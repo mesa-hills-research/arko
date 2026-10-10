@@ -307,6 +307,7 @@ async fn run(args: Args) -> Result<ExitCode, String> {
         mcp_servers: &[],
         skill_folders: &[],
         index_tools: &[],
+        indexes: &[],
     };
     // Settings the agents can't be built with leave no session behind.
     agents::main_config(&agent_settings)?;
@@ -373,6 +374,10 @@ async fn run(args: Args) -> Result<ExitCode, String> {
     };
     let mcp_tools = mcp.tool_names();
     let mcp_started = mcp.started();
+    let known_indexes = indexes
+        .as_ref()
+        .map(|indexes| indexes.known(&settings.workspace))
+        .unwrap_or_default();
     let agent_settings = AgentSettings {
         mcp_tools: &mcp_tools,
         mcp_servers: &mcp_started,
@@ -382,6 +387,7 @@ async fn run(args: Args) -> Result<ExitCode, String> {
         } else {
             &[]
         },
+        indexes: &known_indexes,
         ..agent_settings
     };
     let main_config = agents::main_config(&agent_settings)?;
@@ -2205,6 +2211,7 @@ mod tests {
             mcp_servers: &[],
             skill_folders: &[],
             index_tools: &[],
+            indexes: &[],
         };
         let main = agents::main_config(&settings).unwrap();
         let worker = agents::worker_config(&settings).unwrap();
@@ -2291,6 +2298,7 @@ mod tests {
             mcp_servers: &[],
             skill_folders: &[],
             index_tools: &[],
+            indexes: &[],
         };
         let saved = SavedSetup {
             name: WORKFLOW_NAME.into(),
@@ -2317,6 +2325,7 @@ mod tests {
             mcp_servers: &servers,
             skill_folders: &folders,
             index_tools: index::TOOL_NAMES,
+            indexes: &[],
             ..plain
         })
         .unwrap();
@@ -2367,6 +2376,7 @@ mod tests {
             mcp_servers: &[],
             skill_folders: &[],
             index_tools: &[],
+            indexes: &[],
         };
         let main_config = agents::main_config(&agent_settings).unwrap();
         let worker_config = agents::worker_config(&agent_settings).unwrap();

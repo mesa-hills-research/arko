@@ -194,6 +194,19 @@ pub struct Found {
     pub manifest: Manifest,
 }
 
+/// An index as the agents' instructions name it (see [`Indexes::known`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Known {
+    pub name: String,
+    /// `code` or `docs`.
+    pub kind: &'static str,
+    /// The indexed directory (canonical).
+    pub root: PathBuf,
+    /// Where it lies from the working directory, when it is the working
+    /// directory, holds it or lies in it.
+    pub place: Option<&'static str>,
+}
+
 /// The search modes tools and commands take.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ModeArg {
@@ -616,6 +629,41 @@ impl Indexes {
                 })
             })
             .collect()
+    }
+
+    /// Every readable index, for the agents' instructions: those of the
+    /// working directory (`workspace`) first, then the others, each group by
+    /// name, so the same indexes give the same list.
+    pub fn known(&self, workspace: &Path) -> Vec<Known> {
+        let workspace = workspace
+            .canonicalize()
+            .unwrap_or_else(|_| workspace.to_path_buf());
+        let mut known: Vec<Known> = self
+            .all()
+            .into_iter()
+            .map(|found| {
+                let root = found.manifest.root;
+                let place = if root == workspace {
+                    Some("the working directory")
+                } else if workspace.starts_with(&root) {
+                    Some("holds the working directory")
+                } else if root.starts_with(&workspace) {
+                    Some("in the working directory")
+                } else {
+                    None
+                };
+                Known {
+                    name: found.manifest.name,
+                    kind: found.manifest.kind.as_str(),
+                    root,
+                    place,
+                }
+            })
+            .collect();
+        known.sort_by(|a, b| {
+            (a.place.is_none(), &a.name, &a.root).cmp(&(b.place.is_none(), &b.name, &b.root))
+        });
+        known
     }
 
     /// The indexes whose root contains `dir` or lies in it.

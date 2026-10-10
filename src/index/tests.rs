@@ -312,6 +312,73 @@ fn layout_paths_are_separate() {
     }
 }
 
+/// The indexes the agents' instructions name: where each lies from the
+/// working directory, the working directory's first, then by name.
+#[test]
+fn known_indexes_say_where_they_lie_from_the_working_directory() {
+    let fixture = Fixture::new();
+    let proj = fixture.code_project();
+    let handbook = fixture.docs_project();
+    let indexes = fixture.open(&proj, Backend::Hash, false, fast(false));
+    for root in [&proj, &handbook] {
+        indexes.create_blocking(&create_args(root, None)).unwrap();
+    }
+    let places = |workspace: &Path| {
+        indexes
+            .known(workspace)
+            .into_iter()
+            .map(|known| (known.name, known.kind, known.place))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        places(&handbook),
+        [
+            (
+                "handbook".to_string(),
+                "docs",
+                Some("the working directory")
+            ),
+            ("proj".to_string(), "code", None),
+        ]
+    );
+    assert_eq!(
+        places(&proj.join("src")),
+        [
+            (
+                "proj".to_string(),
+                "code",
+                Some("holds the working directory")
+            ),
+            ("handbook".to_string(), "docs", None),
+        ]
+    );
+    assert_eq!(
+        places(&fixture.base),
+        [
+            (
+                "handbook".to_string(),
+                "docs",
+                Some("in the working directory")
+            ),
+            ("proj".to_string(), "code", Some("in the working directory")),
+        ]
+    );
+    assert_eq!(
+        places(&fixture.data()),
+        [
+            ("handbook".to_string(), "docs", None),
+            ("proj".to_string(), "code", None),
+        ]
+    );
+    let roots: Vec<PathBuf> = indexes
+        .known(&proj)
+        .into_iter()
+        .map(|known| known.root)
+        .collect();
+    assert_eq!(roots, [proj.clone(), handbook.clone()]);
+    fixture.shutdown(&indexes);
+}
+
 #[test]
 fn roots_that_are_refused() {
     let temp = tempfile::tempdir().unwrap();

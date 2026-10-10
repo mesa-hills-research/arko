@@ -2004,6 +2004,7 @@ mod tests {
             mcp_servers: &[],
             skill_folders: &[],
             index_tools: &[],
+            indexes: &[],
         };
         if main {
             crate::agents::main_config(&settings).unwrap()

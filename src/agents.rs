@@ -19,6 +19,7 @@ use arko_ai::{
 use serde::{Deserialize, Serialize};
 
 use crate::crew;
+use crate::index;
 use crate::shell::SHELL_TOOL_NAME;
 use crate::skills;
 
@@ -209,7 +210,13 @@ pub struct AgentSettings<'a> {
     pub skill_folders: &'a [std::path::PathBuf],
     /// The search index tools, offered to both agents.
     pub index_tools: &'a [&'a str],
+    /// The indexes when the session started, named in the instructions
+    /// when there are index tools.
+    pub indexes: &'a [index::Known],
 }
+
+/// How many indexes the instructions name; `index_status` lists the rest.
+const INDEXES_NAMED: usize = 20;
 
 /// `max_workers` for no limit on how many workers run at once.
 pub const NO_LIMIT: u32 = u32::MAX;
@@ -389,9 +396,14 @@ fn tool_instructions(settings: &AgentSettings) -> String {
     } else {
         "the filesystem root, the home directory, system directories, devices, or paths outside the working directory"
     };
+    let uses = if settings.index_tools.is_empty() {
+        "searching (prefer `rg`), building, testing, git, and running programs"
+    } else {
+        "building, testing, git, running programs, and searching text with `rg` (to find code or docs to read, start with `index_search`: see Search indexes below)"
+    };
     let mut text = format!(
         "\n# Tools\n\
-         `shell` runs a command in {shell} in the working directory and returns its exit code and output once it finishes. Use it for what you would do in a terminal: searching (prefer `rg`), building, testing, git, and running programs. Each call starts in the working directory, so a `cd` doesn't carry over to the next call; to run a command somewhere else, give the call that directory as `cwd` instead of a `cd`.\n\n\
+         `shell` runs a command in {shell} in the working directory and returns its exit code and output once it finishes. Use it for what you would do in a terminal: {uses}. Each call starts in the working directory, so a `cd` doesn't carry over to the next call; to run a command somewhere else, give the call that directory as `cwd` instead of a `cd`.\n\n\
          The file tools work with paths relative to the working directory. `read_file` reads a file with line numbers (give `start_line` and `end_line` to read part of a large one), and `list_files` lists a directory's files. Create files with `write_file` (the whole content), and change them with `apply_diff` (SEARCH/REPLACE blocks; it changes nothing if a SEARCH block doesn't match exactly, so read the lines first). Prefer them to heredocs and scripts in the shell, which fail on long text.\n\n\
          The terminal tools run programs in the background: servers, watchers, long builds you want to keep an eye on, and programs that ask questions. `terminal_start` returns a job ID at once, `terminal_status` reads a job's output, `terminal_input` answers a prompt, and `terminal_control` waits for a job, lists jobs or cancels one. Use them only when `shell` doesn't fit, and cancel the jobs you started once you no longer need them.\n\n\
          A command guard refuses commands that would delete, move or overwrite {outside}. A refusal is the guard working, not an obstacle: don't rephrase, split or encode the command to get past it. Do the work another way, or say what was refused and why you needed it.\n",
@@ -400,8 +412,11 @@ fn tool_instructions(settings: &AgentSettings) -> String {
     if !settings.index_tools.is_empty() {
         text.push_str(
             "\n# Search indexes\n\
-             `index_search` searches a codebase or its docs by meaning as well as by words. It returns the top results whole (the entire function, type or doc section, with line numbers as `read_file` shows them), so you don't need to read them again, and the rest as locations with their first lines. Reach for it first to find where something is done or how it works (\"where are retries handled?\", \"how is the session saved?\"), and for code whose names you don't know: one search often replaces several rounds of `rg` and `read_file`. Use `rg` for exact identifiers, strings and patterns, and to find every occurrence.\n\n\
-             Indexes work for any directory, not just the working directory: `index_create` with `path: ../other-repo` indexes another project, and `index_search` searches it when `index` names it (its name, or any directory or file inside it) or `path_prefix` points into it. When there is no index for a non-trivial project you work in, create one: it is kept current as files change. `index_status` lists the indexes, and `index_manage` rebuilds, re-embeds or removes one.\n",
+             `index_search` searches a codebase or its docs by meaning as well as by words. It returns the top results whole (the entire function, type or doc section, with line numbers as `read_file` shows them), so you don't need to read them again, and the rest as locations with their first lines. Use it first whenever you look for code or docs to read: to find where something is done or how it works (\"where are retries handled?\", \"how is the session saved?\"), and also when you know the name, since a query that names a function or type (\"Session::save\", \"parse_config\") returns its definition whole, where `rg` gives one line and needs another call to read the rest. One search often replaces several rounds of `rg`, `sed` and `read_file`; `detail: brief` lists more results in less space. Keep `rg` for listing every occurrence of a name (all the callers, say), for regexes, and for exact strings in logs, configuration and files no index covers.\n\n",
+        );
+        text.push_str(&known_indexes(settings.indexes));
+        text.push_str(
+            "\n\nIndexes work for any directory, not just the working directory. To search another project, name its index in `index` (its name, or any directory or file inside it) or give a `path_prefix` inside it, instead of running `rg` there. When a non-trivial project you work in has no index, create one with `index_create` (`path: ../other-repo` for another project): it is kept current as files change. `index_status` lists the indexes as they are now, and `index_manage` rebuilds, re-embeds or removes one.\n",
         );
     }
     if !settings.mcp_servers.is_empty() {
@@ -426,6 +441,33 @@ fn tool_instructions(settings: &AgentSettings) -> String {
                 .map(|folder| format!("`{}`", folder.display()))
                 .collect::<Vec<_>>()
                 .join(", ")
+        ));
+    }
+    text
+}
+
+/// The indexes the session started with, for the Search indexes section:
+/// the working directory's first, at most [`INDEXES_NAMED`] of them.
+fn known_indexes(indexes: &[index::Known]) -> String {
+    if indexes.is_empty() {
+        return "There were no indexes when this session started.".to_string();
+    }
+    let mut text = String::from("The indexes when this session started:");
+    for known in indexes.iter().take(INDEXES_NAMED) {
+        text.push_str(&format!(
+            "\n- `{}`: {}, `{}`",
+            known.name,
+            known.kind,
+            known.root.display()
+        ));
+        if let Some(place) = known.place {
+            text.push_str(&format!(" ({place})"));
+        }
+    }
+    if indexes.len() > INDEXES_NAMED {
+        text.push_str(&format!(
+            "\n- and {} more (`index_status` lists them)",
+            indexes.len() - INDEXES_NAMED
         ));
     }
     text
@@ -474,6 +516,7 @@ mod tests {
             mcp_servers: &[],
             skill_folders: &[],
             index_tools: &[],
+            indexes: &[],
         }
     }
 
@@ -671,6 +714,71 @@ mod tests {
             );
             assert!(config.instructions.contains("`index_search` searches"));
         }
+    }
+
+    /// With the index tools, both agents are told to read code through
+    /// `index_search` before `rg`, and which indexes there are: the working
+    /// directory's first, at most `INDEXES_NAMED`.
+    #[test]
+    fn the_index_section_names_the_indexes_and_puts_search_before_rg() {
+        let opus = model("opus", false);
+        let plain = main_config(&settings(&opus, &opus)).unwrap();
+        assert!(plain.instructions.contains("searching (prefer `rg`)"));
+
+        let none = AgentSettings {
+            index_tools: crate::index::TOOL_NAMES,
+            ..settings(&opus, &opus)
+        };
+        let config = main_config(&none).unwrap();
+        assert!(!config.instructions.contains("searching (prefer `rg`)"));
+        assert!(
+            config
+                .instructions
+                .contains("to find code or docs to read, start with `index_search`")
+        );
+        assert!(
+            config
+                .instructions
+                .contains("There were no indexes when this session started.")
+        );
+
+        let known = |name: &str, root: &str, place: Option<&'static str>| index::Known {
+            name: name.into(),
+            kind: "code",
+            root: root.into(),
+            place,
+        };
+        let indexes = [
+            known("finn", "/work/finn", Some("the working directory")),
+            known("arko", "/work/arko", None),
+        ];
+        let with = AgentSettings {
+            indexes: &indexes,
+            ..none
+        };
+        for config in [main_config(&with).unwrap(), worker_config(&with).unwrap()] {
+            assert!(config.instructions.contains(
+                "The indexes when this session started:\n- `finn`: code, `/work/finn` (the working directory)\n- `arko`: code, `/work/arko`\n\nIndexes work for any directory"
+            ));
+        }
+
+        let many: Vec<index::Known> = (0..INDEXES_NAMED + 3)
+            .map(|n| known(&format!("i{n:02}"), &format!("/work/i{n:02}"), None))
+            .collect();
+        let config = main_config(&AgentSettings {
+            indexes: &many,
+            ..none
+        })
+        .unwrap();
+        let last = format!("`i{:02}`", INDEXES_NAMED - 1);
+        assert!(config.instructions.contains(&last), "{last}");
+        let first_left_out = format!("`i{INDEXES_NAMED:02}`");
+        assert!(!config.instructions.contains(&first_left_out));
+        assert!(
+            config
+                .instructions
+                .contains("- and 3 more (`index_status` lists them)")
+        );
     }
 
     /// A resumed session builds the same configuration, which the

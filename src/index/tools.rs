@@ -787,8 +787,8 @@ pub fn format_create(outcome: &CreateOutcome) -> String {
 // ----- the tools -----
 
 const SEARCH_DESCRIPTION: &str = "Semantic search of code and docs in fin's indexes (syntax-aware chunks, keyword BM25 plus Voyage embeddings). \
-Prefer it to rg for concept or behaviour questions and when you don't know the names: \"where are failed requests retried\", \"how is the session saved to disk\", \"code that validates config paths\". \
-Use rg/grep for exact identifiers, strings and regexes, or to find every occurrence. \
+Prefer it to rg whenever you look for code or docs to read: for concept or behaviour questions (\"where are failed requests retried\", \"how is the session saved to disk\", \"code that validates config paths\"), and for names you know (\"Session::save\"), whose definitions come back whole. \
+Use rg/grep to list every occurrence of a name, for regexes, and for exact strings in files no index covers. \
 Returns ranked `path:start-end · scope` results. The top ones come whole: the entire function, type or doc section, with line numbers as read_file shows them, so there's no need to read them again or grep around them; the rest show their first lines (read those with read_file if they look promising). detail=brief returns only locations and short snippets, for a quick survey. \
 Works for any directory with an index, not just the current one: name it in `index` (an index name, or any directory or file inside it) or give a `path_prefix` inside it. Without either, searches the indexes covering the current directory; index_status lists them all.";
 

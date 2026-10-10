@@ -36,5 +36,5 @@ mod tools;
 mod tests;
 
 pub use cli::{IndexCommand, run_command};
-pub use engine::Indexes;
+pub use engine::{Indexes, Known};
 pub use tools::TOOL_NAMES;
