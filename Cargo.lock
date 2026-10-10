@@ -170,7 +170,6 @@ dependencies = [
 [[package]]
 name = "arko_index"
 version = "0.3.0"
-source = "git+https://github.com/mesa-hills-research/arko_framework.git?rev=023c92c#023c92ce4701a3e20c643f4c5eedb83785c42a26"
 dependencies = [
  "caprock",
  "fs2",

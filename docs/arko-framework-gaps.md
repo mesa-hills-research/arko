@@ -2,7 +2,7 @@
 
 fin is built on arko_ai, arko_agents and arko_workflows. This page lists the places where fin works around something the framework can't do yet. For each one it gives what arko does today, what fin does instead, and the change that would let fin drop its workaround. The list starts with the biggest gaps.
 
-Paths are relative to the arko_framework repository. Line numbers are from upstream commit `023c92c` (origin `HEAD` when this was written). fin itself builds against a local checkout at `8f8569a`, 142 commits behind it. Where the two differ, the entry says so.
+Paths are relative to the arko_framework repository. Line numbers are from upstream commit `023c92c` (origin `HEAD` when this was written). fin built against an older local checkout then. Where the two differed, the entry says so.
 
 | # | Gap | Priority |
 |---|-----|----------|
@@ -189,4 +189,4 @@ Combined with gap 1, this means:
 
 ## fin's own dependency setup
 
-fin builds against the local checkout through path dependencies. Its arko_index is older and searches by keywords only, so fin takes arko_index from upstream by git (`rev = "023c92c"` in `Cargo.toml`). Moving the other three crates to upstream would bring single-run stops (gap 5) and drop the split. Several of the requests above (1, 2, 3 and 6) would together let fin replace `src/crew.rs` with the framework's own subagents.
+fin builds against the local checkout through path dependencies, all four crates included. The checkout now tracks upstream `main`, which brings single-run stops (gap 5) within reach. Several of the requests above (1, 2, 3 and 6) would together let fin replace `src/crew.rs` with the framework's own subagents.

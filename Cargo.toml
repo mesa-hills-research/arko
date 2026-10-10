@@ -15,9 +15,7 @@ path = "src/main.rs"
 arko_ai = { path = "../arko_framework/arko_ai" }
 arko_agents = { path = "../arko_framework/arko_agents" }
 arko_workflows = { path = "../arko_framework/arko_workflows" }
-# Upstream arko_index (dense and hybrid search, Voyage embeddings, watchers);
-# the local framework checkout has an older, lexical-only arko_index.
-arko_index = { git = "https://github.com/mesa-hills-research/arko_framework.git", rev = "023c92c" }
+arko_index = { path = "../arko_framework/arko_index" }
 
 async-trait = "0.1.79"
 chrono = { version = "0.4.38", features = ["serde"] }
