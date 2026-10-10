@@ -609,12 +609,12 @@ fn dense_and_hybrid_search_with_the_test_embedder() {
             .to_string_lossy()
             .into_owned(),
     );
-    assert!(
-        indexes
-            .search_blocking(&args)
-            .unwrap_err()
-            .contains("outside")
-    );
+    // Without an index named, the path picks the indexes: there are none.
+    let error = indexes.search_blocking(&args).unwrap_err();
+    assert!(error.contains("no index covers"), "{error}");
+    args.index = Some("proj".into());
+    let error = indexes.search_blocking(&args).unwrap_err();
+    assert!(error.contains("outside"), "{error}");
 
     // A free estimate of a complete index, then the status.
     let text = indexes
@@ -916,6 +916,15 @@ fn tool_parameters_are_parsed_leniently() {
     assert_eq!(tools::parse_count("-1"), None);
     assert_eq!(tools::parse_count("lots"), None);
 
+    let detail = |value: Value| tools::parse_detail(&params(json!({ "detail": value })));
+    assert_eq!(
+        tools::parse_detail(&params(json!({}))).unwrap(),
+        tools::Detail::Full
+    );
+    assert_eq!(detail(json!(" Brief ")).unwrap(), tools::Detail::Brief(3));
+    assert_eq!(detail(json!("full")).unwrap(), tools::Detail::Full);
+    assert!(detail(json!("everything")).is_err());
+
     let p = params(json!({
         "yes": "Yes", "no": "off", "num": 1, "flag": true, "bad": "maybe", "blank": "",
         "list": "src/**, *.rs,\ndocs/", "array": ["a", "b, c"], "count": "300k",
@@ -1092,8 +1101,10 @@ fn tools_create_search_and_remove() {
         json!({"query": "exponential backoff", "limit": "2"}),
     )
     .unwrap();
-    let first = text.lines().nth(1).unwrap();
+    // The top result comes whole, with line numbers.
+    let first = text.lines().nth(2).unwrap();
     assert!(first.starts_with("src/net.rs:"), "{text}");
+    assert!(text.contains("\n1 | //! Networking helpers.\n"), "{text}");
     assert!(
         text.lines().next().unwrap().contains("(code, hybrid)"),
         "{text}"
@@ -1384,5 +1395,205 @@ fn voyage_live() {
     assert_eq!(hit_files(&output)[0], "src/net.rs", "{output:?}");
     let (tokens, dollars) = indexes.spent();
     assert!(tokens > 0 && dollars > 0.0);
+    fixture.shutdown(&indexes);
+}
+
+// ----- whole definitions and other directories -----
+
+/// A hit on `chunk` of `file`, as a search of index `proj` returns it.
+fn hit_on(file: &Path, chunk: &arko_index::bench_v1::Chunk) -> Hit {
+    Hit {
+        index: "proj".into(),
+        display: file.file_name().unwrap().to_string_lossy().into_owned(),
+        file: file.to_path_buf(),
+        start_line: chunk.start_line,
+        end_line: chunk.end_line,
+        start_byte: chunk.start_byte,
+        end_byte: chunk.end_byte,
+        scope: chunk.scope.clone(),
+        symbol: chunk.symbol_path.clone(),
+        changed: false,
+    }
+}
+
+/// `fn name` with `lines` statements of `width` characters.
+fn long_function(name: &str, lines: usize, width: usize) -> String {
+    let mut text = format!("/// {name} does a lot.\npub fn {name}() {{\n");
+    for line in 0..lines {
+        let value = "x".repeat(width.saturating_sub(30));
+        text.push_str(&format!("    let v{line} = \"{value}\";\n"));
+    }
+    text.push_str("}\n\n");
+    text
+}
+
+#[test]
+fn search_shows_whole_definitions() {
+    let temp = tempfile::tempdir().unwrap();
+    let file = temp.path().join("work.rs");
+    // `big` is split into several chunks; `small` is one.
+    let text = format!(
+        "{}{}{}",
+        long_function("big", 120, 80),
+        "/// Small.\npub fn small() -> u32 {\n    7\n}\n\n",
+        long_function("huge", 260, 40),
+    );
+    std::fs::write(&file, &text).unwrap();
+    let options = super::engine::chunk_options(Kind::Code);
+    let chunks = arko_index::bench_v1::chunk_file(&file, &options).unwrap();
+    let of = |symbol: &str| -> Vec<&arko_index::bench_v1::Chunk> {
+        chunks
+            .iter()
+            .filter(|chunk| chunk.symbol_path == symbol)
+            .collect()
+    };
+    let big = of("big");
+    assert!(big.len() > 1, "{chunks:?}");
+    let big_start = big[0].start_line;
+    // Its closing brace: the blank line after it isn't shown.
+    let big_end = 123;
+    assert_eq!(big.last().unwrap().end_line, big_end + 1);
+    let small = of("small");
+    assert_eq!(small.len(), 1, "{chunks:?}");
+    let huge = of("huge");
+
+    // A hit on the second part of `big` stands for all of it.
+    let second = hit_on(&file, big[1]);
+    let found = tools::whole_definition(&second, Kind::Code).unwrap();
+    assert_eq!((found.start_line, found.end_line), (big_start, big_end + 1));
+    assert_eq!(found.matched, (big[1].start_line, big[1].end_line));
+
+    let output = SearchOutput {
+        hits: vec![
+            second.clone(),
+            hit_on(&file, big[0]),
+            hit_on(&file, small[0]),
+            hit_on(&file, huge[0]),
+        ],
+        searched: vec![("proj".into(), Kind::Code, Mode::Hybrid)],
+        ..SearchOutput::default()
+    };
+    let text = tools::format_search_detail("work", &output, tools::Detail::Full);
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines[0], "4 results from proj (code, hybrid):", "{text}");
+    assert_eq!(lines[1], "");
+    assert_eq!(
+        lines[2],
+        format!(
+            "work.rs:{big_start}-{big_end} · fn big (matched lines {}-{})",
+            big[1].start_line, big[1].end_line
+        )
+    );
+    assert_eq!(lines[3], format!("{big_start} | /// big does a lot."));
+    assert!(text.contains(&format!("\n{big_end} | }}\n")), "{text}");
+    // The first part of `big` was shown already.
+    assert!(
+        text.contains(&format!(
+            "\nwork.rs:{}-{} · fn big: in the lines {big_start}-{big_end} shown above\n",
+            big[0].start_line, big[0].end_line
+        )),
+        "{text}"
+    );
+    assert!(text.contains("\nwork.rs:"), "{text}");
+    assert!(text.contains(" · fn small\n"), "{text}");
+    assert!(text.contains(" | pub fn small() -> u32 {\n"), "{text}");
+    // `huge` is too long to show whole: the part that matched.
+    let huge_lines = huge.last().unwrap().end_line + 1 - huge[0].start_line;
+    assert!(huge_lines > 200);
+    assert!(
+        text.contains(&format!(
+            "-line definition at lines {}-",
+            huge[0].start_line
+        )) && text.contains("read_file shows the rest"),
+        "{text}"
+    );
+
+    // Brief: the locations and snippets of before.
+    let brief = tools::format_search_detail("work", &output, tools::Detail::Brief(1));
+    assert!(!brief.contains(" | "), "{brief}");
+    assert!(
+        brief.contains(&format!(
+            "\nwork.rs:{}-{} · fn big\n    ",
+            big[1].start_line, big[1].end_line
+        )),
+        "{brief}"
+    );
+
+    // Past the budget, results show their snippets, in rank order.
+    let many = temp.path().join("many.rs");
+    let text: String = (0..30)
+        .map(|n| long_function(&format!("f{n}"), 30, 60))
+        .collect();
+    std::fs::write(&many, text).unwrap();
+    let chunks = arko_index::bench_v1::chunk_file(&many, &options).unwrap();
+    let output = SearchOutput {
+        hits: chunks.iter().map(|chunk| hit_on(&many, chunk)).collect(),
+        searched: vec![("proj".into(), Kind::Code, Mode::Lexical)],
+        ..SearchOutput::default()
+    };
+    let text = tools::format_search_detail("f", &output, tools::Detail::Full);
+    assert!(text.len() < 30_000, "{}", text.len());
+    let whole = text.matches(" | pub fn f").count();
+    assert!(whole > 3 && whole < 30, "{whole}");
+    let first_snippet = text.find("\n    /// f").expect("snippets after the budget");
+    assert!(
+        !text[first_snippet..].contains(" | pub fn f"),
+        "a whole result after a snippet"
+    );
+
+    // The file changed since it was indexed: found by its symbol.
+    let mut moved = hit_on(&file, small[0]);
+    moved.start_byte += 3;
+    let found = tools::whole_definition(&moved, Kind::Code).unwrap();
+    assert_eq!(found.start_line, small[0].start_line);
+    let mut gone = moved.clone();
+    gone.symbol = "nothing_by_that_name".into();
+    assert!(tools::whole_definition(&gone, Kind::Code).is_none());
+}
+
+#[test]
+fn indexes_of_other_directories_are_found_by_any_path_in_them() {
+    let fixture = Fixture::new();
+    let root = fixture.code_project();
+    let work = fixture.base.join("work");
+    std::fs::create_dir_all(&work).unwrap();
+    // Made by a fin that didn't monitor.
+    let one_shot = fixture.open(&root, Backend::Hash, false, fast(false));
+    let outcome = one_shot.create_blocking(&create_args(&root, None)).unwrap();
+    fixture.shutdown(&one_shot);
+
+    // A fin working elsewhere: the index isn't its workspace's.
+    let indexes = fixture.open(&work, Backend::Hash, true, fast(false));
+    assert_eq!(indexes.watch_state(&outcome.layout), WatchState::Off);
+    for name in ["../proj", "../proj/src", "../proj/src/net.rs", "proj"] {
+        let found = indexes.resolve(name, &work).unwrap();
+        assert_eq!(found.manifest.root, root, "{name}");
+    }
+    let error = indexes.resolve("..", &work).unwrap_err();
+    assert!(error.contains("no index named"), "{error}");
+    let error = indexes
+        .manage_blocking("../proj/src", &Action::Remove, &work)
+        .unwrap_err();
+    assert!(error.contains("no index named"), "{error}");
+    let reports = indexes.status_blocking(Some("../proj/src"), &work).unwrap();
+    assert_eq!(reports[0].id, outcome.layout.id());
+
+    // No index covers the working directory: a path_prefix picks one.
+    let mut args = search_args(&work, "retry backoff", Some(ModeArg::Lexical));
+    let error = indexes.search_blocking(&args).unwrap_err();
+    assert!(error.contains("no index covers"), "{error}");
+    args.path_prefix = Some("../proj/src".into());
+    let output = indexes.search_blocking(&args).unwrap();
+    let net = root.join("src/net.rs").to_string_lossy().into_owned();
+    assert_eq!(hit_files(&output)[0], net, "{output:?}");
+    let mut args = search_args(&work, "retry backoff", Some(ModeArg::Lexical));
+    args.index = Some(net.clone());
+    let output = indexes.search_blocking(&args).unwrap();
+    assert_eq!(hit_files(&output)[0], net, "{output:?}");
+
+    // Once searched, a monitored index is kept current.
+    wait_for("the watcher", || {
+        indexes.watch_state(&outcome.layout).active()
+    });
     fixture.shutdown(&indexes);
 }

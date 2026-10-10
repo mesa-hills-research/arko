@@ -32,6 +32,23 @@ pub const TOOL_NAMES: &[&str] = &[
 pub const SNIPPET_LINES: usize = 3;
 /// Characters of a snippet line.
 const SNIPPET_WIDTH: usize = 140;
+/// Bytes of whole definitions one search shows: the results past it show
+/// their snippet.
+const FULL_BUDGET: usize = 24_000;
+/// Lines of one whole definition: a longer one shows the part that matched.
+const FULL_MAX_LINES: usize = 200;
+/// Characters of a line of a whole definition.
+const FULL_WIDTH: usize = 300;
+
+/// How much of each result a search shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Detail {
+    /// The location and this many lines of the chunk that matched.
+    Brief(usize),
+    /// The whole definition (function, type, doc section) of the top results,
+    /// with line numbers, up to [`FULL_BUDGET`]; the rest as `Brief`.
+    Full,
+}
 
 impl Indexes {
     /// The agent's tools, sharing this instance.
@@ -219,6 +236,18 @@ async fn blocking<T: Send + 'static>(
 
 // ----- parsed arguments -----
 
+/// `detail`: `full` (the default) or `brief`.
+pub(crate) fn parse_detail(params: &HashMap<String, Value>) -> Result<Detail, ToolError> {
+    match str_param(params, "detail").map(|text| text.to_ascii_lowercase()) {
+        None => Ok(Detail::Full),
+        Some(text) if matches!(text.as_str(), "full" | "whole" | "code") => Ok(Detail::Full),
+        Some(text) if matches!(text.as_str(), "brief" | "short" | "snippet" | "snippets") => {
+            Ok(Detail::Brief(SNIPPET_LINES))
+        }
+        Some(text) => Err(invalid("detail", format!("{text:?}: use full or brief"))),
+    }
+}
+
 pub(crate) fn parse_search(
     params: &HashMap<String, Value>,
     cwd: &Path,
@@ -350,9 +379,145 @@ fn mode_name(mode: arko_index::hybrid::Mode) -> &'static str {
     }
 }
 
+/// Where a result's whole definition lies (1-based lines, inclusive).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Definition {
+    pub start_line: usize,
+    pub end_line: usize,
+    /// The chunk that matched, in the file as it is now.
+    pub matched: (usize, usize),
+}
+
+/// The whole definition `hit` lies in: its file chunked again as an index of
+/// `kind` chunks it, and the chunks next to the hit's that share its symbol
+/// (a long function is split into several). When the file changed after it
+/// was indexed, the chunk with the hit's symbol. None when the file can't be
+/// read or the chunk isn't there any more.
+pub(crate) fn whole_definition(hit: &engine::Hit, kind: Kind) -> Option<Definition> {
+    let chunks = arko_index::bench_v1::chunk_file(&hit.file, &engine::chunk_options(kind)).ok()?;
+    let same = |chunk: &arko_index::bench_v1::Chunk| chunk.symbol_path == hit.symbol;
+    let at = chunks
+        .iter()
+        .position(|chunk| chunk.start_byte == hit.start_byte && same(chunk))
+        .or_else(|| {
+            if hit.symbol.is_empty() {
+                None
+            } else {
+                chunks.iter().position(same)
+            }
+        })?;
+    let (mut first, mut last) = (at, at);
+    if !hit.symbol.is_empty() {
+        while first > 0 && same(&chunks[first - 1]) {
+            first -= 1;
+        }
+        while last + 1 < chunks.len() && same(&chunks[last + 1]) {
+            last += 1;
+        }
+    }
+    Some(Definition {
+        start_line: chunks[first].start_line,
+        end_line: chunks[last].end_line,
+        matched: (chunks[at].start_line, chunks[at].end_line),
+    })
+}
+
+/// Lines `start..=end` of `text` as `read_file` shows them (`12 | line`),
+/// without trailing blank lines; long lines are cut at [`FULL_WIDTH`].
+fn numbered(text: &str, start: usize, end: usize) -> (String, usize) {
+    let lines: Vec<&str> = text
+        .lines()
+        .enumerate()
+        .skip(start.saturating_sub(1))
+        .take((end + 1).saturating_sub(start.max(1)))
+        .map(|(_, line)| line)
+        .collect();
+    let kept = lines.len()
+        - lines
+            .iter()
+            .rev()
+            .take_while(|line| line.trim().is_empty())
+            .count();
+    let mut out = String::new();
+    for (offset, line) in lines[..kept].iter().enumerate() {
+        let line = line.trim_end();
+        let line = if line.chars().count() > FULL_WIDTH {
+            let cut: String = line.chars().take(FULL_WIDTH - 1).collect();
+            format!("{cut}…")
+        } else {
+            line.to_string()
+        };
+        out.push_str(&format!("{} | {line}\n", start.max(1) + offset));
+    }
+    (out, start.max(1) + kept.saturating_sub(1))
+}
+
+/// A result's header: `[index] path:start-end · scope`.
+fn result_header(hit: &engine::Hit, several: bool, lines: (usize, usize)) -> String {
+    let mut header = String::new();
+    if several {
+        header.push_str(&format!("[{}] ", hit.index));
+    }
+    header.push_str(&format!("{}:{}-{}", hit.display, lines.0, lines.1));
+    let context = if hit.scope.is_empty() {
+        &hit.symbol
+    } else {
+        &hit.scope
+    };
+    if !context.is_empty() {
+        header.push_str(&format!(" · {context}"));
+    }
+    if hit.changed {
+        header.push_str(" (file changed since indexed)");
+    }
+    header
+}
+
+/// A result shown whole: its header and numbered lines, and the lines shown.
+fn whole_result(
+    hit: &engine::Hit,
+    found: &Definition,
+    several: bool,
+) -> Option<(String, (usize, usize))> {
+    let text = String::from_utf8_lossy(&std::fs::read(&hit.file).ok()?).into_owned();
+    let lines = found.end_line + 1 - found.start_line.min(found.end_line);
+    // A definition too long to show whole: the part that matched.
+    let partial = lines > FULL_MAX_LINES;
+    let (start, last) = if partial {
+        let (start, end) = found.matched;
+        (start, end.min(start + FULL_MAX_LINES - 1))
+    } else {
+        (found.start_line, found.end_line)
+    };
+    let (body, end) = numbered(&text, start, last);
+    if body.is_empty() {
+        return None;
+    }
+    let mut header = result_header(hit, several, (start, end));
+    if partial {
+        header.push_str(&format!(
+            " (part of a {lines}-line definition at lines {}-{}: read_file shows the rest)",
+            found.start_line, found.end_line
+        ));
+    } else if found.matched != (found.start_line, found.end_line) {
+        header.push_str(&format!(
+            " (matched lines {}-{})",
+            found.matched.0, found.matched.1
+        ));
+    }
+    Some((format!("{header}\n{body}"), (start, end)))
+}
+
 /// A search's results: a header line, then per result `path:start-end · scope`
 /// and its snippet, then notes.
+#[cfg(test)]
 pub fn format_search(query: &str, output: &SearchOutput, snippet_lines: usize) -> String {
+    format_search_detail(query, output, Detail::Brief(snippet_lines))
+}
+
+/// A search's results with `detail`: a header line, then per result
+/// `path:start-end · scope` and its lines, then notes.
+pub fn format_search_detail(query: &str, output: &SearchOutput, detail: Detail) -> String {
     let mut out = String::new();
     let searched: Vec<String> = output
         .searched
@@ -373,29 +538,55 @@ pub fn format_search(query: &str, output: &SearchOutput, snippet_lines: usize) -
             if output.hits.len() == 1 { "" } else { "s" },
             searched.join(", ")
         ));
+        let kinds: HashMap<&str, Kind> = output
+            .searched
+            .iter()
+            .map(|(name, kind, _)| (name.as_str(), *kind))
+            .collect();
+        let mut budget = FULL_BUDGET;
+        // The whole definitions shown: file and lines.
+        let mut shown: Vec<(&Path, (usize, usize))> = Vec::new();
         for hit in &output.hits {
-            let mut header = String::new();
-            if several {
-                header.push_str(&format!("[{}] ", hit.index));
-            }
-            header.push_str(&format!(
-                "{}:{}-{}",
-                hit.display, hit.start_line, hit.end_line
-            ));
-            let context = if hit.scope.is_empty() {
-                &hit.symbol
-            } else {
-                &hit.scope
+            let lines = match detail {
+                Detail::Brief(lines) => lines,
+                Detail::Full => {
+                    out.push('\n');
+                    let kind = kinds.get(hit.index.as_str()).copied().unwrap_or(Kind::Code);
+                    let found = whole_definition(hit, kind);
+                    if let Some(found) = &found
+                        && let Some((_, lines)) = shown.iter().find(|(file, lines)| {
+                            *file == hit.file.as_path()
+                                && lines.0 <= found.matched.0
+                                && found.matched.1 <= lines.1
+                        })
+                    {
+                        out.push_str(&format!(
+                            "{}: in the lines {}-{} shown above\n",
+                            result_header(hit, several, found.matched),
+                            lines.0,
+                            lines.1
+                        ));
+                        continue;
+                    }
+                    if budget > 0
+                        && let Some(found) = &found
+                        && let Some((text, lines)) = whole_result(hit, found, several)
+                    {
+                        if text.len() <= budget {
+                            budget -= text.len();
+                            shown.push((hit.file.as_path(), lines));
+                            out.push_str(&text);
+                            continue;
+                        }
+                        // The results after it show their snippets, in rank order.
+                        budget = 0;
+                    }
+                    SNIPPET_LINES
+                }
             };
-            if !context.is_empty() {
-                header.push_str(&format!(" · {context}"));
-            }
-            if hit.changed {
-                header.push_str(" (file changed since indexed)");
-            }
-            out.push_str(&header);
+            out.push_str(&result_header(hit, several, (hit.start_line, hit.end_line)));
             out.push('\n');
-            for line in snippet(&hit.file, hit.start_byte, hit.end_byte, snippet_lines) {
+            for line in snippet(&hit.file, hit.start_byte, hit.end_byte, lines) {
                 out.push_str("    ");
                 out.push_str(&line);
                 out.push('\n');
@@ -598,8 +789,8 @@ pub fn format_create(outcome: &CreateOutcome) -> String {
 const SEARCH_DESCRIPTION: &str = "Semantic search of code and docs in fin's indexes (syntax-aware chunks, keyword BM25 plus Voyage embeddings). \
 Prefer it to rg for concept or behaviour questions and when you don't know the names: \"where are failed requests retried\", \"how is the session saved to disk\", \"code that validates config paths\". \
 Use rg/grep for exact identifiers, strings and regexes, or to find every occurrence. \
-Returns ranked `path:start-end · scope` locations with a short snippet; read the promising ones (read_file with start_line and end_line, or the shell) before relying on them. \
-Searches the indexes covering the current directory unless `index` names one; index_status lists them.";
+Returns ranked `path:start-end · scope` results. The top ones come whole: the entire function, type or doc section, with line numbers as read_file shows them, so there's no need to read them again or grep around them; the rest show their first lines (read those with read_file if they look promising). detail=brief returns only locations and short snippets, for a quick survey. \
+Works for any directory with an index, not just the current one: name it in `index` (an index name, or any directory or file inside it) or give a `path_prefix` inside it. Without either, searches the indexes covering the current directory; index_status lists them all.";
 
 const STATUS_DESCRIPTION: &str = "Shows fin's semantic search indexes (all, or the one named): root, kind, chunks, embedding coverage and cost, monitoring and pending changes, errors. Check it before index_create.";
 
@@ -629,7 +820,7 @@ impl Tool for SearchTool {
                 ),
                 param(
                     "index",
-                    "An index name or root path (default: the indexes covering the current directory).",
+                    "An index name, or a directory or file inside an index (absolute or relative; e.g. ../other-repo). Default: the indexes covering path_prefix, else the current directory.",
                     ToolParameterType::String,
                     false,
                 ),
@@ -647,7 +838,13 @@ impl Tool for SearchTool {
                 ),
                 param(
                     "path_prefix",
-                    "Only results under this directory or file (relative to the current directory).",
+                    "Only results under this directory or file (absolute, or relative to the current directory; any indexed directory, also outside the current one).",
+                    ToolParameterType::String,
+                    false,
+                ),
+                param(
+                    "detail",
+                    "full (default): the top results' whole definitions with line numbers; brief: locations and 3-line snippets only.",
                     ToolParameterType::String,
                     false,
                 ),
@@ -672,10 +869,15 @@ impl Tool for SearchTool {
         params: HashMap<String, Value>,
     ) -> Result<String, ToolError> {
         let args = parse_search(&params, context.current_working_directory)?;
+        let detail = parse_detail(&params)?;
         let indexes = Arc::clone(&self.indexes);
         let query = args.query.clone();
-        let output = blocking(move || indexes.search_blocking(&args)).await?;
-        Ok(format_search(&query, &output, SNIPPET_LINES))
+        // Chunking the results' files again is blocking work too.
+        blocking(move || {
+            let output = indexes.search_blocking(&args)?;
+            Ok(format_search_detail(&query, &output, detail))
+        })
+        .await
     }
 }
 
@@ -692,7 +894,7 @@ impl Tool for StatusTool {
             STATUS_DESCRIPTION,
             vec![param(
                 "index",
-                "An index name or root path (default: all indexes).",
+                "An index name, or a directory or file inside an index (default: all indexes).",
                 ToolParameterType::String,
                 false,
             )],
@@ -731,7 +933,7 @@ impl Tool for CreateTool {
             vec![
                 param(
                     "path",
-                    "The directory to index (default: the current directory).",
+                    "The directory to index, absolute or relative: any directory, also outside the current one, e.g. ../other-repo (default: the current directory).",
                     ToolParameterType::String,
                     false,
                 ),
@@ -814,7 +1016,7 @@ impl Tool for ManageTool {
             vec![
                 param(
                     "index",
-                    "The index name or root path (default: the one covering the current directory).",
+                    "The index name, or a directory or file inside it (default: the one covering the current directory). remove takes the name or the index's root only.",
                     ToolParameterType::String,
                     false,
                 ),

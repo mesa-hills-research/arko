@@ -77,13 +77,54 @@ const GRACE: Duration = Duration::from_secs(10);
 /// `start_worker`'s choice of prompt cache.
 pub const CACHE_PARAM: &str = "cache";
 
-/// How long a worker on a Claude model keeps its prompt cache.
+/// How long a worker keeps its prompt cache after its last step.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CacheTtl {
+    /// Anthropic's default.
     #[serde(rename = "5m")]
     FiveMinutes,
+    /// ChatGPT's (OpenAI models over the ChatGPT login), which no request
+    /// can change.
+    #[serde(rename = "30m")]
+    ThirtyMinutes,
+    /// Anthropic's extended lifetime.
     #[serde(rename = "1h")]
     OneHour,
+}
+
+/// A new worker's prompt cache, for a model whose cache lifetime fin knows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WorkerCache {
+    /// The lifetime when the lead doesn't choose.
+    pub default: CacheTtl,
+    /// The lead chooses `5m` or `1h` at a worker's start (Claude models).
+    pub choosable: bool,
+}
+
+impl WorkerCache {
+    /// Claude workers: 5 minutes or an hour, the lead's choice.
+    pub fn claude(one_hour: bool) -> Self {
+        Self {
+            default: CacheTtl::from_1h(one_hour),
+            choosable: true,
+        }
+    }
+
+    /// OpenAI workers over the ChatGPT login: ChatGPT's 30 minutes.
+    pub fn chatgpt() -> Self {
+        Self {
+            default: CacheTtl::ThirtyMinutes,
+            choosable: false,
+        }
+    }
+
+    /// A new worker's lifetime: the lead's choice where it has one.
+    fn choose(self, chosen: Option<CacheTtl>) -> CacheTtl {
+        match chosen {
+            Some(chosen) if self.choosable => chosen,
+            _ => self.default,
+        }
+    }
 }
 
 impl CacheTtl {
@@ -106,6 +147,7 @@ impl CacheTtl {
     fn name(self) -> &'static str {
         match self {
             Self::FiveMinutes => "5m",
+            Self::ThirtyMinutes => "30m",
             Self::OneHour => "1h",
         }
     }
@@ -113,16 +155,20 @@ impl CacheTtl {
     fn lasts(self) -> chrono::Duration {
         match self {
             Self::FiveMinutes => chrono::Duration::minutes(5),
+            Self::ThirtyMinutes => chrono::Duration::minutes(30),
             Self::OneHour => chrono::Duration::hours(1),
         }
     }
 
-    /// Sets `config`'s Anthropic cache lifetime to this one.
+    /// Sets `config`'s Anthropic cache lifetime to this one. ChatGPT's
+    /// lifetime is its own: no setting changes it.
     fn apply(self, config: &mut AgentConfig) {
-        config.llm_config.generation_config.anthropic_cache_ttl = match self {
-            Self::FiveMinutes => None,
-            Self::OneHour => Some(arko_ai::AnthropicCacheTtl::OneHour),
-        };
+        let ttl = &mut config.llm_config.generation_config.anthropic_cache_ttl;
+        match self {
+            Self::FiveMinutes => *ttl = None,
+            Self::OneHour => *ttl = Some(arko_ai::AnthropicCacheTtl::OneHour),
+            Self::ThirtyMinutes => {}
+        }
     }
 }
 
@@ -143,10 +189,9 @@ pub struct Setup {
     pub show_thinking: bool,
     /// How many workers may run at once (`NO_LIMIT`: any number).
     pub max_running: u32,
-    /// A new worker's prompt cache when the lead doesn't choose, for
-    /// workers on a Claude model; `None` on other models, which have no
-    /// choice.
-    pub cache: Option<CacheTtl>,
+    /// A new worker's prompt cache: a choice for workers on a Claude model,
+    /// ChatGPT's fixed 30 minutes on OpenAI models.
+    pub cache: Option<WorkerCache>,
 }
 
 /// A worker as the session records it.
@@ -164,7 +209,7 @@ struct Record {
     /// Its worktree was removed: it can't continue.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     removed: bool,
-    /// Its prompt cache (Claude models).
+    /// How long its prompt cache lasts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     cache: Option<CacheTtl>,
 }
@@ -588,8 +633,7 @@ impl Crew {
         if task.is_empty() {
             return Err("give the worker a task".into());
         }
-        // Only Claude models have a choice.
-        let cache = self.setup.cache.map(|default| cache.unwrap_or(default));
+        let cache = self.setup.cache.map(|setup| setup.choose(cache));
         let number = {
             let mut state = self.lock();
             if state.closing {
@@ -748,7 +792,7 @@ impl Crew {
         let resumed = matches!(launch, Launch::Restart(..));
         let expired = match worker.record.cache {
             Some(cache) if Utc::now() - worker.since > cache.lasts() => format!(
-                " Its {} prompt cache had expired (it stopped {} ago), so it rereads its conversation at full price.",
+                " Its {} prompt cache had expired (it stopped {} ago), so it rereads its whole conversation uncached.",
                 cache.name(),
                 ago(worker.since, Utc::now()).trim_start_matches("for ")
             ),
@@ -1831,12 +1875,14 @@ impl Tool for CrewTool {
                 false,
             ),
         };
-        if let (START_WORKER, Some(default)) = (self.name, cache) {
+        if let (START_WORKER, Some(cache)) = (self.name, cache)
+            && cache.choosable
+        {
             parameters.push(param(
                 CACHE_PARAM,
                 &format!(
                     "How long the worker's prompt cache lasts after its last step: `1h` when you expect to message it or give it follow-up work after it reports (continuing it then reuses the cache), `5m` for a quick one-off such as research (cheaper to write). Default `{}`.",
-                    default.name()
+                    cache.default.name()
                 ),
                 ToolParameterType::String,
                 false,
@@ -2645,13 +2691,66 @@ mod tests {
         let (crew, _woken) = crew(temp.path(), NO_LIMIT);
         assert!(!has_cache(&crew));
         let (claude, _woken) = Crew::new(Setup {
-            cache: Some(CacheTtl::FiveMinutes),
+            cache: Some(WorkerCache::claude(false)),
             ..setup(temp.path())
         });
         assert!(has_cache(&claude));
+        let claude_cache = WorkerCache::claude(false);
+        assert_eq!(claude_cache.choose(None), CacheTtl::FiveMinutes);
+        assert_eq!(
+            claude_cache.choose(Some(CacheTtl::OneHour)),
+            CacheTtl::OneHour
+        );
 
         fake(&claude, "w1", Status::Finished);
         claude.lock().workers[0].record.cache = Some(CacheTtl::OneHour);
         assert!(claude.list().contains("· 1h cache"), "{}", claude.list());
+    }
+
+    #[test]
+    fn a_chatgpt_worker_s_cache_lasts_thirty_minutes() {
+        // ChatGPT's lifetime is fixed: the lead has no choice to make.
+        let chatgpt = WorkerCache::chatgpt();
+        assert_eq!(chatgpt.choose(None), CacheTtl::ThirtyMinutes);
+        assert_eq!(
+            chatgpt.choose(Some(CacheTtl::OneHour)),
+            CacheTtl::ThirtyMinutes
+        );
+        assert_eq!(
+            CacheTtl::ThirtyMinutes.lasts(),
+            chrono::Duration::minutes(30)
+        );
+        assert_eq!(
+            serde_json::from_str::<CacheTtl>("\"30m\"").unwrap(),
+            CacheTtl::ThirtyMinutes
+        );
+        let mut worker = config_on("luna", false);
+        let before = worker.llm_config.generation_config.clone();
+        CacheTtl::ThirtyMinutes.apply(&mut worker);
+        assert_eq!(
+            worker.llm_config.generation_config.anthropic_cache_ttl,
+            before.anthropic_cache_ttl
+        );
+
+        let temp = tempfile::tempdir().unwrap();
+        let (crew, _woken) = Crew::new(Setup {
+            cache: Some(chatgpt),
+            ..setup(temp.path())
+        });
+        let start = crew
+            .lead_tools()
+            .into_iter()
+            .find(|tool| tool.definition().name == START_WORKER)
+            .unwrap();
+        assert!(
+            !start
+                .definition()
+                .parameters
+                .iter()
+                .any(|param| param.name == CACHE_PARAM)
+        );
+        fake(&crew, "w1", Status::Finished);
+        crew.lock().workers[0].record.cache = Some(CacheTtl::ThirtyMinutes);
+        assert!(crew.list().contains("· 30m cache"), "{}", crew.list());
     }
 }

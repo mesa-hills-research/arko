@@ -21,6 +21,7 @@ Paths are relative to the arko_framework repository. Line numbers are from upstr
 | 13 | Missing re-exports | Low |
 | 14 | Skills: paths, scripts and sources | Low |
 | 15 | A reply without a tool call counts as a failure | Low |
+| 16 | ChatGPT's prompt cache is reported as 5 minutes | Low |
 
 ## 1. Subagents block the agent that starts them
 
@@ -175,6 +176,16 @@ Combined with gap 1, this means:
 **fin's workaround.** fin gives the main agent a `message_user` tool that shows the user a message without ending the turn, and its instructions say every response must call a tool.
 
 **Request.** A built-in tool for messages to the user, like `ask_user` without the wait, or a per-agent option that turns a text-only reply into a progress message and lets the run carry on.
+
+## 16. ChatGPT's prompt cache is reported as 5 minutes
+
+**Today.** `prompt_cache_lifetime` reports `OPENAI_PROMPT_CACHE_LIFETIME`, 5 minutes, for every OpenAI model and auth (`arko_ai/src/prompt_cache.rs:66` and `:104`). The ChatGPT OAuth backend keeps its cache for 30 minutes, and no request can change that. arko's own note on the constant records a measurement that found the cache still warm after 40 minutes, but it keeps 5 minutes as the safe value. `wait_for_message`'s automatic limit is built on this value (`WaitForMessageTool::limit`, `arko_workflows/src/messaging/wait.rs:193-206`).
+
+**Effect.** An agent on a ChatGPT login that waits for messages wakes every 4 minutes 30 seconds to keep warm a cache that lasts 30 minutes. Each wake is a model request against the plan's limits. This matters once fin moves to arko's own subagents and their waits.
+
+**fin's workaround.** fin doesn't use arko's waits. Its crew treats an OpenAI worker's cache as lasting 30 minutes: `list_workers` shows it, continuing a worker after that says the cache had expired, and the lead's instructions say to start a fresh worker once a finished one has been idle for longer.
+
+**Request.** A 30-minute lifetime for ChatGPT OAuth, or a way for the host to set the lifetime it reports (an override on `GenerationConfig` or the client).
 
 ## fin's own dependency setup
 

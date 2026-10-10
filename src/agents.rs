@@ -147,6 +147,12 @@ impl ModelSettings {
             .is_ok_and(|provider| provider == Provider::Anthropic)
     }
 
+    /// An OpenAI model, which fin reaches over the ChatGPT login only.
+    fn is_chatgpt(&self) -> bool {
+        self.provider()
+            .is_ok_and(|provider| provider == Provider::OpenAI)
+    }
+
     fn llm_config(&self, show_thinking: bool) -> Result<AgentLLMConfig, String> {
         let model = resolve_model(&self.model)?;
         let mut generation = GenerationConfig::default().with_prompt_caching(true);
@@ -394,7 +400,8 @@ fn tool_instructions(settings: &AgentSettings) -> String {
     if !settings.index_tools.is_empty() {
         text.push_str(
             "\n# Search indexes\n\
-             `index_search` searches a codebase or its docs by meaning as well as by words, and returns ranked `path:start-end` locations with snippets; read those ranges with `read_file`. It suits questions about behaviour or concepts (\"where are retries handled?\", \"how is the session saved?\") and code whose names you don't know. Use `rg` for exact identifiers, strings and patterns, and to find every occurrence. When there is no index for a non-trivial project you work in, create one with `index_create`: it is kept current as files change. `index_status` lists the indexes, and `index_manage` rebuilds, re-embeds or removes one.\n",
+             `index_search` searches a codebase or its docs by meaning as well as by words. It returns the top results whole (the entire function, type or doc section, with line numbers as `read_file` shows them), so you don't need to read them again, and the rest as locations with their first lines. Reach for it first to find where something is done or how it works (\"where are retries handled?\", \"how is the session saved?\"), and for code whose names you don't know: one search often replaces several rounds of `rg` and `read_file`. Use `rg` for exact identifiers, strings and patterns, and to find every occurrence.\n\n\
+             Indexes work for any directory, not just the working directory: `index_create` with `path: ../other-repo` indexes another project, and `index_search` searches it when `index` names it (its name, or any directory or file inside it) or `path_prefix` points into it. When there is no index for a non-trivial project you work in, create one: it is kept current as files change. `index_status` lists the indexes, and `index_manage` rebuilds, re-embeds or removes one.\n",
         );
     }
     if !settings.mcp_servers.is_empty() {
@@ -442,6 +449,10 @@ fn worker_instructions(settings: &AgentSettings) -> String {
             "\nA worker keeps a prompt cache of its conversation, and `start_worker`'s `cache` sets how long it lasts after the worker's last step: `1h` for a worker you expect to send messages or follow-up work after it reports, so continuing it reuses its cache, and `5m` for a quick one-off such as a research task (a 1h cache costs more to write: twice the input price instead of 1.25 times). The default is `{}`. Continuing a worker after its cache has expired rereads its whole conversation at full price: if it finished more than an hour ago, start a fresh worker instead, unless its context is worth that.\n",
             if settings.worker.cache_1h { "1h" } else { "5m" }
         ));
+    } else if settings.worker.is_chatgpt() {
+        text.push_str(
+            "\nA worker keeps a prompt cache of its conversation for 30 minutes after its last step (ChatGPT's cache, which no setting changes). Continuing a worker after its cache has expired rereads its whole conversation uncached, which uses more of the ChatGPT plan's limits: if it finished more than 30 minutes ago, start a fresh worker instead, unless its context is worth that.\n",
+        );
     }
     text
 }
@@ -708,6 +719,12 @@ mod tests {
         assert!(config.instructions.contains("`cache`"), "Claude workers");
         let config = main_config(&settings(&sol, &sol)).unwrap();
         assert!(!config.instructions.contains("`cache`"), "OpenAI workers");
+        assert!(
+            config
+                .instructions
+                .contains("for 30 minutes after its last step"),
+            "ChatGPT's cache"
+        );
         let worker = worker_config(&settings(&opus, &opus)).unwrap();
         assert!(
             !worker

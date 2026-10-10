@@ -12,7 +12,7 @@ use super::engine::{
     self, Action, CreateArgs, EmbedSummary, Events, Found, Indexes, ModeArg, SearchArgs, Timing,
     fmt_count, fmt_dollars,
 };
-use super::tools::{self, format_create, format_search, format_status};
+use super::tools::{self, format_create, format_search_detail, format_status};
 
 /// `fin index` subcommands.
 #[derive(Debug, Clone, clap::Subcommand)]
@@ -58,7 +58,7 @@ pub enum IndexCommand {
         /// The query
         #[arg(required = true, num_args = 1..)]
         query: Vec<String>,
-        /// An index name or root path
+        /// An index name, or a directory or file inside an index
         #[arg(long, short)]
         index: Option<String>,
         /// hybrid, semantic or lexical (default: hybrid when the index has embeddings)
@@ -67,7 +67,8 @@ pub enum IndexCommand {
         /// Results, 1-50
         #[arg(long, short = 'n', default_value_t = engine::DEFAULT_LIMIT)]
         limit: usize,
-        /// Only results under this path (relative to the current directory)
+        /// Only results under this path (absolute, or relative to the current
+        /// directory); without --index, it picks the indexes too
         #[arg(long)]
         path_prefix: Option<String>,
         /// Only chunks of this language (rust, python, markdown, ...)
@@ -76,6 +77,10 @@ pub enum IndexCommand {
         /// Snippet lines per result
         #[arg(long, default_value_t = tools::SNIPPET_LINES)]
         lines: usize,
+        /// Show the top results' whole definitions (functions, types, doc
+        /// sections) with line numbers, as the agents get them
+        #[arg(long, conflicts_with = "lines")]
+        full: bool,
     },
     /// Bring an index up to date with its files: rebuild what changed, embed it
     Update {
@@ -306,6 +311,7 @@ async fn run(indexes: &Arc<Indexes>, cmd: IndexCommand, cwd: &Path) -> Result<Ex
             path_prefix,
             language,
             lines,
+            full,
         } => {
             let mode = match mode.as_deref() {
                 None => None,
@@ -325,8 +331,16 @@ async fn run(indexes: &Arc<Indexes>, cmd: IndexCommand, cwd: &Path) -> Result<Ex
             };
             let text = args.query.clone();
             let worker = Arc::clone(indexes);
+            let detail = if full {
+                tools::Detail::Full
+            } else {
+                tools::Detail::Brief(lines)
+            };
             let output = blocking(move || worker.search_blocking(&args)).await?;
-            println!("{}", cli_text(&format_search(&text, &output, lines)));
+            println!(
+                "{}",
+                cli_text(&format_search_detail(&text, &output, detail))
+            );
             Ok(ExitCode::SUCCESS)
         }
         IndexCommand::Update { index, force } => {

@@ -629,9 +629,17 @@ impl Indexes {
             .collect()
     }
 
-    /// The index `name` names: its name, its id, or its root (a path, relative to
-    /// `cwd`; ambiguous when the directory has a code and a docs index).
+    /// The index `name` names: its name, its id, or a path (relative to `cwd`)
+    /// in its root: the root itself, or a directory or file in it, which names
+    /// the index with the deepest root that holds it. Ambiguous when that
+    /// directory has a code and a docs index.
     pub fn resolve(&self, name: &str, cwd: &Path) -> Result<Found, String> {
+        self.resolve_in(name, cwd, true)
+    }
+
+    /// [`Self::resolve`]; `inside` false takes only an index's own root as a
+    /// path (for removing one).
+    pub(crate) fn resolve_in(&self, name: &str, cwd: &Path, inside: bool) -> Result<Found, String> {
         let name = name.trim();
         let all = self.all();
         if let Some(found) = all.iter().find(|found| found.manifest.name == name) {
@@ -641,9 +649,22 @@ impl Indexes {
             return Ok(found.clone());
         }
         if let Ok(path) = store::absolute(Path::new(name), cwd).canonicalize() {
+            // The deepest root that holds the path.
+            let root = all
+                .iter()
+                .map(|found| &found.manifest.root)
+                .filter(|root| {
+                    if inside {
+                        path.starts_with(root)
+                    } else {
+                        **root == path
+                    }
+                })
+                .max_by_key(|root| root.components().count())
+                .cloned();
             let matching: Vec<&Found> = all
                 .iter()
-                .filter(|found| found.manifest.root == path)
+                .filter(|found| Some(&found.manifest.root) == root.as_ref())
                 .collect();
             match matching.as_slice() {
                 [one] => return Ok((*one).clone()),
@@ -655,7 +676,7 @@ impl Indexes {
                         .collect();
                     return Err(format!(
                         "{} has several indexes: {}; name one",
-                        path.display(),
+                        many[0].manifest.root.display(),
                         names.join(", ")
                     ));
                 }
@@ -809,10 +830,7 @@ impl Indexes {
         caller: Caller,
     ) -> Result<BuildRecord, String> {
         let state = entry.layout.state();
-        let options = Options {
-            front_matter_description: manifest.kind == Kind::Docs,
-            ..Options::default()
-        };
+        let options = chunk_options(manifest.kind);
         let threads = match caller {
             Caller::Interactive => arko_index::threads(),
             Caller::Background => (arko_index::threads() / 2).max(1),
@@ -1403,6 +1421,11 @@ impl Indexes {
             Ok(None) => {}
             Err(error) => notes.push(format!("{name}: couldn't check for changes: {error}")),
         }
+        // A monitored index outside the workspace has no watcher yet: once
+        // searched, it is kept current too.
+        if self.monitor && manifest.monitor {
+            self.start_watch(entry);
+        }
     }
 
     // ----- search -----
@@ -1417,13 +1440,27 @@ impl Indexes {
             return Err("the query is empty".into());
         }
         let cwd = args.cwd.canonicalize().unwrap_or_else(|_| args.cwd.clone());
-        let targets = self.targets(args.index.as_deref(), &cwd)?;
         let limit = args.limit.clamp(1, MAX_LIMIT);
         let prefix = args
             .path_prefix
             .as_deref()
             .map(str::trim)
             .filter(|prefix| !prefix.is_empty());
+        // Without an index named, the indexes of the path searched (any
+        // directory), else of the current one.
+        let named = args
+            .index
+            .as_deref()
+            .map(str::trim)
+            .filter(|name| !name.is_empty());
+        let place = match (named, prefix) {
+            (None, Some(prefix)) => {
+                let wanted = store::absolute(Path::new(prefix), &cwd);
+                wanted.canonicalize().unwrap_or(wanted)
+            }
+            _ => cwd.clone(),
+        };
+        let targets = self.targets(named, &place)?;
         let language = args
             .language
             .as_deref()
@@ -1899,7 +1936,8 @@ impl Indexes {
         action: &Action,
         cwd: &Path,
     ) -> Result<String, String> {
-        let found = self.resolve(name, cwd)?;
+        // Removing takes an index's own root, not a path in it.
+        let found = self.resolve_in(name, cwd, !matches!(action, Action::Remove))?;
         let entry = self.entry(&found.layout);
         let name = found.manifest.name.clone();
         match action {
@@ -2088,6 +2126,14 @@ struct Query<'a> {
 }
 
 /// Whether `file` was modified after `built` (or is gone).
+/// How the indexes of `kind` chunk their files.
+pub(crate) fn chunk_options(kind: Kind) -> Options {
+    Options {
+        front_matter_description: kind == Kind::Docs,
+        ..Options::default()
+    }
+}
+
 fn changed_since(file: &Path, built: Option<DateTime<Utc>>) -> bool {
     let Some(built) = built else {
         return false;
