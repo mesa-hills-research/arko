@@ -1,8 +1,10 @@
 //! Credentials: the Anthropic API key and the ChatGPT login (a Codex
 //! auth.json), from the environment or `.env` files, and the setup screen
 //! that asks for them when the chosen model has none or its file fails.
-//! `.env` files can also turn on the 1-hour prompt cache (FIN_CACHE_1H)
-//! and choose the shell on Windows (FIN_SHELL).
+//! `.env` files can also turn on the 1-hour prompt cache (FIN_CACHE_1H),
+//! choose the shell on Windows (FIN_SHELL) and hold the Voyage API key the
+//! search indexes embed with (VOYAGE_API_KEY), which the setup screen also
+//! takes.
 //!
 //! What the screen takes is saved in fin's own `.env` (in its folder,
 //! readable only by the user) and used in this run at once. Nothing read
@@ -35,9 +37,11 @@ pub const CODEX_AUTH: &str = "FIN_CODEX_AUTH";
 pub const CACHE_1H: &str = "FIN_CACHE_1H";
 /// The shell new sessions run commands in on Windows: `cmd` or `powershell`.
 pub const SHELL: &str = "FIN_SHELL";
+/// The Voyage API key, for the search indexes' embeddings.
+pub const VOYAGE_KEY: &str = "VOYAGE_API_KEY";
 /// The settings a `.env` file can hold; it may set others, which are left
 /// alone.
-const DOTENV_KEYS: [&str; 4] = [ANTHROPIC_KEY, CODEX_AUTH, CACHE_1H, SHELL];
+const DOTENV_KEYS: [&str; 5] = [ANTHROPIC_KEY, CODEX_AUTH, CACHE_1H, SHELL, VOYAGE_KEY];
 
 /// What was entered on the setup screen in this run: it comes before every
 /// other source.
@@ -236,6 +240,11 @@ pub fn setup(need: Option<&Need>) -> Result<(), String> {
                 .or_else(|| CodexAuthFile::default_path().filter(|path| path.is_file()))
                 .map_or("none found".to_string(), |path| path.display().to_string());
             out.line(&format!("  ChatGPT login      {login}"));
+            let voyage = match lookup(VOYAGE_KEY) {
+                None => "not set (search indexes are keyword-only)".to_string(),
+                Some((_, source)) => format!("set ({})", describe(&source)),
+            };
+            out.line(&format!("  Voyage API key     {voyage}"));
         }
         Some(Need::Any) => out.line(
             "No credentials found: ANTHROPIC_API_KEY isn't set (in the environment or a .env file), and there is no ChatGPT login.",
@@ -253,16 +262,27 @@ pub fn setup(need: Option<&Need>) -> Result<(), String> {
         Some(Need::AnthropicKey { .. }) => ask_key(&out, &mut editor, &dotenv),
         Some(Need::ChatGptLogin { .. }) => ask_login(&out, &mut editor, &dotenv),
         None | Some(Need::Any) => {
+            // The Voyage key is no model's credential: offered on its own.
+            let voyage = need.is_none();
             out.line("  1  Paste an Anthropic API key, for Claude models");
             out.line(
                 "  2  Give the path to a Codex auth.json with a ChatGPT login, for OpenAI models",
             );
+            if voyage {
+                out.line("  3  Paste a Voyage API key, for semantic search in the search indexes");
+            }
             out.line("  q  Quit");
+            let prompt = if voyage {
+                "Choose 1, 2, 3 or q: "
+            } else {
+                "Choose 1, 2 or q: "
+            };
             loop {
-                let choice = read(&mut editor, "Choose 1, 2 or q: ", "", false)?;
+                let choice = read(&mut editor, prompt, "", false)?;
                 match choice.trim() {
                     "1" => return ask_key(&out, &mut editor, &dotenv),
                     "2" => return ask_login(&out, &mut editor, &dotenv),
+                    "3" if voyage => return ask_voyage_key(&out, &mut editor, &dotenv),
                     "" | "q" | "Q" => return Err(cancelled()),
                     _ => {}
                 }
@@ -307,6 +327,33 @@ fn ask_key(out: &Output, editor: &mut Editor, dotenv: &Path) -> Result<(), Strin
     save(dotenv, ANTHROPIC_KEY, &key)?;
     enter(ANTHROPIC_KEY, key);
     saved(out, dotenv, ANTHROPIC_KEY);
+    Ok(())
+}
+
+fn ask_voyage_key(out: &Output, editor: &mut Editor, dotenv: &Path) -> Result<(), String> {
+    out.line(&out.dim(
+        "Paste your Voyage API key (from dashboard.voyageai.com; the input is hidden). An empty line quits.",
+    ));
+    let key = loop {
+        let key = read(editor, "Voyage API key: ", "", true)?;
+        let key = key.trim();
+        if key.is_empty() {
+            return Err(cancelled());
+        }
+        if key.chars().any(char::is_whitespace) {
+            out.line(&out.warn("An API key has no spaces in it; paste it again."));
+            continue;
+        }
+        break key.to_string();
+    };
+    if !key.starts_with("pa-") {
+        out.line(&out.warn(
+            "Note: Voyage API keys start with pa-; this one doesn't, so requests may be refused.",
+        ));
+    }
+    save(dotenv, VOYAGE_KEY, &key)?;
+    enter(VOYAGE_KEY, key);
+    saved(out, dotenv, VOYAGE_KEY);
     Ok(())
 }
 

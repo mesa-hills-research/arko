@@ -15,6 +15,7 @@ use arko_workflows::services::RUN_WORKFLOW_AGENT_TOOL_NAME;
 use serde::{Deserialize, Serialize};
 
 use crate::shell::SHELL_TOOL_NAME;
+use crate::skills;
 
 /// The agent the user talks with.
 pub const MAIN: &str = "main";
@@ -178,6 +179,14 @@ pub struct AgentSettings<'a> {
     /// What the agents are told the shell is.
     pub shell_name: &'a str,
     pub allow_outside_workspace: bool,
+    /// The tools of the MCP servers running, offered to both agents.
+    pub mcp_tools: &'a [String],
+    /// The MCP servers running, by name.
+    pub mcp_servers: &'a [String],
+    /// The skill folders, read at the start of each run.
+    pub skill_folders: &'a [std::path::PathBuf],
+    /// The search index tools, offered to both agents.
+    pub index_tools: &'a [&'a str],
 }
 
 /// The tools both agents have: the shell and the terminal tools.
@@ -186,6 +195,16 @@ pub fn terminal_tool_names() -> Vec<String> {
         .chain(TerminalTool::NAMES)
         .map(String::from)
         .collect()
+}
+
+/// The tools both agents have: the shell, the terminal tools, the search
+/// index tools and the MCP servers' tools. (`load_skill` is added for each
+/// run when there are skills to load.)
+fn shared_tool_names(settings: &AgentSettings) -> Vec<String> {
+    let mut tools = terminal_tool_names();
+    tools.extend(settings.index_tools.iter().map(|name| name.to_string()));
+    tools.extend(settings.mcp_tools.iter().cloned());
+    tools
 }
 
 fn environment() -> EnvironmentDetailsConfig {
@@ -203,7 +222,7 @@ fn environment() -> EnvironmentDetailsConfig {
 }
 
 pub fn main_config(settings: &AgentSettings) -> Result<AgentConfig, String> {
-    let mut tools = terminal_tool_names();
+    let mut tools = shared_tool_names(settings);
     let mut overrides = std::collections::HashMap::new();
     if settings.max_workers > 0 {
         tools.push(RUN_WORKFLOW_AGENT_TOOL_NAME.into());
@@ -221,7 +240,7 @@ pub fn main_config(settings: &AgentSettings) -> Result<AgentConfig, String> {
     if settings.max_workers > 0 {
         instructions.push_str(&worker_instructions(settings.max_workers));
     }
-    AgentConfig::builder(
+    let mut builder = AgentConfig::builder(
         MAIN.into(),
         "fin".into(),
         settings.main.llm_config(settings.show_thinking)?,
@@ -241,9 +260,11 @@ pub fn main_config(settings: &AgentSettings) -> Result<AgentConfig, String> {
         "Your reply to the user's latest message, in full: what you did, what you found, and anything you need from them. They read it as your message (Markdown, shown as plain text)."
             .into(),
     )
-    .handover(HandoverConfig::at_input_tokens(settings.handover_at))
-    .build()
-    .map_err(|error| error.to_string())
+    .handover(HandoverConfig::at_input_tokens(settings.handover_at));
+    if let Some(skills) = skills::config(settings.skill_folders) {
+        builder = builder.skills_config(skills);
+    }
+    builder.build().map_err(|error| error.to_string())
 }
 
 pub fn worker_config(settings: &AgentSettings) -> Result<AgentConfig, String> {
@@ -253,7 +274,7 @@ pub fn worker_config(settings: &AgentSettings) -> Result<AgentConfig, String> {
          When the task is done, or you can't go further, call `complete_task`. Its summary is your report to the lead, and the only thing it sees of your work: what you did and found, with the evidence (file paths and line numbers, the commands you ran and what they showed), every file you changed, and anything unfinished. Mark what you couldn't confirm, and say where you looked.\n",
     );
     instructions.push_str(&tool_instructions(settings));
-    AgentConfig::builder(
+    let mut builder = AgentConfig::builder(
         WORKER.into(),
         "worker".into(),
         settings.worker.llm_config(settings.show_thinking)?,
@@ -263,7 +284,7 @@ pub fn worker_config(settings: &AgentSettings) -> Result<AgentConfig, String> {
     )
     .instructions(instructions)
     .tool_config(AgentToolConfig {
-        available_tool_names: terminal_tool_names(),
+        available_tool_names: shared_tool_names(settings),
         default_auto_approve_tool_use: true,
         ..AgentToolConfig::default()
     })
@@ -272,9 +293,11 @@ pub fn worker_config(settings: &AgentSettings) -> Result<AgentConfig, String> {
         "Your report to the lead agent: what you did and found, with evidence (paths, line numbers, commands and results), the files you changed, and anything unfinished or unconfirmed."
             .into(),
     )
-    .handover(HandoverConfig::at_input_tokens(settings.handover_at))
-    .build()
-    .map_err(|error| error.to_string())
+    .handover(HandoverConfig::at_input_tokens(settings.handover_at));
+    if let Some(skills) = skills::config(settings.skill_folders) {
+        builder = builder.skills_config(skills);
+    }
+    builder.build().map_err(|error| error.to_string())
 }
 
 fn main_instructions(_settings: &AgentSettings) -> String {
@@ -291,13 +314,44 @@ fn tool_instructions(settings: &AgentSettings) -> String {
     } else {
         "the filesystem root, the home directory, system directories, devices, or paths outside the working directory"
     };
-    format!(
+    let mut text = format!(
         "\n# Tools\n\
          `shell` runs a command in {shell} in the working directory and returns its exit code and output once it finishes. Use it for everything you would do in a terminal: searching and reading files (prefer `rg`, and read large files in parts), creating and editing files, building, testing, git. Each call starts in the working directory, so a `cd` doesn't carry over to the next call; to run a command somewhere else, give the call that directory as `cwd` instead of a `cd`. Edit files with a short script or a heredoc, and check the result.\n\n\
          The terminal tools run programs in the background: servers, watchers, long builds you want to keep an eye on, and programs that ask questions. `terminal_start` returns a job ID at once, `terminal_status` reads a job's output, `terminal_input` answers a prompt, and `terminal_control` waits for a job, lists jobs or cancels one. Use them only when `shell` doesn't fit, and cancel the jobs you started once you no longer need them.\n\n\
          A command guard refuses commands that would delete, move or overwrite {outside}. A refusal is the guard working, not an obstacle: don't rephrase, split or encode the command to get past it. Do the work another way, or say what was refused and why you needed it.\n",
         shell = settings.shell_name,
-    )
+    );
+    if !settings.index_tools.is_empty() {
+        text.push_str(
+            "\n# Search indexes\n\
+             `index_search` searches a codebase or its docs by meaning as well as by words, and returns ranked `path:start-end` locations with snippets; read those ranges with the shell. It suits questions about behaviour or concepts (\"where are retries handled?\", \"how is the session saved?\") and code whose names you don't know. Use `rg` for exact identifiers, strings and patterns, and to find every occurrence. When there is no index for a non-trivial project you work in, create one with `index_create`: it is kept current as files change. `index_status` lists the indexes, and `index_manage` rebuilds, re-embeds or removes one.\n",
+        );
+    }
+    if !settings.mcp_servers.is_empty() {
+        text.push_str(&format!(
+            "\n# MCP servers\n\
+             Tools named `mcp__<server>__<tool>` come from MCP servers the user set up ({}). Use them where they fit the task better than the shell. They act outside the command guard, so take the same care with what they change.\n",
+            settings
+                .mcp_servers
+                .iter()
+                .map(|name| format!("`{name}`"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    if !settings.skill_folders.is_empty() {
+        text.push_str(&format!(
+            "\n# Skills\n\
+             Skills are instructions for particular kinds of work, from these folders: {}. When a skill's description fits your task, load it with `load_skill` before you start, and follow it. A skill's other files, such as scripts and templates, are in its folder (usually named after the skill) in one of these, and the paths a skill gives are relative to that folder.\n",
+            settings
+                .skill_folders
+                .iter()
+                .map(|folder| format!("`{}`", folder.display()))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    text
 }
 
 fn worker_instructions(max_workers: u32) -> String {
@@ -321,6 +375,10 @@ mod tests {
             show_thinking: false,
             shell_name: "bash",
             allow_outside_workspace: false,
+            mcp_tools: &[],
+            mcp_servers: &[],
+            skill_folders: &[],
+            index_tools: &[],
         }
     }
 
@@ -419,6 +477,52 @@ mod tests {
                 .any(|name| name == RUN_WORKFLOW_AGENT_TOOL_NAME)
         );
         assert!(!config.instructions.contains("# Workers"));
+    }
+
+    #[test]
+    fn mcp_index_and_skill_tools_reach_both_agents_with_their_instructions() {
+        let opus = model("opus", false);
+        let plain = settings(&opus, &opus);
+        for config in [main_config(&plain).unwrap(), worker_config(&plain).unwrap()] {
+            assert!(config.skills_config.is_none());
+            for section in ["# MCP servers", "# Skills", "# Search indexes"] {
+                assert!(!config.instructions.contains(section), "{section}");
+            }
+        }
+        let tools = ["mcp__github__create_issue".to_string()];
+        let servers = ["github".to_string()];
+        let folders = [std::path::PathBuf::from("/work/.claude/skills")];
+        let with = AgentSettings {
+            mcp_tools: &tools,
+            mcp_servers: &servers,
+            skill_folders: &folders,
+            index_tools: &["index_search", "index_create"],
+            ..settings(&opus, &opus)
+        };
+        for config in [main_config(&with).unwrap(), worker_config(&with).unwrap()] {
+            let names = &config.tool_config.available_tool_names;
+            for tool in [
+                "shell",
+                "mcp__github__create_issue",
+                "index_search",
+                "index_create",
+            ] {
+                assert!(names.iter().any(|name| name == tool), "{tool}");
+            }
+            let skills = config.skills_config.as_ref().unwrap();
+            assert_eq!(skills.global_sources[0].path, "/work/.claude/skills");
+            assert!(
+                config
+                    .instructions
+                    .contains("from MCP servers the user set up (`github`)")
+            );
+            assert!(
+                config
+                    .instructions
+                    .contains("from these folders: `/work/.claude/skills`")
+            );
+            assert!(config.instructions.contains("`index_search` searches"));
+        }
     }
 
     /// A resumed session builds the same configuration, which the

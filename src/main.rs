@@ -7,11 +7,19 @@
 //! stops a turn (the workflow is stopped, then rebuilt from its checkpoint,
 //! and the next message reopens the conversation); lines typed while the
 //! agent works reach it as notes. Every session is saved and can be resumed.
+//!
+//! Besides the shell, the agents get the tools of the MCP servers set up
+//! (`mcp`), the skills in the skill folders (`skills`), and semantic search
+//! over indexes of codebases and docs that fin keeps current (`index`, also
+//! run from the command line as `fin index ...`).
 
 mod agents;
 mod credentials;
+mod index;
+mod mcp;
 mod session;
 mod shell;
+mod skills;
 mod term;
 mod ui;
 
@@ -31,7 +39,7 @@ use clap::Parser;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::agents::{AgentSettings, Effort, MAIN, ModelSettings, WORKER, resolve_model};
-use crate::credentials::{ANTHROPIC_KEY, Need};
+use crate::credentials::{ANTHROPIC_KEY, Need, VOYAGE_KEY};
 use crate::session::{Session, Settings};
 use crate::shell::{Shell, ShellTool, WindowsShell};
 use crate::ui::{Control, Input, Output, Stats};
@@ -41,7 +49,7 @@ use crate::ui::{Control, Input, Output, Stats};
     name = "fin",
     version,
     about = "A general-purpose agent for the terminal: a shell, background jobs and workers that run at the same time.",
-    after_help = "Credentials: ANTHROPIC_API_KEY for Claude models; a ChatGPT login for OpenAI models (a Codex auth.json: --codex-auth, else FIN_CODEX_AUTH, else Codex's own from `codex login`; or OPENAI_OAUTH_ACCESS_TOKEN and OPENAI_OAUTH_ACCOUNT_ID). ANTHROPIC_API_KEY, FIN_CODEX_AUTH, FIN_CACHE_1H (1 turns on --cache-1h) and FIN_SHELL (cmd or powershell, on Windows) can also be in a .env file: the nearest one in the current directory or a parent, else the one in fin's folder (FIN_HOME, else fin in your data directory, such as ~/.local/share/fin). When the model has none, or the auth file fails, fin asks for them on a setup screen and saves them in that folder's .env; --setup opens it.\n\nWhile the agent works, type to add to its task, and press Ctrl-C to stop the turn. Commands: /new, /cost, /session, /help, /exit."
+    after_help = "Credentials: ANTHROPIC_API_KEY for Claude models; a ChatGPT login for OpenAI models (a Codex auth.json: --codex-auth, else FIN_CODEX_AUTH, else Codex's own from `codex login`; or OPENAI_OAUTH_ACCESS_TOKEN and OPENAI_OAUTH_ACCOUNT_ID). ANTHROPIC_API_KEY, FIN_CODEX_AUTH, FIN_CACHE_1H (1 turns on --cache-1h) and FIN_SHELL (cmd or powershell, on Windows) can also be in a .env file: the nearest one in the current directory or a parent, else the one in fin's folder (FIN_HOME, else fin in your data directory, such as ~/.local/share/fin). When the model has none, or the auth file fails, fin asks for them on a setup screen and saves them in that folder's .env; --setup opens it. VOYAGE_API_KEY (Voyage AI, for semantic search) can be in the environment or that .env too.\n\nMCP servers: fin starts those set up in --mcp-config files, in the project's .mcp.json (it asks first, and remembers the answer until the file's servers change) and in mcp.json in fin's folder, in Claude Code's format ({\"mcpServers\": {\"name\": {\"command\": ..., \"args\": [...], \"env\": {...}}}}); servers over standard input and output only. Skills: folders with a SKILL.md, in the project's .agents/skills, .claude/skills or .skills, in skills in fin's folder, or in ~/.agents/skills or ~/.claude/skills.\n\nSearch indexes: `fin index create [PATH]` indexes a codebase or its docs (the agents can create indexes too), and fin keeps the working directory's indexes current while it runs; `fin index --help` lists the commands. Without VOYAGE_API_KEY, search is by keywords only.\n\nWhile the agent works, type to add to its task, and press Ctrl-C to stop the turn. Commands: /new, /cost, /mcp, /skills, /session, /help, /exit."
 )]
 struct Args {
     /// Send this message, print the reply and exit. Progress goes to
@@ -135,10 +143,30 @@ struct Args {
     #[arg(long, value_enum)]
     shell: Option<WindowsShell>,
 
-    /// Open the setup screen first: paste an Anthropic API key, or give
-    /// the path to a Codex auth.json. It is saved in fin's folder.
+    /// Open the setup screen first: paste an Anthropic API key or a Voyage
+    /// API key, or give the path to a Codex auth.json. It is saved in fin's
+    /// folder.
     #[arg(long)]
     setup: bool,
+
+    /// Start the MCP servers in this file too (repeatable), in Claude
+    /// Code's format or arko's. A server named here is taken over one of
+    /// the same name in the project's .mcp.json or fin's mcp.json.
+    #[arg(long = "mcp-config", value_name = "FILE")]
+    mcp_config: Vec<PathBuf>,
+
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+#[derive(clap::Subcommand, Debug)]
+enum Command {
+    /// Search indexes of codebases and docs: create, list, search, update
+    /// and watch them.
+    Index {
+        #[command(subcommand)]
+        command: index::IndexCommand,
+    },
 }
 
 fn main() -> ExitCode {
@@ -183,6 +211,9 @@ async fn run(args: Args) -> Result<ExitCode, String> {
             return Err("--setup needs a terminal".into());
         }
         credentials::setup(None)?;
+    }
+    if let Some(Command::Index { command }) = &args.command {
+        return index::run_command(command.clone(), &root, credentials::var(VOYAGE_KEY)).await;
     }
 
     // The session: resumed with the settings it was started with, or new.
@@ -256,9 +287,17 @@ async fn run(args: Args) -> Result<ExitCode, String> {
         show_thinking: settings.show_thinking,
         shell_name: shell.name,
         allow_outside_workspace: settings.allow_outside_workspace,
+        mcp_tools: &[],
+        mcp_servers: &[],
+        skill_folders: &[],
+        index_tools: &[],
     };
-    let main_config = agents::main_config(&agent_settings)?;
-    let worker_config = agents::worker_config(&agent_settings)?;
+    // Settings the agents can't be built with leave no session behind.
+    agents::main_config(&agent_settings)?;
+    agents::worker_config(&agent_settings)?;
+    // A project's MCP servers are started once the user approves them.
+    let (mcp_servers, mcp_notes) =
+        mcp::servers(&root, &settings.workspace, &args.mcp_config, can_ask)?;
 
     let session = match session {
         Some(session) => session,
@@ -274,6 +313,68 @@ async fn run(args: Args) -> Result<ExitCode, String> {
 
     let managers = Managers::open(&session, &shell, settings.allow_outside_workspace)?;
     let one_shot = args.prompt.is_some();
+
+    // MCP servers, skills and search indexes: what goes wrong with them is
+    // said, and the session goes on without.
+    let startup = Output::new(None, one_shot);
+    for note in &mcp_notes {
+        startup.line(&startup.warn(&format!("fin: {note}")));
+    }
+    let mcp = if mcp_servers.is_empty() {
+        mcp::Running::default()
+    } else {
+        startup.line(&startup.dim(&format!(
+            "Starting MCP servers: {}…",
+            mcp_servers
+                .iter()
+                .map(|server| server.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )));
+        mcp::Running::start(mcp_servers).await
+    };
+    for started in &mcp.servers {
+        if let Err(error) = &started.result {
+            startup.line(&startup.warn(&format!(
+                "fin: the MCP server `{}` (in {}) didn't start: {error}",
+                started.server.name,
+                started.server.file.display()
+            )));
+        }
+    }
+    let skill_folders = skills::folders(&settings.workspace, &root);
+    let indexes = match index::Indexes::open(
+        &root,
+        &settings.workspace,
+        credentials::var(VOYAGE_KEY),
+        !one_shot,
+    ) {
+        Ok(indexes) => Some(indexes),
+        Err(error) => {
+            startup.line(&startup.warn(&format!("fin: search indexes are off: {error}")));
+            None
+        }
+    };
+    let mcp_tools = mcp.tool_names();
+    let mcp_started = mcp.started();
+    let agent_settings = AgentSettings {
+        mcp_tools: &mcp_tools,
+        mcp_servers: &mcp_started,
+        skill_folders: &skill_folders,
+        index_tools: if indexes.is_some() {
+            index::TOOL_NAMES
+        } else {
+            &[]
+        },
+        ..agent_settings
+    };
+    let main_config = agents::main_config(&agent_settings)?;
+    let worker_config = agents::worker_config(&agent_settings)?;
+    let mut tools = managers.tools(&shell);
+    tools.extend(mcp.tools().iter().cloned());
+    if let Some(indexes) = &indexes {
+        tools.extend(indexes.tools());
+    }
     let (input_sender, input) = mpsc::unbounded_channel();
     let printer = if one_shot {
         None
@@ -302,7 +403,13 @@ async fn run(args: Args) -> Result<ExitCode, String> {
         client,
         main_config,
         worker_config,
-        tools: managers.tools(&shell),
+        tools,
+        root: root.clone(),
+        mcp,
+        mcp_notes,
+        skill_folders,
+        indexes,
+        unoffered: None,
         output: output.clone(),
         stats: Arc::new(Mutex::new(Stats::default())),
         workflow: None,
@@ -315,6 +422,9 @@ async fn run(args: Args) -> Result<ExitCode, String> {
     };
     harness.project = project_instructions(&harness.settings.workspace);
     harness.open(!new)?;
+    if one_shot && let Some(note) = &harness.unoffered {
+        output.line(&output.warn(&format!("fin: {note}")));
+    }
     let mut input = Inputs {
         receiver: input,
         pending: None,
@@ -345,6 +455,10 @@ async fn run(args: Args) -> Result<ExitCode, String> {
         ExitCode::SUCCESS
     };
     ui::stop_reading();
+    harness.mcp.shutdown().await;
+    if let Some(indexes) = &harness.indexes {
+        indexes.shutdown().await;
+    }
     managers.shutdown().await;
     // The prompt is still drawn, and its thread still reading: what is
     // printed from here goes straight to the terminal, below the prompt
@@ -668,6 +782,75 @@ fn saved_setup(checkpoint: &Path, run_dir: &Path) -> Result<SavedSetup, String> 
     })
 }
 
+/// What a resumed session's agents aren't offered, as they started without
+/// it: the tools fin has now that their saved tool lists leave out, and
+/// skills. A resumed conversation keeps the configuration it was saved
+/// with.
+fn unoffered(saved: &SavedSetup, fresh: &[(&str, &arko_agents::AgentConfig)]) -> Option<String> {
+    let mut missing: Vec<&str> = Vec::new();
+    let mut skills = false;
+    for (agent, fresh) in fresh {
+        let Some(saved) = saved.configs.get(*agent) else {
+            continue;
+        };
+        let offered = &saved.tool_config.available_tool_names;
+        for name in &fresh.tool_config.available_tool_names {
+            if !offered.contains(name) && !missing.contains(&name.as_str()) {
+                missing.push(name);
+            }
+        }
+        skills |= fresh.skills_config.is_some() && saved.skills_config.is_none();
+    }
+    let mut parts = Vec::new();
+    if missing.iter().any(|name| index::TOOL_NAMES.contains(name)) {
+        parts.push("the search index tools".to_string());
+    }
+    let mut servers: Vec<&str> = Vec::new();
+    for (server, _) in missing.iter().filter_map(|name| mcp::split_tool_name(name)) {
+        if !servers.contains(&server) {
+            servers.push(server);
+        }
+    }
+    if !servers.is_empty() {
+        parts.push(format!(
+            "the tools of the MCP server{} {}",
+            if servers.len() == 1 { "" } else { "s" },
+            and_list(&servers)
+        ));
+    }
+    if skills {
+        parts.push("skills".to_string());
+    }
+    let others = missing
+        .iter()
+        .filter(|name| !index::TOOL_NAMES.contains(name) && mcp::split_tool_name(name).is_none())
+        .count();
+    if others > 0 {
+        parts.push(format!(
+            "{others} other tool{}",
+            if others == 1 { "" } else { "s" }
+        ));
+    }
+    if parts.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "This session started without {}, so its agents don't get them; a new session does.",
+        and_list(&parts)
+    ))
+}
+
+/// `a`, `a and b`, `a, b, and c`.
+fn and_list<T: AsRef<str>>(items: &[T]) -> String {
+    let items: Vec<&str> = items.iter().map(AsRef::as_ref).collect();
+    match items.as_slice() {
+        [] => String::new(),
+        [one] => one.to_string(),
+        [first, second] => format!("{first} and {second}"),
+        [rest @ .., last] => format!("{}, and {last}", rest.join(", ")),
+    }
+}
+
 /// Where the conversation with the main agent stands.
 enum Conversation {
     /// The next message starts a conversation.
@@ -693,6 +876,18 @@ struct Harness {
     main_config: arko_agents::AgentConfig,
     worker_config: arko_agents::AgentConfig,
     tools: Vec<Arc<dyn Tool>>,
+    /// fin's folder.
+    root: PathBuf,
+    /// The MCP servers started, and what was left out and why.
+    mcp: mcp::Running,
+    mcp_notes: Vec<String>,
+    /// The skill folders that exist.
+    skill_folders: Vec<PathBuf>,
+    /// The search indexes; `None` when they couldn't be opened.
+    indexes: Option<Arc<index::Indexes>>,
+    /// In a resumed session: the tools (and skills) fin has that the
+    /// session's agents aren't offered, as they started without them.
+    unoffered: Option<String>,
     output: Arc<Output>,
     stats: Arc<Mutex<Stats>>,
     workflow: Option<Arc<Workflow>>,
@@ -735,6 +930,12 @@ impl Harness {
                 .unwrap_or(fresh)
                 .clone()
         };
+        if let Some(saved) = &saved {
+            self.unoffered = unoffered(
+                saved,
+                &[(MAIN, &self.main_config), (WORKER, &self.worker_config)],
+            );
+        }
         let name = saved.as_ref().map_or(WORKFLOW_NAME, |saved| &saved.name);
         let mut builder = Workflow::builder()
             .name(name)
@@ -810,6 +1011,27 @@ impl Harness {
                 .map(|(name, _)| format!(" · {name} loaded"))
                 .unwrap_or_default()
         )));
+        let mut extras = Vec::new();
+        extras.extend(self.mcp.summary());
+        match skills::list(&self.skill_folders, &self.settings.workspace) {
+            Ok(skills) => {
+                let count = skills.on_demand_skills.len() + skills.auto_loaded_skills.len();
+                if count > 0 {
+                    extras.push(format!(
+                        "{count} skill{}",
+                        if count == 1 { "" } else { "s" }
+                    ));
+                }
+            }
+            Err(error) => out.line(&out.warn(&format!("The skills couldn't be read: {error}"))),
+        }
+        extras.extend(self.indexes.as_ref().and_then(|indexes| indexes.summary()));
+        if !extras.is_empty() {
+            out.line(&out.dim(&extras.join(" · ")));
+        }
+        if let Some(note) = &self.unoffered {
+            out.line(&out.warn(note));
+        }
         if new {
             out.line(&out.dim(
                 "Type a message (end a line with \\ to continue it). While the agent works, type to add to its task; Ctrl-C stops the turn. /help for commands.",
@@ -905,7 +1127,18 @@ impl Harness {
                 if let Some(usage) = &self.stats.lock().unwrap().plan_usage {
                     out.line(usage);
                 }
+                if let Some(indexes) = &self.indexes {
+                    let (tokens, dollars) = indexes.spent();
+                    if tokens > 0 {
+                        out.line(&format!(
+                            "${dollars:.3} for embeddings (Voyage) while fin ran · {}k tokens",
+                            tokens.div_ceil(1000)
+                        ));
+                    }
+                }
             }
+            "/mcp" => self.list_mcp(),
+            "/skills" => self.list_skills(),
             "/session" => {
                 out.line(&format!("session {}", self.session.id));
                 out.line(&out.dim(&format!("{}", self.session.dir.display())));
@@ -927,6 +1160,8 @@ impl Harness {
             _ => {
                 out.line("/new      start a new conversation (this session keeps the old one)");
                 out.line("/cost     what this session has cost");
+                out.line("/mcp      the MCP servers and their tools");
+                out.line("/skills   the skills the agents can load");
                 out.line("/session  this session's ID, folder and models");
                 out.line("/exit     quit (Ctrl-D too); the session is saved");
                 out.line(
@@ -936,6 +1171,90 @@ impl Harness {
                 );
             }
         }
+    }
+
+    /// `/mcp`: each server with its tools, or why it didn't start.
+    fn list_mcp(&self) {
+        let out = &self.output;
+        if self.mcp.servers.is_empty() {
+            out.line(&format!(
+                "No MCP servers. fin starts those set up in {}, in the project's {} (once you approve them) and in --mcp-config files.",
+                self.root.join(mcp::USER_FILE).display(),
+                mcp::PROJECT_FILE
+            ));
+        }
+        for started in &self.mcp.servers {
+            let server = &started.server;
+            out.line(&format!(
+                "{}  {}",
+                out.bold(&server.name),
+                out.dim(&format!(
+                    "{} · {}",
+                    ui::cut(&server.shown, 100),
+                    server.file.display()
+                ))
+            ));
+            match &started.result {
+                Ok(tools) if tools.is_empty() => out.line(&out.dim("  no tools")),
+                Ok(tools) => out.line(&format!(
+                    "  {}",
+                    tools
+                        .iter()
+                        .map(|name| mcp::split_tool_name(name)
+                            .map_or(name.as_str(), |(_, tool)| tool))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )),
+                Err(error) => out.line(&out.error(&format!("  didn't start: {error}"))),
+            }
+        }
+        for note in &self.mcp_notes {
+            out.line(&out.dim(note));
+        }
+        if let Some(note) = &self.unoffered {
+            out.line(&out.warn(note));
+        }
+    }
+
+    /// `/skills`: the skills in the skill folders now.
+    fn list_skills(&self) {
+        let out = &self.output;
+        let skills = match skills::list(&self.skill_folders, &self.settings.workspace) {
+            Ok(skills) => skills,
+            Err(error) => {
+                out.line(&out.error(&format!("The skills couldn't be read: {error}")));
+                return;
+            }
+        };
+        if skills.on_demand_skills.is_empty() && skills.auto_loaded_skills.is_empty() {
+            out.line(&format!(
+                "No skills. fin reads them (folders with a SKILL.md) from the project's .agents/skills, .claude/skills and .skills, from {}, and from ~/.agents/skills and ~/.claude/skills.",
+                self.root.join("skills").display()
+            ));
+            return;
+        }
+        for skill in &skills.on_demand_skills {
+            out.line(&format!(
+                "{}  {}",
+                out.bold(&skill.name),
+                ui::cut(&skill.description, 160)
+            ));
+        }
+        for skill in &skills.auto_loaded_skills {
+            out.line(&format!(
+                "{}  {}",
+                out.bold(&skill.name),
+                out.dim("(always in the agents' instructions)")
+            ));
+        }
+        out.line(&out.dim(&format!(
+            "From {}",
+            self.skill_folders
+                .iter()
+                .map(|folder| folder.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )));
     }
 
     /// One turn: the message goes to the main agent, and its reply is
@@ -1210,7 +1529,9 @@ fn conversation_of(workflow: &Workflow) -> Conversation {
 
 /// The commands, typed alone on a line.
 fn command(text: &str) -> Option<&str> {
-    const COMMANDS: [&str; 6] = ["/exit", "/quit", "/new", "/cost", "/session", "/help"];
+    const COMMANDS: [&str; 8] = [
+        "/exit", "/quit", "/new", "/cost", "/mcp", "/skills", "/session", "/help",
+    ];
     COMMANDS.contains(&text).then_some(text)
 }
 
@@ -1258,6 +1579,63 @@ mod tests {
         assert_eq!(command("/cost"), Some("/cost"));
         assert_eq!(command("/usr/bin is missing"), None);
         assert_eq!(command("/cost please"), None);
+    }
+
+    /// A session started before an MCP server, the search indexes or
+    /// skills were there is told that its agents don't get them.
+    #[test]
+    fn a_resumed_session_says_which_tools_its_agents_lack() {
+        let opus = ModelSettings {
+            model: resolve_model("opus").unwrap().id,
+            effort: Effort::High,
+            fast: false,
+            cache_1h: false,
+        };
+        let plain = AgentSettings {
+            main: &opus,
+            worker: &opus,
+            max_workers: 4,
+            handover_at: 200_000,
+            show_thinking: false,
+            shell_name: "bash",
+            allow_outside_workspace: false,
+            mcp_tools: &[],
+            mcp_servers: &[],
+            skill_folders: &[],
+            index_tools: &[],
+        };
+        let saved = SavedSetup {
+            name: WORKFLOW_NAME.into(),
+            configs: [
+                (MAIN.to_string(), agents::main_config(&plain).unwrap()),
+                (WORKER.to_string(), agents::worker_config(&plain).unwrap()),
+            ]
+            .into(),
+        };
+        let fresh = |settings: &AgentSettings| {
+            let main = agents::main_config(settings).unwrap();
+            let worker = agents::worker_config(settings).unwrap();
+            unoffered(&saved, &[(MAIN, &main), (WORKER, &worker)])
+        };
+        assert_eq!(fresh(&plain), None);
+        let tools = [
+            "mcp__github__create_issue".to_string(),
+            "mcp__db__query".to_string(),
+        ];
+        let servers = ["github".to_string(), "db".to_string()];
+        let folders = [PathBuf::from("/work/.claude/skills")];
+        let note = fresh(&AgentSettings {
+            mcp_tools: &tools,
+            mcp_servers: &servers,
+            skill_folders: &folders,
+            index_tools: index::TOOL_NAMES,
+            ..plain
+        })
+        .unwrap();
+        assert_eq!(
+            note,
+            "This session started without the search index tools, the tools of the MCP servers github and db, and skills, so its agents don't get them; a new session does."
+        );
     }
 
     #[test]

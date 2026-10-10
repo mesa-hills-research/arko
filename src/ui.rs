@@ -7,8 +7,8 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use arko_agents::AgentEvent;
 use arko_agents::terminal::TerminalTool;
+use arko_agents::{AgentEvent, LOAD_SKILL_TOOL_NAME};
 use arko_workflows::WorkflowEvent;
 use arko_workflows::services::RUN_WORKFLOW_AGENT_TOOL_NAME;
 use rustyline::completion::Completer;
@@ -21,6 +21,8 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 use uuid::Uuid;
 
 use crate::agents::MAIN;
+use crate::index;
+use crate::mcp;
 use crate::shell::SHELL_TOOL_NAME;
 
 pub const PROMPT: &str = "› ";
@@ -538,6 +540,13 @@ impl EventPrinter {
             "terminal_control" => format!("{bullet} terminal {}", text("action")),
             "terminal_input" => format!("{bullet} terminal input"),
             "terminal_status" => format!("{bullet} terminal status"),
+            LOAD_SKILL_TOOL_NAME => {
+                format!("{bullet} {} {}", self.output.bold("skill"), text("name"))
+            }
+            tool if index::TOOL_NAMES.contains(&tool) || mcp::split_tool_name(tool).is_some() => {
+                let (name, detail) = labelled(tool, parameters);
+                format!("{bullet} {}{}", self.output.bold(&name), detail)
+            }
             other => format!("{bullet} {other}"),
         })
     }
@@ -593,7 +602,58 @@ fn brief(tool: &str, parameters: &HashMap<String, serde_json::Value>) -> String 
         SHELL_TOOL_NAME => command_line(text("command")),
         "terminal_start" => format!("background {}", command_line(text("command"))),
         tool if TerminalTool::NAMES.contains(&tool) => tool.replace('_', " "),
+        LOAD_SKILL_TOOL_NAME => format!("skill {}", text("name")),
+        tool if index::TOOL_NAMES.contains(&tool) || mcp::split_tool_name(tool).is_some() => {
+            let (name, detail) = labelled(tool, parameters);
+            format!("{name}{detail}")
+        }
         other => other.to_string(),
+    }
+}
+
+/// A search index or MCP tool's call: its name as shown (`index search:`,
+/// `github: create_issue`), and what it is called with, briefly.
+fn labelled(tool: &str, parameters: &HashMap<String, serde_json::Value>) -> (String, String) {
+    let text = |name: &str| {
+        parameters
+            .get(name)
+            .and_then(|value| value.as_str())
+            .unwrap_or_default()
+            .trim()
+            .to_string()
+    };
+    let with = |detail: String| {
+        if detail.is_empty() {
+            String::new()
+        } else {
+            format!(" {detail}")
+        }
+    };
+    match tool {
+        "index_search" => ("index search:".into(), with(cut(&text("query"), 160))),
+        "index_status" => ("index status".into(), with(text("index"))),
+        "index_create" => (
+            "index create:".into(),
+            with(match text("path").as_str() {
+                "" => ".".into(),
+                path => cut(path, 160),
+            }),
+        ),
+        "index_manage" => (
+            format!("index {}", text("action")),
+            with(cut(&text("index"), 160)),
+        ),
+        _ => {
+            let (server, name) = mcp::split_tool_name(tool).unwrap_or(("mcp", tool));
+            let arguments = if parameters.is_empty() {
+                String::new()
+            } else {
+                // In key order, so a call always shows the same way.
+                let sorted: std::collections::BTreeMap<_, _> = parameters.iter().collect();
+                cut(&serde_json::to_string(&sorted).unwrap_or_default(), 120)
+            };
+            (format!("{server}: {name}"), with(arguments))
+        }
     }
 }
 
@@ -615,6 +675,46 @@ mod tests {
     fn continued_lines_are_joined_with_their_line_breaks() {
         assert_eq!(joined("first\\\nsecond"), "first\nsecond");
         assert_eq!(joined("one line"), "one line");
+    }
+
+    #[test]
+    fn index_and_mcp_calls_are_shown_briefly() {
+        let params = |pairs: &[(&str, serde_json::Value)]| -> HashMap<String, serde_json::Value> {
+            pairs
+                .iter()
+                .map(|(key, value)| (key.to_string(), value.clone()))
+                .collect()
+        };
+        assert_eq!(
+            brief(
+                "index_search",
+                &params(&[("query", "where are retries handled?".into())])
+            ),
+            "index search: where are retries handled?"
+        );
+        assert_eq!(brief("index_create", &params(&[])), "index create: .");
+        assert_eq!(
+            brief(
+                "index_manage",
+                &params(&[("action", "rebuild".into()), ("index", "finn".into())])
+            ),
+            "index rebuild finn"
+        );
+        assert_eq!(
+            brief("load_skill", &params(&[("name", "review".into())])),
+            "skill review"
+        );
+        assert_eq!(
+            brief(
+                "mcp__github__create_issue",
+                &params(&[
+                    ("title", "Bug".into()),
+                    ("labels", serde_json::json!(["a"]))
+                ])
+            ),
+            r#"github: create_issue {"labels":["a"],"title":"Bug"}"#
+        );
+        assert_eq!(brief("mcp__db__ping", &params(&[])), "db: ping");
     }
 
     #[test]
