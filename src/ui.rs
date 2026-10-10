@@ -28,6 +28,7 @@ use crate::agents::MAIN;
 use crate::crew;
 use crate::index;
 use crate::mcp;
+use crate::message;
 use crate::shell::SHELL_TOOL_NAME;
 
 pub const PROMPT: &str = "› ";
@@ -471,6 +472,8 @@ impl EventPrinter {
                 )));
             }
             AgentEvent::ConversationHandedOver { .. } if main => {
+                // The report's last line has no newline after it.
+                self.flush();
                 self.output.line(&self.output.dim(
                     "  ⟳ handed over: the agent continues in a fresh conversation from its report",
                 ));
@@ -535,16 +538,34 @@ impl EventPrinter {
         Some(match tool {
             // The question is shown as it is asked.
             "complete_task" | ASK_USER_TOOL_NAME => return None,
-            crew::START_WORKER => format!(
-                "{bullet} {}{}: {}",
-                self.output.bold("start worker"),
+            message::MESSAGE_USER => {
+                let message = text(message::MESSAGE_PARAM).trim();
+                format!(
+                    "{} {}",
+                    self.output.accent("✉"),
+                    message.replace('\n', "\n  ")
+                )
+            }
+            crew::START_WORKER => {
+                let mut notes = Vec::new();
                 if flag(parameters, "worktree") {
-                    " (worktree)"
-                } else {
-                    ""
-                },
-                cut(text("task"), 160)
-            ),
+                    notes.push("worktree".to_string());
+                }
+                let cache = text(crew::CACHE_PARAM).trim();
+                if !cache.is_empty() {
+                    notes.push(format!("{cache} cache"));
+                }
+                format!(
+                    "{bullet} {}{}: {}",
+                    self.output.bold("start worker"),
+                    if notes.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" ({})", notes.join(", "))
+                    },
+                    cut(text("task"), 160)
+                )
+            }
             crew::MESSAGE_WORKER => format!(
                 "{bullet} {} {}: {}",
                 self.output.bold("message"),
@@ -970,6 +991,23 @@ mod tests {
             line(ASK_USER_TOOL_NAME, &[("questions", "Which?".into())]),
             None
         );
+        assert_eq!(
+            line(
+                crew::START_WORKER,
+                &[("task", "Look it up.".into()), ("cache", "5m".into())]
+            )
+            .unwrap(),
+            "● start worker (5m cache): Look it up."
+        );
+        // The agent's message to the user is shown whole.
+        assert_eq!(
+            line(
+                message::MESSAGE_USER,
+                &[("message", "Halfway there.\nTests next.".into())]
+            )
+            .unwrap(),
+            "✉ Halfway there.\n  Tests next."
+        );
     }
 
     /// `text` without its terminal styles.
@@ -1029,5 +1067,30 @@ mod tests {
         assert_eq!(printer.text, "Wor");
         printer.flush();
         assert!(printer.text.is_empty());
+    }
+
+    /// A handover report's last line, which has no newline after it, is
+    /// printed before the handover is announced.
+    #[tokio::test]
+    async fn the_handover_report_is_printed_to_its_last_line() {
+        let output = Arc::new(Output::new(None, true));
+        let mut printer = EventPrinter::new(output, Arc::default(), false, None);
+        let event = |event: AgentEvent| WorkflowEvent {
+            timestamp: chrono::Utc::now(),
+            workflow_run_id: Uuid::nil(),
+            agent_name: MAIN.into(),
+            agent_run_id: Uuid::nil(),
+            event,
+        };
+        printer.event(event(AgentEvent::AssistantResponseChunk(
+            "## Waiting on\nNothing from the user.".into(),
+        )));
+        assert_eq!(printer.text, "Nothing from the user.");
+        printer.event(event(AgentEvent::ConversationHandedOver {
+            report: "## Waiting on\nNothing from the user.".into(),
+            input_tokens: 500_000,
+            handovers: 1,
+        }));
+        assert!(printer.text.is_empty(), "{:?}", printer.text);
     }
 }

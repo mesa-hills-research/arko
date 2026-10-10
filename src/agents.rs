@@ -120,6 +120,11 @@ pub struct ModelSettings {
     /// models only). Off in sessions saved before it existed.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub cache_1h: bool,
+    /// The input size, in tokens, at which the agent hands over. `None` in
+    /// sessions saved before it was set per model: the session's
+    /// `handover_at` applies.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handover_at: Option<usize>,
 }
 
 impl ModelSettings {
@@ -135,6 +140,11 @@ impl ModelSettings {
 
     pub fn provider(&self) -> Result<Provider, String> {
         Ok(resolve_model(&self.model)?.provider)
+    }
+
+    fn is_claude(&self) -> bool {
+        self.provider()
+            .is_ok_and(|provider| provider == Provider::Anthropic)
     }
 
     fn llm_config(&self, show_thinking: bool) -> Result<AgentLLMConfig, String> {
@@ -197,6 +207,20 @@ pub struct AgentSettings<'a> {
 
 /// `max_workers` for no limit on how many workers run at once.
 pub const NO_LIMIT: u32 = u32::MAX;
+
+/// The input size, in tokens, at which an agent on `model` hands over
+/// unless `--handover-at` says otherwise: 500k on Claude models, 200k on
+/// others, and at most 80% of what the model accepts.
+pub fn default_handover(model: &Model) -> usize {
+    let tokens = match model.provider {
+        Provider::Anthropic => 500_000,
+        _ => 200_000,
+    };
+    match model.max_input_tokens {
+        0 => tokens,
+        limit => tokens.min(limit / 5 * 4),
+    }
+}
 
 /// arko's built-in file tools, which both agents have.
 pub const FILE_TOOL_NAMES: [&str; 4] = [
@@ -274,13 +298,14 @@ fn environment() -> EnvironmentDetailsConfig {
 pub fn main_config(settings: &AgentSettings) -> Result<AgentConfig, String> {
     let mut tools = shared_tool_names(settings);
     tools.push(ASK_USER_TOOL_NAME.into());
+    tools.push(crate::message::MESSAGE_USER.into());
     if settings.max_workers > 0 {
         tools.extend(crew::LEAD_TOOL_NAMES.iter().map(|name| name.to_string()));
     }
     let mut instructions = main_instructions(settings);
     instructions.push_str(&tool_instructions(settings));
     if settings.max_workers > 0 {
-        instructions.push_str(&worker_instructions(settings.max_workers));
+        instructions.push_str(&worker_instructions(settings));
     }
     let mut builder = AgentConfig::builder(
         MAIN.into(),
@@ -297,7 +322,9 @@ pub fn main_config(settings: &AgentSettings) -> Result<AgentConfig, String> {
         "Your reply to the user's latest message, in full: what you did, what you found, and anything you need from them. They read it as your message (Markdown, shown as plain text)."
             .into(),
     )
-    .handover(HandoverConfig::at_input_tokens(settings.handover_at));
+    .handover(HandoverConfig::at_input_tokens(
+        settings.main.handover_at.unwrap_or(settings.handover_at),
+    ));
     if let Some(skills) = skills::config(settings.skill_folders) {
         builder = builder.skills_config(skills);
     }
@@ -332,7 +359,9 @@ pub fn worker_config(settings: &AgentSettings) -> Result<AgentConfig, String> {
         "Your report to the lead agent: what you did and found, with evidence (paths, line numbers, commands and results), the files you changed, and anything unfinished or unconfirmed."
             .into(),
     )
-    .handover(HandoverConfig::at_input_tokens(settings.handover_at));
+    .handover(HandoverConfig::at_input_tokens(
+        settings.worker.handover_at.unwrap_or(settings.handover_at),
+    ));
     if let Some(skills) = skills::config(settings.skill_folders) {
         builder = builder.skills_config(skills);
     }
@@ -343,7 +372,7 @@ fn main_instructions(_settings: &AgentSettings) -> String {
     "# How this conversation works\n\
      The user talks with you in a terminal. Each of their messages starts a turn: work on it with your tools for as long as it takes, then end the turn by calling `complete_task`. Its summary is your reply: the user reads it as your message, so write your answer there in full. Text you write outside tool calls is shown to the user as you work; keep it to short progress notes, and don't repeat your reply in it.\n\n\
      When a step doesn't need the user, keep going. End the turn to ask only when you can't continue without them, or before something destructive or hard to undo that they didn't ask for: deleting data they may want, force-pushing, publishing, or changing things outside the working directory.\n\n\
-     The user can type while you work. What they type reaches you as a note from the operator: take it into account in the work you're doing.\n\n\
+     The user can type while you work. What they type reaches you as a note from the operator: take it into account in the work you're doing. When a note asks you something or needs an answer before you finish (a question, \"progress?\"), answer it with `message_user` and carry on with your work. Every response of yours must call a tool: a reply in plain text, without one, is an error.\n\n\
      When you need the user to decide something before you can go on (a choice between approaches with real trade-offs, missing information only they have), ask with `ask_user`: it waits for their answer and you continue. Ask only what you can't reasonably decide yourself; if they can't be asked (fin runs without a terminal), it says so, and you decide.\n"
         .to_string()
 }
@@ -395,19 +424,26 @@ fn tool_instructions(settings: &AgentSettings) -> String {
     text
 }
 
-fn worker_instructions(max_workers: u32) -> String {
-    let limit = if max_workers == NO_LIMIT {
+fn worker_instructions(settings: &AgentSettings) -> String {
+    let limit = if settings.max_workers == NO_LIMIT {
         "There is no limit on how many run at once.".to_string()
     } else {
-        format!("At most {max_workers} run at once.")
+        format!("At most {} run at once.", settings.max_workers)
     };
-    format!(
+    let mut text = format!(
         "\n# Workers\n\
          `start_worker` starts a worker: a subagent with the same tools (shell, terminal, files, search) that carries out one task while you go on with your own work. It returns at once with the worker's ID (w1, w2, ...), so start several in one response to run them in parallel. {limit} A worker doesn't see this conversation: give it everything it needs in `task`, namely the goal, the context and constraints, what done looks like, and what to report.\n\n\
          With `worktree: true` a worker works in its own git worktree: a separate checkout of the current commit, on a branch of its own, where it commits its changes. Use one for each worker that changes files, so workers don't edit the same files as each other or you; then review its branch and merge it into the working directory (`git merge` or `git cherry-pick`). A worktree has the committed files only: commit what a worker needs first. Without a worktree, a worker works in the working directory itself, which suits investigations, reviews and small changes to files no one else touches.\n\n\
          Workers report on their own. A worker's report, when it finishes, and its messages to you reach you as notes from agent `w1` (and so on) while you work, and start a new turn for you if you have ended yours. So don't wait idly: do other work, and end your turn when you have something to tell the user, saying which workers are still running. When you can't go on without their results, `wait_for_workers` waits until one finishes or sends a message (or the user types something) and returns what arrived. `message_worker` sends a worker a message: a running worker reads it at its next step, and a worker that has finished or was stopped continues its task with it, keeping its context, so give follow-up work to the worker that already knows the code. `list_workers` shows the workers and what they're doing; `stop_worker` stops one, and removes its worktree once you have merged its work.\n\n\
          Use workers for independent parts of a large task (exploring separate areas of a codebase, an audit split by area, changes in separate worktrees), or to keep a long investigation out of your own context. Do small things yourself. Check what a worker reports before you rely on it.\n"
-    )
+    );
+    if settings.worker.is_claude() {
+        text.push_str(&format!(
+            "\nA worker keeps a prompt cache of its conversation, and `start_worker`'s `cache` sets how long it lasts after the worker's last step: `1h` for a worker you expect to send messages or follow-up work after it reports, so continuing it reuses its cache, and `5m` for a quick one-off such as a research task (a 1h cache costs more to write: twice the input price instead of 1.25 times). The default is `{}`. Continuing a worker after its cache has expired rereads its whole conversation at full price: if it finished more than an hour ago, start a fresh worker instead, unless its context is worth that.\n",
+            if settings.worker.cache_1h { "1h" } else { "5m" }
+        ));
+    }
+    text
 }
 
 #[cfg(test)]
@@ -436,6 +472,7 @@ mod tests {
             effort: Effort::Xhigh,
             fast,
             cache_1h: false,
+            handover_at: None,
         }
     }
 
@@ -449,6 +486,7 @@ mod tests {
         );
         let opus = ModelSettings {
             cache_1h: true,
+            handover_at: None,
             ..opus
         };
         let config = main_config(&settings(&opus, &opus)).unwrap();
@@ -632,5 +670,51 @@ mod tests {
         let first = serde_json::to_value(main_config(&settings(&opus, &opus)).unwrap()).unwrap();
         let second = serde_json::to_value(main_config(&settings(&opus, &opus)).unwrap()).unwrap();
         assert_eq!(first, second);
+    }
+
+    #[test]
+    fn claude_models_hand_over_at_500k_and_others_at_200k() {
+        let opus = resolve_model("opus").unwrap();
+        assert_eq!(default_handover(&opus), 500_000);
+        let sol = resolve_model("sol").unwrap();
+        assert_eq!(default_handover(&sol), 200_000);
+        // Never past 80% of what the model accepts.
+        let mut small = opus.clone();
+        small.max_input_tokens = 200_000;
+        assert_eq!(default_handover(&small), 160_000);
+
+        let mut main = model("opus", false);
+        main.handover_at = Some(default_handover(&opus));
+        let worker = model("sol", false);
+        let settings = settings(&main, &worker);
+        let handover = |config: &AgentConfig| config.handover.clone().unwrap().at_input_tokens;
+        assert_eq!(handover(&main_config(&settings).unwrap()), Some(500_000));
+        // A session saved before it was set per model uses its own size.
+        assert_eq!(handover(&worker_config(&settings).unwrap()), Some(200_000));
+    }
+
+    #[test]
+    fn the_lead_answers_with_message_user_and_chooses_claude_workers_caches() {
+        let opus = model("opus", false);
+        let sol = model("sol", false);
+        let config = main_config(&settings(&opus, &opus)).unwrap();
+        let tools = &config.tool_config.available_tool_names;
+        assert!(
+            tools
+                .iter()
+                .any(|name| name == crate::message::MESSAGE_USER)
+        );
+        assert!(config.instructions.contains("`message_user`"));
+        assert!(config.instructions.contains("`cache`"), "Claude workers");
+        let config = main_config(&settings(&sol, &sol)).unwrap();
+        assert!(!config.instructions.contains("`cache`"), "OpenAI workers");
+        let worker = worker_config(&settings(&opus, &opus)).unwrap();
+        assert!(
+            !worker
+                .tool_config
+                .available_tool_names
+                .iter()
+                .any(|name| name == crate::message::MESSAGE_USER)
+        );
     }
 }

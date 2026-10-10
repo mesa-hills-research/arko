@@ -20,6 +20,7 @@ Paths are relative to the arko_framework repository. Line numbers are from upstr
 | 12 | Base URLs can't be set from the environment | Low |
 | 13 | Missing re-exports | Low |
 | 14 | Skills: paths, scripts and sources | Low |
+| 15 | A reply without a tool call counts as a failure | Low |
 
 ## 1. Subagents block the agent that starts them
 
@@ -166,6 +167,14 @@ Combined with gap 1, this means:
 - Several workspace sources.
 - The skill's folder shown to the model when the skill loads, with `scripts/` and other files left in place for it to run or read.
 - `~` expansion in global paths.
+
+## 15. A reply without a tool call counts as a failure
+
+**Today.** When a response has text but no tool call, the runtime treats it as unusable output and answers "Your response did not call a tool, so the task is still open…" (`NO_NATIVE_TOOL_CALL`, `arko_agents/src/runtime/loop/texts.rs:15`). The reply goes through the runtime's error recovery (`handle_model_output_failure`, `runtime/loop/recovery.rs:380`, called from `runtime/loop/native.rs:584`). This happens most when the user types a question while the agent works and the agent answers it in plain text.
+
+**fin's workaround.** fin gives the main agent a `message_user` tool that shows the user a message without ending the turn, and its instructions say every response must call a tool.
+
+**Request.** A built-in tool for messages to the user, like `ask_user` without the wait, or a per-agent option that turns a text-only reply into a progress message and lets the run carry on.
 
 ## fin's own dependency setup
 

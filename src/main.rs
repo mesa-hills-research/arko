@@ -22,6 +22,7 @@ mod credentials;
 mod crew;
 mod index;
 mod mcp;
+mod message;
 #[cfg(test)]
 mod mock_model;
 mod session;
@@ -114,9 +115,10 @@ struct Args {
     workers: Option<u32>,
 
     /// Input size, in tokens, at which an agent writes a handover report and
-    /// continues in a fresh conversation.
-    #[arg(long, default_value_t = 200_000)]
-    handover_at: usize,
+    /// continues in a fresh conversation. Default: 500000 on Claude models,
+    /// 200000 on others (at most 80% of what the model accepts).
+    #[arg(long)]
+    handover_at: Option<usize>,
 
     /// Let commands delete, move and overwrite paths outside the working
     /// directory too (protected paths, such as the home directory itself,
@@ -252,9 +254,10 @@ async fn run(args: Args) -> Result<ExitCode, String> {
                 || args.cache_1h
                 || args.no_cache_1h
                 || args.shell.is_some()
+                || args.handover_at.is_some()
             {
                 eprintln!(
-                    "fin: a resumed session keeps the models and shell it was started with ({})",
+                    "fin: a resumed session keeps the models, shell and handover size it was started with ({})",
                     settings.main.describe()
                 );
             }
@@ -417,6 +420,11 @@ async fn run(args: Args) -> Result<ExitCode, String> {
             stats: stats.clone(),
             show_thinking: settings.show_thinking,
             max_running: settings.max_workers,
+            cache: settings
+                .worker
+                .provider()
+                .is_ok_and(|provider| provider == Provider::Anthropic)
+                .then(|| crew::CacheTtl::from_1h(settings.worker.cache_1h)),
         });
         if !new {
             for problem in crew.load() {
@@ -575,8 +583,16 @@ fn new_settings(args: &Args) -> Result<Settings, String> {
     let cache_1h = |id: &str| {
         want_1h && resolve_model(id).is_ok_and(|model| model.provider == Provider::Anthropic)
     };
+    let handover_at = |id: &str| {
+        args.handover_at.or_else(|| {
+            resolve_model(id)
+                .ok()
+                .map(|model| agents::default_handover(&model))
+        })
+    };
     let main = ModelSettings {
         cache_1h: cache_1h(&main_model),
+        handover_at: handover_at(&main_model),
         model: main_model,
         effort: args.effort,
         fast: args.fast,
@@ -586,6 +602,7 @@ fn new_settings(args: &Args) -> Result<Settings, String> {
             let model = resolve_model(name)?.id;
             ModelSettings {
                 cache_1h: cache_1h(&model),
+                handover_at: handover_at(&model),
                 model,
                 effort: args.worker_effort.unwrap_or(args.effort),
                 fast: args.worker_fast,
@@ -596,6 +613,8 @@ fn new_settings(args: &Args) -> Result<Settings, String> {
             ..main.clone()
         },
     };
+    // What sessions read before the handover was set per model.
+    let session_handover = main.handover_at.unwrap_or(200_000);
     if args.cache_1h && !main.cache_1h && !worker.cache_1h {
         eprintln!("fin: --cache-1h is for Claude models; this session has none, so it is ignored");
     }
@@ -604,7 +623,7 @@ fn new_settings(args: &Args) -> Result<Settings, String> {
         main,
         worker,
         max_workers: args.workers.unwrap_or(NO_LIMIT),
-        handover_at: args.handover_at,
+        handover_at: session_handover,
         allow_outside_workspace: args.allow_outside_workspace,
         show_thinking: args.show_thinking,
         created: chrono::Utc::now(),
@@ -882,6 +901,9 @@ fn unoffered(saved: &SavedSetup, fresh: &[(&str, &arko_agents::AgentConfig)]) ->
     if missing.contains(&ASK_USER_TOOL_NAME) {
         parts.push("questions to you (ask_user)".to_string());
     }
+    if missing.contains(&message::MESSAGE_USER) {
+        parts.push("answers to you while it works (message_user)".to_string());
+    }
     if missing.iter().any(|name| index::TOOL_NAMES.contains(name)) {
         parts.push("the search index tools".to_string());
     }
@@ -908,6 +930,7 @@ fn unoffered(saved: &SavedSetup, fresh: &[(&str, &arko_agents::AgentConfig)]) ->
             || crew::WORKER_TOOL_NAMES.contains(&name)
             || agents::FILE_TOOL_NAMES.contains(&name)
             || name == ASK_USER_TOOL_NAME
+            || name == message::MESSAGE_USER
     };
     let others = missing.iter().filter(|name| !named(name)).count();
     if others > 0 {
@@ -1078,7 +1101,9 @@ impl Harness {
         for tool in &self.tools {
             builder = builder.agent_tool(MAIN, tool.clone());
         }
-        builder = builder.user_input_handler(self.asker.clone());
+        builder = builder
+            .agent_tool(MAIN, Arc::new(message::MessageUser))
+            .user_input_handler(self.asker.clone());
         // Sessions from before workers ran in parallel delegate with
         // `run_workflow_agent`, which waits for the worker: they keep it.
         let legacy = saved
@@ -1194,6 +1219,23 @@ impl Harness {
     }
 
     /// The workers, as the banner and `/session` say it.
+    /// When the agents hand over, as `/session` says it.
+    fn handover_summary(&self) -> String {
+        let tokens = |model: &ModelSettings| {
+            format!(
+                "{}k tokens",
+                model.handover_at.unwrap_or(self.settings.handover_at) / 1000
+            )
+        };
+        let main = tokens(&self.settings.main);
+        let worker = tokens(&self.settings.worker);
+        if self.settings.max_workers == 0 || main == worker {
+            format!("handover at {main} of input")
+        } else {
+            format!("handover at {main} of input (main), {worker} (workers)")
+        }
+    }
+
     fn workers_summary(&self) -> String {
         let mut text = match self.settings.max_workers {
             0 => return "no workers".to_string(),
@@ -1411,6 +1453,7 @@ impl Harness {
                         )
                     }
                 )));
+                out.line(&out.dim(&self.handover_summary()));
             }
             "/new" => out.line(&out.dim("Wait for the turn to end (or press Ctrl-C) first.")),
             _ => {
@@ -2146,6 +2189,7 @@ mod tests {
             effort: Effort::High,
             fast: false,
             cache_1h: false,
+            handover_at: None,
         };
         let settings = AgentSettings {
             main: &opus,
@@ -2167,6 +2211,7 @@ mod tests {
             !crew::LEAD_TOOL_NAMES.contains(&name.as_str())
                 && !agents::FILE_TOOL_NAMES.contains(&name.as_str())
                 && name != ASK_USER_TOOL_NAME
+                && name != message::MESSAGE_USER
         });
         old.tool_config
             .available_tool_names
@@ -2177,7 +2222,7 @@ mod tests {
         };
         assert_eq!(
             unoffered(&saved, &[(MAIN, &main), (WORKER, &worker)]).unwrap(),
-            "This session started without workers that run in parallel, the file tools, and questions to you (ask_user), so its agents don't get them; a new session does."
+            "This session started without workers that run in parallel, the file tools, questions to you (ask_user), and answers to you while it works (message_user), so its agents don't get them; a new session does."
         );
     }
 
@@ -2230,6 +2275,7 @@ mod tests {
             effort: Effort::High,
             fast: false,
             cache_1h: false,
+            handover_at: None,
         };
         let plain = AgentSettings {
             main: &opus,
@@ -2291,6 +2337,7 @@ mod tests {
             effort: Effort::High,
             fast: false,
             cache_1h: false,
+            handover_at: None,
         };
         let workspace = temp.join("work");
         std::fs::create_dir_all(&workspace).unwrap();
@@ -2337,6 +2384,7 @@ mod tests {
             stats: stats.clone(),
             show_thinking: false,
             max_running: NO_LIMIT,
+            cache: None,
         });
         let (questions_sender, questions) = mpsc::unbounded_channel();
         let (input_sender, receiver) = mpsc::unbounded_channel();

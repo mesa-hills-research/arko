@@ -74,6 +74,57 @@ const DEFAULT_WAIT: u64 = 600;
 const MAX_WAIT: u64 = 3600;
 /// How long a stopped worker gets to save its state.
 const GRACE: Duration = Duration::from_secs(10);
+/// `start_worker`'s choice of prompt cache.
+pub const CACHE_PARAM: &str = "cache";
+
+/// How long a worker on a Claude model keeps its prompt cache.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CacheTtl {
+    #[serde(rename = "5m")]
+    FiveMinutes,
+    #[serde(rename = "1h")]
+    OneHour,
+}
+
+impl CacheTtl {
+    pub fn from_1h(one_hour: bool) -> Self {
+        if one_hour {
+            Self::OneHour
+        } else {
+            Self::FiveMinutes
+        }
+    }
+
+    fn parse(text: &str) -> Result<Self, String> {
+        match text.trim().to_ascii_lowercase().as_str() {
+            "5m" | "5min" | "5 minutes" => Ok(Self::FiveMinutes),
+            "1h" | "60m" | "1 hour" => Ok(Self::OneHour),
+            other => Err(format!("cache is `5m` or `1h`, not `{other}`")),
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::FiveMinutes => "5m",
+            Self::OneHour => "1h",
+        }
+    }
+
+    fn lasts(self) -> chrono::Duration {
+        match self {
+            Self::FiveMinutes => chrono::Duration::minutes(5),
+            Self::OneHour => chrono::Duration::hours(1),
+        }
+    }
+
+    /// Sets `config`'s Anthropic cache lifetime to this one.
+    fn apply(self, config: &mut AgentConfig) {
+        config.llm_config.generation_config.anthropic_cache_ttl = match self {
+            Self::FiveMinutes => None,
+            Self::OneHour => Some(arko_ai::AnthropicCacheTtl::OneHour),
+        };
+    }
+}
 
 /// What the crew needs from the session.
 pub struct Setup {
@@ -92,6 +143,10 @@ pub struct Setup {
     pub show_thinking: bool,
     /// How many workers may run at once (`NO_LIMIT`: any number).
     pub max_running: u32,
+    /// A new worker's prompt cache when the lead doesn't choose, for
+    /// workers on a Claude model; `None` on other models, which have no
+    /// choice.
+    pub cache: Option<CacheTtl>,
 }
 
 /// A worker as the session records it.
@@ -109,6 +164,9 @@ struct Record {
     /// Its worktree was removed: it can't continue.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     removed: bool,
+    /// Its prompt cache (Claude models).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    cache: Option<CacheTtl>,
 }
 
 /// A git worktree made for a worker.
@@ -463,7 +521,13 @@ impl Crew {
                 .configs
                 .remove(WORKER)
                 .unwrap_or_else(|| self.setup.worker_config.clone()),
-            None => self.setup.worker_config.clone(),
+            None => {
+                let mut config = self.setup.worker_config.clone();
+                if let Some(cache) = record.cache {
+                    cache.apply(&mut config);
+                }
+                config
+            }
         };
         let mut builder = Workflow::builder()
             .name(WORKFLOW_NAME)
@@ -514,11 +578,18 @@ impl Crew {
 
     // ----- the lead's tools -----
 
-    async fn start(&self, task: String, worktree: bool) -> Result<String, String> {
+    async fn start(
+        &self,
+        task: String,
+        worktree: bool,
+        cache: Option<CacheTtl>,
+    ) -> Result<String, String> {
         let task = task.trim().to_string();
         if task.is_empty() {
             return Err("give the worker a task".into());
         }
+        // Only Claude models have a choice.
+        let cache = self.setup.cache.map(|default| cache.unwrap_or(default));
         let number = {
             let mut state = self.lock();
             if state.closing {
@@ -546,6 +617,7 @@ impl Crew {
             worktree: worktree.clone(),
             created: Utc::now(),
             removed: false,
+            cache,
         };
         let (workflow, printer) = self.build(&record, None)?;
         let prompt = worker_prompt(&id, &task, &dir, worktree.as_ref());
@@ -580,12 +652,15 @@ impl Crew {
             ),
             None => "in the working directory".to_string(),
         };
+        let cached = cache.map_or(String::new(), |cache| {
+            format!(", with a {} prompt cache", cache.name())
+        });
         self.out().line(&self.out().dim(&format!(
-            "  ⇢ {id} started {place}: {}",
+            "  ⇢ {id} started {place}{cached}: {}",
             ui::cut(&task, 120)
         )));
         Ok(format!(
-            "Started worker {id}, {place}{}. It works while you go on; its report reaches you when it finishes (wait_for_workers waits for it).",
+            "Started worker {id}, {place}{}{cached}. It works while you go on; its report reaches you when it finishes (wait_for_workers waits for it).",
             match &worktree {
                 Some(worktree) => format!(", made from commit {}", short(&worktree.base)),
                 None => String::new(),
@@ -671,6 +746,14 @@ impl Crew {
         limit?;
         let workflow = workflow.ok_or("the worker has no workflow")?;
         let resumed = matches!(launch, Launch::Restart(..));
+        let expired = match worker.record.cache {
+            Some(cache) if Utc::now() - worker.since > cache.lasts() => format!(
+                " Its {} prompt cache had expired (it stopped {} ago), so it rereads its conversation at full price.",
+                cache.name(),
+                ago(worker.since, Utc::now()).trim_start_matches("for ")
+            ),
+            _ => String::new(),
+        };
         worker.status = Status::Running;
         worker.since = Utc::now();
         worker.stop_requested = false;
@@ -683,7 +766,7 @@ impl Crew {
             if resumed { "resumes" } else { "continues" }
         )));
         Ok(format!(
-            "{id} {} its task with your message; its report reaches you when it finishes.",
+            "{id} {} its task with your message; its report reaches you when it finishes.{expired}",
             if resumed { "resumes" } else { "continues" }
         ))
     }
@@ -786,6 +869,10 @@ impl Crew {
                     short(&worktree.base)
                 ),
                 None => "in the working directory".into(),
+            };
+            let place = match record.cache {
+                Some(cache) => format!("{place} · {} cache", cache.name()),
+                None => place,
             };
             let mut line = format!(
                 "{}: {} {} · {place}\n  task: {}",
@@ -1664,7 +1751,8 @@ const WAIT_PARAM: &str = "timeout_seconds";
 impl Tool for CrewTool {
     fn definition(&self) -> ToolDefinition {
         use ToolParameterType::{Bool, String as Text};
-        let (description, parameters, parallel_safe) = match self.name {
+        let cache = self.crew.upgrade().and_then(|crew| crew.setup.cache);
+        let (description, mut parameters, parallel_safe) = match self.name {
             START_WORKER => (
                 "Starts a worker on a task and returns its ID (w1, w2, ...) at once: it works while you go on. Its report reaches you when it finishes. Start several in one response to run them in parallel.",
                 vec![
@@ -1743,6 +1831,17 @@ impl Tool for CrewTool {
                 false,
             ),
         };
+        if let (START_WORKER, Some(default)) = (self.name, cache) {
+            parameters.push(param(
+                CACHE_PARAM,
+                &format!(
+                    "How long the worker's prompt cache lasts after its last step: `1h` when you expect to message it or give it follow-up work after it reports (continuing it then reuses the cache), `5m` for a quick one-off such as research (cheaper to write). Default `{}`.",
+                    default.name()
+                ),
+                ToolParameterType::String,
+                false,
+            ));
+        }
         ToolDefinition {
             name: self.name.to_string(),
             description: description.to_string(),
@@ -1778,8 +1877,23 @@ impl Tool for CrewTool {
         let me = self.worker.as_deref().unwrap_or_default();
         let result = match self.name {
             START_WORKER => {
-                crew.start(required(&params, "task")?, bool_param(&params, "worktree")?)
-                    .await
+                let cache = match params.get(CACHE_PARAM).and_then(Value::as_str) {
+                    Some(text) if !text.trim().is_empty() => {
+                        Some(CacheTtl::parse(text).map_err(|message| {
+                            ToolError::ParameterValidation {
+                                param_name: CACHE_PARAM.to_string(),
+                                message,
+                            }
+                        })?)
+                    }
+                    _ => None,
+                };
+                crew.start(
+                    required(&params, "task")?,
+                    bool_param(&params, "worktree")?,
+                    cache,
+                )
+                .await
             }
             MESSAGE_WORKER => crew.message(
                 required(&params, "worker")?.trim(),
@@ -1822,6 +1936,7 @@ mod tests {
             effort: Effort::High,
             fast: false,
             cache_1h: false,
+            handover_at: None,
         }
     }
 
@@ -1863,17 +1978,27 @@ mod tests {
         worker_config: AgentConfig,
     ) -> (Arc<Crew>, mpsc::UnboundedReceiver<()>) {
         Crew::new(Setup {
+            client: Arc::new(client),
+            worker_config,
+            max_running,
+            ..setup(dir)
+        })
+    }
+
+    fn setup(dir: &Path) -> Setup {
+        Setup {
             session_id: "s1".into(),
             session_dir: dir.join("session"),
             workspace: dir.to_path_buf(),
-            client: Arc::new(client),
-            worker_config,
+            client: Arc::new(LLMClient::new()),
+            worker_config: config(false),
             tools: Vec::new(),
             output: Arc::new(Output::new(None, true)),
             stats: Arc::default(),
             show_thinking: false,
-            max_running,
-        })
+            max_running: NO_LIMIT,
+            cache: None,
+        }
     }
 
     /// A worker in the crew's records that runs no workflow.
@@ -1890,6 +2015,7 @@ mod tests {
                 worktree: None,
                 created: Utc::now(),
                 removed: false,
+                cache: None,
             },
             workflow: None,
             printer: None,
@@ -2112,7 +2238,10 @@ mod tests {
         assert_eq!(crew.stop("w1", false).await.unwrap(), "w1 isn't running.");
         // The limit counts the workers running.
         fake(&crew, "w2", Status::Running);
-        let full = crew.start("another task".into(), false).await.unwrap_err();
+        let full = crew
+            .start("another task".into(), false, None)
+            .await
+            .unwrap_err();
         assert!(full.starts_with("1 worker is running"), "{full}");
         let list = crew.list();
         assert!(list.contains("w1: finished"), "{list}");
@@ -2287,7 +2416,10 @@ mod tests {
             server.client(),
             config_on("luna", false),
         );
-        let started = crew.start("Count the files.".into(), false).await.unwrap();
+        let started = crew
+            .start("Count the files.".into(), false, None)
+            .await
+            .unwrap();
         assert!(
             started.starts_with("Started worker w1, in the working directory"),
             "{started}"
@@ -2373,7 +2505,9 @@ mod tests {
             server.client(),
             config_on("luna", false),
         );
-        crew.start("Fix the parser.".into(), false).await.unwrap();
+        crew.start("Fix the parser.".into(), false, None)
+            .await
+            .unwrap();
         let message = crew.wait(None, Duration::from_secs(20)).await.unwrap();
         assert!(
             message.starts_with(
@@ -2437,7 +2571,7 @@ mod tests {
         run_git(&repo, &["commit", "-q", "-m", "first"]);
         let (crew, mut woken) =
             crew_with(&repo, NO_LIMIT, server.client(), config_on("luna", false));
-        let started = crew.start("Edit a.txt.".into(), true).await.unwrap();
+        let started = crew.start("Edit a.txt.".into(), true, None).await.unwrap();
         assert!(
             started.contains("in a worktree on branch `fin/s1/w1`"),
             "{started}"
@@ -2474,5 +2608,50 @@ mod tests {
         let closed = crew.message("w1", "More.".into()).unwrap_err();
         assert!(closed.contains("worktree was removed"), "{closed}");
         crew.shutdown().await;
+    }
+
+    #[test]
+    fn a_claude_worker_s_cache_is_chosen_at_its_start() {
+        assert_eq!(CacheTtl::parse("1h"), Ok(CacheTtl::OneHour));
+        assert_eq!(CacheTtl::parse(" 5M "), Ok(CacheTtl::FiveMinutes));
+        assert!(CacheTtl::parse("2h").is_err());
+        assert_eq!(serde_json::to_string(&CacheTtl::OneHour).unwrap(), "\"1h\"");
+
+        let mut worker = config(false);
+        CacheTtl::OneHour.apply(&mut worker);
+        assert_eq!(
+            worker.llm_config.generation_config.anthropic_cache_ttl,
+            Some(arko_ai::AnthropicCacheTtl::OneHour)
+        );
+        CacheTtl::FiveMinutes.apply(&mut worker);
+        assert_eq!(
+            worker.llm_config.generation_config.anthropic_cache_ttl,
+            None
+        );
+
+        // The choice is offered for Claude workers only.
+        let temp = tempfile::tempdir().unwrap();
+        let has_cache = |crew: &Arc<Crew>| {
+            let tool = crew
+                .lead_tools()
+                .into_iter()
+                .find(|tool| tool.definition().name == START_WORKER)
+                .unwrap();
+            tool.definition()
+                .parameters
+                .iter()
+                .any(|param| param.name == CACHE_PARAM)
+        };
+        let (crew, _woken) = crew(temp.path(), NO_LIMIT);
+        assert!(!has_cache(&crew));
+        let (claude, _woken) = Crew::new(Setup {
+            cache: Some(CacheTtl::FiveMinutes),
+            ..setup(temp.path())
+        });
+        assert!(has_cache(&claude));
+
+        fake(&claude, "w1", Status::Finished);
+        claude.lock().workers[0].record.cache = Some(CacheTtl::OneHour);
+        assert!(claude.list().contains("· 1h cache"), "{}", claude.list());
     }
 }

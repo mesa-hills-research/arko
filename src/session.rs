@@ -187,6 +187,7 @@ mod tests {
             effort: Effort::Xhigh,
             fast: false,
             cache_1h: false,
+            handover_at: None,
         };
         Settings {
             workspace: workspace.to_path_buf(),
