@@ -2,6 +2,11 @@
 //! hand tasks to. Their configurations depend only on the session's
 //! settings, so a resumed session builds them again unchanged.
 
+use arko_agents::agent_config::PathSafetyPolicy;
+use arko_agents::builtins::{
+    APPLY_DIFF_TOOL_NAME, ASK_USER_TOOL_NAME, LIST_FILES_TOOL_NAME, READ_FILE_TOOL_NAME,
+    WRITE_FILE_TOOL_NAME,
+};
 use arko_agents::terminal::TerminalTool;
 use arko_agents::{
     AgentConfig, AgentLLMConfig, AgentToolConfig, BuiltInEnvironmentDetail,
@@ -11,9 +16,9 @@ use arko_ai::{
     AnthropicCacheTtl, AnthropicReasoningEffort, GenerationConfig, Model, OpenAIEffort,
     OpenAIServiceTier, Provider, ReasoningConfig,
 };
-use arko_workflows::services::RUN_WORKFLOW_AGENT_TOOL_NAME;
 use serde::{Deserialize, Serialize};
 
+use crate::crew;
 use crate::shell::SHELL_TOOL_NAME;
 use crate::skills;
 
@@ -172,7 +177,8 @@ impl ModelSettings {
 pub struct AgentSettings<'a> {
     pub main: &'a ModelSettings,
     pub worker: &'a ModelSettings,
-    /// How many workers may run at once; 0 turns them off.
+    /// How many workers may run at once; 0 turns them off, and
+    /// [`NO_LIMIT`] sets no limit.
     pub max_workers: u32,
     pub handover_at: usize,
     pub show_thinking: bool,
@@ -189,6 +195,17 @@ pub struct AgentSettings<'a> {
     pub index_tools: &'a [&'a str],
 }
 
+/// `max_workers` for no limit on how many workers run at once.
+pub const NO_LIMIT: u32 = u32::MAX;
+
+/// arko's built-in file tools, which both agents have.
+pub const FILE_TOOL_NAMES: [&str; 4] = [
+    READ_FILE_TOOL_NAME,
+    LIST_FILES_TOOL_NAME,
+    WRITE_FILE_TOOL_NAME,
+    APPLY_DIFF_TOOL_NAME,
+];
+
 /// The tools both agents have: the shell and the terminal tools.
 pub fn terminal_tool_names() -> Vec<String> {
     std::iter::once(SHELL_TOOL_NAME)
@@ -197,14 +214,47 @@ pub fn terminal_tool_names() -> Vec<String> {
         .collect()
 }
 
-/// The tools both agents have: the shell, the terminal tools, the search
-/// index tools and the MCP servers' tools. (`load_skill` is added for each
-/// run when there are skills to load.)
+/// The tools both agents have: the shell, the terminal tools, the file
+/// tools, the search index tools and the MCP servers' tools. (`load_skill`
+/// is added for each run when there are skills to load.)
 fn shared_tool_names(settings: &AgentSettings) -> Vec<String> {
     let mut tools = terminal_tool_names();
+    tools.extend(FILE_TOOL_NAMES.iter().map(|name| name.to_string()));
     tools.extend(settings.index_tools.iter().map(|name| name.to_string()));
     tools.extend(settings.mcp_tools.iter().cloned());
     tools
+}
+
+/// Both agents' tool configuration: `tools` run without approval, the file
+/// tools read anywhere, and write outside the working directory only when
+/// the session allows it (as the command guard does); `read_file` reads
+/// line ranges.
+fn tool_config(settings: &AgentSettings, tools: Vec<String>) -> AgentToolConfig {
+    let policy = |policy: PathSafetyPolicy| PerToolConfigOverride {
+        out_of_workspace_path_policy: Some(policy),
+        ..PerToolConfigOverride::default()
+    };
+    let write = if settings.allow_outside_workspace {
+        PathSafetyPolicy::AutoApprove
+    } else {
+        PathSafetyPolicy::AutoReject
+    };
+    let overrides = [
+        (READ_FILE_TOOL_NAME, policy(PathSafetyPolicy::AutoApprove)),
+        (LIST_FILES_TOOL_NAME, policy(PathSafetyPolicy::AutoApprove)),
+        (WRITE_FILE_TOOL_NAME, policy(write.clone())),
+        (APPLY_DIFF_TOOL_NAME, policy(write)),
+    ]
+    .into_iter()
+    .map(|(name, config)| (name.to_string(), config))
+    .collect();
+    AgentToolConfig {
+        available_tool_names: tools,
+        default_auto_approve_tool_use: true,
+        tool_specific_configs: overrides,
+        read_file_line_ranges: true,
+        ..AgentToolConfig::default()
+    }
 }
 
 fn environment() -> EnvironmentDetailsConfig {
@@ -223,17 +273,9 @@ fn environment() -> EnvironmentDetailsConfig {
 
 pub fn main_config(settings: &AgentSettings) -> Result<AgentConfig, String> {
     let mut tools = shared_tool_names(settings);
-    let mut overrides = std::collections::HashMap::new();
+    tools.push(ASK_USER_TOOL_NAME.into());
     if settings.max_workers > 0 {
-        tools.push(RUN_WORKFLOW_AGENT_TOOL_NAME.into());
-        // Several workers in one response run at the same time.
-        overrides.insert(
-            RUN_WORKFLOW_AGENT_TOOL_NAME.to_string(),
-            PerToolConfigOverride {
-                parallel_safe: Some(true),
-                ..PerToolConfigOverride::default()
-            },
-        );
+        tools.extend(crew::LEAD_TOOL_NAMES.iter().map(|name| name.to_string()));
     }
     let mut instructions = main_instructions(settings);
     instructions.push_str(&tool_instructions(settings));
@@ -249,12 +291,7 @@ pub fn main_config(settings: &AgentSettings) -> Result<AgentConfig, String> {
         "You are fin, a general-purpose agent working in a terminal on the user's computer. You help with software engineering and anything else the user asks: you investigate, run commands, create and change files, and report back.".into(),
     )
     .instructions(instructions)
-    .tool_config(AgentToolConfig {
-        available_tool_names: tools,
-        default_auto_approve_tool_use: true,
-        tool_specific_configs: overrides,
-        ..AgentToolConfig::default()
-    })
+    .tool_config(tool_config(settings, tools))
     .environment_details_config(environment())
     .complete_task_summary_prompt_override(
         "Your reply to the user's latest message, in full: what you did, what you found, and anything you need from them. They read it as your message (Markdown, shown as plain text)."
@@ -270,8 +307,10 @@ pub fn main_config(settings: &AgentSettings) -> Result<AgentConfig, String> {
 pub fn worker_config(settings: &AgentSettings) -> Result<AgentConfig, String> {
     let mut instructions = String::from(
         "# Your task\n\
-         A lead agent gave you one task, in your first message. It can't see your work and can't answer questions while you work, so make reasonable choices yourself and say which in your report; if something blocks you, report what and why.\n\n\
-         When the task is done, or you can't go further, call `complete_task`. Its summary is your report to the lead, and the only thing it sees of your work: what you did and found, with the evidence (file paths and line numbers, the commands you ran and what they showed), every file you changed, and anything unfinished. Mark what you couldn't confirm, and say where you looked.\n",
+         A lead agent gave you one task, in your first message, and works on other things while you work on it. It can't see your work. Make reasonable choices yourself and say which in your report; if something blocks you, report what and why.\n\n\
+         When the task is done, or you can't go further, call `complete_task`. Its summary is your report to the lead, and the only thing it sees of your work: what you did and found, with the evidence (file paths and line numbers, the commands you ran and what they showed), every file you changed (and the commits you made), and anything unfinished. Mark what you couldn't confirm, and say where you looked.\n\n\
+         # The lead\n\
+         The lead can send you messages while you work: they reach you as notes from agent `lead`. Take them into account; a message that arrives as you finish comes back to you, and you report again. `message_lead` sends the lead a message without ending your task: use it for what it needs before your report (a finding that changes its plan, a question only it can answer), not for progress updates. `wait_for_lead` waits for its answer; wait only when you can't reasonably go on without one. After your report the lead may send you follow-up work: you continue with your conversation as it was.\n",
     );
     instructions.push_str(&tool_instructions(settings));
     let mut builder = AgentConfig::builder(
@@ -280,14 +319,14 @@ pub fn worker_config(settings: &AgentSettings) -> Result<AgentConfig, String> {
         settings.worker.llm_config(settings.show_thinking)?,
     )
     .role_description(
-        "A subagent that carries out one task the lead agent hands it (an investigation, a change, a review) in the same working directory, with a shell and terminal, and reports back.".into(),
+        "A subagent that carries out one task the lead agent hands it (an investigation, a change, a review), with a shell, a terminal and file tools, and reports back.".into(),
     )
     .instructions(instructions)
-    .tool_config(AgentToolConfig {
-        available_tool_names: shared_tool_names(settings),
-        default_auto_approve_tool_use: true,
-        ..AgentToolConfig::default()
-    })
+    .tool_config(tool_config(settings, {
+        let mut tools = shared_tool_names(settings);
+        tools.extend(crew::WORKER_TOOL_NAMES.iter().map(|name| name.to_string()));
+        tools
+    }))
     .environment_details_config(environment())
     .complete_task_summary_prompt_override(
         "Your report to the lead agent: what you did and found, with evidence (paths, line numbers, commands and results), the files you changed, and anything unfinished or unconfirmed."
@@ -304,7 +343,8 @@ fn main_instructions(_settings: &AgentSettings) -> String {
     "# How this conversation works\n\
      The user talks with you in a terminal. Each of their messages starts a turn: work on it with your tools for as long as it takes, then end the turn by calling `complete_task`. Its summary is your reply: the user reads it as your message, so write your answer there in full. Text you write outside tool calls is shown to the user as you work; keep it to short progress notes, and don't repeat your reply in it.\n\n\
      When a step doesn't need the user, keep going. End the turn to ask only when you can't continue without them, or before something destructive or hard to undo that they didn't ask for: deleting data they may want, force-pushing, publishing, or changing things outside the working directory.\n\n\
-     The user can type while you work. What they type reaches you as a note from the operator: take it into account in the work you're doing.\n"
+     The user can type while you work. What they type reaches you as a note from the operator: take it into account in the work you're doing.\n\n\
+     When you need the user to decide something before you can go on (a choice between approaches with real trade-offs, missing information only they have), ask with `ask_user`: it waits for their answer and you continue. Ask only what you can't reasonably decide yourself; if they can't be asked (fin runs without a terminal), it says so, and you decide.\n"
         .to_string()
 }
 
@@ -316,7 +356,8 @@ fn tool_instructions(settings: &AgentSettings) -> String {
     };
     let mut text = format!(
         "\n# Tools\n\
-         `shell` runs a command in {shell} in the working directory and returns its exit code and output once it finishes. Use it for everything you would do in a terminal: searching and reading files (prefer `rg`, and read large files in parts), creating and editing files, building, testing, git. Each call starts in the working directory, so a `cd` doesn't carry over to the next call; to run a command somewhere else, give the call that directory as `cwd` instead of a `cd`. Edit files with a short script or a heredoc, and check the result.\n\n\
+         `shell` runs a command in {shell} in the working directory and returns its exit code and output once it finishes. Use it for what you would do in a terminal: searching (prefer `rg`), building, testing, git, and running programs. Each call starts in the working directory, so a `cd` doesn't carry over to the next call; to run a command somewhere else, give the call that directory as `cwd` instead of a `cd`.\n\n\
+         The file tools work with paths relative to the working directory. `read_file` reads a file with line numbers (give `start_line` and `end_line` to read part of a large one), and `list_files` lists a directory's files. Create files with `write_file` (the whole content), and change them with `apply_diff` (SEARCH/REPLACE blocks; it changes nothing if a SEARCH block doesn't match exactly, so read the lines first). Prefer them to heredocs and scripts in the shell, which fail on long text.\n\n\
          The terminal tools run programs in the background: servers, watchers, long builds you want to keep an eye on, and programs that ask questions. `terminal_start` returns a job ID at once, `terminal_status` reads a job's output, `terminal_input` answers a prompt, and `terminal_control` waits for a job, lists jobs or cancels one. Use them only when `shell` doesn't fit, and cancel the jobs you started once you no longer need them.\n\n\
          A command guard refuses commands that would delete, move or overwrite {outside}. A refusal is the guard working, not an obstacle: don't rephrase, split or encode the command to get past it. Do the work another way, or say what was refused and why you needed it.\n",
         shell = settings.shell_name,
@@ -324,7 +365,7 @@ fn tool_instructions(settings: &AgentSettings) -> String {
     if !settings.index_tools.is_empty() {
         text.push_str(
             "\n# Search indexes\n\
-             `index_search` searches a codebase or its docs by meaning as well as by words, and returns ranked `path:start-end` locations with snippets; read those ranges with the shell. It suits questions about behaviour or concepts (\"where are retries handled?\", \"how is the session saved?\") and code whose names you don't know. Use `rg` for exact identifiers, strings and patterns, and to find every occurrence. When there is no index for a non-trivial project you work in, create one with `index_create`: it is kept current as files change. `index_status` lists the indexes, and `index_manage` rebuilds, re-embeds or removes one.\n",
+             `index_search` searches a codebase or its docs by meaning as well as by words, and returns ranked `path:start-end` locations with snippets; read those ranges with `read_file`. It suits questions about behaviour or concepts (\"where are retries handled?\", \"how is the session saved?\") and code whose names you don't know. Use `rg` for exact identifiers, strings and patterns, and to find every occurrence. When there is no index for a non-trivial project you work in, create one with `index_create`: it is kept current as files change. `index_status` lists the indexes, and `index_manage` rebuilds, re-embeds or removes one.\n",
         );
     }
     if !settings.mcp_servers.is_empty() {
@@ -355,10 +396,17 @@ fn tool_instructions(settings: &AgentSettings) -> String {
 }
 
 fn worker_instructions(max_workers: u32) -> String {
+    let limit = if max_workers == NO_LIMIT {
+        "There is no limit on how many run at once.".to_string()
+    } else {
+        format!("At most {max_workers} run at once.")
+    };
     format!(
         "\n# Workers\n\
-         `run_workflow_agent` with agent `worker` hands a task to a subagent that has the same shell and terminal tools and works in the same directory, and returns its report when it finishes. A worker doesn't see this conversation: give it everything it needs in `prompt`, namely the goal, the context and constraints, what done looks like, and what to report. Several calls in one response run at the same time, up to {max_workers} at once.\n\n\
-         Use workers for independent parts of a large task (exploring separate areas of a codebase, an audit split by area, changes to separate files), or to keep a long investigation out of your own context. Do small things yourself. Don't let workers running at the same time edit the same files, and check what a worker reports before you rely on it.\n"
+         `start_worker` starts a worker: a subagent with the same tools (shell, terminal, files, search) that carries out one task while you go on with your own work. It returns at once with the worker's ID (w1, w2, ...), so start several in one response to run them in parallel. {limit} A worker doesn't see this conversation: give it everything it needs in `task`, namely the goal, the context and constraints, what done looks like, and what to report.\n\n\
+         With `worktree: true` a worker works in its own git worktree: a separate checkout of the current commit, on a branch of its own, where it commits its changes. Use one for each worker that changes files, so workers don't edit the same files as each other or you; then review its branch and merge it into the working directory (`git merge` or `git cherry-pick`). A worktree has the committed files only: commit what a worker needs first. Without a worktree, a worker works in the working directory itself, which suits investigations, reviews and small changes to files no one else touches.\n\n\
+         Workers report on their own. A worker's report, when it finishes, and its messages to you reach you as notes from agent `w1` (and so on) while you work, and start a new turn for you if you have ended yours. So don't wait idly: do other work, and end your turn when you have something to tell the user, saying which workers are still running. When you can't go on without their results, `wait_for_workers` waits until one finishes or sends a message (or the user types something) and returns what arrived. `message_worker` sends a worker a message: a running worker reads it at its next step, and a worker that has finished or was stopped continues its task with it, keeping its context, so give follow-up work to the worker that already knows the code. `list_workers` shows the workers and what they're doing; `stop_worker` stops one, and removes its worktree once you have merged its work.\n\n\
+         Use workers for independent parts of a large task (exploring separate areas of a codebase, an audit split by area, changes in separate worktrees), or to keep a long investigation out of your own context. Do small things yourself. Check what a worker reports before you rely on it.\n"
     )
 }
 
@@ -452,31 +500,82 @@ mod tests {
     }
 
     #[test]
-    fn workers_are_offered_only_when_enabled_and_run_in_parallel() {
+    fn workers_are_offered_only_when_enabled() {
         let opus = model("opus", false);
         let mut with = settings(&opus, &opus);
-        let config = main_config(&with).unwrap();
-        assert!(
+        let offers = |config: &AgentConfig, tool: &str| {
             config
                 .tool_config
                 .available_tool_names
                 .iter()
-                .any(|name| name == RUN_WORKFLOW_AGENT_TOOL_NAME)
-        );
-        assert_eq!(
-            config.tool_config.tool_specific_configs[RUN_WORKFLOW_AGENT_TOOL_NAME].parallel_safe,
-            Some(true)
-        );
+                .any(|name| name == tool)
+        };
+        let config = main_config(&with).unwrap();
+        for tool in crew::LEAD_TOOL_NAMES {
+            assert!(offers(&config, tool), "{tool}");
+        }
+        assert!(config.instructions.contains("At most 4 run at once."));
+        let worker = worker_config(&with).unwrap();
+        for tool in crew::WORKER_TOOL_NAMES {
+            assert!(offers(&worker, tool), "{tool}");
+            assert!(!offers(&config, tool), "{tool}");
+        }
+        assert!(!offers(&worker, crew::START_WORKER));
+        assert!(!offers(&worker, ASK_USER_TOOL_NAME));
+        with.max_workers = NO_LIMIT;
+        let config = main_config(&with).unwrap();
+        assert!(config.instructions.contains("There is no limit"));
         with.max_workers = 0;
         let config = main_config(&with).unwrap();
-        assert!(
-            !config
-                .tool_config
-                .available_tool_names
-                .iter()
-                .any(|name| name == RUN_WORKFLOW_AGENT_TOOL_NAME)
-        );
+        assert!(!offers(&config, crew::START_WORKER));
         assert!(!config.instructions.contains("# Workers"));
+        assert!(offers(&config, ASK_USER_TOOL_NAME));
+    }
+
+    /// The file tools read anywhere, and write outside the working
+    /// directory only as the command guard lets commands.
+    #[test]
+    fn the_file_tools_write_only_where_the_guard_lets_commands() {
+        let opus = model("opus", false);
+        let policy = |config: &AgentConfig, tool: &str| {
+            config.tool_config.tool_specific_configs[tool]
+                .out_of_workspace_path_policy
+                .clone()
+                .unwrap()
+        };
+        let mut with = settings(&opus, &opus);
+        for config in [main_config(&with).unwrap(), worker_config(&with).unwrap()] {
+            for tool in FILE_TOOL_NAMES {
+                assert!(
+                    config
+                        .tool_config
+                        .available_tool_names
+                        .iter()
+                        .any(|name| name == tool),
+                    "{tool}"
+                );
+            }
+            assert!(config.tool_config.read_file_line_ranges);
+            assert_eq!(
+                policy(&config, READ_FILE_TOOL_NAME),
+                PathSafetyPolicy::AutoApprove
+            );
+            assert_eq!(
+                policy(&config, WRITE_FILE_TOOL_NAME),
+                PathSafetyPolicy::AutoReject
+            );
+            assert_eq!(
+                policy(&config, APPLY_DIFF_TOOL_NAME),
+                PathSafetyPolicy::AutoReject
+            );
+            assert!(config.instructions.contains("`apply_diff`"));
+        }
+        with.allow_outside_workspace = true;
+        let config = main_config(&with).unwrap();
+        assert_eq!(
+            policy(&config, WRITE_FILE_TOOL_NAME),
+            PathSafetyPolicy::AutoApprove
+        );
     }
 
     #[test]

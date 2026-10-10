@@ -18,7 +18,8 @@ pub struct Settings {
     pub workspace: PathBuf,
     pub main: ModelSettings,
     pub worker: ModelSettings,
-    /// How many workers may run at once; 0 turns them off.
+    /// How many workers may run at once; 0 turns them off, and
+    /// `agents::NO_LIMIT` sets no limit.
     pub max_workers: u32,
     pub handover_at: usize,
     pub allow_outside_workspace: bool,
@@ -90,10 +91,7 @@ impl Session {
 
     /// The checkpoint to resume from: the one `latest-checkpoint` names.
     pub fn latest_checkpoint(&self) -> Option<PathBuf> {
-        let run = self.run_dir();
-        let name = std::fs::read_to_string(run.join("latest-checkpoint")).ok()?;
-        let path = run.join(name.trim());
-        path.is_file().then_some(path)
+        latest_checkpoint_in(&self.run_dir())
     }
 
     /// When the session was last worked in: its latest checkpoint's time.
@@ -118,6 +116,13 @@ impl Session {
         std::fs::write(&temporary, text)?;
         std::fs::rename(temporary, self.dir.join(SETTINGS_FILE))
     }
+}
+
+/// The checkpoint `latest-checkpoint` names in a workflow's run directory.
+pub fn latest_checkpoint_in(run: &Path) -> Option<PathBuf> {
+    let name = std::fs::read_to_string(run.join("latest-checkpoint")).ok()?;
+    let path = run.join(name.trim());
+    path.is_file().then_some(path)
 }
 
 /// The folder sessions and the input history are kept in: `FIN_HOME`, or

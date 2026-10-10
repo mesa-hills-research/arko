@@ -1,12 +1,16 @@
 //! fin: a general-purpose agent for the terminal.
 //!
-//! The user talks with one agent (`main`), which works with a shell and
-//! background terminal jobs in the working directory and can hand tasks to
-//! workers that run at the same time. Each message is a turn of one
+//! The user talks with one agent (`main`), which works with a shell,
+//! background terminal jobs and file tools in the working directory, and
+//! can start workers that run while it goes on (`crew`), each in the
+//! working directory or a git worktree of its own. Each message is a turn of one
 //! conversation: the first runs the agent, later ones continue it. Ctrl-C
 //! stops a turn (the workflow is stopped, then rebuilt from its checkpoint,
 //! and the next message reopens the conversation); lines typed while the
-//! agent works reach it as notes. Every session is saved and can be resumed.
+//! agent works reach it as notes, and its `ask_user` questions are answered
+//! at the prompt. The workers' reports reach it as notes while it works,
+//! and start a turn when it is idle. Every session is saved and can be
+//! resumed.
 //!
 //! Besides the shell, the agents get the tools of the MCP servers set up
 //! (`mcp`), the skills in the skill folders (`skills`), and semantic search
@@ -15,8 +19,11 @@
 
 mod agents;
 mod credentials;
+mod crew;
 mod index;
 mod mcp;
+#[cfg(test)]
+mod mock_model;
 mod session;
 mod shell;
 mod skills;
@@ -29,17 +36,20 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use arko_agents::Tool;
+use arko_agents::builtins::ASK_USER_TOOL_NAME;
 use arko_agents::terminal::{TerminalConfig, TerminalManager, TerminalTool};
 use arko_ai::{CodexAuthFile, LLMClient, Provider};
 use arko_workflows::notes::Note;
 use arko_workflows::persistence::{EventLog, PersistenceConfig};
 use arko_workflows::prelude::*;
-use arko_workflows::services::WorkflowServicesConfig;
+use arko_workflows::services::{RUN_WORKFLOW_AGENT_TOOL_NAME, WorkflowServicesConfig};
+use arko_workflows::user_input::{UserInputHandler, UserInputRequest};
 use clap::Parser;
 use tokio::sync::{mpsc, oneshot};
 
-use crate::agents::{AgentSettings, Effort, MAIN, ModelSettings, WORKER, resolve_model};
+use crate::agents::{AgentSettings, Effort, MAIN, ModelSettings, NO_LIMIT, WORKER, resolve_model};
 use crate::credentials::{ANTHROPIC_KEY, Need, VOYAGE_KEY};
+use crate::crew::Crew;
 use crate::session::{Session, Settings};
 use crate::shell::{Shell, ShellTool, WindowsShell};
 use crate::ui::{Control, Input, Output, Stats};
@@ -48,12 +58,14 @@ use crate::ui::{Control, Input, Output, Stats};
 #[command(
     name = "fin",
     version,
-    about = "A general-purpose agent for the terminal: a shell, background jobs and workers that run at the same time.",
-    after_help = "Credentials: ANTHROPIC_API_KEY for Claude models; a ChatGPT login for OpenAI models (a Codex auth.json: --codex-auth, else FIN_CODEX_AUTH, else Codex's own from `codex login`; or OPENAI_OAUTH_ACCESS_TOKEN and OPENAI_OAUTH_ACCOUNT_ID). ANTHROPIC_API_KEY, FIN_CODEX_AUTH, FIN_CACHE_1H (1 turns on --cache-1h) and FIN_SHELL (cmd or powershell, on Windows) can also be in a .env file: the nearest one in the current directory or a parent, else the one in fin's folder (FIN_HOME, else fin in your data directory, such as ~/.local/share/fin). When the model has none, or the auth file fails, fin asks for them on a setup screen and saves them in that folder's .env; --setup opens it. VOYAGE_API_KEY (Voyage AI, for semantic search) can be in the environment or that .env too.\n\nMCP servers: fin starts those set up in --mcp-config files, in the project's .mcp.json (it asks first, and remembers the answer until the file's servers change) and in mcp.json in fin's folder, in Claude Code's format ({\"mcpServers\": {\"name\": {\"command\": ..., \"args\": [...], \"env\": {...}}}}); servers over standard input and output only. Skills: folders with a SKILL.md, in the project's .agents/skills, .claude/skills or .skills, in skills in fin's folder, or in ~/.agents/skills or ~/.claude/skills.\n\nSearch indexes: `fin index create [PATH]` indexes a codebase or its docs (the agents can create indexes too), and fin keeps the working directory's indexes current while it runs; `fin index --help` lists the commands. Without VOYAGE_API_KEY, search is by keywords only.\n\nWhile the agent works, type to add to its task, and press Ctrl-C to stop the turn. Commands: /new, /cost, /mcp, /skills, /session, /help, /exit."
+    about = "A general-purpose agent for the terminal: a shell, background jobs, file tools and workers that run in parallel.",
+    after_help = "Credentials: ANTHROPIC_API_KEY for Claude models; a ChatGPT login for OpenAI models (a Codex auth.json: --codex-auth, else FIN_CODEX_AUTH, else Codex's own from `codex login`; or OPENAI_OAUTH_ACCESS_TOKEN and OPENAI_OAUTH_ACCOUNT_ID). ANTHROPIC_API_KEY, FIN_CODEX_AUTH, FIN_CACHE_1H (1 turns on --cache-1h) and FIN_SHELL (cmd or powershell, on Windows) can also be in a .env file: the nearest one in the current directory or a parent, else the one in fin's folder (FIN_HOME, else fin in your data directory, such as ~/.local/share/fin). When the model has none, or the auth file fails, fin asks for them on a setup screen and saves them in that folder's .env; --setup opens it. VOYAGE_API_KEY (Voyage AI, for semantic search) can be in the environment or that .env too.\n\nMCP servers: fin starts those set up in --mcp-config files, in the project's .mcp.json (it asks first, and remembers the answer until the file's servers change) and in mcp.json in fin's folder, in Claude Code's format ({\"mcpServers\": {\"name\": {\"command\": ..., \"args\": [...], \"env\": {...}}}}); servers over standard input and output only. Skills: folders with a SKILL.md, in the project's .agents/skills, .claude/skills or .skills, in skills in fin's folder, or in ~/.agents/skills or ~/.claude/skills.\n\nSearch indexes: `fin index create [PATH]` indexes a codebase or its docs (the agents can create indexes too), and fin keeps the working directory's indexes current while it runs; `fin index --help` lists the commands. Without VOYAGE_API_KEY, search is by keywords only.\n\nWorkers: the agent starts them to work in parallel while it goes on, each in the working directory or in a git worktree of its own (made in the session's folder, on a branch fin/<session>/<worker>); their reports reach it as they finish. /workers lists them, /stop-workers stops them.\n\nWhile the agent works, type to add to its task, and press Ctrl-C to stop the turn (the workers go on). Commands: /new, /cost, /workers, /stop-workers, /mcp, /skills, /session, /help, /exit."
 )]
 struct Args {
     /// Send this message, print the reply and exit. Progress goes to
-    /// standard error, the reply to standard output.
+    /// standard error, the reply to standard output. When the agent starts
+    /// workers, fin waits for their reports, which go to the agent, and
+    /// prints its reply to them.
     #[arg(short = 'p', long)]
     prompt: Option<String>,
 
@@ -96,9 +108,10 @@ struct Args {
     #[arg(long = "no-cache-1h")]
     no_cache_1h: bool,
 
-    /// How many workers may run at once; 0 turns them off.
-    #[arg(long, default_value_t = 4)]
-    workers: u32,
+    /// How many workers may run at once (default: no limit); 0 turns them
+    /// off.
+    #[arg(long)]
+    workers: Option<u32>,
 
     /// Input size, in tokens, at which an agent writes a handover report and
     /// continues in a fresh conversation.
@@ -384,6 +397,36 @@ async fn run(args: Args) -> Result<ExitCode, String> {
     };
     let interactive = printer.is_some();
     let output = Arc::new(Output::new(printer, one_shot));
+    let stats = Arc::new(Mutex::new(Stats::default()));
+    // The main agent's questions are put to the user at the prompt; with
+    // no terminal, it is told there is no one to ask.
+    let (questions_sender, questions) = mpsc::unbounded_channel();
+    let asker = Arc::new(Asker {
+        questions: interactive.then_some(questions_sender),
+    });
+    // The workers, and those of a resumed session.
+    let (crew, woken) = if settings.max_workers > 0 {
+        let (crew, woken) = Crew::new(crew::Setup {
+            session_id: session.id.clone(),
+            session_dir: session.dir.clone(),
+            workspace: settings.workspace.clone(),
+            client: client.clone(),
+            worker_config: worker_config.clone(),
+            tools: tools.clone(),
+            output: output.clone(),
+            stats: stats.clone(),
+            show_thinking: settings.show_thinking,
+            max_running: settings.max_workers,
+        });
+        if !new {
+            for problem in crew.load() {
+                output.line(&output.warn(&format!("fin: {problem}")));
+            }
+        }
+        (Some(crew), Some(woken))
+    } else {
+        (None, None)
+    };
     {
         // Ctrl-C when the line editor isn't reading (in raw mode it reads
         // Ctrl-C as a key).
@@ -411,7 +454,7 @@ async fn run(args: Args) -> Result<ExitCode, String> {
         indexes,
         unoffered: None,
         output: output.clone(),
-        stats: Arc::new(Mutex::new(Stats::default())),
+        stats,
         workflow: None,
         printer: None,
         conversation: Conversation::New,
@@ -419,6 +462,12 @@ async fn run(args: Args) -> Result<ExitCode, String> {
         unread: Vec::new(),
         queue_lines: !interactive,
         exiting: false,
+        crew,
+        asker,
+        one_shot,
+        unread_news: 0,
+        exit_warned: false,
+        news_hint_shown: false,
     };
     harness.project = project_instructions(&harness.settings.workspace);
     harness.open(!new)?;
@@ -428,6 +477,8 @@ async fn run(args: Args) -> Result<ExitCode, String> {
     let mut input = Inputs {
         receiver: input,
         pending: None,
+        questions,
+        woken,
     };
 
     let code = if let Some(prompt) = args.prompt.clone() {
@@ -437,7 +488,13 @@ async fn run(args: Args) -> Result<ExitCode, String> {
         let end = if harness.exiting {
             TurnEnd::Exit
         } else {
-            harness.turn(prompt, &mut input).await
+            harness.turn(Prompt::User(prompt), &mut input).await
+        };
+        // The reply waits for the workers the agent started: their news
+        // goes to it as it comes.
+        let end = match end {
+            TurnEnd::Answered => harness.finish_workers(&mut input).await,
+            other => other,
         };
         match end {
             TurnEnd::Answered => ExitCode::SUCCESS,
@@ -455,6 +512,17 @@ async fn run(args: Args) -> Result<ExitCode, String> {
         ExitCode::SUCCESS
     };
     ui::stop_reading();
+    if let Some(crew) = &harness.crew {
+        let running = crew.running().len();
+        if running > 0 {
+            output.line(&output.dim(&format!(
+                "Stopping {running} worker{}… (resuming the session lets the agent continue {})",
+                if running == 1 { "" } else { "s" },
+                if running == 1 { "it" } else { "them" }
+            )));
+        }
+        crew.shutdown().await;
+    }
     harness.mcp.shutdown().await;
     if let Some(indexes) = &harness.indexes {
         indexes.shutdown().await;
@@ -535,7 +603,7 @@ fn new_settings(args: &Args) -> Result<Settings, String> {
         workspace,
         main,
         worker,
-        max_workers: args.workers,
+        max_workers: args.workers.unwrap_or(NO_LIMIT),
         handover_at: args.handover_at,
         allow_outside_workspace: args.allow_outside_workspace,
         show_thinking: args.show_thinking,
@@ -802,6 +870,18 @@ fn unoffered(saved: &SavedSetup, fresh: &[(&str, &arko_agents::AgentConfig)]) ->
         skills |= fresh.skills_config.is_some() && saved.skills_config.is_none();
     }
     let mut parts = Vec::new();
+    if missing.contains(&crew::START_WORKER) {
+        parts.push("workers that run in parallel".to_string());
+    }
+    if missing
+        .iter()
+        .any(|name| agents::FILE_TOOL_NAMES.contains(name))
+    {
+        parts.push("the file tools".to_string());
+    }
+    if missing.contains(&ASK_USER_TOOL_NAME) {
+        parts.push("questions to you (ask_user)".to_string());
+    }
     if missing.iter().any(|name| index::TOOL_NAMES.contains(name)) {
         parts.push("the search index tools".to_string());
     }
@@ -821,10 +901,15 @@ fn unoffered(saved: &SavedSetup, fresh: &[(&str, &arko_agents::AgentConfig)]) ->
     if skills {
         parts.push("skills".to_string());
     }
-    let others = missing
-        .iter()
-        .filter(|name| !index::TOOL_NAMES.contains(name) && mcp::split_tool_name(name).is_none())
-        .count();
+    let named = |name: &str| {
+        index::TOOL_NAMES.contains(&name)
+            || mcp::split_tool_name(name).is_some()
+            || crew::LEAD_TOOL_NAMES.contains(&name)
+            || crew::WORKER_TOOL_NAMES.contains(&name)
+            || agents::FILE_TOOL_NAMES.contains(&name)
+            || name == ASK_USER_TOOL_NAME
+    };
+    let others = missing.iter().filter(|name| !named(name)).count();
     if others > 0 {
         parts.push(format!(
             "{others} other tool{}",
@@ -869,6 +954,31 @@ enum TurnEnd {
     Exit,
 }
 
+/// What starts a turn.
+enum Prompt {
+    /// The user's message.
+    User(String),
+    /// The workers' news, without a message from the user.
+    News,
+    /// A turn fin stopped in the middle of goes on, without a message.
+    Recover,
+}
+
+/// What became of the workers' news.
+enum News {
+    /// There is none (left).
+    Done,
+    /// The conversation isn't waiting for a message: it goes with the
+    /// user's next one.
+    Waiting,
+    /// The user stopped the turn it started.
+    Stopped,
+    /// The turn it started failed: it waits for the next message, or news.
+    Failed,
+    /// The user quit during the turn it started.
+    Exit,
+}
+
 struct Harness {
     settings: Settings,
     session: Session,
@@ -903,6 +1013,22 @@ struct Harness {
     queue_lines: bool,
     /// The user quit while a turn ran before the prompt opened.
     exiting: bool,
+    /// The workers; `None` when they are off, or when the session's main
+    /// agent delegates with `run_workflow_agent` (sessions from before
+    /// workers ran in parallel), which waits for the worker.
+    crew: Option<Arc<Crew>>,
+    /// Puts the main agent's questions to the user.
+    asker: Arc<Asker>,
+    /// fin sends one message and exits (-p).
+    one_shot: bool,
+    /// News from the workers given to the main agent as notes during its
+    /// last turn, which it didn't get to read: a turn continues its
+    /// conversation for them.
+    unread_news: usize,
+    /// `/exit` was typed with workers running: the next one quits.
+    exit_warned: bool,
+    /// The user was told that the workers' news waits for their message.
+    news_hint_shown: bool,
 }
 
 impl Harness {
@@ -952,7 +1078,27 @@ impl Harness {
         for tool in &self.tools {
             builder = builder.agent_tool(MAIN, tool.clone());
         }
-        if self.settings.max_workers > 0 {
+        builder = builder.user_input_handler(self.asker.clone());
+        // Sessions from before workers ran in parallel delegate with
+        // `run_workflow_agent`, which waits for the worker: they keep it.
+        let legacy = saved
+            .as_ref()
+            .and_then(|saved| saved.configs.get(MAIN))
+            .is_some_and(|config| {
+                config
+                    .tool_config
+                    .available_tool_names
+                    .iter()
+                    .any(|name| name == RUN_WORKFLOW_AGENT_TOOL_NAME)
+            });
+        if legacy {
+            self.crew = None;
+        } else if let Some(crew) = &self.crew {
+            for tool in crew.lead_tools() {
+                builder = builder.agent_tool(MAIN, tool);
+            }
+        }
+        if legacy && self.settings.max_workers > 0 {
             builder = builder
                 .agent(WORKER, config(WORKER, &self.worker_config))
                 .workflow_services(
@@ -976,6 +1122,7 @@ impl Harness {
             self.output.clone(),
             self.stats.clone(),
             self.settings.show_thinking,
+            None,
         ));
         if let Some((_, old)) = self.printer.replace((control, task)) {
             old.abort();
@@ -991,16 +1138,11 @@ impl Harness {
 
     fn banner(&self, new: bool) {
         let out = &self.output;
-        let workers = match self.settings.max_workers {
-            0 => "no workers".to_string(),
-            n if self.settings.worker == self.settings.main => format!("up to {n} workers"),
-            n => format!("up to {n} workers on {}", self.settings.worker.describe()),
-        };
         out.line(&format!(
             "{} {} · {}",
             out.bold("fin"),
             self.settings.main.describe(),
-            workers
+            self.workers_summary()
         ));
         out.line(&out.dim(&format!(
             "{} · session {}{}",
@@ -1029,6 +1171,13 @@ impl Harness {
         if !extras.is_empty() {
             out.line(&out.dim(&extras.join(" · ")));
         }
+        if let Some(crew) = &self.crew
+            && !crew.is_empty()
+        {
+            out.line(&out.dim(
+                "The session's workers are kept: /workers lists them, and the agent can continue them.",
+            ));
+        }
         if let Some(note) = &self.unoffered {
             out.line(&out.warn(note));
         }
@@ -1044,6 +1193,20 @@ impl Harness {
         }
     }
 
+    /// The workers, as the banner and `/session` say it.
+    fn workers_summary(&self) -> String {
+        let mut text = match self.settings.max_workers {
+            0 => return "no workers".to_string(),
+            NO_LIMIT => "parallel workers".to_string(),
+            n if self.crew.is_some() => format!("up to {n} parallel workers"),
+            n => format!("up to {n} workers"),
+        };
+        if self.settings.worker != self.settings.main {
+            text.push_str(&format!(" on {}", self.settings.worker.describe()));
+        }
+        text
+    }
+
     /// After a crash, the turn that was running goes on where it was saved.
     /// Continues a turn fin stopped in the middle of. The user may quit
     /// during it (`exiting`).
@@ -1056,7 +1219,7 @@ impl Harness {
                     "The last turn didn't finish (fin stopped while it ran); it continues now.",
                 ),
             );
-            if let TurnEnd::Exit = self.turn(String::new(), input).await {
+            if let TurnEnd::Exit = self.turn(Prompt::Recover, input).await {
                 self.exiting = true;
             }
         }
@@ -1064,10 +1227,30 @@ impl Harness {
 
     async fn repl(&mut self, input: &mut Inputs) {
         let mut last_interrupt: Option<Instant> = None;
-        while let Some(event) = input.next().await {
+        loop {
+            let event = match input.next_event(true).await {
+                Event::Input(event) => event,
+                Event::Woken => {
+                    if let News::Exit = self.deliver_news(input).await {
+                        break;
+                    }
+                    continue;
+                }
+                Event::Question(question) => {
+                    // No turn runs: no one waits for the answer.
+                    drop(question);
+                    continue;
+                }
+            };
             match event {
-                Input::Eof => break,
-                Input::Interrupt => {
+                None | Some(Input::Eof) => {
+                    // Without a terminal, the workers finish first.
+                    if self.queue_lines {
+                        self.finish_workers(input).await;
+                    }
+                    break;
+                }
+                Some(Input::Interrupt) => {
                     if last_interrupt.is_some_and(|at| at.elapsed() < Duration::from_secs(3)) {
                         break;
                     }
@@ -1075,7 +1258,7 @@ impl Harness {
                     self.output
                         .line(&self.output.dim("(Ctrl-C again, Ctrl-D or /exit to quit)"));
                 }
-                Input::Line(line) => {
+                Some(Input::Line(line)) => {
                     let line = input.coalesce(line).await;
                     let text = line.trim();
                     if text.is_empty() {
@@ -1083,8 +1266,20 @@ impl Harness {
                     }
                     if let Some(command) = command(text) {
                         match command {
-                            "/exit" | "/quit" => break,
+                            "/exit" | "/quit" => {
+                                if self.may_exit() {
+                                    break;
+                                }
+                            }
                             "/new" => {
+                                let previous = match &self.conversation {
+                                    Conversation::Answered(result) => Some(result.clone()),
+                                    _ => None,
+                                };
+                                if let Some(crew) = &self.crew {
+                                    crew.lead_restarted(previous.as_ref());
+                                }
+                                self.unread_news = 0;
                                 self.conversation = Conversation::New;
                                 self.unread.clear();
                                 self.output.line(
@@ -1097,12 +1292,31 @@ impl Harness {
                         }
                         continue;
                     }
-                    if let TurnEnd::Exit = self.turn(text.to_string(), input).await {
+                    if let TurnEnd::Exit = self.turn(Prompt::User(text.to_string()), input).await {
+                        break;
+                    }
+                    if let News::Exit = self.deliver_news(input).await {
                         break;
                     }
                 }
             }
         }
+    }
+
+    /// `/exit` quits; with workers running, the first one only warns.
+    fn may_exit(&mut self) -> bool {
+        let running = self.crew.as_ref().map_or(0, |crew| crew.running().len());
+        if running == 0 || self.exit_warned {
+            return true;
+        }
+        self.exit_warned = true;
+        self.output.line(&self.output.warn(&format!(
+            "{running} worker{} running: /exit again stops {} and quits (resuming the session lets the agent continue {}).",
+            if running == 1 { " is" } else { "s are" },
+            if running == 1 { "it" } else { "them" },
+            if running == 1 { "it" } else { "them" },
+        )));
+        false
     }
 
     /// Commands that work at any time.
@@ -1118,12 +1332,22 @@ impl Harness {
                         sum.1 + run.total_output_tokens(),
                     )
                 });
+                let workers = self.crew.as_ref().map(|crew| crew.spent());
+                let (worker_dollars, worker_input, worker_output) =
+                    workers.unwrap_or((0.0, 0, 0));
                 out.line(&format!(
                     "${:.2} billed in this session · {}k input and {}k output tokens",
-                    workflow.context().budget.total_spent(),
-                    input / 1000,
-                    output / 1000
+                    workflow.context().budget.total_spent() + worker_dollars,
+                    (input + worker_input) / 1000,
+                    (output + worker_output) / 1000
                 ));
+                if worker_input + worker_output > 0 {
+                    out.line(&out.dim(&format!(
+                        "  of which the workers: ${worker_dollars:.2} · {}k input and {}k output tokens",
+                        worker_input / 1000,
+                        worker_output / 1000
+                    )));
+                }
                 if let Some(usage) = &self.stats.lock().unwrap().plan_usage {
                     out.line(usage);
                 }
@@ -1137,38 +1361,72 @@ impl Harness {
                     }
                 }
             }
+            "/workers" => match &self.crew {
+                Some(crew) if !crew.is_empty() => {
+                    for line in crew.describe().lines() {
+                        out.line(line);
+                    }
+                }
+                Some(_) => out.line("No workers yet: the agent starts them as it needs them."),
+                None if self.settings.max_workers == 0 => {
+                    out.line("Workers are off in this session (--workers 0).");
+                }
+                None => out.line(
+                    "This session started before workers ran in parallel: the agent waits for each worker it runs.",
+                ),
+            },
+            "/stop-workers" => {
+                let stopped = self
+                    .crew
+                    .as_ref()
+                    .map_or(0, |crew| crew.stop_all("the user stopped the workers"));
+                if stopped == 0 {
+                    out.line("No worker is running.");
+                } else {
+                    out.line(&out.warn(&format!(
+                        "Stopping {stopped} worker{}: a message from the agent resumes {}.",
+                        if stopped == 1 { "" } else { "s" },
+                        if stopped == 1 { "it" } else { "them" }
+                    )));
+                }
+            }
             "/mcp" => self.list_mcp(),
             "/skills" => self.list_skills(),
             "/session" => {
                 out.line(&format!("session {}", self.session.id));
                 out.line(&out.dim(&format!("{}", self.session.dir.display())));
                 out.line(&out.dim(&format!(
-                    "main: {} · workers: {}",
+                    "main: {} · {}",
                     self.settings.main.describe(),
                     if self.settings.max_workers == 0 {
-                        "off".to_string()
+                        "no workers".to_string()
                     } else {
                         format!(
-                            "{} (up to {})",
+                            "workers: {} ({})",
                             self.settings.worker.describe(),
-                            self.settings.max_workers
+                            match self.settings.max_workers {
+                                NO_LIMIT => "no limit".to_string(),
+                                n => format!("up to {n} at once"),
+                            }
                         )
                     }
                 )));
             }
             "/new" => out.line(&out.dim("Wait for the turn to end (or press Ctrl-C) first.")),
             _ => {
-                out.line("/new      start a new conversation (this session keeps the old one)");
-                out.line("/cost     what this session has cost");
-                out.line("/mcp      the MCP servers and their tools");
-                out.line("/skills   the skills the agents can load");
-                out.line("/session  this session's ID, folder and models");
-                out.line("/exit     quit (Ctrl-D too); the session is saved");
                 out.line(
-                    &out.dim(
-                        "While the agent works: type to add to its task; Ctrl-C stops the turn.",
-                    ),
+                    "/new           start a new conversation (this session keeps the old one)",
                 );
+                out.line("/cost          what this session has cost");
+                out.line("/workers       the workers: what each is doing, or reported");
+                out.line("/stop-workers  stop the workers running (the agent can resume them)");
+                out.line("/mcp           the MCP servers and their tools");
+                out.line("/skills        the skills the agents can load");
+                out.line("/session       this session's ID, folder and models");
+                out.line("/exit          quit (Ctrl-D too); the session is saved");
+                out.line(&out.dim(
+                    "While the agent works: type to add to its task; Ctrl-C stops the turn (the workers go on). When it asks you something, type the answer.",
+                ));
             }
         }
     }
@@ -1258,22 +1516,38 @@ impl Harness {
     }
 
     /// One turn: the message goes to the main agent, and its reply is
-    /// printed. An empty message restarts an unfinished turn.
-    async fn turn(&mut self, message: String, input: &mut Inputs) -> TurnEnd {
+    /// printed.
+    async fn turn(&mut self, prompt: Prompt, input: &mut Inputs) -> TurnEnd {
         // A turn fin stopped in the middle of (a crash) goes on where it
         // was saved, without a message: the message follows it.
-        if !message.is_empty()
+        if !matches!(prompt, Prompt::Recover)
             && let Conversation::Stopped(run) = &self.conversation
             && matches!(run.restart, Restart::Recover)
-            && let TurnEnd::Exit = Box::pin(self.turn(String::new(), input)).await
+            && let TurnEnd::Exit = Box::pin(self.turn(Prompt::Recover, input)).await
         {
             return TurnEnd::Exit;
         }
+        self.exit_warned = false;
+        self.news_hint_shown = false;
         let workflow = self.workflow().clone();
         // A message after a stop goes to the stopped task, which resumes.
-        let resumes = !message.is_empty()
+        let resumes = !matches!(prompt, Prompt::Recover)
             && matches!(&self.conversation, Conversation::Stopped(run) if run.restart != Restart::Recover);
-        let message = self.compose(message);
+        let news_turn = matches!(prompt, Prompt::News);
+        let (message, mail) = self.compose(prompt);
+        if news_turn {
+            let mut from: Vec<&str> = Vec::new();
+            for event in &mail {
+                if !from.contains(&event.worker.as_str()) {
+                    from.push(&event.worker);
+                }
+            }
+            self.output.line(&self.output.dim(&if from.is_empty() {
+                "  ⇠ the workers' news goes to the agent".to_string()
+            } else {
+                format!("  ⇠ news from {} goes to the agent", and_list(&from))
+            }));
+        }
         if resumes {
             self.output.line(
                 &self
@@ -1281,8 +1555,13 @@ impl Harness {
                     .dim("  ✎ added to the stopped task: the agent resumes it where it stopped"),
             );
         }
-        let spent_before = workflow.context().budget.total_spent();
+        let spent_before = self.spent();
         let started = Instant::now();
+        // Notes of the turn before were given again with this one.
+        self.unread_news = 0;
+        if let Some(crew) = &self.crew {
+            crew.lead_started(workflow.notes_handle());
+        }
         let conversation = std::mem::replace(&mut self.conversation, Conversation::New);
         let call = {
             let workflow = workflow.clone();
@@ -1301,11 +1580,26 @@ impl Harness {
         let mut queued: Vec<String> = Vec::new();
         let mut stopping = false;
         let mut exit = false;
+        // The agent's question the next line answers.
+        let mut answering: Option<oneshot::Sender<String>> = None;
         let outcome = loop {
             tokio::select! {
                 outcome = &mut call => break outcome,
-                event = input.next() => match event {
-                    Some(Input::Line(line)) => {
+                event = input.next_event(false) => match event {
+                    Event::Question(question) => {
+                        if question.answer.is_closed() {
+                            continue;
+                        }
+                        self.flush_printer().await;
+                        self.output.line(&self.output.bold("  ? The agent asks:"));
+                        for line in question.text.trim().lines() {
+                            self.output.line(&format!("    {line}"));
+                        }
+                        self.output.line(&self.output.dim("  (Type your answer and press Enter.)"));
+                        answering = Some(question.answer);
+                    }
+                    Event::Woken => {}
+                    Event::Input(Some(Input::Line(line))) => {
                         let line = input.coalesce(line).await;
                         let text = line.trim().to_string();
                         if text.is_empty() {
@@ -1313,12 +1607,27 @@ impl Harness {
                         }
                         if let Some(command) = command(&text) {
                             if matches!(command, "/exit" | "/quit") {
-                                exit = true;
-                                stopping |= self.stop(&workflow);
+                                if self.may_exit() {
+                                    exit = true;
+                                    stopping |= self.stop(&workflow);
+                                }
                             } else {
                                 self.command(command);
                             }
-                        } else if self.queue_lines {
+                            continue;
+                        }
+                        let text = match answering.take() {
+                            Some(answer) => match answer.send(text) {
+                                Ok(()) => {
+                                    self.output.line(&self.output.dim("  ✎ answered"));
+                                    continue;
+                                }
+                                // The question was dropped (a stop).
+                                Err(text) => text,
+                            },
+                            None => text,
+                        };
+                        if self.queue_lines {
                             queued.push(text);
                         } else {
                             match workflow.post_note(Note::new(text.clone()).to([MAIN]).once()) {
@@ -1327,6 +1636,9 @@ impl Harness {
                                         "  ✎ added to the task: the agent reads it at its next step",
                                     ));
                                     notes.push(text);
+                                    if let Some(crew) = &self.crew {
+                                        crew.user_typed();
+                                    }
                                 }
                                 Err(error) => self.output.line(&self.output.error(&format!(
                                     "  could not pass that on: {error}"
@@ -1334,14 +1646,14 @@ impl Harness {
                             }
                         }
                     }
-                    Some(Input::Interrupt) => {
+                    Event::Input(Some(Input::Interrupt)) => {
                         if stopping {
                             self.output.line(&self.output.dim("  (stopping: the agents get up to 10 s to end)"));
                         } else {
                             stopping = self.stop(&workflow);
                         }
                     }
-                    Some(Input::Eof) | None => {
+                    Event::Input(Some(Input::Eof) | None) => {
                         exit = true;
                         stopping |= self.stop(&workflow);
                     }
@@ -1354,10 +1666,21 @@ impl Harness {
                 "the turn's task failed: {error}"
             )))
         });
+        let unread_news = self
+            .crew
+            .as_ref()
+            .map_or(0, |crew| crew.lead_ended(outcome.as_ref().ok()));
         let end = match outcome {
             Ok(result) => {
+                self.unread_news = unread_news;
                 self.output.line("");
-                self.output.answer(result.summary.trim());
+                // With -p, a reply the workers' news will follow isn't the
+                // answer.
+                if self.one_shot && self.news_coming() {
+                    self.output.line(result.summary.trim());
+                } else {
+                    self.output.answer(result.summary.trim());
+                }
                 self.keep_unread(&notes, &result);
                 self.conversation = Conversation::Answered(result);
                 TurnEnd::Answered
@@ -1379,7 +1702,7 @@ impl Harness {
                 self.output
                     .line(&self.output.error(&format!("The turn failed: {error}")));
                 self.unread.extend(notes);
-                self.recover_after_error(&workflow);
+                self.recover_after_error(&workflow, mail);
                 TurnEnd::Failed
             }
         };
@@ -1389,17 +1712,111 @@ impl Harness {
         }
         // Lines read without a terminal, each its own turn.
         for line in queued {
-            if let TurnEnd::Exit = Box::pin(self.turn(line, input)).await {
+            if let TurnEnd::Exit = Box::pin(self.turn(Prompt::User(line), input)).await {
                 return TurnEnd::Exit;
             }
         }
         end
     }
 
-    /// The message as the agent gets it: with the project's instructions
-    /// when it starts a conversation, and with what the user typed during
-    /// the last turn that the agent didn't read.
-    fn compose(&mut self, message: String) -> String {
+    /// Whether the workers have news for the main agent, or will have.
+    fn news_coming(&self) -> bool {
+        self.unread_news > 0
+            || self
+                .crew
+                .as_ref()
+                .is_some_and(|crew| crew.has_mail() || !crew.running().is_empty())
+    }
+
+    /// While the main agent's conversation waits for a message, the
+    /// workers' news (their reports and messages) starts a turn of it.
+    async fn deliver_news(&mut self, input: &mut Inputs) -> News {
+        input.drain_woken();
+        loop {
+            let Some(crew) = self.crew.clone() else {
+                return News::Done;
+            };
+            if !crew.has_mail() && self.unread_news == 0 {
+                return News::Done;
+            }
+            if !matches!(self.conversation, Conversation::Answered(_)) {
+                if !self.news_hint_shown && !self.one_shot {
+                    self.news_hint_shown = true;
+                    self.output.line(&self.output.dim(
+                        "  (the workers have news for the agent: it goes with your next message)",
+                    ));
+                }
+                return News::Waiting;
+            }
+            match self.turn(Prompt::News, input).await {
+                TurnEnd::Answered => input.drain_woken(),
+                TurnEnd::Exit => return News::Exit,
+                TurnEnd::Stopped => return News::Stopped,
+                TurnEnd::Failed => return News::Failed,
+            }
+        }
+    }
+
+    /// Without a terminal (with -p, or input from a pipe), fin waits for
+    /// the workers before it ends: their news goes to the agent as it
+    /// comes. Returns how the last turn ended.
+    async fn finish_workers(&mut self, input: &mut Inputs) -> TurnEnd {
+        let mut said = false;
+        loop {
+            let news = self.deliver_news(input).await;
+            let Some(crew) = self.crew.clone() else {
+                return TurnEnd::Answered;
+            };
+            // (A worker's report is in the mailbox as it stops running.)
+            let running = crew.running();
+            match news {
+                News::Exit => return TurnEnd::Exit,
+                News::Stopped => {
+                    crew.stop_all("the user stopped fin");
+                    return TurnEnd::Stopped;
+                }
+                // News that came as the last turn ended.
+                News::Done if crew.has_mail() || self.unread_news > 0 => continue,
+                News::Done if running.is_empty() => return TurnEnd::Answered,
+                // The conversation can't take the news (a turn failed).
+                News::Waiting | News::Failed if running.is_empty() => return TurnEnd::Failed,
+                _ => {}
+            }
+            if !said {
+                said = true;
+                self.output.line(&self.output.dim(&format!(
+                    "Waiting for {} (Ctrl-C stops {})…",
+                    and_list(&running),
+                    if running.len() == 1 { "it" } else { "them" }
+                )));
+            }
+            match input.next_event(true).await {
+                Event::Woken => {}
+                Event::Question(question) => drop(question),
+                Event::Input(Some(Input::Line(_))) => {}
+                Event::Input(Some(Input::Interrupt | Input::Eof) | None) => {
+                    let stopped = crew.stop_all("the user stopped fin");
+                    self.output.line(&self.output.warn(&format!(
+                        "Stopping {stopped} worker{}.",
+                        if stopped == 1 { "" } else { "s" }
+                    )));
+                    return TurnEnd::Stopped;
+                }
+            }
+        }
+    }
+
+    /// The message as the agent gets it, and the workers' news it carries:
+    /// with the project's instructions when it starts a conversation, with
+    /// what the user typed during the last turn that the agent didn't read,
+    /// and with the news from the workers it hasn't been given. A turn that
+    /// recovers gets no message.
+    fn compose(&mut self, prompt: Prompt) -> (String, Vec<crew::Event>) {
+        let message = match prompt {
+            Prompt::Recover => return (String::new(), Vec::new()),
+            Prompt::User(message) => Some(message),
+            Prompt::News => None,
+        };
         let mut parts = Vec::new();
         if matches!(self.conversation, Conversation::New)
             && let Some((name, text)) = &self.project
@@ -1419,13 +1836,37 @@ impl Harness {
                     .join("\n")
             ));
         }
-        if parts.is_empty() {
-            return message;
+        let mail = self
+            .crew
+            .as_ref()
+            .map(|crew| crew.take_mail())
+            .unwrap_or_default();
+        if !mail.is_empty() {
+            let heading = if message.is_some() {
+                "# News from your workers since your last turn"
+            } else {
+                "# News from your workers (fin started this turn for it; the user hasn't written)"
+            };
+            parts.push(format!(
+                "{heading}\n\n{}",
+                mail.iter()
+                    .map(crew::Event::text)
+                    .collect::<Vec<_>>()
+                    .join("\n\n---\n\n")
+            ));
         }
-        if !message.is_empty() {
-            parts.push(format!("# My message\n\n{message}"));
-        }
-        parts.join("\n\n")
+        let message = match message {
+            Some(message) if parts.is_empty() => message,
+            Some(message) => {
+                parts.push(format!("# My message\n\n{message}"));
+                parts.join("\n\n")
+            }
+            None if parts.is_empty() => {
+                "Your workers sent you news as your last turn ended: it follows. (fin started this turn for it; the user hasn't written.)".to_string()
+            }
+            None => parts.join("\n\n"),
+        };
+        (message, mail)
     }
 
     /// Notes the run never read go with the next message.
@@ -1449,7 +1890,15 @@ impl Harness {
     }
 
     fn stop(&self, workflow: &Workflow) -> bool {
-        self.output.line(&self.output.warn("  Stopping the turn…"));
+        let running = self.crew.as_ref().map_or(0, |crew| crew.running().len());
+        self.output.line(&self.output.warn(&if running == 0 {
+            "  Stopping the turn…".to_string()
+        } else {
+            format!(
+                "  Stopping the turn… (the workers go on: /stop-workers stops {})",
+                if running == 1 { "it" } else { "them" }
+            )
+        }));
         workflow.stop(StopRequest::operator("the user stopped the turn"));
         true
     }
@@ -1462,13 +1911,22 @@ impl Harness {
     }
 
     /// After a failed turn, the conversation goes on if its last reply
-    /// stands; otherwise the next message starts a new one.
-    fn recover_after_error(&mut self, workflow: &Workflow) {
+    /// stands; otherwise the next message starts a new one. The workers'
+    /// news the turn carried, and the news it may not have read, go back
+    /// to the mailbox.
+    fn recover_after_error(&mut self, workflow: &Workflow, mail: Vec<crew::Event>) {
         self.conversation = conversation_of(workflow);
+        if let Some(crew) = &self.crew {
+            crew.lead_restarted(match &self.conversation {
+                Conversation::Answered(result) => Some(result),
+                _ => None,
+            });
+            crew.put_back(mail);
+        }
         if matches!(self.conversation, Conversation::New) {
-            self.output.line(&self.output.dim(
+            self.output.line(self.output.dim(
                 "This conversation can't go on; your next message starts a new one (/new). The session keeps the old one.",
-            ));
+            ).as_str());
         }
     }
 
@@ -1481,9 +1939,14 @@ impl Harness {
         }
     }
 
+    /// What the session has cost: the main agent's runs and the workers'.
+    fn spent(&self) -> f64 {
+        self.workflow().context().budget.total_spent()
+            + self.crew.as_ref().map_or(0.0, |crew| crew.spent().0)
+    }
+
     fn footer(&self, spent_before: f64, started: Instant) {
-        let workflow = self.workflow();
-        let spent = workflow.context().budget.total_spent();
+        let spent = self.spent();
         let stats = self.stats.lock().unwrap().clone();
         let mut parts = vec![format!("{:.0} s", started.elapsed().as_secs_f64())];
         if spent > 0.0 {
@@ -1495,6 +1958,13 @@ impl Harness {
         }
         if let Some(tokens) = stats.context_tokens {
             parts.push(format!("context {}k", tokens / 1000));
+        }
+        let running = self.crew.as_ref().map_or(0, |crew| crew.running().len());
+        if running > 0 {
+            parts.push(format!(
+                "{running} worker{} running",
+                if running == 1 { "" } else { "s" }
+            ));
         }
         if let Some(plan) = stats.plan_usage {
             parts.push(plan);
@@ -1529,25 +1999,59 @@ fn conversation_of(workflow: &Workflow) -> Conversation {
 
 /// The commands, typed alone on a line.
 fn command(text: &str) -> Option<&str> {
-    const COMMANDS: [&str; 8] = [
-        "/exit", "/quit", "/new", "/cost", "/mcp", "/skills", "/session", "/help",
+    const COMMANDS: [&str; 10] = [
+        "/exit",
+        "/quit",
+        "/new",
+        "/cost",
+        "/workers",
+        "/stop-workers",
+        "/mcp",
+        "/skills",
+        "/session",
+        "/help",
     ];
     COMMANDS.contains(&text).then_some(text)
 }
 
-/// The user's input, read on its own thread.
+/// The user's input, read on its own thread; the main agent's questions;
+/// and the crew's wake-ups.
 struct Inputs {
     receiver: mpsc::UnboundedReceiver<Input>,
     /// An input read ahead while gathering a pasted block.
     pending: Option<Input>,
+    questions: mpsc::UnboundedReceiver<Question>,
+    /// The crew says the main agent has news, or a worker stopped running.
+    woken: Option<mpsc::UnboundedReceiver<()>>,
+}
+
+/// What [`Inputs::next_event`] returns.
+enum Event {
+    /// An input; `None` once the input thread is gone.
+    Input(Option<Input>),
+    /// The main agent asks the user something.
+    Question(Question),
+    /// The crew woke fin up.
+    Woken,
 }
 
 impl Inputs {
-    /// The next input; cancel-safe.
-    async fn next(&mut self) -> Option<Input> {
-        match self.pending.take() {
-            Some(input) => Some(input),
-            None => self.receiver.recv().await,
+    /// The next input, question, or (when `woken`) wake-up; cancel-safe.
+    async fn next_event(&mut self, woken: bool) -> Event {
+        if let Some(input) = self.pending.take() {
+            return Event::Input(Some(input));
+        }
+        tokio::select! {
+            input = self.receiver.recv() => Event::Input(input),
+            Some(question) = self.questions.recv() => Event::Question(question),
+            () = wake(&mut self.woken), if woken => Event::Woken,
+        }
+    }
+
+    /// Forgets the wake-ups so far: what they were for is being seen to.
+    fn drain_woken(&mut self) {
+        if let Some(woken) = &mut self.woken {
+            while woken.try_recv().is_ok() {}
         }
     }
 
@@ -1570,6 +2074,55 @@ impl Inputs {
     }
 }
 
+/// The crew's next wake-up; never, without a crew.
+async fn wake(woken: &mut Option<mpsc::UnboundedReceiver<()>>) {
+    if let Some(receiver) = woken {
+        if receiver.recv().await.is_some() {
+            return;
+        }
+        // The crew is gone.
+        *woken = None;
+    }
+    std::future::pending::<()>().await;
+}
+
+/// A question the main agent asks with `ask_user`, and where its answer
+/// goes.
+struct Question {
+    text: String,
+    answer: oneshot::Sender<String>,
+}
+
+/// Answers the main agent's `ask_user` questions: the user types the
+/// answer at the prompt. Without a terminal, the agent is told that no one
+/// can answer. It always answers: an error would fail the turn.
+struct Asker {
+    questions: Option<mpsc::UnboundedSender<Question>>,
+}
+
+/// The answer when no one can answer.
+const CANT_ASK: &str = "No one can answer questions in this session (fin runs without a terminal, from a script or with -p). Decide yourself, go on, and say in your reply what you assumed.";
+
+#[async_trait::async_trait]
+impl UserInputHandler for Asker {
+    async fn respond(&self, request: UserInputRequest) -> Result<String, String> {
+        let Some(questions) = &self.questions else {
+            return Ok(CANT_ASK.to_string());
+        };
+        let (answer, answered) = oneshot::channel();
+        let question = Question {
+            text: request.questions,
+            answer,
+        };
+        if questions.send(question).is_err() {
+            return Ok(CANT_ASK.to_string());
+        }
+        Ok(answered
+            .await
+            .unwrap_or_else(|_| "(The user didn't answer.)".to_string()))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1577,8 +2130,95 @@ mod tests {
     #[test]
     fn only_the_known_commands_are_commands() {
         assert_eq!(command("/cost"), Some("/cost"));
+        assert_eq!(command("/stop-workers"), Some("/stop-workers"));
+        assert_eq!(command("/workers"), Some("/workers"));
         assert_eq!(command("/usr/bin is missing"), None);
         assert_eq!(command("/cost please"), None);
+    }
+
+    /// A session saved before workers ran in parallel, and before the file
+    /// tools and `ask_user`, keeps `run_workflow_agent`, and is told what
+    /// its agents lack.
+    #[test]
+    fn a_session_from_before_parallel_workers_is_told_what_it_lacks() {
+        let opus = ModelSettings {
+            model: resolve_model("opus").unwrap().id,
+            effort: Effort::High,
+            fast: false,
+            cache_1h: false,
+        };
+        let settings = AgentSettings {
+            main: &opus,
+            worker: &opus,
+            max_workers: NO_LIMIT,
+            handover_at: 200_000,
+            show_thinking: false,
+            shell_name: "bash",
+            allow_outside_workspace: false,
+            mcp_tools: &[],
+            mcp_servers: &[],
+            skill_folders: &[],
+            index_tools: &[],
+        };
+        let main = agents::main_config(&settings).unwrap();
+        let worker = agents::worker_config(&settings).unwrap();
+        let mut old = main.clone();
+        old.tool_config.available_tool_names.retain(|name| {
+            !crew::LEAD_TOOL_NAMES.contains(&name.as_str())
+                && !agents::FILE_TOOL_NAMES.contains(&name.as_str())
+                && name != ASK_USER_TOOL_NAME
+        });
+        old.tool_config
+            .available_tool_names
+            .push(RUN_WORKFLOW_AGENT_TOOL_NAME.into());
+        let saved = SavedSetup {
+            name: WORKFLOW_NAME.into(),
+            configs: [(MAIN.to_string(), old)].into(),
+        };
+        assert_eq!(
+            unoffered(&saved, &[(MAIN, &main), (WORKER, &worker)]).unwrap(),
+            "This session started without workers that run in parallel, the file tools, and questions to you (ask_user), so its agents don't get them; a new session does."
+        );
+    }
+
+    fn request(questions: &str) -> UserInputRequest {
+        UserInputRequest {
+            workflow_run_id: uuid::Uuid::new_v4(),
+            agent_run_id: uuid::Uuid::new_v4(),
+            agent_name: MAIN.into(),
+            questions: questions.into(),
+        }
+    }
+
+    /// The agent's questions reach the prompt, and the answer comes back;
+    /// without a terminal, the agent hears that no one can answer. The
+    /// asker never fails the turn.
+    #[tokio::test]
+    async fn the_agents_questions_are_answered_at_the_prompt() {
+        let alone = Asker { questions: None };
+        assert_eq!(alone.respond(request("Which?")).await.unwrap(), CANT_ASK);
+
+        let (sender, mut questions) = mpsc::unbounded_channel();
+        let asker = Arc::new(Asker {
+            questions: Some(sender),
+        });
+        let asking = tokio::spawn({
+            let asker = asker.clone();
+            async move { asker.respond(request("Tabs or spaces?")).await }
+        });
+        let question = questions.recv().await.unwrap();
+        assert_eq!(question.text, "Tabs or spaces?");
+        question.answer.send("spaces".into()).unwrap();
+        assert_eq!(asking.await.unwrap().unwrap(), "spaces");
+
+        let asking = tokio::spawn({
+            let asker = asker.clone();
+            async move { asker.respond(request("Still there?")).await }
+        });
+        drop(questions.recv().await.unwrap());
+        assert_eq!(asking.await.unwrap().unwrap(), "(The user didn't answer.)");
+        drop(questions);
+        assert_eq!(asker.respond(request("Hello?")).await.unwrap(), CANT_ASK);
     }
 
     /// A session started before an MCP server, the search indexes or
@@ -1636,6 +2276,219 @@ mod tests {
             note,
             "This session started without the search index tools, the tools of the MCP servers github and db, and skills, so its agents don't get them; a new session does."
         );
+    }
+
+    /// A harness in `temp` on the model server's client, with workers;
+    /// with a terminal when `interactive`. Returns it, its inputs, and
+    /// what sends the user's input.
+    fn harness(
+        temp: &Path,
+        client: LLMClient,
+        interactive: bool,
+    ) -> (Harness, Inputs, mpsc::UnboundedSender<Input>) {
+        let luna = ModelSettings {
+            model: resolve_model("luna").unwrap().id,
+            effort: Effort::High,
+            fast: false,
+            cache_1h: false,
+        };
+        let workspace = temp.join("work");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let settings = Settings {
+            workspace: workspace.clone(),
+            main: luna.clone(),
+            worker: luna.clone(),
+            max_workers: NO_LIMIT,
+            handover_at: 200_000,
+            allow_outside_workspace: false,
+            show_thinking: false,
+            created: chrono::Utc::now(),
+            title: None,
+            windows_shell: None,
+        };
+        let agent_settings = AgentSettings {
+            main: &luna,
+            worker: &luna,
+            max_workers: NO_LIMIT,
+            handover_at: 200_000,
+            show_thinking: false,
+            shell_name: "bash",
+            allow_outside_workspace: false,
+            mcp_tools: &[],
+            mcp_servers: &[],
+            skill_folders: &[],
+            index_tools: &[],
+        };
+        let main_config = agents::main_config(&agent_settings).unwrap();
+        let worker_config = agents::worker_config(&agent_settings).unwrap();
+        let root = temp.join("fin");
+        let session = Session::create(&root).unwrap();
+        let client = Arc::new(client);
+        let output = Arc::new(Output::new(None, true));
+        let stats = Arc::new(Mutex::new(Stats::default()));
+        let (crew, woken) = Crew::new(crew::Setup {
+            session_id: session.id.clone(),
+            session_dir: session.dir.clone(),
+            workspace,
+            client: client.clone(),
+            worker_config: worker_config.clone(),
+            tools: Vec::new(),
+            output: output.clone(),
+            stats: stats.clone(),
+            show_thinking: false,
+            max_running: NO_LIMIT,
+        });
+        let (questions_sender, questions) = mpsc::unbounded_channel();
+        let (input_sender, receiver) = mpsc::unbounded_channel();
+        let mut harness = Harness {
+            settings,
+            session,
+            client,
+            main_config,
+            worker_config,
+            tools: Vec::new(),
+            root,
+            mcp: mcp::Running::default(),
+            mcp_notes: Vec::new(),
+            skill_folders: Vec::new(),
+            indexes: None,
+            unoffered: None,
+            output,
+            stats,
+            workflow: None,
+            printer: None,
+            conversation: Conversation::New,
+            project: None,
+            unread: Vec::new(),
+            queue_lines: !interactive,
+            exiting: false,
+            crew: Some(crew),
+            asker: Arc::new(Asker {
+                questions: interactive.then_some(questions_sender),
+            }),
+            one_shot: !interactive,
+            unread_news: 0,
+            exit_warned: false,
+            news_hint_shown: false,
+        };
+        harness.open(false).unwrap();
+        let inputs = Inputs {
+            receiver,
+            pending: None,
+            questions,
+            woken: Some(woken),
+        };
+        (harness, inputs, input_sender)
+    }
+
+    fn summary(harness: &Harness) -> String {
+        match &harness.conversation {
+            Conversation::Answered(result) => result.summary.clone(),
+            _ => panic!("the conversation wasn't answered"),
+        }
+    }
+
+    /// With -p, the agent starts a worker and replies; fin waits for the
+    /// worker, and its report starts a turn whose reply is the answer.
+    #[tokio::test]
+    async fn a_one_shot_turn_waits_for_its_workers_and_hears_their_news() {
+        use crate::mock_model::{ModelServer, complete, tool_call};
+        let bodies = Arc::new(Mutex::new(Vec::new()));
+        let seen = bodies.clone();
+        let release = Arc::new(tokio::sync::Notify::new());
+        let hold = release.clone();
+        let server = ModelServer::start(Arc::new(move |_, body: String| {
+            seen.lock().unwrap().push(body.clone());
+            let hold = hold.clone();
+            Box::pin(async move {
+                if body.contains("You are worker w1") {
+                    hold.notified().await;
+                    complete("w", "There are 3 files.")
+                } else if body.contains("There are 3 files.") {
+                    complete("m3", "Final: 3 files.")
+                } else if body.contains("Started worker w1") {
+                    complete("m2", "w1 is counting; its report follows.")
+                } else {
+                    tool_call(
+                        "m1",
+                        crew::START_WORKER,
+                        serde_json::json!({"task": "Count the files."}),
+                    )
+                }
+            })
+        }))
+        .await;
+        let temp = tempfile::tempdir().unwrap();
+        let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), false);
+        let end = harness
+            .turn(Prompt::User("How many files?".into()), &mut inputs)
+            .await;
+        assert!(matches!(end, TurnEnd::Answered));
+        assert_eq!(summary(&harness), "w1 is counting; its report follows.");
+        let crew = harness.crew.clone().unwrap();
+        assert_eq!(crew.running(), ["w1"]);
+        assert!(harness.news_coming());
+
+        release.notify_one();
+        let end =
+            tokio::time::timeout(Duration::from_secs(30), harness.finish_workers(&mut inputs))
+                .await
+                .unwrap();
+        assert!(matches!(end, TurnEnd::Answered));
+        assert_eq!(summary(&harness), "Final: 3 files.");
+        assert!(!harness.news_coming());
+        let bodies = bodies.lock().unwrap().clone();
+        let news = bodies
+            .iter()
+            .find(|body| body.contains("There are 3 files.") && !body.contains("You are worker"))
+            .unwrap();
+        assert!(
+            news.contains(
+                "# News from your workers (fin started this turn for it; the user hasn't written)"
+            ),
+            "{news}"
+        );
+        crew.shutdown().await;
+    }
+
+    /// The agent's question is put to the user, and the next line typed
+    /// answers it.
+    #[tokio::test]
+    async fn the_agent_asks_and_the_next_line_answers() {
+        use crate::mock_model::{ModelServer, complete, tool_call};
+        let server = ModelServer::start(Arc::new(move |_, body: String| {
+            Box::pin(async move {
+                if body.contains("Two spaces, please.") {
+                    complete("m2", "Indented with two spaces.")
+                } else {
+                    tool_call(
+                        "m1",
+                        ASK_USER_TOOL_NAME,
+                        serde_json::json!({"questions": "Tabs or spaces?"}),
+                    )
+                }
+            })
+        }))
+        .await;
+        let temp = tempfile::tempdir().unwrap();
+        let (mut harness, mut inputs, sender) = harness(temp.path(), server.client(), true);
+        let answering = tokio::spawn(async move {
+            // The answer is typed once the question is up.
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            sender
+                .send(Input::Line("Two spaces, please.".into()))
+                .unwrap();
+            sender
+        });
+        let end = tokio::time::timeout(
+            Duration::from_secs(30),
+            harness.turn(Prompt::User("Indent the file.".into()), &mut inputs),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(end, TurnEnd::Answered));
+        assert_eq!(summary(&harness), "Indented with two spaces.");
+        drop(answering.await.unwrap());
     }
 
     #[test]

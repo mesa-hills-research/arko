@@ -7,6 +7,10 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
+use arko_agents::builtins::{
+    APPLY_DIFF_TOOL_NAME, ASK_USER_TOOL_NAME, LIST_FILES_TOOL_NAME, READ_FILE_TOOL_NAME,
+    WRITE_FILE_TOOL_NAME,
+};
 use arko_agents::terminal::TerminalTool;
 use arko_agents::{AgentEvent, LOAD_SKILL_TOOL_NAME};
 use arko_workflows::WorkflowEvent;
@@ -21,6 +25,7 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 use uuid::Uuid;
 
 use crate::agents::MAIN;
+use crate::crew;
 use crate::index;
 use crate::mcp;
 use crate::shell::SHELL_TOOL_NAME;
@@ -251,15 +256,18 @@ pub enum Control {
     Flush(oneshot::Sender<()>),
 }
 
-/// Prints a workflow's events until its channel closes.
+/// Prints a workflow's events until its channel closes. The runs of agents
+/// other than the main one are labelled `label` (a worker's ID), else
+/// `worker 1`, `worker 2`, ... by run.
 pub async fn print_events(
     mut events: broadcast::Receiver<WorkflowEvent>,
     mut control: mpsc::UnboundedReceiver<Control>,
     output: Arc<Output>,
     stats: Arc<Mutex<Stats>>,
     show_thinking: bool,
+    label: Option<String>,
 ) {
-    let mut printer = EventPrinter::new(output, stats, show_thinking);
+    let mut printer = EventPrinter::new(output, stats, show_thinking, label);
     loop {
         tokio::select! {
             biased;
@@ -291,12 +299,19 @@ struct EventPrinter {
     thinking: String,
     /// Labels of the workers' runs, by run ID.
     workers: HashMap<Uuid, String>,
+    /// The label of every run that isn't the main agent's.
+    label: Option<String>,
     /// Shell commands the main agent is running, by call ID.
     commands: HashMap<Uuid, String>,
 }
 
 impl EventPrinter {
-    fn new(output: Arc<Output>, stats: Arc<Mutex<Stats>>, show_thinking: bool) -> Self {
+    fn new(
+        output: Arc<Output>,
+        stats: Arc<Mutex<Stats>>,
+        show_thinking: bool,
+        label: Option<String>,
+    ) -> Self {
         Self {
             output,
             stats,
@@ -304,11 +319,15 @@ impl EventPrinter {
             text: String::new(),
             thinking: String::new(),
             workers: HashMap::new(),
+            label,
             commands: HashMap::new(),
         }
     }
 
     fn worker(&mut self, run: Uuid) -> String {
+        if let Some(label) = &self.label {
+            return label.clone();
+        }
         let count = self.workers.len() + 1;
         self.workers
             .entry(run)
@@ -383,6 +402,13 @@ impl EventPrinter {
             } if main => {
                 if self.commands.remove(&tool_call_id).is_some() {
                     self.shell_result(&output);
+                } else if crew::LEAD_TOOL_NAMES.contains(&tool_name.as_str())
+                    && tool_name != crew::START_WORKER
+                {
+                    // (A started worker is announced by the crew.)
+                    let first = output.lines().next().unwrap_or_default();
+                    self.output
+                        .line(&self.output.dim(&format!("  ⎿ {}", cut(first, 160))));
                 } else if tool_name == RUN_WORKFLOW_AGENT_TOOL_NAME {
                     let lines = output.lines().count();
                     self.output.line(&self.output.dim(&format!(
@@ -505,8 +531,53 @@ impl EventPrinter {
                 .unwrap_or_default()
         };
         let bullet = self.output.accent("●");
+        let worker = || self.output.bold(text("worker").trim());
         Some(match tool {
-            "complete_task" => return None,
+            // The question is shown as it is asked.
+            "complete_task" | ASK_USER_TOOL_NAME => return None,
+            crew::START_WORKER => format!(
+                "{bullet} {}{}: {}",
+                self.output.bold("start worker"),
+                if flag(parameters, "worktree") {
+                    " (worktree)"
+                } else {
+                    ""
+                },
+                cut(text("task"), 160)
+            ),
+            crew::MESSAGE_WORKER => format!(
+                "{bullet} {} {}: {}",
+                self.output.bold("message"),
+                worker(),
+                cut(text("message"), 160)
+            ),
+            crew::WAIT_FOR_WORKERS => {
+                let which = text("workers").trim();
+                format!(
+                    "{bullet} {}",
+                    self.output.bold(&if which.is_empty() {
+                        "waiting for the workers".to_string()
+                    } else {
+                        format!("waiting for {which}")
+                    })
+                )
+            }
+            crew::LIST_WORKERS => format!("{bullet} {}", self.output.bold("list workers")),
+            crew::STOP_WORKER => format!(
+                "{bullet} {} {}{}",
+                self.output.bold("stop"),
+                worker(),
+                if flag(parameters, "remove_worktree") {
+                    " and remove its worktree"
+                } else {
+                    ""
+                }
+            ),
+            READ_FILE_TOOL_NAME | WRITE_FILE_TOOL_NAME | APPLY_DIFF_TOOL_NAME
+            | LIST_FILES_TOOL_NAME => {
+                let (verb, detail) = file_call(tool, parameters);
+                format!("{bullet} {} {detail}", self.output.bold(verb))
+            }
             SHELL_TOOL_NAME => {
                 let cwd = text("cwd");
                 let cwd = cwd.trim();
@@ -600,6 +671,13 @@ fn brief(tool: &str, parameters: &HashMap<String, serde_json::Value>) -> String 
     };
     match tool {
         SHELL_TOOL_NAME => command_line(text("command")),
+        READ_FILE_TOOL_NAME | WRITE_FILE_TOOL_NAME | APPLY_DIFF_TOOL_NAME
+        | LIST_FILES_TOOL_NAME => {
+            let (verb, detail) = file_call(tool, parameters);
+            format!("{verb} {detail}")
+        }
+        crew::MESSAGE_LEAD => "message to the lead".to_string(),
+        crew::WAIT_FOR_LEAD => "waiting for the lead".to_string(),
         "terminal_start" => format!("background {}", command_line(text("command"))),
         tool if TerminalTool::NAMES.contains(&tool) => tool.replace('_', " "),
         LOAD_SKILL_TOOL_NAME => format!("skill {}", text("name")),
@@ -608,6 +686,75 @@ fn brief(tool: &str, parameters: &HashMap<String, serde_json::Value>) -> String 
             format!("{name}{detail}")
         }
         other => other.to_string(),
+    }
+}
+
+/// A boolean parameter: `true`, or the text `true`.
+fn flag(parameters: &HashMap<String, serde_json::Value>, name: &str) -> bool {
+    match parameters.get(name) {
+        Some(serde_json::Value::Bool(value)) => *value,
+        Some(serde_json::Value::String(text)) => text.trim().eq_ignore_ascii_case("true"),
+        _ => false,
+    }
+}
+
+/// A file tool's call: its verb (`read`, `write`, `edit`, `list`) and what
+/// it reads or changes (`src/main.rs:10-40`, `src/new.rs (12 lines)`).
+fn file_call(
+    tool: &str,
+    parameters: &HashMap<String, serde_json::Value>,
+) -> (&'static str, String) {
+    let text = |name: &str| match parameters.get(name) {
+        Some(serde_json::Value::String(text)) => text.trim().to_string(),
+        Some(serde_json::Value::Number(number)) => number.to_string(),
+        _ => String::new(),
+    };
+    let path = cut(&text("path"), 160);
+    match tool {
+        READ_FILE_TOOL_NAME => {
+            let range = match (text("start_line").as_str(), text("end_line").as_str()) {
+                ("", "") => String::new(),
+                (start, "") => format!(":{start}-"),
+                ("", end) => format!(":1-{end}"),
+                (start, end) => format!(":{start}-{end}"),
+            };
+            ("read", format!("{path}{range}"))
+        }
+        WRITE_FILE_TOOL_NAME => {
+            let lines = parameters
+                .get("content")
+                .and_then(|value| value.as_str())
+                .map_or(0, |content| content.lines().count());
+            (
+                "write",
+                format!("{path} ({lines} line{})", if lines == 1 { "" } else { "s" }),
+            )
+        }
+        APPLY_DIFF_TOOL_NAME => {
+            let blocks = parameters
+                .get("diff")
+                .and_then(|value| value.as_str())
+                .map_or(0, |diff| diff.matches("<<<<<<< SEARCH").count());
+            (
+                "edit",
+                if blocks > 1 {
+                    format!("{path} ({blocks} changes)")
+                } else {
+                    path
+                },
+            )
+        }
+        _ => {
+            let directory = cut(&text("directory"), 160);
+            (
+                "list",
+                if directory.is_empty() {
+                    ".".into()
+                } else {
+                    directory
+                },
+            )
+        }
     }
 }
 
@@ -718,6 +865,132 @@ mod tests {
     }
 
     #[test]
+    fn file_and_worker_calls_are_shown_briefly() {
+        let params = |pairs: &[(&str, serde_json::Value)]| -> HashMap<String, serde_json::Value> {
+            pairs
+                .iter()
+                .map(|(key, value)| (key.to_string(), value.clone()))
+                .collect()
+        };
+        assert_eq!(
+            brief(
+                READ_FILE_TOOL_NAME,
+                &params(&[
+                    ("path", "src/main.rs".into()),
+                    ("start_line", 10.into()),
+                    ("end_line", "40".into())
+                ])
+            ),
+            "read src/main.rs:10-40"
+        );
+        assert_eq!(
+            brief(READ_FILE_TOOL_NAME, &params(&[("path", "a.rs".into())])),
+            "read a.rs"
+        );
+        assert_eq!(
+            brief(
+                WRITE_FILE_TOOL_NAME,
+                &params(&[("path", "a.rs".into()), ("content", "a\nb\n".into())])
+            ),
+            "write a.rs (2 lines)"
+        );
+        let block = "<<<<<<< SEARCH\n:start_line:1\n-------\na\n=======\nb\n>>>>>>> REPLACE\n";
+        assert_eq!(
+            brief(
+                APPLY_DIFF_TOOL_NAME,
+                &params(&[("path", "a.rs".into()), ("diff", block.into())])
+            ),
+            "edit a.rs"
+        );
+        assert_eq!(
+            brief(
+                APPLY_DIFF_TOOL_NAME,
+                &params(&[("path", "a.rs".into()), ("diff", block.repeat(2).into())])
+            ),
+            "edit a.rs (2 changes)"
+        );
+        assert_eq!(brief(LIST_FILES_TOOL_NAME, &params(&[])), "list .");
+        assert_eq!(
+            brief(crew::MESSAGE_LEAD, &params(&[("message", "hi".into())])),
+            "message to the lead"
+        );
+
+        let printer = EventPrinter::new(
+            Arc::new(Output::new(None, true)),
+            Arc::default(),
+            false,
+            None,
+        );
+        let line = |tool: &str, pairs: &[(&str, serde_json::Value)]| {
+            printer
+                .call_line(tool, &params(pairs))
+                .map(|line| strip_styles(&line))
+        };
+        assert_eq!(
+            line(
+                crew::START_WORKER,
+                &[
+                    ("task", "Fix the parser.".into()),
+                    ("worktree", true.into())
+                ]
+            )
+            .unwrap(),
+            "● start worker (worktree): Fix the parser."
+        );
+        assert_eq!(
+            line(
+                crew::MESSAGE_WORKER,
+                &[("worker", "w2".into()), ("message", "Use plan B.".into())]
+            )
+            .unwrap(),
+            "● message w2: Use plan B."
+        );
+        assert_eq!(
+            line(crew::WAIT_FOR_WORKERS, &[]).unwrap(),
+            "● waiting for the workers"
+        );
+        assert_eq!(
+            line(
+                crew::STOP_WORKER,
+                &[("worker", "w1".into()), ("remove_worktree", "true".into())]
+            )
+            .unwrap(),
+            "● stop w1 and remove its worktree"
+        );
+        assert_eq!(
+            line(
+                WRITE_FILE_TOOL_NAME,
+                &[("path", "b.rs".into()), ("content", "x".into())]
+            )
+            .unwrap(),
+            "● write b.rs (1 line)"
+        );
+        // The question is shown as it is asked.
+        assert_eq!(
+            line(ASK_USER_TOOL_NAME, &[("questions", "Which?".into())]),
+            None
+        );
+    }
+
+    /// `text` without its terminal styles.
+    fn strip_styles(text: &str) -> String {
+        let mut plain = String::new();
+        let mut chars = text.chars();
+        while let Some(c) = chars.next() {
+            if c == '\x1b' {
+                for c in chars.by_ref() {
+                    if c == 'm' {
+                        break;
+                    }
+                }
+            } else {
+                plain.push(c);
+            }
+        }
+        plain
+    }
+
+    #[test]
     fn commands_show_their_first_line() {
         assert_eq!(command_line("cargo test"), "$ cargo test");
         assert_eq!(
@@ -730,7 +1003,7 @@ mod tests {
     async fn text_is_printed_by_whole_lines_and_flushed_at_the_end() {
         let output = Arc::new(Output::new(None, false));
         let stats = Arc::new(Mutex::new(Stats::default()));
-        let mut printer = EventPrinter::new(output, stats.clone(), false);
+        let mut printer = EventPrinter::new(output, stats.clone(), false, None);
         let event = |agent: &str, event: AgentEvent| WorkflowEvent {
             timestamp: chrono::Utc::now(),
             workflow_run_id: Uuid::nil(),

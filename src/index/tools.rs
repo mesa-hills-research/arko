@@ -598,7 +598,7 @@ pub fn format_create(outcome: &CreateOutcome) -> String {
 const SEARCH_DESCRIPTION: &str = "Semantic search of code and docs in fin's indexes (syntax-aware chunks, keyword BM25 plus Voyage embeddings). \
 Prefer it to rg for concept or behaviour questions and when you don't know the names: \"where are failed requests retried\", \"how is the session saved to disk\", \"code that validates config paths\". \
 Use rg/grep for exact identifiers, strings and regexes, or to find every occurrence. \
-Returns ranked `path:start-end · scope` locations with a short snippet; read the promising ones with the shell (sed -n 'START,ENDp' FILE) before relying on them. \
+Returns ranked `path:start-end · scope` locations with a short snippet; read the promising ones (read_file with start_line and end_line, or the shell) before relying on them. \
 Searches the indexes covering the current directory unless `index` names one; index_status lists them.";
 
 const STATUS_DESCRIPTION: &str = "Shows fin's semantic search indexes (all, or the one named): root, kind, chunks, embedding coverage and cost, monitoring and pending changes, errors. Check it before index_create.";
