@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+<meta name="referrer" content="no-referrer">
+<meta name="color-scheme" content="light dark">
+<title>fin</title>
+<link rel="icon" href="/icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/app.css">
+<script src="/app.js" defer></script>
+</head>
+<body>
+<header id="top">
+  <div class="row">
+    <span class="brand">fin</span>
+    <span id="state" class="pill offline">connecting</span>
+    <span id="figures" class="figures"></span>
+    <button id="more" class="plain" type="button" aria-expanded="false" aria-controls="details">details</button>
+  </div>
+  <div id="details" class="details" hidden>
+    <div id="info" class="info"></div>
+    <pre id="workers" class="workers"></pre>
+  </div>
+</header>
+
+<main id="log" aria-live="polite"></main>
+<button id="jump" class="jump" type="button" hidden>&darr; latest</button>
+
+<section id="lock" class="lock" hidden>
+  <h1>fin</h1>
+  <p id="lock-why">Open the link fin printed in its console: it holds the key.</p>
+  <form id="key-form" autocomplete="off">
+    <label for="key">Or paste the key</label>
+    <input id="key" type="password" autocapitalize="off" spellcheck="false">
+    <button type="submit">Open</button>
+  </form>
+</section>
+
+<footer id="bottom">
+  <form id="question" class="question" hidden>
+    <div class="ask">The agent asks</div>
+    <div id="question-text" class="question-text"></div>
+    <textarea id="answer" rows="2" placeholder="Your answer"></textarea>
+    <div class="buttons"><button type="submit">Answer</button></div>
+  </form>
+  <div id="error" class="error" role="alert" hidden></div>
+  <form id="compose" class="compose">
+    <textarea id="text" rows="1" placeholder="Message" enterkeyhint="send" aria-label="Message"></textarea>
+    <button id="stop" class="danger" type="button" hidden>Stop</button>
+    <button id="send" type="submit">Send</button>
+  </form>
+</footer>
+</body>
+</html>

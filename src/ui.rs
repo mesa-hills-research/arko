@@ -31,6 +31,7 @@ use crate::glyphs;
 use crate::index;
 use crate::mcp;
 use crate::message;
+use crate::remote;
 use crate::shell::SHELL_TOOL_NAME;
 
 pub const PROMPT: &str = "› ";
@@ -265,7 +266,8 @@ pub enum Control {
 
 /// Prints a workflow's events until its channel closes. The runs of agents
 /// other than the main one are labelled `label` (a worker's ID), else
-/// `worker 1`, `worker 2`, ... by run.
+/// `worker 1`, `worker 2`, ... by run. The events go to `feed` too, for
+/// the remote page, as they are printed.
 pub async fn print_events(
     mut events: broadcast::Receiver<WorkflowEvent>,
     mut control: mpsc::UnboundedReceiver<Control>,
@@ -273,15 +275,25 @@ pub async fn print_events(
     stats: Arc<Mutex<Stats>>,
     show_thinking: bool,
     label: Option<String>,
+    feed: Option<remote::Feed>,
 ) {
+    let feed_label = label.clone();
     let mut printer = EventPrinter::new(output, stats, show_thinking, label);
     loop {
         tokio::select! {
             biased;
             event = events.recv() => match event {
-                Ok(event) => printer.event(event),
+                Ok(event) => {
+                    if let Some(feed) = &feed {
+                        feed.event(&event, feed_label.as_deref());
+                    }
+                    printer.event(event);
+                }
                 Err(broadcast::error::RecvError::Lagged(missed)) => {
                     printer.output.line(&printer.output.dim(&format!("  ({missed} events not shown)")));
+                    if let Some(feed) = &feed {
+                        feed.missed(missed);
+                    }
                 }
                 Err(broadcast::error::RecvError::Closed) => break,
             },
@@ -698,7 +710,7 @@ fn command_line(command: &str) -> String {
 }
 
 /// A worker's call, briefly.
-fn brief(tool: &str, parameters: &HashMap<String, serde_json::Value>) -> String {
+pub fn brief(tool: &str, parameters: &HashMap<String, serde_json::Value>) -> String {
     let text = |name: &str| {
         parameters
             .get(name)

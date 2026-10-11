@@ -26,6 +26,7 @@ mod mcp;
 mod message;
 #[cfg(test)]
 mod mock_model;
+mod remote;
 mod session;
 mod shell;
 mod skills;
@@ -52,6 +53,7 @@ use tokio::sync::{mpsc, oneshot};
 use crate::agents::{AgentSettings, Effort, MAIN, ModelSettings, NO_LIMIT, WORKER, resolve_model};
 use crate::credentials::{ANTHROPIC_KEY, Need, VOYAGE_KEY};
 use crate::crew::Crew;
+use crate::remote::{Action, Delivery, Level, Source};
 use crate::session::{Session, Settings};
 use crate::shell::{Shell, ShellTool, WindowsShell};
 use crate::ui::{Control, Input, Output, Stats};
@@ -61,7 +63,7 @@ use crate::ui::{Control, Input, Output, Stats};
     name = "fin",
     version,
     about = "A general-purpose agent for the terminal: a shell, background jobs, file tools and workers that run in parallel.",
-    after_help = "Credentials: ANTHROPIC_API_KEY for Claude models; a ChatGPT login for OpenAI models (a Codex auth.json: --codex-auth, else FIN_CODEX_AUTH, else Codex's own from `codex login`; or OPENAI_OAUTH_ACCESS_TOKEN and OPENAI_OAUTH_ACCOUNT_ID). ANTHROPIC_API_KEY, FIN_CODEX_AUTH, FIN_CACHE_1H (1 turns on --cache-1h), FIN_SHELL (cmd or powershell, on Windows) and FIN_SYMBOLS (see below) can also be in a .env file: the nearest one in the current directory or a parent, else the one in fin's folder (FIN_HOME, else fin in your data directory, such as ~/.local/share/fin). When the model has none, or the auth file fails, fin asks for them on a setup screen and saves them in that folder's .env; --setup opens it. VOYAGE_API_KEY (Voyage AI, for semantic search) can be in the environment or that .env too.\n\nMCP servers: fin starts those set up in --mcp-config files, in the project's .mcp.json (it asks first, and remembers the answer until the file's servers change) and in mcp.json in fin's folder, in Claude Code's format ({\"mcpServers\": {\"name\": {\"command\": ..., \"args\": [...], \"env\": {...}}}}); servers over standard input and output only. Skills: folders with a SKILL.md, in the project's .agents/skills, .claude/skills or .skills, in skills in fin's folder, or in ~/.agents/skills or ~/.claude/skills.\n\nSearch indexes: `fin index create [PATH]` indexes a codebase or its docs, in any directory (the agents can create indexes too). fin keeps the working directory's indexes current while it runs, and other indexes once the agent searches them. The agents' searches return the top results' whole functions and sections. `fin index --help` lists the commands. Without VOYAGE_API_KEY, search is by keywords only.\n\nWorkers: the agent starts them to work in parallel while it goes on, each in the working directory or in a git worktree of its own (made in the session's folder, on a branch fin/<session>/<worker>); their reports reach it as they finish. /workers lists them, /stop-workers stops them.\n\nSymbols: the classic Windows console (cmd.exe or PowerShell outside Windows Terminal) shows characters its fonts lack as question marks, so there fin prints stand-ins those fonts have. FIN_SYMBOLS sets the symbols: full, basic (those stand-ins) or ascii.\n\nWhile the agent works, type to add to its task, and press Ctrl-C to stop the turn (the workers go on). Commands: /new, /cost, /workers, /stop-workers, /mcp, /skills, /session, /help, /exit."
+    after_help = "Credentials: ANTHROPIC_API_KEY for Claude models; a ChatGPT login for OpenAI models (a Codex auth.json: --codex-auth, else FIN_CODEX_AUTH, else Codex's own from `codex login`; or OPENAI_OAUTH_ACCESS_TOKEN and OPENAI_OAUTH_ACCOUNT_ID). ANTHROPIC_API_KEY, FIN_CODEX_AUTH, FIN_CACHE_1H (1 turns on --cache-1h), FIN_SHELL (cmd or powershell, on Windows) and FIN_SYMBOLS (see below) can also be in a .env file: the nearest one in the current directory or a parent, else the one in fin's folder (FIN_HOME, else fin in your data directory, such as ~/.local/share/fin). When the model has none, or the auth file fails, fin asks for them on a setup screen and saves them in that folder's .env; --setup opens it. VOYAGE_API_KEY (Voyage AI, for semantic search) can be in the environment or that .env too.\n\nMCP servers: fin starts those set up in --mcp-config files, in the project's .mcp.json (it asks first, and remembers the answer until the file's servers change) and in mcp.json in fin's folder, in Claude Code's format ({\"mcpServers\": {\"name\": {\"command\": ..., \"args\": [...], \"env\": {...}}}}); servers over standard input and output only. Skills: folders with a SKILL.md, in the project's .agents/skills, .claude/skills or .skills, in skills in fin's folder, or in ~/.agents/skills or ~/.claude/skills.\n\nSearch indexes: `fin index create [PATH]` indexes a codebase or its docs, in any directory (the agents can create indexes too). fin keeps the working directory's indexes current while it runs, and other indexes once the agent searches them. The agents' searches return the top results' whole functions and sections. `fin index --help` lists the commands. Without VOYAGE_API_KEY, search is by keywords only.\n\nWorkers: the agent starts them to work in parallel while it goes on, each in the working directory or in a git worktree of its own (made in the session's folder, on a branch fin/<session>/<worker>); their reports reach it as they finish. /workers lists them, /stop-workers stops them.\n\nRemote: --remote (or /remote during a session) serves a web page for following the session and taking part in it from a browser, such as a phone's. The page shows the agent's work as it goes and the session's status. It sends messages, which mean what a line typed at the prompt means (a note while the agent works, else a new turn), answers to the agent's questions, and stops (like Ctrl-C). fin prints the link, with a QR code when other devices can reach it. The link holds the session's key (kept in the session's folder), which the page trades for a cookie. fin listens on 127.0.0.1:8765 by default, and --remote 0.0.0.0 (or 0.0.0.0:PORT) lets in the devices on your network, or on your tailnet with Tailscale. The page is served without TLS: on a network you don't trust, reach it through an SSH tunnel (ssh -L 8765:127.0.0.1:8765 HOST, then open the link on your side) or Tailscale. /remote off stops it and ends its sessions, and /remote new-key makes a new key.\n\nSymbols: the classic Windows console (cmd.exe or PowerShell outside Windows Terminal) shows characters its fonts lack as question marks, so there fin prints stand-ins those fonts have. FIN_SYMBOLS sets the symbols: full, basic (those stand-ins) or ascii.\n\nWhile the agent works, type to add to its task, and press Ctrl-C to stop the turn (the workers go on). Commands: /new, /cost, /workers, /stop-workers, /mcp, /skills, /session, /remote, /help, /exit."
 )]
 struct Args {
     /// Send this message, print the reply and exit. Progress goes to
@@ -171,6 +173,21 @@ struct Args {
     #[arg(long = "mcp-config", value_name = "FILE")]
     mcp_config: Vec<PathBuf>,
 
+    /// Serve a web page for following this session and taking part in it
+    /// from a browser, such as a phone's. ADDR is a port, an address, or
+    /// both: default 127.0.0.1:8765 (this machine only), and 0.0.0.0 lets
+    /// in the other devices on the network. fin prints the link, which holds
+    /// the session's key. No TLS: on a network you don't trust, reach it
+    /// through an SSH tunnel or Tailscale.
+    #[arg(
+        long,
+        value_name = "ADDR",
+        num_args = 0..=1,
+        default_missing_value = "127.0.0.1",
+        conflicts_with = "prompt"
+    )]
+    remote: Option<String>,
+
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -231,6 +248,7 @@ async fn run(args: Args) -> Result<ExitCode, String> {
     if let Some(Command::Index { command }) = &args.command {
         return index::run_command(command.clone(), &root, credentials::var(VOYAGE_KEY)).await;
     }
+    let remote_bind = args.remote.as_deref().map(remote::parse_bind).transpose()?;
 
     // The session: resumed with the settings it was started with, or new.
     let resumed = if let Some(id) = &args.resume {
@@ -408,6 +426,15 @@ async fn run(args: Args) -> Result<ExitCode, String> {
     let interactive = printer.is_some();
     let output = Arc::new(Output::new(printer, one_shot));
     let stats = Arc::new(Mutex::new(Stats::default()));
+    // What the remote page shows, kept from the start so that a page
+    // opened later has the history.
+    let feed = remote::Feed::new(MAIN);
+    let (remote_actions, remote_input) = mpsc::unbounded_channel();
+    let gauges = Arc::new(Gauges {
+        workflow: Mutex::new(None),
+        crew: Mutex::new(None),
+        stats: stats.clone(),
+    });
     // The main agent's questions are put to the user at the prompt; with
     // no terminal, it is told there is no one to ask.
     let (questions_sender, questions) = mpsc::unbounded_channel();
@@ -434,6 +461,7 @@ async fn run(args: Args) -> Result<ExitCode, String> {
                 Ok(Provider::OpenAI) => Some(crew::WorkerCache::chatgpt()),
                 _ => None,
             },
+            feed: Some(feed.clone()),
         });
         if !new {
             for problem in crew.load() {
@@ -485,6 +513,11 @@ async fn run(args: Args) -> Result<ExitCode, String> {
         unread_news: 0,
         exit_warned: false,
         news_hint_shown: false,
+        feed,
+        remote: None,
+        remote_actions,
+        remote_bind: None,
+        gauges,
     };
     harness.project = project_instructions(&harness.settings.workspace);
     harness.open(!new)?;
@@ -496,6 +529,7 @@ async fn run(args: Args) -> Result<ExitCode, String> {
         pending: None,
         questions,
         woken,
+        remote: remote_input,
     };
 
     let code = if let Some(prompt) = args.prompt.clone() {
@@ -520,6 +554,9 @@ async fn run(args: Args) -> Result<ExitCode, String> {
         }
     } else {
         harness.banner(new);
+        if let Some(bind) = remote_bind {
+            harness.start_remote(bind).await;
+        }
         if !new {
             harness.restart_unfinished(&mut input).await;
         }
@@ -529,6 +566,12 @@ async fn run(args: Args) -> Result<ExitCode, String> {
         ExitCode::SUCCESS
     };
     ui::stop_reading();
+    if harness.remote.is_some() {
+        harness
+            .feed
+            .notice(Level::Info, "fin closed. The session is saved.");
+        harness.stop_remote().await;
+    }
     if let Some(crew) = &harness.crew {
         let running = crew.running().len();
         if running > 0 {
@@ -1061,6 +1104,18 @@ struct Harness {
     exit_warned: bool,
     /// The user was told that the workers' news waits for their message.
     news_hint_shown: bool,
+    /// What the remote page shows: the workflows' events, and what fin
+    /// says of the turns.
+    feed: remote::Feed,
+    /// The remote page's server, while it runs.
+    remote: Option<remote::Server>,
+    /// Where the page's actions go; [`Inputs`] reads them.
+    remote_actions: mpsc::UnboundedSender<Action>,
+    /// Where the page was last asked for, and the port it was served on:
+    /// `/remote` serves it there again.
+    remote_bind: Option<(remote::Bind, u16)>,
+    /// The figures of the page's status.
+    gauges: Arc<Gauges>,
 }
 
 impl Harness {
@@ -1157,7 +1212,10 @@ impl Harness {
             self.stats.clone(),
             self.settings.show_thinking,
             None,
+            Some(self.feed.clone()),
         ));
+        *lock(&self.gauges.workflow) = Some(workflow.clone());
+        *lock(&self.gauges.crew) = self.crew.clone();
         if let Some((_, old)) = self.printer.replace((control, task)) {
             old.abort();
         }
@@ -1222,6 +1280,8 @@ impl Harness {
         } else if let Conversation::Answered(result) = &self.conversation {
             out.line(&out.dim("Resumed. The last reply:"));
             out.line(&result.summary);
+            self.feed.notice(Level::Info, "Resumed. The last reply:");
+            self.feed.reply(&result.summary);
         } else {
             out.line(&out.dim("Resumed."));
         }
@@ -1265,10 +1325,9 @@ impl Harness {
         if let Conversation::Stopped(run) = &self.conversation
             && matches!(run.restart, Restart::Recover)
         {
-            self.output.line(
-                &self.output.dim(
-                    "The last turn didn't finish (fin stopped while it ran); it continues now.",
-                ),
+            self.say(
+                Level::Info,
+                "The last turn didn't finish (fin stopped while it ran); it continues now.",
             );
             if let TurnEnd::Exit = self.turn(Prompt::Recover, input).await {
                 self.exiting = true;
@@ -1279,8 +1338,7 @@ impl Harness {
     async fn repl(&mut self, input: &mut Inputs) {
         let mut last_interrupt: Option<Instant> = None;
         loop {
-            let event = match input.next_event(true).await {
-                Event::Input(event) => event,
+            let (line, source) = match input.next_event(true).await {
                 Event::Woken => {
                     if let News::Exit = self.deliver_news(input).await {
                         break;
@@ -1292,65 +1350,305 @@ impl Harness {
                     drop(question);
                     continue;
                 }
-            };
-            match event {
-                None | Some(Input::Eof) => {
+                Event::Input(None | Some(Input::Eof)) => {
                     // Without a terminal, the workers finish first.
                     if self.queue_lines {
                         self.finish_workers(input).await;
                     }
                     break;
                 }
-                Some(Input::Interrupt) => {
+                Event::Input(Some(Input::Interrupt)) => {
                     if last_interrupt.is_some_and(|at| at.elapsed() < Duration::from_secs(3)) {
                         break;
                     }
                     last_interrupt = Some(Instant::now());
                     self.output
                         .line(&self.output.dim("(Ctrl-C again, Ctrl-D or /exit to quit)"));
+                    continue;
                 }
-                Some(Input::Line(line)) => {
-                    let line = input.coalesce(line).await;
-                    let text = line.trim();
-                    if text.is_empty() {
-                        continue;
-                    }
-                    if let Some(command) = command(text) {
-                        match command {
-                            "/exit" | "/quit" => {
-                                if self.may_exit() {
-                                    break;
-                                }
-                            }
-                            "/new" => {
-                                let previous = match &self.conversation {
-                                    Conversation::Answered(result) => Some(result.clone()),
-                                    _ => None,
-                                };
-                                if let Some(crew) = &self.crew {
-                                    crew.lead_restarted(previous.as_ref());
-                                }
-                                self.unread_news = 0;
-                                self.conversation = Conversation::New;
-                                self.unread.clear();
-                                self.output.line(
-                                    &self
-                                        .output
-                                        .dim("The next message starts a new conversation."),
-                                );
-                            }
-                            other => self.command(other),
+                Event::Input(Some(Input::Line(line))) => {
+                    (input.coalesce(line).await, Source::Terminal)
+                }
+                Event::Remote(Action::Message(text)) => {
+                    self.echo_web(&text);
+                    (text, Source::Web)
+                }
+                // (The page's stop never quits fin.)
+                Event::Remote(Action::Stop) => {
+                    self.feed.notice(Level::Info, "No turn is running.");
+                    continue;
+                }
+                Event::Remote(Action::Answer { .. }) => {
+                    self.feed
+                        .notice(Level::Warn, "That question is no longer asked.");
+                    continue;
+                }
+            };
+            let text = line.trim();
+            if text.is_empty() {
+                continue;
+            }
+            if let Some(command) = command(text) {
+                if self.refused(command, source) {
+                    continue;
+                }
+                if is_remote_command(command) {
+                    self.remote_command(command).await;
+                    continue;
+                }
+                self.feed.user(command, source, Delivery::Command);
+                let quit = self.mirrored(|harness| match command {
+                    "/exit" | "/quit" => harness.may_exit(),
+                    "/new" => {
+                        let previous = match &harness.conversation {
+                            Conversation::Answered(result) => Some(result.clone()),
+                            _ => None,
+                        };
+                        if let Some(crew) = &harness.crew {
+                            crew.lead_restarted(previous.as_ref());
                         }
-                        continue;
+                        harness.unread_news = 0;
+                        harness.conversation = Conversation::New;
+                        harness.unread.clear();
+                        harness.output.line(
+                            &harness
+                                .output
+                                .dim("The next message starts a new conversation."),
+                        );
+                        false
                     }
-                    if let TurnEnd::Exit = self.turn(Prompt::User(text.to_string()), input).await {
-                        break;
+                    other => {
+                        harness.command(other);
+                        false
                     }
-                    if let News::Exit = self.deliver_news(input).await {
-                        break;
+                });
+                if quit {
+                    break;
+                }
+                continue;
+            }
+            self.feed.user(text, source, Delivery::Turn);
+            if let TurnEnd::Exit = self.turn(Prompt::User(text.to_string()), input).await {
+                break;
+            }
+            if let News::Exit = self.deliver_news(input).await {
+                break;
+            }
+        }
+    }
+
+    /// Prints `text` (dim, or as a warning or an error) and shows it on the
+    /// remote page.
+    fn say(&self, level: Level, text: &str) {
+        let out = &self.output;
+        out.line(&match level {
+            Level::Info => out.dim(text),
+            Level::Warn => out.warn(text),
+            Level::Error => out.error(text),
+        });
+        self.feed.notice(level, text);
+    }
+
+    /// Shows in the terminal what was typed on the remote page.
+    fn echo_web(&self, text: &str) {
+        let out = &self.output;
+        out.line(&format!(
+            "{} {}",
+            out.accent(&format!("web {}", ui::PROMPT.trim_end())),
+            text.trim().replace('\n', "\n  ")
+        ));
+    }
+
+    /// Whether the command can't be run from where it was typed: the page
+    /// can't quit fin or turn itself off.
+    fn refused(&self, command: &str, source: Source) -> bool {
+        if source == Source::Web
+            && (matches!(command, "/exit" | "/quit") || is_remote_command(command))
+        {
+            self.say(
+                Level::Warn,
+                &format!("  {command} works at the terminal only, not from the web page."),
+            );
+            return true;
+        }
+        false
+    }
+
+    /// Runs `run` with what the harness prints shown on the remote page
+    /// too, as a command's output.
+    fn mirrored<R>(&mut self, run: impl FnOnce(&mut Self) -> R) -> R {
+        let lines = Arc::new(Mutex::new(Vec::new()));
+        let tee = Tee {
+            to: self.output.clone(),
+            lines: lines.clone(),
+        };
+        let mirror = Arc::new(Output::new(Some(Box::new(tee)), false));
+        let output = std::mem::replace(&mut self.output, mirror);
+        let result = run(self);
+        self.output = output;
+        let text = lock(&lines).join("\n");
+        self.feed.output(&remote::plain(&text));
+        result
+    }
+
+    /// `/remote`: starts the page (on the address given, else where it was
+    /// last, else 127.0.0.1), or shows its links again; `/remote off` stops
+    /// it, and `/remote new-key` makes a new key, which ends the page's
+    /// sessions.
+    async fn remote_command(&mut self, command: &str) {
+        let argument = command.strip_prefix("/remote").unwrap_or_default().trim();
+        match argument {
+            "" if self.remote.is_some() => {
+                if let Some(addr) = self.remote.as_ref().map(remote::Server::addr) {
+                    match self.remote_key(false) {
+                        Ok(key) => self.announce_remote(addr, &key),
+                        Err(error) => self.say(Level::Error, &format!("fin: {error}")),
                     }
                 }
             }
+            "" | "on" => {
+                let bind = self.remote_bind.map(|(bind, _)| bind).unwrap_or_default();
+                self.start_remote(bind).await;
+            }
+            "off" => {
+                if self.remote.is_some() {
+                    self.feed
+                        .notice(Level::Warn, "The web page was turned off at the terminal.");
+                    self.stop_remote().await;
+                    self.output.line(&self.output.dim(
+                        "The web page is off: its links and sessions no longer work. /remote starts it again.",
+                    ));
+                } else {
+                    self.output.line("The web page isn't on.");
+                }
+            }
+            "new-key" => {
+                if let Err(error) = self.remote_key(true) {
+                    self.say(Level::Error, &format!("fin: {error}"));
+                    return;
+                }
+                match self.remote_bind.filter(|_| self.remote.is_some()) {
+                    // On the same port: the old links are dead.
+                    Some((bind, _)) => {
+                        self.feed.notice(
+                            Level::Warn,
+                            "The session's key was changed at the terminal.",
+                        );
+                        self.start_remote(bind).await;
+                    }
+                    None => self
+                        .output
+                        .line("The session has a new key. /remote starts the web page with it."),
+                }
+            }
+            other => match remote::parse_bind(other) {
+                Ok(bind) => self.start_remote(bind).await,
+                Err(error) => self.output.line(
+                    &self
+                        .output
+                        .error(&format!("{error}. Or: /remote off, /remote new-key")),
+                ),
+            },
+        }
+    }
+
+    /// The session's key (a new one when `new`).
+    fn remote_key(&self, new: bool) -> Result<String, String> {
+        let path = self.session.dir.join(remote::KEY_FILE);
+        if new {
+            remote::new_key(&path)
+        } else {
+            remote::session_key(&path)
+        }
+    }
+
+    /// Serves the web page where `bind` says, in place of the one running,
+    /// and prints its links.
+    async fn start_remote(&mut self, bind: remote::Bind) {
+        self.stop_remote().await;
+        let key = match self.remote_key(false) {
+            Ok(key) => key,
+            Err(error) => {
+                self.output.line(
+                    &self
+                        .output
+                        .error(&format!("fin: the web page is off: {error}")),
+                );
+                return;
+            }
+        };
+        let info = remote::Info {
+            model: self.settings.main.describe(),
+            workspace: self.settings.workspace.display().to_string(),
+            session: self.session.id.clone(),
+        };
+        // A page served before is served on its port again, if it is free.
+        let earlier = self.remote_bind.map(|(_, port)| port);
+        match remote::start(
+            bind,
+            earlier,
+            key.clone(),
+            info,
+            self.feed.clone(),
+            self.remote_actions.clone(),
+            self.gauges.clone(),
+        ) {
+            Ok(server) => {
+                self.announce_remote(server.addr(), &key);
+                self.remote_bind = Some((bind, server.addr().port()));
+                self.remote = Some(server);
+            }
+            Err(error) => self.output.line(
+                &self
+                    .output
+                    .error(&format!("fin: the web page is off: {error}")),
+            ),
+        }
+    }
+
+    /// Stops the web page: its streams end, and its sessions with them.
+    async fn stop_remote(&mut self) {
+        if let Some(server) = self.remote.take() {
+            server.stop().await;
+        }
+    }
+
+    /// Prints the links to the page (with the key: never logged), and a QR
+    /// code of the first that other devices can open.
+    fn announce_remote(&self, addr: std::net::SocketAddr, key: &str) {
+        let out = &self.output;
+        let links = remote::links(addr, key);
+        let mut lines = Vec::new();
+        for (n, link) in links.iter().enumerate() {
+            let interface = link
+                .interface
+                .as_ref()
+                .map(|name| out.dim(&format!("  ({name})")))
+                .unwrap_or_default();
+            lines.push(format!(
+                "{} {}{interface}",
+                if n == 0 {
+                    out.bold("Web page:")
+                } else {
+                    " ".repeat("Web page:".len())
+                },
+                link.url
+            ));
+        }
+        out.line(&lines.join("\n"));
+        if links.iter().all(|link| link.loopback) {
+            out.line(&out.dim(
+                "Only this machine can open it: for a phone, /remote 0.0.0.0 (the network's devices, Tailscale's too), or an SSH tunnel.",
+            ));
+        }
+        out.line(&out.warn(
+            "The link holds the session's key: whoever has it can follow this session and act in it. No TLS: on a network you don't trust, use an SSH tunnel or Tailscale. /remote off stops the page.",
+        ));
+        if glyphs::symbols() != glyphs::Symbols::Ascii
+            && let Some(link) = links.iter().find(|link| !link.loopback)
+            && let Some(code) = remote::qr_lines(&link.url)
+        {
+            out.line(&code.join("\n"));
         }
     }
 
@@ -1475,6 +1773,9 @@ impl Harness {
                 out.line("/mcp           the MCP servers and their tools");
                 out.line("/skills        the skills the agents can load");
                 out.line("/session       this session's ID, folder and models");
+                out.line(
+                    "/remote        the web page, for a phone or browser (/remote ADDR, /remote off, /remote new-key)",
+                );
                 out.line("/exit          quit (Ctrl-D too); the session is saved");
                 out.line(&out.dim(
                     "While the agent works: type to add to its task; Ctrl-C stops the turn (the workers go on). When it asks you something, type the answer.",
@@ -1581,6 +1882,7 @@ impl Harness {
         }
         self.exit_warned = false;
         self.news_hint_shown = false;
+        self.feed.turn_started();
         let workflow = self.workflow().clone();
         // A message after a stop goes to the stopped task, which resumes.
         let resumes = !matches!(prompt, Prompt::Recover)
@@ -1594,17 +1896,19 @@ impl Harness {
                     from.push(&event.worker);
                 }
             }
-            self.output.line(&self.output.dim(&if from.is_empty() {
-                "  ⇠ the workers' news goes to the agent".to_string()
-            } else {
-                format!("  ⇠ news from {} goes to the agent", and_list(&from))
-            }));
+            self.say(
+                Level::Info,
+                &if from.is_empty() {
+                    "  ⇠ the workers' news goes to the agent".to_string()
+                } else {
+                    format!("  ⇠ news from {} goes to the agent", and_list(&from))
+                },
+            );
         }
         if resumes {
-            self.output.line(
-                &self
-                    .output
-                    .dim("  ✎ added to the stopped task: the agent resumes it where it stopped"),
+            self.say(
+                Level::Info,
+                "  ✎ added to the stopped task: the agent resumes it where it stopped",
             );
         }
         let spent_before = self.spent();
@@ -1632,84 +1936,136 @@ impl Harness {
         let mut queued: Vec<String> = Vec::new();
         let mut stopping = false;
         let mut exit = false;
-        // The agent's question the next line answers.
-        let mut answering: Option<oneshot::Sender<String>> = None;
+        // The agent's question the next line answers, with the ID the
+        // remote page knows it by.
+        let mut answering: Option<(u64, oneshot::Sender<String>)> = None;
         let outcome = loop {
             tokio::select! {
                 outcome = &mut call => break outcome,
-                event = input.next_event(false) => match event {
-                    Event::Question(question) => {
-                        if question.answer.is_closed() {
-                            continue;
-                        }
-                        self.flush_printer().await;
-                        self.output.line(&self.output.bold("  ? The agent asks:"));
-                        for line in question.text.trim().lines() {
-                            self.output.line(&format!("    {line}"));
-                        }
-                        self.output.line(&self.output.dim("  (Type your answer and press Enter.)"));
-                        answering = Some(question.answer);
-                    }
-                    Event::Woken => {}
-                    Event::Input(Some(Input::Line(line))) => {
-                        let line = input.coalesce(line).await;
-                        let text = line.trim().to_string();
-                        if text.is_empty() {
-                            continue;
-                        }
-                        if let Some(command) = command(&text) {
-                            if matches!(command, "/exit" | "/quit") {
-                                if self.may_exit() {
-                                    exit = true;
-                                    stopping |= self.stop(&workflow);
-                                }
-                            } else {
-                                self.command(command);
+                event = input.next_event(false) => {
+                    let (line, source) = match event {
+                        Event::Question(question) => {
+                            if question.answer.is_closed() {
+                                continue;
+                            }
+                            self.flush_printer().await;
+                            self.output.line(&self.output.bold("  ? The agent asks:"));
+                            for line in question.text.trim().lines() {
+                                self.output.line(&format!("    {line}"));
+                            }
+                            self.output.line(&self.output.dim("  (Type your answer and press Enter.)"));
+                            let id = self.feed.question(&question.text);
+                            if let Some((old, _)) = answering.replace((id, question.answer)) {
+                                self.feed.question_closed(old);
                             }
                             continue;
                         }
-                        let text = match answering.take() {
-                            Some(answer) => match answer.send(text) {
-                                Ok(()) => {
-                                    self.output.line(&self.output.dim("  ✎ answered"));
-                                    continue;
-                                }
-                                // The question was dropped (a stop).
-                                Err(text) => text,
-                            },
-                            None => text,
-                        };
-                        if self.queue_lines {
-                            queued.push(text);
-                        } else {
-                            match workflow.post_note(Note::new(text.clone()).to([MAIN]).once()) {
-                                Ok(_) => {
-                                    self.output.line(&self.output.dim(
-                                        "  ✎ added to the task: the agent reads it at its next step",
-                                    ));
-                                    notes.push(text);
-                                    if let Some(crew) = &self.crew {
-                                        crew.user_typed();
+                        Event::Woken => continue,
+                        Event::Input(Some(Input::Line(line))) => {
+                            (input.coalesce(line).await, Source::Terminal)
+                        }
+                        Event::Remote(Action::Message(text)) => {
+                            self.echo_web(&text);
+                            (text, Source::Web)
+                        }
+                        Event::Remote(Action::Answer { question, text }) => {
+                            match answering.take() {
+                                Some((id, answer)) if id == question => {
+                                    self.echo_web(&text);
+                                    let given = text.trim().to_string();
+                                    if answer.send(given.clone()).is_ok() {
+                                        self.output.line(&self.output.dim("  ✎ answered"));
+                                        self.feed.answered(id, &given, Source::Web);
+                                    } else {
+                                        self.feed.question_closed(id);
+                                        self.feed.notice(Level::Warn, "That question is no longer asked.");
                                     }
                                 }
-                                Err(error) => self.output.line(&self.output.error(&format!(
-                                    "  could not pass that on: {error}"
-                                ))),
+                                other => {
+                                    answering = other;
+                                    self.feed.notice(Level::Warn, "That question is no longer asked.");
+                                }
                             }
+                            continue;
+                        }
+                        Event::Input(Some(Input::Interrupt)) | Event::Remote(Action::Stop) => {
+                            if stopping {
+                                self.output.line(&self.output.dim("  (stopping: the agents get up to 10 s to end)"));
+                            } else {
+                                stopping = self.stop(&workflow);
+                            }
+                            continue;
+                        }
+                        Event::Input(Some(Input::Eof) | None) => {
+                            exit = true;
+                            stopping |= self.stop(&workflow);
+                            continue;
+                        }
+                    };
+                    let text = line.trim().to_string();
+                    if text.is_empty() {
+                        continue;
+                    }
+                    if let Some(command) = command(&text) {
+                        if self.refused(command, source) {
+                            continue;
+                        }
+                        if is_remote_command(command) {
+                            self.remote_command(command).await;
+                            continue;
+                        }
+                        self.feed.user(command, source, Delivery::Command);
+                        let quit = self.mirrored(|harness| {
+                            if matches!(command, "/exit" | "/quit") {
+                                harness.may_exit()
+                            } else {
+                                harness.command(command);
+                                false
+                            }
+                        });
+                        if quit {
+                            exit = true;
+                            stopping |= self.stop(&workflow);
+                        }
+                        continue;
+                    }
+                    let text = match answering.take() {
+                        Some((id, answer)) => match answer.send(text) {
+                            Ok(()) => {
+                                self.output.line(&self.output.dim("  ✎ answered"));
+                                self.feed.answered(id, line.trim(), source);
+                                continue;
+                            }
+                            // The question was dropped (a stop).
+                            Err(text) => {
+                                self.feed.question_closed(id);
+                                text
+                            }
+                        },
+                        None => text,
+                    };
+                    if self.queue_lines {
+                        self.feed.user(&text, source, Delivery::Queued);
+                        queued.push(text);
+                    } else {
+                        match workflow.post_note(Note::new(text.clone()).to([MAIN]).once()) {
+                            Ok(_) => {
+                                self.output.line(&self.output.dim(
+                                    "  ✎ added to the task: the agent reads it at its next step",
+                                ));
+                                self.feed.user(&text, source, Delivery::Note);
+                                notes.push(text);
+                                if let Some(crew) = &self.crew {
+                                    crew.user_typed();
+                                }
+                            }
+                            Err(error) => self.say(
+                                Level::Error,
+                                &format!("  could not pass that on: {error}"),
+                            ),
                         }
                     }
-                    Event::Input(Some(Input::Interrupt)) => {
-                        if stopping {
-                            self.output.line(&self.output.dim("  (stopping: the agents get up to 10 s to end)"));
-                        } else {
-                            stopping = self.stop(&workflow);
-                        }
-                    }
-                    Event::Input(Some(Input::Eof) | None) => {
-                        exit = true;
-                        stopping |= self.stop(&workflow);
-                    }
-                },
+                }
             }
         };
         self.flush_printer().await;
@@ -1722,6 +2078,9 @@ impl Harness {
             .crew
             .as_ref()
             .map_or(0, |crew| crew.lead_ended(outcome.as_ref().ok()));
+        if let Some((id, _)) = answering.take() {
+            self.feed.question_closed(id);
+        }
         let end = match outcome {
             Ok(result) => {
                 self.unread_news = unread_news;
@@ -1733,26 +2092,27 @@ impl Harness {
                 } else {
                     self.output.answer(result.summary.trim());
                 }
+                self.feed.reply(&result.summary);
                 self.keep_unread(&notes, &result);
                 self.conversation = Conversation::Answered(result);
                 TurnEnd::Answered
             }
             Err(WorkflowError::Cancelled) if stopping => {
-                self.output.line(&self.output.warn("Stopped."));
+                self.say(Level::Warn, "Stopped.");
                 self.unread.extend(notes);
                 match self.reopen() {
                     Ok(()) => TurnEnd::Stopped,
                     Err(error) => {
-                        self.output.line(&self.output.error(&format!(
-                            "The session couldn't be reopened after the stop: {error}"
-                        )));
+                        self.say(
+                            Level::Error,
+                            &format!("The session couldn't be reopened after the stop: {error}"),
+                        );
                         TurnEnd::Failed
                     }
                 }
             }
             Err(error) => {
-                self.output
-                    .line(&self.output.error(&format!("The turn failed: {error}")));
+                self.say(Level::Error, &format!("The turn failed: {error}"));
                 self.unread.extend(notes);
                 self.recover_after_error(&workflow, mail);
                 TurnEnd::Failed
@@ -1794,9 +2154,10 @@ impl Harness {
             if !matches!(self.conversation, Conversation::Answered(_)) {
                 if !self.news_hint_shown && !self.one_shot {
                     self.news_hint_shown = true;
-                    self.output.line(&self.output.dim(
+                    self.say(
+                        Level::Info,
                         "  (the workers have news for the agent: it goes with your next message)",
-                    ));
+                    );
                 }
                 return News::Waiting;
             }
@@ -1846,7 +2207,14 @@ impl Harness {
                 Event::Woken => {}
                 Event::Question(question) => drop(question),
                 Event::Input(Some(Input::Line(_))) => {}
-                Event::Input(Some(Input::Interrupt | Input::Eof) | None) => {
+                Event::Remote(Action::Message(_) | Action::Answer { .. }) => {
+                    self.feed.notice(
+                        Level::Warn,
+                        "fin is only waiting for the workers now, so messages aren't taken.",
+                    );
+                }
+                Event::Input(Some(Input::Interrupt | Input::Eof) | None)
+                | Event::Remote(Action::Stop) => {
                     let stopped = crew.stop_all("the user stopped fin");
                     self.output.line(&self.output.warn(&format!(
                         "Stopping {stopped} worker{}.",
@@ -1934,23 +2302,27 @@ impl Harness {
         };
         let unread: Vec<String> = notes.iter().filter(|text| !read(text)).cloned().collect();
         if !unread.is_empty() {
-            self.output.line(&self.output.dim(
+            self.say(
+                Level::Info,
                 "  (the agent finished before it read what you typed; it goes with your next message)",
-            ));
+            );
             self.unread.extend(unread);
         }
     }
 
     fn stop(&self, workflow: &Workflow) -> bool {
         let running = self.crew.as_ref().map_or(0, |crew| crew.running().len());
-        self.output.line(&self.output.warn(&if running == 0 {
-            "  Stopping the turn…".to_string()
-        } else {
-            format!(
-                "  Stopping the turn… (the workers go on: /stop-workers stops {})",
-                if running == 1 { "it" } else { "them" }
-            )
-        }));
+        self.say(
+            Level::Warn,
+            &if running == 0 {
+                "  Stopping the turn…".to_string()
+            } else {
+                format!(
+                    "  Stopping the turn… (the workers go on: /stop-workers stops {})",
+                    if running == 1 { "it" } else { "them" }
+                )
+            },
+        );
         workflow.stop(StopRequest::operator("the user stopped the turn"));
         true
     }
@@ -1976,9 +2348,10 @@ impl Harness {
             crew.put_back(mail);
         }
         if matches!(self.conversation, Conversation::New) {
-            self.output.line(self.output.dim(
+            self.say(
+                Level::Info,
                 "This conversation can't go on; your next message starts a new one (/new). The session keeps the old one.",
-            ).as_str());
+            );
         }
     }
 
@@ -2021,8 +2394,10 @@ impl Harness {
         if let Some(plan) = stats.plan_usage {
             parts.push(plan);
         }
+        let parts = parts.join(" · ");
         self.output
-            .line(&self.output.dim(&format!("── {} ──", parts.join(" · "))));
+            .line(&self.output.dim(&format!("── {parts} ──")));
+        self.feed.turn_ended(&parts);
     }
 }
 
@@ -2063,7 +2438,12 @@ fn command(text: &str) -> Option<&str> {
         "/session",
         "/help",
     ];
-    COMMANDS.contains(&text).then_some(text)
+    (COMMANDS.contains(&text) || is_remote_command(text)).then_some(text)
+}
+
+/// `/remote`, alone or with what follows it.
+fn is_remote_command(text: &str) -> bool {
+    text == "/remote" || text.starts_with("/remote ")
 }
 
 /// The user's input, read on its own thread; the main agent's questions;
@@ -2075,6 +2455,8 @@ struct Inputs {
     questions: mpsc::UnboundedReceiver<Question>,
     /// The crew says the main agent has news, or a worker stopped running.
     woken: Option<mpsc::UnboundedReceiver<()>>,
+    /// What the remote page sends.
+    remote: mpsc::UnboundedReceiver<Action>,
 }
 
 /// What [`Inputs::next_event`] returns.
@@ -2085,10 +2467,13 @@ enum Event {
     Question(Question),
     /// The crew woke fin up.
     Woken,
+    /// The remote page sent something.
+    Remote(Action),
 }
 
 impl Inputs {
-    /// The next input, question, or (when `woken`) wake-up; cancel-safe.
+    /// The next input, question, action from the remote page, or (when
+    /// `woken`) wake-up; cancel-safe.
     async fn next_event(&mut self, woken: bool) -> Event {
         if let Some(input) = self.pending.take() {
             return Event::Input(Some(input));
@@ -2096,6 +2481,7 @@ impl Inputs {
         tokio::select! {
             input = self.receiver.recv() => Event::Input(input),
             Some(question) = self.questions.recv() => Event::Question(question),
+            Some(action) = self.remote.recv() => Event::Remote(action),
             () = wake(&mut self.woken), if woken => Event::Woken,
         }
     }
@@ -2136,6 +2522,55 @@ async fn wake(woken: &mut Option<mpsc::UnboundedReceiver<()>>) {
         *woken = None;
     }
     std::future::pending::<()>().await;
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// The session's figures for the remote page's status, read as the page
+/// asks. The main workflow (built again after a stop) and the crew are set
+/// as they change.
+struct Gauges {
+    workflow: Mutex<Option<Arc<Workflow>>>,
+    crew: Mutex<Option<Arc<Crew>>>,
+    stats: Arc<Mutex<Stats>>,
+}
+
+impl remote::Meter for Gauges {
+    fn read(&self) -> remote::Reading {
+        let workflow = lock(&self.workflow).clone();
+        let crew = lock(&self.crew).clone();
+        let stats = lock(&self.stats).clone();
+        remote::Reading {
+            cost: workflow.map_or(0.0, |workflow| workflow.context().budget.total_spent())
+                + crew.as_ref().map_or(0.0, |crew| crew.dollars()),
+            context_tokens: stats.context_tokens,
+            plan_usage: stats.plan_usage,
+            workers_running: crew.as_ref().map(|crew| crew.running()).unwrap_or_default(),
+            workers: crew
+                .filter(|crew| !crew.is_empty())
+                .map(|crew| crew.describe()),
+        }
+    }
+}
+
+/// Prints through `to`, and keeps a copy of the lines: a command's output,
+/// for the remote page.
+struct Tee {
+    to: Arc<Output>,
+    lines: Arc<Mutex<Vec<String>>>,
+}
+
+impl rustyline::ExternalPrinter for Tee {
+    fn print(&mut self, text: String) -> rustyline::Result<()> {
+        let text = text.strip_suffix('\n').unwrap_or(&text);
+        self.to.line(text);
+        lock(&self.lines).push(text.to_string());
+        Ok(())
+    }
 }
 
 /// A question the main agent asks with `ask_user`, and where its answer
@@ -2386,6 +2821,7 @@ mod tests {
         let client = Arc::new(client);
         let output = Arc::new(Output::new(None, true));
         let stats = Arc::new(Mutex::new(Stats::default()));
+        let feed = remote::Feed::new(MAIN);
         let (crew, woken) = Crew::new(crew::Setup {
             session_id: session.id.clone(),
             session_dir: session.dir.clone(),
@@ -2398,9 +2834,16 @@ mod tests {
             show_thinking: false,
             max_running: NO_LIMIT,
             cache: None,
+            feed: Some(feed.clone()),
         });
         let (questions_sender, questions) = mpsc::unbounded_channel();
         let (input_sender, receiver) = mpsc::unbounded_channel();
+        let (remote_actions, remote_input) = mpsc::unbounded_channel();
+        let gauges = Arc::new(Gauges {
+            workflow: Mutex::new(None),
+            crew: Mutex::new(None),
+            stats: stats.clone(),
+        });
         let mut harness = Harness {
             settings,
             session,
@@ -2431,6 +2874,11 @@ mod tests {
             unread_news: 0,
             exit_warned: false,
             news_hint_shown: false,
+            feed,
+            remote: None,
+            remote_actions,
+            remote_bind: None,
+            gauges,
         };
         harness.open(false).unwrap();
         let inputs = Inputs {
@@ -2438,6 +2886,7 @@ mod tests {
             pending: None,
             questions,
             woken: Some(woken),
+            remote: remote_input,
         };
         (harness, inputs, input_sender)
     }
@@ -2566,5 +3015,247 @@ mod tests {
             project_instructions(temp.path()).unwrap(),
             ("AGENTS.md".to_string(), "agent rules".to_string())
         );
+    }
+
+    #[test]
+    fn remote_takes_an_optional_address_and_not_with_a_prompt() {
+        let parse = |args: &[&str]| Args::try_parse_from(args).map(|args| args.remote);
+        assert_eq!(parse(&["fin"]).unwrap(), None);
+        assert_eq!(
+            parse(&["fin", "--remote"]).unwrap().as_deref(),
+            Some("127.0.0.1")
+        );
+        assert_eq!(
+            parse(&["fin", "--remote", "0.0.0.0:8765"])
+                .unwrap()
+                .as_deref(),
+            Some("0.0.0.0:8765")
+        );
+        assert!(parse(&["fin", "-p", "hi", "--remote"]).is_err());
+        assert!(command("/remote off").is_some() && command("/remotely").is_none());
+    }
+
+    /// Serves `harness`'s web page on a free port; returns an HTTP client,
+    /// the page's address and a session cookie.
+    async fn web(harness: &mut Harness) -> (reqwest::Client, String, String) {
+        harness
+            .start_remote(remote::Bind {
+                ip: std::net::Ipv4Addr::LOCALHOST.into(),
+                port: Some(0),
+            })
+            .await;
+        let addr = harness.remote.as_ref().expect("the page is on").addr();
+        let key = std::fs::read_to_string(harness.session.dir.join(remote::KEY_FILE)).unwrap();
+        let http = arko_ai::http_client();
+        let base = format!("http://{addr}");
+        let response = http
+            .post(format!("{base}/api/session"))
+            .body(serde_json::json!({ "key": key.trim() }).to_string())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 204);
+        let cookie = response.headers()["set-cookie"].to_str().unwrap();
+        let cookie = cookie.split(';').next().unwrap().to_string();
+        (http, base, cookie)
+    }
+
+    /// The page's history, as (kind, text, delivery).
+    fn shown(feed: &remote::Feed) -> Vec<(String, String, String)> {
+        let (items, _, _) = feed.subscribe();
+        items
+            .iter()
+            .map(|item| {
+                let item = serde_json::to_value(item).unwrap();
+                let text = |name: &str| item[name].as_str().unwrap_or_default().to_string();
+                (text("kind"), text("text"), text("delivery"))
+            })
+            .collect()
+    }
+
+    fn has(feed: &remote::Feed, kind: &str, text: &str, delivery: &str) -> bool {
+        shown(feed)
+            .iter()
+            .any(|item| item == &(kind.to_string(), text.to_string(), delivery.to_string()))
+    }
+
+    async fn until(condition: impl Fn() -> bool) {
+        tokio::time::timeout(Duration::from_secs(20), async {
+            while !condition() {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("in time");
+    }
+
+    /// The agent's question shows on the page, and the answer sent from
+    /// it reaches the agent; the page's history has the turn.
+    #[tokio::test]
+    async fn the_web_page_answers_the_agents_question() {
+        use crate::mock_model::{ModelServer, complete, tool_call};
+        let server = ModelServer::start(Arc::new(move |_, body: String| {
+            Box::pin(async move {
+                if body.contains("Two spaces, please.") {
+                    complete("m2", "Indented with two spaces.")
+                } else {
+                    tool_call(
+                        "m1",
+                        ASK_USER_TOOL_NAME,
+                        serde_json::json!({"questions": "Tabs or spaces?"}),
+                    )
+                }
+            })
+        }))
+        .await;
+        let temp = tempfile::tempdir().unwrap();
+        let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
+        let (http, base, cookie) = web(&mut harness).await;
+        let feed = harness.feed.clone();
+        let answering = tokio::spawn(async move {
+            until(|| feed.activity().question.is_some()).await;
+            let question = feed.activity().question.unwrap();
+            assert_eq!(question.text, "Tabs or spaces?");
+            let response = http
+                .post(format!("{base}/api/answer"))
+                .header("cookie", cookie)
+                .body(
+                    serde_json::json!({"question": question.id, "text": "Two spaces, please."})
+                        .to_string(),
+                )
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), 202);
+        });
+        let end = tokio::time::timeout(
+            Duration::from_secs(30),
+            harness.turn(Prompt::User("Indent the file.".into()), &mut inputs),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(end, TurnEnd::Answered));
+        assert_eq!(summary(&harness), "Indented with two spaces.");
+        answering.await.unwrap();
+        let feed = &harness.feed;
+        assert!(has(feed, "question", "Tabs or spaces?", ""));
+        assert!(has(feed, "user", "Two spaces, please.", "answer"));
+        assert!(has(feed, "reply", "Indented with two spaces.", ""));
+        assert_eq!(shown(feed).last().unwrap().0, "turn");
+        assert!(!feed.activity().working && feed.activity().question.is_none());
+        harness.stop_remote().await;
+    }
+
+    /// A message sent from the page while the agent works reaches it as a
+    /// note; when the agent is idle, it comes in as typed lines do. The
+    /// agent's calls show on the page.
+    #[tokio::test]
+    async fn a_message_from_the_web_page_is_a_note_while_the_agent_works() {
+        use crate::mock_model::{ModelServer, complete, tool_call};
+        let release = Arc::new(tokio::sync::Notify::new());
+        let hold = release.clone();
+        let server = ModelServer::start(Arc::new(move |_, body: String| {
+            let hold = hold.clone();
+            Box::pin(async move {
+                if body.contains("Also count the directories.") {
+                    complete("m2", "3 files, 2 directories.")
+                } else if body.contains("Count the files.") {
+                    hold.notified().await;
+                    tool_call("m1", crew::LIST_WORKERS, serde_json::json!({}))
+                } else {
+                    complete("m3", "Nothing to count.")
+                }
+            })
+        }))
+        .await;
+        let temp = tempfile::tempdir().unwrap();
+        let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
+        let (http, base, cookie) = web(&mut harness).await;
+        let post = {
+            let (http, base, cookie) = (http.clone(), base.clone(), cookie.clone());
+            move |text: &'static str| {
+                let (http, base, cookie) = (http.clone(), base.clone(), cookie.clone());
+                async move {
+                    let response = http
+                        .post(format!("{base}/api/message"))
+                        .header("cookie", cookie)
+                        .body(serde_json::json!({ "text": text }).to_string())
+                        .send()
+                        .await
+                        .unwrap();
+                    assert_eq!(response.status(), 202);
+                }
+            }
+        };
+        let feed = harness.feed.clone();
+        let sending = tokio::spawn({
+            let post = post.clone();
+            async move {
+                until(|| feed.activity().working).await;
+                post("Also count the directories.").await;
+                until(|| has(&feed, "user", "Also count the directories.", "note")).await;
+                release.notify_one();
+            }
+        });
+        let end = tokio::time::timeout(
+            Duration::from_secs(30),
+            harness.turn(Prompt::User("Count the files.".into()), &mut inputs),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(end, TurnEnd::Answered));
+        assert_eq!(summary(&harness), "3 files, 2 directories.");
+        sending.await.unwrap();
+        assert!(has(&harness.feed, "call", "list workers", ""));
+
+        post("Thanks.").await;
+        let message = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if let Event::Remote(action) = inputs.next_event(true).await {
+                    break action;
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(message, Action::Message("Thanks.".into()));
+        harness.stop_remote().await;
+    }
+
+    /// Commands sent from the page run, and their output shows on it; the
+    /// page can't quit fin.
+    #[tokio::test]
+    async fn commands_from_the_web_page_show_their_output_there() {
+        let temp = tempfile::tempdir().unwrap();
+        let (mut harness, mut inputs, sender) = harness(temp.path(), LLMClient::new(), true);
+        let actions = harness.remote_actions.clone();
+        let feed = harness.feed.clone();
+        let typing = async move {
+            actions.send(Action::Message("/exit".into())).unwrap();
+            actions.send(Action::Message("/workers".into())).unwrap();
+            until(|| shown(&feed).iter().any(|item| item.0 == "output")).await;
+            sender.send(Input::Eof).unwrap();
+        };
+        let (_, ()) = tokio::time::timeout(
+            Duration::from_secs(20),
+            futures_util::future::join(harness.repl(&mut inputs), typing),
+        )
+        .await
+        .unwrap();
+        let shown = shown(&harness.feed);
+        assert!(
+            shown
+                .iter()
+                .any(|item| item.0 == "notice"
+                    && item.1.contains("/exit works at the terminal only")),
+            "{shown:?}"
+        );
+        assert!(has(&harness.feed, "user", "/workers", "command"));
+        assert!(has(
+            &harness.feed,
+            "output",
+            "No workers yet: the agent starts them as it needs them.",
+            ""
+        ));
     }
 }

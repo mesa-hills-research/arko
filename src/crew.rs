@@ -39,6 +39,7 @@ use tokio::sync::{Notify, mpsc};
 use tokio::task::JoinHandle;
 
 use crate::agents::{MAIN, WORKER};
+use crate::remote;
 use crate::ui::{self, Control, Output, Stats};
 
 pub const START_WORKER: &str = "start_worker";
@@ -192,6 +193,8 @@ pub struct Setup {
     /// A new worker's prompt cache: a choice for workers on a Claude model,
     /// ChatGPT's fixed 30 minutes on OpenAI models.
     pub cache: Option<WorkerCache>,
+    /// Where the workers' events go besides the terminal: the remote page.
+    pub feed: Option<remote::Feed>,
 }
 
 /// A worker as the session records it.
@@ -604,6 +607,7 @@ impl Crew {
             self.setup.stats.clone(),
             self.setup.show_thinking,
             Some(record.id.clone()),
+            self.setup.feed.clone(),
         ));
         Ok((workflow, (control, printer)))
     }
@@ -1389,6 +1393,17 @@ impl Crew {
         total
     }
 
+    /// What the workers' models have cost, in dollars (without their
+    /// tokens, which take longer to count).
+    pub fn dollars(&self) -> f64 {
+        self.lock()
+            .workers
+            .iter()
+            .filter_map(|worker| worker.workflow.as_ref())
+            .map(|workflow| workflow.context().budget.total_spent())
+            .sum()
+    }
+
     /// `/workers`: each worker, a line or two.
     pub fn describe(&self) -> String {
         self.list()
@@ -2045,6 +2060,7 @@ mod tests {
             show_thinking: false,
             max_running: NO_LIMIT,
             cache: None,
+            feed: None,
         }
     }
 
