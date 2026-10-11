@@ -2,16 +2,16 @@
 
 fin is built on arko_ai, arko_agents and arko_workflows. This page lists the places where fin works around something the framework can't do yet. For each one it gives what arko does today, what fin does instead, and the change that would let fin drop its workaround. The list starts with the biggest gaps.
 
-Paths are relative to the arko_framework repository. Line numbers are from upstream commit `023c92c` (origin `HEAD` when this was written). fin built against an older local checkout then. Where the two differed, the entry says so.
+Paths are relative to the arko_framework repository. Line numbers in the remaining requests refer to upstream commit `023c92c`. Resolved entries describe the APIs fin now uses.
 
-| # | Gap | Priority |
+| # | Gap | Status / priority |
 |---|-----|----------|
-| 1 | Subagents block the agent that starts them | High |
-| 2 | Lead and subagents can't talk while a subagent runs | High |
-| 3 | Every run in a workflow shares one working directory | High |
-| 4 | No isolated workspaces (git worktrees) for parallel subagents | Medium |
-| 5 | Stopping a single run (upstream only) | Medium |
-| 6 | No way to know whether a note or message was read | Medium |
+| 1 | Subagents block the agent that starts them | Resolved |
+| 2 | Lead and subagents can't talk while a subagent runs | Resolved |
+| 3 | Every run in a workflow shares one working directory | Resolved |
+| 4 | No isolated workspaces (git worktrees) for parallel subagents | Resolved |
+| 5 | Stopping a single run (upstream only) | Resolved |
+| 6 | No way to know whether a note or message was read | Resolved |
 | 7 | Resumed runs keep their old tools and instructions | Medium |
 | 8 | MCP servers: stdio only, no working directory | Medium |
 | 9 | A failing `ask_user` handler ends the run | Low |
@@ -20,78 +20,18 @@ Paths are relative to the arko_framework repository. Line numbers are from upstr
 | 12 | Base URLs can't be set from the environment | Low |
 | 13 | Missing re-exports | Low |
 | 14 | Skills: paths, scripts and sources | Low |
-| 15 | A reply without a tool call counts as a failure | Low |
-| 16 | ChatGPT's prompt cache is reported as 5 minutes | Low |
+| 15 | A reply without a tool call counts as a failure | Resolved |
+| 16 | ChatGPT's prompt cache is reported as 5 minutes | Resolved |
 
-## 1. Subagents block the agent that starts them
+## Resolved: native workers (1–6)
 
-**Today.** `run_workflow_agent` runs the target agent to completion inside the tool call. `execute` awaits `WorkflowEngine::run_nested` (`arko_workflows/src/services/mod.rs:243-249`), and the tool's own doc says "The call runs another agent to completion, however long that takes" (`:675`). Its parameters are `agent`, `prompt` and `resume_run` (`:664-667`), with nothing that returns early. The result comes back only as the tool result.
+`arko_workflows::subagents` now runs background agents inside one workflow. fin uses `start_agent`, `message_agent`, `wait_for_agents`, `list_agents` and `stop_agent`. Runs above the concurrency cap queue, and the cap can be unlimited. Mail and run state survive checkpoints. Reports reach a running lead at a turn boundary, and `NewsWaiting` wakes an idle lead. `resume_subagents` continues interrupted workers.
 
-The tool is marked `parallel_safe: false` (`:669`), so several calls in one response run one after another unless the host overrides it per tool. Calls running at once are capped by `WorkflowServicesConfig::max_active_calls`, default 4 (`:47-58`), and a call over the cap fails at once instead of waiting (`:260-270`). The cap can't be turned off: `max_active_calls(0)` is a build error.
+Each run has a saved working directory. `GitWorktreeProvider` creates fin's isolated workers under `<session>/worktrees`, on branches `fin/<session>/<id>`. Worker IDs are `r1`, `r2`, and so on. The provider records the workspace for later follow-up and removal.
 
-Hosts can start runs without blocking (`Workflow::spawn_agent`, `run_agents_parallel`), but an agent can't.
+Single-run stops leave other agents running. `stop_subagent` also stops queued runs and reports the reason to the lead. fin uses a lead-only stop for Ctrl-C and transfers workers when `/new` starts a new lead conversation.
 
-**Effect.** A lead that hands out work sits idle until every subagent finishes, even when it could carry on with something else or answer the user.
-
-**fin's workaround.** fin has its own lead tools in `src/crew.rs`: `start_worker` returns a worker id at once, and each worker runs in the background as its own `Workflow`. A worker's report reaches the lead as a note while its turn runs, or starts a new turn when it's idle. `wait_for_workers`, `list_workers` and `stop_worker` complete the set. In `fin -p`, fin waits for the workers' reports before it exits.
-
-**Request.**
-- A way for an agent to start a subagent in the background: a `start_agent` tool, or a `background: true` parameter on `run_workflow_agent`. It returns a run id at once.
-- The run's result (its `complete_task` summary, or its failure) delivered to the caller at its next turn boundary, the way notes are delivered, plus a `WorkflowEvent` so the host can start a turn for an idle caller.
-- A `wait_for_agents` tool that returns when any of the given runs finishes, with its result, and a tool that lists the caller's runs and their state.
-- An unlimited setting for `max_active_calls`, and an option to queue calls over the cap instead of failing them.
-
-## 2. Lead and subagents can't talk while a subagent runs
-
-**Today.** `send_message` exists (`arko_workflows/src/messaging/tools.rs:44-56`). It works between agents of the same `Workflow`, is addressed by agent name (every active run of that name gets it), and is delivered at the recipient's next turn boundary. `wait_for_message` (`messaging/wait.rs`) returns when a message arrives, but its result only names the sender. The text arrives at the next turn boundary.
-
-Combined with gap 1, this means:
-- A lead inside `run_workflow_agent` can't make another tool call, so it can't message the subagent it's waiting on.
-- A subagent's message to its lead is queued until `run_workflow_agent` returns, because context is "added at the next turn boundary… including while a tool call ran" (`arko_agents/README.md:789-792`). A subagent that waits for the lead's answer times out.
-- Each subagent in its own `Workflow` (fin's workaround for gap 3) can't use `send_message` at all, because the `MessageBus` belongs to one workflow (`arko_workflows/src/context/mod.rs:26`).
-
-**fin's workaround.** fin's crew has its own mailbox. The lead has `message_worker` and `wait_for_workers`, and workers have `message_lead` and `wait_for_lead`. Messages to a running agent are posted with `Workflow::post_note` and reach it at its next turn boundary. A wait tool returns the message text itself. A message to a finished worker continues its run with `continue_agent`, and one to a stopped worker restarts it.
-
-**Request.**
-- Messages addressed to a run id, so a lead can tell apart two runs of the same agent.
-- `wait_for_message` (and the proposed `wait_for_agents`) returning the message text, so a waiting agent can act on it in the same call.
-- With background subagents (gap 1) and per-run workspaces (gap 3), the existing `send_message` would cover the rest.
-
-## 3. Every run in a workflow shares one working directory
-
-**Today.** The engine creates each run's task with the workflow's workspace: `Task::new(config, String::new(), ctx.workspace.clone(), None)` (`arko_workflows/src/workflow/engine.rs:2571`). `WorkflowBuilder::workspace` is set once per workflow (`workflow/mod.rs:1344`), and `AgentConfig` has no workspace field. arko_agents already supports a per-task directory (`Task.current_working_directory` drives the terminal tools and path checks, `arko_agents/src/terminal/mod.rs:553`), but arko_workflows never sets it per run.
-
-**Effect.** Parallel subagents that change files all work in the same checkout, and their edits and builds collide.
-
-**fin's workaround.** One `Workflow` per worker, each with its own workspace (the working directory or a git worktree), checkpoints in `<session>/workers/<id>/run`, and cost ledger. fin keeps its own records of the workers (`workers.json`), adds up their costs, reloads them when a session resumes, and needs its own mailbox because `send_message` can't cross workflows (gap 2).
-
-**Request.** A `workspace` (or `cwd`) option on `run_agent`, `spawn_agent` and the background subagent tool. It would set the run's task directory for the shell, terminal and file tools and the path-safety checks, and be saved in the checkpoint so continued and recovered runs keep it.
-
-## 4. No isolated workspaces for parallel subagents
-
-**Today.** Nothing in arko_agents or arko_workflows creates an isolated workspace for a run.
-
-**fin's workaround.** When the lead asks for one, `start_worker` makes a git worktree at `<session>/worktrees/<id>` on a new branch `fin/<session-id>/<id>`, one at a time under a lock, and runs the worker's workflow there. `stop_worker` can remove it. A worktree starts from the last commit, so uncommitted changes in the main checkout aren't in it, and each worktree builds its own `target/`.
-
-**Request.** An `isolation` option on the background subagent tool (none, or a git worktree), backed by a host-pluggable trait (something like `WorkspaceProvider` with `create(run) -> PathBuf` and `remove(run)`), so hosts can plug in vws_rs, a copy or a container. The run's workspace (gap 3) would be set to what it returns, and the run's record would keep the path and branch so a later message or restart reuses it.
-
-## 5. Stopping a single run
-
-**Today.** Upstream has `Workflow::stop_run(agent_run_id, request, intent)` and `stop_agent(agent_name, …)`, which stop one run while the rest of the workflow carries on (`arko_workflows/src/workflow/mod.rs:385-450`, also on `WorkflowCancelHandle`). The local checkout at `8f8569a` only has whole-workflow `cancel` and `stop`.
-
-**fin's workaround.** Built against the local checkout, fin stops a worker by stopping that worker's own workflow.
-
-**Request.** This is already upstream. One addition would help background subagents: when a run is stopped, its caller should hear about it (a note or event saying which run stopped and why). Today fin's lead isn't told when the user stops a worker.
-
-## 6. No way to know whether a note or message was read
-
-**Today.** Per-run note tracking exists (`NotesSnapshot.seen`, `arko_workflows/src/notes/mod.rs:181-190`), but only in saved checkpoints. The live `NoteBoard` is `pub(crate)` (`context/mod.rs:61`), and no `AgentEvent` reports that context was injected. Messages are acknowledged only when the recipient's run completes. arko's own recovery code checks whether a run got a note by searching the conversation for its text (`holds`, `notes/mod.rs:643`).
-
-**Effect.** When a run finishes right as a note arrives, the host can't tell whether the agent saw it.
-
-**fin's workaround.** fin searches the finished run's conversation for the note header arko writes, ``Note {seq} from agent `{name}` `` (format at `notes/mod.rs:706-714`). If it isn't there, fin continues the run once so it reads the note. A change to that format would break the check silently, and a fallback stops it from looping.
-
-**Request.** An `AgentEvent::ContextInjected { note_seqs, message_ids }` event, or `NotesHandle::given(run_id) -> u64` on the live board.
+`ContextInjected`, `notes_given` and the native mailbox's delivery receipts replace searches through conversation text to find out whether news was read. All worker costs are included in the workflow ledger.
 
 ## 7. Resumed runs keep their old tools and instructions
 
@@ -99,7 +39,7 @@ Combined with gap 1, this means:
 
 **Effect.** After an upgrade, resumed sessions keep the tools and instructions they were created with.
 
-**fin's workaround.** A session saved before workers became asynchronous keeps the blocking `run_workflow_agent`, and fin tells the agent which newer tools it lacks.
+**fin's workaround.** Saved sessions retain their original agent configurations. Sessions with old worker tools preserve their workers and worktrees as archives. Calls to retired worker tools return a migration notice. Start a new fin session to use native workers. `/new` resets a conversation inside the same saved session and keeps its original tools.
 
 **Request.** An opt-in way to continue a run with the current configuration: the new tool list and instructions, with the system message replaced (or a short "your tools changed" note added).
 
@@ -169,24 +109,14 @@ Combined with gap 1, this means:
 - The skill's folder shown to the model when the skill loads, with `scripts/` and other files left in place for it to run or read.
 - `~` expansion in global paths.
 
-## 15. A reply without a tool call counts as a failure
+## Resolved: messages to the user (15)
 
-**Today.** When a response has text but no tool call, the runtime treats it as unusable output and answers "Your response did not call a tool, so the task is still open…" (`NO_NATIVE_TOOL_CALL`, `arko_agents/src/runtime/loop/texts.rs:15`). The reply goes through the runtime's error recovery (`handle_model_output_failure`, `runtime/loop/recovery.rs:380`, called from `runtime/loop/native.rs:584`). This happens most when the user types a question while the agent works and the agent answers it in plain text.
+arko_agents supplies `message_user` and a `MessageToUser` event. A message can reach the user while the agent keeps working. Hosts can still override the tool, as fin does. The runtime also offers an opt-in setting for treating text-only responses as progress messages.
 
-**fin's workaround.** fin gives the main agent a `message_user` tool that shows the user a message without ending the turn, and its instructions say every response must call a tool.
+## Resolved: ChatGPT prompt cache (16)
 
-**Request.** A built-in tool for messages to the user, like `ask_user` without the wait, or a per-agent option that turns a text-only reply into a progress message and lets the run carry on.
-
-## 16. ChatGPT's prompt cache is reported as 5 minutes
-
-**Today.** `prompt_cache_lifetime` reports `OPENAI_PROMPT_CACHE_LIFETIME`, 5 minutes, for every OpenAI model and auth (`arko_ai/src/prompt_cache.rs:66` and `:104`). The ChatGPT OAuth backend keeps its cache for 30 minutes, and no request can change that. arko's own note on the constant records a measurement that found the cache still warm after 40 minutes, but it keeps 5 minutes as the safe value. `wait_for_message`'s automatic limit is built on this value (`WaitForMessageTool::limit`, `arko_workflows/src/messaging/wait.rs:193-206`).
-
-**Effect.** An agent on a ChatGPT login that waits for messages wakes every 4 minutes 30 seconds to keep warm a cache that lasts 30 minutes. Each wake is a model request against the plan's limits. This matters once fin moves to arko's own subagents and their waits.
-
-**fin's workaround.** fin doesn't use arko's waits. Its crew treats an OpenAI worker's cache as lasting 30 minutes: `list_workers` shows it, continuing a worker after that says the cache had expired, and the lead's instructions say to start a fresh worker once a finished one has been idle for longer.
-
-**Request.** A 30-minute lifetime for ChatGPT OAuth, or a way for the host to set the lifetime it reports (an override on `GenerationConfig` or the client).
+`LLMClient::prompt_cache_lifetime` distinguishes ChatGPT OAuth's 30-minute cache from OpenAI API keys' 5-minute cache. Native worker waits use that value. Claude workers retain fin's `cache` choice of `5m` or `1h`, supplied through a `start_agent` parameter and preparation hook.
 
 ## fin's own dependency setup
 
-fin builds against the local checkout through path dependencies, all four crates included. The checkout now tracks upstream `main`, which brings single-run stops (gap 5) within reach. Several of the requests above (1, 2, 3 and 6) would together let fin replace `src/crew.rs` with the framework's own subagents.
+fin builds against the local arko checkout through path dependencies. Native subagents replace fin's per-worker workflows, mailbox and `workers.json` runtime.

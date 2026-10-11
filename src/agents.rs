@@ -350,7 +350,7 @@ pub fn worker_config(settings: &AgentSettings) -> Result<AgentConfig, String> {
          A lead agent gave you one task, in your first message, and works on other things while you work on it. It can't see your work. Make reasonable choices yourself and say which in your report; if something blocks you, report what and why.\n\n\
          When the task is done, or you can't go further, call `complete_task`. Its summary is your report to the lead, and the only thing it sees of your work: what you did and found, with the evidence (file paths and line numbers, the commands you ran and what they showed), every file you changed (and the commits you made), and anything unfinished. Mark what you couldn't confirm, and say where you looked.\n\n\
          # The lead\n\
-         The lead can send you messages while you work: they reach you as notes from agent `lead`. Take them into account; a message that arrives as you finish comes back to you, and you report again. `message_lead` sends the lead a message without ending your task: use it for what it needs before your report (a finding that changes its plan, a question only it can answer), not for progress updates. `wait_for_lead` waits for its answer; wait only when you can't reasonably go on without one. After your report the lead may send you follow-up work: you continue with your conversation as it was.\n",
+         The lead can send you messages while you work: they reach you as workflow context updates from your lead. Take them into account; a message that arrives as you finish comes back to you, and you report again. `message_agent` addressed to `lead` sends the lead a message without ending your task: use it for what it needs before your report (a finding that changes its plan, a question only it can answer), not for progress updates. `wait_for_agents` waits for its answer; wait only when you can't reasonably go on without one. After your report the lead may send you follow-up work: you continue with your conversation as it was.\n",
     );
     instructions.push_str(&tool_instructions(settings));
     let mut builder = AgentConfig::builder(
@@ -478,18 +478,21 @@ fn worker_instructions(settings: &AgentSettings) -> String {
     let limit = if settings.max_workers == NO_LIMIT {
         "There is no limit on how many run at once.".to_string()
     } else {
-        format!("At most {} run at once.", settings.max_workers)
+        format!(
+            "At most {} run at once. Additional starts wait in a queue.",
+            settings.max_workers
+        )
     };
     let mut text = format!(
         "\n# Workers\n\
-         `start_worker` starts a worker: a subagent with the same tools (shell, terminal, files, search) that carries out one task while you go on with your own work. It returns at once with the worker's ID (w1, w2, ...), so start several in one response to run them in parallel. {limit} A worker doesn't see this conversation: give it everything it needs in `task`, namely the goal, the context and constraints, what done looks like, and what to report.\n\n\
-         With `worktree: true` a worker works in its own git worktree: a separate checkout of the current commit, on a branch of its own, where it commits its changes. Use one for each worker that changes files, so workers don't edit the same files as each other or you; then review its branch and merge it into the working directory (`git merge` or `git cherry-pick`). A worktree has the committed files only: commit what a worker needs first. Without a worktree, a worker works in the working directory itself, which suits investigations, reviews and small changes to files no one else touches.\n\n\
-         Workers report on their own. A worker's report, when it finishes, and its messages to you reach you as notes from agent `w1` (and so on) while you work, and start a new turn for you if you have ended yours. So don't wait idly: do other work, and end your turn when you have something to tell the user, saying which workers are still running. When you can't go on without their results, `wait_for_workers` waits until one finishes or sends a message (or the user types something) and returns what arrived. `message_worker` sends a worker a message: a running worker reads it at its next step, and a worker that has finished or was stopped continues its task with it, keeping its context, so give follow-up work to the worker that already knows the code. `list_workers` shows the workers and what they're doing; `stop_worker` stops one, and removes its worktree once you have merged its work.\n\n\
+         `start_agent` with `agent: worker` starts a worker: a subagent with the same tools (shell, terminal, files, search) that carries out one task while you go on with your own work. It returns at once with the worker's ID (r1, r2, ...), so start several in one response to run them in parallel. {limit} A worker doesn't see this conversation: give it everything it needs in `task`, namely the goal, the context and constraints, what done looks like, and what to report.\n\n\
+         With `isolated: true` a worker works in its own git worktree: a separate checkout of the current commit, on a branch of its own, where it commits its changes. Use one for each worker that changes files, so workers don't edit the same files as each other or you; then review its branch and merge it into the working directory (`git merge` or `git cherry-pick`). A worktree has the committed files only: commit what a worker needs first. Without a worktree, a worker works in the working directory itself, which suits investigations, reviews and small changes to files no one else touches.\n\n\
+         Workers report on their own. A worker's report, when it finishes, and its messages to you reach you as notes from run `r1` (and so on) while you work, and start a new turn for you if you have ended yours. So don't wait idly: do other work, and end your turn when you have something to tell the user, saying which workers are still running. When you can't go on without their results, `wait_for_agents` waits until one finishes or sends a message (or the user types something) and returns what arrived. `message_agent` addressed to its handle in `to` sends a worker a message: a running worker reads it at its next step, and a worker that has finished or was stopped continues its task with it, keeping its context, so give follow-up work to the worker that already knows the code. `list_agents` shows the workers and what they're doing; `stop_agent` stops the handle in `run`, and `remove_workspace: true` removes its worktree once you have merged its work.\n\n\
          Use workers for independent parts of a large task (exploring separate areas of a codebase, an audit split by area, changes in separate worktrees), or to keep a long investigation out of your own context. Do small things yourself. Check what a worker reports before you rely on it.\n"
     );
     if settings.worker.is_claude() {
         text.push_str(&format!(
-            "\nA worker keeps a prompt cache of its conversation, and `start_worker`'s `cache` sets how long it lasts after the worker's last step: `1h` for a worker you expect to send messages or follow-up work after it reports, so continuing it reuses its cache, and `5m` for a quick one-off such as a research task (a 1h cache costs more to write: twice the input price instead of 1.25 times). The default is `{}`. Continuing a worker after its cache has expired rereads its whole conversation at full price: if it finished more than an hour ago, start a fresh worker instead, unless its context is worth that.\n",
+            "\nA worker keeps a prompt cache of its conversation, and `start_agent`'s `cache` sets how long it lasts after the worker's last step: `1h` for a worker you expect to send messages or follow-up work after it reports, so continuing it reuses its cache, and `5m` for a quick one-off such as a research task (a 1h cache costs more to write: twice the input price instead of 1.25 times). The default is `{}`. Continuing a worker after its cache has expired rereads its whole conversation at full price: if it finished more than an hour ago, start a fresh worker instead, unless its context is worth that.\n",
             if settings.worker.cache_1h { "1h" } else { "5m" }
         ));
     } else if settings.worker.is_chatgpt() {
@@ -611,16 +614,16 @@ mod tests {
         let worker = worker_config(&with).unwrap();
         for tool in crew::WORKER_TOOL_NAMES {
             assert!(offers(&worker, tool), "{tool}");
-            assert!(!offers(&config, tool), "{tool}");
+            assert!(offers(&config, tool), "{tool}");
         }
-        assert!(!offers(&worker, crew::START_WORKER));
+        assert!(!offers(&worker, crew::START_AGENT));
         assert!(!offers(&worker, ASK_USER_TOOL_NAME));
         with.max_workers = NO_LIMIT;
         let config = main_config(&with).unwrap();
         assert!(config.instructions.contains("There is no limit"));
         with.max_workers = 0;
         let config = main_config(&with).unwrap();
-        assert!(!offers(&config, crew::START_WORKER));
+        assert!(!offers(&config, crew::START_AGENT));
         assert!(!config.instructions.contains("# Workers"));
         assert!(offers(&config, ASK_USER_TOOL_NAME));
     }

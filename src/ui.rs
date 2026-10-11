@@ -264,28 +264,37 @@ pub enum Control {
     Flush(oneshot::Sender<()>),
 }
 
-/// Prints a workflow's events until its channel closes. The runs of agents
-/// other than the main one are labelled `label` (a worker's ID), else
-/// `worker 1`, `worker 2`, ... by run. The events go to `feed` too, for
-/// the remote page, as they are printed.
+/// Prints a workflow's events until its channel closes. Native worker runs
+/// use their r1, r2, ... handles in the terminal and remote feed.
 pub async fn print_events(
     mut events: broadcast::Receiver<WorkflowEvent>,
     mut control: mpsc::UnboundedReceiver<Control>,
     output: Arc<Output>,
     stats: Arc<Mutex<Stats>>,
     show_thinking: bool,
-    label: Option<String>,
+    workflow: Option<std::sync::Weak<arko_workflows::Workflow>>,
     feed: Option<remote::Feed>,
 ) {
-    let feed_label = label.clone();
-    let mut printer = EventPrinter::new(output, stats, show_thinking, label);
+    let mut printer = EventPrinter::new(output, stats, show_thinking, None);
     loop {
         tokio::select! {
             biased;
             event = events.recv() => match event {
                 Ok(event) => {
+                    let label = if event.agent_name == MAIN {
+                        None
+                    } else {
+                        printer.workers.get(&event.agent_run_id).cloned().or_else(||
+                            workflow.as_ref().and_then(std::sync::Weak::upgrade)
+                                .and_then(|workflow| workflow.subagents().into_iter()
+                                    .find(|run| run.run_id == event.agent_run_id)
+                                    .map(|run| run.handle)))
+                    };
+                    if let Some(label) = &label {
+                        printer.workers.insert(event.agent_run_id, label.clone());
+                    }
                     if let Some(feed) = &feed {
-                        feed.event(&event, feed_label.as_deref());
+                        feed.event(&event, label.as_deref());
                     }
                     printer.event(event);
                 }
@@ -422,7 +431,7 @@ impl EventPrinter {
                 if self.commands.remove(&tool_call_id).is_some() {
                     self.shell_result(&output);
                 } else if crew::LEAD_TOOL_NAMES.contains(&tool_name.as_str())
-                    && tool_name != crew::START_WORKER
+                    && tool_name != crew::START_AGENT
                 {
                     // (A started worker is announced by the crew.)
                     let first = output.lines().next().unwrap_or_default();
@@ -552,7 +561,7 @@ impl EventPrinter {
                 .unwrap_or_default()
         };
         let bullet = self.output.accent("●");
-        let worker = || self.output.bold(text("worker").trim());
+        let worker = || self.output.bold(text("to").trim());
         Some(match tool {
             // The question is shown as it is asked.
             "complete_task" | ASK_USER_TOOL_NAME => return None,
@@ -573,9 +582,9 @@ impl EventPrinter {
                     message.replace('\n', "\n  ")
                 )
             }
-            crew::START_WORKER => {
+            crew::START_AGENT => {
                 let mut notes = Vec::new();
-                if flag(parameters, "worktree") {
+                if flag(parameters, "isolated") {
                     notes.push("worktree".to_string());
                 }
                 let cache = text(crew::CACHE_PARAM).trim();
@@ -593,14 +602,14 @@ impl EventPrinter {
                     cut(text("task"), 160)
                 )
             }
-            crew::MESSAGE_WORKER => format!(
+            crew::MESSAGE_AGENT => format!(
                 "{bullet} {} {}: {}",
                 self.output.bold("message"),
                 worker(),
                 cut(text("message"), 160)
             ),
-            crew::WAIT_FOR_WORKERS => {
-                let which = text("workers").trim();
+            crew::WAIT_FOR_AGENTS => {
+                let which = text("runs").trim();
                 format!(
                     "{bullet} {}",
                     self.output.bold(&if which.is_empty() {
@@ -610,12 +619,12 @@ impl EventPrinter {
                     })
                 )
             }
-            crew::LIST_WORKERS => format!("{bullet} {}", self.output.bold("list workers")),
-            crew::STOP_WORKER => format!(
+            crew::LIST_AGENTS => format!("{bullet} {}", self.output.bold("list workers")),
+            crew::STOP_AGENT => format!(
                 "{bullet} {} {}{}",
                 self.output.bold("stop"),
-                worker(),
-                if flag(parameters, "remove_worktree") {
+                self.output.bold(text("run")),
+                if flag(parameters, "remove_workspace") {
                     " and remove its worktree"
                 } else {
                     ""
@@ -724,9 +733,9 @@ pub fn brief(tool: &str, parameters: &HashMap<String, serde_json::Value>) -> Str
             let (verb, detail) = file_call(tool, parameters);
             format!("{verb} {detail}")
         }
-        crew::MESSAGE_LEAD => "message to the lead".to_string(),
+        crew::MESSAGE_AGENT => format!("message to {}", text("to")),
         HANDOVER_REPORT_TOOL_NAME => "handover report".to_string(),
-        crew::WAIT_FOR_LEAD => "waiting for the lead".to_string(),
+        crew::WAIT_FOR_AGENTS => "waiting for messages".to_string(),
         "terminal_start" => format!("background {}", command_line(text("command"))),
         tool if TerminalTool::NAMES.contains(&tool) => tool.replace('_', " "),
         LOAD_SKILL_TOOL_NAME => format!("skill {}", text("name")),
@@ -960,8 +969,11 @@ mod tests {
         );
         assert_eq!(brief(LIST_FILES_TOOL_NAME, &params(&[])), "list .");
         assert_eq!(
-            brief(crew::MESSAGE_LEAD, &params(&[("message", "hi".into())])),
-            "message to the lead"
+            brief(
+                crew::MESSAGE_AGENT,
+                &params(&[("to", "lead".into()), ("message", "hi".into())])
+            ),
+            "message to lead"
         );
 
         let printer = EventPrinter::new(
@@ -977,10 +989,10 @@ mod tests {
         };
         assert_eq!(
             line(
-                crew::START_WORKER,
+                crew::START_AGENT,
                 &[
                     ("task", "Fix the parser.".into()),
-                    ("worktree", true.into())
+                    ("isolated", true.into())
                 ]
             )
             .unwrap(),
@@ -988,23 +1000,23 @@ mod tests {
         );
         assert_eq!(
             line(
-                crew::MESSAGE_WORKER,
-                &[("worker", "w2".into()), ("message", "Use plan B.".into())]
+                crew::MESSAGE_AGENT,
+                &[("to", "w2".into()), ("message", "Use plan B.".into())]
             )
             .unwrap(),
             "● message w2: Use plan B."
         );
         assert_eq!(
-            line(crew::WAIT_FOR_WORKERS, &[]).unwrap(),
+            line(crew::WAIT_FOR_AGENTS, &[]).unwrap(),
             "● waiting for the workers"
         );
         assert_eq!(
             line(
-                crew::STOP_WORKER,
-                &[("worker", "w1".into()), ("remove_worktree", "true".into())]
+                crew::STOP_AGENT,
+                &[("run", "r1".into()), ("remove_workspace", "true".into())]
             )
             .unwrap(),
-            "● stop w1 and remove its worktree"
+            "● stop r1 and remove its worktree"
         );
         assert_eq!(
             line(
@@ -1021,7 +1033,7 @@ mod tests {
         );
         assert_eq!(
             line(
-                crew::START_WORKER,
+                crew::START_AGENT,
                 &[("task", "Look it up.".into()), ("cache", "5m".into())]
             )
             .unwrap(),

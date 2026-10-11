@@ -49,9 +49,9 @@ pub fn call(tool: &str, parameters: &Parameters) -> Option<Item> {
             Kind::Message,
             text(parameters, message::MESSAGE_PARAM).trim(),
         ),
-        crew::START_WORKER => {
+        crew::START_AGENT => {
             let mut notes = Vec::new();
-            if flag(parameters, "worktree") {
+            if flag(parameters, "isolated") {
                 notes.push("worktree".to_string());
             }
             let cache = text(parameters, crew::CACHE_PARAM).trim();
@@ -66,28 +66,28 @@ pub fn call(tool: &str, parameters: &Parameters) -> Option<Item> {
             let task = text(parameters, "task").trim();
             call(format!("start worker{notes}: {}", cut(task, 160))).detail(long(task, 160))
         }
-        crew::MESSAGE_WORKER => {
+        crew::MESSAGE_AGENT => {
             let message = text(parameters, "message").trim();
             call(format!(
                 "message {}: {}",
-                text(parameters, "worker").trim(),
+                text(parameters, "to").trim(),
                 cut(message, 160)
             ))
             .detail(long(message, 160))
         }
-        crew::WAIT_FOR_WORKERS => {
-            let which = text(parameters, "workers").trim();
+        crew::WAIT_FOR_AGENTS => {
+            let which = text(parameters, "runs").trim();
             call(if which.is_empty() {
                 "waiting for the workers".to_string()
             } else {
                 format!("waiting for {which}")
             })
         }
-        crew::LIST_WORKERS => call("list workers".into()),
-        crew::STOP_WORKER => call(format!(
+        crew::LIST_AGENTS => call("list workers".into()),
+        crew::STOP_AGENT => call(format!(
             "stop {}{}",
-            text(parameters, "worker").trim(),
-            if flag(parameters, "remove_worktree") {
+            text(parameters, "run").trim(),
+            if flag(parameters, "remove_workspace") {
                 " and remove its worktree"
             } else {
                 ""
@@ -135,7 +135,7 @@ fn long(text: &str, limit: usize) -> String {
 pub fn shows_result(tool: &str) -> bool {
     !matches!(
         tool,
-        "complete_task" | ASK_USER_TOOL_NAME | HANDOVER_REPORT_TOOL_NAME | crew::START_WORKER
+        "complete_task" | ASK_USER_TOOL_NAME | HANDOVER_REPORT_TOOL_NAME | crew::START_AGENT
     ) && tool != message::MESSAGE_USER
 }
 
@@ -186,8 +186,8 @@ pub fn result(tool: &str, output: &str) -> Option<Item> {
 pub fn worker_call(tool: &str, parameters: &Parameters) -> Option<(String, Option<String>)> {
     match tool {
         "complete_task" => None,
-        crew::MESSAGE_LEAD => Some((
-            "message to the lead".into(),
+        crew::MESSAGE_AGENT => Some((
+            format!("message to {}", text(parameters, "to")),
             Some(text(parameters, "message").trim().to_string()),
         )),
         _ => Some((ui::brief(tool, parameters), None)),
@@ -209,8 +209,8 @@ mod tests {
     fn calls_read_as_in_the_terminal_with_their_long_parts_whole() {
         let task = "Fix the parser. ".repeat(20);
         let item = call(
-            crew::START_WORKER,
-            &params(&[("task", task.clone().into()), ("worktree", true.into())]),
+            crew::START_AGENT,
+            &params(&[("task", task.clone().into()), ("isolated", true.into())]),
         )
         .unwrap();
         assert!(
@@ -239,8 +239,11 @@ mod tests {
             "1 | fn main() {} (2 lines)"
         );
         assert_eq!(
-            worker_call(crew::MESSAGE_LEAD, &params(&[("message", "Done?".into())])),
-            Some(("message to the lead".into(), Some("Done?".into())))
+            worker_call(
+                crew::MESSAGE_AGENT,
+                &params(&[("to", "lead".into()), ("message", "Done?".into())])
+            ),
+            Some(("message to lead".into(), Some("Done?".into())))
         );
     }
 }

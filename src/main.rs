@@ -5,9 +5,8 @@
 //! can start workers that run while it goes on (`crew`), each in the
 //! working directory or a git worktree of its own. Each message is a turn of one
 //! conversation: the first runs the agent, later ones continue it. Ctrl-C
-//! stops a turn (the workflow is stopped, then rebuilt from its checkpoint,
-//! and the next message reopens the conversation); lines typed while the
-//! agent works reach it as notes, and its `ask_user` questions are answered
+//! stops only the lead. The next message reopens its conversation. Lines
+//! typed while the agent works reach it as notes, and its `ask_user` questions are answered
 //! at the prompt. The workers' reports reach it as notes while it works,
 //! and start a turn when it is idle. Every session is saved and can be
 //! resumed.
@@ -446,28 +445,18 @@ async fn run(args: Args) -> Result<ExitCode, String> {
         let (crew, woken) = Crew::new(crew::Setup {
             session_id: session.id.clone(),
             session_dir: session.dir.clone(),
-            workspace: settings.workspace.clone(),
-            client: client.clone(),
-            worker_config: worker_config.clone(),
-            tools: tools.clone(),
             output: output.clone(),
-            stats: stats.clone(),
-            show_thinking: settings.show_thinking,
             max_running: settings.max_workers,
-            cache: match settings.worker.provider() {
-                Ok(Provider::Anthropic) => {
-                    Some(crew::WorkerCache::claude(settings.worker.cache_1h))
-                }
-                Ok(Provider::OpenAI) => Some(crew::WorkerCache::chatgpt()),
-                _ => None,
-            },
+            cache_1h: settings.worker.cache_1h,
+            cache_lifetime: client
+                .prompt_cache_lifetime(
+                    &worker_config.llm_config.model,
+                    &worker_config.llm_config.generation_config,
+                )
+                .await,
+            allow_outside_workspace: settings.allow_outside_workspace,
             feed: Some(feed.clone()),
         });
-        if !new {
-            for problem in crew.load() {
-                output.line(&output.warn(&format!("fin: {problem}")));
-            }
-        }
         (Some(crew), Some(woken))
     } else {
         (None, None)
@@ -510,7 +499,6 @@ async fn run(args: Args) -> Result<ExitCode, String> {
         crew,
         asker,
         one_shot,
-        unread_news: 0,
         exit_warned: false,
         news_hint_shown: false,
         feed,
@@ -941,7 +929,7 @@ fn unoffered(saved: &SavedSetup, fresh: &[(&str, &arko_agents::AgentConfig)]) ->
         skills |= fresh.skills_config.is_some() && saved.skills_config.is_none();
     }
     let mut parts = Vec::new();
-    if missing.contains(&crew::START_WORKER) {
+    if missing.contains(&crew::START_AGENT) {
         parts.push("workers that run in parallel".to_string());
     }
     if missing
@@ -1088,18 +1076,12 @@ struct Harness {
     queue_lines: bool,
     /// The user quit while a turn ran before the prompt opened.
     exiting: bool,
-    /// The workers; `None` when they are off, or when the session's main
-    /// agent delegates with `run_workflow_agent` (sessions from before
-    /// workers ran in parallel), which waits for the worker.
+    /// Native workers. None when disabled or when resuming a legacy session.
     crew: Option<Arc<Crew>>,
     /// Puts the main agent's questions to the user.
     asker: Arc<Asker>,
     /// fin sends one message and exits (-p).
     one_shot: bool,
-    /// News from the workers given to the main agent as notes during its
-    /// last turn, which it didn't get to read: a turn continues its
-    /// conversation for them.
-    unread_news: usize,
     /// `/exit` was typed with workers running: the next one quits.
     exit_warned: bool,
     /// The user was told that the workers' news waits for their message.
@@ -1168,37 +1150,63 @@ impl Harness {
         builder = builder
             .agent_tool(MAIN, Arc::new(message::MessageUser))
             .user_input_handler(self.asker.clone());
-        // Sessions from before workers ran in parallel delegate with
-        // `run_workflow_agent`, which waits for the worker: they keep it.
-        let legacy = saved
-            .as_ref()
-            .and_then(|saved| saved.configs.get(MAIN))
-            .is_some_and(|config| {
-                config
-                    .tool_config
-                    .available_tool_names
-                    .iter()
-                    .any(|name| name == RUN_WORKFLOW_AGENT_TOOL_NAME)
-            });
+        let legacy = self.settings.max_workers > 0
+            && saved
+                .as_ref()
+                .and_then(|saved| saved.configs.get(MAIN))
+                .is_some_and(|config| {
+                    !config
+                        .tool_config
+                        .available_tool_names
+                        .iter()
+                        .any(|name| name == crew::START_AGENT)
+                });
         if legacy {
             self.crew = None;
-        } else if let Some(crew) = &self.crew {
-            for tool in crew.lead_tools() {
-                builder = builder.agent_tool(MAIN, tool);
+            self.unoffered = Some(match self.unoffered.take() {
+                Some(note) => format!("{note}\n{}", crew::LEGACY_NOTICE),
+                None => crew::LEGACY_NOTICE.into(),
+            });
+            for name in crew::LEGACY_TOOL_NAMES
+                .iter()
+                .copied()
+                .chain([RUN_WORKFLOW_AGENT_TOOL_NAME])
+            {
+                builder = builder.agent_tool(MAIN, Arc::new(crew::LegacyTool(name)));
             }
         }
-        if legacy && self.settings.max_workers > 0 {
-            builder = builder
-                .agent(WORKER, config(WORKER, &self.worker_config))
-                .workflow_services(
-                    WorkflowServicesConfig::default()
-                        .allow_caller(MAIN)
-                        .allow_target(WORKER)
-                        .max_active_calls(self.settings.max_workers),
-                );
+        if self.settings.max_workers > 0 {
+            builder = builder.agent(WORKER, config(WORKER, &self.worker_config));
             for tool in &self.tools {
                 builder = builder.agent_tool(WORKER, tool.clone());
             }
+            if legacy {
+                for name in crew::LEGACY_TOOL_NAMES {
+                    builder = builder.agent_tool(WORKER, Arc::new(crew::LegacyTool(name)));
+                }
+            }
+        }
+        if let Some(crew) = &self.crew {
+            let weak = Arc::downgrade(crew);
+            builder = builder
+                .workflow_services(
+                    WorkflowServicesConfig::default()
+                        .allow_caller(MAIN)
+                        .allow_target(WORKER),
+                )
+                .subagents(crew.config())
+                .hook(
+                    HookPoint::PreToolExecution,
+                    Arc::new(move |hook| {
+                        if hook.agent_name.as_deref() == Some(MAIN)
+                            && let Some(run) = hook.agent_run_id
+                            && let Some(crew) = weak.upgrade()
+                        {
+                            crew.lead_run(run);
+                        }
+                        HookResult::Continue
+                    }),
+                );
         }
         if let Some(checkpoint) = checkpoint {
             builder = builder.resume_from(checkpoint);
@@ -1211,7 +1219,7 @@ impl Harness {
             self.output.clone(),
             self.stats.clone(),
             self.settings.show_thinking,
-            None,
+            Some(Arc::downgrade(&workflow)),
             Some(self.feed.clone()),
         ));
         *lock(&self.gauges.workflow) = Some(workflow.clone());
@@ -1224,6 +1232,18 @@ impl Harness {
         } else {
             Conversation::New
         };
+        if let Some(crew) = &self.crew {
+            let lead = workflow
+                .result()
+                .agent_results
+                .iter()
+                .rfind(|run| run.agent_name == MAIN)
+                .map(|run| run.agent_run_id);
+            crew.attach(&workflow, lead);
+            if resume {
+                workflow.resume_subagents();
+            }
+        }
         self.workflow = Some(workflow);
         Ok(())
     }
@@ -1400,14 +1420,6 @@ impl Harness {
                 let quit = self.mirrored(|harness| match command {
                     "/exit" | "/quit" => harness.may_exit(),
                     "/new" => {
-                        let previous = match &harness.conversation {
-                            Conversation::Answered(result) => Some(result.clone()),
-                            _ => None,
-                        };
-                        if let Some(crew) = &harness.crew {
-                            crew.lead_restarted(previous.as_ref());
-                        }
-                        harness.unread_news = 0;
                         harness.conversation = Conversation::New;
                         harness.unread.clear();
                         harness.output.line(
@@ -1686,9 +1698,9 @@ impl Harness {
                     workers.unwrap_or((0.0, 0, 0));
                 out.line(&format!(
                     "${:.2} billed in this session · {}k input and {}k output tokens",
-                    workflow.context().budget.total_spent() + worker_dollars,
-                    (input + worker_input) / 1000,
-                    (output + worker_output) / 1000
+                    workflow.context().budget.total_spent(),
+                    input / 1000,
+                    output / 1000
                 ));
                 if worker_input + worker_output > 0 {
                     out.line(&out.dim(&format!(
@@ -1721,7 +1733,7 @@ impl Harness {
                     out.line("Workers are off in this session (--workers 0).");
                 }
                 None => out.line(
-                    "This session started before workers ran in parallel: the agent waits for each worker it runs.",
+                    "Old workers are archived. Start a new fin session for native workers. /new keeps this session's old tools.",
                 ),
             },
             "/stop-workers" => {
@@ -1888,22 +1900,9 @@ impl Harness {
         let resumes = !matches!(prompt, Prompt::Recover)
             && matches!(&self.conversation, Conversation::Stopped(run) if run.restart != Restart::Recover);
         let news_turn = matches!(prompt, Prompt::News);
-        let (message, mail) = self.compose(prompt);
+        let message = self.compose(prompt);
         if news_turn {
-            let mut from: Vec<&str> = Vec::new();
-            for event in &mail {
-                if !from.contains(&event.worker.as_str()) {
-                    from.push(&event.worker);
-                }
-            }
-            self.say(
-                Level::Info,
-                &if from.is_empty() {
-                    "  ⇠ the workers' news goes to the agent".to_string()
-                } else {
-                    format!("  ⇠ news from {} goes to the agent", and_list(&from))
-                },
-            );
+            self.say(Level::Info, "  ⇠ the workers' news goes to the agent");
         }
         if resumes {
             self.say(
@@ -1913,11 +1912,6 @@ impl Harness {
         }
         let spent_before = self.spent();
         let started = Instant::now();
-        // Notes of the turn before were given again with this one.
-        self.unread_news = 0;
-        if let Some(crew) = &self.crew {
-            crew.lead_started(workflow.notes_handle());
-        }
         let conversation = std::mem::replace(&mut self.conversation, Conversation::New);
         let call = {
             let workflow = workflow.clone();
@@ -1932,7 +1926,7 @@ impl Harness {
             })
         };
         tokio::pin!(call);
-        let mut notes: Vec<String> = Vec::new();
+        let mut notes: Vec<(u64, String)> = Vec::new();
         let mut queued: Vec<String> = Vec::new();
         let mut stopping = false;
         let mut exit = false;
@@ -2049,15 +2043,12 @@ impl Harness {
                         queued.push(text);
                     } else {
                         match workflow.post_note(Note::new(text.clone()).to([MAIN]).once()) {
-                            Ok(_) => {
+                            Ok(seq) => {
                                 self.output.line(&self.output.dim(
                                     "  ✎ added to the task: the agent reads it at its next step",
                                 ));
                                 self.feed.user(&text, source, Delivery::Note);
-                                notes.push(text);
-                                if let Some(crew) = &self.crew {
-                                    crew.user_typed();
-                                }
+                                notes.push((seq.seq, text));
                             }
                             Err(error) => self.say(
                                 Level::Error,
@@ -2074,16 +2065,11 @@ impl Harness {
                 "the turn's task failed: {error}"
             )))
         });
-        let unread_news = self
-            .crew
-            .as_ref()
-            .map_or(0, |crew| crew.lead_ended(outcome.as_ref().ok()));
         if let Some((id, _)) = answering.take() {
             self.feed.question_closed(id);
         }
         let end = match outcome {
             Ok(result) => {
-                self.unread_news = unread_news;
                 self.output.line("");
                 // With -p, a reply the workers' news will follow isn't the
                 // answer.
@@ -2093,28 +2079,20 @@ impl Harness {
                     self.output.answer(result.summary.trim());
                 }
                 self.feed.reply(&result.summary);
-                self.keep_unread(&notes, &result);
+                self.keep_unread(&notes, &workflow);
                 self.conversation = Conversation::Answered(result);
                 TurnEnd::Answered
             }
-            Err(WorkflowError::Cancelled) if stopping => {
+            Err(WorkflowError::AgentStopped { .. } | WorkflowError::Cancelled) if stopping => {
                 self.say(Level::Warn, "Stopped.");
-                self.unread.extend(notes);
-                match self.reopen() {
-                    Ok(()) => TurnEnd::Stopped,
-                    Err(error) => {
-                        self.say(
-                            Level::Error,
-                            &format!("The session couldn't be reopened after the stop: {error}"),
-                        );
-                        TurnEnd::Failed
-                    }
-                }
+                self.keep_unread(&notes, &workflow);
+                self.conversation = conversation_of(&workflow);
+                TurnEnd::Stopped
             }
             Err(error) => {
                 self.say(Level::Error, &format!("The turn failed: {error}"));
-                self.unread.extend(notes);
-                self.recover_after_error(&workflow, mail);
+                self.keep_unread(&notes, &workflow);
+                self.recover_after_error(&workflow);
                 TurnEnd::Failed
             }
         };
@@ -2133,11 +2111,9 @@ impl Harness {
 
     /// Whether the workers have news for the main agent, or will have.
     fn news_coming(&self) -> bool {
-        self.unread_news > 0
-            || self
-                .crew
-                .as_ref()
-                .is_some_and(|crew| crew.has_mail() || !crew.running().is_empty())
+        self.crew
+            .as_ref()
+            .is_some_and(|crew| !crew.running().is_empty() || crew.has_mail())
     }
 
     /// While the main agent's conversation waits for a message, the
@@ -2148,7 +2124,7 @@ impl Harness {
             let Some(crew) = self.crew.clone() else {
                 return News::Done;
             };
-            if !crew.has_mail() && self.unread_news == 0 {
+            if !crew.has_mail() {
                 return News::Done;
             }
             if !matches!(self.conversation, Conversation::Answered(_)) {
@@ -2189,7 +2165,7 @@ impl Harness {
                     return TurnEnd::Stopped;
                 }
                 // News that came as the last turn ended.
-                News::Done if crew.has_mail() || self.unread_news > 0 => continue,
+                News::Done if crew.has_mail() => continue,
                 News::Done if running.is_empty() => return TurnEnd::Answered,
                 // The conversation can't take the news (a turn failed).
                 News::Waiting | News::Failed if running.is_empty() => return TurnEnd::Failed,
@@ -2226,14 +2202,12 @@ impl Harness {
         }
     }
 
-    /// The message as the agent gets it, and the workers' news it carries:
-    /// with the project's instructions when it starts a conversation, with
-    /// what the user typed during the last turn that the agent didn't read,
-    /// and with the news from the workers it hasn't been given. A turn that
-    /// recovers gets no message.
-    fn compose(&mut self, prompt: Prompt) -> (String, Vec<crew::Event>) {
+    /// The user's message with project instructions and unread operator notes.
+    /// arko injects worker news from its mailbox when the run continues.
+    /// Recovery keeps the existing prompt.
+    fn compose(&mut self, prompt: Prompt) -> String {
         let message = match prompt {
-            Prompt::Recover => return (String::new(), Vec::new()),
+            Prompt::Recover => return String::new(),
             Prompt::User(message) => Some(message),
             Prompt::News => None,
         };
@@ -2256,26 +2230,10 @@ impl Harness {
                     .join("\n")
             ));
         }
-        let mail = self
-            .crew
-            .as_ref()
-            .map(|crew| crew.take_mail())
-            .unwrap_or_default();
-        if !mail.is_empty() {
-            let heading = if message.is_some() {
-                "# News from your workers since your last turn"
-            } else {
-                "# News from your workers (fin started this turn for it; the user hasn't written)"
-            };
-            parts.push(format!(
-                "{heading}\n\n{}",
-                mail.iter()
-                    .map(crew::Event::text)
-                    .collect::<Vec<_>>()
-                    .join("\n\n---\n\n")
-            ));
+        if let Some(notice) = &self.unoffered {
+            parts.push(format!("# Session capabilities\n\n{notice}"));
         }
-        let message = match message {
+        match message {
             Some(message) if parts.is_empty() => message,
             Some(message) => {
                 parts.push(format!("# My message\n\n{message}"));
@@ -2285,22 +2243,24 @@ impl Harness {
                 "Your workers sent you news as your last turn ended: it follows. (fin started this turn for it; the user hasn't written.)".to_string()
             }
             None => parts.join("\n\n"),
-        };
-        (message, mail)
+        }
     }
 
     /// Notes the run never read go with the next message.
-    fn keep_unread(&mut self, notes: &[String], result: &AgentResult) {
-        let read = |text: &str| {
-            result.task.conversation.messages.iter().any(|message| {
-                message
-                    .content
-                    .iter()
-                    .filter_map(arko_ai::Content::as_text)
-                    .any(|part| part.contains(text))
-            })
-        };
-        let unread: Vec<String> = notes.iter().filter(|text| !read(text)).cloned().collect();
+    fn keep_unread(&mut self, notes: &[(u64, String)], workflow: &Workflow) {
+        let given = workflow
+            .result()
+            .agent_results
+            .iter()
+            .filter(|run| run.agent_name == MAIN)
+            .map(|run| workflow.notes_given(run.agent_run_id))
+            .max()
+            .unwrap_or(0);
+        let unread: Vec<String> = notes
+            .iter()
+            .filter(|(seq, _)| *seq > given)
+            .map(|(_, text)| text.clone())
+            .collect();
         if !unread.is_empty() {
             self.say(
                 Level::Info,
@@ -2323,30 +2283,18 @@ impl Harness {
                 )
             },
         );
-        workflow.stop(StopRequest::operator("the user stopped the turn"));
-        true
+        workflow
+            .stop_agent(
+                MAIN,
+                StopRequest::operator("the user stopped the turn"),
+                RunStopIntent::Relaunch,
+            )
+            .is_ok_and(|runs| !runs.is_empty())
     }
 
-    /// After a stop, the workflow is built again from its checkpoint, and
-    /// the stopped conversation waits for the next message.
-    fn reopen(&mut self) -> Result<(), String> {
-        self.workflow = None;
-        self.open(true)
-    }
-
-    /// After a failed turn, the conversation goes on if its last reply
-    /// stands; otherwise the next message starts a new one. The workers'
-    /// news the turn carried, and the news it may not have read, go back
-    /// to the mailbox.
-    fn recover_after_error(&mut self, workflow: &Workflow, mail: Vec<crew::Event>) {
+    /// Keep the same workflow after a failed turn so its workers keep running.
+    fn recover_after_error(&mut self, workflow: &Workflow) {
         self.conversation = conversation_of(workflow);
-        if let Some(crew) = &self.crew {
-            crew.lead_restarted(match &self.conversation {
-                Conversation::Answered(result) => Some(result),
-                _ => None,
-            });
-            crew.put_back(mail);
-        }
         if matches!(self.conversation, Conversation::New) {
             self.say(
                 Level::Info,
@@ -2367,7 +2315,6 @@ impl Harness {
     /// What the session has cost: the main agent's runs and the workers'.
     fn spent(&self) -> f64 {
         self.workflow().context().budget.total_spent()
-            + self.crew.as_ref().map_or(0.0, |crew| crew.spent().0)
     }
 
     fn footer(&self, spent_before: f64, started: Instant) {
@@ -2404,23 +2351,25 @@ impl Harness {
 /// Where the main agent's conversation stands in a workflow built from a
 /// checkpoint: stopped (or interrupted), answered, or neither.
 fn conversation_of(workflow: &Workflow) -> Conversation {
-    if let Some(run) = workflow
-        .stopped_runs()
-        .into_iter()
-        .rfind(|run| run.result.agent_name == MAIN)
-    {
-        return Conversation::Stopped(run);
-    }
-    match workflow
+    let latest = workflow
         .result()
         .agent_results
         .into_iter()
-        .rfind(|result| result.agent_name == MAIN)
+        .rfind(|result| result.agent_name == MAIN);
+    let Some(latest) = latest else {
+        return Conversation::New;
+    };
+    if let Some(run) = workflow
+        .stopped_runs()
+        .into_iter()
+        .find(|run| run.result.agent_run_id == latest.agent_run_id)
     {
-        Some(result) if result.status == AgentRunStatus::Completed => {
-            Conversation::Answered(result)
-        }
-        _ => Conversation::New,
+        return Conversation::Stopped(run);
+    }
+    if latest.status == AgentRunStatus::Completed {
+        Conversation::Answered(latest)
+    } else {
+        Conversation::New
     }
 }
 
@@ -2531,8 +2480,7 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 }
 
 /// The session's figures for the remote page's status, read as the page
-/// asks. The main workflow (built again after a stop) and the crew are set
-/// as they change.
+/// asks. The workflow and its worker view are refreshed on session resume.
 struct Gauges {
     workflow: Mutex<Option<Arc<Workflow>>>,
     crew: Mutex<Option<Arc<Crew>>>,
@@ -2545,8 +2493,7 @@ impl remote::Meter for Gauges {
         let crew = lock(&self.crew).clone();
         let stats = lock(&self.stats).clone();
         remote::Reading {
-            cost: workflow.map_or(0.0, |workflow| workflow.context().budget.total_spent())
-                + crew.as_ref().map_or(0.0, |crew| crew.dollars()),
+            cost: workflow.map_or(0.0, |workflow| workflow.context().budget.total_spent()),
             context_tokens: stats.context_tokens,
             plan_usage: stats.plan_usage,
             workers_running: crew.as_ref().map(|crew| crew.running()).unwrap_or_default(),
@@ -2825,15 +2772,13 @@ mod tests {
         let (crew, woken) = Crew::new(crew::Setup {
             session_id: session.id.clone(),
             session_dir: session.dir.clone(),
-            workspace,
-            client: client.clone(),
-            worker_config: worker_config.clone(),
-            tools: Vec::new(),
             output: output.clone(),
-            stats: stats.clone(),
-            show_thinking: false,
             max_running: NO_LIMIT,
-            cache: None,
+            cache_1h: false,
+            cache_lifetime: arko_ai::prompt_cache::PromptCacheLifetime::Known(Duration::from_secs(
+                300,
+            )),
+            allow_outside_workspace: false,
             feed: Some(feed.clone()),
         });
         let (questions_sender, questions) = mpsc::unbounded_channel();
@@ -2871,7 +2816,6 @@ mod tests {
                 questions: interactive.then_some(questions_sender),
             }),
             one_shot: !interactive,
-            unread_news: 0,
             exit_warned: false,
             news_hint_shown: false,
             feed,
@@ -2911,18 +2855,18 @@ mod tests {
             seen.lock().unwrap().push(body.clone());
             let hold = hold.clone();
             Box::pin(async move {
-                if body.contains("You are worker w1") {
+                if body.contains("You are agent run r1") {
                     hold.notified().await;
                     complete("w", "There are 3 files.")
                 } else if body.contains("There are 3 files.") {
                     complete("m3", "Final: 3 files.")
-                } else if body.contains("Started worker w1") {
-                    complete("m2", "w1 is counting; its report follows.")
+                } else if body.contains("Started r1") {
+                    complete("m2", "r1 is counting; its report follows.")
                 } else {
                     tool_call(
                         "m1",
-                        crew::START_WORKER,
-                        serde_json::json!({"task": "Count the files."}),
+                        crew::START_AGENT,
+                        serde_json::json!({"agent": WORKER, "task": "Count the files."}),
                     )
                 }
             })
@@ -2934,9 +2878,9 @@ mod tests {
             .turn(Prompt::User("How many files?".into()), &mut inputs)
             .await;
         assert!(matches!(end, TurnEnd::Answered));
-        assert_eq!(summary(&harness), "w1 is counting; its report follows.");
+        assert_eq!(summary(&harness), "r1 is counting; its report follows.");
         let crew = harness.crew.clone().unwrap();
-        assert_eq!(crew.running(), ["w1"]);
+        assert_eq!(crew.running(), ["r1"]);
         assert!(harness.news_coming());
 
         release.notify_one();
@@ -2950,15 +2894,505 @@ mod tests {
         let bodies = bodies.lock().unwrap().clone();
         let news = bodies
             .iter()
-            .find(|body| body.contains("There are 3 files.") && !body.contains("You are worker"))
+            .find(|body| body.contains("There are 3 files.") && !body.contains("You are agent run"))
             .unwrap();
         assert!(
-            news.contains(
-                "# News from your workers (fin started this turn for it; the user hasn't written)"
-            ),
+            news.contains("fin started this turn for it; the user hasn't written"),
             "{news}"
         );
         crew.shutdown().await;
+    }
+
+    /// Both directions share arko's mailbox, and a wait returns the report whole.
+    #[tokio::test]
+    async fn workers_and_lead_exchange_messages_and_reports_mid_turn() {
+        use crate::mock_model::{ModelServer, complete, tool_call};
+        let server = ModelServer::start(Arc::new(move |_, body: String| Box::pin(async move {
+            if body.contains("You are agent run r1") {
+                if body.contains("Use the blue branch.") { complete("w3", "Blue branch checked.") }
+                else if body.contains("Sent. Your lead") {
+                    tool_call("w2", crew::WAIT_FOR_AGENTS, serde_json::json!({"timeout_seconds": 10}))
+                } else { tool_call("w1", crew::MESSAGE_AGENT, serde_json::json!({"to":"lead", "message":"Which branch should I check?"})) }
+            } else if body.contains("Blue branch checked.") { complete("m5", "The blue branch is checked.") }
+            else if body.contains("Use the blue branch.") { tool_call("m4", crew::WAIT_FOR_AGENTS, serde_json::json!({"runs":["r1"],"all":true,"timeout_seconds":10})) }
+            else if body.contains("Which branch should I check?") { tool_call("m3", crew::MESSAGE_AGENT, serde_json::json!({"to":"r1", "message":"Use the blue branch."})) }
+            else if body.contains("Started r1") { tool_call("m2", crew::WAIT_FOR_AGENTS, serde_json::json!({"timeout_seconds":10})) }
+            else { tool_call("m1", crew::START_AGENT, serde_json::json!({"agent":WORKER,"task":"Check a branch after asking which one."})) }
+        }))).await;
+        let temp = tempfile::tempdir().unwrap();
+        let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
+        let end = tokio::time::timeout(
+            Duration::from_secs(30),
+            harness.turn(Prompt::User("Check it.".into()), &mut inputs),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(end, TurnEnd::Answered));
+        assert_eq!(summary(&harness), "The blue branch is checked.");
+        harness.flush_printer().await;
+        assert!(has(&harness.feed, "worker", "message to lead", ""));
+        let ledger = harness.workflow().context().budget.total_spent();
+        assert!(harness.crew.as_ref().unwrap().spent().0 > 0.0);
+        assert_eq!(harness.spent(), ledger);
+        assert_eq!(remote::Meter::read(harness.gauges.as_ref()).cost, ledger);
+        harness.crew.as_ref().unwrap().shutdown().await;
+    }
+
+    /// Ctrl-C preserves the worker and the workflow; /new transfers its ownership.
+    #[tokio::test]
+    async fn a_lead_stop_and_new_conversation_keep_workers_alive() {
+        use crate::mock_model::{ModelServer, complete, tool_call};
+        let worker_release = Arc::new(tokio::sync::Notify::new());
+        let lead_waiting = Arc::new(tokio::sync::Notify::new());
+        let hold = worker_release.clone();
+        let ready = lead_waiting.clone();
+        let server = ModelServer::start(Arc::new(move |_, body: String| {
+            let hold = hold.clone();
+            let ready = ready.clone();
+            Box::pin(async move {
+                if body.contains("You are agent run r1") {
+                    hold.notified().await;
+                    complete("w", "Worker survived.")
+                } else if body.contains("Worker survived.") {
+                    complete("m4", "Received the surviving worker's report.")
+                } else if body.contains("Fresh lead") {
+                    if body.contains("agent `worker`") {
+                        complete("m3", "I own r1 now.")
+                    } else {
+                        tool_call("m2", crew::LIST_AGENTS, serde_json::json!({}))
+                    }
+                } else if body.contains("Started r1") {
+                    ready.notify_one();
+                    std::future::pending::<String>().await
+                } else {
+                    tool_call(
+                        "m1",
+                        crew::START_AGENT,
+                        serde_json::json!({"agent":WORKER,"task":"Stay running."}),
+                    )
+                }
+            })
+        }))
+        .await;
+        let temp = tempfile::tempdir().unwrap();
+        let (mut harness, mut inputs, sender) = harness(temp.path(), server.client(), true);
+        let workflow = harness.workflow().clone();
+        let interrupt = tokio::spawn(async move {
+            lead_waiting.notified().await;
+            sender.send(Input::Interrupt).unwrap();
+            sender
+        });
+        let end = tokio::time::timeout(
+            Duration::from_secs(25),
+            harness.turn(Prompt::User("Start background work.".into()), &mut inputs),
+        )
+        .await
+        .unwrap();
+        let _sender = interrupt.await.unwrap();
+        assert!(matches!(end, TurnEnd::Stopped));
+        assert!(Arc::ptr_eq(&workflow, harness.workflow()));
+        assert_eq!(harness.crew.as_ref().unwrap().running(), ["r1"]);
+        let previous = workflow.subagents()[0].caller_run_id;
+        harness.conversation = Conversation::New;
+        let end = tokio::time::timeout(
+            Duration::from_secs(15),
+            harness.turn(Prompt::User("Fresh lead".into()), &mut inputs),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(end, TurnEnd::Answered));
+        assert_eq!(summary(&harness), "I own r1 now.");
+        let current = match &harness.conversation {
+            Conversation::Answered(result) => result.agent_run_id,
+            _ => unreachable!(),
+        };
+        assert_ne!(previous, current);
+        assert_eq!(workflow.subagents()[0].caller_run_id, current);
+        worker_release.notify_one();
+        let end =
+            tokio::time::timeout(Duration::from_secs(20), harness.finish_workers(&mut inputs))
+                .await
+                .unwrap();
+        assert!(matches!(end, TurnEnd::Answered));
+        assert_eq!(summary(&harness), "Received the surviving worker's report.");
+        harness.crew.as_ref().unwrap().shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn resuming_a_session_restarts_its_interrupted_native_workers() {
+        use crate::mock_model::{ModelServer, complete, tool_call};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let workers = Arc::new(AtomicUsize::new(0));
+        let seen = workers.clone();
+        let started = Arc::new(tokio::sync::Notify::new());
+        let ready = started.clone();
+        let server = ModelServer::start(Arc::new(move |_, body: String| {
+            let seen = seen.clone();
+            let ready = ready.clone();
+            Box::pin(async move {
+                if body.contains("You are agent run r1") {
+                    if seen.fetch_add(1, Ordering::SeqCst) == 0 {
+                        ready.notify_one();
+                        std::future::pending::<String>().await
+                    } else {
+                        complete("w2", "Recovered the worker.")
+                    }
+                } else if body.contains("Recovered the worker.") {
+                    complete("m3", "Worker recovery finished.")
+                } else if body.contains("Started r1") {
+                    complete("m2", "Worker is running.")
+                } else {
+                    tool_call(
+                        "m1",
+                        crew::START_AGENT,
+                        serde_json::json!({"agent":WORKER,"task":"Resume this work."}),
+                    )
+                }
+            })
+        }))
+        .await;
+        let temp = tempfile::tempdir().unwrap();
+        let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
+        assert!(matches!(
+            harness
+                .turn(Prompt::User("Start it.".into()), &mut inputs)
+                .await,
+            TurnEnd::Answered
+        ));
+        tokio::time::timeout(Duration::from_secs(10), started.notified())
+            .await
+            .unwrap();
+        harness.crew.as_ref().unwrap().shutdown().await;
+        harness.open(true).unwrap();
+        assert!(matches!(
+            tokio::time::timeout(Duration::from_secs(25), harness.finish_workers(&mut inputs))
+                .await
+                .unwrap(),
+            TurnEnd::Answered
+        ));
+        assert_eq!(summary(&harness), "Worker recovery finished.");
+        assert_eq!(workers.load(Ordering::SeqCst), 2);
+        harness.crew.as_ref().unwrap().shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn legacy_sessions_explain_retired_tools_and_keep_their_archives() {
+        use crate::mock_model::{ModelServer, complete, tool_call};
+        let server = ModelServer::start(Arc::new(move |_, body: String| {
+            Box::pin(async move {
+                // The stub's successful result allows ordinary completion after an obsolete call.
+                if body.contains("This session uses the old worker tools.")
+                    && body.contains("call_old")
+                {
+                    complete("done", "A new fin session is needed for native workers.")
+                } else if body.contains("Try the old tool") {
+                    tool_call(
+                        "old",
+                        "start_worker",
+                        serde_json::json!({"task":"Archived work"}),
+                    )
+                } else {
+                    complete("saved", "Saved with old tools.")
+                }
+            })
+        }))
+        .await;
+        let temp = tempfile::tempdir().unwrap();
+        let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
+        harness
+            .main_config
+            .tool_config
+            .available_tool_names
+            .retain(|name| !crew::LEAD_TOOL_NAMES.contains(&name.as_str()));
+        harness
+            .main_config
+            .tool_config
+            .available_tool_names
+            .push("start_worker".into());
+        harness
+            .tools
+            .push(Arc::new(crew::LegacyTool("start_worker")));
+        harness.crew = None;
+        harness.open(false).unwrap();
+        assert!(matches!(
+            harness
+                .turn(Prompt::User("Save it.".into()), &mut inputs)
+                .await,
+            TurnEnd::Answered
+        ));
+        let archive = harness.session.dir.join("workers");
+        std::fs::create_dir_all(&archive).unwrap();
+        std::fs::write(archive.join("workers.json"), "old workers").unwrap();
+        harness.tools.clear();
+        harness.open(true).unwrap();
+        assert!(harness.crew.is_none());
+        assert!(
+            harness
+                .unoffered
+                .as_ref()
+                .unwrap()
+                .contains("/new resets this conversation but keeps its old tools")
+        );
+        assert!(matches!(
+            tokio::time::timeout(
+                Duration::from_secs(15),
+                harness.turn(Prompt::User("Try the old tool".into()), &mut inputs)
+            )
+            .await
+            .unwrap(),
+            TurnEnd::Answered
+        ));
+        assert_eq!(
+            std::fs::read_to_string(archive.join("workers.json")).unwrap(),
+            "old workers"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_finished_worker_keeps_its_worktree_and_context_for_follow_up() {
+        use crate::mock_model::{ModelServer, complete, tool_call};
+        let server = ModelServer::start(Arc::new(move |_, body: String| Box::pin(async move {
+            if body.contains("You are agent run r1") {
+                if body.contains("Review the second pass.") { complete("w2", "Second pass reviewed with the original context.") }
+                else { complete("w1", "First pass reviewed.") }
+            } else if body.contains("Take over the saved worker") {
+                if body.contains("Review the committed files.") { complete("m8", "Ownership moved.") }
+                else { tool_call("m7", crew::LIST_AGENTS, serde_json::json!({})) }
+            } else if body.contains("Second pass reviewed with the original context.") { complete("m6", "Both passes done.") }
+            else if body.contains("Review the second pass.") { tool_call("m5", crew::WAIT_FOR_AGENTS, serde_json::json!({"all":true,"timeout_seconds":10})) }
+            else if body.contains("Follow up with r1") { tool_call("m4", crew::MESSAGE_AGENT, serde_json::json!({"to":"r1","message":"Review the second pass."})) }
+            else if body.contains("First pass reviewed.") { complete("m3", "First pass done.") }
+            else if body.contains("Started r1") { tool_call("m2", crew::WAIT_FOR_AGENTS, serde_json::json!({"all":true,"timeout_seconds":10})) }
+            else { tool_call("m1", crew::START_AGENT, serde_json::json!({"agent":WORKER,"task":"Review the committed files.","isolated":true})) }
+        }))).await;
+        let temp = tempfile::tempdir().unwrap();
+        let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
+        for args in [
+            vec!["init", "-q"],
+            vec!["config", "user.email", "test@example.invalid"],
+            vec!["config", "user.name", "Test"],
+            vec!["commit", "--allow-empty", "-qm", "Initial"],
+        ] {
+            let status = std::process::Command::new("git")
+                .args(args)
+                .current_dir(&harness.settings.workspace)
+                .status()
+                .unwrap();
+            assert!(status.success());
+        }
+        assert!(matches!(
+            tokio::time::timeout(
+                Duration::from_secs(20),
+                harness.turn(Prompt::User("Review it.".into()), &mut inputs)
+            )
+            .await
+            .unwrap(),
+            TurnEnd::Answered
+        ));
+        let first = harness.workflow().subagents()[0].clone();
+        let isolated = first.isolated.as_ref().unwrap();
+        assert_eq!(isolated.path, harness.session.dir.join("worktrees/r1"));
+        assert_eq!(
+            isolated.branch.as_deref(),
+            Some(format!("fin/{}/r1", harness.session.id).as_str())
+        );
+        assert!(matches!(
+            tokio::time::timeout(
+                Duration::from_secs(20),
+                harness.turn(Prompt::User("Follow up with r1".into()), &mut inputs)
+            )
+            .await
+            .unwrap(),
+            TurnEnd::Answered
+        ));
+        assert_eq!(summary(&harness), "Both passes done.");
+        let second = harness.workflow().subagents()[0].clone();
+        assert_eq!(first.run_id, second.run_id);
+        assert_eq!(first.workspace, second.workspace);
+        assert!(second.isolated.unwrap().path.exists());
+        // A failed lead starts a fresh conversation after resume. Its workers
+        // still belong to its saved run until the new lead's first tool.
+        {
+            let mut results = harness.workflow().context().agent_results.write();
+            let lead = results
+                .iter_mut()
+                .rfind(|run| run.agent_name == MAIN)
+                .unwrap();
+            lead.status = AgentRunStatus::Failed;
+            lead.task.set_state(arko_agents::TaskState::Failed {
+                reason: "Saved model failure".into(),
+                cause: None,
+                error_kind: None,
+            });
+        }
+        harness.workflow().checkpoint().await.unwrap();
+        harness.open(true).unwrap();
+        assert!(matches!(harness.conversation, Conversation::New));
+        assert!(matches!(
+            harness
+                .turn(
+                    Prompt::User("Take over the saved worker".into()),
+                    &mut inputs
+                )
+                .await,
+            TurnEnd::Answered
+        ));
+        assert_eq!(summary(&harness), "Ownership moved.");
+        let lead = match &harness.conversation {
+            Conversation::Answered(run) => run.agent_run_id,
+            _ => unreachable!(),
+        };
+        assert_eq!(harness.workflow().subagents()[0].caller_run_id, lead);
+        harness.crew.as_ref().unwrap().shutdown().await;
+    }
+
+    /// The runtime injects reports during a running lead turn without a wait tool.
+    #[tokio::test]
+    async fn a_worker_report_arrives_at_the_leads_next_tool_boundary() {
+        use crate::mock_model::{ModelServer, complete, tool_call};
+        let worker_release = Arc::new(tokio::sync::Notify::new());
+        let lead_release = Arc::new(tokio::sync::Notify::new());
+        let hold_worker = worker_release.clone();
+        let hold_lead = lead_release.clone();
+        let server = ModelServer::start(Arc::new(move |_, body: String| {
+            let hold_worker = hold_worker.clone();
+            let hold_lead = hold_lead.clone();
+            Box::pin(async move {
+                if body.contains("You are agent run r1") {
+                    hold_worker.notified().await;
+                    complete("w1", "The report arrived mid-turn.")
+                } else if body.contains("The report arrived mid-turn.") {
+                    complete("m3", "I read the report before ending my turn.")
+                } else if body.contains("Started r1") {
+                    hold_lead.notified().await;
+                    tool_call(
+                        "m2",
+                        message::MESSAGE_USER,
+                        serde_json::json!({"message":"Still working."}),
+                    )
+                } else {
+                    tool_call(
+                        "m1",
+                        crew::START_AGENT,
+                        serde_json::json!({"agent":WORKER,"task":"Report while the lead works."}),
+                    )
+                }
+            })
+        }))
+        .await;
+        let temp = tempfile::tempdir().unwrap();
+        let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
+        let workflow = harness.workflow().clone();
+        let release = tokio::spawn(async move {
+            worker_release.notify_one();
+            while workflow.subagents().iter().all(|run| run.report.is_none()) {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            lead_release.notify_one();
+        });
+        assert!(matches!(
+            tokio::time::timeout(
+                Duration::from_secs(20),
+                harness.turn(Prompt::User("Do both.".into()), &mut inputs)
+            )
+            .await
+            .unwrap(),
+            TurnEnd::Answered
+        ));
+        release.await.unwrap();
+        assert_eq!(
+            summary(&harness),
+            "I read the report before ending my turn."
+        );
+        assert!(!harness.crew.as_ref().unwrap().has_mail());
+        harness.crew.as_ref().unwrap().shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn resuming_with_pending_reports_wakes_the_idle_prompt() {
+        use crate::mock_model::{ModelServer, complete, tool_call};
+        let release = Arc::new(tokio::sync::Notify::new());
+        let hold = release.clone();
+        let server = ModelServer::start(Arc::new(move |_, body: String| {
+            let hold = hold.clone();
+            Box::pin(async move {
+                if body.contains("You are agent run r1") {
+                    hold.notified().await;
+                    complete("w", "A report saved for later.")
+                } else if body.contains("A report saved for later.") {
+                    complete("m3", "Read the saved report.")
+                } else if body.contains("Started r1") {
+                    complete("m2", "Waiting in the background.")
+                } else {
+                    tool_call(
+                        "m1",
+                        crew::START_AGENT,
+                        serde_json::json!({"agent":WORKER,"task":"Save a report."}),
+                    )
+                }
+            })
+        }))
+        .await;
+        let temp = tempfile::tempdir().unwrap();
+        let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
+        assert!(matches!(
+            harness
+                .turn(Prompt::User("Start it.".into()), &mut inputs)
+                .await,
+            TurnEnd::Answered
+        ));
+        release.notify_one();
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while !harness.crew.as_ref().unwrap().has_mail() {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        harness.crew.as_ref().unwrap().shutdown().await;
+        inputs.drain_woken();
+        harness.open(true).unwrap();
+        assert!(harness.crew.as_ref().unwrap().running().is_empty());
+        assert!(harness.crew.as_ref().unwrap().has_mail());
+        assert!(matches!(
+            tokio::time::timeout(Duration::from_secs(2), inputs.next_event(true))
+                .await
+                .unwrap(),
+            Event::Woken
+        ));
+        assert!(matches!(
+            harness.deliver_news(&mut inputs).await,
+            News::Done
+        ));
+        assert_eq!(summary(&harness), "Read the saved report.");
+        harness.crew.as_ref().unwrap().shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn a_session_with_workers_disabled_resumes_without_a_migration_notice() {
+        let server = crate::mock_model::ModelServer::start(Arc::new(move |_, _| {
+            Box::pin(async { crate::mock_model::complete("m", "Done.") })
+        }))
+        .await;
+        let temp = tempfile::tempdir().unwrap();
+        let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
+        harness.settings.max_workers = 0;
+        harness.crew = None;
+        harness
+            .main_config
+            .tool_config
+            .available_tool_names
+            .retain(|name| !crew::LEAD_TOOL_NAMES.contains(&name.as_str()));
+        harness.open(false).unwrap();
+        assert!(matches!(
+            harness
+                .turn(Prompt::User("Do it.".into()), &mut inputs)
+                .await,
+            TurnEnd::Answered
+        ));
+        harness.open(true).unwrap();
+        assert!(harness.unoffered.is_none());
+        assert!(harness.crew.is_none());
     }
 
     /// The agent's question is put to the user, and the next line typed
@@ -3161,7 +3595,7 @@ mod tests {
                     complete("m2", "3 files, 2 directories.")
                 } else if body.contains("Count the files.") {
                     hold.notified().await;
-                    tool_call("m1", crew::LIST_WORKERS, serde_json::json!({}))
+                    tool_call("m1", crew::LIST_AGENTS, serde_json::json!({}))
                 } else {
                     complete("m3", "Nothing to count.")
                 }
