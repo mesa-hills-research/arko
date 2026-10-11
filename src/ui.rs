@@ -27,6 +27,7 @@ use uuid::Uuid;
 
 use crate::agents::MAIN;
 use crate::crew;
+use crate::glyphs;
 use crate::index;
 use crate::mcp;
 use crate::message;
@@ -82,8 +83,10 @@ impl Output {
         }
     }
 
-    /// Prints `text` (one or more lines) as progress.
+    /// Prints `text` (one or more lines) as progress, with its symbols as
+    /// the terminal shows them.
     pub fn line(&self, text: &str) {
+        let text = glyphs::render(text);
         let mut printer = self.printer.lock().unwrap();
         if let Some(printer) = printer.as_mut() {
             if printer.print(format!("{text}\n")).is_ok() {
@@ -99,12 +102,13 @@ impl Output {
 
     /// Prints the agent's reply: to standard output in one-shot mode.
     pub fn answer(&self, text: &str) {
+        let text = glyphs::render(text);
         if self.progress_to_stderr {
             let mut stdout = std::io::stdout().lock();
             let _ = writeln!(stdout, "{text}");
             let _ = stdout.flush();
         } else {
-            self.line(text);
+            self.line(&text);
         }
     }
 
@@ -210,8 +214,9 @@ pub fn spawn_input(
                 .ok()
                 .map(|printer| Box::new(printer) as Box<dyn ExternalPrinter + Send>);
             let _ = printer_sender.send(printer);
+            let prompt = glyphs::render(PROMPT).into_owned();
             while !CLOSING.load(Ordering::SeqCst) {
-                let input = match editor.readline(PROMPT) {
+                let input = match editor.readline(prompt.as_str()) {
                     Ok(line) => Input::Line(joined(&line)),
                     Err(ReadlineError::Interrupted) => Input::Interrupt,
                     Err(_) => Input::Eof,

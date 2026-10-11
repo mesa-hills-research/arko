@@ -154,7 +154,7 @@ pub(crate) async fn run_command_with(
     timing: Timing,
 ) -> Result<ExitCode, String> {
     let monitor = matches!(cmd, IndexCommand::Watch { .. });
-    let events: Events = Arc::new(|line: &str| eprintln!("{line}"));
+    let events: Events = Arc::new(|line: &str| eprintln!("{}", crate::glyphs::render(line)));
     let indexes = Indexes::open_with(data_root, cwd, backend, monitor, timing, Some(events))?;
     let result = run(&indexes, cmd, cwd).await;
     indexes.shutdown().await;
@@ -163,7 +163,7 @@ pub(crate) async fn run_command_with(
 
 /// The text the tools share, with the tools' hints turned into commands.
 fn cli_text(text: &str) -> String {
-    [
+    let text = [
         ("index_manage action=embed", "`fin index embed`"),
         ("index_manage action=rebuild", "`fin index update --force`"),
         ("index_status", "`fin index status`"),
@@ -176,7 +176,8 @@ fn cli_text(text: &str) -> String {
     .iter()
     .fold(text.to_string(), |text, (tool, command)| {
         text.replace(tool, command)
-    })
+    });
+    crate::glyphs::render(&text).into_owned()
 }
 
 async fn blocking<T: Send + 'static>(
@@ -230,7 +231,10 @@ async fn run(indexes: &Arc<Indexes>, cmd: IndexCommand, cwd: &Path) -> Result<Ex
                 wait: false,
                 defer_embed: true,
             };
-            eprintln!("Building the index of {}…", args.path.display());
+            eprintln!(
+                "{}",
+                crate::glyphs::render(&format!("Building the index of {}…", args.path.display()))
+            );
             let worker = Arc::clone(indexes);
             let outcome = blocking(move || worker.create_blocking(&args)).await?;
             println!("{}", cli_text(&format_create(&outcome)));
@@ -454,7 +458,7 @@ async fn run(indexes: &Arc<Indexes>, cmd: IndexCommand, cwd: &Path) -> Result<Ex
             tokio::signal::ctrl_c()
                 .await
                 .map_err(|error| format!("waiting for Ctrl-C: {error}"))?;
-            eprintln!("Stopping…");
+            eprintln!("{}", crate::glyphs::render("Stopping…"));
             let (tokens, dollars) = indexes.spent();
             if tokens > 0 {
                 eprintln!(
@@ -497,7 +501,10 @@ async fn embed_with_progress(
         let stop = Arc::clone(&stop);
         tokio::spawn(async move {
             if tokio::signal::ctrl_c().await.is_ok() {
-                eprintln!("\nStopping after the current request…");
+                eprintln!(
+                    "\n{}",
+                    crate::glyphs::render("Stopping after the current request…")
+                );
                 stop.stop("interrupted (Ctrl-C)");
             }
         })

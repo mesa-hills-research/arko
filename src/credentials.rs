@@ -41,7 +41,14 @@ pub const SHELL: &str = "FIN_SHELL";
 pub const VOYAGE_KEY: &str = "VOYAGE_API_KEY";
 /// The settings a `.env` file can hold; it may set others, which are left
 /// alone.
-const DOTENV_KEYS: [&str; 5] = [ANTHROPIC_KEY, CODEX_AUTH, CACHE_1H, SHELL, VOYAGE_KEY];
+const DOTENV_KEYS: [&str; 6] = [
+    ANTHROPIC_KEY,
+    CODEX_AUTH,
+    CACHE_1H,
+    SHELL,
+    VOYAGE_KEY,
+    crate::glyphs::SYMBOLS,
+];
 
 /// What was entered on the setup screen in this run: it comes before every
 /// other source.
