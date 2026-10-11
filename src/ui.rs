@@ -11,6 +11,7 @@ use arko_agents::builtins::{
     APPLY_DIFF_TOOL_NAME, ASK_USER_TOOL_NAME, LIST_FILES_TOOL_NAME, READ_FILE_TOOL_NAME,
     WRITE_FILE_TOOL_NAME,
 };
+use arko_agents::handover::{HANDOVER_REPORT_PARAM_NAME, HANDOVER_REPORT_TOOL_NAME};
 use arko_agents::terminal::TerminalTool;
 use arko_agents::{AgentEvent, LOAD_SKILL_TOOL_NAME};
 use arko_workflows::WorkflowEvent;
@@ -538,6 +539,15 @@ impl EventPrinter {
         Some(match tool {
             // The question is shown as it is asked.
             "complete_task" | ASK_USER_TOOL_NAME => return None,
+            // The report is shown whole: the agent continues from it alone.
+            HANDOVER_REPORT_TOOL_NAME => format!(
+                "{} {}\n  {}",
+                self.output.accent("⟳"),
+                self.output.bold("handover report"),
+                text(HANDOVER_REPORT_PARAM_NAME)
+                    .trim()
+                    .replace('\n', "\n  ")
+            ),
             message::MESSAGE_USER => {
                 let message = text(message::MESSAGE_PARAM).trim();
                 format!(
@@ -698,6 +708,7 @@ fn brief(tool: &str, parameters: &HashMap<String, serde_json::Value>) -> String 
             format!("{verb} {detail}")
         }
         crew::MESSAGE_LEAD => "message to the lead".to_string(),
+        HANDOVER_REPORT_TOOL_NAME => "handover report".to_string(),
         crew::WAIT_FOR_LEAD => "waiting for the lead".to_string(),
         "terminal_start" => format!("background {}", command_line(text("command"))),
         tool if TerminalTool::NAMES.contains(&tool) => tool.replace('_', " "),
@@ -1007,6 +1018,22 @@ mod tests {
             )
             .unwrap(),
             "✉ Halfway there.\n  Tests next."
+        );
+        // So is a handover report, which a worker's line only names.
+        assert_eq!(
+            line(
+                HANDOVER_REPORT_TOOL_NAME,
+                &[("report", "## Done\nThe parser.\n".into())]
+            )
+            .unwrap(),
+            "⟳ handover report\n  ## Done\n  The parser."
+        );
+        assert_eq!(
+            brief(
+                HANDOVER_REPORT_TOOL_NAME,
+                &params(&[("report", "x".into())])
+            ),
+            "handover report"
         );
     }
 
