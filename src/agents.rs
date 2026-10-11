@@ -412,7 +412,8 @@ fn tool_instructions(settings: &AgentSettings) -> String {
     if !settings.index_tools.is_empty() {
         text.push_str(
             "\n# Search indexes\n\
-             `index_search` searches a codebase or its docs by meaning as well as by words. It returns the top results whole (the entire function, type or doc section, with line numbers as `read_file` shows them), so you don't need to read them again, and the rest as locations with their first lines. Use it first whenever you look for code or docs to read: to find where something is done or how it works (\"where are retries handled?\", \"how is the session saved?\"), and also when you know the name, since a query that names a function or type (\"Session::save\", \"parse_config\") returns its definition whole, where `rg` gives one line and needs another call to read the rest. One search often replaces several rounds of `rg`, `sed` and `read_file`; `detail: brief` lists more results in less space. Keep `rg` for listing every occurrence of a name (all the callers, say), for regexes, and for exact strings in logs, configuration and files no index covers.\n\n",
+             `index_search` searches a codebase or its docs by meaning as well as by words. It returns the top results whole (the entire function, type or doc section, with line numbers as `read_file` shows them), so you don't need to read them again, and the rest as locations with their first lines. Use it first whenever you look for code or docs to read: to find where something is done or how it works (\"where are retries handled?\", \"how is the session saved?\"), and also when you know the name, since a query that names a function or type (\"Session::save\", \"parse_config\") returns its definition whole, where `rg` gives one line and needs another call to read the rest. One search often replaces several rounds of `rg`, `sed` and `read_file`; `detail: brief` lists more results in less space. Keep `rg` for listing every occurrence of a name (all the callers, say), for regexes, and for exact strings in logs, configuration and files no index covers.\n\n\
+             Begin every task in an indexed codebase with it, before anything else. Whether you're asked a question about the code, a bug to find or a change to make, your first step is one or a few `index_search` queries that describe the behaviour or concept involved, before you list directories, run `rg` or open files. This is where the index saves the most: it finds the relevant code even when the words differ from the code's (a user's \"handoff\" for code that says \"handover\", which `rg` misses), and its results show where that code lives and how it works, so you don't read whole files to find your way. Go to `rg` and `read_file` once the searches have shown you where to look.\n\n",
         );
         text.push_str(&known_indexes(settings.indexes));
         text.push_str(
@@ -735,6 +736,12 @@ mod tests {
             config
                 .instructions
                 .contains("to find code or docs to read, start with `index_search`")
+        );
+        // And to explore with it at the start of every task.
+        assert!(
+            config
+                .instructions
+                .contains("Begin every task in an indexed codebase with it, before anything else.")
         );
         assert!(
             config
