@@ -36,8 +36,14 @@ pub enum SettingsRow {
     Theme,
     Mouse,
     Outside,
+    Handover,
     Page,
 }
+
+/// The handover sizes ← and → step through, in tokens.
+pub const HANDOVER_STEPS: [usize; 9] = [
+    100_000, 150_000, 200_000, 250_000, 300_000, 400_000, 500_000, 750_000, 1_000_000,
+];
 
 /// The theme picker, open in the settings.
 #[derive(Debug, Clone, PartialEq)]
@@ -326,6 +332,17 @@ fn settings(frame: &mut Frame, app: &App, area: Rect, selected: usize) {
                 "Outside",
                 choices(theme, &["on", "off"], usize::from(!app.outside())),
                 "Whether the agents may change files outside the working directory.".to_string(),
+            ),
+            SettingsRow::Handover => (
+                "Session",
+                "Handover at",
+                vec![
+                    Span::styled(format!("{} ", glyphs::render("←")), theme.dim()),
+                    Span::styled(format!(" {}k ", app.handover_at() / 1000), theme.chosen()),
+                    Span::styled(format!(" {}", glyphs::render("→")), theme.dim()),
+                ],
+                "The input size the main agent hands over at: it writes a report of its work and goes on from it, fresh. /handover hands over now."
+                    .to_string(),
             ),
             SettingsRow::Page => (
                 "Session",

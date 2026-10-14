@@ -704,6 +704,9 @@ impl App {
         if commands::find("/outside on").is_some() {
             rows.push(SettingsRow::Outside);
         }
+        if commands::find("/handover-at 200k").is_some() {
+            rows.push(SettingsRow::Handover);
+        }
         rows.push(SettingsRow::Page);
         rows
     }
@@ -803,6 +806,20 @@ impl App {
                 SettingsRow::Outside => {
                     let on = !self.outside();
                     self.send(if on { "/outside on" } else { "/outside off" });
+                }
+                SettingsRow::Handover => {
+                    // The next round size down or up (the session may hold
+                    // it under the model's limit; the status says).
+                    let now = self.handover_at();
+                    let steps = super::overlay::HANDOVER_STEPS;
+                    let next = if step < 0 {
+                        steps.iter().rev().find(|size| **size < now)
+                    } else {
+                        steps.iter().find(|size| **size > now)
+                    };
+                    if let Some(size) = next {
+                        self.send(&format!("/handover-at {}k", size / 1000));
+                    }
                 }
                 SettingsRow::Page => {
                     if super::page().is_some() {
@@ -1133,5 +1150,15 @@ pub(super) mod tests {
         let chosen = app.theme.name.clone();
         assert_ne!(chosen, "macOS Classic Dark");
         assert_eq!(app.prefs.theme.as_deref(), Some(chosen.as_str()));
+        // The handover size steps to the next round size, as a command.
+        let row = app
+            .settings_rows()
+            .iter()
+            .position(|row| *row == SettingsRow::Handover)
+            .unwrap();
+        app.overlay = Some(Overlay::Settings { row, picker: None });
+        press(&mut app, KeyCode::Right, KeyModifiers::NONE);
+        press(&mut app, KeyCode::Left, KeyModifiers::NONE);
+        assert_eq!(sent(&mut app), ["/handover-at 300k", "/handover-at 200k"]);
     }
 }
