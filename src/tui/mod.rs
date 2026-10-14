@@ -18,7 +18,7 @@ mod markdown;
 mod overlay;
 mod prefs;
 mod screen;
-mod theme;
+pub(crate) mod theme;
 mod transcript;
 mod wrap;
 

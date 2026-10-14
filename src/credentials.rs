@@ -54,7 +54,7 @@ pub const SHELL: &str = "FIN_SHELL";
 pub const VOYAGE_KEY: &str = "VOYAGE_API_KEY";
 /// The settings a `.env` file can hold; it may set others, which are left
 /// alone.
-const DOTENV_KEYS: [&str; 11] = [
+const DOTENV_KEYS: [&str; 13] = [
     ANTHROPIC_KEY,
     OPENAI_KEY,
     GEMINI_KEY,
@@ -66,6 +66,8 @@ const DOTENV_KEYS: [&str; 11] = [
     SHELL,
     VOYAGE_KEY,
     crate::glyphs::SYMBOLS,
+    crate::tui::theme::SETTING,
+    crate::remote::HOST_VARIABLE,
 ];
 
 /// What was entered on the setup screen in this run: it comes before every
