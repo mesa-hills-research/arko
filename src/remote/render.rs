@@ -160,13 +160,22 @@ impl Outcome {
     /// first words on the call's line, and the whole of a longer message
     /// as a block under it.
     pub fn failed(message: &str) -> Self {
-        // arko's "Tool 'shell' execution failed: ..." names what the line
-        // already shows.
-        let message = message.trim();
-        let message = message
+        // arko's "Tool 'read_file' execution failed: I/O error during tool
+        // execution for tool 'read_file': ..." names what the line already
+        // shows.
+        let mut message = message.trim();
+        if let Some((_, why)) = message
             .strip_prefix("Tool '")
             .and_then(|rest| rest.split_once("' execution failed: "))
-            .map_or(message, |(_, why)| why.trim());
+        {
+            message = why.trim();
+        }
+        if let Some((_, why)) = message
+            .split_once(" for tool '")
+            .and_then(|(_, rest)| rest.split_once("': "))
+        {
+            message = why.trim();
+        }
         let text = cut(message.lines().next().unwrap_or_default(), OUTCOME_CHARS);
         let block = (message != text)
             .then(|| Item::new(Kind::Result, clip(message, 600)).level(Level::Error));
@@ -239,6 +248,21 @@ pub fn outcome(tool: &str, output: &str) -> Outcome {
             }
         }
         crew::MESSAGE_AGENT if output.starts_with("Sent") => Outcome::ok("sent"),
+        // Its result is the mail that came: "[mail 2] r1 ... finished ...".
+        crew::WAIT_FOR_AGENTS => {
+            let mail = output
+                .lines()
+                .filter(|line| line.starts_with("[mail "))
+                .count();
+            if mail > 0 {
+                Outcome::ok(plural(mail, "message", "messages"))
+            } else {
+                Outcome::ok(cut(
+                    output.lines().next().unwrap_or_default(),
+                    OUTCOME_CHARS,
+                ))
+            }
+        }
         RUN_WORKFLOW_AGENT_TOOL_NAME => {
             Outcome::ok(format!("reported ({})", plural(lines(), "line", "lines")))
         }
@@ -396,6 +420,13 @@ mod tests {
         );
         assert_eq!(
             told(
+                crew::WAIT_FOR_AGENTS,
+                "[mail 2] r1 (agent `worker`) finished. Its report:\n\nDone.\n[mail 3] r2 (agent `worker`) finished."
+            ),
+            (CallStatus::Ok, "2 messages".into())
+        );
+        assert_eq!(
+            told(
                 "apply_diff",
                 "Applied 1 of 2 diff block(s) to 'a.rs'.\nDetails:\n  Block 2: FAILURE"
             ),
@@ -430,6 +461,10 @@ mod tests {
                 .is_none(),
             "no output, no block"
         );
+        let failed = Outcome::failed(
+            "Tool 'read_file' execution failed: I/O error during tool execution for tool 'read_file': No such file",
+        );
+        assert_eq!(failed.text.as_deref(), Some("No such file"));
         let failed = Outcome::failed("Tool 'x' execution failed: boom\nat line 3");
         assert_eq!(failed.text.as_deref(), Some("boom"));
         assert_eq!(failed.block.unwrap().text, "boom\nat line 3");

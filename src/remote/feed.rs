@@ -160,6 +160,10 @@ pub struct Item {
     /// The worker a `worker_line` stands for.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub worker: Option<String>,
+    /// The call a `result` is of: clients show it under that call, which
+    /// other items may have followed by the time the result came.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub call: Option<u64>,
 }
 
 impl Item {
@@ -179,6 +183,7 @@ impl Item {
             status: None,
             outcome: None,
             worker: None,
+            call: None,
         }
     }
 
@@ -544,7 +549,8 @@ impl Feed {
             let item = item.clone();
             self.send(Update::Change(item));
         }
-        if let Some(block) = outcome.block {
+        if let Some(mut block) = outcome.block {
+            block.call = Some(call.item);
             self.push(state, block.agent(call.agent));
         }
     }
@@ -1134,6 +1140,7 @@ mod tests {
         assert_eq!(items[1].status, Some(CallStatus::Ok));
         assert_eq!(items[1].outcome.as_deref(), Some("3 passed"));
         assert_eq!(items[2].level, None);
+        assert_eq!(items[2].call, Some(items[1].id));
         assert_eq!(
             items[2].detail.as_deref(),
             Some("running 3 tests\ntest result: ok. 3 passed; 0 failed")
