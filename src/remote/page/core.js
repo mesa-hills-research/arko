@@ -16,7 +16,7 @@
   const VIEWS = {
     full: { name: 'Full', about: 'Everything, with the workers’ calls inline.' },
     quiet: { name: 'Quiet', about: 'Each worker as one line that updates in place.' },
-    messages: { name: 'Messages', about: 'The conversation; tool calls as a count per turn.' },
+    messages: { name: 'Messages', about: 'Just the messages, with a count of each turn’s tool calls.' },
   };
 
   /** How many items the page keeps, as fin does: the main transcript's
