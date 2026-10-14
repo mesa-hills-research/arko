@@ -22,6 +22,7 @@ Paths are relative to the arko_framework repository. Line numbers in the remaini
 | 14 | Skills: paths, scripts and sources | Low |
 | 15 | A reply without a tool call counts as a failure | Resolved |
 | 16 | ChatGPT's prompt cache is reported as 5 minutes | Resolved |
+| 17 | A host can't ask a workflow's run for a handover | Low |
 
 ## Resolved: native workers (1–6)
 
@@ -108,6 +109,16 @@ Single-run stops leave other agents running. `stop_subagent` also stops queued r
 - Several workspace sources.
 - The skill's folder shown to the model when the skill loads, with `scripts/` and other files left in place for it to run or read.
 - `~` expansion in global paths.
+
+## 17. A host can't ask a workflow's run for a handover
+
+**Today.** `UserCommand::RequestHandover` asks a running agent for a handover at its next turn boundary (`arko_agents/src/runtime/command.rs`). A workflow host reaches a run's command channel only through `AgentHandle::into_parts` (`arko_workflows/src/workflow/mod.rs`), which returns the raw event and command channels, so the workflow's hooks and budget tracking no longer apply. `run_agent`, `continue_agent` and `restart` keep the channel to themselves.
+
+**Effect.** A host can't change when a running agent hands over. The size in `AgentConfig::handover` is saved with the run, so a resumed conversation keeps the size it started with.
+
+**fin's workaround.** fin's shell tool keeps each run's command channel when the runtime binds it (`Tool::bind_runtime`, which gives every offered tool the run's channel as the run starts). fin watches the main agent's reported input and sends `RequestHandover` on that channel at the size the user sets (`/handover-at`), or at once (`/handover`). This works only for runs offered one of fin's tools, and the size can only go below the one saved in the configuration.
+
+**Request.** `Workflow::request_handover(run_id)`, which sends the command to a running run or keeps it for the run's next start, and a way to change a saved run's handover size when it resumes.
 
 ## Resolved: messages to the user (15)
 

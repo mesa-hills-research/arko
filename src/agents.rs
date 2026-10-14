@@ -12,6 +12,7 @@ use arko_agents::{
     AgentConfig, AgentLLMConfig, AgentToolConfig, BuiltInEnvironmentDetail,
     EnvironmentDetailPlacement, EnvironmentDetailsConfig, HandoverConfig, PerToolConfigOverride,
 };
+use arko_ai::input_limit::effective_max_input_tokens;
 use arko_ai::{AnthropicReasoningEffort, Model, OpenAIEffort, Provider};
 use serde::{Deserialize, Serialize};
 
@@ -146,7 +147,6 @@ pub struct AgentSettings<'a> {
     pub show_thinking: bool,
     /// What the agents are told the shell is.
     pub shell_name: &'a str,
-    pub allow_outside_workspace: bool,
     /// The tools of the MCP servers running, offered to both agents.
     pub mcp_tools: &'a [String],
     /// The MCP servers running, by name.
@@ -166,12 +166,31 @@ const INDEXES_NAMED: usize = 20;
 /// `max_workers` for no limit on how many workers run at once.
 pub const NO_LIMIT: u32 = u32::MAX;
 
+/// What the handover size leaves free below the input limit of the
+/// ChatGPT login's backend: the report request and the report the agent
+/// writes (a few thousand tokens), and the tool results of a step past
+/// the size. The size is checked before each request with its new tool
+/// results counted, so a step goes past it only by what the estimate
+/// misses, or when fin asks after a request reported its size.
+pub const CHATGPT_HANDOVER_ROOM: usize = 22_000;
+
 /// The input size, in tokens, at which an agent on `model` hands over
-/// unless `--handover-at` says otherwise: 500k on Claude models (by API
-/// key, on OpenRouter or in Claude Code), 200k on others, and at most 80%
-/// of what the model accepts; [`providers::UNKNOWN_LIMIT_HANDOVER`] when
-/// that isn't known (an OpenRouter model without its catalog).
-pub fn default_handover(model: &Model) -> usize {
+/// unless `--handover-at` says otherwise, in a session that reaches OpenAI
+/// models by `openai_auth`. An OpenAI model on the ChatGPT login hands over
+/// [`CHATGPT_HANDOVER_ROOM`] below what that login's backend accepts
+/// ([`CHATGPT_OAUTH_MAX_INPUT_TOKENS`](arko_ai::input_limit::CHATGPT_OAUTH_MAX_INPUT_TOKENS),
+/// 272k, less than the API's limit), so at 250k. Others hand over at 500k
+/// on Claude models (by API key, on OpenRouter or in Claude Code), 200k on
+/// the rest, and at most 80% of what the model accepts;
+/// [`providers::UNKNOWN_LIMIT_HANDOVER`] when that isn't known (an
+/// OpenRouter model without its catalog).
+pub fn default_handover(model: &Model, openai_auth: Option<OpenAiAuth>) -> usize {
+    if model.provider == Provider::OpenAI
+        && openai_auth == Some(OpenAiAuth::ChatGpt)
+        && let Some(limit) = effective_max_input_tokens(model, true)
+    {
+        return limit.saturating_sub(CHATGPT_HANDOVER_ROOM);
+    }
     let tokens = match model.provider {
         Provider::Anthropic | Provider::ClaudeCode => 500_000,
         Provider::OpenRouter if providers::is_claude_slug(&model.id) => 500_000,
@@ -210,28 +229,25 @@ fn shared_tool_names(settings: &AgentSettings) -> Vec<String> {
     tools
 }
 
-/// Both agents' tool configuration: `tools` run without approval, the file
-/// tools read anywhere, and write outside the working directory only when
-/// the session allows it (as the command guard does); `read_file` reads
-/// line ranges.
-fn tool_config(settings: &AgentSettings, tools: Vec<String>) -> AgentToolConfig {
-    let policy = |policy: PathSafetyPolicy| PerToolConfigOverride {
-        out_of_workspace_path_policy: Some(policy),
+/// Both agents' tool configuration: `tools` run without approval, and
+/// `read_file` reads line ranges. The file tools may read and write
+/// anywhere as far as the configuration goes: whether they write outside
+/// the working directory follows outside access, which can change while
+/// the session runs, so a hook decides it (see `outside`), as the command
+/// guard does for commands.
+fn tool_config(tools: Vec<String>) -> AgentToolConfig {
+    let anywhere = PerToolConfigOverride {
+        out_of_workspace_path_policy: Some(PathSafetyPolicy::AutoApprove),
         ..PerToolConfigOverride::default()
     };
-    let write = if settings.allow_outside_workspace {
-        PathSafetyPolicy::AutoApprove
-    } else {
-        PathSafetyPolicy::AutoReject
-    };
     let overrides = [
-        (READ_FILE_TOOL_NAME, policy(PathSafetyPolicy::AutoApprove)),
-        (LIST_FILES_TOOL_NAME, policy(PathSafetyPolicy::AutoApprove)),
-        (WRITE_FILE_TOOL_NAME, policy(write.clone())),
-        (APPLY_DIFF_TOOL_NAME, policy(write)),
+        READ_FILE_TOOL_NAME,
+        LIST_FILES_TOOL_NAME,
+        WRITE_FILE_TOOL_NAME,
+        APPLY_DIFF_TOOL_NAME,
     ]
     .into_iter()
-    .map(|(name, config)| (name.to_string(), config))
+    .map(|name| (name.to_string(), anywhere.clone()))
     .collect();
     AgentToolConfig {
         available_tool_names: tools,
@@ -277,7 +293,7 @@ pub fn main_config(settings: &AgentSettings) -> Result<AgentConfig, String> {
         "You are fin, a general-purpose agent working in a terminal on the user's computer. You help with software engineering and anything else the user asks: you investigate, run commands, create and change files, and report back.".into(),
     )
     .instructions(instructions)
-    .tool_config(tool_config(settings, tools))
+    .tool_config(tool_config(tools))
     .environment_details_config(environment())
     .complete_task_summary_prompt_override(
         "Your reply to the user's latest message, in full: what you did, what you found, and anything you need from them. They read it as your message (Markdown, shown as plain text)."
@@ -313,7 +329,7 @@ pub fn worker_config(settings: &AgentSettings) -> Result<AgentConfig, String> {
         "A subagent that carries out one task the lead agent hands it (an investigation, a change, a review), with a shell, a terminal and file tools, and reports back.".into(),
     )
     .instructions(instructions)
-    .tool_config(tool_config(settings, {
+    .tool_config(tool_config({
         let mut tools = shared_tool_names(settings);
         tools.extend(crew::WORKER_TOOL_NAMES.iter().map(|name| name.to_string()));
         tools
@@ -345,11 +361,6 @@ fn main_instructions(_settings: &AgentSettings) -> String {
 }
 
 fn tool_instructions(settings: &AgentSettings) -> String {
-    let outside = if settings.allow_outside_workspace {
-        "the filesystem root, the home directory, system directories or devices"
-    } else {
-        "the filesystem root, the home directory, system directories, devices, or paths outside the working directory"
-    };
     let uses = if settings.index_tools.is_empty() {
         "searching (prefer `rg`), building, testing, git, and running programs"
     } else {
@@ -360,7 +371,7 @@ fn tool_instructions(settings: &AgentSettings) -> String {
          `shell` runs a command in {shell} in the working directory and returns its exit code and output once it finishes. Use it for what you would do in a terminal: {uses}. Each call starts in the working directory, so a `cd` doesn't carry over to the next call; to run a command somewhere else, give the call that directory as `cwd` instead of a `cd`.\n\n\
          The file tools work with paths relative to the working directory. `read_file` reads a file with line numbers (give `start_line` and `end_line` to read part of a large one), and `list_files` lists a directory's files. Create files with `write_file` (the whole content), and change them with `apply_diff` (SEARCH/REPLACE blocks; it changes nothing if a SEARCH block doesn't match exactly, so read the lines first). Prefer them to heredocs and scripts in the shell, which fail on long text.\n\n\
          The terminal tools run programs in the background: servers, watchers, long builds you want to keep an eye on, and programs that ask questions. `terminal_start` returns a job ID at once, `terminal_status` reads a job's output, `terminal_input` answers a prompt, and `terminal_control` waits for a job, lists jobs or cancels one. Use them only when `shell` doesn't fit, and cancel the jobs you started once you no longer need them.\n\n\
-         A command guard refuses commands that would delete, move or overwrite {outside}. A refusal is the guard working, not an obstacle: don't rephrase, split or encode the command to get past it. Do the work another way, or say what was refused and why you needed it.\n",
+         A command guard refuses commands that would delete, move or overwrite the filesystem root, the home directory, system directories or devices, and paths outside the working directory unless the user has turned on outside access; the file tools' writes follow the same rule. The user can turn outside access on and off at any time, and a note tells you when they do. A refusal is the guard working, not an obstacle: don't rephrase, split or encode the command to get past it. Do the work another way, or say what was refused and why you needed it.\n",
         shell = settings.shell_name,
     );
     if !settings.index_tools.is_empty() {
@@ -475,7 +486,6 @@ mod tests {
             handover_at: 200_000,
             show_thinking: false,
             shell_name: "bash",
-            allow_outside_workspace: false,
             mcp_tools: &[],
             mcp_servers: &[],
             skill_folders: &[],
@@ -668,10 +678,13 @@ mod tests {
         assert!(offers(&config, ASK_USER_TOOL_NAME));
     }
 
-    /// The file tools read anywhere, and write outside the working
-    /// directory only as the command guard lets commands.
+    /// The file tools' configuration lets them read and write anywhere:
+    /// outside access decides their writes outside the working directory
+    /// as the session runs (`outside`), so the configuration, which a
+    /// resume needs unchanged, doesn't depend on it. The instructions say
+    /// the rule without saying whether it is on.
     #[test]
-    fn the_file_tools_write_only_where_the_guard_lets_commands() {
+    fn the_file_tools_write_where_outside_access_lets_them() {
         let opus = model("opus", false);
         let policy = |config: &AgentConfig, tool: &str| {
             config.tool_config.tool_specific_configs[tool]
@@ -679,7 +692,7 @@ mod tests {
                 .clone()
                 .unwrap()
         };
-        let mut with = settings(&opus, &opus);
+        let with = settings(&opus, &opus);
         for config in [main_config(&with).unwrap(), worker_config(&with).unwrap()] {
             for tool in FILE_TOOL_NAMES {
                 assert!(
@@ -692,26 +705,15 @@ mod tests {
                 );
             }
             assert!(config.tool_config.read_file_line_ranges);
-            assert_eq!(
-                policy(&config, READ_FILE_TOOL_NAME),
-                PathSafetyPolicy::AutoApprove
-            );
-            assert_eq!(
-                policy(&config, WRITE_FILE_TOOL_NAME),
-                PathSafetyPolicy::AutoReject
-            );
-            assert_eq!(
-                policy(&config, APPLY_DIFF_TOOL_NAME),
-                PathSafetyPolicy::AutoReject
-            );
+            for tool in FILE_TOOL_NAMES {
+                assert_eq!(policy(&config, tool), PathSafetyPolicy::AutoApprove);
+            }
+            assert!(crate::outside::files_follow(&config));
             assert!(config.instructions.contains("`apply_diff`"));
+            assert!(config.instructions.contains(
+                "paths outside the working directory unless the user has turned on outside access"
+            ));
         }
-        with.allow_outside_workspace = true;
-        let config = main_config(&with).unwrap();
-        assert_eq!(
-            policy(&config, WRITE_FILE_TOOL_NAME),
-            PathSafetyPolicy::AutoApprove
-        );
     }
 
     #[test]
@@ -842,18 +844,26 @@ mod tests {
     }
 
     #[test]
-    fn claude_models_hand_over_at_500k_and_others_at_200k() {
+    fn claude_models_hand_over_at_500k_chatgpt_at_250k_and_others_at_200k() {
         let opus = resolve_model("opus").unwrap();
-        assert_eq!(default_handover(&opus), 500_000);
+        assert_eq!(default_handover(&opus, None), 500_000);
+        assert_eq!(default_handover(&opus, Some(OpenAiAuth::ChatGpt)), 500_000);
         let sol = resolve_model("sol").unwrap();
-        assert_eq!(default_handover(&sol), 200_000);
+        // The ChatGPT backend's 272k, less the room: not the API's limit,
+        // which an API key has.
+        assert!(sol.max_input_tokens > 272_000);
+        assert_eq!(default_handover(&sol, Some(OpenAiAuth::ChatGpt)), 250_000);
+        assert_eq!(default_handover(&sol, Some(OpenAiAuth::ApiKey)), 200_000);
         // Never past 80% of what the model accepts.
         let mut small = opus.clone();
         small.max_input_tokens = 200_000;
-        assert_eq!(default_handover(&small), 160_000);
+        assert_eq!(default_handover(&small, None), 160_000);
+        let mut small = sol.clone();
+        small.max_input_tokens = 128_000;
+        assert_eq!(default_handover(&small, Some(OpenAiAuth::ChatGpt)), 106_000);
 
         let mut main = model("opus", false);
-        main.handover_at = Some(default_handover(&opus));
+        main.handover_at = Some(default_handover(&opus, None));
         let worker = model("sol", false);
         let settings = settings(&main, &worker);
         let handover = |config: &AgentConfig| config.handover.clone().unwrap().at_input_tokens;

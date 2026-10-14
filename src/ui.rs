@@ -533,8 +533,8 @@ impl EventPrinter {
             AgentEvent::HandoverRequested { input_tokens } if main => {
                 self.flush();
                 self.output.echo(&self.output.dim(&format!(
-                    "  ⟳ the conversation reached {}k tokens; the agent is writing a handover report",
-                    input_tokens / 1000
+                    "  ⟳ {}",
+                    crate::handover::requested_text(event.agent_run_id, input_tokens)
                 )));
             }
             AgentEvent::ConversationHandedOver { .. } if main => {

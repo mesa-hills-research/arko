@@ -603,7 +603,7 @@ fn apply_catalog(
             ));
         }
         if !explicit_handover {
-            model.handover_at = Some(default_handover(&listed));
+            model.handover_at = Some(default_handover(&listed, None));
         }
     }
     // What sessions read before the handover was set per model.
@@ -683,7 +683,7 @@ mod tests {
             effort: Effort::Xhigh,
             fast: false,
             cache_1h: false,
-            handover_at: Some(default_handover(&resolve_model(name).unwrap())),
+            handover_at: Some(default_handover(&resolve_model(name).unwrap(), None)),
         }
     }
 
@@ -851,29 +851,43 @@ mod tests {
 
     #[test]
     fn handovers_follow_the_model_s_limit_and_a_fallback_when_unknown() {
-        assert_eq!(default_handover(&resolve_model("opus").unwrap()), 500_000);
         assert_eq!(
-            default_handover(&resolve_model("cc:fable").unwrap()),
+            default_handover(&resolve_model("opus").unwrap(), None),
             500_000
         );
-        assert_eq!(default_handover(&resolve_model("sol").unwrap()), 200_000);
-        assert_eq!(default_handover(&resolve_model("gemini").unwrap()), 200_000);
+        assert_eq!(
+            default_handover(&resolve_model("cc:fable").unwrap(), None),
+            500_000
+        );
+        assert_eq!(
+            default_handover(&resolve_model("sol").unwrap(), None),
+            200_000
+        );
+        assert_eq!(
+            default_handover(&resolve_model("gemini").unwrap(), None),
+            200_000
+        );
         // An OpenRouter model without its catalog has no known limit.
         assert_eq!(
-            default_handover(&resolve_model("openrouter:x/y").unwrap()),
+            default_handover(&resolve_model("openrouter:x/y").unwrap(), None),
             UNKNOWN_LIMIT_HANDOVER
         );
         let mut small = resolve_model("openrouter:anthropic/claude-opus-5.5").unwrap();
         small.max_input_tokens = 200_000;
-        assert_eq!(default_handover(&small), 160_000);
+        assert_eq!(default_handover(&small, None), 160_000);
         small.max_input_tokens = 1_000_000;
-        assert_eq!(default_handover(&small), 500_000, "Claude on OpenRouter");
+        assert_eq!(
+            default_handover(&small, None),
+            500_000,
+            "Claude on OpenRouter"
+        );
     }
 
     fn settings(main: ModelSettings, worker: ModelSettings) -> Settings {
         Settings {
             workspace: "/work".into(),
             handover_at: main.handover_at.unwrap_or(200_000),
+            main_handover_at: None,
             main,
             worker,
             max_workers: 4,

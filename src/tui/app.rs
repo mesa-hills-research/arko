@@ -31,8 +31,6 @@ pub struct Info {
     pub workspace: String,
     /// The handover size the session started with, until the status says.
     pub handover_at: usize,
-    /// Outside access as the session started, until the status says.
-    pub outside: bool,
     /// The session's folder: the web page's key is there.
     pub session_dir: PathBuf,
     /// Where the view's choices are remembered.
@@ -802,7 +800,7 @@ impl App {
 
     /// Whether the agents may work outside the workspace now.
     pub fn outside(&self) -> bool {
-        self.reading.settings.outside || self.info.outside
+        self.reading.settings.outside
     }
 
     /// The handover size now.

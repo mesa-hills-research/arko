@@ -29,6 +29,29 @@ pub fn lines(text: &str) -> Option<Vec<String>> {
     Some(lines)
 }
 
+/// The margin around the code in SVG, in modules: the standard's.
+const SVG_QUIET: i32 = 4;
+
+/// `text` as a QR code in SVG: dark modules on a light ground with its
+/// margin, whatever the page's theme, since that is what readers expect.
+/// The image scales to what holds it.
+pub fn svg(text: &str) -> Option<String> {
+    let code = QrCode::encode_text(text, QrCodeEcc::Low).ok()?;
+    let size = code.size();
+    let mut path = String::new();
+    for y in 0..size {
+        for x in 0..size {
+            if code.get_module(x, y) {
+                path.push_str(&format!("M{},{}h1v1h-1z", x + SVG_QUIET, y + SVG_QUIET));
+            }
+        }
+    }
+    let full = size + 2 * SVG_QUIET;
+    Some(format!(
+        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {full} {full}" shape-rendering="crispEdges"><rect width="{full}" height="{full}" fill="#fff"/><path d="{path}" fill="#000"/></svg>"##
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -42,5 +65,18 @@ mod tests {
         assert_eq!(lines.len(), width.div_ceil(2));
         assert!(lines.iter().all(|line| line.chars().count() == width));
         assert!(lines[0].chars().all(|c| c == '█'));
+    }
+
+    #[test]
+    fn the_svg_has_its_margin_and_dark_modules() {
+        let svg = svg("http://192.168.1.12:8765/#key=abc").unwrap();
+        // 33 bytes: a version 3 code, 29 modules, and the margins.
+        assert!(
+            svg.starts_with("<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 37 37\""),
+            "{svg}"
+        );
+        // The finder pattern's corner, inside the margin.
+        assert!(svg.contains("M4,4h1v1h-1z"));
+        assert!(svg.ends_with("</svg>"));
     }
 }

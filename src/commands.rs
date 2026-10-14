@@ -86,8 +86,26 @@ pub const COMMANDS: &[Command] = &[
     Command::session("/session", "this session's ID, folder and models"),
     Command {
         name: "/remote",
-        args: "ADDR|off|new-key",
-        about: "the web page, for a phone or browser (/remote ADDR, /remote off, /remote new-key)",
+        args: "ADDR|qr [INTERFACE]|off|new-key",
+        about: "the web page, for a phone or browser (/remote ADDR, /remote qr [INTERFACE], /remote off, /remote new-key)",
+        aliases: &[],
+        runs: Runs::Session,
+    },
+    Command {
+        name: "/outside",
+        args: "on|off",
+        about: "outside access: whether the agents may change paths outside the working directory (/outside on, /outside off)",
+        aliases: &[],
+        runs: Runs::Session,
+    },
+    Command::session(
+        "/handover",
+        "the main agent hands over now: it writes a report and goes on from it in a fresh conversation",
+    ),
+    Command {
+        name: "/handover-at",
+        args: "SIZE",
+        about: "the input size the main agent hands over at (/handover-at 200k)",
         aliases: &[],
         runs: Runs::Session,
     },

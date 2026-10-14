@@ -54,10 +54,15 @@ impl ModelServer {
                     };
                     let index = count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                     let stream = respond(index, body).await;
-                    let reply = format!(
-                        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{stream}",
-                        stream.len()
-                    );
+                    // A whole response (an error), or the events of a turn.
+                    let reply = if stream.starts_with("HTTP/1.1 ") {
+                        stream
+                    } else {
+                        format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{stream}",
+                            stream.len()
+                        )
+                    };
                     let _ = socket.write_all(reply.as_bytes()).await;
                 });
             }
@@ -68,6 +73,23 @@ impl ModelServer {
     pub fn client(&self) -> LLMClient {
         LLMClient::new().with_openai_client(
             arko_ai::providers::openai::OpenAIClient::new("test-key").with_base_url(&self.url),
+        )
+    }
+
+    /// A client of this server over a ChatGPT login (with a token that
+    /// doesn't expire), where OpenAI models accept the backend's input
+    /// limit.
+    pub fn chatgpt_client(&self) -> LLMClient {
+        use base64::Engine;
+        let part = |json: &str| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(json);
+        let token = format!(
+            "{}.{}.signature",
+            part(r#"{"alg":"none"}"#),
+            part(r#"{"exp":4102444800}"#)
+        );
+        LLMClient::new().with_openai_client(
+            arko_ai::providers::openai::OpenAIClient::new_chatgpt_oauth(&token, None, "account")
+                .with_base_url(&self.url),
         )
     }
 
@@ -112,6 +134,25 @@ pub fn tool_call(id: &str, name: &str, arguments: Value) -> String {
     .iter()
     .map(|event| format!("data: {event}\n\n"))
     .collect()
+}
+
+/// `turn` (a model turn), reporting `tokens` of input.
+pub fn with_input(turn: String, tokens: usize) -> String {
+    turn.replace("\"input_tokens\":10", &format!("\"input_tokens\":{tokens}"))
+}
+
+/// The answer to a request over the model's input limit, as OpenAI gives
+/// it.
+pub fn overflow() -> String {
+    let body = serde_json::json!({"error": {
+        "message": "Your input exceeds the context window of this model. Please adjust your input and try again.",
+        "type": "invalid_request_error", "param": "input", "code": "context_length_exceeded",
+    }})
+    .to_string();
+    format!(
+        "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    )
 }
 
 pub fn complete(id: &str, report: &str) -> String {

@@ -701,10 +701,7 @@ impl Feed {
                 self.push(&mut state, notice(text, Level::Warn));
             }
             AgentEvent::HandoverRequested { input_tokens } if main => {
-                let text = format!(
-                    "the conversation reached {}k tokens; the agent is writing a handover report",
-                    input_tokens / 1000
-                );
+                let text = crate::handover::requested_text(event.agent_run_id, *input_tokens);
                 self.push(&mut state, notice(text, Level::Info));
             }
             AgentEvent::ConversationHandedOver { .. } if main => {

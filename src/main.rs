@@ -22,11 +22,13 @@ mod commands;
 mod credentials;
 mod crew;
 mod glyphs;
+mod handover;
 mod index;
 mod mcp;
 mod message;
 #[cfg(test)]
 mod mock_model;
+mod outside;
 mod providers;
 mod remote;
 mod session;
@@ -134,14 +136,18 @@ struct Args {
 
     /// Input size, in tokens, at which an agent writes a handover report and
     /// continues in a fresh conversation. Default: 500000 on Claude models,
-    /// 200000 on others (at most 80% of what the model accepts; 100000 when
-    /// OpenRouter's catalog can't say).
+    /// 250000 for OpenAI models on the ChatGPT login (whose backend accepts
+    /// 272000), 200000 on others (at most 80% of what the model accepts;
+    /// 100000 when OpenRouter's catalog can't say). When resuming, it sets
+    /// the main agent's size as /handover-at does (up to the size the
+    /// session started with).
     #[arg(long)]
     handover_at: Option<usize>,
 
-    /// Let commands delete, move and overwrite paths outside the working
-    /// directory too (protected paths, such as the home directory itself,
-    /// stay refused).
+    /// Let commands and the file tools delete, move and overwrite paths
+    /// outside the working directory too (protected paths, such as the
+    /// home directory itself, stay refused). It turns outside access on in
+    /// a resumed session too; /outside turns it on and off as you go.
     #[arg(long)]
     allow_outside_workspace: bool,
 
@@ -300,11 +306,10 @@ async fn run(args: Args) -> Result<ExitCode, String> {
                 || args.cache_1h
                 || args.no_cache_1h
                 || args.shell.is_some()
-                || args.handover_at.is_some()
                 || args.openai_auth.is_some()
             {
                 eprintln!(
-                    "fin: a resumed session keeps the models, shell and handover size it was started with ({})",
+                    "fin: a resumed session keeps the models and shell it was started with ({})",
                     settings.describe(&settings.main)
                 );
             }
@@ -361,7 +366,6 @@ async fn run(args: Args) -> Result<ExitCode, String> {
         handover_at: settings.handover_at,
         show_thinking: settings.show_thinking,
         shell_name: shell.name,
-        allow_outside_workspace: settings.allow_outside_workspace,
         mcp_tools: &[],
         mcp_servers: &[],
         skill_folders: &[],
@@ -387,7 +391,13 @@ async fn run(args: Args) -> Result<ExitCode, String> {
     }
     start_log(&session);
 
-    let managers = Managers::open(&session, &shell, settings.allow_outside_workspace)?;
+    let managers = Managers::open(&session, &shell)?;
+    // Outside access as the session left it; the flag turns it on below.
+    let outside = Arc::new(outside::Outside::new(
+        settings.allow_outside_workspace,
+        managers.list(),
+        settings.workspace.clone(),
+    ));
     let one_shot = args.prompt.is_some();
 
     // MCP servers, skills and search indexes: what goes wrong with them is
@@ -451,7 +461,9 @@ async fn run(args: Args) -> Result<ExitCode, String> {
     };
     let main_config = agents::main_config(&agent_settings)?;
     let worker_config = agents::worker_config(&agent_settings)?;
-    let mut tools = managers.tools(&shell);
+    // Where the runs' command channels are kept, to ask for handovers.
+    let runs = Arc::new(handover::Runs::default());
+    let mut tools = managers.tools(&shell, runs.clone());
     tools.extend(mcp.tools().iter().cloned());
     if let Some(indexes) = &indexes {
         tools.extend(indexes.tools());
@@ -477,10 +489,21 @@ async fn run(args: Args) -> Result<ExitCode, String> {
     // opened later has the history.
     let feed = remote::Feed::new(MAIN);
     let (remote_actions, remote_input) = mpsc::unbounded_channel();
+    let handover = Arc::new(handover::Handover::new(
+        runs,
+        settings
+            .main_handover_at
+            .or(settings.main.handover_at)
+            .unwrap_or(settings.handover_at),
+        output.clone(),
+        feed.clone(),
+    ));
     let gauges = Arc::new(Gauges {
         workflow: Mutex::new(None),
         crew: Mutex::new(None),
         stats: stats.clone(),
+        outside: outside.clone(),
+        handover: handover.clone(),
     });
     // The main agent's questions are put to the user at the prompt; with
     // no terminal, it is told there is no one to ask.
@@ -502,7 +525,6 @@ async fn run(args: Args) -> Result<ExitCode, String> {
                     &worker_config.llm_config.generation_config,
                 )
                 .await,
-            allow_outside_workspace: settings.allow_outside_workspace,
             feed: Some(feed.clone()),
         });
         (Some(crew), Some(woken))
@@ -554,9 +576,15 @@ async fn run(args: Args) -> Result<ExitCode, String> {
         remote_actions,
         remote_bind: None,
         gauges,
+        outside,
+        handover,
     };
     harness.project = project_instructions(&harness.settings.workspace);
     harness.open(!new)?;
+    harness.outside_at_start(new, args.allow_outside_workspace);
+    if !new && let Some(tokens) = args.handover_at {
+        harness.handover_at_start(tokens);
+    }
     if one_shot && let Some(note) = &harness.unoffered {
         output.line(&output.warn(&format!("fin: {note}")));
     }
@@ -604,7 +632,6 @@ async fn run(args: Args) -> Result<ExitCode, String> {
                             .main
                             .handover_at
                             .unwrap_or(harness.settings.handover_at),
-                        outside: harness.settings.allow_outside_workspace,
                     },
                     &output,
                 )
@@ -697,47 +724,11 @@ fn new_settings(args: &Args) -> Result<Settings, String> {
     let cache_1h = |id: &str| {
         want_1h && resolve_model(id).is_ok_and(|model| providers::takes_cache_ttl(&model))
     };
-    let handover_at = |id: &str| {
-        args.handover_at.or_else(|| {
-            resolve_model(id)
-                .ok()
-                .map(|model| agents::default_handover(&model))
-        })
-    };
-    let main = ModelSettings {
-        cache_1h: cache_1h(&main_model),
-        handover_at: handover_at(&main_model),
-        model: main_model,
-        effort: args.effort,
-        fast: args.fast,
-    };
-    let worker = match &args.worker_model {
-        Some(model) => {
-            let model = name(model)?;
-            ModelSettings {
-                cache_1h: cache_1h(&model),
-                handover_at: handover_at(&model),
-                model,
-                effort: args.worker_effort.unwrap_or(args.effort),
-                fast: args.worker_fast,
-            }
-        }
-        None => ModelSettings {
-            effort: args.worker_effort.unwrap_or(main.effort),
-            ..main.clone()
-        },
-    };
-    // What sessions read before the handover was set per model.
-    let session_handover = main.handover_at.unwrap_or(200_000);
-    if args.cache_1h && !main.cache_1h && !worker.cache_1h {
-        eprintln!(
-            "fin: --cache-1h is for Claude models by API key or on OpenRouter (Claude Code chooses its own); this session has none, so it is ignored"
-        );
-    }
+    let worker_model = args.worker_model.as_deref().map(name).transpose()?;
     // OpenAI models are all reached one way: the session keeps it.
-    let uses_openai = [&main, &worker]
-        .iter()
-        .any(|model| model.provider() == Ok(arko_ai::Provider::OpenAI));
+    let uses_openai = std::iter::once(&main_model)
+        .chain(&worker_model)
+        .any(|id| resolve_model(id).is_ok_and(|model| model.provider == arko_ai::Provider::OpenAI));
     let openai_auth = if uses_openai {
         let (auth, both) =
             providers::choose_openai_auth(args.openai_auth, args.codex_auth.as_deref())?;
@@ -753,12 +744,49 @@ fn new_settings(args: &Args) -> Result<Settings, String> {
         }
         None
     };
+    // On the ChatGPT login, OpenAI models hand over below its backend's
+    // input limit.
+    let handover_at = |id: &str| {
+        args.handover_at.or_else(|| {
+            resolve_model(id)
+                .ok()
+                .map(|model| agents::default_handover(&model, openai_auth))
+        })
+    };
+    let main = ModelSettings {
+        cache_1h: cache_1h(&main_model),
+        handover_at: handover_at(&main_model),
+        model: main_model,
+        effort: args.effort,
+        fast: args.fast,
+    };
+    let worker = match worker_model {
+        Some(model) => ModelSettings {
+            cache_1h: cache_1h(&model),
+            handover_at: handover_at(&model),
+            model,
+            effort: args.worker_effort.unwrap_or(args.effort),
+            fast: args.worker_fast,
+        },
+        None => ModelSettings {
+            effort: args.worker_effort.unwrap_or(main.effort),
+            ..main.clone()
+        },
+    };
+    // What sessions read before the handover was set per model.
+    let session_handover = main.handover_at.unwrap_or(200_000);
+    if args.cache_1h && !main.cache_1h && !worker.cache_1h {
+        eprintln!(
+            "fin: --cache-1h is for Claude models by API key or on OpenRouter (Claude Code chooses its own); this session has none, so it is ignored"
+        );
+    }
     let settings = Settings {
         workspace,
         main,
         worker,
         max_workers: args.workers.unwrap_or(NO_LIMIT),
         handover_at: session_handover,
+        main_handover_at: None,
         allow_outside_workspace: args.allow_outside_workspace,
         show_thinking: args.show_thinking,
         created: chrono::Utc::now(),
@@ -855,12 +883,12 @@ struct Managers {
 }
 
 impl Managers {
-    fn open(session: &Session, shell: &Shell, allow_outside: bool) -> Result<Self, String> {
+    /// Opens them with outside access off: [`outside::Outside`] sets it.
+    fn open(session: &Session, shell: &Shell) -> Result<Self, String> {
         let open = |directory: PathBuf, args: &[String]| {
             let mut config = TerminalConfig::new(directory);
             config.shell = shell.program.clone();
             config.shell_args = args.to_vec();
-            config.command_guard.allow_outside_workspace = allow_outside;
             TerminalManager::new(config).map_err(|error| {
                 format!(
                     "could not open the session's terminal ({error}); is it open in another fin?"
@@ -873,11 +901,16 @@ impl Managers {
         })
     }
 
-    fn tools(&self, shell: &Shell) -> Vec<Arc<dyn Tool>> {
-        let mut tools: Vec<Arc<dyn Tool>> = vec![Arc::new(ShellTool::new(
-            self.commands.clone(),
-            shell.clone(),
-        ))];
+    fn list(&self) -> Vec<Arc<TerminalManager>> {
+        vec![self.commands.clone(), self.jobs.clone()]
+    }
+
+    /// The shell tool, which keeps the command channels of the runs it is
+    /// bound to in `runs`, and the terminal tools.
+    fn tools(&self, shell: &Shell, runs: Arc<handover::Runs>) -> Vec<Arc<dyn Tool>> {
+        let mut tools: Vec<Arc<dyn Tool>> = vec![Arc::new(
+            ShellTool::new(self.commands.clone(), shell.clone()).keeping_runs(runs),
+        )];
         for tool in TerminalTool::all(self.jobs.clone()) {
             tools.push(Arc::new(tool));
         }
@@ -1117,6 +1150,11 @@ struct Harness {
     remote_bind: Option<(remote::Bind, u16)>,
     /// The figures of the page's status.
     gauges: Arc<Gauges>,
+    /// Outside access, which the user turns on and off (`/outside`).
+    outside: Arc<outside::Outside>,
+    /// The main agent's handover size, and the watch that asks for its
+    /// handovers (`/handover`, `/handover-at`).
+    handover: Arc<handover::Handover>,
 }
 
 impl Harness {
@@ -1227,10 +1265,24 @@ impl Harness {
                     }),
                 );
         }
+        // After the crew's hook: a call it refuses doesn't act.
+        builder = builder.hook(HookPoint::PreToolExecution, self.outside.hook());
         if let Some(checkpoint) = checkpoint {
             builder = builder.resume_from(checkpoint);
         }
         let workflow = Arc::new(builder.build().map_err(|error| error.to_string())?);
+        let mut configs = vec![config(MAIN, &self.main_config)];
+        if self.settings.max_workers > 0 {
+            configs.push(config(WORKER, &self.worker_config));
+        }
+        self.outside.attach(&workflow, &configs);
+        self.handover.watch(
+            &workflow,
+            configs[0]
+                .handover
+                .as_ref()
+                .and_then(|handover| handover.at_input_tokens),
+        );
         let (control, controls) = mpsc::unbounded_channel();
         let task = tokio::spawn(ui::print_events(
             workflow.subscribe_events(),
@@ -1312,6 +1364,10 @@ impl Harness {
         if let Some(note) = &self.unoffered {
             out.line(&out.warn(note));
         }
+        // The risky setting is the one worth a line.
+        if self.outside.is_on() {
+            out.line(&out.warn(&self.outside.describe()));
+        }
         if new {
             out.echo(&out.dim(
                 "Type a message (end a line with \\ to continue it). While the agent works, type to add to its task; Ctrl-C stops the turn. /help for commands.",
@@ -1342,14 +1398,15 @@ impl Harness {
     /// The workers, as the banner and `/session` say it.
     /// When the agents hand over, as `/session` says it.
     fn handover_summary(&self) -> String {
-        let tokens = |model: &ModelSettings| {
-            format!(
-                "{}k tokens",
-                model.handover_at.unwrap_or(self.settings.handover_at) / 1000
-            )
-        };
-        let main = tokens(&self.settings.main);
-        let worker = tokens(&self.settings.worker);
+        let main = format!("{}k tokens", self.handover.at() / 1000);
+        let worker = format!(
+            "{}k tokens",
+            self.settings
+                .worker
+                .handover_at
+                .unwrap_or(self.settings.handover_at)
+                / 1000
+        );
         if self.settings.max_workers == 0 || main == worker {
             format!("handover at {main} of input")
         } else {
@@ -1451,12 +1508,16 @@ impl Harness {
                     self.remote_command(command).await;
                     continue;
                 }
+                if self.live_command(command, source) {
+                    continue;
+                }
                 self.feed.user(command, source, Delivery::Command);
                 let quit = self.mirrored(|harness| match command {
                     "/exit" | "/quit" => harness.may_exit(),
                     "/new" => {
                         harness.conversation = Conversation::New;
                         harness.unread.clear();
+                        harness.handover.forget();
                         harness.output.line(
                             &harness
                                 .output
@@ -1557,6 +1618,7 @@ impl Harness {
                 let bind = self.remote_bind.map(|(bind, _)| bind).unwrap_or_default();
                 self.start_remote(bind).await;
             }
+            qr if qr == "qr" || qr.starts_with("qr ") => self.remote_qr(qr[2..].trim()),
             "off" => {
                 if self.remote.is_some() {
                     self.feed
@@ -1590,11 +1652,9 @@ impl Harness {
             }
             other => match remote::parse_bind(other) {
                 Ok(bind) => self.start_remote(bind).await,
-                Err(error) => self.output.line(
-                    &self
-                        .output
-                        .error(&format!("{error}. Or: /remote off, /remote new-key")),
-                ),
+                Err(error) => self.output.line(&self.output.error(&format!(
+                    "{error}. Or: /remote qr, /remote off, /remote new-key"
+                ))),
             },
         }
     }
@@ -1662,17 +1722,17 @@ impl Harness {
         }
     }
 
-    /// Prints the links to the page (with the key: never logged), and a QR
-    /// code of the first that other devices can open.
+    /// Prints the links to the page (with the key: never logged), best
+    /// first, and a QR code of the first that other devices can open.
     fn announce_remote(&self, addr: std::net::SocketAddr, key: &str) {
         let out = &self.output;
-        let links = remote::links(addr, key);
+        let (links, note) = remote::links(addr, key);
         let mut lines = Vec::new();
         for (n, link) in links.iter().enumerate() {
             let interface = link
                 .interface
                 .as_ref()
-                .map(|name| out.dim(&format!("  ({name})")))
+                .map(|name| out.dim(&format!("  ({name}, {})", link.kind.label())))
                 .unwrap_or_default();
             lines.push(format!(
                 "{} {}{interface}",
@@ -1685,6 +1745,9 @@ impl Harness {
             ));
         }
         out.line(&lines.join("\n"));
+        if let Some(note) = note {
+            out.line(&out.warn(&note));
+        }
         if links.iter().all(|link| link.loopback) {
             out.line(&out.dim(
                 "Only this machine can open it: for a phone, /remote 0.0.0.0 (the network's devices, Tailscale's too), or an SSH tunnel.",
@@ -1693,12 +1756,299 @@ impl Harness {
         out.line(&out.warn(
             "The link holds the session's key: whoever has it can follow this session and act in it. No TLS: on a network you don't trust, use an SSH tunnel or Tailscale. /remote off stops the page.",
         ));
+        let others = links.iter().filter(|link| !link.loopback).count();
         if glyphs::symbols() != glyphs::Symbols::Ascii
             && let Some(link) = links.iter().find(|link| !link.loopback)
             && let Some(code) = remote::qr_lines(&link.url)
         {
+            if others > 1 {
+                out.echo(&out.dim(&format!(
+                    "The QR code opens the first link{}; /remote qr INTERFACE shows another.",
+                    place(link)
+                )));
+            }
             // (The full-screen view shows it in an overlay that stays.)
             out.echo(&code.join("\n"));
+        }
+    }
+
+    /// `/remote qr [INTERFACE]`: the QR code of the page's first link that
+    /// other devices can open, or of the one on `interface` (a name or an
+    /// address).
+    fn remote_qr(&self, interface: &str) {
+        let out = &self.output;
+        let Some(addr) = self.remote.as_ref().map(remote::Server::addr) else {
+            out.line("The web page isn't on: /remote starts it.");
+            return;
+        };
+        let key = match self.remote_key(false) {
+            Ok(key) => key,
+            Err(error) => {
+                out.line(&out.error(&format!("fin: {error}")));
+                return;
+            }
+        };
+        let (links, note) = remote::links(addr, &key);
+        if interface.is_empty()
+            && let Some(note) = note
+        {
+            out.line(&out.warn(&note));
+        }
+        let link = match qr_link(&links, interface, addr) {
+            Ok(link) => link,
+            Err(error) => {
+                out.line(&out.error(&error));
+                return;
+            }
+        };
+        if glyphs::symbols() == glyphs::Symbols::Ascii {
+            out.line(&format!(
+                "With FIN_SYMBOLS=ascii the terminal shows no QR code. The link{}: {}",
+                place(link),
+                link.url
+            ));
+            return;
+        }
+        match remote::qr_lines(&link.url) {
+            Some(code) => {
+                out.line(&format!("{}{}", link.url, out.dim(&place(link))));
+                out.line(&code.join("\n"));
+            }
+            None => out.line(&out.error("The link is too long for a QR code.")),
+        }
+    }
+
+    /// Runs `command` when it changes a setting while the session runs
+    /// (`/outside`); returns whether it was one. A change from the web
+    /// page is announced in the terminal and on the page, so that whoever
+    /// is at the terminal knows.
+    fn live_command(&mut self, command: &str, source: Source) -> bool {
+        let Some((name, argument)) = split_live_command(command) else {
+            return false;
+        };
+        self.feed.user(command, source, Delivery::Command);
+        match name {
+            "/outside" => self.outside_command(argument, source),
+            "/handover" => self.handover_command(argument, source),
+            _ => self.handover_at_command(argument, source),
+        }
+        true
+    }
+
+    /// `/handover`: the main agent hands over at its next step, or when
+    /// its next turn starts.
+    fn handover_command(&mut self, argument: &str, source: Source) {
+        if !argument.is_empty() {
+            self.mirrored(|harness| {
+                harness.output.line(&harness.output.error(
+                    "/handover takes nothing after it; /handover-at sets the size the agent hands over at.",
+                ))
+            });
+            return;
+        }
+        let Some(asked) = self.ask_handover() else {
+            self.mirrored(|harness| {
+                harness.output.line(
+                    "There is no conversation to hand over: your next message starts a new one.",
+                )
+            });
+            return;
+        };
+        if source == Source::Web && asked != handover::Asked::Already {
+            self.say(Level::Info, "A handover was asked for from the web page.");
+        }
+        self.mirrored(|harness| harness.output.line(handover_text(asked)));
+    }
+
+    /// `/handover-at`: the size the main agent hands over at, and with a
+    /// size, sets it.
+    fn handover_at_command(&mut self, argument: &str, source: Source) {
+        if argument.is_empty() {
+            let mut text = format!(
+                "The main agent hands over at {} tokens of input",
+                handover::shown(self.handover.at())
+            );
+            if let Some(input) = self.handover.input() {
+                text.push_str(&format!(
+                    " (its latest request: {})",
+                    handover::shown(input)
+                ));
+            }
+            text.push_str(". /handover-at 200k sets another size; /handover hands over now.");
+            self.mirrored(|harness| harness.output.line(&text));
+            return;
+        }
+        let tokens = match handover::parse_tokens(argument) {
+            Ok(tokens) => tokens,
+            Err(error) => {
+                self.mirrored(|harness| harness.output.line(&harness.output.error(&error)));
+                return;
+            }
+        };
+        let set = self.set_handover_at(tokens);
+        if source == Source::Web {
+            self.say(
+                Level::Info,
+                &format!(
+                    "The handover size was set to {} from the web page.",
+                    handover::shown(set)
+                ),
+            );
+        }
+        let lines = self.handover_set_lines(tokens, set);
+        self.mirrored(|harness| {
+            for line in &lines {
+                harness.output.line(line);
+            }
+        });
+    }
+
+    /// Asks the main agent for a handover: at its next step while it
+    /// works, else as its next turn starts. `None` when there is no
+    /// conversation to hand over.
+    fn ask_handover(&self) -> Option<handover::Asked> {
+        if self.feed.activity().working {
+            return Some(self.handover.ask_now());
+        }
+        let run = match &self.conversation {
+            Conversation::New => return None,
+            Conversation::Answered(result) => result.agent_run_id,
+            Conversation::Stopped(run) => run.result.agent_run_id,
+        };
+        Some(self.handover.ask_next(run))
+    }
+
+    /// `--handover-at` when resuming: the size the main agent hands over
+    /// at from now on.
+    fn handover_at_start(&mut self, tokens: usize) {
+        let set = self.set_handover_at(tokens);
+        for line in self.handover_set_lines(tokens, set) {
+            self.say(Level::Info, &line);
+        }
+    }
+
+    /// Sets the size the main agent hands over at, up to the one its
+    /// configuration hands over at by itself, and keeps it in the session.
+    /// Returns the size set.
+    fn set_handover_at(&mut self, tokens: usize) -> usize {
+        let set = self.handover.set_at(tokens);
+        self.settings.main_handover_at = Some(set);
+        if let Err(error) = self.session.save_settings(&self.settings) {
+            self.say(
+                Level::Error,
+                &format!("fin: could not save the session's settings: {error}"),
+            );
+        }
+        set
+    }
+
+    /// What the user is told when `tokens` was asked for and `set` set;
+    /// asks for the handover when the main agent's context is over it.
+    fn handover_set_lines(&self, tokens: usize, set: usize) -> Vec<String> {
+        let mut lines = vec![if set < tokens {
+            format!(
+                "This session's main agent hands over at {} at the latest: its conversation keeps the size it was started with. It now hands over at {}.",
+                handover::shown(self.handover.configured()),
+                handover::shown(set)
+            )
+        } else {
+            format!(
+                "The main agent now hands over at {} tokens of input.",
+                handover::shown(set)
+            )
+        }];
+        if let Some(input) = self.handover.input().filter(|input| *input >= set)
+            && let Some(asked) = self.ask_handover()
+        {
+            lines.push(format!(
+                "Its context ({}) is over that already. {}",
+                handover::shown(input),
+                handover_text(asked)
+            ));
+        }
+        lines
+    }
+
+    /// `/outside`: says whether outside access is on; `/outside on|off`
+    /// turns it on or off.
+    fn outside_command(&mut self, argument: &str, source: Source) {
+        let on = match outside::parse(argument) {
+            Ok(Some(on)) => on,
+            Ok(None) => {
+                self.mirrored(|harness| harness.output.line(&harness.outside.describe()));
+                return;
+            }
+            Err(error) => {
+                self.mirrored(|harness| harness.output.line(&harness.output.error(&error)));
+                return;
+            }
+        };
+        let state = if on { "on" } else { "off" };
+        if self.outside.is_on() == on {
+            self.mirrored(|harness| {
+                harness
+                    .output
+                    .line(&format!("Outside access is already {state}."))
+            });
+            return;
+        }
+        if source == Source::Web {
+            self.say(
+                if on { Level::Warn } else { Level::Info },
+                &format!("Outside access turned {state} from the web page."),
+            );
+        }
+        self.set_outside(on);
+        self.mirrored(|harness| {
+            let text = harness.outside.describe();
+            harness
+                .output
+                .line(&if on { harness.output.warn(&text) } else { text })
+        });
+    }
+
+    /// Outside access as the session starts. The agents' instructions
+    /// leave it to a note: a new session started with it on says so, and
+    /// `--allow-outside-workspace` (`flag`) turns it on in a resumed one.
+    /// (The banner tells the user.)
+    fn outside_at_start(&mut self, new: bool, flag: bool) {
+        if new && self.outside.is_on() {
+            self.tell_agents(&self.outside.note());
+        } else if !new && flag {
+            self.set_outside(true);
+        }
+    }
+
+    /// Turns outside access on or off: the command guard, the file tools
+    /// and new workers follow at once, the session keeps it, and the agents
+    /// get a note. Returns whether it changed.
+    fn set_outside(&mut self, on: bool) -> bool {
+        if !self.outside.set(on) {
+            return false;
+        }
+        self.settings.allow_outside_workspace = on;
+        if let Err(error) = self.session.save_settings(&self.settings) {
+            self.say(
+                Level::Error,
+                &format!("fin: could not save the session's settings: {error}"),
+            );
+        }
+        self.tell_agents(&self.outside.note());
+        true
+    }
+
+    /// A note to the agents from fin: the running ones read it at their
+    /// next step, and later runs (workers, conversations, handovers) in
+    /// their first message.
+    fn tell_agents(&self, text: &str) {
+        if let Err(error) = self
+            .workflow()
+            .post_note(Note::new(text).source(NoteSource::Host))
+        {
+            self.say(
+                Level::Error,
+                &format!("fin: could not tell the agents: {error}"),
+            );
         }
     }
 
@@ -2043,6 +2393,9 @@ impl Harness {
                         }
                         if is_remote_command(command) {
                             self.remote_command(command).await;
+                            continue;
+                        }
+                        if self.live_command(command, source) {
                             continue;
                         }
                         self.feed.user(command, source, Delivery::Command);
@@ -2413,12 +2766,74 @@ fn conversation_of(workflow: &Workflow) -> Conversation {
 /// The command `text` is, if it is one (see `commands`): a command's name,
 /// alone or with what it takes.
 fn command(text: &str) -> Option<&str> {
-    commands::find(text).map(|_| text)
+    (commands::find(text).is_some() || split_live_command(text).is_some()).then_some(text)
 }
 
 /// `/remote`, alone or with what follows it.
 fn is_remote_command(text: &str) -> bool {
     text == "/remote" || text.starts_with("/remote ")
+}
+
+/// The link `/remote qr` shows: the first other devices can open, or the
+/// one on `interface` (a name or an address). `Err` with what to tell the
+/// user when there is none, of a server on `addr`.
+fn qr_link<'a>(
+    links: &'a [remote::Link],
+    interface: &str,
+    addr: std::net::SocketAddr,
+) -> Result<&'a remote::Link, String> {
+    let mut others = links.iter().filter(|link| !link.loopback);
+    let link = if interface.is_empty() {
+        others.next()
+    } else {
+        others.find(|link| link.is(interface))
+    };
+    link.ok_or_else(|| {
+        if links.iter().all(|link| link.loopback) {
+            format!(
+                "Only this machine can open the page (it listens on {addr}), so there is no QR code: /remote 0.0.0.0 serves it to the network's devices."
+            )
+        } else {
+            format!(
+                "The page has no link on `{interface}`: its links are on {}.",
+                remote::link_names(links)
+            )
+        }
+    })
+}
+
+/// Where a link leads, as the terminal says it: ` (ens33, LAN)`.
+fn place(link: &remote::Link) -> String {
+    link.interface
+        .as_ref()
+        .map(|name| format!(" ({name}, {})", link.kind.label()))
+        .unwrap_or_default()
+}
+
+/// The commands that change a setting while the session runs, which take
+/// an argument: `/outside`, `/handover`, `/handover-at`.
+const LIVE_COMMANDS: [&str; 3] = ["/outside", "/handover", "/handover-at"];
+
+/// What the user is told of a handover asked for.
+fn handover_text(asked: handover::Asked) -> &'static str {
+    match asked {
+        handover::Asked::Now => {
+            "The main agent hands over at its next step: it writes a report of its work, then goes on from the report in a fresh conversation."
+        }
+        handover::Asked::Next => {
+            "The main agent hands over when your next message starts its turn: it writes a report of its work first, then goes on from the report in a fresh conversation."
+        }
+        handover::Asked::Already => "A handover is under way already.",
+    }
+}
+
+/// A live command, alone or with its argument: the command and the
+/// argument.
+fn split_live_command(text: &str) -> Option<(&str, &str)> {
+    let (name, argument) = text.split_once(' ').unwrap_or((text, ""));
+    LIVE_COMMANDS
+        .contains(&name)
+        .then_some((name, argument.trim()))
 }
 
 /// The user's input, read on its own thread; the main agent's questions;
@@ -2511,6 +2926,8 @@ struct Gauges {
     workflow: Mutex<Option<Arc<Workflow>>>,
     crew: Mutex<Option<Arc<Crew>>>,
     stats: Arc<Mutex<Stats>>,
+    outside: Arc<outside::Outside>,
+    handover: Arc<handover::Handover>,
 }
 
 impl remote::Meter for Gauges {
@@ -2526,7 +2943,10 @@ impl remote::Meter for Gauges {
             workers: crew
                 .filter(|crew| !crew.is_empty())
                 .map(|crew| crew.describe()),
-            settings: remote::LiveSettings::default(),
+            settings: remote::LiveSettings {
+                outside: self.outside.is_on(),
+                handover_at: self.handover.at(),
+            },
         }
     }
 }
@@ -2589,9 +3009,21 @@ impl UserInputHandler for Asker {
 mod tests {
     use super::*;
 
+    /// The live settings' end-to-end tests, in their own file.
+    mod live {
+        use super::*;
+        include!("live_tests.rs");
+    }
+
     #[test]
     fn only_the_known_commands_are_commands() {
         assert_eq!(command("/cost"), Some("/cost"));
+        assert_eq!(command("/outside on"), Some("/outside on"));
+        assert_eq!(
+            split_live_command("/outside  off "),
+            Some(("/outside", "off"))
+        );
+        assert_eq!(command("/outsider"), None);
         assert_eq!(command("/stop-workers"), Some("/stop-workers"));
         assert_eq!(command("/workers"), Some("/workers"));
         assert_eq!(command("/usr/bin is missing"), None);
@@ -2618,7 +3050,6 @@ mod tests {
             handover_at: 200_000,
             show_thinking: false,
             shell_name: "bash",
-            allow_outside_workspace: false,
             mcp_tools: &[],
             mcp_servers: &[],
             skill_folders: &[],
@@ -2706,7 +3137,6 @@ mod tests {
             handover_at: 200_000,
             show_thinking: false,
             shell_name: "bash",
-            allow_outside_workspace: false,
             mcp_tools: &[],
             mcp_servers: &[],
             skill_folders: &[],
@@ -2771,6 +3201,7 @@ mod tests {
             worker: luna.clone(),
             max_workers: NO_LIMIT,
             handover_at: 200_000,
+            main_handover_at: None,
             allow_outside_workspace: false,
             show_thinking: false,
             created: chrono::Utc::now(),
@@ -2786,7 +3217,6 @@ mod tests {
             handover_at: 200_000,
             show_thinking: false,
             shell_name: "bash",
-            allow_outside_workspace: false,
             mcp_tools: &[],
             mcp_servers: &[],
             skill_folders: &[],
@@ -2810,16 +3240,24 @@ mod tests {
             cache_lifetime: arko_ai::prompt_cache::PromptCacheLifetime::Known(Duration::from_secs(
                 300,
             )),
-            allow_outside_workspace: false,
             feed: Some(feed.clone()),
         });
         let (questions_sender, questions) = mpsc::unbounded_channel();
         let (input_sender, receiver) = mpsc::unbounded_channel();
         let (remote_actions, remote_input) = mpsc::unbounded_channel();
+        let outside = Arc::new(outside::Outside::new(false, Vec::new(), workspace.clone()));
+        let handover = Arc::new(handover::Handover::new(
+            Arc::default(),
+            200_000,
+            output.clone(),
+            feed.clone(),
+        ));
         let gauges = Arc::new(Gauges {
             workflow: Mutex::new(None),
             crew: Mutex::new(None),
             stats: stats.clone(),
+            outside: outside.clone(),
+            handover: handover.clone(),
         });
         let mut harness = Harness {
             settings,
@@ -2855,6 +3293,8 @@ mod tests {
             remote_actions,
             remote_bind: None,
             gauges,
+            outside,
+            handover,
         };
         harness.open(false).unwrap();
         let inputs = Inputs {
@@ -3761,8 +4201,13 @@ mod tests {
         setup: &providers::Setup,
     ) -> Managers {
         let shell = Shell::detect(WindowsShell::Cmd);
-        let managers = Managers::open(&harness.session, &shell, false).unwrap();
-        harness.tools = managers.tools(&shell);
+        let managers = Managers::open(&harness.session, &shell).unwrap();
+        harness.tools = managers.tools(&shell, harness.handover.runs());
+        harness.outside = Arc::new(outside::Outside::new(
+            harness.settings.allow_outside_workspace,
+            managers.list(),
+            harness.settings.workspace.clone(),
+        ));
         let agent_settings = AgentSettings {
             main,
             worker,
@@ -3771,7 +4216,6 @@ mod tests {
             handover_at: 200_000,
             show_thinking: false,
             shell_name: shell.name,
-            allow_outside_workspace: false,
             mcp_tools: &[],
             mcp_servers: &[],
             skill_folders: &[],

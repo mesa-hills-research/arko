@@ -67,7 +67,6 @@ pub struct Setup {
     pub session_dir: PathBuf,
     pub workspace: PathBuf,
     pub handover_at: usize,
-    pub outside: bool,
 }
 
 /// The view while it runs.
@@ -132,7 +131,6 @@ pub fn start(setup: Setup, output: &Arc<Output>) -> Option<Screen> {
     let info = Info {
         workspace,
         handover_at: setup.handover_at,
-        outside: setup.outside,
         session_dir: setup.session_dir.clone(),
         prefs: Some(setup.root.join("tui.json")),
     };

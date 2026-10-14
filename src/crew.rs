@@ -59,7 +59,6 @@ pub struct Setup {
     pub cache_1h: bool,
     /// The client's cache lifetime for the worker model and authentication.
     pub cache_lifetime: PromptCacheLifetime,
-    pub allow_outside_workspace: bool,
     pub feed: Option<remote::Feed>,
 }
 
@@ -117,10 +116,10 @@ impl Crew {
         } else {
             config.max_running(self.setup.max_running as usize)
         };
-        if self.setup.allow_outside_workspace {
-            config = config.workspaces_anywhere();
-        }
-        config
+        // A worker's workspace may be outside the lead's only while outside
+        // access is on, which can change while the session runs: the
+        // `outside` hook refuses the others.
+        config.workspaces_anywhere()
     }
 
     pub fn attach(self: &Arc<Self>, workflow: &Arc<Workflow>, lead: Option<Uuid>) {
@@ -433,7 +432,6 @@ mod tests {
             max_running: 2,
             cache_1h: true,
             cache_lifetime: PromptCacheLifetime::Known(Duration::from_secs(3600)),
-            allow_outside_workspace: false,
             feed: None,
         });
         let native = crew.config();

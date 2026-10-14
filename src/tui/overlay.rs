@@ -436,7 +436,7 @@ fn page(frame: &mut Frame, app: &App, area: Rect, link: usize, since: Instant) {
     let mut lines: Vec<Line<'static>> = Vec::new();
     let links = super::page().and_then(|addr| {
         let key = remote::session_key(&app.info.session_dir.join(remote::KEY_FILE)).ok()?;
-        Some(remote::links(addr, &key))
+        Some(remote::links(addr, &key).0)
     });
     let warning = Line::from(Span::styled(
         "The link holds the session's key. No TLS: on a network you don't trust, use an SSH tunnel or Tailscale.",
@@ -488,11 +488,11 @@ fn page(frame: &mut Frame, app: &App, area: Rect, link: usize, since: Instant) {
                 None => {}
             }
             lines.push(Line::from(Span::styled(shown.url.clone(), theme.text())));
+            // Ranked: the local network first, VPNs last.
             let mut about = vec![Span::styled(
-                match (&shown.interface, shown.loopback) {
-                    (_, true) => "this machine only".to_string(),
-                    (Some(name), _) => name.clone(),
-                    (None, _) => "this address".to_string(),
+                match &shown.interface {
+                    Some(name) if !shown.loopback => format!("{name} · {}", shown.kind.label()),
+                    _ => shown.kind.label().to_string(),
                 },
                 theme.dim(),
             )];
