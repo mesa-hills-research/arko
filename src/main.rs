@@ -120,7 +120,10 @@ struct Args {
 
     /// Input size, in tokens, at which an agent writes a handover report and
     /// continues in a fresh conversation. Default: 500000 on Claude models,
-    /// 200000 on others (at most 80% of what the model accepts).
+    /// 250000 on the ChatGPT login (whose backend accepts 272000), 200000
+    /// on others (at most 80% of what the model accepts). When resuming, it
+    /// sets the main agent's size as /handover-at does (up to the size the
+    /// session started with).
     #[arg(long)]
     handover_at: Option<usize>,
 
