@@ -1274,9 +1274,7 @@ fn entry_lines(item: &Item, theme: &Theme, width: usize, own: bool) -> Vec<Wrapp
     }
 }
 
-/// The banner gets no wider than this: a header, not a wall.
-const BANNER_WIDTH: usize = 100;
-/// Its labels' column.
+/// The banner's labels' column.
 const BANNER_LABELS: usize = 11;
 
 /// The banner, boxed: the title, a row for each fact (its label and its
@@ -1296,8 +1294,9 @@ fn banner_lines(banner: &Banner, theme: &Theme, width: usize) -> Vec<Wrapped> {
     } else {
         Style::new().fg(theme.border)
     };
-    // As wide as the transcript, up to a header's width.
-    let outer = width.saturating_sub(MARGIN).clamp(24, BANNER_WIDTH);
+    // As wide as the transcript, with the same margin on the right as on
+    // the left.
+    let outer = width.saturating_sub(2 * MARGIN).max(24);
     let inner = outer - 4;
     let edge = |left: &str, right: &str, title: Option<&str>| {
         let mut spans = vec![
@@ -1361,7 +1360,11 @@ fn banner_lines(banner: &Banner, theme: &Theme, width: usize) -> Vec<Wrapped> {
         }
         line
     };
-    let mut lines = vec![edge(set.top_left, set.top_right, Some("fin"))];
+    // A blank line above the box: one row reads as wide as the two
+    // columns of margin at its sides.
+    let mut above = Wrapped::line(Vec::new());
+    above.bare = true;
+    let mut lines = vec![above, edge(set.top_left, set.top_right, Some("fin"))];
     lines.push(row(
         "Model",
         &banner.model,
@@ -1766,9 +1769,10 @@ mod tests {
         assert!(t.selection.is_none());
     }
 
-    /// The banner is a box that fits the screen: its long path cut in the
-    /// middle, its notes under a rule; a copy takes the values and notes,
-    /// not the box or the labels.
+    /// The banner is a box that fits the screen, with a blank line above it
+    /// and the same margin on both sides: its long path cut in the middle,
+    /// its notes under a rule. A copy takes the values and notes, not the
+    /// box or the labels.
     #[test]
     fn the_banner_is_a_box_whose_copy_is_its_values() {
         let mut t = Transcript::new();
@@ -1783,21 +1787,23 @@ mod tests {
         });
         let filter = full();
         let screen = rows(&mut t, &filter, 80, 14);
-        assert_eq!(screen[0], format!("  ┌ fin {}┐", "─".repeat(71)));
+        assert_eq!(screen[0].trim(), "");
+        assert_eq!(screen[1], format!("  ┌ fin {}┐", "─".repeat(69)));
         assert_eq!(
-            screen[1],
-            format!("  │ Model      Claude Opus 5.5 (xhigh){} │", " ".repeat(40))
+            screen[2],
+            format!("  │ Model      Claude Opus 5.5 (xhigh){} │", " ".repeat(38))
         );
         assert!(
-            screen[3].starts_with("  │ Workspace  /home/someone/deep/"),
+            screen[4].starts_with("  │ Workspace  /home/someone/deep/"),
             "{screen:?}"
         );
-        assert!(screen[3].contains("…") && screen[3].ends_with("/project │"));
-        assert!(screen.iter().all(|row| text_width(row) <= 80));
-        assert_eq!(screen[7], format!("  ├{}┤", "─".repeat(76)));
-        assert!(screen[8].starts_with("  │ Outside access is on."));
-        assert_eq!(screen[9], format!("  └{}┘", "─".repeat(76)));
-        let (from, to) = (t.point_at(0, 0).unwrap(), t.point_at(79, 9).unwrap());
+        assert!(screen[4].contains("…") && screen[4].ends_with("/project │"));
+        // Two columns of margin on the right, as on the left.
+        assert!(screen.iter().all(|row| text_width(row) <= 78));
+        assert_eq!(screen[8], format!("  ├{}┤", "─".repeat(74)));
+        assert!(screen[9].starts_with("  │ Outside access is on."));
+        assert_eq!(screen[10], format!("  └{}┘", "─".repeat(74)));
+        let (from, to) = (t.point_at(0, 0).unwrap(), t.point_at(79, 10).unwrap());
         t.select(from, to, &filter);
         let copied = t.selected_text(&filter, &Theme::terminal()).unwrap();
         // (The path whole, as it is, not as the screen shortens it.)
