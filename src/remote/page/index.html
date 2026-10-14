@@ -5,51 +5,147 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
 <meta name="referrer" content="no-referrer">
 <meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#F7F7F7" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#171717" media="(prefers-color-scheme: dark)">
 <title>fin</title>
 <link rel="icon" href="/icon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="/app.css">
+<script src="/core.js" defer></script>
 <script src="/app.js" defer></script>
 </head>
 <body>
-<header id="top">
-  <div class="row">
-    <span class="brand">fin</span>
-    <span id="state" class="pill offline">connecting</span>
-    <span id="figures" class="figures"></span>
-    <button id="more" class="plain" type="button" aria-expanded="false" aria-controls="details">details</button>
-  </div>
-  <div id="details" class="details" hidden>
-    <div id="info" class="info"></div>
-    <pre id="workers" class="workers"></pre>
-  </div>
-</header>
+<div id="app" class="app" hidden>
+  <header class="top">
+    <div class="status">
+      <span id="state" class="state connecting"><span class="dot" aria-hidden="true"></span><span id="state-label">Connecting</span><span id="state-time" class="state-time"></span></span>
+      <span id="figures" class="figures"></span>
+    </div>
+    <span id="outside" class="chip warn" hidden title="The agents may work outside the workspace">Outside</span>
+    <div class="actions">
+      <button id="workers-button" class="tool workers-button" type="button" hidden aria-haspopup="dialog"><span class="wdot" aria-hidden="true"></span><span id="workers-count">0 workers</span></button>
+      <div class="views" role="radiogroup" aria-label="View">
+        <button type="button" role="radio" data-view="full">Full</button>
+        <button type="button" role="radio" data-view="quiet">Quiet</button>
+        <button type="button" role="radio" data-view="messages">Messages</button>
+      </div>
+      <button id="view-button" class="tool view-button" type="button" aria-haspopup="menu" aria-expanded="false"><span id="view-name">Full</span><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M6 8l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+      <button id="settings-button" class="tool" type="button" aria-haspopup="dialog" title="Settings">
+        <svg viewBox="0 0 20 20" aria-hidden="true"><path fill-rule="evenodd" d="M8.6 2h2.8l.4 2.1a6 6 0 0 1 1.5.9l2-.7 1.4 2.4-1.6 1.4a6 6 0 0 1 0 1.8l1.6 1.4-1.4 2.4-2-.7a6 6 0 0 1-1.5.9l-.4 2.1H8.6l-.4-2.1a6 6 0 0 1-1.5-.9l-2 .7-1.4-2.4 1.6-1.4a6 6 0 0 1 0-1.8L3.3 6.7l1.4-2.4 2 .7a6 6 0 0 1 1.5-.9zM10 7.4a2.6 2.6 0 1 0 0 5.2 2.6 2.6 0 0 0 0-5.2z"/></svg>
+      </button>
+    </div>
+    <div id="view-menu" class="menu" role="menu" hidden></div>
+  </header>
 
-<main id="log" aria-live="polite"></main>
-<button id="jump" class="jump" type="button" hidden>&darr; latest</button>
+  <div id="banner" class="banner" hidden>
+    <button id="back" class="back" type="button"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M12 5l-5 5 5 5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>Main</button>
+    <div class="banner-text"><span id="banner-title" class="banner-title"></span><span id="banner-meta" class="banner-meta"></span></div>
+    <kbd class="hint-key">Esc</kbd>
+  </div>
+  <div id="offline" class="conn" role="status" hidden><span id="offline-text">Not connected.</span> <button id="retry" class="link" type="button">Retry now</button></div>
+
+  <div class="stage">
+    <main id="log" class="log" aria-label="Transcript">
+      <div id="rows" class="rows"></div>
+      <p id="empty" class="empty" hidden>Nothing here yet.</p>
+    </main>
+    <button id="jump" class="jump" type="button" hidden><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 4v11M5 10l5 5 5-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg><span id="jump-text">Latest</span></button>
+  </div>
+
+  <footer class="bottom">
+    <section id="ask" class="ask" hidden aria-live="polite">
+      <div class="ask-head"><span class="ask-label">The agent asks</span><button id="ask-fold" class="link" type="button" aria-expanded="true">Hide</button></div>
+      <div id="ask-text" class="ask-text md"></div>
+    </section>
+    <div id="error" class="error" role="alert" hidden></div>
+    <form id="compose" class="compose">
+      <textarea id="text" rows="1" placeholder="Message" aria-label="Message"></textarea>
+      <button id="stop" class="stop" type="button" hidden title="Stop the turn"><svg viewBox="0 0 20 20" aria-hidden="true"><rect x="5.5" y="5.5" width="9" height="9" rx="1.5"/></svg><span>Stop</span></button>
+      <button id="send" class="send" type="submit" title="Send" disabled><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 15.5V5M5.5 9.5 10 5l4.5 4.5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+    </form>
+    <div id="keys" class="keys" aria-hidden="true"><kbd>Enter</kbd> send <kbd>Shift+Enter</kbd> new line</div>
+  </footer>
+</div>
+
+<dialog id="workers" class="sheet" aria-labelledby="workers-title">
+  <div class="sheet-head"><h2 id="workers-title">Workers</h2><button class="link close" type="button" data-close>Done</button></div>
+  <div id="workers-list" class="sheet-body pick"></div>
+</dialog>
+
+<dialog id="settings" class="sheet" aria-labelledby="settings-title">
+  <div class="sheet-head"><h2 id="settings-title">Settings</h2><button class="link close" type="button" data-close>Done</button></div>
+  <div class="sheet-body">
+    <section class="group">
+      <h3>View</h3>
+      <div id="view-options" class="options" role="radiogroup" aria-label="View"></div>
+    </section>
+
+    <section class="group">
+      <h3>Access</h3>
+      <div class="setting">
+        <div class="setting-text"><span class="setting-name">Outside the workspace</span><span id="outside-about" class="setting-about"></span></div>
+        <button id="outside-switch" class="switch" type="button" role="switch" aria-checked="false" aria-label="Outside the workspace"><span></span></button>
+      </div>
+      <div id="outside-confirm" class="confirm" hidden>
+        <p>Let the agents read and change files anywhere this computer lets you? Commands that leave the workspace stop being refused.</p>
+        <div class="confirm-buttons"><button id="outside-cancel" class="secondary" type="button">Cancel</button><button id="outside-allow" class="primary" type="button">Allow</button></div>
+      </div>
+      <p id="outside-note" class="note" hidden></p>
+    </section>
+
+    <section class="group">
+      <h3>Handover</h3>
+      <div class="setting">
+        <div class="setting-text"><span class="setting-name">Hand over at</span><span class="setting-about">The agent writes a report and goes on in a fresh conversation.</span></div>
+        <span id="handover-value" class="setting-value"></span>
+      </div>
+      <details class="more" id="handover-more">
+        <summary>Change</summary>
+        <form id="handover-form" class="inline-form">
+          <label for="handover-input">Tokens</label>
+          <input id="handover-input" inputmode="numeric" autocomplete="off" placeholder="250k">
+          <button class="secondary" type="submit">Set</button>
+        </form>
+        <div class="setting">
+          <div class="setting-text"><span class="setting-name">Hand over now</span></div>
+          <button id="handover-now" class="secondary" type="button">Hand over</button>
+        </div>
+        <div id="handover-confirm" class="confirm" hidden>
+          <p>Hand over now? The agent stops to write its report, then continues from it alone.</p>
+          <div class="confirm-buttons"><button id="handover-cancel" class="secondary" type="button">Cancel</button><button id="handover-go" class="primary" type="button">Hand over</button></div>
+        </div>
+      </details>
+      <p id="handover-note" class="note" hidden></p>
+    </section>
+
+    <section id="links-group" class="group" hidden>
+      <h3>Open on another device</h3>
+      <div id="links-first" class="link-card"></div>
+      <details id="links-more" class="more" hidden>
+        <summary id="links-more-label">Other addresses</summary>
+        <div id="links-rest"></div>
+      </details>
+    </section>
+
+    <section class="group">
+      <h3>Session</h3>
+      <dl id="info" class="info"></dl>
+      <details class="more" id="workers-more" hidden>
+        <summary>Workers in detail</summary>
+        <pre id="workers-text" class="workers-text"></pre>
+      </details>
+    </section>
+  </div>
+</dialog>
 
 <section id="lock" class="lock" hidden>
+  <img src="/icon.svg" alt="" class="lock-icon" width="56" height="56">
   <h1>fin</h1>
   <p id="lock-why">Open the link fin printed in its console: it holds the key.</p>
   <form id="key-form" autocomplete="off">
     <label for="key">Or paste the key</label>
     <input id="key" type="password" autocapitalize="off" spellcheck="false">
-    <button type="submit">Open</button>
+    <button class="primary" type="submit">Open</button>
   </form>
 </section>
-
-<footer id="bottom">
-  <form id="question" class="question" hidden>
-    <div class="ask">The agent asks</div>
-    <div id="question-text" class="question-text"></div>
-    <textarea id="answer" rows="2" placeholder="Your answer"></textarea>
-    <div class="buttons"><button type="submit">Answer</button></div>
-  </form>
-  <div id="error" class="error" role="alert" hidden></div>
-  <form id="compose" class="compose">
-    <textarea id="text" rows="1" placeholder="Message" enterkeyhint="send" aria-label="Message"></textarea>
-    <button id="stop" class="danger" type="button" hidden>Stop</button>
-    <button id="send" type="submit">Send</button>
-  </form>
-</footer>
 </body>
 </html>

@@ -1,0 +1,7 @@
+fin bundles the third-party files below, each under its own license.
+
+
+JetBrains Mono (src/remote/page/fonts/JetBrainsMono-Regular.ttf)
+  Copyright 2020 The JetBrains Mono Project Authors
+  (https://github.com/JetBrains/JetBrainsMono)
+  SIL Open Font License 1.1, in src/remote/page/fonts/OFL-JetBrainsMono.txt

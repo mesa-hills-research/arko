@@ -1,0 +1,226 @@
+//! A scripted session for trying the remote page by hand, with fin's own
+//! harness and the mock model: no model is called.
+
+use std::sync::Arc;
+use std::time::Duration;
+
+use arko_agents::builtins::ASK_USER_TOOL_NAME;
+use arko_workflows::prelude::*;
+
+use crate::Managers;
+use crate::agents::{MAIN, WORKER};
+use crate::crew;
+use crate::remote::{self, Level};
+use crate::shell::{Shell, WindowsShell};
+use crate::ui::Input;
+
+/// Not a test: serves the web page for a scripted session, to try the
+/// page by hand. `FIN_DEMO_PORT` (8799) and `FIN_DEMO_SECONDS` (900);
+/// run with `cargo test remote_page_demo -- --ignored --nocapture` and
+/// open the link it prints. Messages: "Run the demo" (calls, two
+/// workers, a failed command, a question, a report), "demo:stream" (a
+/// long reply that streams), "demo:slow" (a 30 s command), "demo:ask" (a
+/// question), "demo:long" (3,500 calls, to reach the history's limit;
+/// "demo:long 500", 500), anything else (a short turn). Lines added to the
+/// file `FIN_DEMO_INPUT` are typed at the terminal.
+#[tokio::test]
+#[ignore]
+async fn remote_page_demo() {
+    use crate::mock_model::{ModelServer, complete, tool_call};
+    use crate::shell::SHELL_TOOL_NAME;
+    use arko_agents::AgentEvent;
+    use arko_agents::builtins::READ_FILE_TOOL_NAME;
+    use uuid::Uuid;
+    fn turn(id: &str, text: &str, call: Option<(&str, serde_json::Value)>) -> String {
+        let mut events = Vec::new();
+        if !text.is_empty() {
+            events.push(serde_json::json!({"type": "response.output_text.delta", "delta": text}));
+            events.push(serde_json::json!({"type": "response.output_item.done", "output_index": 0, "item": {
+                "type": "message", "id": format!("msg_{id}"), "role": "assistant", "status": "completed",
+                "content": [{"type": "output_text", "text": text, "annotations": []}],
+            }}));
+        }
+        let mut stream: String = events
+            .iter()
+            .map(|event| format!("data: {event}\n\n"))
+            .collect();
+        stream.push_str(&match call {
+            Some((name, arguments)) => tool_call(id, name, arguments),
+            None => complete(id, text),
+        });
+        stream
+    }
+    let feed_cell: Arc<std::sync::OnceLock<remote::Feed>> = Arc::new(std::sync::OnceLock::new());
+    let feed_for_model = feed_cell.clone();
+    let server = ModelServer::start(Arc::new(move |_, body: String| {
+        let feed = feed_for_model.clone();
+        Box::pin(async move {
+            tokio::time::sleep(Duration::from_millis(900)).await;
+            let shell = |command: &str| (SHELL_TOOL_NAME, serde_json::json!({"command": command}));
+            if body.contains("You are agent run r") && body.contains("Fix the flaky test") {
+                let step = body.matches("function_call_output").count();
+                return match step {
+                    0 => turn("w10", "Looking at the parser's tests first.", Some(shell("sleep 1; echo 'running 40 tests'; echo 'test parser::tests::flaky ... FAILED'; exit 101"))),
+                    1 => turn("w11", "", Some((READ_FILE_TOOL_NAME, serde_json::json!({"path": "src/parser.rs"})))),
+                    2 => turn("w12", "The setup races the clock; waiting on the fixture fixes it.", Some(shell("sleep 2; echo 'test result: ok. 40 passed; 0 failed'"))),
+                    3 => turn("w13", "", Some(shell("sleep 2; for i in 1 2 3; do echo \"run $i: ok\"; done"))),
+                    _ => complete("w14", "Fixed: the parser test's setup raced the clock.\n\n- The fixture now signals when it is ready.\n- 40 passed, ten runs in a row."),
+                };
+            }
+            if body.contains("You are agent run r") {
+                let step = body.matches("function_call_output").count();
+                return match step {
+                    0 => turn("w20", "", Some(shell("sleep 4; echo 'README: 14 flags documented'"))),
+                    _ => complete("w21", "The README's flags are current, except the note on --remote's port."),
+                };
+            }
+            // The script the user's latest message names, and its step:
+            // the results that came since.
+            let last_user = body.rfind("\"role\":\"user\"").unwrap_or(0);
+            let after = |marker: &str| {
+                body[last_user..]
+                    .contains(marker)
+                    .then(|| body[last_user..].matches("function_call_output").count())
+            };
+            if let Some(step) = after("Run the demo") {
+                return match step {
+                    0 => turn("d0", "I'll look around first.", Some(shell("ls -la; echo 'running 12 tests'; echo 'test result: ok. 12 passed; 0 failed'"))),
+                    1 => turn("d1", "Two workers next: one fixes the flaky test, one checks the docs.", Some((crew::START_AGENT, serde_json::json!({"agent": WORKER, "task": "Fix the flaky test in src/parser.rs\n\nIt fails one run in ten; find why, fix it, and run it ten times."})))),
+                    2 => turn("d2", "", Some((crew::START_AGENT, serde_json::json!({"agent": WORKER, "task": "Review the README for stale flags"})))),
+                    3 => turn("d3", "Meanwhile, the build:", Some(shell("sleep 2; echo 'error[E0425]: cannot find value `x` in this scope'; exit 3"))),
+                    4 => turn("d4", "", Some((ASK_USER_TOOL_NAME, serde_json::json!({"questions": "Should I also update the **CHANGELOG**? It has no entry for 0.4 yet."})))),
+                    5 => turn("d5", "Waiting for the workers.", Some((crew::WAIT_FOR_AGENTS, serde_json::json!({"all": true, "timeout_seconds": 60})))),
+                    _ => complete("d6", "## Done\n\nThe flaky test is fixed and the docs are checked.\n\n- **r1** found a race in the parser's setup: the fixture now signals when it's ready, and `cargo test` passed **40 of 40**, ten times.\n- **r2** found one stale note, on `--remote`'s port.\n\n```rust\nfixture.ready().await?;\nparse(&input)?;\n```\n\n| Check | Result |\n|---|---|\n| Tests | 40 passed |\n| Docs | 1 note |\n\nSee https://example.com/notes for the details."),
+                };
+            }
+            if let Some(step) = after("demo:stream") {
+                if step == 0 {
+                    if let Some(feed) = feed.get() {
+                        let words = "Here is a long reply that streams in, word by word, so the page has something to follow while you scroll up and down. ".repeat(3);
+                        'paragraphs: for paragraph in 0..12 {
+                            for word in words.split_inclusive(' ') {
+                                if !feed.activity().working {
+                                    break 'paragraphs;
+                                }
+                                feed.event(&WorkflowEvent {
+                                    timestamp: chrono::Utc::now(),
+                                    workflow_run_id: Uuid::nil(),
+                                    agent_name: MAIN.into(),
+                                    agent_run_id: Uuid::nil(),
+                                    event: AgentEvent::AssistantResponseChunk(word.into()),
+                                }, None);
+                                tokio::time::sleep(Duration::from_millis(40)).await;
+                            }
+                            feed.event(&WorkflowEvent {
+                                timestamp: chrono::Utc::now(),
+                                workflow_run_id: Uuid::nil(),
+                                agent_name: MAIN.into(),
+                                agent_run_id: Uuid::nil(),
+                                event: AgentEvent::AssistantResponseChunk(format!("(paragraph {})\n\n", paragraph + 1)),
+                            }, None);
+                        }
+                    }
+                }
+                return complete("s1", "That was the stream.");
+            }
+            if let Some(step) = after("demo:slow") {
+                return match step {
+                    0 => turn("z0", "This takes a while.", Some(shell("sleep 30; echo done"))),
+                    _ => complete("z1", "Slept."),
+                };
+            }
+            if let Some(step) = after("demo:ask") {
+                return match step {
+                    0 => tool_call("q0", ASK_USER_TOOL_NAME, serde_json::json!({"questions": "Tabs or spaces?"})),
+                    _ => complete("q1", "Noted."),
+                };
+            }
+            if let Some(step) = after("demo:long") {
+                if step == 0 && let Some(feed) = feed.get() {
+                    // "demo:long 500": that many.
+                    let count: usize = body[last_user..]
+                        .split("demo:long")
+                        .nth(1)
+                        .and_then(|rest| rest.trim_start().split(|c: char| !c.is_ascii_digit()).next())
+                        .and_then(|digits| digits.parse().ok())
+                        .unwrap_or(3500);
+                    for n in 0..count {
+                        let call = Uuid::new_v4();
+                        feed.event(&WorkflowEvent {
+                            timestamp: chrono::Utc::now(),
+                            workflow_run_id: Uuid::nil(),
+                            agent_name: MAIN.into(),
+                            agent_run_id: Uuid::nil(),
+                            event: AgentEvent::ToolCallFormatted { tool_call_id: call, tool_name: "read_file".into(), parameters: [("path".to_string(), format!("src/file{n}.rs").into())].into() },
+                        }, None);
+                        feed.event(&WorkflowEvent {
+                            timestamp: chrono::Utc::now(),
+                            workflow_run_id: Uuid::nil(),
+                            agent_name: MAIN.into(),
+                            agent_run_id: Uuid::nil(),
+                            event: AgentEvent::ToolResult { tool_call_id: call, tool_name: "read_file".into(), output: "1 | a\n2 | b".into() },
+                        }, None);
+                        if n % 50 == 0 {
+                            tokio::time::sleep(Duration::from_millis(10)).await;
+                        }
+                    }
+                }
+                return complete("l1", "Read 3,500 files.");
+            }
+            turn("m0", "On it.", None)
+        })
+    }))
+    .await;
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, sender) =
+        crate::tests::harness(temp.path(), server.client(), true);
+    let shell = Shell::detect(WindowsShell::Powershell);
+    let managers = Managers::open(&harness.session, &shell, false).unwrap();
+    harness.tools = managers.tools(&shell);
+    harness.open(false).unwrap();
+    let _ = feed_cell.set(harness.feed.clone());
+    let port = std::env::var("FIN_DEMO_PORT")
+        .ok()
+        .and_then(|port| port.parse().ok())
+        .unwrap_or(8799);
+    harness
+        .start_remote(remote::Bind {
+            ip: std::net::Ipv4Addr::LOCALHOST.into(),
+            port: Some(port),
+        })
+        .await;
+    let key = std::fs::read_to_string(harness.session.dir.join(remote::KEY_FILE)).unwrap();
+    println!("DEMO http://127.0.0.1:{port}/#key={}", key.trim());
+    // Lines added to the file `FIN_DEMO_INPUT` are typed at the prompt.
+    if let Ok(path) = std::env::var("FIN_DEMO_INPUT") {
+        let sender = sender.clone();
+        tokio::spawn(async move {
+            let mut typed = std::fs::read_to_string(&path)
+                .unwrap_or_default()
+                .lines()
+                .count();
+            loop {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                let text = std::fs::read_to_string(&path).unwrap_or_default();
+                for line in text.lines().skip(typed) {
+                    let _ = sender.send(Input::Line(line.to_string()));
+                }
+                typed = text.lines().count();
+            }
+        });
+    }
+    let seconds = std::env::var("FIN_DEMO_SECONDS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(900);
+    let ending = async move {
+        tokio::time::sleep(Duration::from_secs(seconds)).await;
+        sender.send(Input::Eof).unwrap();
+    };
+    futures_util::future::join(harness.repl(&mut inputs), ending).await;
+    harness
+        .feed
+        .notice(Level::Info, "fin closed. The session is saved.");
+    harness.stop_remote().await;
+    managers.shutdown().await;
+}

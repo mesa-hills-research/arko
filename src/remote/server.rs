@@ -31,6 +31,10 @@ const INDEX: &str = include_str!("page/index.html");
 const SCRIPT: &str = include_str!("page/app.js");
 const STYLE: &str = include_str!("page/app.css");
 const ICON: &str = include_str!("page/icon.svg");
+const CORE: &str = include_str!("page/core.js");
+/// The page's monospace font, the same on every device (SIL Open Font
+/// License 1.1; see NOTICE).
+const MONO_FONT: &[u8] = include_bytes!("page/fonts/JetBrainsMono-Regular.ttf");
 
 /// The largest request body: a long message, pasted.
 const MAX_BODY: usize = 512 * 1024;
@@ -157,6 +161,24 @@ fn router(app: Arc<App>) -> Router {
             get(|| async { file(SCRIPT, "text/javascript; charset=utf-8") }),
         )
         .route(
+            "/core.js",
+            get(|| async { file(CORE, "text/javascript; charset=utf-8") }),
+        )
+        .route(
+            "/fonts/JetBrainsMono-Regular.ttf",
+            get(|| async {
+                (
+                    [
+                        (header::CONTENT_TYPE, "font/ttf"),
+                        // It never changes under its name.
+                        (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
+                    ],
+                    MONO_FONT,
+                )
+                    .into_response()
+            }),
+        )
+        .route(
             "/app.css",
             get(|| async { file(STYLE, "text/css; charset=utf-8") }),
         )
@@ -194,7 +216,7 @@ async fn harden(mut response: Response) -> Response {
     headers.insert(
         header::CONTENT_SECURITY_POLICY,
         HeaderValue::from_static(
-            "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+            "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; font-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
         ),
     );
     response
