@@ -12,14 +12,12 @@ use arko_agents::{
     AgentConfig, AgentLLMConfig, AgentToolConfig, BuiltInEnvironmentDetail,
     EnvironmentDetailPlacement, EnvironmentDetailsConfig, HandoverConfig, PerToolConfigOverride,
 };
-use arko_ai::{
-    AnthropicCacheTtl, AnthropicReasoningEffort, GenerationConfig, Model, OpenAIEffort,
-    OpenAIServiceTier, Provider, ReasoningConfig,
-};
+use arko_ai::{AnthropicReasoningEffort, Model, OpenAIEffort, Provider};
 use serde::{Deserialize, Serialize};
 
 use crate::crew;
 use crate::index;
+use crate::providers::{self, OpenAiAuth};
 use crate::shell::SHELL_TOOL_NAME;
 use crate::skills;
 
@@ -74,40 +72,8 @@ impl std::fmt::Display for Effort {
     }
 }
 
-/// Short names for the models people use most.
-const ALIASES: [(&str, &str); 6] = [
-    ("opus", "claude-opus-5-5"),
-    ("fable", "claude-fable-5-1"),
-    ("sonnet", "claude-sonnet-5-5"),
-    ("sol", "gpt-6.1-sol"),
-    ("astra", "gpt-6-astra"),
-    ("luna", "gpt-6-luna"),
-];
-
-/// The registered Anthropic or OpenAI model `name` names: an ID or an
-/// alias.
-pub fn resolve_model(name: &str) -> Result<Model, String> {
-    let id = ALIASES
-        .iter()
-        .find(|(alias, _)| alias.eq_ignore_ascii_case(name))
-        .map_or(name, |(_, id)| id);
-    let model = Model::find(id).ok_or_else(|| {
-        format!(
-            "`{name}` isn't a model fin knows. Use a model ID, or one of: {}",
-            ALIASES
-                .iter()
-                .map(|(alias, id)| format!("{alias} ({id})"))
-                .collect::<Vec<_>>()
-                .join(", ")
-        )
-    })?;
-    match model.provider {
-        Provider::Anthropic | Provider::OpenAI => Ok(model),
-        provider => Err(format!(
-            "`{name}` is a {provider:?} model; fin runs Anthropic models (API key) and OpenAI models (ChatGPT login)"
-        )),
-    }
-}
+/// Models are named and resolved by [`crate::providers`].
+pub use crate::providers::resolve_model;
 
 /// One agent's model settings.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -143,49 +109,19 @@ impl ModelSettings {
         Ok(resolve_model(&self.model)?.provider)
     }
 
-    fn is_claude(&self) -> bool {
-        self.provider()
-            .is_ok_and(|provider| provider == Provider::Anthropic)
-    }
-
-    /// An OpenAI model, which fin reaches over the ChatGPT login only.
-    fn is_chatgpt(&self) -> bool {
-        self.provider()
-            .is_ok_and(|provider| provider == Provider::OpenAI)
+    /// A model that takes Anthropic's cache lifetimes, so a worker's
+    /// `cache` chooses one: Claude by API key or on OpenRouter.
+    fn takes_cache_ttl(&self) -> bool {
+        resolve_model(&self.model).is_ok_and(|model| providers::takes_cache_ttl(&model))
     }
 
     fn llm_config(&self, show_thinking: bool) -> Result<AgentLLMConfig, String> {
         let model = resolve_model(&self.model)?;
-        let mut generation = GenerationConfig::default().with_prompt_caching(true);
-        match model.provider {
-            Provider::Anthropic => {
-                if self.fast && !model.supports_anthropic_fast_mode() {
-                    return Err(format!(
-                        "{} has no fast mode; Anthropic offers it on Claude Opus 5.5, Opus 5 and Opus 4.8",
-                        model.id
-                    ));
-                }
-                generation = generation.with_reasoning(
-                    ReasoningConfig::anthropic_adaptive_with_effort(self.effort.into()),
-                );
-                if self.fast {
-                    generation = generation.with_anthropic_fast_mode(true);
-                }
-                if self.cache_1h {
-                    generation = generation.with_anthropic_cache_ttl(AnthropicCacheTtl::OneHour);
-                }
-            }
-            _ => {
-                generation = generation
-                    .with_reasoning(ReasoningConfig::openai(self.effort.into(), show_thinking));
-                if self.fast {
-                    generation = generation.with_openai_service_tier(OpenAIServiceTier::Fast);
-                }
-            }
-        }
+        let generation_config =
+            providers::generation(&model, self.effort, self.fast, self.cache_1h, show_thinking)?;
         Ok(AgentLLMConfig {
             model,
-            generation_config: generation,
+            generation_config,
         })
     }
 }
@@ -194,6 +130,9 @@ impl ModelSettings {
 pub struct AgentSettings<'a> {
     pub main: &'a ModelSettings,
     pub worker: &'a ModelSettings,
+    /// What the configurations take from the session's providers: how it
+    /// reaches OpenAI models.
+    pub providers: &'a providers::Setup,
     /// How many workers may run at once; 0 turns them off, and
     /// [`NO_LIMIT`] sets no limit.
     pub max_workers: u32,
@@ -222,15 +161,18 @@ const INDEXES_NAMED: usize = 20;
 pub const NO_LIMIT: u32 = u32::MAX;
 
 /// The input size, in tokens, at which an agent on `model` hands over
-/// unless `--handover-at` says otherwise: 500k on Claude models, 200k on
-/// others, and at most 80% of what the model accepts.
+/// unless `--handover-at` says otherwise: 500k on Claude models (by API
+/// key or on OpenRouter), 200k on others, and at most 80% of what the
+/// model accepts; [`providers::UNKNOWN_LIMIT_HANDOVER`] when that isn't
+/// known (an OpenRouter model without its catalog).
 pub fn default_handover(model: &Model) -> usize {
     let tokens = match model.provider {
         Provider::Anthropic => 500_000,
+        Provider::OpenRouter if providers::is_claude_slug(&model.id) => 500_000,
         _ => 200_000,
     };
     match model.max_input_tokens {
-        0 => tokens,
+        0 => providers::UNKNOWN_LIMIT_HANDOVER,
         limit => tokens.min(limit / 5 * 4),
     }
 }
@@ -490,12 +432,13 @@ fn worker_instructions(settings: &AgentSettings) -> String {
          Workers report on their own. A worker's report, when it finishes, and its messages to you reach you as notes from run `r1` (and so on) while you work, and start a new turn for you if you have ended yours. So don't wait idly: do other work, and end your turn when you have something to tell the user, saying which workers are still running. When you can't go on without their results, `wait_for_agents` waits until one finishes or sends a message (or the user types something) and returns what arrived. `message_agent` addressed to its handle in `to` sends a worker a message: a running worker reads it at its next step, and a worker that has finished or was stopped continues its task with it, keeping its context, so give follow-up work to the worker that already knows the code. `list_agents` shows the workers and what they're doing; `stop_agent` stops the handle in `run`, and `remove_workspace: true` removes its worktree once you have merged its work.\n\n\
          Use workers for independent parts of a large task (exploring separate areas of a codebase, an audit split by area, changes in separate worktrees), or to keep a long investigation out of your own context. Do small things yourself. Check what a worker reports before you rely on it.\n"
     );
-    if settings.worker.is_claude() {
+    let openai = settings.worker.provider() == Ok(Provider::OpenAI);
+    if settings.worker.takes_cache_ttl() {
         text.push_str(&format!(
             "\nA worker keeps a prompt cache of its conversation, and `start_agent`'s `cache` sets how long it lasts after the worker's last step: `1h` for a worker you expect to send messages or follow-up work after it reports, so continuing it reuses its cache, and `5m` for a quick one-off such as a research task (a 1h cache costs more to write: twice the input price instead of 1.25 times). The default is `{}`. Continuing a worker after its cache has expired rereads its whole conversation at full price: if it finished more than an hour ago, start a fresh worker instead, unless its context is worth that.\n",
             if settings.worker.cache_1h { "1h" } else { "5m" }
         ));
-    } else if settings.worker.is_chatgpt() {
+    } else if openai && settings.providers.openai_auth != Some(OpenAiAuth::ApiKey) {
         text.push_str(
             "\nA worker keeps a prompt cache of its conversation for 30 minutes after its last step (ChatGPT's cache, which no setting changes). Continuing a worker after its cache has expired rereads its whole conversation uncached, which uses more of the ChatGPT plan's limits: if it finished more than 30 minutes ago, start a fresh worker instead, unless its context is worth that.\n",
         );
@@ -506,6 +449,7 @@ fn worker_instructions(settings: &AgentSettings) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use arko_ai::{AnthropicCacheTtl, OpenAIServiceTier};
 
     fn settings<'a>(main: &'a ModelSettings, worker: &'a ModelSettings) -> AgentSettings<'a> {
         AgentSettings {
@@ -521,12 +465,13 @@ mod tests {
             skill_folders: &[],
             index_tools: &[],
             indexes: &[],
+            providers: Box::leak(Box::new(providers::Setup::new(None))),
         }
     }
 
     fn model(name: &str, fast: bool) -> ModelSettings {
         ModelSettings {
-            model: resolve_model(name).unwrap().id,
+            model: providers::model_name(&resolve_model(name).unwrap()),
             effort: Effort::Xhigh,
             fast,
             cache_1h: false,
@@ -569,15 +514,49 @@ mod tests {
     }
 
     #[test]
-    fn aliases_and_ids_name_models_of_the_two_providers() {
+    fn aliases_and_ids_name_models_of_every_provider() {
         assert_eq!(resolve_model("opus").unwrap().id, "claude-opus-5-5");
         assert_eq!(resolve_model("Sol").unwrap().id, "gpt-6.1-sol");
         assert_eq!(
             resolve_model("claude-fable-5-1").unwrap().id,
             "claude-fable-5-1"
         );
-        assert!(resolve_model("gemini-3.5-flash").is_err());
+        assert_eq!(
+            resolve_model("gemini-3.5-flash").unwrap().provider,
+            Provider::Google
+        );
         assert!(resolve_model("no-such-model").is_err());
+    }
+
+    /// Each worker provider's cache gets its own paragraph: the `cache`
+    /// choice where Anthropic's cache lifetimes apply, ChatGPT's 30
+    /// minutes, and nothing where fin can't tell.
+    #[test]
+    fn the_lead_hears_about_its_workers_caches_by_provider() {
+        let lead = model("opus", false);
+        let instructions = |worker: &ModelSettings, auth: Option<OpenAiAuth>| {
+            let setup = providers::Setup::new(auth);
+            let with = AgentSettings {
+                providers: &setup,
+                ..settings(&lead, worker)
+            };
+            main_config(&with).unwrap().instructions
+        };
+        let openrouter_claude = model("openrouter:anthropic/claude-opus-5.5", false);
+        assert!(instructions(&openrouter_claude, None).contains("`cache`"));
+        let sol = model("sol", false);
+        assert!(instructions(&sol, None).contains("for 30 minutes after its last step"));
+        assert!(
+            !instructions(&sol, Some(OpenAiAuth::ApiKey)).contains("30 minutes"),
+            "an API key's cache isn't ChatGPT's"
+        );
+        let gemini = model("gemini", false);
+        let text = instructions(&gemini, None);
+        assert!(
+            !text.contains("`cache`")
+                && !text.contains("30 minutes")
+                && !text.contains("an hour after")
+        );
     }
 
     #[test]

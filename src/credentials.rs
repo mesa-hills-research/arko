@@ -1,10 +1,11 @@
-//! Credentials: the Anthropic API key and the ChatGPT login (a Codex
-//! auth.json), from the environment or `.env` files, and the setup screen
-//! that asks for them when the chosen model has none or its file fails.
-//! `.env` files can also turn on the 1-hour prompt cache (FIN_CACHE_1H),
-//! choose the shell on Windows (FIN_SHELL) and hold the Voyage API key the
-//! search indexes embed with (VOYAGE_API_KEY), which the setup screen also
-//! takes.
+//! Credentials: the API keys of the model providers (Anthropic, OpenAI,
+//! Google Gemini, OpenRouter) and the ChatGPT login (a Codex auth.json),
+//! from the environment or `.env` files, and the setup screen that asks for
+//! them when the chosen model has none or its file fails. `.env` files can
+//! also turn on the 1-hour prompt cache (FIN_CACHE_1H), choose how
+//! sessions reach OpenAI models (FIN_OPENAI_AUTH), choose the shell on
+//! Windows (FIN_SHELL) and hold the Voyage API key the search indexes embed
+//! with (VOYAGE_API_KEY), which the setup screen also takes.
 //!
 //! What the screen takes is saved in fin's own `.env` (in its folder,
 //! readable only by the user) and used in this run at once. Nothing read
@@ -31,8 +32,18 @@ use crate::ui::Output;
 
 /// The Anthropic API key.
 pub const ANTHROPIC_KEY: &str = "ANTHROPIC_API_KEY";
+/// The OpenAI API key, for sessions that reach OpenAI models with one.
+pub const OPENAI_KEY: &str = "OPENAI_API_KEY";
+/// The Google Gemini API key, as Google names it now.
+pub const GEMINI_KEY: &str = "GEMINI_API_KEY";
+/// The Google Gemini API key's older name, which comes first.
+pub const GOOGLE_KEY: &str = "GOOGLE_API_KEY";
+/// The OpenRouter API key.
+pub const OPENROUTER_KEY: &str = "OPENROUTER_API_KEY";
 /// The Codex auth.json that holds the ChatGPT login.
 pub const CODEX_AUTH: &str = "FIN_CODEX_AUTH";
+/// How new sessions reach OpenAI models: `chatgpt` or `api-key`.
+pub const OPENAI_AUTH: &str = "FIN_OPENAI_AUTH";
 /// Anthropic's 1-hour prompt cache for new sessions: `1` or `0`.
 pub const CACHE_1H: &str = "FIN_CACHE_1H";
 /// The shell new sessions run commands in on Windows: `cmd` or `powershell`.
@@ -41,9 +52,14 @@ pub const SHELL: &str = "FIN_SHELL";
 pub const VOYAGE_KEY: &str = "VOYAGE_API_KEY";
 /// The settings a `.env` file can hold; it may set others, which are left
 /// alone.
-const DOTENV_KEYS: [&str; 6] = [
+const DOTENV_KEYS: [&str; 11] = [
     ANTHROPIC_KEY,
+    OPENAI_KEY,
+    GEMINI_KEY,
+    GOOGLE_KEY,
+    OPENROUTER_KEY,
     CODEX_AUTH,
+    OPENAI_AUTH,
     CACHE_1H,
     SHELL,
     VOYAGE_KEY,
@@ -63,8 +79,7 @@ pub enum Source {
 }
 
 /// A setting, if it is set: entered on the setup screen, else from the
-/// environment, else (ANTHROPIC_API_KEY and FIN_CODEX_AUTH) from a `.env`
-/// file.
+/// environment, else (the settings fin reads there) from a `.env` file.
 pub fn var(name: &str) -> Option<String> {
     lookup(name).map(|(value, _)| value)
 }
@@ -197,27 +212,40 @@ pub fn codex_auth(flag: Option<&Path>) -> Option<PathBuf> {
 /// Credentials a session can't start without.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Need {
-    /// No model was chosen, and there is no credential for either provider.
+    /// No model was chosen, and there is no credential for any provider.
     Any,
     /// The model needs an Anthropic API key.
     AnthropicKey { model: String },
     /// The model needs a ChatGPT login; `problem` says what failed.
     ChatGptLogin { model: String, problem: String },
+    /// The model needs an OpenAI API key: the session reaches OpenAI models
+    /// with one.
+    OpenAiKey { model: String },
+    /// The model needs a Google Gemini API key.
+    GeminiKey { model: String },
+    /// The model needs an OpenRouter API key.
+    OpenRouterKey { model: String },
 }
 
 impl Need {
     /// What is missing, as an error where the setup screen can't be shown.
     pub fn message(&self) -> String {
-        let what = match self {
-            Need::Any => "no credentials: set ANTHROPIC_API_KEY (in the environment or a .env file) for Claude models, or sign in to ChatGPT with `codex login` for OpenAI models".to_string(),
-            Need::AnthropicKey { model } => {
-                format!("{model} needs ANTHROPIC_API_KEY (in the environment or a .env file)")
-            }
-            Need::ChatGptLogin { model, problem } => {
-                format!("{model} needs a ChatGPT login (`codex login`): {problem}")
-            }
+        let setup = "; or run `fin --setup` in a terminal to enter it";
+        let key = |model: &str, name: &str| {
+            format!("{model} needs {name} (in the environment or a .env file){setup}")
         };
-        format!("{what}; or run `fin --setup` in a terminal to enter it")
+        match self {
+            Need::Any => format!(
+                "no credentials: set ANTHROPIC_API_KEY (Claude models), OPENAI_API_KEY (OpenAI models), GEMINI_API_KEY (Gemini models) or OPENROUTER_API_KEY (any model on OpenRouter), in the environment or a .env file; or sign in to ChatGPT with `codex login`{setup}"
+            ),
+            Need::AnthropicKey { model } => key(model, ANTHROPIC_KEY),
+            Need::OpenAiKey { model } => key(model, OPENAI_KEY),
+            Need::GeminiKey { model } => key(model, "GEMINI_API_KEY (or GOOGLE_API_KEY)"),
+            Need::OpenRouterKey { model } => key(model, OPENROUTER_KEY),
+            Need::ChatGptLogin { model, problem } => format!(
+                "{model} needs a ChatGPT login (`codex login`): {problem}{setup}. A new session can use OPENAI_API_KEY instead: --openai-auth api-key"
+            ),
+        }
     }
 }
 
@@ -227,9 +255,87 @@ pub fn can_ask() -> bool {
     std::io::stdin().is_terminal() && std::io::stdout().is_terminal()
 }
 
-/// The setup screen: asks for what `need` names (either credential with
-/// `None` or `Need::Any`), saves it in fin's `.env` and uses it in this run.
-/// An error when the user quits.
+/// An API key the setup screen takes.
+struct Key {
+    name: &'static str,
+    /// What it is, with its article: "an Anthropic API key".
+    what: &'static str,
+    /// Where to get one.
+    from: &'static str,
+    /// How its keys start.
+    prefix: &'static str,
+}
+
+const ANTHROPIC: Key = Key {
+    name: ANTHROPIC_KEY,
+    what: "an Anthropic API key",
+    from: "console.anthropic.com",
+    prefix: "sk-ant-",
+};
+const OPENAI: Key = Key {
+    name: OPENAI_KEY,
+    what: "an OpenAI API key",
+    from: "platform.openai.com/api-keys",
+    prefix: "sk-",
+};
+const GEMINI: Key = Key {
+    name: GEMINI_KEY,
+    what: "a Gemini API key",
+    from: "aistudio.google.com/apikey",
+    prefix: "AIza",
+};
+const OPENROUTER: Key = Key {
+    name: OPENROUTER_KEY,
+    what: "an OpenRouter API key",
+    from: "openrouter.ai/keys",
+    prefix: "sk-or-",
+};
+const VOYAGE: Key = Key {
+    name: VOYAGE_KEY,
+    what: "a Voyage API key",
+    from: "dashboard.voyageai.com",
+    prefix: "pa-",
+};
+const KEYS: [&Key; 5] = [&ANTHROPIC, &OPENAI, &GEMINI, &OPENROUTER, &VOYAGE];
+
+/// What the setup screen's menu offers.
+#[derive(Clone, Copy)]
+enum Choice {
+    Key(&'static Key),
+    ChatGptLogin,
+}
+
+/// The menu: what each choice is for.
+const MENU: [(Choice, &str); 6] = [
+    (
+        Choice::Key(&ANTHROPIC),
+        "Paste an Anthropic API key, for Claude models (billed per token)",
+    ),
+    (
+        Choice::ChatGptLogin,
+        "Give the path to a Codex auth.json with a ChatGPT login, for OpenAI models on your ChatGPT plan",
+    ),
+    (
+        Choice::Key(&OPENAI),
+        "Paste an OpenAI API key, for OpenAI models (billed per token)",
+    ),
+    (
+        Choice::Key(&GEMINI),
+        "Paste a Gemini API key, for Google's Gemini models (billed per token)",
+    ),
+    (
+        Choice::Key(&OPENROUTER),
+        "Paste an OpenRouter API key, for the models OpenRouter serves (-m openrouter:<slug>)",
+    ),
+    (
+        Choice::Key(&VOYAGE),
+        "Paste a Voyage API key, for semantic search in the search indexes",
+    ),
+];
+
+/// The setup screen: asks for what `need` names (anything with `None` or
+/// `Need::Any`), saves it in fin's `.env` and uses it in this run. An error
+/// when the user quits.
 pub fn setup(need: Option<&Need>) -> Result<(), String> {
     let out = Output::new(None, false);
     let dotenv = fin_dotenv()?;
@@ -238,63 +344,91 @@ pub fn setup(need: Option<&Need>) -> Result<(), String> {
     match need {
         None => {
             out.line(&out.dim("Credentials now:"));
-            let key = match lookup(ANTHROPIC_KEY) {
+            let key = |name: &str| match lookup(name) {
                 None => "not set".to_string(),
                 Some((_, source)) => format!("set ({})", describe(&source)),
             };
-            out.line(&format!("  Anthropic API key  {key}"));
+            out.line(&format!("  Anthropic API key   {}", key(ANTHROPIC_KEY)));
             let login = codex_auth(None)
                 .or_else(|| CodexAuthFile::default_path().filter(|path| path.is_file()))
                 .map_or("none found".to_string(), |path| path.display().to_string());
-            out.line(&format!("  ChatGPT login      {login}"));
+            out.line(&format!("  ChatGPT login       {login}"));
+            out.line(&format!("  OpenAI API key      {}", key(OPENAI_KEY)));
+            let gemini = match lookup(GOOGLE_KEY) {
+                Some((_, source)) => format!("set as GOOGLE_API_KEY ({})", describe(&source)),
+                None => key(GEMINI_KEY),
+            };
+            out.line(&format!("  Gemini API key      {gemini}"));
+            out.line(&format!("  OpenRouter API key  {}", key(OPENROUTER_KEY)));
             let voyage = match lookup(VOYAGE_KEY) {
                 None => "not set (search indexes are keyword-only)".to_string(),
                 Some((_, source)) => format!("set ({})", describe(&source)),
             };
-            out.line(&format!("  Voyage API key     {voyage}"));
+            out.line(&format!("  Voyage API key      {voyage}"));
         }
         Some(Need::Any) => out.line(
-            "No credentials found: ANTHROPIC_API_KEY isn't set (in the environment or a .env file), and there is no ChatGPT login.",
+            "No credentials found: no API key is set (in the environment or a .env file), and there is no ChatGPT login.",
         ),
         Some(Need::AnthropicKey { model }) => out.line(&format!(
             "{model} needs an Anthropic API key: ANTHROPIC_API_KEY isn't set in the environment or a .env file."
         )),
+        Some(Need::OpenAiKey { model }) => out.line(&format!(
+            "{model} needs an OpenAI API key (this session reaches OpenAI models with one): OPENAI_API_KEY isn't set in the environment or a .env file."
+        )),
+        Some(Need::GeminiKey { model }) => out.line(&format!(
+            "{model} needs a Gemini API key: neither GEMINI_API_KEY nor GOOGLE_API_KEY is set in the environment or a .env file."
+        )),
+        Some(Need::OpenRouterKey { model }) => out.line(&format!(
+            "{model} needs an OpenRouter API key: OPENROUTER_API_KEY isn't set in the environment or a .env file."
+        )),
         Some(Need::ChatGptLogin { model, problem }) => {
-            out.line(&format!("{model} needs a ChatGPT login: {problem}"))
+            out.line(&format!("{model} needs a ChatGPT login: {problem}"));
+            out.line(&out.dim(
+                "(A new session can reach OpenAI models with an API key instead: fin --openai-auth api-key.)",
+            ));
         }
     }
     out.line("");
     let mut editor = Prompt::editor()?;
-    match need {
-        Some(Need::AnthropicKey { .. }) => ask_key(&out, &mut editor, &dotenv),
-        Some(Need::ChatGptLogin { .. }) => ask_login(&out, &mut editor, &dotenv),
+    let choice = match need {
+        Some(Need::AnthropicKey { .. }) => Choice::Key(&ANTHROPIC),
+        Some(Need::OpenAiKey { .. }) => Choice::Key(&OPENAI),
+        Some(Need::GeminiKey { .. }) => Choice::Key(&GEMINI),
+        Some(Need::OpenRouterKey { .. }) => Choice::Key(&OPENROUTER),
+        Some(Need::ChatGptLogin { .. }) => Choice::ChatGptLogin,
         None | Some(Need::Any) => {
             // The Voyage key is no model's credential: offered on its own.
-            let voyage = need.is_none();
-            out.line("  1  Paste an Anthropic API key, for Claude models");
-            out.line(
-                "  2  Give the path to a Codex auth.json with a ChatGPT login, for OpenAI models",
-            );
-            if voyage {
-                out.line("  3  Paste a Voyage API key, for semantic search in the search indexes");
+            let offered = if need.is_none() {
+                MENU.len()
+            } else {
+                MENU.len() - 1
+            };
+            for (number, (_, text)) in MENU.iter().take(offered).enumerate() {
+                out.line(&format!("  {}  {text}", number + 1));
             }
             out.line("  q  Quit");
-            let prompt = if voyage {
-                "Choose 1, 2, 3 or q: "
-            } else {
-                "Choose 1, 2 or q: "
-            };
+            let prompt = format!("Choose 1-{offered} or q: ");
             loop {
-                let choice = read(&mut editor, prompt, "", false)?;
-                match choice.trim() {
-                    "1" => return ask_key(&out, &mut editor, &dotenv),
-                    "2" => return ask_login(&out, &mut editor, &dotenv),
-                    "3" if voyage => return ask_voyage_key(&out, &mut editor, &dotenv),
+                let line = read(&mut editor, &prompt, "", false)?;
+                match line.trim() {
                     "" | "q" | "Q" => return Err(cancelled()),
-                    _ => {}
+                    number => {
+                        if let Some(choice) = number
+                            .parse::<usize>()
+                            .ok()
+                            .filter(|number| (1..=offered).contains(number))
+                            .map(|number| MENU[number - 1].0)
+                        {
+                            break choice;
+                        }
+                    }
                 }
             }
         }
+    };
+    match choice {
+        Choice::Key(key) => ask_key(&out, &mut editor, &dotenv, key),
+        Choice::ChatGptLogin => ask_login(&out, &mut editor, &dotenv),
     }
 }
 
@@ -310,58 +444,71 @@ fn cancelled() -> String {
     "setup cancelled".into()
 }
 
-fn ask_key(out: &Output, editor: &mut Editor, dotenv: &Path) -> Result<(), String> {
-    out.line(&out.dim(
-        "Paste your Anthropic API key (from console.anthropic.com; the input is hidden). An empty line quits.",
-    ));
-    let key = loop {
-        let key = read(editor, "API key: ", "", true)?;
-        let key = key.trim();
-        if key.is_empty() {
+/// Asks for `key`, saves it in fin's `.env` and uses it in this run.
+fn ask_key(out: &Output, editor: &mut Editor, dotenv: &Path, key: &Key) -> Result<(), String> {
+    out.line(&out.dim(&format!(
+        "Paste {} (from {}; the input is hidden). An empty line quits.",
+        key.what, key.from
+    )));
+    let prompt = format!("{}: ", capitalized(key.what));
+    let value = loop {
+        let value = read(editor, &prompt, "", true)?;
+        let value = value.trim();
+        if value.is_empty() {
             return Err(cancelled());
         }
-        if key.chars().any(char::is_whitespace) {
+        if value.chars().any(char::is_whitespace) {
             out.line(&out.warn("An API key has no spaces in it; paste it again."));
             continue;
         }
-        break key.to_string();
+        if let Some(other) = mistaken_for(value, key) {
+            out.line(&out.warn(&format!(
+                "That looks like {} (it starts with {}), not {}: paste the {} (an empty line quits).",
+                other.what,
+                other.prefix,
+                key.what,
+                without_article(key.what)
+            )));
+            continue;
+        }
+        break value.to_string();
     };
-    if !key.starts_with("sk-ant-") {
-        out.line(&out.warn(
-            "Note: Anthropic API keys start with sk-ant-; this one doesn't, so requests may be refused.",
-        ));
+    if !value.starts_with(key.prefix) {
+        out.line(&out.warn(&format!(
+            "Note: {}s start with {}; this one doesn't, so requests may be refused.",
+            capitalized(without_article(key.what)),
+            key.prefix
+        )));
     }
-    save(dotenv, ANTHROPIC_KEY, &key)?;
-    enter(ANTHROPIC_KEY, key);
-    saved(out, dotenv, ANTHROPIC_KEY);
+    save(dotenv, key.name, &value)?;
+    enter(key.name, value);
+    saved(out, dotenv, key.name);
     Ok(())
 }
 
-fn ask_voyage_key(out: &Output, editor: &mut Editor, dotenv: &Path) -> Result<(), String> {
-    out.line(&out.dim(
-        "Paste your Voyage API key (from dashboard.voyageai.com; the input is hidden). An empty line quits.",
-    ));
-    let key = loop {
-        let key = read(editor, "Voyage API key: ", "", true)?;
-        let key = key.trim();
-        if key.is_empty() {
-            return Err(cancelled());
-        }
-        if key.chars().any(char::is_whitespace) {
-            out.line(&out.warn("An API key has no spaces in it; paste it again."));
-            continue;
-        }
-        break key.to_string();
-    };
-    if !key.starts_with("pa-") {
-        out.line(&out.warn(
-            "Note: Voyage API keys start with pa-; this one doesn't, so requests may be refused.",
-        ));
-    }
-    save(dotenv, VOYAGE_KEY, &key)?;
-    enter(VOYAGE_KEY, key);
-    saved(out, dotenv, VOYAGE_KEY);
-    Ok(())
+/// The other provider's key `value` looks like, when it has that key's
+/// longer prefix: an Anthropic key pasted where an OpenAI one goes.
+fn mistaken_for(value: &str, key: &Key) -> Option<&'static Key> {
+    KEYS.into_iter()
+        .filter(|other| other.name != key.name && value.starts_with(other.prefix))
+        .filter(|other| other.prefix.len() > key.prefix.len() || !value.starts_with(key.prefix))
+        .max_by_key(|other| other.prefix.len())
+}
+
+/// "an OpenAI API key" without its article: "OpenAI API key".
+fn without_article(what: &str) -> &str {
+    what.split_once(' ').map_or(what, |(_, rest)| rest)
+}
+
+/// "OpenAI API key" as a prompt starts it: with a capital, without its
+/// article.
+fn capitalized(what: &str) -> String {
+    let what = without_article(what);
+    let mut chars = what.chars();
+    chars
+        .next()
+        .map(|first| first.to_uppercase().chain(chars).collect())
+        .unwrap_or_default()
 }
 
 fn ask_login(out: &Output, editor: &mut Editor, dotenv: &Path) -> Result<(), String> {
@@ -586,7 +733,7 @@ mod tests {
         assert!(read_dotenv(&path).is_empty());
         std::fs::write(
             &path,
-            "# keys\nOPENAI_API_KEY=sk-openai\nANTHROPIC_API_KEY=\n",
+            "# keys\nAZURE_API_KEY=sk-azure\nANTHROPIC_API_KEY=\n",
         )
         .unwrap();
         assert!(read_dotenv(&path).is_empty());
@@ -656,6 +803,68 @@ mod tests {
         let path = temp.path().join(".env");
         std::fs::write(&path, "FIN_CACHE_1H=1\n").unwrap();
         assert_eq!(read_dotenv(&path), vec![(CACHE_1H, "1".to_string())]);
+    }
+
+    /// Every provider's key is read from a `.env` file, and so is how
+    /// sessions reach OpenAI models.
+    #[test]
+    fn a_dotenv_file_holds_every_provider_s_key() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join(".env");
+        std::fs::write(
+            &path,
+            "OPENAI_API_KEY=sk-proj-1\nGEMINI_API_KEY=AIza1\nOPENROUTER_API_KEY=sk-or-1\nFIN_OPENAI_AUTH=api-key\n",
+        )
+        .unwrap();
+        assert_eq!(
+            read_dotenv(&path),
+            vec![
+                (OPENAI_KEY, "sk-proj-1".to_string()),
+                (GEMINI_KEY, "AIza1".to_string()),
+                (OPENROUTER_KEY, "sk-or-1".to_string()),
+                (OPENAI_AUTH, "api-key".to_string()),
+            ]
+        );
+    }
+
+    /// A key pasted where another provider's goes is caught before it is
+    /// saved under the wrong name.
+    #[test]
+    fn a_key_for_another_provider_is_recognised() {
+        let name = |key: Option<&Key>| key.map(|key| key.name);
+        assert_eq!(
+            name(mistaken_for("sk-ant-api03-x", &OPENAI)),
+            Some(ANTHROPIC_KEY)
+        );
+        assert_eq!(
+            name(mistaken_for("sk-or-v1-x", &OPENAI)),
+            Some(OPENROUTER_KEY)
+        );
+        assert_eq!(name(mistaken_for("sk-proj-x", &OPENAI)), None);
+        assert_eq!(
+            name(mistaken_for("sk-proj-x", &ANTHROPIC)),
+            Some(OPENAI_KEY)
+        );
+        assert_eq!(name(mistaken_for("sk-ant-x", &ANTHROPIC)), None);
+        assert_eq!(name(mistaken_for("AIzaSy", &OPENROUTER)), Some(GEMINI_KEY));
+        assert_eq!(name(mistaken_for("pa-x", &GEMINI)), Some(VOYAGE_KEY));
+        assert_eq!(name(mistaken_for("something", &GEMINI)), None);
+        assert_eq!(capitalized(OPENAI.what), "OpenAI API key");
+        assert_eq!(capitalized(GEMINI.what), "Gemini API key");
+    }
+
+    #[test]
+    fn what_is_missing_is_said_where_the_screen_cant_be_shown() {
+        let message = Need::GeminiKey {
+            model: "gemini-3.1-pro-preview".into(),
+        }
+        .message();
+        assert!(message.contains("needs GEMINI_API_KEY"), "{message}");
+        assert!(message.contains("fin --setup"), "{message}");
+        let message = Need::Any.message();
+        for name in [ANTHROPIC_KEY, OPENAI_KEY, GEMINI_KEY, OPENROUTER_KEY] {
+            assert!(message.contains(name), "{name}: {message}");
+        }
     }
 
     #[test]

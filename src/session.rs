@@ -8,6 +8,7 @@ use chrono::{DateTime, Local, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::agents::ModelSettings;
+use crate::providers::OpenAiAuth;
 use crate::shell::WindowsShell;
 
 const SETTINGS_FILE: &str = "session.json";
@@ -34,6 +35,29 @@ pub struct Settings {
     /// before it could be chosen, which ran PowerShell.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub windows_shell: Option<WindowsShell>,
+    /// How the session reaches OpenAI models, when it has one: the ChatGPT
+    /// login or an API key. `None` in sessions without OpenAI models, and
+    /// in those saved before it could be chosen, which used the ChatGPT
+    /// login.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub openai_auth: Option<OpenAiAuth>,
+}
+
+impl Settings {
+    /// `model`'s settings as the banner and `/session` say them, with how
+    /// the session reaches it when that isn't in its name (OpenAI models).
+    pub fn describe(&self, model: &ModelSettings) -> String {
+        let mut text = model.describe();
+        if crate::providers::resolve_model(&model.model)
+            .is_ok_and(|resolved| resolved.provider == arko_ai::Provider::OpenAI)
+        {
+            text.push_str(&format!(
+                " via {}",
+                self.openai_auth.unwrap_or(OpenAiAuth::ChatGpt).describe()
+            ));
+        }
+        text
+    }
 }
 
 /// A session's folder.
@@ -200,6 +224,7 @@ mod tests {
             created,
             title: None,
             windows_shell: None,
+            openai_auth: None,
         }
     }
 
@@ -249,5 +274,39 @@ mod tests {
             .unwrap();
         assert_eq!(loaded.workspace, here);
         assert!(Session::open(root.path(), "missing").is_err());
+    }
+
+    /// The OpenAI auth is saved only when chosen; sessions from before it
+    /// load without it, and their OpenAI models used the ChatGPT login.
+    #[test]
+    fn the_openai_auth_is_saved_with_the_session() {
+        let root = tempfile::tempdir().unwrap();
+        let session = Session::create(root.path()).unwrap();
+        let mut settings = settings(root.path(), Utc::now());
+        session.save_settings(&settings).unwrap();
+        let text = std::fs::read_to_string(session.dir.join(SETTINGS_FILE)).unwrap();
+        assert!(!text.contains("openai_auth"), "{text}");
+        assert_eq!(session.load_settings().unwrap().openai_auth, None);
+
+        settings.openai_auth = Some(OpenAiAuth::ApiKey);
+        settings.main.model = "gpt-6.1-sol".into();
+        session.save_settings(&settings).unwrap();
+        let text = std::fs::read_to_string(session.dir.join(SETTINGS_FILE)).unwrap();
+        assert!(text.contains(r#""openai_auth": "api-key""#), "{text}");
+        let loaded = session.load_settings().unwrap();
+        assert_eq!(loaded.openai_auth, Some(OpenAiAuth::ApiKey));
+        assert_eq!(
+            loaded.describe(&loaded.main),
+            "gpt-6.1-sol (xhigh effort) via OpenAI API key"
+        );
+        assert_eq!(
+            loaded.describe(&loaded.worker),
+            "claude-opus-5-5 (xhigh effort)"
+        );
+        settings.openai_auth = None;
+        assert_eq!(
+            settings.describe(&settings.main),
+            "gpt-6.1-sol (xhigh effort) via ChatGPT login"
+        );
     }
 }
