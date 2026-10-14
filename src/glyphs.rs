@@ -49,6 +49,25 @@ pub const SYMBOLS_TABLE: &[(char, &str, &str)] = &[
     ('·', "·", "|"),
     ('—', "—", "--"),
     ('–', "–", "-"),
+    // The full-screen view's.
+    ('▎', "│", "|"),
+    ('▸', "›", ">"),
+    ('○', "○", "o"),
+    ('•', "•", "*"),
+    ('↓', "↓", "v"),
+    ('↑', "↑", "^"),
+    ('←', "←", "<-"),
+    ('┌', "┌", "+"),
+    ('┐', "┐", "+"),
+    ('└', "└", "+"),
+    ('┘', "┘", "+"),
+    ('╭', "┌", "+"),
+    ('╮', "┐", "+"),
+    ('╰', "└", "+"),
+    ('╯', "┘", "+"),
+    ('█', "█", "#"),
+    ('▀', "▀", "\""),
+    ('▄', "▄", "_"),
 ];
 
 /// The symbols this terminal shows: FIN_SYMBOLS (in the environment or a
@@ -110,7 +129,7 @@ fn choose(setting: Option<&str>, classic: bool) -> Symbols {
 
 /// Whether fin runs in the classic Windows console: no terminal says what
 /// it is (Windows Terminal, VS Code, WezTerm, ConEmu, Alacritty).
-fn classic_console() -> bool {
+pub fn classic_console() -> bool {
     [
         "WT_SESSION",
         "TERM_PROGRAM",
@@ -160,8 +179,9 @@ mod tests {
     fn the_stand_ins_stay_in_their_sets() {
         let wgl4 = |c: char| {
             matches!(c as u32,
-                0x20..=0x7E | 0xA0..=0xFF | 0x2013 | 0x2014 | 0x2026 | 0x203A | 0x221A
-                | 0x2190..=0x2195 | 0x2500..=0x257F | 0x25A0 | 0x25BA | 0x25CF)
+                0x20..=0x7E | 0xA0..=0xFF | 0x2013 | 0x2014 | 0x2022 | 0x2026 | 0x203A | 0x221A
+                | 0x2190..=0x2195 | 0x2500..=0x257F | 0x2580 | 0x2584 | 0x2588 | 0x25A0
+                | 0x25BA | 0x25CB | 0x25CF)
         };
         for (symbol, basic, ascii) in SYMBOLS_TABLE {
             assert!(basic.chars().all(wgl4), "{symbol}: {basic:?}");
@@ -176,6 +196,11 @@ mod tests {
             ("ui.rs", include_str!("ui.rs")),
             ("main.rs", include_str!("main.rs")),
             ("crew.rs", include_str!("crew.rs")),
+            ("tui/app.rs", include_str!("tui/app.rs")),
+            ("tui/transcript.rs", include_str!("tui/transcript.rs")),
+            ("tui/markdown.rs", include_str!("tui/markdown.rs")),
+            ("tui/input.rs", include_str!("tui/input.rs")),
+            ("tui/overlay.rs", include_str!("tui/overlay.rs")),
         ] {
             for c in source.chars().filter(|c| !c.is_ascii()) {
                 // Letters (in test strings and names) are shown as they are.

@@ -411,6 +411,17 @@ pub enum Failure {
 /// credentials it needs, OpenAI as the session's [`OpenAiAuth`] says (never
 /// both ways), and Claude Code checked: installed and signed in.
 pub fn client(codex_auth: Option<&Path>, settings: &Settings) -> Result<LLMClient, Failure> {
+    // Debug builds can talk to a local test model server (the full-screen
+    // view's end-to-end checks run the real binary on one).
+    #[cfg(debug_assertions)]
+    if let Some(url) = std::env::var("FIN_TEST_MODEL_URL")
+        .ok()
+        .filter(|url| !url.is_empty())
+    {
+        return Ok(LLMClient::new().with_openai_client(
+            arko_ai::providers::openai::OpenAIClient::new("test-key").with_base_url(&url),
+        ));
+    }
     client_with(
         settings,
         credentials::var,

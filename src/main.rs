@@ -18,6 +18,7 @@
 
 mod agents;
 mod claude_code;
+mod commands;
 mod credentials;
 mod crew;
 mod glyphs;
@@ -32,6 +33,7 @@ mod session;
 mod shell;
 mod skills;
 mod term;
+mod tui;
 mod ui;
 
 use std::path::{Path, PathBuf};
@@ -208,6 +210,10 @@ struct Args {
         conflicts_with = "prompt"
     )]
     remote: Option<String>,
+
+    /// Use the line prompt instead of the full-screen view.
+    #[arg(long, conflicts_with = "prompt")]
+    repl: bool,
 
     #[command(subcommand)]
     command: Option<Command>,
@@ -451,13 +457,20 @@ async fn run(args: Args) -> Result<ExitCode, String> {
         tools.extend(indexes.tools());
     }
     let (input_sender, input) = mpsc::unbounded_channel();
+    // The full-screen view is the front end with a terminal (not with
+    // --repl); it reads the input itself.
+    let full_screen = !one_shot && !args.repl && tui::available();
     let printer = if one_shot {
         None
     } else {
         term::save();
-        ui::spawn_input(root.join("history.txt"), input_sender.clone())
+        if full_screen {
+            None
+        } else {
+            ui::spawn_input(root.join("history.txt"), input_sender.clone())
+        }
     };
-    let interactive = printer.is_some();
+    let interactive = printer.is_some() || full_screen;
     let output = Arc::new(Output::new(printer, one_shot));
     let stats = Arc::new(Mutex::new(Stats::default()));
     // What the remote page shows, kept from the start so that a page
@@ -576,6 +589,27 @@ async fn run(args: Args) -> Result<ExitCode, String> {
             TurnEnd::Failed => ExitCode::FAILURE,
         }
     } else {
+        let screen = full_screen
+            .then(|| {
+                tui::start(
+                    tui::Setup {
+                        feed: harness.feed.clone(),
+                        meter: harness.gauges.clone(),
+                        input: input_sender.clone(),
+                        root: root.clone(),
+                        session_dir: harness.session.dir.clone(),
+                        workspace: harness.settings.workspace.clone(),
+                        handover_at: harness
+                            .settings
+                            .main
+                            .handover_at
+                            .unwrap_or(harness.settings.handover_at),
+                        outside: harness.settings.allow_outside_workspace,
+                    },
+                    &output,
+                )
+            })
+            .flatten();
         harness.banner(new);
         if let Some(bind) = remote_bind {
             harness.start_remote(bind).await;
@@ -585,6 +619,9 @@ async fn run(args: Args) -> Result<ExitCode, String> {
         }
         if !harness.exiting {
             harness.repl(&mut input).await;
+        }
+        if let Some(screen) = screen {
+            screen.close().await;
         }
         ExitCode::SUCCESS
     };
@@ -1276,12 +1313,12 @@ impl Harness {
             out.line(&out.warn(note));
         }
         if new {
-            out.line(&out.dim(
+            out.echo(&out.dim(
                 "Type a message (end a line with \\ to continue it). While the agent works, type to add to its task; Ctrl-C stops the turn. /help for commands.",
             ));
         } else if let Conversation::Answered(result) = &self.conversation {
-            out.line(&out.dim("Resumed. The last reply:"));
-            out.line(&result.summary);
+            out.echo(&out.dim("Resumed. The last reply:"));
+            out.echo(&result.summary);
             self.feed.notice(Level::Info, "Resumed. The last reply:");
             self.feed.reply(&result.summary);
         } else {
@@ -1438,7 +1475,7 @@ impl Harness {
     /// remote page.
     fn say(&self, level: Level, text: &str) {
         let out = &self.output;
-        out.line(&match level {
+        out.echo(&match level {
             Level::Info => out.dim(text),
             Level::Warn => out.warn(text),
             Level::Error => out.error(text),
@@ -1449,7 +1486,7 @@ impl Harness {
     /// Shows in the terminal what was typed on the remote page.
     fn echo_web(&self, text: &str) {
         let out = &self.output;
-        out.line(&format!(
+        out.echo(&format!(
             "{} {}",
             out.accent(&format!("web {}", ui::PROMPT.trim_end())),
             text.trim().replace('\n', "\n  ")
@@ -1593,6 +1630,7 @@ impl Harness {
             Ok(server) => {
                 self.announce_remote(server.addr(), &key);
                 self.remote_bind = Some((bind, server.addr().port()));
+                tui::page_at(Some(server.addr()));
                 self.remote = Some(server);
             }
             Err(error) => self.output.line(
@@ -1606,6 +1644,7 @@ impl Harness {
     /// Stops the web page: its streams end, and its sessions with them.
     async fn stop_remote(&mut self) {
         if let Some(server) = self.remote.take() {
+            tui::page_at(None);
             server.stop().await;
         }
     }
@@ -1645,7 +1684,8 @@ impl Harness {
             && let Some(link) = links.iter().find(|link| !link.loopback)
             && let Some(code) = remote::qr_lines(&link.url)
         {
-            out.line(&code.join("\n"));
+            // (The full-screen view shows it in an overlay that stays.)
+            out.echo(&code.join("\n"));
         }
     }
 
@@ -1760,20 +1800,19 @@ impl Harness {
                 out.line(&out.dim(&self.handover_summary()));
             }
             "/new" => out.line(&out.dim("Wait for the turn to end (or press Ctrl-C) first.")),
+            other
+                if commands::find(other)
+                    .is_some_and(|command| command.runs == commands::Runs::Screen) =>
+            {
+                out.line(&format!(
+                    "{} works in the full-screen view (fin without --repl).",
+                    other.split_whitespace().next().unwrap_or(other)
+                ));
+            }
             _ => {
-                out.line(
-                    "/new           start a new conversation (this session keeps the old one)",
-                );
-                out.line("/cost          what this session has cost");
-                out.line("/workers       the workers: what each is doing, or reported");
-                out.line("/stop-workers  stop the workers running (the agent can resume them)");
-                out.line("/mcp           the MCP servers and their tools");
-                out.line("/skills        the skills the agents can load");
-                out.line("/session       this session's ID, folder and models");
-                out.line(
-                    "/remote        the web page, for a phone or browser (/remote ADDR, /remote off, /remote new-key)",
-                );
-                out.line("/exit          quit (Ctrl-D too); the session is saved");
+                for line in commands::help_lines() {
+                    out.line(&line);
+                }
                 out.line(&out.dim(
                     "While the agent works: type to add to its task; Ctrl-C stops the turn (the workers go on). When it asks you something, type the answer.",
                 ));
@@ -1928,11 +1967,11 @@ impl Harness {
                                 continue;
                             }
                             self.flush_printer().await;
-                            self.output.line(&self.output.bold("  ? The agent asks:"));
+                            self.output.echo(&self.output.bold("  ? The agent asks:"));
                             for line in question.text.trim().lines() {
-                                self.output.line(&format!("    {line}"));
+                                self.output.echo(&format!("    {line}"));
                             }
-                            self.output.line(&self.output.dim("  (Type your answer and press Enter.)"));
+                            self.output.echo(&self.output.dim("  (Type your answer and press Enter.)"));
                             let id = self.feed.question(&question.text);
                             if let Some((old, _)) = answering.replace((id, question.answer)) {
                                 self.feed.question_closed(old);
@@ -1953,7 +1992,7 @@ impl Harness {
                                     self.echo_web(&text);
                                     let given = text.trim().to_string();
                                     if answer.send(given.clone()).is_ok() {
-                                        self.output.line(&self.output.dim("  ✎ answered"));
+                                        self.output.echo(&self.output.dim("  ✎ answered"));
                                         self.feed.answered(id, &given, Source::Web);
                                     } else {
                                         self.feed.question_closed(id);
@@ -2011,7 +2050,7 @@ impl Harness {
                     let text = match answering.take() {
                         Some((id, answer)) => match answer.send(text) {
                             Ok(()) => {
-                                self.output.line(&self.output.dim("  ✎ answered"));
+                                self.output.echo(&self.output.dim("  ✎ answered"));
                                 self.feed.answered(id, line.trim(), source);
                                 continue;
                             }
@@ -2029,7 +2068,7 @@ impl Harness {
                     } else {
                         match workflow.post_note(Note::new(text.clone()).to([MAIN]).once()) {
                             Ok(seq) => {
-                                self.output.line(&self.output.dim(
+                                self.output.echo(&self.output.dim(
                                     "  ✎ added to the task: the agent reads it at its next step",
                                 ));
                                 self.feed.user(&text, source, Delivery::Note);
@@ -2055,7 +2094,7 @@ impl Harness {
         }
         let end = match outcome {
             Ok(result) => {
-                self.output.line("");
+                self.output.echo("");
                 // With -p, a reply the workers' news will follow isn't the
                 // answer.
                 if self.one_shot && self.news_coming() {
@@ -2328,7 +2367,7 @@ impl Harness {
         }
         let parts = parts.join(" · ");
         self.output
-            .line(&self.output.dim(&format!("── {parts} ──")));
+            .echo(&self.output.dim(&format!("── {parts} ──")));
         self.feed.turn_ended(&parts);
     }
 }
@@ -2358,21 +2397,10 @@ fn conversation_of(workflow: &Workflow) -> Conversation {
     }
 }
 
-/// The commands, typed alone on a line.
+/// The command `text` is, if it is one (see `commands`): a command's name,
+/// alone or with what it takes.
 fn command(text: &str) -> Option<&str> {
-    const COMMANDS: [&str; 10] = [
-        "/exit",
-        "/quit",
-        "/new",
-        "/cost",
-        "/workers",
-        "/stop-workers",
-        "/mcp",
-        "/skills",
-        "/session",
-        "/help",
-    ];
-    (COMMANDS.contains(&text) || is_remote_command(text)).then_some(text)
+    commands::find(text).map(|_| text)
 }
 
 /// `/remote`, alone or with what follows it.
@@ -2500,7 +2528,8 @@ struct Tee {
 impl rustyline::ExternalPrinter for Tee {
     fn print(&mut self, text: String) -> rustyline::Result<()> {
         let text = text.strip_suffix('\n').unwrap_or(&text);
-        self.to.line(text);
+        // (The feed gets the whole output when the command ends.)
+        self.to.echo(text);
         lock(&self.lines).push(text.to_string());
         Ok(())
     }

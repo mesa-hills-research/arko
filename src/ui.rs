@@ -37,7 +37,7 @@ use crate::shell::SHELL_TOOL_NAME;
 pub const PROMPT: &str = "› ";
 
 /// What the user did at the prompt.
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Input {
     Line(String),
     /// Ctrl-C.
@@ -48,8 +48,12 @@ pub enum Input {
 
 /// Where everything is printed: above the prompt when there is one, else
 /// to standard output (and, in one-shot mode, progress to standard error).
+/// While the full-screen view owns the terminal, lines go to the feed it
+/// shows instead, and echoes (what the feed has already) nowhere.
 pub struct Output {
     printer: Mutex<Option<Box<dyn ExternalPrinter + Send>>>,
+    /// The full-screen view's feed, while it shows the session.
+    feed: Mutex<Option<remote::Feed>>,
     color: bool,
     /// Progress goes to standard error; only answers go to standard output.
     progress_to_stderr: bool,
@@ -65,14 +69,28 @@ impl Output {
         let color = terminal && std::env::var_os("NO_COLOR").is_none_or(|value| value.is_empty());
         Self {
             printer: Mutex::new(printer),
+            feed: Mutex::new(None),
             color,
             progress_to_stderr,
         }
     }
 
-    /// Prints straight to the terminal from now on, not above the prompt.
+    /// Prints straight to the terminal from now on, not above the prompt
+    /// (nor to the full-screen view's feed).
     pub fn detach(&self) {
         self.printer.lock().unwrap().take();
+        self.feed.lock().unwrap().take();
+    }
+
+    /// Prints above the line prompt `printer` from now on.
+    pub fn attach(&self, printer: Box<dyn ExternalPrinter + Send>) {
+        *self.printer.lock().unwrap() = Some(printer);
+    }
+
+    /// Sends lines to `feed` from now on, which the full-screen view shows;
+    /// echoes are left out.
+    pub fn to_feed(&self, feed: remote::Feed) {
+        *self.feed.lock().unwrap() = Some(feed);
     }
 
     /// Clears the line the cursor is on (the prompt's).
@@ -87,6 +105,10 @@ impl Output {
     /// Prints `text` (one or more lines) as progress, with its symbols as
     /// the terminal shows them.
     pub fn line(&self, text: &str) {
+        if let Some(feed) = self.feed.lock().unwrap().as_ref() {
+            feed.output(&remote::plain(text));
+            return;
+        }
         let text = glyphs::render(text);
         let mut printer = self.printer.lock().unwrap();
         if let Some(printer) = printer.as_mut() {
@@ -101,8 +123,22 @@ impl Output {
         }
     }
 
-    /// Prints the agent's reply: to standard output in one-shot mode.
+    /// Prints a line the feed has already (the user's text, a notice, the
+    /// agent's question or reply, the end of a turn), or one only the line
+    /// prompt needs: as [`line`](Self::line) does, but not while the
+    /// full-screen view shows the feed.
+    pub fn echo(&self, text: &str) {
+        if self.feed.lock().unwrap().is_none() {
+            self.line(text);
+        }
+    }
+
+    /// Prints the agent's reply: to standard output in one-shot mode. (The
+    /// full-screen view has it from the feed.)
     pub fn answer(&self, text: &str) {
+        if self.feed.lock().unwrap().is_some() {
+            return;
+        }
         let text = glyphs::render(text);
         if self.progress_to_stderr {
             let mut stdout = std::io::stdout().lock();
@@ -302,7 +338,7 @@ pub async fn print_events(
                     printer.event(event);
                 }
                 Err(broadcast::error::RecvError::Lagged(missed)) => {
-                    printer.output.line(&printer.output.dim(&format!("  ({missed} events not shown)")));
+                    printer.output.echo(&printer.output.dim(&format!("  ({missed} events not shown)")));
                     if let Some(feed) = &feed {
                         feed.missed(missed);
                     }
@@ -370,12 +406,12 @@ impl EventPrinter {
     fn print_lines(&mut self) {
         while let Some(end) = self.text.find('\n') {
             let line: String = self.text.drain(..=end).collect();
-            self.output.line(line.trim_end_matches(['\n', '\r']));
+            self.output.echo(line.trim_end_matches(['\n', '\r']));
         }
         while let Some(end) = self.thinking.find('\n') {
             let line: String = self.thinking.drain(..=end).collect();
             let line = line.trim_end_matches(['\n', '\r']);
-            self.output.line(&self.output.dim(&format!("  {line}")));
+            self.output.echo(&self.output.dim(&format!("  {line}")));
         }
     }
 
@@ -384,12 +420,12 @@ impl EventPrinter {
         if !self.thinking.trim().is_empty() {
             let rest = std::mem::take(&mut self.thinking);
             self.output
-                .line(&self.output.dim(&format!("  {}", rest.trim_end())));
+                .echo(&self.output.dim(&format!("  {}", rest.trim_end())));
         }
         self.thinking.clear();
         if !self.text.trim().is_empty() {
             let rest = std::mem::take(&mut self.text);
-            self.output.line(rest.trim_end());
+            self.output.echo(rest.trim_end());
         }
         self.text.clear();
     }
@@ -414,7 +450,7 @@ impl EventPrinter {
                 if main {
                     self.flush();
                     if let Some(line) = self.call_line(&tool_name, &parameters) {
-                        self.output.line(&line);
+                        self.output.echo(&line);
                     }
                     if tool_name == SHELL_TOOL_NAME {
                         self.commands.insert(tool_call_id, tool_name);
@@ -423,7 +459,7 @@ impl EventPrinter {
                     let worker = self.worker(event.agent_run_id);
                     let call = brief(&tool_name, &parameters);
                     self.output
-                        .line(&self.output.dim(&format!("  ↳ {worker}: {call}")));
+                        .echo(&self.output.dim(&format!("  ↳ {worker}: {call}")));
                 }
             }
             AgentEvent::ToolResult {
@@ -439,10 +475,10 @@ impl EventPrinter {
                     // (A started worker is announced by the crew.)
                     let first = output.lines().next().unwrap_or_default();
                     self.output
-                        .line(&self.output.dim(&format!("  ⎿ {}", cut(first, 160))));
+                        .echo(&self.output.dim(&format!("  ⎿ {}", cut(first, 160))));
                 } else if tool_name == RUN_WORKFLOW_AGENT_TOOL_NAME {
                     let lines = output.lines().count();
-                    self.output.line(&self.output.dim(&format!(
+                    self.output.echo(&self.output.dim(&format!(
                         "  ⎿ the worker reported ({lines} line{})",
                         if lines == 1 { "" } else { "s" }
                     )));
@@ -468,7 +504,7 @@ impl EventPrinter {
                 } else {
                     format!("  ! {who}{text}")
                 };
-                self.output.line(&self.output.error(&line));
+                self.output.echo(&self.output.error(&line));
             }
             AgentEvent::RetryScheduled {
                 attempt,
@@ -477,26 +513,26 @@ impl EventPrinter {
                 ..
             } => {
                 let why = if rate_limit { "rate limited; " } else { "" };
-                self.output.line(&self.output.warn(&format!(
+                self.output.echo(&self.output.warn(&format!(
                     "  … {why}retrying in {:.0} s (attempt {attempt})",
                     delay_ms as f64 / 1000.0
                 )));
             }
             AgentEvent::UsageLimitReached { error_message, .. } => {
-                self.output.line(&self.output.warn(&format!(
+                self.output.echo(&self.output.warn(&format!(
                     "  … usage limit reached: {}",
                     cut(&error_message, 300)
                 )));
             }
             AgentEvent::OutputTokenLimitReached { output_tokens, .. } if main => {
                 self.flush();
-                self.output.line(&self.output.warn(&format!(
+                self.output.echo(&self.output.warn(&format!(
                     "  ! the reply reached the model's output limit ({output_tokens} tokens)"
                 )));
             }
             AgentEvent::HandoverRequested { input_tokens } if main => {
                 self.flush();
-                self.output.line(&self.output.dim(&format!(
+                self.output.echo(&self.output.dim(&format!(
                     "  ⟳ the conversation reached {}k tokens; the agent is writing a handover report",
                     input_tokens / 1000
                 )));
@@ -504,12 +540,12 @@ impl EventPrinter {
             AgentEvent::ConversationHandedOver { .. } if main => {
                 // The report's last line has no newline after it.
                 self.flush();
-                self.output.line(&self.output.dim(
+                self.output.echo(&self.output.dim(
                     "  ⟳ handed over: the agent continues in a fresh conversation from its report",
                 ));
             }
             AgentEvent::RefusalReceived(refusal) => {
-                self.output.line(
+                self.output.echo(
                     &self
                         .output
                         .warn(&format!("  ! the model refused ({:?})", refusal.category)),
@@ -533,7 +569,7 @@ impl EventPrinter {
         if !self.thinking.trim().is_empty() {
             let rest = std::mem::take(&mut self.thinking);
             for line in rest.trim_end().lines() {
-                self.output.line(&self.output.dim(&format!("  {line}")));
+                self.output.echo(&self.output.dim(&format!("  {line}")));
             }
         }
         self.thinking.clear();
@@ -687,10 +723,10 @@ impl EventPrinter {
             }
         }
         for line in text {
-            self.output.line(&self.output.dim(&line));
+            self.output.echo(&self.output.dim(&line));
         }
         let status = format!("  ⎿ {status}");
-        self.output.line(&if failed {
+        self.output.echo(&if failed {
             self.output.warn(&status)
         } else {
             self.output.dim(&status)

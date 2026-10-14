@@ -1,0 +1,15 @@
+fin
+
+fin is licensed under the MIT License or the Apache License, Version 2.0, at
+your option.
+
+fin bundles the third-party files below, each under its own license.
+
+
+Color themes (themes/*.json)
+  From GPUI Kit (https://github.com/mesa-hills-research/gpui_kit), based on
+  the themes of GPUI Component (https://github.com/longbridge/gpui-component),
+  most of them with changed colors
+  Copyright 2024 - 2026 Longbridge
+  Apache License 2.0, in themes/LICENSE-APACHE
+  Each file names the author of its color scheme and links to the source.

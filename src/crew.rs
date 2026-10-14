@@ -197,9 +197,10 @@ impl Crew {
                     _ => None,
                 };
                 if let Some(text) = text {
+                    // (The feed has the worker's summary.)
                     crew.setup
                         .output
-                        .line(&crew.setup.output.dim(&format!("  ↳ {text}")));
+                        .echo(&crew.setup.output.dim(&format!("  ↳ {text}")));
                 }
                 if let Some(feed) = &crew.setup.feed {
                     crew.tell_feed(feed, &event.handle, event.run_id, &event.kind);
@@ -369,7 +370,7 @@ impl Crew {
             // exiting immediately after a report preserves that report on resume.
             if let Err(error) = workflow.checkpoint().await {
                 let text = format!("Could not save the final worker state: {error}");
-                self.setup.output.line(&self.setup.output.warn(&text));
+                self.setup.output.echo(&self.setup.output.warn(&text));
                 if let Some(feed) = &self.setup.feed {
                     feed.notice(remote::Level::Warn, &text);
                 }
