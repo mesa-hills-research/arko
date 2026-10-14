@@ -1223,6 +1223,25 @@ mod tests {
         assert!(worker[0].contains("r1 Test it · running"), "{worker:?}");
         assert!(worker.iter().any(|r| r.contains("Thinking about it")));
         assert!(!worker.iter().any(|r| r.contains("Fix it")));
+        // Its own view doesn't name it on its calls.
+        assert!(
+            worker.iter().any(|r| r.starts_with("▸ cargo test")),
+            "{worker:?}"
+        );
+        // A turn of text and notices only has no counter.
+        let mut text = item(8, Kind::Text, "Thinking.");
+        text.turn = Some(2);
+        t.apply(Update::Item(text));
+        let mut notice = item(9, Kind::Notice, "news");
+        notice.level = Some(Level::Info);
+        notice.turn = Some(2);
+        t.apply(Update::Item(notice));
+        let messages = rows(&mut t, &Filter::Main(View::Messages), 60, 12);
+        assert!(
+            !messages.iter().any(|r| r.contains("0 tool calls")),
+            "{messages:?}"
+        );
+        assert!(!messages.iter().any(|r| r.contains("Thinking.")));
         assert_eq!(t.item(1).unwrap().agent, MAIN_AGENT);
     }
 }

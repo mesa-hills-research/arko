@@ -38,11 +38,8 @@ pub fn items(messages: &[Message]) -> Vec<Item> {
                             else {
                                 continue;
                             };
+                            // (The answer comes as a message of the user's.)
                             if tool == ASK_USER_TOOL_NAME {
-                                let mut answer = Item::new(Kind::User, result.output.trim());
-                                answer.source = Some(Source::Terminal);
-                                answer.delivery = Some(Delivery::Answer);
-                                push(&mut items, answer);
                                 continue;
                             }
                             let outcome = if result.is_error {
@@ -125,6 +122,16 @@ fn user_item(text: &str) -> Option<Item> {
     if text.is_empty() || text.starts_with("# Workflow context update") {
         return None;
     }
+    // The answer to the agent's question.
+    if let Some(asked) = text.strip_prefix("You asked the following questions:") {
+        let answer = asked
+            .split_once("The user responded:")
+            .map_or(asked, |(_, answer)| answer);
+        let mut item = Item::new(Kind::User, answer.trim());
+        item.source = Some(Source::Terminal);
+        item.delivery = Some(Delivery::Answer);
+        return Some(item);
+    }
     if text.starts_with("Your workers sent you news") {
         return Some(
             Item::new(Kind::Notice, "the workers' news went to the agent")
@@ -182,6 +189,9 @@ mod tests {
             ask,
             result,
             Message::new_user("# Workflow context update\n\nfiles changed"),
+            Message::new_user(
+                "You asked the following questions:\nKeep the old API?\n\nThe user responded:\nyes",
+            ),
             done,
         ];
         let items = items(&messages);
@@ -193,6 +203,7 @@ mod tests {
                 (Kind::Text, "Let me check."),
                 (Kind::Call, "$ cargo test"),
                 (Kind::Result, "exit code 0, 1.0 s"),
+                (Kind::User, "yes"),
                 (Kind::Reply, "All 12 pass."),
             ]
         );

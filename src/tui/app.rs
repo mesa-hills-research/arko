@@ -98,6 +98,9 @@ pub struct App {
     pub list_focus: Option<usize>,
     /// When the view started: the agent list shows the workers since.
     started_ms: i64,
+    /// Where the agent list was drawn, and the row of its first line: for
+    /// the mouse.
+    pub list_drawn: (ratatui::layout::Rect, usize),
 }
 
 impl App {
@@ -150,6 +153,7 @@ impl App {
             answered: None,
             list_focus: None,
             started_ms: chrono::Utc::now().timestamp_millis(),
+            list_drawn: Default::default(),
         }
     }
 
@@ -361,7 +365,6 @@ impl App {
                     self.list_focus = Some(0);
                 }
             }
-            KeyCode::Tab => self.editor.insert('\t'),
             KeyCode::Char(c) if !ctrl && !alt => self.typed(c),
             _ => {}
         }
@@ -566,6 +569,12 @@ impl App {
         if trimmed.is_empty() {
             return;
         }
+        // Debug builds: what a crash of the view does (the terminal comes
+        // back, and the session ends saved).
+        #[cfg(debug_assertions)]
+        if trimmed == "/__panic" {
+            panic!("the full-screen view's test panic");
+        }
         if let Some(command) = commands::find(trimmed) {
             let rest = trimmed
                 .split_once(char::is_whitespace)
@@ -581,10 +590,19 @@ impl App {
                 }
                 ("/remote", _) => {
                     // The page starts (or stops) in the session; its links
-                    // show in an overlay that stays.
+                    // show in an overlay that stays (`qr IFACE`: that one's).
                     if !matches!(rest, "off" | "new-key") {
+                        let interface = rest.strip_prefix("qr").map(str::trim);
+                        let link = interface
+                            .filter(|name| !name.is_empty())
+                            .and_then(|name| {
+                                super::overlay::page_links(self)?
+                                    .iter()
+                                    .position(|link| link.interface.as_deref() == Some(name))
+                            })
+                            .unwrap_or(0);
                         self.overlay = Some(Overlay::Remote {
-                            link: 0,
+                            link,
                             since: Instant::now(),
                         });
                     }
@@ -814,17 +832,39 @@ impl App {
     // ----- the mouse -----
 
     pub fn mouse(&mut self, event: MouseEvent) {
+        let at = ratatui::layout::Position {
+            x: event.column,
+            y: event.row,
+        };
         match event.kind {
+            // Over the help, the wheel scrolls it.
+            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+                if matches!(self.overlay, Some(Overlay::Help { .. })) =>
+            {
+                if let Some(Overlay::Help { scroll }) = &mut self.overlay {
+                    *scroll = if event.kind == MouseEventKind::ScrollUp {
+                        scroll.saturating_sub(WHEEL as usize)
+                    } else {
+                        *scroll + WHEEL as usize
+                    };
+                }
+            }
             MouseEventKind::ScrollUp => self.transcript.scroll(-WHEEL),
             MouseEventKind::ScrollDown => self.transcript.scroll(WHEEL),
             MouseEventKind::Down(MouseButton::Left) => {
                 if self.overlay.is_some() {
                     return;
                 }
-                let at = ratatui::layout::Position {
-                    x: event.column,
-                    y: event.row,
-                };
+                // A row of the agent list shows that agent's transcript.
+                let (list, first) = self.list_drawn;
+                if list.contains(at) {
+                    let row = first + (at.y - list.y) as usize;
+                    if let Some(agent) = self.list().get(row) {
+                        let id = agent.map(|w| w.id.clone());
+                        self.watch(id);
+                    }
+                    return;
+                }
                 if self
                     .transcript
                     .drawn
@@ -1058,6 +1098,15 @@ pub(super) mod tests {
         // Esc in the box leaves the worker's view.
         press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
         assert_eq!(app.watching, None);
+        // A click on a row of the list shows that agent.
+        app.list_drawn = (ratatui::layout::Rect::new(0, 20, 80, 2), 0);
+        app.mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 5,
+            row: 21,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert_eq!(app.watching.as_deref(), Some("r1"));
     }
 
     #[test]

@@ -201,6 +201,8 @@ mod tests {
             ("tui/markdown.rs", include_str!("tui/markdown.rs")),
             ("tui/input.rs", include_str!("tui/input.rs")),
             ("tui/overlay.rs", include_str!("tui/overlay.rs")),
+            ("tui/screen.rs", include_str!("tui/screen.rs")),
+            ("tui/mod.rs", include_str!("tui/mod.rs")),
         ] {
             for c in source.chars().filter(|c| !c.is_ascii()) {
                 // Letters (in test strings and names) are shown as they are.

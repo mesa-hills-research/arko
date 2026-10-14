@@ -14,7 +14,7 @@ use super::app::App;
 use super::theme::{Depth, Theme};
 use super::transcript::View;
 use super::wrap::{self, width as text_width};
-use crate::commands::{self, Runs};
+use crate::commands;
 use crate::glyphs;
 use crate::remote;
 
@@ -144,7 +144,11 @@ pub const KEYS: &[(&str, &str)] = &[
         "Ctrl+J",
         "new line, in every terminal (Alt+Enter too where Alt works)",
     ),
-    ("↑ ↓", "earlier messages, from the first or last line"),
+    (
+        "↑ ↓",
+        "earlier messages, from the first or last line; ↓ goes on to the agent list",
+    ),
+    ("Tab", "complete a command in the menu"),
     ("Ctrl+A E B F", "line start, end, back, forward (readline)"),
     (
         "Ctrl+K U W Y",
@@ -159,7 +163,7 @@ pub const KEYS: &[(&str, &str)] = &[
         "back to the bottom, when the box is empty (Ctrl+End always)",
     ),
     ("Ctrl+O", "next view: full, quiet, messages"),
-    ("Ctrl+T", "the workers: watch one's own work"),
+    ("Ctrl+T", "the agent list: Enter shows a worker's own work"),
     ("Esc", "close, go back, or put the agent's question off"),
     (
         "Ctrl+C",
@@ -210,10 +214,7 @@ fn help(frame: &mut Frame, app: &App, area: Rect, scroll: usize) {
             theme.text().add_modifier(Modifier::BOLD),
         )];
         spans.push(Span::styled(command.about.to_string(), theme.text()));
-        if command.runs == Runs::Screen {
-            spans.push(Span::styled(" (this view)".to_string(), theme.dim()));
-        }
-        for line in wrap::wrap(&spans, inner_width, 15) {
+        for line in wrap::wrap(&spans, inner_width, 14) {
             lines.push(Line::from(line));
         }
     }
@@ -362,10 +363,14 @@ fn settings(frame: &mut Frame, app: &App, area: Rect, selected: usize) {
         spans.extend(value);
         lines.push(Line::from(spans));
         if chosen {
-            lines.push(Line::from(vec![
-                Span::raw(" ".repeat(label_width + 2)),
-                Span::styled(about, theme.dim()),
-            ]));
+            let room = (area.width.min(72) as usize)
+                .saturating_sub(label_width + 8)
+                .max(10);
+            for line in wrap::wrap(&[Span::styled(about, theme.dim())], room, 0) {
+                let mut spans = vec![Span::raw(" ".repeat(label_width + 2))];
+                spans.extend(line);
+                lines.push(Line::from(spans));
+            }
         }
     }
     let width = 72.min(area.width.saturating_sub(2));
@@ -431,13 +436,17 @@ fn theme_picker(frame: &mut Frame, app: &App, area: Rect, picker: &Picker) {
     footer(frame, rect, theme, &[("Enter", "keep"), ("Esc", "back")]);
 }
 
+/// The web page's links, ranked, while it runs.
+pub fn page_links(app: &App) -> Option<Vec<remote::Link>> {
+    let addr = super::page()?;
+    let key = remote::session_key(&app.info.session_dir.join(remote::KEY_FILE)).ok()?;
+    Some(remote::links(addr, &key).0)
+}
+
 fn page(frame: &mut Frame, app: &App, area: Rect, link: usize, since: Instant) {
     let theme = &app.theme;
     let mut lines: Vec<Line<'static>> = Vec::new();
-    let links = super::page().and_then(|addr| {
-        let key = remote::session_key(&app.info.session_dir.join(remote::KEY_FILE)).ok()?;
-        Some(remote::links(addr, &key).0)
-    });
+    let links = page_links(app);
     let warning = Line::from(Span::styled(
         "The link holds the session's key. No TLS: on a network you don't trust, use an SSH tunnel or Tailscale.",
         theme.warning(),

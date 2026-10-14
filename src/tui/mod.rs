@@ -37,7 +37,7 @@ use crossterm::terminal::{
     BeginSynchronizedUpdate, EndSynchronizedUpdate, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use crossterm::{Command, cursor, execute, queue};
-use futures_util::StreamExt;
+use futures_util::{FutureExt, StreamExt};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use tokio::sync::{broadcast, mpsc, oneshot};
@@ -141,7 +141,20 @@ pub fn start(setup: Setup, output: &Arc<Output>) -> Option<Screen> {
         let _ = execute!(std::io::stdout(), DisableMouseCapture);
     }
     let (stop, stopped) = oneshot::channel();
-    let task = tokio::spawn(run(terminal.0, app, setup, updates, stopped));
+    let input = setup.input.clone();
+    let task = tokio::spawn(async move {
+        let running = std::panic::AssertUnwindSafe(run(terminal.0, app, setup, updates, stopped));
+        match running.catch_unwind().await {
+            Ok(reply) => reply,
+            Err(_) => {
+                // The panic hook restored the terminal and said why; the
+                // session ends as Ctrl-D ends it (it is saved).
+                close();
+                let _ = input.send(Input::Eof);
+                None
+            }
+        }
+    });
     Some(Screen {
         stop,
         task,
@@ -194,6 +207,7 @@ impl Command for EnableMouse {
 /// terminal and whether Shift+Enter is reported.
 fn open() -> std::io::Result<(Terminal<CrosstermBackend<Stdout>>, bool)> {
     crossterm::terminal::enable_raw_mode()?;
+    OPEN.store(true, std::sync::atomic::Ordering::SeqCst);
     // A panic restores the terminal before its message prints (as
     // ratatui's init does, ratatui/src/init.rs:566).
     let previous = std::panic::take_hook();
@@ -233,10 +247,16 @@ fn open() -> std::io::Result<(Terminal<CrosstermBackend<Stdout>>, bool)> {
 
 /// The keyboard protocol was pushed: it is popped as the view closes.
 static ENHANCED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// The view has the terminal: [`close`] gives it back once.
+static OPEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// The terminal as it was: safe to call more than once, and from the panic
-/// hook.
+/// hook. (Only once: leaving the alternate screen again would put the
+/// cursor back where the view started, over what was printed since.)
 fn close() {
+    if !OPEN.swap(false, std::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
     let _ = crossterm::terminal::disable_raw_mode();
     let mut stdout = std::io::stdout();
     if ENHANCED.swap(false, std::sync::atomic::Ordering::SeqCst) {
@@ -443,7 +463,9 @@ fn handle(
 ) {
     let now = Instant::now();
     let typed = batch.iter().filter(|event| types(event)).count();
-    let mut pasting = typed >= 2 || burst.is_some();
+    // (Three keys or more: two quick keys of a person's can come in one
+    // read while the view is busy drawing.)
+    let mut pasting = typed >= 3 || burst.is_some();
     if enter.take().is_some() {
         if typed > 0 {
             // The Enter that waited was a paste's.

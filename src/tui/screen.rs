@@ -64,6 +64,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     draw_input(frame, app, input_area, &input, (cursor_row, cursor_column));
     if list_rows > 0 {
         draw_list(frame, app, list);
+    } else {
+        app.list_drawn = Default::default();
     }
     let status_y = input_area.y - 1;
     draw_status(frame, app, Rect::new(area.x, status_y, area.width, 1));
@@ -182,12 +184,14 @@ fn draw_input(
 /// The agent list, below the input: `● main` and a row for each worker,
 /// the one shown marked; ↓ from the box moves into it, Enter shows a
 /// worker's own transcript.
-fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
+fn draw_list(frame: &mut Frame, app: &mut App, area: Rect) {
+    let rows = area.height as usize;
+    let count = app.list().len();
+    let focus = app.list_focus.map(|row| row.min(count - 1));
+    let first = focus.map_or(0, |row| row.saturating_sub(rows - 1));
+    app.list_drawn = (area, first);
     let theme = &app.theme;
     let list = app.list();
-    let rows = area.height as usize;
-    let focus = app.list_focus.map(|row| row.min(list.len() - 1));
-    let first = focus.map_or(0, |row| row.saturating_sub(rows - 1));
     let id_width = list
         .iter()
         .map(|row| row.map_or(4, |w| w.id.len()))
