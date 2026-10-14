@@ -33,6 +33,7 @@
   --error: #D21F07;         /* base.red, 5.1:1 */
   --success: #278000;       /* success.background, 4.8:1 */
   --switch-off: #D4D4D4;
+  --thumb: #C8C8C8;         /* scrollbar.thumb.background */
   --shadow: 0 8px 28px rgba(0, 0, 0, 0.14), 0 1px 3px rgba(0, 0, 0, 0.08);
   --mono: "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace;
   --sans: -apple-system, BlinkMacSystemFont, system-ui, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
@@ -63,6 +64,7 @@
     --error: #FF5257;
     --success: #30D158;
     --switch-off: #393939;
+    --thumb: #5A5A5A;       /* scrollbar.thumb (#9F9F9F), quieter on the dark */
     --shadow: 0 10px 32px rgba(0, 0, 0, 0.55), 0 0 0 1px #303030;
     color-scheme: dark;
   }
@@ -285,6 +287,8 @@ kbd {
   overscroll-behavior: contain;
   -webkit-overflow-scrolling: touch;
 }
+
+.log, .sheet-body, .ask-text, .workers-text { scrollbar-width: thin; scrollbar-color: var(--thumb) transparent; }
 
 .rows {
   max-width: var(--column);

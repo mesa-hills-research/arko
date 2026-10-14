@@ -24,6 +24,23 @@ use crate::ui::Input;
 /// question), "demo:long" (3,500 calls, to reach the history's limit;
 /// "demo:long 500", 500), anything else (a short turn). Lines added to the
 /// file `FIN_DEMO_INPUT` are typed at the terminal.
+/// What starts a script: a message with one of these.
+const MARKERS: [&str; 5] = [
+    "Run the demo",
+    "demo:stream",
+    "demo:slow",
+    "demo:ask",
+    "demo:long",
+];
+
+#[derive(Default)]
+struct Script {
+    /// The markers seen, by how many times.
+    known: std::collections::HashMap<&'static str, usize>,
+    /// The script running and its next step.
+    current: Option<(&'static str, usize)>,
+}
+
 #[tokio::test]
 #[ignore]
 async fn remote_page_demo() {
@@ -53,8 +70,12 @@ async fn remote_page_demo() {
     }
     let feed_cell: Arc<std::sync::OnceLock<remote::Feed>> = Arc::new(std::sync::OnceLock::new());
     let feed_for_model = feed_cell.clone();
+    // The script running: started by its marker in a new message, it goes
+    // a step on with each request of the main agent, until it completes.
+    let script: Arc<std::sync::Mutex<Script>> = Arc::default();
     let server = ModelServer::start(Arc::new(move |_, body: String| {
         let feed = feed_for_model.clone();
+        let script = script.clone();
         Box::pin(async move {
             tokio::time::sleep(Duration::from_millis(900)).await;
             let shell = |command: &str| (SHELL_TOOL_NAME, serde_json::json!({"command": command}));
@@ -75,26 +96,26 @@ async fn remote_page_demo() {
                     _ => complete("w21", "The README's flags are current, except the note on --remote's port."),
                 };
             }
-            // The script the latest message names (a message after a stop
-            // comes as a note, after the last user message), and its step:
-            // the results that came since.
-            let last_user = body.rfind("\"role\":\"user\"").unwrap_or(0);
-            let latest = [
-                "Run the demo",
-                "demo:stream",
-                "demo:slow",
-                "demo:ask",
-                "demo:long",
-            ]
-            .into_iter()
-            .filter_map(|marker| body.rfind(marker).map(|at| (at, marker)))
-            .max()
-            .filter(|(at, _)| *at >= last_user);
-            let after = |marker: &str| {
-                latest
-                    .filter(|(_, latest)| *latest == marker)
-                    .map(|(at, _)| body[at..].matches("function_call_output").count())
+            let (marker, step) = {
+                let mut script = script.lock().unwrap();
+                for marker in MARKERS {
+                    let count = body.matches(marker).count();
+                    let known = script.known.entry(marker).or_default();
+                    if count > *known {
+                        *known = count;
+                        script.current = Some((marker, 0));
+                    }
+                }
+                match &mut script.current {
+                    Some((marker, step)) => {
+                        *step += 1;
+                        (Some(*marker), *step - 1)
+                    }
+                    None => (None, 0),
+                }
             };
+            let after = |name: &str| (marker == Some(name)).then_some(step);
+            let done = || script.lock().unwrap().current = None;
             if let Some(step) = after("Run the demo") {
                 return match step {
                     0 => turn("d0", "I'll look around first.", Some(shell("ls -la; echo 'running 12 tests'; echo 'test result: ok. 12 passed; 0 failed'"))),
@@ -103,7 +124,10 @@ async fn remote_page_demo() {
                     3 => turn("d3", "Meanwhile, the build:", Some(shell("sleep 2; echo 'error[E0425]: cannot find value `x` in this scope'; exit 3"))),
                     4 => turn("d4", "", Some((ASK_USER_TOOL_NAME, serde_json::json!({"questions": "Should I also update the **CHANGELOG**? It has no entry for 0.4 yet."})))),
                     5 => turn("d5", "Waiting for the workers.", Some((crew::WAIT_FOR_AGENTS, serde_json::json!({"all": true, "timeout_seconds": 60})))),
-                    _ => complete("d6", "## Done\n\nThe flaky test is fixed and the docs are checked.\n\n- **r1** found a race in the parser's setup: the fixture now signals when it's ready, and `cargo test` passed **40 of 40**, ten times.\n- **r2** found one stale note, on `--remote`'s port.\n\n```rust\nfixture.ready().await?;\nparse(&input)?;\n```\n\n| Check | Result |\n|---|---|\n| Tests | 40 passed |\n| Docs | 1 note |\n\nSee https://example.com/notes for the details."),
+                    _ => {
+                        done();
+                        complete("d6", "## Done\n\nThe flaky test is fixed and the docs are checked.\n\n- **r1** found a race in the parser's setup: the fixture now signals when it's ready, and `cargo test` passed **40 of 40**, ten times.\n- **r2** found one stale note, on `--remote`'s port.\n\n```rust\nfixture.ready().await?;\nparse(&input)?;\n```\n\n| Check | Result |\n|---|---|\n| Tests | 40 passed |\n| Docs | 1 note |\n\nSee https://example.com/notes for the details.")
+                    }
                 };
             }
             if let Some(step) = after("demo:stream") {
@@ -134,18 +158,25 @@ async fn remote_page_demo() {
                         }
                     }
                 }
+                done();
                 return complete("s1", "That was the stream.");
             }
             if let Some(step) = after("demo:slow") {
                 return match step {
                     0 => turn("z0", "This takes a while.", Some(shell("sleep 30; echo done"))),
-                    _ => complete("z1", "Slept."),
+                    _ => {
+                        done();
+                        complete("z1", "Slept.")
+                    }
                 };
             }
             if let Some(step) = after("demo:ask") {
                 return match step {
                     0 => tool_call("q0", ASK_USER_TOOL_NAME, serde_json::json!({"questions": "Tabs or spaces?"})),
-                    _ => complete("q1", "Noted."),
+                    _ => {
+                        done();
+                        complete("q1", "Noted.")
+                    }
                 };
             }
             if let Some(step) = after("demo:long") {
@@ -178,7 +209,8 @@ async fn remote_page_demo() {
                         }
                     }
                 }
-                return complete("l1", "Read 3,500 files.");
+                done();
+                return complete("l1", "Read the files.");
             }
             turn("m0", "On it.", None)
         })
