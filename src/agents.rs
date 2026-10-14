@@ -109,6 +109,12 @@ impl ModelSettings {
         Ok(resolve_model(&self.model)?.provider)
     }
 
+    /// A Claude model in Claude Code.
+    pub fn in_claude_code(&self) -> bool {
+        self.provider()
+            .is_ok_and(|provider| provider == Provider::ClaudeCode)
+    }
+
     /// A model that takes Anthropic's cache lifetimes, so a worker's
     /// `cache` chooses one: Claude by API key or on OpenRouter.
     fn takes_cache_ttl(&self) -> bool {
@@ -131,7 +137,7 @@ pub struct AgentSettings<'a> {
     pub main: &'a ModelSettings,
     pub worker: &'a ModelSettings,
     /// What the configurations take from the session's providers: how it
-    /// reaches OpenAI models.
+    /// reaches OpenAI models, and how Claude Code runs.
     pub providers: &'a providers::Setup,
     /// How many workers may run at once; 0 turns them off, and
     /// [`NO_LIMIT`] sets no limit.
@@ -162,12 +168,12 @@ pub const NO_LIMIT: u32 = u32::MAX;
 
 /// The input size, in tokens, at which an agent on `model` hands over
 /// unless `--handover-at` says otherwise: 500k on Claude models (by API
-/// key or on OpenRouter), 200k on others, and at most 80% of what the
-/// model accepts; [`providers::UNKNOWN_LIMIT_HANDOVER`] when that isn't
-/// known (an OpenRouter model without its catalog).
+/// key, on OpenRouter or in Claude Code), 200k on others, and at most 80%
+/// of what the model accepts; [`providers::UNKNOWN_LIMIT_HANDOVER`] when
+/// that isn't known (an OpenRouter model without its catalog).
 pub fn default_handover(model: &Model) -> usize {
     let tokens = match model.provider {
-        Provider::Anthropic => 500_000,
+        Provider::Anthropic | Provider::ClaudeCode => 500_000,
         Provider::OpenRouter if providers::is_claude_slug(&model.id) => 500_000,
         _ => 200_000,
     };
@@ -283,6 +289,9 @@ pub fn main_config(settings: &AgentSettings) -> Result<AgentConfig, String> {
     if let Some(skills) = skills::config(settings.skill_folders) {
         builder = builder.skills_config(skills);
     }
+    if settings.main.in_claude_code() {
+        builder = builder.claude_code(settings.providers.claude_code.clone());
+    }
     builder.build().map_err(|error| error.to_string())
 }
 
@@ -319,6 +328,9 @@ pub fn worker_config(settings: &AgentSettings) -> Result<AgentConfig, String> {
     ));
     if let Some(skills) = skills::config(settings.skill_folders) {
         builder = builder.skills_config(skills);
+    }
+    if settings.worker.in_claude_code() {
+        builder = builder.claude_code(settings.providers.claude_code.clone());
     }
     builder.build().map_err(|error| error.to_string())
 }
@@ -442,6 +454,10 @@ fn worker_instructions(settings: &AgentSettings) -> String {
         text.push_str(
             "\nA worker keeps a prompt cache of its conversation for 30 minutes after its last step (ChatGPT's cache, which no setting changes). Continuing a worker after its cache has expired rereads its whole conversation uncached, which uses more of the ChatGPT plan's limits: if it finished more than 30 minutes ago, start a fresh worker instead, unless its context is worth that.\n",
         );
+    } else if settings.worker.in_claude_code() {
+        text.push_str(
+            "\nA worker runs in Claude Code, which keeps a prompt cache of its conversation for an hour after its last step on a Claude plan (no setting changes it). Continuing a worker after its cache has expired rereads its whole conversation uncached, which uses more of the plan's limits: if it finished more than an hour ago, start a fresh worker instead, unless its context is worth that.\n",
+        );
     }
     text
 }
@@ -528,9 +544,54 @@ mod tests {
         assert!(resolve_model("no-such-model").is_err());
     }
 
+    /// Agents in Claude Code get fin's own tools, served to it, and none of
+    /// Claude Code's: the command guard sees every command. Agents on other
+    /// providers get no Claude Code settings.
+    #[test]
+    fn claude_code_agents_run_fin_s_tools_only() {
+        let opus = model("cc:opus", false);
+        let fable = model("cc:fable", false);
+        let with = settings(&opus, &fable);
+        for config in [main_config(&with).unwrap(), worker_config(&with).unwrap()] {
+            assert!(config.runs_in_claude_code());
+            let claude_code = config.claude_code.as_ref().unwrap();
+            assert!(claude_code.replace_system_prompt);
+            assert_eq!(claude_code.env["ANTHROPIC_API_KEY"], "");
+            let tools = &config.tool_config.available_tool_names;
+            assert!(tools.iter().any(|name| name == SHELL_TOOL_NAME));
+            assert!(
+                !tools
+                    .iter()
+                    .any(|name| arko_agents::claude_code::is_built_in_tool(name)),
+                "{tools:?}"
+            );
+            assert!(config.validate().is_ok());
+        }
+        let main = main_config(&with).unwrap();
+        assert_eq!(main.llm_config.model.id, "claude-opus-5-5");
+        assert!(
+            main.instructions.contains("A worker runs in Claude Code"),
+            "{}",
+            main.instructions
+        );
+        assert!(!main.instructions.contains("`cache`"));
+        let worker = worker_config(&with).unwrap();
+        assert_eq!(worker.llm_config.model.id, "claude-fable-5-1");
+
+        let api = model("opus", false);
+        let config = main_config(&settings(&api, &opus)).unwrap();
+        assert!(config.claude_code.is_none());
+        assert!(
+            worker_config(&settings(&api, &opus))
+                .unwrap()
+                .claude_code
+                .is_some()
+        );
+    }
+
     /// Each worker provider's cache gets its own paragraph: the `cache`
     /// choice where Anthropic's cache lifetimes apply, ChatGPT's 30
-    /// minutes, and nothing where fin can't tell.
+    /// minutes, Claude Code's hour, and nothing where fin can't tell.
     #[test]
     fn the_lead_hears_about_its_workers_caches_by_provider() {
         let lead = model("opus", false);

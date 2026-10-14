@@ -4,9 +4,11 @@
 //! `gemini-3.1-pro-preview`) or an alias (`opus`, `sol`, `gemini`) names a
 //! model at its own provider: Claude models with an Anthropic API key,
 //! OpenAI models with a ChatGPT login or an OpenAI API key, Gemini models
-//! with a Google Gemini API key. A prefix names another route:
+//! with a Google Gemini API key. Two prefixes name the other routes:
 //! `openrouter:<slug>` any model OpenRouter serves
-//! (`openrouter:anthropic/claude-opus-5.5`), on an OpenRouter key.
+//! (`openrouter:anthropic/claude-opus-5.5`), on an OpenRouter key, and
+//! `cc:<model>` a Claude model run in the user's Claude Code CLI, on their
+//! Claude plan (`cc:opus`, `cc:fable`).
 //!
 //! Plain names stay as they were: a registry ID names one model at one
 //! provider (IDs are unique across the registry). A prefix appears only
@@ -31,11 +33,16 @@ use arko_ai::{
 use serde::{Deserialize, Serialize};
 
 use crate::agents::{Effort, ModelSettings, default_handover};
+use crate::claude_code;
 use crate::credentials::{self, Need};
 use crate::session::Settings;
 
 /// The prefix of a model on OpenRouter: `openrouter:<slug>`.
 pub const OPENROUTER: &str = "openrouter:";
+/// The prefix of a Claude model run in Claude Code: `cc:<model>`.
+pub const CLAUDE_CODE: &str = "cc:";
+/// The long form of [`CLAUDE_CODE`], also accepted.
+const CLAUDE_CODE_LONG: &str = "claude-code:";
 
 /// Short names for the models people use most.
 pub const ALIASES: [(&str, &str); 8] = [
@@ -54,7 +61,8 @@ pub const ALIASES: [(&str, &str); 8] = [
 /// smallest context window common among the models OpenRouter serves.
 pub const UNKNOWN_LIMIT_HANDOVER: usize = 100_000;
 
-/// The model `name` names: a registry ID or alias, or `openrouter:<slug>`.
+/// The model `name` names: a registry ID or alias, `openrouter:<slug>`, or
+/// `cc:<model>`.
 pub fn resolve_model(name: &str) -> Result<Model, String> {
     let name = name.trim();
     if let Some(slug) = strip_prefix(name, OPENROUTER) {
@@ -64,6 +72,24 @@ pub fn resolve_model(name: &str) -> Result<Model, String> {
             ));
         }
         return Ok(Model::openrouter(slug));
+    }
+    if let Some(rest) =
+        strip_prefix(name, CLAUDE_CODE).or_else(|| strip_prefix(name, CLAUDE_CODE_LONG))
+    {
+        let model = registered(rest).map_err(|_| {
+            format!(
+                "`{name}` names no Claude model: Claude Code runs Claude models, such as cc:opus (claude-opus-5-5) or cc:fable (claude-fable-5-1){}",
+                suggestion(rest).map(|close| format!("; did you mean cc:{close}?")).unwrap_or_default()
+            )
+        })?;
+        if model.provider != Provider::Anthropic {
+            return Err(format!(
+                "`{name}`: Claude Code runs Claude models, and {} isn't one ({} model)",
+                model.id,
+                provider_name(&model)
+            ));
+        }
+        return Ok(Model::claude_code(model));
     }
     registered(name)
 }
@@ -88,7 +114,7 @@ fn unknown(name: &str) -> String {
         text.push_str(&format!(" Did you mean {close}?"));
     }
     text.push_str(&format!(
-        " Use a model ID, an alias ({}), or openrouter:<slug> for a model on OpenRouter.",
+        " Use a model ID, an alias ({}), openrouter:<slug> for a model on OpenRouter, or cc:<model> for a Claude model in Claude Code (cc:opus).",
         ALIASES
             .iter()
             .map(|(alias, id)| format!("{alias} = {id}"))
@@ -139,7 +165,19 @@ fn strip_prefix<'a>(name: &'a str, prefix: &str) -> Option<&'a str> {
 pub fn model_name(model: &Model) -> String {
     match model.provider {
         Provider::OpenRouter => format!("{OPENROUTER}{}", model.id),
+        Provider::ClaudeCode => format!("{CLAUDE_CODE}{}", model.id),
         _ => model.id.clone(),
+    }
+}
+
+/// The provider's name, as fin's messages say it.
+pub fn provider_name(model: &Model) -> &'static str {
+    match model.provider {
+        Provider::Anthropic => "Claude",
+        Provider::OpenAI => "OpenAI",
+        Provider::Google => "Gemini",
+        Provider::OpenRouter => "OpenRouter",
+        Provider::ClaudeCode => "Claude Code",
     }
 }
 
@@ -150,7 +188,8 @@ pub fn is_claude_slug(slug: &str) -> bool {
 }
 
 /// Whether `model` takes Anthropic's prompt-cache lifetime (the 1-hour
-/// cache): Claude models on an API key or on OpenRouter.
+/// cache): Claude models on an API key or on OpenRouter. Claude Code
+/// chooses its own: an hour on a Claude plan.
 pub fn takes_cache_ttl(model: &Model) -> bool {
     match model.provider {
         Provider::Anthropic => true,
@@ -178,6 +217,7 @@ pub fn generation(
                     model_name(model)
                 ));
             }
+            // In Claude Code, the effort is the CLI's --effort.
             generation = generation.with_reasoning(
                 ReasoningConfig::anthropic_adaptive_with_effort(effort.into()),
             );
@@ -311,13 +351,16 @@ pub fn choose_openai_auth(
 
 /// The model of a new session without `--model`, by the credentials there
 /// are: Claude Opus 5.5 with an Anthropic API key, else GPT-6.1 Sol with a
-/// ChatGPT login, else Opus on OpenRouter, Sol on an OpenAI API key, or
-/// Gemini 3.1 Pro on a Gemini key; `None` without any.
+/// ChatGPT login, else Claude Opus 5.5 in Claude Code when `claude` is
+/// installed, else Opus on OpenRouter, Sol on an OpenAI API key, or Gemini
+/// 3.1 Pro on a Gemini key; `None` without any.
 pub fn default_model(codex_auth: Option<&Path>) -> Option<&'static str> {
     if credentials::var(credentials::ANTHROPIC_KEY).is_some() {
         Some("claude-opus-5-5")
     } else if has_chatgpt_login(codex_auth) {
         Some("gpt-6.1-sol")
+    } else if claude_code::find_cli().is_some() {
+        Some("cc:claude-opus-5-5")
     } else if credentials::var(credentials::OPENROUTER_KEY).is_some() {
         Some("openrouter:anthropic/claude-opus-5.5")
     } else if credentials::var(credentials::OPENAI_KEY).is_some() {
@@ -365,22 +408,24 @@ pub enum Failure {
 }
 
 /// The model client for the session's models: each provider with the
-/// credentials it needs, and OpenAI as the session's [`OpenAiAuth`] says
-/// (never both ways).
+/// credentials it needs, OpenAI as the session's [`OpenAiAuth`] says (never
+/// both ways), and Claude Code checked: installed and signed in.
 pub fn client(codex_auth: Option<&Path>, settings: &Settings) -> Result<LLMClient, Failure> {
     client_with(
         settings,
         credentials::var,
         credentials::codex_auth(codex_auth),
+        claude_code::check,
     )
 }
 
-/// [`client`], with the settings read through `var` and the Codex
-/// auth.json the user named (else Codex's own).
+/// [`client`], with the settings read through `var`, the Codex auth.json
+/// the user named (else Codex's own), and how Claude Code is checked.
 fn client_with(
     settings: &Settings,
     var: impl Fn(&str) -> Option<String>,
     auth_file: Option<std::path::PathBuf>,
+    check_claude_code: impl Fn() -> Result<claude_code::Ready, claude_code::Problem>,
 ) -> Result<LLMClient, Failure> {
     let models = [&settings.main, &settings.worker]
         .into_iter()
@@ -440,6 +485,24 @@ fn client_with(
             Provider::OpenRouter => Need::OpenRouterKey { model: model_name },
             Provider::ClaudeCode => unreachable!("Claude Code takes no client"),
         }));
+    }
+    if let Some((settings, _)) = models
+        .iter()
+        .find(|(_, model)| model.provider == Provider::ClaudeCode)
+    {
+        match check_claude_code() {
+            Ok(ready) => {
+                if let Some(warning) = ready.warning() {
+                    eprintln!("fin: {warning}");
+                }
+            }
+            Err(problem) => {
+                return Err(Failure::Need(Need::ClaudeCode {
+                    model: settings.model.clone(),
+                    problem,
+                }));
+            }
+        }
     }
     Ok(client)
 }
@@ -576,11 +639,16 @@ pub fn plan_usage_line(plans: &std::collections::BTreeMap<String, String>) -> Op
 pub struct Setup {
     /// How the session reaches OpenAI models.
     pub openai_auth: Option<OpenAiAuth>,
+    /// How Claude Code runs, for the agents on `cc:` models.
+    pub claude_code: arko_agents::ClaudeCodeSettings,
 }
 
 impl Setup {
     pub fn new(openai_auth: Option<OpenAiAuth>) -> Self {
-        Self { openai_auth }
+        Self {
+            openai_auth,
+            claude_code: claude_code::settings(),
+        }
     }
 }
 
@@ -628,6 +696,13 @@ mod tests {
                 Provider::OpenRouter,
                 "openrouter:openai/gpt-6-luna:floor",
             ),
+            ("cc:opus", Provider::ClaudeCode, "cc:claude-opus-5-5"),
+            ("cc:fable", Provider::ClaudeCode, "cc:claude-fable-5-1"),
+            (
+                "claude-code:claude-opus-5-5",
+                Provider::ClaudeCode,
+                "cc:claude-opus-5-5",
+            ),
         ] {
             let model = resolve_model(name).unwrap();
             assert_eq!(model.provider, provider, "{name}");
@@ -637,12 +712,17 @@ mod tests {
             let again = resolve_model(&saved_name).unwrap();
             assert_eq!((again.provider, again.id), (model.provider, model.id));
         }
+        // Claude Code models keep the registry's limits and prices.
+        let cc = resolve_model("cc:opus").unwrap();
+        let opus = resolve_model("opus").unwrap();
+        assert_eq!(cc.max_input_tokens, opus.max_input_tokens);
     }
 
     #[test]
     fn a_name_that_names_no_model_says_what_was_meant() {
         let error = resolve_model("opsu").unwrap_err();
         assert!(error.contains("Did you mean opus?"), "{error}");
+        assert!(error.contains("cc:<model>"), "{error}");
         assert!(error.contains("openrouter:<slug>"), "{error}");
         let error = resolve_model("anthropic/claude-opus-5.5").unwrap_err();
         assert!(
@@ -651,6 +731,13 @@ mod tests {
         );
         let error = resolve_model("claude-opus-5.5").unwrap_err();
         assert!(error.contains("Did you mean claude-opus-5-5?"), "{error}");
+        let error = resolve_model("cc:sol").unwrap_err();
+        assert!(
+            error.contains("gpt-6.1-sol isn't one (OpenAI model)"),
+            "{error}"
+        );
+        let error = resolve_model("cc:opsu").unwrap_err();
+        assert!(error.contains("did you mean cc:opus?"), "{error}");
         assert!(resolve_model("openrouter:").is_err());
         assert!(resolve_model("no-such-model-at-all").is_err());
     }
@@ -660,9 +747,9 @@ mod tests {
         let config = |name: &str, effort: Effort, fast: bool, cache_1h: bool| {
             generation(&resolve_model(name).unwrap(), effort, fast, cache_1h, false)
         };
-        // Claude: adaptive thinking at the effort, fast mode on Opus, the
-        // 1-hour cache.
-        for name in ["opus"] {
+        // Claude, by API key or in Claude Code: adaptive thinking at the
+        // effort, fast mode on Opus, the 1-hour cache by API key only.
+        for name in ["opus", "cc:opus"] {
             let opus = config(name, Effort::Xhigh, true, true).unwrap();
             assert!(matches!(
                 opus.reasoning,
@@ -686,6 +773,13 @@ mod tests {
                 .unwrap()
                 .anthropic_cache_ttl,
             Some(AnthropicCacheTtl::OneHour)
+        );
+        assert_eq!(
+            config("cc:opus", Effort::High, false, true)
+                .unwrap()
+                .anthropic_cache_ttl,
+            None,
+            "Claude Code chooses its cache"
         );
         // OpenAI: its reasoning and Fast tier.
         let sol = config("sol", Effort::Max, true, true).unwrap();
@@ -747,6 +841,10 @@ mod tests {
     #[test]
     fn handovers_follow_the_model_s_limit_and_a_fallback_when_unknown() {
         assert_eq!(default_handover(&resolve_model("opus").unwrap()), 500_000);
+        assert_eq!(
+            default_handover(&resolve_model("cc:fable").unwrap()),
+            500_000
+        );
         assert_eq!(default_handover(&resolve_model("sol").unwrap()), 200_000);
         assert_eq!(default_handover(&resolve_model("gemini").unwrap()), 200_000);
         // An OpenRouter model without its catalog has no known limit.
@@ -832,7 +930,7 @@ mod tests {
         assert!(notes[0].contains("100k tokens"), "{notes:?}");
 
         // Sessions without OpenRouter models aren't touched.
-        let mut session = settings(model("opus"), model("fable"));
+        let mut session = settings(model("opus"), model("cc:fable"));
         assert!(
             apply_catalog(&mut session, Ok(&catalog), false)
                 .unwrap()
@@ -909,8 +1007,8 @@ mod tests {
         assert_eq!(plan_usage_text(&PlanUsage::default()), None);
     }
 
-    /// What `client_with` needs when nothing is set and the ChatGPT login
-    /// is a file that isn't there.
+    /// What `client_with` needs when nothing is set, Claude Code is
+    /// installed, and the ChatGPT login is a file that isn't there.
     fn need(session: &Settings, vars: &[(&str, &str)]) -> Option<Need> {
         let vars: Vec<(String, String)> = vars
             .iter()
@@ -921,7 +1019,14 @@ mod tests {
                 .find(|(set, _)| set == name)
                 .map(|(_, value)| value.clone())
         };
-        match client_with(session, lookup, Some("/no/such/auth.json".into())) {
+        let ready = || {
+            Ok(claude_code::Ready {
+                path: "/bin/claude".into(),
+                method: Some("claude.ai".into()),
+                plan: Some("max".into()),
+            })
+        };
+        match client_with(session, lookup, Some("/no/such/auth.json".into()), ready) {
             Ok(_) => None,
             Err(Failure::Need(need)) => Some(need),
             Err(Failure::Other(error)) => panic!("{error}"),
@@ -976,10 +1081,14 @@ mod tests {
                 .find(|(set, _)| *set == name)
                 .map(|(_, value)| value.to_string())
         };
-        let client = client_with(&sol, lookup, None).ok().unwrap();
+        let client = client_with(&sol, lookup, None, || Err(claude_code::Problem::Missing))
+            .ok()
+            .unwrap();
         assert!(!client.is_openai_chatgpt_oauth().await, "the API key");
         sol.openai_auth = Some(OpenAiAuth::ChatGpt);
-        let client = client_with(&sol, lookup, None).ok().unwrap();
+        let client = client_with(&sol, lookup, None, || Err(claude_code::Problem::Missing))
+            .ok()
+            .unwrap();
         assert!(client.is_openai_chatgpt_oauth().await, "the login");
         assert!(matches!(
             need(&sol, &[("OPENAI_API_KEY", "sk-proj-1")]),
@@ -990,6 +1099,15 @@ mod tests {
         assert!(matches!(
             need(&sol, &[("OPENAI_API_KEY", "sk-proj-1")]),
             Some(Need::ChatGptLogin { .. })
+        ));
+
+        // Claude Code takes no key, but must be installed and signed in.
+        let cc = settings(model("cc:opus"), model("cc:fable"));
+        assert_eq!(need(&cc, &[]), None);
+        let missing = client_with(&cc, |_| None, None, || Err(claude_code::Problem::Missing));
+        assert!(matches!(
+            missing,
+            Err(Failure::Need(Need::ClaudeCode { problem: claude_code::Problem::Missing, ref model })) if model == "cc:claude-opus-5-5"
         ));
     }
 

@@ -1,11 +1,12 @@
 //! Credentials: the API keys of the model providers (Anthropic, OpenAI,
 //! Google Gemini, OpenRouter) and the ChatGPT login (a Codex auth.json),
 //! from the environment or `.env` files, and the setup screen that asks for
-//! them when the chosen model has none or its file fails. `.env` files can
-//! also turn on the 1-hour prompt cache (FIN_CACHE_1H), choose how
-//! sessions reach OpenAI models (FIN_OPENAI_AUTH), choose the shell on
-//! Windows (FIN_SHELL) and hold the Voyage API key the search indexes embed
-//! with (VOYAGE_API_KEY), which the setup screen also takes.
+//! them when the chosen model has none or its file fails. The screen also
+//! checks Claude Code, whose own login fin uses. `.env` files can also
+//! turn on the 1-hour prompt cache (FIN_CACHE_1H), choose how sessions
+//! reach OpenAI models (FIN_OPENAI_AUTH), choose the shell on Windows
+//! (FIN_SHELL) and hold the Voyage API key the search indexes embed with
+//! (VOYAGE_API_KEY), which the setup screen also takes.
 //!
 //! What the screen takes is saved in fin's own `.env` (in its folder,
 //! readable only by the user) and used in this run at once. Nothing read
@@ -27,6 +28,7 @@ use rustyline::hint::Hinter;
 use rustyline::validate::Validator;
 use rustyline::{ColorMode, Context, Helper};
 
+use crate::claude_code;
 use crate::session;
 use crate::ui::Output;
 
@@ -225,6 +227,11 @@ pub enum Need {
     GeminiKey { model: String },
     /// The model needs an OpenRouter API key.
     OpenRouterKey { model: String },
+    /// The model runs in Claude Code, which isn't installed or signed in.
+    ClaudeCode {
+        model: String,
+        problem: claude_code::Problem,
+    },
 }
 
 impl Need {
@@ -236,7 +243,7 @@ impl Need {
         };
         match self {
             Need::Any => format!(
-                "no credentials: set ANTHROPIC_API_KEY (Claude models), OPENAI_API_KEY (OpenAI models), GEMINI_API_KEY (Gemini models) or OPENROUTER_API_KEY (any model on OpenRouter), in the environment or a .env file; or sign in to ChatGPT with `codex login`{setup}"
+                "no credentials: set ANTHROPIC_API_KEY (Claude models), OPENAI_API_KEY (OpenAI models), GEMINI_API_KEY (Gemini models) or OPENROUTER_API_KEY (any model on OpenRouter), in the environment or a .env file; sign in to ChatGPT with `codex login`; or install Claude Code for Claude models on your Claude plan{setup}"
             ),
             Need::AnthropicKey { model } => key(model, ANTHROPIC_KEY),
             Need::OpenAiKey { model } => key(model, OPENAI_KEY),
@@ -244,6 +251,20 @@ impl Need {
             Need::OpenRouterKey { model } => key(model, OPENROUTER_KEY),
             Need::ChatGptLogin { model, problem } => format!(
                 "{model} needs a ChatGPT login (`codex login`): {problem}{setup}. A new session can use OPENAI_API_KEY instead: --openai-auth api-key"
+            ),
+            Need::ClaudeCode {
+                model,
+                problem: claude_code::Problem::Missing,
+            } => format!(
+                "{model} runs in Claude Code, and there is no `claude` on the PATH: {}",
+                claude_code::INSTALL
+            ),
+            Need::ClaudeCode {
+                model,
+                problem: claude_code::Problem::SignedOut(path),
+            } => format!(
+                "{model} runs in Claude Code ({}), which isn't signed in: sign in with `claude auth login`",
+                path.display()
             ),
         }
     }
@@ -303,10 +324,11 @@ const KEYS: [&Key; 5] = [&ANTHROPIC, &OPENAI, &GEMINI, &OPENROUTER, &VOYAGE];
 enum Choice {
     Key(&'static Key),
     ChatGptLogin,
+    ClaudeCode,
 }
 
 /// The menu: what each choice is for.
-const MENU: [(Choice, &str); 6] = [
+const MENU: [(Choice, &str); 7] = [
     (
         Choice::Key(&ANTHROPIC),
         "Paste an Anthropic API key, for Claude models (billed per token)",
@@ -326,6 +348,10 @@ const MENU: [(Choice, &str); 6] = [
     (
         Choice::Key(&OPENROUTER),
         "Paste an OpenRouter API key, for the models OpenRouter serves (-m openrouter:<slug>)",
+    ),
+    (
+        Choice::ClaudeCode,
+        "Use Claude Code, for Claude models on your Claude plan (-m cc:opus)",
     ),
     (
         Choice::Key(&VOYAGE),
@@ -360,6 +386,14 @@ pub fn setup(need: Option<&Need>) -> Result<(), String> {
             };
             out.line(&format!("  Gemini API key      {gemini}"));
             out.line(&format!("  OpenRouter API key  {}", key(OPENROUTER_KEY)));
+            let claude = match claude_code::check() {
+                Ok(ready) => format!("{}, {}", ready.path.display(), ready.describe()),
+                Err(claude_code::Problem::Missing) => "not installed".to_string(),
+                Err(claude_code::Problem::SignedOut(path)) => {
+                    format!("not signed in ({})", path.display())
+                }
+            };
+            out.line(&format!("  Claude Code         {claude}"));
             let voyage = match lookup(VOYAGE_KEY) {
                 None => "not set (search indexes are keyword-only)".to_string(),
                 Some((_, source)) => format!("set ({})", describe(&source)),
@@ -367,7 +401,7 @@ pub fn setup(need: Option<&Need>) -> Result<(), String> {
             out.line(&format!("  Voyage API key      {voyage}"));
         }
         Some(Need::Any) => out.line(
-            "No credentials found: no API key is set (in the environment or a .env file), and there is no ChatGPT login.",
+            "No credentials found: no API key is set (in the environment or a .env file), there is no ChatGPT login, and Claude Code isn't installed.",
         ),
         Some(Need::AnthropicKey { model }) => out.line(&format!(
             "{model} needs an Anthropic API key: ANTHROPIC_API_KEY isn't set in the environment or a .env file."
@@ -387,6 +421,15 @@ pub fn setup(need: Option<&Need>) -> Result<(), String> {
                 "(A new session can reach OpenAI models with an API key instead: fin --openai-auth api-key.)",
             ));
         }
+        Some(Need::ClaudeCode { model, problem }) => out.line(&match problem {
+            claude_code::Problem::Missing => format!(
+                "{model} runs in Claude Code, and there is no `claude` on the PATH."
+            ),
+            claude_code::Problem::SignedOut(path) => format!(
+                "{model} runs in Claude Code ({}), which isn't signed in.",
+                path.display()
+            ),
+        }),
     }
     out.line("");
     let mut editor = Prompt::editor()?;
@@ -396,6 +439,12 @@ pub fn setup(need: Option<&Need>) -> Result<(), String> {
         Some(Need::GeminiKey { .. }) => Choice::Key(&GEMINI),
         Some(Need::OpenRouterKey { .. }) => Choice::Key(&OPENROUTER),
         Some(Need::ChatGptLogin { .. }) => Choice::ChatGptLogin,
+        Some(Need::ClaudeCode { problem, .. }) => {
+            out.line(&out.dim(
+                "(For another provider instead, quit (q) and start fin with --setup, or with -m and another model.)",
+            ));
+            return ask_claude_code(&out, &mut editor, Some(problem.clone()));
+        }
         None | Some(Need::Any) => {
             // The Voyage key is no model's credential: offered on its own.
             let offered = if need.is_none() {
@@ -429,6 +478,7 @@ pub fn setup(need: Option<&Need>) -> Result<(), String> {
     match choice {
         Choice::Key(key) => ask_key(&out, &mut editor, &dotenv, key),
         Choice::ChatGptLogin => ask_login(&out, &mut editor, &dotenv),
+        Choice::ClaudeCode => ask_claude_code(&out, &mut editor, None),
     }
 }
 
@@ -509,6 +559,83 @@ fn capitalized(what: &str) -> String {
         .next()
         .map(|first| first.to_uppercase().chain(chars).collect())
         .unwrap_or_default()
+}
+
+/// Checks Claude Code until it is installed and signed in, while the user
+/// sets it up in another terminal. `known` is what a check before found,
+/// which the screen has said already.
+fn ask_claude_code(
+    out: &Output,
+    editor: &mut Editor,
+    known: Option<claude_code::Problem>,
+) -> Result<(), String> {
+    let (mut problem, mut said) = match known {
+        Some(problem) => (problem, true),
+        None => match claude_code::check() {
+            Ok(ready) => return claude_code_ready(out, &ready),
+            Err(problem) => (problem, false),
+        },
+    };
+    let mut instructed = None;
+    loop {
+        // What is wrong and what to do, once for each problem.
+        if instructed.as_ref() != Some(&problem) {
+            match &problem {
+                claude_code::Problem::Missing => {
+                    if !said {
+                        out.line("Claude Code isn't installed: there is no `claude` on the PATH.");
+                    }
+                    out.line(&format!("In another terminal, {}.", claude_code::INSTALL));
+                    out.line(&out.dim(
+                        "If the installer adds a folder to your PATH, quit (q) and start fin again from a new terminal.",
+                    ));
+                }
+                claude_code::Problem::SignedOut(path) => {
+                    if !said {
+                        out.line(&format!(
+                            "Claude Code ({}) isn't signed in.",
+                            path.display()
+                        ));
+                    }
+                    out.line(
+                        "In another terminal, sign in with `claude auth login`, with the Claude account whose plan fin should use.",
+                    );
+                }
+            }
+            instructed = Some(problem.clone());
+            said = false;
+        }
+        let line = read(
+            editor,
+            "Press Enter to check again, or q to quit: ",
+            "",
+            false,
+        )?;
+        if matches!(line.trim(), "q" | "Q") {
+            return Err(cancelled());
+        }
+        match claude_code::check() {
+            Ok(ready) => return claude_code_ready(out, &ready),
+            Err(still) if still == problem => out.line(&out.warn(match still {
+                claude_code::Problem::Missing => "Not yet: there is still no `claude` on the PATH.",
+                claude_code::Problem::SignedOut(_) => "Not yet: Claude Code still isn't signed in.",
+            })),
+            Err(other) => problem = other,
+        }
+    }
+}
+
+fn claude_code_ready(out: &Output, ready: &claude_code::Ready) -> Result<(), String> {
+    out.line(&format!(
+        "Claude Code ({}) is ready: {}. fin runs Claude models in it with -m cc:opus or -m cc:fable.",
+        ready.path.display(),
+        ready.describe()
+    ));
+    if let Some(warning) = ready.warning() {
+        out.line(&out.warn(&warning));
+    }
+    out.line("");
+    Ok(())
 }
 
 fn ask_login(out: &Output, editor: &mut Editor, dotenv: &Path) -> Result<(), String> {
@@ -861,8 +988,24 @@ mod tests {
         .message();
         assert!(message.contains("needs GEMINI_API_KEY"), "{message}");
         assert!(message.contains("fin --setup"), "{message}");
+        let message = Need::ClaudeCode {
+            model: "cc:claude-opus-5-5".into(),
+            problem: claude_code::Problem::Missing,
+        }
+        .message();
+        assert!(message.contains("no `claude` on the PATH"), "{message}");
+        assert!(
+            message.contains("npm install -g @anthropic-ai/claude-code"),
+            "{message}"
+        );
         let message = Need::Any.message();
-        for name in [ANTHROPIC_KEY, OPENAI_KEY, GEMINI_KEY, OPENROUTER_KEY] {
+        for name in [
+            ANTHROPIC_KEY,
+            OPENAI_KEY,
+            GEMINI_KEY,
+            OPENROUTER_KEY,
+            "Claude Code",
+        ] {
             assert!(message.contains(name), "{name}: {message}");
         }
     }
