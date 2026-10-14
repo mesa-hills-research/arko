@@ -434,16 +434,15 @@ pub fn draw(frame: &mut Frame, theme: &Theme, area: Rect, picker: &ModelPicker) 
                             "Another model",
                             theme.dim().add_modifier(Modifier::BOLD),
                         )));
-                        lines.push(Line::from(vec![
-                            marker(chosen),
-                            Span::styled(
-                                glyphs::render(
-                                    "Type a model ID, an alias, cc:<model> or openrouter:<slug>…",
-                                )
-                                .into_owned(),
-                                style,
-                            ),
-                        ]));
+                        // In line with its heading: chosen, it shows by its
+                        // colour alone.
+                        lines.push(Line::from(Span::styled(
+                            glyphs::render(
+                                "Type a model ID, an alias, cc:<model> or openrouter:<slug>…",
+                            )
+                            .into_owned(),
+                            style,
+                        )));
                         if chosen {
                             selected_line = lines.len() - 1;
                         }
@@ -649,11 +648,12 @@ mod tests {
                     .contains("Claude Code, on your Claude plan  needs Claude Code installed")),
             "{rows:#?}"
         );
-        // The headings start in one column, and the rows under them in another.
+        // The headings start in one column, and the models under them in
+        // another. The row to type a model lines up with its heading.
         assert_eq!(
             column("Another model"),
             column("OpenAI, on your ChatGPT plan")
         );
-        assert_eq!(column("Type a model ID"), column("gpt-6.1-sol"));
+        assert_eq!(column("Type a model ID"), column("Another model"));
     }
 }

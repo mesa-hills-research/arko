@@ -782,7 +782,7 @@ mod tests {
         );
         assert!(rows.contains("│ Another model  "), "{rows}");
         assert!(
-            rows.contains("  Type a model ID, an alias, cc:<model> or openrouter:<slug>…"),
+            rows.contains("│ Type a model ID, an alias, cc:<model> or openrouter:<slug>…"),
             "{rows}"
         );
         assert!(rows.contains(" Enter  next   Esc  close"), "{rows}");
