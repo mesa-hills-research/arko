@@ -780,8 +780,9 @@ mod tests {
             rows.contains("Google Gemini, billed per token  needs GEMINI_API_KEY"),
             "{rows}"
         );
+        assert!(rows.contains("│ Another model  "), "{rows}");
         assert!(
-            rows.contains("Another model…  a model ID, an alias or openrouter:<slug>"),
+            rows.contains("  Type a model ID, an alias, cc:<model> or openrouter:<slug>…"),
             "{rows}"
         );
         assert!(rows.contains(" Enter  next   Esc  close"), "{rows}");

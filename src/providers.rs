@@ -528,7 +528,7 @@ pub fn missing_credential(name: &str, codex_auth: Option<&Path>) -> Option<Strin
             return match claude_code::find_cli().map(|_| claude_code::check_recent()) {
                 Some(Ok(_)) => None,
                 Some(Err(_)) => Some("Claude Code signed in".to_string()),
-                None => Some("Claude Code, which isn't installed".to_string()),
+                None => Some("Claude Code installed".to_string()),
             };
         }
     };

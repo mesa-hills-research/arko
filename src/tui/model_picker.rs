@@ -338,7 +338,7 @@ fn about(effort: Effort) -> &'static str {
 
 /// Draws the picker over `area`.
 pub fn draw(frame: &mut Frame, theme: &Theme, area: Rect, picker: &ModelPicker) {
-    let width = 76.min(area.width.saturating_sub(2));
+    let width = 95.min(area.width.saturating_sub(2));
     let inner_width = width.saturating_sub(4) as usize;
     let marker = |chosen: bool| {
         if chosen {
@@ -430,12 +430,18 @@ pub fn draw(frame: &mut Frame, theme: &Theme, area: Rect, picker: &ModelPicker) 
                     }
                     Row::Other => {
                         lines.push(Line::default());
+                        lines.push(Line::from(Span::styled(
+                            "Another model",
+                            theme.dim().add_modifier(Modifier::BOLD),
+                        )));
                         lines.push(Line::from(vec![
                             marker(chosen),
-                            Span::styled(glyphs::render("Another model…").into_owned(), style),
                             Span::styled(
-                                "  a model ID, an alias or openrouter:<slug>",
-                                theme.dim(),
+                                glyphs::render(
+                                    "Type a model ID, an alias, cc:<model> or openrouter:<slug>…",
+                                )
+                                .into_owned(),
+                                style,
                             ),
                         ]));
                         if chosen {
@@ -588,4 +594,66 @@ pub fn draw_notice(
         &[("Enter", "close")]
     };
     footer(frame, rect, theme, keys);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    /// The picker as an 80-column screen shows it, row by row.
+    fn screen(picker: &ModelPicker) -> Vec<String> {
+        let (width, height) = (80, 40);
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal
+            .draw(|frame| draw(frame, &Theme::terminal(), frame.area(), picker))
+            .unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        (0..height)
+            .map(|y| {
+                (0..width)
+                    .map(|x| buffer[(x, y)].symbol().to_string())
+                    .collect::<String>()
+                    .trim_end()
+                    .to_string()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn every_section_lines_up_and_its_note_fits_an_80_column_screen() {
+        let models = Models {
+            main: "gpt-6-luna".into(),
+            main_effort: "high".into(),
+            workers: "gpt-6-luna".into(),
+            workers_effort: "high".into(),
+            openai_auth: Some("ChatGPT".into()),
+            ..Models::default()
+        };
+        let picker = ModelPicker::open(Target::Main, &models, |name| {
+            name.starts_with("cc:")
+                .then(|| "Claude Code installed".to_string())
+        });
+        let rows = screen(&picker);
+        let column = |text: &str| {
+            let row = rows
+                .iter()
+                .find(|row| row.contains(text))
+                .unwrap_or_else(|| panic!("no {text:?} in {rows:#?}"));
+            row.find(text).unwrap()
+        };
+        assert!(
+            rows.iter()
+                .any(|row| row
+                    .contains("Claude Code, on your Claude plan  needs Claude Code installed")),
+            "{rows:#?}"
+        );
+        // The headings start in one column, and the rows under them in another.
+        assert_eq!(
+            column("Another model"),
+            column("OpenAI, on your ChatGPT plan")
+        );
+        assert_eq!(column("Type a model ID"), column("gpt-6.1-sol"));
+    }
 }
