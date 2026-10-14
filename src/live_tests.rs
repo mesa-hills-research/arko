@@ -1017,7 +1017,7 @@ async fn a_result_past_the_input_limit_is_shortened_after_a_refusal_and_the_hand
     assert_eq!(refused, 1);
     assert!(
         notices.iter().any(|text| text.starts_with(
-            "The request was over the model's input limit; the result of big was shortened and the request is sent again (1/2)"
+            "The request was over the model's input limit, so the result of big was shortened and the request is sent again (1/2)"
         )),
         "{notices:#?}"
     );
