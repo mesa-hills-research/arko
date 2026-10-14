@@ -18,6 +18,9 @@ arko_workflows = { path = "../arko_framework/arko_workflows" }
 arko_index = { path = "../arko_framework/arko_index" }
 
 async-trait = "0.1.79"
+# The system clipboard, for the full-screen view's copies: X11 (and
+# XWayland), Wayland where the compositor has data-control, macOS, Windows.
+arboard = { version = "3.6.1", default-features = false, features = ["wayland-data-control"] }
 # The remote web page's server (--remote): HTTP/1.1, JSON and SSE only.
 axum = { version = "0.8.9", default-features = false, features = ["http1", "json", "tokio"] }
 base64 = "0.22.1"
@@ -47,7 +50,7 @@ rustyline = { version = "18.0.1", default-features = false, features = ["with-fi
 libc = "0.2.182"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_System_Console", "Win32_System_DataExchange", "Win32_System_Memory", "Win32_System_Ole"] }
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_System_Console"] }
 
 [dev-dependencies]
 # Tests of the remote's server (built as arko_ai builds it).

@@ -59,8 +59,9 @@ pub struct Info {
 pub enum Effect {
     /// The session gets this, as the terminal's input.
     Input(Input),
-    /// Copy this text.
-    Copy(String),
+    /// Copy `text`, which is `what` ("14 characters", "the last
+    /// reply"): the status line says what became of it.
+    Copy { text: String, what: String },
     /// Turn mouse capture on or off.
     Mouse(bool),
     /// Draw the whole screen again.
@@ -644,9 +645,11 @@ impl App {
         match name {
             "/copy" => match self.transcript.last_reply() {
                 Some(reply) => {
-                    let reply = reply.to_string();
-                    self.effects.push(Effect::Copy(reply));
-                    self.say("Copied the last reply");
+                    let text = reply.to_string();
+                    self.effects.push(Effect::Copy {
+                        text,
+                        what: "the last reply".into(),
+                    });
                 }
                 None => self.say("No reply to copy yet"),
             },
@@ -1001,17 +1004,13 @@ impl App {
             return;
         };
         let lines = text.lines().count();
-        let said = if lines > 1 {
-            format!("Copied {lines} lines")
+        let what = if lines > 1 {
+            format!("{lines} lines")
         } else {
             let count = text.chars().count();
-            format!(
-                "Copied {count} character{}",
-                if count == 1 { "" } else { "s" }
-            )
+            format!("{count} character{}", if count == 1 { "" } else { "s" })
         };
-        self.effects.push(Effect::Copy(text));
-        self.say(said);
+        self.effects.push(Effect::Copy { text, what });
     }
 
     /// A click (no drag) at `at`: a row of the agent list shows that

@@ -667,8 +667,14 @@ mod tests {
         screen(&mut app, 40, 8);
         mouse(&mut app, MouseEventKind::Drag(left), 21, 0);
         mouse(&mut app, MouseEventKind::Up(left), 21, 0);
-        assert_eq!(app.take_effects(), [Effect::Copy("there, reader.".into())]);
-        assert_eq!(app.hint(), Some("Copied 14 characters"));
+        let copy = |text: &str, what: &str| Effect::Copy {
+            text: text.into(),
+            what: what.into(),
+        };
+        assert_eq!(
+            app.take_effects(),
+            [copy("there, reader.", "14 characters")]
+        );
         // The highlight stays until a key is pressed.
         assert!(app.transcript.selection.is_some());
         app.key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
@@ -683,7 +689,7 @@ mod tests {
             mouse(&mut app, kind, 9, 0);
             screen(&mut app, 40, 8);
         }
-        assert_eq!(app.take_effects(), [Effect::Copy("there,".into())]);
+        assert_eq!(app.take_effects(), [copy("there,", "6 characters")]);
         // A triple click (on another cell, so the count starts over): the
         // second click copies the word, the third the line.
         for _ in 0..3 {
@@ -694,8 +700,8 @@ mod tests {
         assert_eq!(
             app.take_effects(),
             [
-                Effect::Copy("there,".into()),
-                Effect::Copy("Hello there, reader.".into())
+                copy("there,", "6 characters"),
+                copy("Hello there, reader.", "20 characters")
             ]
         );
     }

@@ -1,80 +1,96 @@
-//! Copying a message: through the terminal (OSC 52, crossterm's
-//! `CopyToClipboard`, which reaches the user's clipboard over SSH too
-//! where the terminal honours it), and, on this machine, the system
-//! clipboard as well, as not every terminal honours OSC 52.
+//! Copying: to the system clipboard, and through the terminal (OSC 52,
+//! crossterm's `CopyToClipboard`, which reaches the user's clipboard over
+//! SSH where the terminal honours it: GNOME Terminal doesn't).
+//!
+//! The system clipboard is arboard's: the X11 clipboard (XWayland's on a
+//! Wayland desktop such as GNOME's), Wayland's where the compositor has the
+//! data-control protocol (arboard tries it first, then X11), macOS's and
+//! Windows'. On X11 and Wayland the copy lives in the program that made
+//! it, so one clipboard is kept for the whole run, and when it goes arboard
+//! hands the text to a clipboard manager where there is one. Where arboard
+//! can't reach a clipboard (Wayland without XWayland or data-control),
+//! wl-copy, xclip or xsel take the text if one is installed.
 
-/// Copies `text` to the system clipboard, on its own thread (a clipboard
-/// program may take a moment); skipped over SSH, where this machine's
-/// clipboard isn't the user's.
-pub fn system(text: String) {
-    let remote = ["SSH_CONNECTION", "SSH_TTY"]
-        .iter()
-        .any(|name| std::env::var_os(name).is_some_and(|value| !value.is_empty()));
-    if remote {
-        return;
-    }
-    std::thread::spawn(move || {
-        copy(&text);
-    });
+use std::sync::Mutex;
+
+/// What became of a copy.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Copied {
+    /// The system clipboard has it.
+    System,
+    /// Only the terminal was asked (OSC 52): over SSH, or without a
+    /// display, this machine's clipboard isn't the user's.
+    Terminal,
+    /// Nothing could take it: what would fix that.
+    Failed(String),
 }
 
-#[cfg(windows)]
-fn copy(text: &str) -> bool {
-    use windows_sys::Win32::Foundation::GlobalFree;
-    use windows_sys::Win32::System::DataExchange::{
-        CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData,
+/// The clipboard, kept from the first copy to the end of the run.
+static CLIPBOARD: Mutex<Option<arboard::Clipboard>> = Mutex::new(None);
+
+/// Copies `text` to the system clipboard (the caller sends OSC 52 too).
+pub fn copy(text: &str) -> Copied {
+    let set = |name: &str| std::env::var_os(name).is_some_and(|value| !value.is_empty());
+    if set("SSH_CONNECTION") || set("SSH_TTY") {
+        return Copied::Terminal;
+    }
+    let error = match system(text) {
+        Ok(()) => return Copied::System,
+        Err(error) => error,
     };
-    use windows_sys::Win32::System::Memory::{
-        GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock,
-    };
-    use windows_sys::Win32::System::Ole::CF_UNICODETEXT;
-    // Windows' text has CRLF line breaks.
-    let wide: Vec<u16> = text
-        .replace("\r\n", "\n")
-        .replace('\n', "\r\n")
-        .encode_utf16()
-        .chain([0])
-        .collect();
-    // SAFETY: the clipboard is opened, filled with memory it then owns
-    // (or the memory is freed), and closed; the copy stays in bounds.
-    unsafe {
-        if OpenClipboard(std::ptr::null_mut()) == 0 {
-            return false;
+    log::info!("the system clipboard didn't take a copy: {error}");
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        if tools(text) {
+            return Copied::System;
         }
-        EmptyClipboard();
-        let size = wide.len() * std::mem::size_of::<u16>();
-        let memory = GlobalAlloc(GMEM_MOVEABLE, size);
-        let mut done = false;
-        if !memory.is_null() {
-            let target = GlobalLock(memory) as *mut u16;
-            if !target.is_null() {
-                std::ptr::copy_nonoverlapping(wide.as_ptr(), target, wide.len());
-                GlobalUnlock(memory);
-                done = !SetClipboardData(CF_UNICODETEXT as u32, memory).is_null();
-            }
-            if !done {
-                GlobalFree(memory);
-            }
+        if !set("DISPLAY") && !set("WAYLAND_DISPLAY") {
+            return Copied::Terminal;
         }
-        CloseClipboard();
-        done
+        if set("WAYLAND_DISPLAY") {
+            return Copied::Failed(
+                "Couldn't copy: this desktop's clipboard needs wl-clipboard (install it)".into(),
+            );
+        }
+        Copied::Failed("Couldn't copy: this desktop's clipboard needs xclip (install it)".into())
+    }
+    #[cfg(not(all(unix, not(target_os = "macos"))))]
+    Copied::Failed(format!("Couldn't copy to the clipboard: {error}"))
+}
+
+/// Copies through arboard, with the clipboard kept for the run.
+fn system(text: &str) -> Result<(), String> {
+    let mut clipboard = CLIPBOARD
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if clipboard.is_none() {
+        *clipboard = Some(arboard::Clipboard::new().map_err(|error| error.to_string())?);
+    }
+    let result = clipboard
+        .as_mut()
+        .map(|clipboard| clipboard.set_text(text.to_string()));
+    match result {
+        Some(Ok(())) => Ok(()),
+        Some(Err(error)) => {
+            // Opened again next time (the display may have come back).
+            *clipboard = None;
+            Err(error.to_string())
+        }
+        None => Err("no clipboard".into()),
     }
 }
 
-#[cfg(not(windows))]
-fn copy(text: &str) -> bool {
+/// Copies through an installed clipboard program.
+#[cfg(all(unix, not(target_os = "macos")))]
+fn tools(text: &str) -> bool {
     use std::io::Write;
-    let programs: &[(&str, &[&str])] = if cfg!(target_os = "macos") {
-        &[("pbcopy", &[])]
-    } else if std::env::var_os("WAYLAND_DISPLAY").is_some() {
+    let programs: &[(&str, &[&str])] = if std::env::var_os("WAYLAND_DISPLAY").is_some() {
         &[("wl-copy", &[]), ("xclip", &["-selection", "clipboard"])]
-    } else if std::env::var_os("DISPLAY").is_some() {
+    } else {
         &[
             ("xclip", &["-selection", "clipboard"]),
             ("xsel", &["--clipboard", "--input"]),
         ]
-    } else {
-        &[]
     };
     for (program, args) in programs {
         let child = std::process::Command::new(program)
@@ -89,9 +105,11 @@ fn copy(text: &str) -> bool {
         if let Some(mut stdin) = child.stdin.take() {
             let _ = stdin.write_all(text.as_bytes());
         }
-        // (xclip and wl-copy stay in the background to serve the
+        // (wl-copy and xclip go on in the background to serve the
         // clipboard; the program started returns.)
-        return child.wait().is_ok_and(|status| status.success());
+        if child.wait().is_ok_and(|status| status.success()) {
+            return true;
+        }
     }
     false
 }

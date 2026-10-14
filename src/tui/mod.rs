@@ -413,13 +413,19 @@ async fn run(
                 Effect::Input(input) => {
                     let _ = setup.input.send(input);
                 }
-                Effect::Copy(text) => {
+                Effect::Copy { text, what } => {
+                    // The terminal's clipboard, and the system's: the status
+                    // line says "Copied" only when the system's took it.
                     let mut stdout = std::io::stdout();
                     let _ = execute!(
                         stdout,
                         crossterm::clipboard::CopyToClipboard::to_clipboard_from(text.as_bytes())
                     );
-                    clipboard::system(text);
+                    app.say(match clipboard::copy(&text) {
+                        clipboard::Copied::System => format!("Copied {what}"),
+                        clipboard::Copied::Terminal => "Sent to the terminal's clipboard".into(),
+                        clipboard::Copied::Failed(why) => why,
+                    });
                 }
                 Effect::Mouse(on) => {
                     let _ = if on {
