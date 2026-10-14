@@ -254,8 +254,11 @@ fn read_lines(sender: mpsc::UnboundedSender<Input>) {
 pub struct Stats {
     /// The input of the main agent's latest model request, in tokens.
     pub context_tokens: Option<usize>,
-    /// The ChatGPT plan's usage windows, as last reported.
+    /// The subscription plans' usage windows, as last reported: one line
+    /// for every plan the session's agents use (ChatGPT, Claude).
     pub plan_usage: Option<String>,
+    /// Each plan's part of `plan_usage`, by plan.
+    pub plans: std::collections::BTreeMap<String, String>,
 }
 
 /// A request to the event printer.
@@ -494,8 +497,8 @@ impl EventPrinter {
             AgentEvent::HandoverRequested { input_tokens } if main => {
                 self.flush();
                 self.output.line(&self.output.dim(&format!(
-                    "  ⟳ the conversation reached {}k tokens; the agent is writing a handover report",
-                    input_tokens / 1000
+                    "  ⟳ {}",
+                    crate::handover::requested_text(event.agent_run_id, input_tokens)
                 )));
             }
             AgentEvent::ConversationHandedOver { .. } if main => {
@@ -516,22 +519,10 @@ impl EventPrinter {
                 self.stats.lock().unwrap().context_tokens = Some(usage.input_tokens);
             }
             AgentEvent::PlanUsageReported(usage) => {
-                let windows = [(&usage.primary, "5 h"), (&usage.secondary, "7 d")]
-                    .into_iter()
-                    .filter_map(|(window, name)| {
-                        let window = window.as_ref()?;
-                        let name = match window.window_minutes {
-                            Some(300) => "5 h".to_string(),
-                            Some(10_080) => "7 d".to_string(),
-                            Some(minutes) => format!("{minutes} min"),
-                            None => name.to_string(),
-                        };
-                        Some(format!("{name} {:.0}%", window.used_percent))
-                    })
-                    .collect::<Vec<_>>();
-                if !windows.is_empty() {
-                    self.stats.lock().unwrap().plan_usage =
-                        Some(format!("ChatGPT plan {}", windows.join(", ")));
+                if let Some(text) = crate::providers::plan_usage_text(&usage) {
+                    let mut stats = self.stats.lock().unwrap();
+                    stats.plans.insert(format!("{:?}", usage.plan), text);
+                    stats.plan_usage = crate::providers::plan_usage_line(&stats.plans);
                 }
             }
             _ => {}

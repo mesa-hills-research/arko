@@ -171,11 +171,25 @@ fn find_program(name: &str) -> Option<PathBuf> {
 pub struct ShellTool {
     manager: Arc<TerminalManager>,
     shell: Shell,
+    /// Where the runs it is bound to keep their command channels.
+    runs: Option<Arc<crate::handover::Runs>>,
 }
 
 impl ShellTool {
     pub fn new(manager: Arc<TerminalManager>, shell: Shell) -> Self {
-        Self { manager, shell }
+        Self {
+            manager,
+            shell,
+            runs: None,
+        }
+    }
+
+    /// Keeps the command channel of each run the tool is bound to in
+    /// `runs`: every agent has the shell, so fin reaches every run there
+    /// (to ask for a handover).
+    pub fn keeping_runs(mut self, runs: Arc<crate::handover::Runs>) -> Self {
+        self.runs = Some(runs);
+        self
     }
 }
 
@@ -262,7 +276,7 @@ impl Tool for ShellTool {
         ToolDefinition {
             name: SHELL_TOOL_NAME.into(),
             description: format!(
-                "Run a command in {} in the working directory (or in `cwd`), wait for it to finish, and return its exit code and output (standard output and error together). Each call starts a new shell in the working directory, or in `cwd` when the call gives one: a `cd` doesn't carry over to the next call. {} A command still running after timeout_seconds is stopped; run servers, watchers and interactive programs with terminal_start instead. Output over {MAX_OUTPUT_CHARS} characters keeps its start and end, and the result names a log file with all of it. Commands that would delete, move or overwrite the filesystem root, the home directory, system directories, devices, or paths outside the working directory are refused.",
+                "Run a command in {} in the working directory (or in `cwd`), wait for it to finish, and return its exit code and output (standard output and error together). Each call starts a new shell in the working directory, or in `cwd` when the call gives one: a `cd` doesn't carry over to the next call. {} A command still running after timeout_seconds is stopped; run servers, watchers and interactive programs with terminal_start instead. Output over {MAX_OUTPUT_CHARS} characters keeps its start and end, and the result names a log file with all of it. Commands that would delete, move or overwrite the filesystem root, the home directory, system directories or devices are refused, and so are those on paths outside the working directory unless the user has turned on outside access.",
                 self.shell.name,
                 if self.shell.kind == ShellKind::Posix {
                     "Standard input is closed: a program that asks for input fails instead of waiting."
@@ -295,6 +309,16 @@ impl Tool for ShellTool {
     /// The call enforces its own time limit (`timeout_seconds`).
     fn uses_host_timeout(&self) -> bool {
         false
+    }
+
+    fn bind_runtime(
+        &self,
+        task_id: Uuid,
+        sender: tokio::sync::mpsc::WeakSender<arko_agents::UserCommand>,
+    ) {
+        if let Some(runs) = &self.runs {
+            runs.bind(task_id, sender);
+        }
     }
 
     async fn execute(

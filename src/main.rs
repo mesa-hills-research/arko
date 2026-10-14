@@ -17,14 +17,18 @@
 //! run from the command line as `fin index ...`).
 
 mod agents;
+mod claude_code;
 mod credentials;
 mod crew;
 mod glyphs;
+mod handover;
 mod index;
 mod mcp;
 mod message;
 #[cfg(test)]
 mod mock_model;
+mod outside;
+mod providers;
 mod remote;
 #[cfg(test)]
 mod remote_demo;
@@ -42,7 +46,7 @@ use std::time::{Duration, Instant};
 use arko_agents::Tool;
 use arko_agents::builtins::ASK_USER_TOOL_NAME;
 use arko_agents::terminal::{TerminalConfig, TerminalManager, TerminalTool};
-use arko_ai::{CodexAuthFile, LLMClient, Provider};
+use arko_ai::LLMClient;
 use arko_workflows::notes::Note;
 use arko_workflows::persistence::{EventLog, PersistenceConfig};
 use arko_workflows::prelude::*;
@@ -52,8 +56,9 @@ use clap::Parser;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::agents::{AgentSettings, Effort, MAIN, ModelSettings, NO_LIMIT, WORKER, resolve_model};
-use crate::credentials::{ANTHROPIC_KEY, Need, VOYAGE_KEY};
+use crate::credentials::{Need, VOYAGE_KEY};
 use crate::crew::Crew;
+use crate::providers::{Failure, OpenAiAuth};
 use crate::remote::{Action, Delivery, Level, Source};
 use crate::session::{Session, Settings};
 use crate::shell::{Shell, ShellTool, WindowsShell};
@@ -74,18 +79,27 @@ struct Args {
     #[arg(short = 'p', long)]
     prompt: Option<String>,
 
-    /// The model: an ID, or opus, fable, sonnet, sol, astra or luna.
-    /// Default: opus with ANTHROPIC_API_KEY (or one in a .env file), else
-    /// sol with a ChatGPT login.
+    /// The model: an ID or alias (opus, fable, sonnet, sol, astra, luna,
+    /// gemini, flash); openrouter:<slug> for a model on OpenRouter
+    /// (openrouter:anthropic/claude-opus-5.5); or cc:<model> for a Claude
+    /// model in your installed Claude Code, on your Claude plan (cc:opus,
+    /// cc:fable). Default, by the credentials there are: opus with
+    /// ANTHROPIC_API_KEY, else sol with a ChatGPT login, else cc:opus with
+    /// Claude Code installed, else openrouter:anthropic/claude-opus-5.5
+    /// with OPENROUTER_API_KEY, else sol with OPENAI_API_KEY, else gemini
+    /// with GEMINI_API_KEY.
     #[arg(short, long)]
     model: Option<String>,
 
-    /// Reasoning effort.
+    /// Reasoning effort. Gemini thinks at low, medium or high (higher
+    /// efforts are high).
     #[arg(short, long, value_enum, default_value_t = Effort::Xhigh)]
     effort: Effort,
 
-    /// Fast mode: Anthropic's on Claude Opus 5.5 (priced at 2x), or Fast
-    /// mode over the ChatGPT login (uses more of the plan).
+    /// Fast mode: Anthropic's on Claude Opus 5.5 (priced at 2x; in Claude
+    /// Code, Claude Code's fast mode), or OpenAI's Fast mode (priced at 2x
+    /// with an API key; uses more of a ChatGPT plan). Gemini and OpenRouter
+    /// have none.
     #[arg(long)]
     fast: bool,
 
@@ -102,10 +116,12 @@ struct Args {
     #[arg(long)]
     worker_fast: bool,
 
-    /// Anthropic's 1-hour prompt cache for the Claude models, instead of
-    /// the 5-minute one: the cache outlasts pauses of up to an hour, and a
-    /// cache write costs 2x the input price instead of 1.25x. Default:
-    /// FIN_CACHE_1H (1 or 0, in the environment or a .env file).
+    /// Anthropic's 1-hour prompt cache for the Claude models (by API key
+    /// or on OpenRouter), instead of the 5-minute one: the cache outlasts
+    /// pauses of up to an hour, and a cache write costs 2x the input price
+    /// instead of 1.25x. Claude Code chooses its own (an hour on a Claude
+    /// plan). Default: FIN_CACHE_1H (1 or 0, in the environment or a .env
+    /// file).
     #[arg(long = "cache-1h", conflicts_with = "no_cache_1h")]
     cache_1h: bool,
 
@@ -120,13 +136,18 @@ struct Args {
 
     /// Input size, in tokens, at which an agent writes a handover report and
     /// continues in a fresh conversation. Default: 500000 on Claude models,
-    /// 200000 on others (at most 80% of what the model accepts).
+    /// 250000 for OpenAI models on the ChatGPT login (whose backend accepts
+    /// 272000), 200000 on others (at most 80% of what the model accepts;
+    /// 100000 when OpenRouter's catalog can't say). When resuming, it sets
+    /// the main agent's size as /handover-at does (up to the size the
+    /// session started with).
     #[arg(long)]
     handover_at: Option<usize>,
 
-    /// Let commands delete, move and overwrite paths outside the working
-    /// directory too (protected paths, such as the home directory itself,
-    /// stay refused).
+    /// Let commands and the file tools delete, move and overwrite paths
+    /// outside the working directory too (protected paths, such as the
+    /// home directory itself, stay refused). It turns outside access on in
+    /// a resumed session too; /outside turns it on and off as you go.
     #[arg(long)]
     allow_outside_workspace: bool,
 
@@ -156,15 +177,22 @@ struct Args {
     #[arg(long)]
     codex_auth: Option<PathBuf>,
 
+    /// How a new session reaches OpenAI models: chatgpt (the ChatGPT login,
+    /// on your plan) or api-key (OPENAI_API_KEY, billed per token). The
+    /// session keeps it. Default: FIN_OPENAI_AUTH, else the ChatGPT login
+    /// when there is one, else the API key.
+    #[arg(long, value_enum)]
+    openai_auth: Option<OpenAiAuth>,
+
     /// The shell commands run in on Windows: cmd (cmd.exe) or powershell
     /// (PowerShell 7 where installed, else Windows PowerShell). Default:
     /// FIN_SHELL, else cmd. Elsewhere commands run in bash (else sh).
     #[arg(long, value_enum)]
     shell: Option<WindowsShell>,
 
-    /// Open the setup screen first: paste an Anthropic API key or a Voyage
-    /// API key, or give the path to a Codex auth.json. It is saved in fin's
-    /// folder.
+    /// Open the setup screen first: paste an API key (Anthropic, OpenAI,
+    /// Gemini, OpenRouter or Voyage), give the path to a Codex auth.json, or
+    /// check Claude Code. What you enter is saved in fin's folder.
     #[arg(long)]
     setup: bool,
 
@@ -274,11 +302,11 @@ async fn run(args: Args) -> Result<ExitCode, String> {
                 || args.cache_1h
                 || args.no_cache_1h
                 || args.shell.is_some()
-                || args.handover_at.is_some()
+                || args.openai_auth.is_some()
             {
                 eprintln!(
-                    "fin: a resumed session keeps the models, shell and handover size it was started with ({})",
-                    settings.main.describe()
+                    "fin: a resumed session keeps the models and shell it was started with ({})",
+                    settings.describe(&settings.main)
                 );
             }
             if !settings.workspace.is_dir() {
@@ -293,7 +321,17 @@ async fn run(args: Args) -> Result<ExitCode, String> {
             if args.model.is_none() && default_model(&args).is_none() && can_ask {
                 credentials::setup(Some(&Need::Any))?;
             }
-            (None, new_settings(&args)?, true)
+            let mut settings = new_settings(&args)?;
+            let notes = providers::check_openrouter(
+                &mut settings,
+                args.handover_at.is_some(),
+                providers::openrouter_url(),
+            )
+            .await?;
+            for note in notes {
+                eprintln!("fin: {note}");
+            }
+            (None, settings, true)
         }
     };
 
@@ -308,21 +346,22 @@ async fn run(args: Args) -> Result<ExitCode, String> {
 
     // Missing credentials, or an auth file that fails, are asked for.
     let client = loop {
-        match client(&args, &settings) {
+        match providers::client(args.codex_auth.as_deref(), &settings) {
             Ok(client) => break Arc::new(client),
             Err(Failure::Need(need)) if can_ask => credentials::setup(Some(&need))?,
             Err(Failure::Need(need)) => return Err(need.message()),
             Err(Failure::Other(message)) => return Err(message),
         }
     };
+    let provider_setup = providers::Setup::new(settings.openai_auth);
     let agent_settings = AgentSettings {
         main: &settings.main,
         worker: &settings.worker,
+        providers: &provider_setup,
         max_workers: settings.max_workers,
         handover_at: settings.handover_at,
         show_thinking: settings.show_thinking,
         shell_name: shell.name,
-        allow_outside_workspace: settings.allow_outside_workspace,
         mcp_tools: &[],
         mcp_servers: &[],
         skill_folders: &[],
@@ -348,7 +387,13 @@ async fn run(args: Args) -> Result<ExitCode, String> {
     }
     start_log(&session);
 
-    let managers = Managers::open(&session, &shell, settings.allow_outside_workspace)?;
+    let managers = Managers::open(&session, &shell)?;
+    // Outside access as the session left it; the flag turns it on below.
+    let outside = Arc::new(outside::Outside::new(
+        settings.allow_outside_workspace,
+        managers.list(),
+        settings.workspace.clone(),
+    ));
     let one_shot = args.prompt.is_some();
 
     // MCP servers, skills and search indexes: what goes wrong with them is
@@ -412,7 +457,9 @@ async fn run(args: Args) -> Result<ExitCode, String> {
     };
     let main_config = agents::main_config(&agent_settings)?;
     let worker_config = agents::worker_config(&agent_settings)?;
-    let mut tools = managers.tools(&shell);
+    // Where the runs' command channels are kept, to ask for handovers.
+    let runs = Arc::new(handover::Runs::default());
+    let mut tools = managers.tools(&shell, runs.clone());
     tools.extend(mcp.tools().iter().cloned());
     if let Some(indexes) = &indexes {
         tools.extend(indexes.tools());
@@ -431,10 +478,21 @@ async fn run(args: Args) -> Result<ExitCode, String> {
     // opened later has the history.
     let feed = remote::Feed::new(MAIN);
     let (remote_actions, remote_input) = mpsc::unbounded_channel();
+    let handover = Arc::new(handover::Handover::new(
+        runs,
+        settings
+            .main_handover_at
+            .or(settings.main.handover_at)
+            .unwrap_or(settings.handover_at),
+        output.clone(),
+        feed.clone(),
+    ));
     let gauges = Arc::new(Gauges {
         workflow: Mutex::new(None),
         crew: Mutex::new(None),
         stats: stats.clone(),
+        outside: outside.clone(),
+        handover: handover.clone(),
     });
     // The main agent's questions are put to the user at the prompt; with
     // no terminal, it is told there is no one to ask.
@@ -456,7 +514,6 @@ async fn run(args: Args) -> Result<ExitCode, String> {
                     &worker_config.llm_config.generation_config,
                 )
                 .await,
-            allow_outside_workspace: settings.allow_outside_workspace,
             feed: Some(feed.clone()),
         });
         (Some(crew), Some(woken))
@@ -508,9 +565,15 @@ async fn run(args: Args) -> Result<ExitCode, String> {
         remote_actions,
         remote_bind: None,
         gauges,
+        outside,
+        handover,
     };
     harness.project = project_instructions(&harness.settings.workspace);
     harness.open(!new)?;
+    harness.outside_at_start(new, args.allow_outside_workspace);
+    if !new && let Some(tokens) = args.handover_at {
+        harness.handover_at_start(tokens);
+    }
     if one_shot && let Some(note) = &harness.unoffered {
         output.line(&output.warn(&format!("fin: {note}")));
     }
@@ -610,26 +673,50 @@ fn workspace(args: &Args) -> Result<PathBuf, String> {
 
 fn new_settings(args: &Args) -> Result<Settings, String> {
     let workspace = workspace(args)?;
+    let name = |name: &str| Ok::<_, String>(providers::model_name(&resolve_model(name)?));
     let main_model = match &args.model {
-        Some(name) => resolve_model(name)?.id,
+        Some(model) => name(model)?,
         None => default_model(args)
             .ok_or_else(|| Need::Any.message())?
             .to_string(),
     };
-    // The 1-hour cache is Anthropic's; other models ignore it.
+    // The 1-hour cache is Anthropic's, by API key or on OpenRouter; other
+    // models ignore it.
     let want_1h = if args.cache_1h || args.no_cache_1h {
         args.cache_1h
     } else {
         credentials::switch(credentials::CACHE_1H)?.unwrap_or(false)
     };
     let cache_1h = |id: &str| {
-        want_1h && resolve_model(id).is_ok_and(|model| model.provider == Provider::Anthropic)
+        want_1h && resolve_model(id).is_ok_and(|model| providers::takes_cache_ttl(&model))
     };
+    let worker_model = args.worker_model.as_deref().map(name).transpose()?;
+    // OpenAI models are all reached one way: the session keeps it.
+    let uses_openai = std::iter::once(&main_model)
+        .chain(&worker_model)
+        .any(|id| resolve_model(id).is_ok_and(|model| model.provider == arko_ai::Provider::OpenAI));
+    let openai_auth = if uses_openai {
+        let (auth, both) =
+            providers::choose_openai_auth(args.openai_auth, args.codex_auth.as_deref())?;
+        if both {
+            eprintln!(
+                "fin: this session reaches OpenAI models over your ChatGPT login (your plan), which comes before OPENAI_API_KEY; --openai-auth api-key (or FIN_OPENAI_AUTH=api-key in a .env file) starts sessions on the API key instead, billed per token"
+            );
+        }
+        Some(auth)
+    } else {
+        if args.openai_auth.is_some() {
+            eprintln!("fin: --openai-auth is for OpenAI models; this session has none");
+        }
+        None
+    };
+    // On the ChatGPT login, OpenAI models hand over below its backend's
+    // input limit.
     let handover_at = |id: &str| {
         args.handover_at.or_else(|| {
             resolve_model(id)
                 .ok()
-                .map(|model| agents::default_handover(&model))
+                .map(|model| agents::default_handover(&model, openai_auth))
         })
     };
     let main = ModelSettings {
@@ -639,17 +726,14 @@ fn new_settings(args: &Args) -> Result<Settings, String> {
         effort: args.effort,
         fast: args.fast,
     };
-    let worker = match &args.worker_model {
-        Some(name) => {
-            let model = resolve_model(name)?.id;
-            ModelSettings {
-                cache_1h: cache_1h(&model),
-                handover_at: handover_at(&model),
-                model,
-                effort: args.worker_effort.unwrap_or(args.effort),
-                fast: args.worker_fast,
-            }
-        }
+    let worker = match worker_model {
+        Some(model) => ModelSettings {
+            cache_1h: cache_1h(&model),
+            handover_at: handover_at(&model),
+            model,
+            effort: args.worker_effort.unwrap_or(args.effort),
+            fast: args.worker_fast,
+        },
         None => ModelSettings {
             effort: args.worker_effort.unwrap_or(main.effort),
             ..main.clone()
@@ -658,20 +742,26 @@ fn new_settings(args: &Args) -> Result<Settings, String> {
     // What sessions read before the handover was set per model.
     let session_handover = main.handover_at.unwrap_or(200_000);
     if args.cache_1h && !main.cache_1h && !worker.cache_1h {
-        eprintln!("fin: --cache-1h is for Claude models; this session has none, so it is ignored");
+        eprintln!(
+            "fin: --cache-1h is for Claude models by API key or on OpenRouter (Claude Code chooses its own); this session has none, so it is ignored"
+        );
     }
-    Ok(Settings {
+    let settings = Settings {
         workspace,
         main,
         worker,
         max_workers: args.workers.unwrap_or(NO_LIMIT),
         handover_at: session_handover,
+        main_handover_at: None,
         allow_outside_workspace: args.allow_outside_workspace,
         show_thinking: args.show_thinking,
         created: chrono::Utc::now(),
         windows_shell: Some(windows_shell(args)?),
         title: args.prompt.as_deref().map(|prompt| ui::cut(prompt, 80)),
-    })
+        openai_auth,
+    };
+    providers::check_openai_choices(&settings)?;
+    Ok(settings)
 }
 
 /// The shell a new session runs commands in on Windows: --shell, else
@@ -687,88 +777,9 @@ fn windows_shell(args: &Args) -> Result<WindowsShell, String> {
     }
 }
 
-/// Opus with an Anthropic key, else GPT-6.1 Sol with a ChatGPT login;
-/// `None` without either.
+/// The model of a new session without --model; `None` without credentials.
 fn default_model(args: &Args) -> Option<&'static str> {
-    if credentials::var(ANTHROPIC_KEY).is_some() {
-        Some("claude-opus-5-5")
-    } else if credentials::codex_auth(args.codex_auth.as_deref()).is_some()
-        || credentials::var("OPENAI_OAUTH_ACCESS_TOKEN").is_some()
-        || CodexAuthFile::default_path().is_some_and(|path| path.is_file())
-    {
-        Some("gpt-6.1-sol")
-    } else {
-        None
-    }
-}
-
-/// Why there is no model client.
-enum Failure {
-    /// Credentials are missing, or the auth file fails.
-    Need(Need),
-    Other(String),
-}
-
-/// The model client: Anthropic with an API key, OpenAI with the ChatGPT
-/// login only (never an OpenAI API key).
-fn client(args: &Args, settings: &Settings) -> Result<LLMClient, Failure> {
-    const NOT_USED: [&str; 4] = [
-        "OPENAI_API_KEY",
-        "GOOGLE_API_KEY",
-        "GEMINI_API_KEY",
-        "OPENROUTER_API_KEY",
-    ];
-    let auth_file = credentials::codex_auth(args.codex_auth.as_deref());
-    let from_file = auth_file.is_some();
-    let mut client = LLMClient::from_env_with(|name| {
-        if NOT_USED.contains(&name) || (from_file && name.starts_with("OPENAI_OAUTH_")) {
-            None
-        } else {
-            credentials::var(name)
-        }
-    })
-    .map_err(|error| Failure::Other(error.to_string()))?;
-    let openai_model = [&settings.main, &settings.worker]
-        .into_iter()
-        .find(|model| model.provider() == Ok(Provider::OpenAI));
-    if let Some(model) = openai_model
-        && !client.has_provider(&Provider::OpenAI)
-    {
-        let need = |problem: String| {
-            Failure::Need(Need::ChatGptLogin {
-                model: model.model.clone(),
-                problem,
-            })
-        };
-        let auth = match &auth_file {
-            Some(path) => CodexAuthFile::load(path),
-            None => CodexAuthFile::load_default(),
-        }
-        .map_err(|error| need(error.to_string()))?;
-        auth.credentials().map_err(|error| {
-            need(format!(
-                "{} holds no ChatGPT login ({error}); sign in with `codex login`",
-                auth.path().display()
-            ))
-        })?;
-        client = client
-            .with_codex_auth_file(&auth)
-            .map_err(|error| need(error.to_string()))?;
-    }
-    for model in [&settings.main, &settings.worker] {
-        let provider = model.provider().map_err(Failure::Other)?;
-        if !client.has_provider(&provider) {
-            let model = model.model.clone();
-            return Err(Failure::Need(match provider {
-                Provider::Anthropic => Need::AnthropicKey { model },
-                _ => Need::ChatGptLogin {
-                    model,
-                    problem: "no ChatGPT login found".into(),
-                },
-            }));
-        }
-    }
-    Ok(client)
+    providers::default_model(args.codex_auth.as_deref())
 }
 
 /// Logs go to the session's `fin.log`, not the terminal. `RUST_LOG` sets
@@ -838,12 +849,12 @@ struct Managers {
 }
 
 impl Managers {
-    fn open(session: &Session, shell: &Shell, allow_outside: bool) -> Result<Self, String> {
+    /// Opens them with outside access off: [`outside::Outside`] sets it.
+    fn open(session: &Session, shell: &Shell) -> Result<Self, String> {
         let open = |directory: PathBuf, args: &[String]| {
             let mut config = TerminalConfig::new(directory);
             config.shell = shell.program.clone();
             config.shell_args = args.to_vec();
-            config.command_guard.allow_outside_workspace = allow_outside;
             TerminalManager::new(config).map_err(|error| {
                 format!(
                     "could not open the session's terminal ({error}); is it open in another fin?"
@@ -856,11 +867,16 @@ impl Managers {
         })
     }
 
-    fn tools(&self, shell: &Shell) -> Vec<Arc<dyn Tool>> {
-        let mut tools: Vec<Arc<dyn Tool>> = vec![Arc::new(ShellTool::new(
-            self.commands.clone(),
-            shell.clone(),
-        ))];
+    fn list(&self) -> Vec<Arc<TerminalManager>> {
+        vec![self.commands.clone(), self.jobs.clone()]
+    }
+
+    /// The shell tool, which keeps the command channels of the runs it is
+    /// bound to in `runs`, and the terminal tools.
+    fn tools(&self, shell: &Shell, runs: Arc<handover::Runs>) -> Vec<Arc<dyn Tool>> {
+        let mut tools: Vec<Arc<dyn Tool>> = vec![Arc::new(
+            ShellTool::new(self.commands.clone(), shell.clone()).keeping_runs(runs),
+        )];
         for tool in TerminalTool::all(self.jobs.clone()) {
             tools.push(Arc::new(tool));
         }
@@ -1100,6 +1116,11 @@ struct Harness {
     remote_bind: Option<(remote::Bind, u16)>,
     /// The figures of the page's status.
     gauges: Arc<Gauges>,
+    /// Outside access, which the user turns on and off (`/outside`).
+    outside: Arc<outside::Outside>,
+    /// The main agent's handover size, and the watch that asks for its
+    /// handovers (`/handover`, `/handover-at`).
+    handover: Arc<handover::Handover>,
 }
 
 impl Harness {
@@ -1210,10 +1231,24 @@ impl Harness {
                     }),
                 );
         }
+        // After the crew's hook: a call it refuses doesn't act.
+        builder = builder.hook(HookPoint::PreToolExecution, self.outside.hook());
         if let Some(checkpoint) = checkpoint {
             builder = builder.resume_from(checkpoint);
         }
         let workflow = Arc::new(builder.build().map_err(|error| error.to_string())?);
+        let mut configs = vec![config(MAIN, &self.main_config)];
+        if self.settings.max_workers > 0 {
+            configs.push(config(WORKER, &self.worker_config));
+        }
+        self.outside.attach(&workflow, &configs);
+        self.handover.watch(
+            &workflow,
+            configs[0]
+                .handover
+                .as_ref()
+                .and_then(|handover| handover.at_input_tokens),
+        );
         let (control, controls) = mpsc::unbounded_channel();
         let task = tokio::spawn(ui::print_events(
             workflow.subscribe_events(),
@@ -1255,7 +1290,7 @@ impl Harness {
         out.line(&format!(
             "{} {} · {}",
             out.bold("fin"),
-            self.settings.main.describe(),
+            self.settings.describe(&self.settings.main),
             self.workers_summary()
         ));
         out.line(&out.dim(&format!(
@@ -1295,6 +1330,10 @@ impl Harness {
         if let Some(note) = &self.unoffered {
             out.line(&out.warn(note));
         }
+        // The risky setting is the one worth a line.
+        if self.outside.is_on() {
+            out.line(&out.warn(&self.outside.describe()));
+        }
         if new {
             out.line(&out.dim(
                 "Type a message (end a line with \\ to continue it). While the agent works, type to add to its task; Ctrl-C stops the turn. /help for commands.",
@@ -1312,14 +1351,15 @@ impl Harness {
     /// The workers, as the banner and `/session` say it.
     /// When the agents hand over, as `/session` says it.
     fn handover_summary(&self) -> String {
-        let tokens = |model: &ModelSettings| {
-            format!(
-                "{}k tokens",
-                model.handover_at.unwrap_or(self.settings.handover_at) / 1000
-            )
-        };
-        let main = tokens(&self.settings.main);
-        let worker = tokens(&self.settings.worker);
+        let main = format!("{}k tokens", self.handover.at() / 1000);
+        let worker = format!(
+            "{}k tokens",
+            self.settings
+                .worker
+                .handover_at
+                .unwrap_or(self.settings.handover_at)
+                / 1000
+        );
         if self.settings.max_workers == 0 || main == worker {
             format!("handover at {main} of input")
         } else {
@@ -1335,7 +1375,10 @@ impl Harness {
             n => format!("up to {n} workers"),
         };
         if self.settings.worker != self.settings.main {
-            text.push_str(&format!(" on {}", self.settings.worker.describe()));
+            text.push_str(&format!(
+                " on {}",
+                self.settings.describe(&self.settings.worker)
+            ));
         }
         text
     }
@@ -1418,12 +1461,16 @@ impl Harness {
                     self.remote_command(command).await;
                     continue;
                 }
+                if self.live_command(command, source) {
+                    continue;
+                }
                 self.feed.user(command, source, Delivery::Command);
                 let quit = self.mirrored(|harness| match command {
                     "/exit" | "/quit" => harness.may_exit(),
                     "/new" => {
                         harness.conversation = Conversation::New;
                         harness.unread.clear();
+                        harness.handover.forget();
                         harness.output.line(
                             &harness
                                 .output
@@ -1524,6 +1571,7 @@ impl Harness {
                 let bind = self.remote_bind.map(|(bind, _)| bind).unwrap_or_default();
                 self.start_remote(bind).await;
             }
+            qr if qr == "qr" || qr.starts_with("qr ") => self.remote_qr(qr[2..].trim()),
             "off" => {
                 if self.remote.is_some() {
                     self.feed
@@ -1557,11 +1605,9 @@ impl Harness {
             }
             other => match remote::parse_bind(other) {
                 Ok(bind) => self.start_remote(bind).await,
-                Err(error) => self.output.line(
-                    &self
-                        .output
-                        .error(&format!("{error}. Or: /remote off, /remote new-key")),
-                ),
+                Err(error) => self.output.line(&self.output.error(&format!(
+                    "{error}. Or: /remote qr, /remote off, /remote new-key"
+                ))),
             },
         }
     }
@@ -1592,7 +1638,7 @@ impl Harness {
             }
         };
         let info = remote::Info {
-            model: self.settings.main.describe(),
+            model: self.settings.describe(&self.settings.main),
             workspace: self.settings.workspace.display().to_string(),
             session: self.session.id.clone(),
         };
@@ -1627,17 +1673,17 @@ impl Harness {
         }
     }
 
-    /// Prints the links to the page (with the key: never logged), and a QR
-    /// code of the first that other devices can open.
+    /// Prints the links to the page (with the key: never logged), best
+    /// first, and a QR code of the first that other devices can open.
     fn announce_remote(&self, addr: std::net::SocketAddr, key: &str) {
         let out = &self.output;
-        let links = remote::links(addr, key);
+        let (links, note) = remote::links(addr, key);
         let mut lines = Vec::new();
         for (n, link) in links.iter().enumerate() {
             let interface = link
                 .interface
                 .as_ref()
-                .map(|name| out.dim(&format!("  ({name})")))
+                .map(|name| out.dim(&format!("  ({name}, {})", link.kind.label())))
                 .unwrap_or_default();
             lines.push(format!(
                 "{} {}{interface}",
@@ -1650,6 +1696,9 @@ impl Harness {
             ));
         }
         out.line(&lines.join("\n"));
+        if let Some(note) = note {
+            out.line(&out.warn(&note));
+        }
         if links.iter().all(|link| link.loopback) {
             out.line(&out.dim(
                 "Only this machine can open it: for a phone, /remote 0.0.0.0 (the network's devices, Tailscale's too), or an SSH tunnel.",
@@ -1658,11 +1707,298 @@ impl Harness {
         out.line(&out.warn(
             "The link holds the session's key: whoever has it can follow this session and act in it. No TLS: on a network you don't trust, use an SSH tunnel or Tailscale. /remote off stops the page.",
         ));
+        let others = links.iter().filter(|link| !link.loopback).count();
         if glyphs::symbols() != glyphs::Symbols::Ascii
             && let Some(link) = links.iter().find(|link| !link.loopback)
             && let Some(code) = remote::qr_lines(&link.url)
         {
+            if others > 1 {
+                out.line(&out.dim(&format!(
+                    "The QR code opens the first link{}; /remote qr INTERFACE shows another.",
+                    place(link)
+                )));
+            }
             out.line(&code.join("\n"));
+        }
+    }
+
+    /// `/remote qr [INTERFACE]`: the QR code of the page's first link that
+    /// other devices can open, or of the one on `interface` (a name or an
+    /// address).
+    fn remote_qr(&self, interface: &str) {
+        let out = &self.output;
+        let Some(addr) = self.remote.as_ref().map(remote::Server::addr) else {
+            out.line("The web page isn't on: /remote starts it.");
+            return;
+        };
+        let key = match self.remote_key(false) {
+            Ok(key) => key,
+            Err(error) => {
+                out.line(&out.error(&format!("fin: {error}")));
+                return;
+            }
+        };
+        let (links, note) = remote::links(addr, &key);
+        if interface.is_empty()
+            && let Some(note) = note
+        {
+            out.line(&out.warn(&note));
+        }
+        let link = match qr_link(&links, interface, addr) {
+            Ok(link) => link,
+            Err(error) => {
+                out.line(&out.error(&error));
+                return;
+            }
+        };
+        if glyphs::symbols() == glyphs::Symbols::Ascii {
+            out.line(&format!(
+                "With FIN_SYMBOLS=ascii the terminal shows no QR code. The link{}: {}",
+                place(link),
+                link.url
+            ));
+            return;
+        }
+        match remote::qr_lines(&link.url) {
+            Some(code) => {
+                out.line(&format!("{}{}", link.url, out.dim(&place(link))));
+                out.line(&code.join("\n"));
+            }
+            None => out.line(&out.error("The link is too long for a QR code.")),
+        }
+    }
+
+    /// Runs `command` when it changes a setting while the session runs
+    /// (`/outside`); returns whether it was one. A change from the web
+    /// page is announced in the terminal and on the page, so that whoever
+    /// is at the terminal knows.
+    fn live_command(&mut self, command: &str, source: Source) -> bool {
+        let Some((name, argument)) = split_live_command(command) else {
+            return false;
+        };
+        self.feed.user(command, source, Delivery::Command);
+        match name {
+            "/outside" => self.outside_command(argument, source),
+            "/handover" => self.handover_command(argument, source),
+            _ => self.handover_at_command(argument, source),
+        }
+        true
+    }
+
+    /// `/handover`: the main agent hands over at its next step, or when
+    /// its next turn starts.
+    fn handover_command(&mut self, argument: &str, source: Source) {
+        if !argument.is_empty() {
+            self.mirrored(|harness| {
+                harness.output.line(&harness.output.error(
+                    "/handover takes nothing after it; /handover-at sets the size the agent hands over at.",
+                ))
+            });
+            return;
+        }
+        let Some(asked) = self.ask_handover() else {
+            self.mirrored(|harness| {
+                harness.output.line(
+                    "There is no conversation to hand over: your next message starts a new one.",
+                )
+            });
+            return;
+        };
+        if source == Source::Web && asked != handover::Asked::Already {
+            self.say(Level::Info, "A handover was asked for from the web page.");
+        }
+        self.mirrored(|harness| harness.output.line(handover_text(asked)));
+    }
+
+    /// `/handover-at`: the size the main agent hands over at, and with a
+    /// size, sets it.
+    fn handover_at_command(&mut self, argument: &str, source: Source) {
+        if argument.is_empty() {
+            let mut text = format!(
+                "The main agent hands over at {} tokens of input",
+                handover::shown(self.handover.at())
+            );
+            if let Some(input) = self.handover.input() {
+                text.push_str(&format!(
+                    " (its latest request: {})",
+                    handover::shown(input)
+                ));
+            }
+            text.push_str(". /handover-at 200k sets another size; /handover hands over now.");
+            self.mirrored(|harness| harness.output.line(&text));
+            return;
+        }
+        let tokens = match handover::parse_tokens(argument) {
+            Ok(tokens) => tokens,
+            Err(error) => {
+                self.mirrored(|harness| harness.output.line(&harness.output.error(&error)));
+                return;
+            }
+        };
+        let set = self.set_handover_at(tokens);
+        if source == Source::Web {
+            self.say(
+                Level::Info,
+                &format!(
+                    "The handover size was set to {} from the web page.",
+                    handover::shown(set)
+                ),
+            );
+        }
+        let lines = self.handover_set_lines(tokens, set);
+        self.mirrored(|harness| {
+            for line in &lines {
+                harness.output.line(line);
+            }
+        });
+    }
+
+    /// Asks the main agent for a handover: at its next step while it
+    /// works, else as its next turn starts. `None` when there is no
+    /// conversation to hand over.
+    fn ask_handover(&self) -> Option<handover::Asked> {
+        if self.feed.activity().working {
+            return Some(self.handover.ask_now());
+        }
+        let run = match &self.conversation {
+            Conversation::New => return None,
+            Conversation::Answered(result) => result.agent_run_id,
+            Conversation::Stopped(run) => run.result.agent_run_id,
+        };
+        Some(self.handover.ask_next(run))
+    }
+
+    /// `--handover-at` when resuming: the size the main agent hands over
+    /// at from now on.
+    fn handover_at_start(&mut self, tokens: usize) {
+        let set = self.set_handover_at(tokens);
+        for line in self.handover_set_lines(tokens, set) {
+            self.say(Level::Info, &line);
+        }
+    }
+
+    /// Sets the size the main agent hands over at, up to the one its
+    /// configuration hands over at by itself, and keeps it in the session.
+    /// Returns the size set.
+    fn set_handover_at(&mut self, tokens: usize) -> usize {
+        let set = self.handover.set_at(tokens);
+        self.settings.main_handover_at = Some(set);
+        if let Err(error) = self.session.save_settings(&self.settings) {
+            self.say(
+                Level::Error,
+                &format!("fin: could not save the session's settings: {error}"),
+            );
+        }
+        set
+    }
+
+    /// What the user is told when `tokens` was asked for and `set` set;
+    /// asks for the handover when the main agent's context is over it.
+    fn handover_set_lines(&self, tokens: usize, set: usize) -> Vec<String> {
+        let mut lines = vec![if set < tokens {
+            format!(
+                "This session's main agent hands over at {} at the latest: its conversation keeps the size it was started with. It now hands over at {}.",
+                handover::shown(self.handover.configured()),
+                handover::shown(set)
+            )
+        } else {
+            format!(
+                "The main agent now hands over at {} tokens of input.",
+                handover::shown(set)
+            )
+        }];
+        if let Some(input) = self.handover.input().filter(|input| *input >= set)
+            && let Some(asked) = self.ask_handover()
+        {
+            lines.push(format!(
+                "Its context ({}) is over that already. {}",
+                handover::shown(input),
+                handover_text(asked)
+            ));
+        }
+        lines
+    }
+
+    /// `/outside`: says whether outside access is on; `/outside on|off`
+    /// turns it on or off.
+    fn outside_command(&mut self, argument: &str, source: Source) {
+        let on = match outside::parse(argument) {
+            Ok(Some(on)) => on,
+            Ok(None) => {
+                self.mirrored(|harness| harness.output.line(&harness.outside.describe()));
+                return;
+            }
+            Err(error) => {
+                self.mirrored(|harness| harness.output.line(&harness.output.error(&error)));
+                return;
+            }
+        };
+        let state = if on { "on" } else { "off" };
+        if self.outside.is_on() == on {
+            self.mirrored(|harness| {
+                harness
+                    .output
+                    .line(&format!("Outside access is already {state}."))
+            });
+            return;
+        }
+        if source == Source::Web {
+            self.say(
+                if on { Level::Warn } else { Level::Info },
+                &format!("Outside access turned {state} from the web page."),
+            );
+        }
+        self.set_outside(on);
+        self.mirrored(|harness| {
+            let text = harness.outside.describe();
+            harness
+                .output
+                .line(&if on { harness.output.warn(&text) } else { text })
+        });
+    }
+
+    /// Outside access as the session starts. The agents' instructions
+    /// leave it to a note: a new session started with it on says so, and
+    /// `--allow-outside-workspace` (`flag`) turns it on in a resumed one.
+    /// (The banner tells the user.)
+    fn outside_at_start(&mut self, new: bool, flag: bool) {
+        if new && self.outside.is_on() {
+            self.tell_agents(&self.outside.note());
+        } else if !new && flag {
+            self.set_outside(true);
+        }
+    }
+
+    /// Turns outside access on or off: the command guard, the file tools
+    /// and new workers follow at once, the session keeps it, and the agents
+    /// get a note. Returns whether it changed.
+    fn set_outside(&mut self, on: bool) -> bool {
+        if !self.outside.set(on) {
+            return false;
+        }
+        self.settings.allow_outside_workspace = on;
+        if let Err(error) = self.session.save_settings(&self.settings) {
+            self.say(
+                Level::Error,
+                &format!("fin: could not save the session's settings: {error}"),
+            );
+        }
+        self.tell_agents(&self.outside.note());
+        true
+    }
+
+    /// A note to the agents from fin: the running ones read it at their
+    /// next step, and later runs (workers, conversations, handovers) in
+    /// their first message.
+    fn tell_agents(&self, text: &str) {
+        if let Err(error) = self
+            .workflow()
+            .post_note(Note::new(text).source(NoteSource::Host))
+        {
+            self.say(
+                Level::Error,
+                &format!("fin: could not tell the agents: {error}"),
+            );
         }
     }
 
@@ -1760,13 +2096,13 @@ impl Harness {
                 out.line(&out.dim(&format!("{}", self.session.dir.display())));
                 out.line(&out.dim(&format!(
                     "main: {} · {}",
-                    self.settings.main.describe(),
+                    self.settings.describe(&self.settings.main),
                     if self.settings.max_workers == 0 {
                         "no workers".to_string()
                     } else {
                         format!(
                             "workers: {} ({})",
-                            self.settings.worker.describe(),
+                            self.settings.describe(&self.settings.worker),
                             match self.settings.max_workers {
                                 NO_LIMIT => "no limit".to_string(),
                                 n => format!("up to {n} at once"),
@@ -1788,7 +2124,16 @@ impl Harness {
                 out.line("/skills        the skills the agents can load");
                 out.line("/session       this session's ID, folder and models");
                 out.line(
-                    "/remote        the web page, for a phone or browser (/remote ADDR, /remote off, /remote new-key)",
+                    "/remote        the web page, for a phone or browser (/remote ADDR, /remote qr [INTERFACE], /remote off, /remote new-key)",
+                );
+                out.line(
+                    "/outside       outside access: whether the agents may change paths outside the working directory (/outside on, /outside off)",
+                );
+                out.line(
+                    "/handover      the main agent hands over now: it writes a report and goes on from it in a fresh conversation",
+                );
+                out.line(
+                    "/handover-at   the input size the main agent hands over at (/handover-at 200k)",
                 );
                 out.line("/exit          quit (Ctrl-D too); the session is saved");
                 out.line(&out.dim(
@@ -2008,6 +2353,9 @@ impl Harness {
                         }
                         if is_remote_command(command) {
                             self.remote_command(command).await;
+                            continue;
+                        }
+                        if self.live_command(command, source) {
                             continue;
                         }
                         self.feed.user(command, source, Delivery::Command);
@@ -2389,12 +2737,75 @@ fn command(text: &str) -> Option<&str> {
         "/session",
         "/help",
     ];
-    (COMMANDS.contains(&text) || is_remote_command(text)).then_some(text)
+    (COMMANDS.contains(&text) || is_remote_command(text) || split_live_command(text).is_some())
+        .then_some(text)
 }
 
 /// `/remote`, alone or with what follows it.
 fn is_remote_command(text: &str) -> bool {
     text == "/remote" || text.starts_with("/remote ")
+}
+
+/// The link `/remote qr` shows: the first other devices can open, or the
+/// one on `interface` (a name or an address). `Err` with what to tell the
+/// user when there is none, of a server on `addr`.
+fn qr_link<'a>(
+    links: &'a [remote::Link],
+    interface: &str,
+    addr: std::net::SocketAddr,
+) -> Result<&'a remote::Link, String> {
+    let mut others = links.iter().filter(|link| !link.loopback);
+    let link = if interface.is_empty() {
+        others.next()
+    } else {
+        others.find(|link| link.is(interface))
+    };
+    link.ok_or_else(|| {
+        if links.iter().all(|link| link.loopback) {
+            format!(
+                "Only this machine can open the page (it listens on {addr}), so there is no QR code: /remote 0.0.0.0 serves it to the network's devices."
+            )
+        } else {
+            format!(
+                "The page has no link on `{interface}`: its links are on {}.",
+                remote::link_names(links)
+            )
+        }
+    })
+}
+
+/// Where a link leads, as the terminal says it: ` (ens33, LAN)`.
+fn place(link: &remote::Link) -> String {
+    link.interface
+        .as_ref()
+        .map(|name| format!(" ({name}, {})", link.kind.label()))
+        .unwrap_or_default()
+}
+
+/// The commands that change a setting while the session runs, which take
+/// an argument: `/outside`, `/handover`, `/handover-at`.
+const LIVE_COMMANDS: [&str; 3] = ["/outside", "/handover", "/handover-at"];
+
+/// What the user is told of a handover asked for.
+fn handover_text(asked: handover::Asked) -> &'static str {
+    match asked {
+        handover::Asked::Now => {
+            "The main agent hands over at its next step: it writes a report of its work, then goes on from the report in a fresh conversation."
+        }
+        handover::Asked::Next => {
+            "The main agent hands over when your next message starts its turn: it writes a report of its work first, then goes on from the report in a fresh conversation."
+        }
+        handover::Asked::Already => "A handover is under way already.",
+    }
+}
+
+/// A live command, alone or with its argument: the command and the
+/// argument.
+fn split_live_command(text: &str) -> Option<(&str, &str)> {
+    let (name, argument) = text.split_once(' ').unwrap_or((text, ""));
+    LIVE_COMMANDS
+        .contains(&name)
+        .then_some((name, argument.trim()))
 }
 
 /// The user's input, read on its own thread; the main agent's questions;
@@ -2487,6 +2898,8 @@ struct Gauges {
     workflow: Mutex<Option<Arc<Workflow>>>,
     crew: Mutex<Option<Arc<Crew>>>,
     stats: Arc<Mutex<Stats>>,
+    outside: Arc<outside::Outside>,
+    handover: Arc<handover::Handover>,
 }
 
 impl remote::Meter for Gauges {
@@ -2502,7 +2915,10 @@ impl remote::Meter for Gauges {
             workers: crew
                 .filter(|crew| !crew.is_empty())
                 .map(|crew| crew.describe()),
-            settings: remote::LiveSettings::default(),
+            settings: remote::LiveSettings {
+                outside: self.outside.is_on(),
+                handover_at: self.handover.at(),
+            },
         }
     }
 }
@@ -2564,9 +2980,21 @@ impl UserInputHandler for Asker {
 mod tests {
     use super::*;
 
+    /// The live settings' end-to-end tests, in their own file.
+    mod live {
+        use super::*;
+        include!("live_tests.rs");
+    }
+
     #[test]
     fn only_the_known_commands_are_commands() {
         assert_eq!(command("/cost"), Some("/cost"));
+        assert_eq!(command("/outside on"), Some("/outside on"));
+        assert_eq!(
+            split_live_command("/outside  off "),
+            Some(("/outside", "off"))
+        );
+        assert_eq!(command("/outsider"), None);
         assert_eq!(command("/stop-workers"), Some("/stop-workers"));
         assert_eq!(command("/workers"), Some("/workers"));
         assert_eq!(command("/usr/bin is missing"), None);
@@ -2588,11 +3016,11 @@ mod tests {
         let settings = AgentSettings {
             main: &opus,
             worker: &opus,
+            providers: &providers::Setup::new(None),
             max_workers: NO_LIMIT,
             handover_at: 200_000,
             show_thinking: false,
             shell_name: "bash",
-            allow_outside_workspace: false,
             mcp_tools: &[],
             mcp_servers: &[],
             skill_folders: &[],
@@ -2675,11 +3103,11 @@ mod tests {
         let plain = AgentSettings {
             main: &opus,
             worker: &opus,
+            providers: &providers::Setup::new(None),
             max_workers: 4,
             handover_at: 200_000,
             show_thinking: false,
             shell_name: "bash",
-            allow_outside_workspace: false,
             mcp_tools: &[],
             mcp_servers: &[],
             skill_folders: &[],
@@ -2744,20 +3172,22 @@ mod tests {
             worker: luna.clone(),
             max_workers: NO_LIMIT,
             handover_at: 200_000,
+            main_handover_at: None,
             allow_outside_workspace: false,
             show_thinking: false,
             created: chrono::Utc::now(),
             title: None,
             windows_shell: None,
+            openai_auth: None,
         };
         let agent_settings = AgentSettings {
             main: &luna,
             worker: &luna,
+            providers: &providers::Setup::new(None),
             max_workers: NO_LIMIT,
             handover_at: 200_000,
             show_thinking: false,
             shell_name: "bash",
-            allow_outside_workspace: false,
             mcp_tools: &[],
             mcp_servers: &[],
             skill_folders: &[],
@@ -2781,16 +3211,24 @@ mod tests {
             cache_lifetime: arko_ai::prompt_cache::PromptCacheLifetime::Known(Duration::from_secs(
                 300,
             )),
-            allow_outside_workspace: false,
             feed: Some(feed.clone()),
         });
         let (questions_sender, questions) = mpsc::unbounded_channel();
         let (input_sender, receiver) = mpsc::unbounded_channel();
         let (remote_actions, remote_input) = mpsc::unbounded_channel();
+        let outside = Arc::new(outside::Outside::new(false, Vec::new(), workspace.clone()));
+        let handover = Arc::new(handover::Handover::new(
+            Arc::default(),
+            200_000,
+            output.clone(),
+            feed.clone(),
+        ));
         let gauges = Arc::new(Gauges {
             workflow: Mutex::new(None),
             crew: Mutex::new(None),
             stats: stats.clone(),
+            outside: outside.clone(),
+            handover: handover.clone(),
         });
         let mut harness = Harness {
             settings,
@@ -2826,6 +3264,8 @@ mod tests {
             remote_actions,
             remote_bind: None,
             gauges,
+            outside,
+            handover,
         };
         harness.open(false).unwrap();
         let inputs = Inputs {
@@ -3719,5 +4159,381 @@ mod tests {
             "No workers yet: the agent starts them as it needs them.",
             ""
         ));
+    }
+
+    /// Puts `harness` on the models `main` and `worker` with `setup`, with
+    /// fin's shell and terminal tools (agents in Claude Code are offered
+    /// the tools registered for them, and only those). Returns the
+    /// terminal managers, to shut down after.
+    fn on_models(
+        harness: &mut Harness,
+        main: &ModelSettings,
+        worker: &ModelSettings,
+        setup: &providers::Setup,
+    ) -> Managers {
+        let shell = Shell::detect(WindowsShell::Cmd);
+        let managers = Managers::open(&harness.session, &shell).unwrap();
+        harness.tools = managers.tools(&shell, harness.handover.runs());
+        harness.outside = Arc::new(outside::Outside::new(
+            harness.settings.allow_outside_workspace,
+            managers.list(),
+            harness.settings.workspace.clone(),
+        ));
+        let agent_settings = AgentSettings {
+            main,
+            worker,
+            providers: setup,
+            max_workers: NO_LIMIT,
+            handover_at: 200_000,
+            show_thinking: false,
+            shell_name: shell.name,
+            mcp_tools: &[],
+            mcp_servers: &[],
+            skill_folders: &[],
+            index_tools: &[],
+            indexes: &[],
+        };
+        harness.main_config = agents::main_config(&agent_settings).unwrap();
+        harness.worker_config = agents::worker_config(&agent_settings).unwrap();
+        harness.settings.main = main.clone();
+        harness.settings.worker = worker.clone();
+        harness.open(false).unwrap();
+        managers
+    }
+
+    /// Claude Code settings that run arko's scripted stand-in for the
+    /// `claude` CLI, with its script, log and state in `fake`.
+    fn fake_claude_code(fake: &Path) -> providers::Setup {
+        let mut setup = providers::Setup::new(None);
+        let python = std::env::var("ARKO_TEST_PYTHON")
+            .unwrap_or_else(|_| if cfg!(windows) { "python" } else { "python3" }.into());
+        setup.claude_code.cli_path = Some(python.into());
+        setup.claude_code.cli_args = vec![
+            concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../arko_framework/arko_agents/tests/fixtures/fake_claude_agent.py"
+            )
+            .into(),
+        ];
+        for (name, file) in [
+            ("FAKE_CLAUDE_SCRIPT", "script.json"),
+            ("FAKE_CLAUDE_LOG", "log.jsonl"),
+            ("FAKE_CLAUDE_STATE", "state"),
+        ] {
+            setup
+                .claude_code
+                .env
+                .insert(name.into(), fake.join(file).display().to_string());
+        }
+        setup
+    }
+
+    /// The fake CLI's log, and the arguments it was started with.
+    fn fake_log(fake: &Path) -> (Vec<serde_json::Value>, Vec<String>) {
+        let log: Vec<serde_json::Value> = std::fs::read_to_string(fake.join("log.jsonl"))
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        let argv = serde_json::from_value(
+            log.iter().find(|entry| entry["event"] == "argv").unwrap()["argv"].clone(),
+        )
+        .unwrap();
+        (log, argv)
+    }
+
+    /// The argument after `flag`.
+    fn after(argv: &[String], flag: &str) -> Option<String> {
+        argv.iter()
+            .position(|arg| arg == flag)
+            .map(|index| argv[index + 1].clone())
+    }
+
+    /// A turn on a model on OpenRouter: fin sends OpenRouter's own
+    /// reasoning, the 1-hour cache on a Claude slug, and its tools, and the
+    /// cost is what OpenRouter reports.
+    #[tokio::test]
+    async fn a_turn_on_openrouter_sends_its_settings_and_counts_its_cost() {
+        use crate::mock_model::{ModelServer, openrouter_tool_call};
+        let bodies = Arc::new(Mutex::new(Vec::new()));
+        let seen = bodies.clone();
+        let server = ModelServer::start(Arc::new(move |_, body: String| {
+            seen.lock().unwrap().push(body);
+            Box::pin(async move {
+                openrouter_tool_call(
+                    "1",
+                    "complete_task",
+                    serde_json::json!({"summary": "Done on OpenRouter."}),
+                    0.0125,
+                )
+            })
+        }))
+        .await;
+        let temp = tempfile::tempdir().unwrap();
+        let (mut harness, mut inputs, _sender) =
+            harness(temp.path(), server.openrouter_client(), false);
+        let model = ModelSettings {
+            model: "openrouter:anthropic/claude-opus-5.5".into(),
+            effort: Effort::Xhigh,
+            fast: false,
+            cache_1h: true,
+            handover_at: Some(500_000),
+        };
+        let managers = on_models(&mut harness, &model, &model, &providers::Setup::new(None));
+        let end = tokio::time::timeout(
+            Duration::from_secs(30),
+            harness.turn(Prompt::User("Do it.".into()), &mut inputs),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(end, TurnEnd::Answered));
+        assert_eq!(summary(&harness), "Done on OpenRouter.");
+        let body: serde_json::Value = serde_json::from_str(&bodies.lock().unwrap()[0]).unwrap();
+        assert_eq!(body["model"], "anthropic/claude-opus-5.5");
+        assert_eq!(body["reasoning"]["effort"], "xhigh");
+        assert_eq!(body["cache_control"]["ttl"], "1h");
+        let tools: Vec<&str> = body["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|tool| tool["function"]["name"].as_str().unwrap())
+            .collect();
+        assert!(tools.contains(&"shell"), "{tools:?}");
+        assert!(
+            (harness.spent() - 0.0125).abs() < 1e-9,
+            "{}",
+            harness.spent()
+        );
+        harness.crew.as_ref().unwrap().shutdown().await;
+        managers.shutdown().await;
+    }
+
+    /// A turn on a Gemini model: fin sends its thinking level (xhigh
+    /// effort thinks high) and its tools, and the cost is priced from the
+    /// registry.
+    #[tokio::test]
+    async fn a_turn_on_gemini_sends_its_thinking_level_and_counts_its_cost() {
+        use crate::mock_model::{ModelServer, gemini_tool_call};
+        let bodies = Arc::new(Mutex::new(Vec::new()));
+        let seen = bodies.clone();
+        let server = ModelServer::start(Arc::new(move |_, body: String| {
+            seen.lock().unwrap().push(body);
+            Box::pin(async move {
+                gemini_tool_call(
+                    "1",
+                    "complete_task",
+                    serde_json::json!({"summary": "Done on Gemini."}),
+                )
+            })
+        }))
+        .await;
+        let temp = tempfile::tempdir().unwrap();
+        let (mut harness, mut inputs, _sender) =
+            harness(temp.path(), server.gemini_client(), false);
+        let model = ModelSettings {
+            model: "gemini-3.1-pro-preview".into(),
+            effort: Effort::Xhigh,
+            fast: false,
+            cache_1h: false,
+            handover_at: Some(200_000),
+        };
+        let managers = on_models(&mut harness, &model, &model, &providers::Setup::new(None));
+        let end = tokio::time::timeout(
+            Duration::from_secs(30),
+            harness.turn(Prompt::User("Do it.".into()), &mut inputs),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(end, TurnEnd::Answered));
+        assert_eq!(summary(&harness), "Done on Gemini.");
+        let body: serde_json::Value = serde_json::from_str(&bodies.lock().unwrap()[0]).unwrap();
+        assert_eq!(body["model"], "gemini-3.1-pro-preview");
+        assert_eq!(
+            body["generation_config"]["thinking_level"], "high",
+            "{body}"
+        );
+        assert!(body.to_string().contains("\"shell\""), "fin's tools");
+        // 1000 input tokens at $2/M and 20 output at $12/M.
+        assert!(
+            (harness.spent() - 0.00224).abs() < 1e-9,
+            "{}",
+            harness.spent()
+        );
+        harness.crew.as_ref().unwrap().shutdown().await;
+        managers.shutdown().await;
+    }
+
+    /// A turn on a Claude Code model (`cc:opus`), through arko's scripted
+    /// stand-in for the `claude` CLI: the CLI is offered fin's own tools and
+    /// none of Claude Code's, fin's shell runs the command and its guard
+    /// refuses one outside the working directory, and the turn's spending
+    /// shows as plan usage, not dollars.
+    #[tokio::test]
+    async fn a_turn_in_claude_code_runs_fin_s_tools_and_shows_plan_usage() {
+        let temp = tempfile::tempdir().unwrap();
+        let fake = temp.path().join("fake");
+        std::fs::create_dir_all(&fake).unwrap();
+        // Outside the working directory and the temporary directories,
+        // which the guard lets commands change; it doesn't exist, so a
+        // command the guard let through would change nothing.
+        let outside = format!("~/fin-guard-test-{}", uuid::Uuid::new_v4().simple());
+        let script = serde_json::json!([[
+            {"rate_limit": {"status": "allowed", "unifiedWindows": {
+                "five_hour": {"utilization": 0.12}, "seven_day": {"utilization": 0.03}}}},
+            {"text": "Making the file.", "input_tokens": 1200},
+            {"tool": "mcp__arko__shell", "input": {"command": "echo hi > made.txt"}},
+            {"tool": "mcp__arko__shell", "input": {"command": format!("rm -rf {outside}")}},
+            {"tool": "mcp__arko__complete_task", "input": {"summary": "Made it."}},
+        ]]);
+        std::fs::write(fake.join("script.json"), script.to_string()).unwrap();
+        let (mut harness, mut inputs, _sender) = harness(temp.path(), LLMClient::new(), false);
+        let cc = ModelSettings {
+            model: "cc:claude-opus-5-5".into(),
+            effort: Effort::High,
+            fast: false,
+            cache_1h: false,
+            handover_at: None,
+        };
+        let managers = on_models(&mut harness, &cc, &cc, &fake_claude_code(&fake));
+
+        let end = tokio::time::timeout(
+            Duration::from_secs(60),
+            harness.turn(Prompt::User("Make a file.".into()), &mut inputs),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(end, TurnEnd::Answered));
+        assert_eq!(summary(&harness), "Made it.");
+        let workspace = &harness.settings.workspace;
+        assert_eq!(
+            std::fs::read_to_string(workspace.join("made.txt"))
+                .unwrap()
+                .trim(),
+            "hi"
+        );
+
+        let (log, argv) = fake_log(&fake);
+        assert_eq!(
+            after(&argv, "--tools").as_deref(),
+            Some(""),
+            "no built-ins: {argv:?}"
+        );
+        assert_eq!(after(&argv, "--model").as_deref(), Some("claude-opus-5-5"));
+        assert_eq!(after(&argv, "--effort").as_deref(), Some("high"));
+        assert!(
+            after(&argv, "--system-prompt").is_some_and(|prompt| prompt.contains("You are fin")),
+            "fin's prompt replaces Claude Code's: {argv:?}"
+        );
+        let served: Vec<String> =
+            log.iter().find(|entry| entry["event"] == "tools").unwrap()["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|tool| tool["name"].as_str().unwrap().to_string())
+                .collect();
+        for tool in [
+            "shell",
+            "terminal_start",
+            "read_file",
+            "ask_user",
+            "start_agent",
+        ] {
+            assert!(served.iter().any(|name| name == tool), "{tool}: {served:?}");
+        }
+        let refused = log
+            .iter()
+            .filter(|entry| entry["event"] == "post")
+            .find(|entry| entry["tool"] == "mcp__arko__shell" && entry["is_error"] == true)
+            .expect("the command guard refused the rm");
+        assert!(
+            refused["output"]
+                .as_str()
+                .unwrap()
+                .contains("which is outside the working directory"),
+            "{refused}"
+        );
+
+        harness.flush_printer().await;
+        let stats = harness.stats.lock().unwrap().clone();
+        assert_eq!(
+            stats.plan_usage.as_deref(),
+            Some("Claude plan 5 h 12%, 7 d 3%")
+        );
+        assert_eq!(harness.spent(), 0.0, "the plan, not dollars");
+        let reading = remote::Meter::read(harness.gauges.as_ref());
+        assert_eq!(reading.cost, 0.0);
+        assert_eq!(
+            reading.plan_usage.as_deref(),
+            Some("Claude plan 5 h 12%, 7 d 3%")
+        );
+        harness.crew.as_ref().unwrap().shutdown().await;
+        managers.shutdown().await;
+    }
+
+    /// The workers can run on another provider than the main agent: here
+    /// the main agent is on the OpenAI mock and its worker in Claude Code,
+    /// with fin's tools only, and the worker's report reaches the main
+    /// agent.
+    #[tokio::test]
+    async fn a_worker_in_claude_code_reports_to_a_main_agent_elsewhere() {
+        use crate::mock_model::{ModelServer, complete, tool_call};
+        let server = ModelServer::start(Arc::new(move |_, body: String| {
+            Box::pin(async move {
+                if body.contains("There are 3 files.") {
+                    complete("m3", "Final: 3 files.")
+                } else if body.contains("Started r1") {
+                    complete("m2", "r1 is counting; its report follows.")
+                } else {
+                    tool_call(
+                        "m1",
+                        crew::START_AGENT,
+                        serde_json::json!({"agent": WORKER, "task": "Count the files."}),
+                    )
+                }
+            })
+        }))
+        .await;
+        let temp = tempfile::tempdir().unwrap();
+        let fake = temp.path().join("fake");
+        std::fs::create_dir_all(&fake).unwrap();
+        let script = serde_json::json!([[
+            {"tool": "mcp__arko__shell", "input": {"command": "ls | wc -l"}},
+            {"tool": "mcp__arko__complete_task", "input": {"summary": "There are 3 files."}},
+        ]]);
+        std::fs::write(fake.join("script.json"), script.to_string()).unwrap();
+        let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), false);
+        let luna = harness.settings.main.clone();
+        let cc = ModelSettings {
+            model: "cc:claude-fable-5-1".into(),
+            effort: Effort::Medium,
+            fast: false,
+            cache_1h: false,
+            handover_at: None,
+        };
+        let managers = on_models(&mut harness, &luna, &cc, &fake_claude_code(&fake));
+        assert!(harness.main_config.claude_code.is_none());
+        assert!(harness.worker_config.runs_in_claude_code());
+
+        let end = tokio::time::timeout(
+            Duration::from_secs(60),
+            harness.turn(Prompt::User("How many files?".into()), &mut inputs),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(end, TurnEnd::Answered));
+        if summary(&harness) != "Final: 3 files." {
+            let end =
+                tokio::time::timeout(Duration::from_secs(60), harness.finish_workers(&mut inputs))
+                    .await
+                    .unwrap();
+            assert!(matches!(end, TurnEnd::Answered));
+        }
+        assert_eq!(summary(&harness), "Final: 3 files.");
+        let (_, argv) = fake_log(&fake);
+        assert_eq!(after(&argv, "--tools").as_deref(), Some(""), "{argv:?}");
+        assert_eq!(after(&argv, "--model").as_deref(), Some("claude-fable-5-1"));
+        assert_eq!(after(&argv, "--effort").as_deref(), Some("medium"));
+        harness.crew.as_ref().unwrap().shutdown().await;
+        managers.shutdown().await;
     }
 }

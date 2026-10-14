@@ -10,8 +10,8 @@ use arko_agents::{
     AgentConfig, TaskContext, Tool, ToolDefinition, ToolError, ToolParameterDefinition,
     ToolParameterType, ToolTypeDetails,
 };
+use arko_ai::AnthropicCacheTtl;
 use arko_ai::prompt_cache::PromptCacheLifetime;
-use arko_ai::{AnthropicCacheTtl, Provider};
 use arko_workflows::prelude::*;
 use arko_workflows::subagents::{
     GitWorktreeProvider, StartRequest, SubagentEventKind, SubagentState, SubagentsConfig,
@@ -59,7 +59,6 @@ pub struct Setup {
     pub cache_1h: bool,
     /// The client's cache lifetime for the worker model and authentication.
     pub cache_lifetime: PromptCacheLifetime,
-    pub allow_outside_workspace: bool,
     pub feed: Option<remote::Feed>,
 }
 
@@ -102,14 +101,14 @@ impl Crew {
                     Some(other) => return Err(format!("cache is 5m or 1h, not {other}")),
                     None => default_1h,
                 };
-                if config.llm_config.model.provider == Provider::Anthropic {
+                if crate::providers::takes_cache_ttl(&config.llm_config.model) {
                     config.llm_config.generation_config.anthropic_cache_ttl = one_hour.then_some(AnthropicCacheTtl::OneHour);
                 }
                 Ok(())
             }))
             .start_parameter(ToolParameterDefinition {
                 name: CACHE_PARAM.into(),
-                description: "Claude workers: 1h for later follow-up, 5m for a short task. ChatGPT uses its own 30-minute cache.".into(),
+                description: "Claude workers on an API key or OpenRouter: 1h for later follow-up, 5m for a short task. Others ignore it: ChatGPT keeps its own 30-minute cache, Claude Code an hour.".into(),
                 param_type: ToolParameterType::String, required: false, is_path: false, flag: None, default_value: None,
             });
         config = if self.setup.max_running == NO_LIMIT {
@@ -117,10 +116,10 @@ impl Crew {
         } else {
             config.max_running(self.setup.max_running as usize)
         };
-        if self.setup.allow_outside_workspace {
-            config = config.workspaces_anywhere();
-        }
-        config
+        // A worker's workspace may be outside the lead's only while outside
+        // access is on, which can change while the session runs: the
+        // `outside` hook refuses the others.
+        config.workspaces_anywhere()
     }
 
     pub fn attach(self: &Arc<Self>, workflow: &Arc<Workflow>, lead: Option<Uuid>) {
@@ -293,7 +292,7 @@ impl Crew {
                             .agent_configs
                             .get(&run.agent)
                             .is_some_and(|config| {
-                                config.llm_config.model.provider == Provider::Anthropic
+                                crate::providers::takes_cache_ttl(&config.llm_config.model)
                             })
                         {
                             lifetime = match run.parameters.get(CACHE_PARAM).and_then(Value::as_str)
@@ -432,7 +431,6 @@ mod tests {
             max_running: 2,
             cache_1h: true,
             cache_lifetime: PromptCacheLifetime::Known(Duration::from_secs(3600)),
-            allow_outside_workspace: false,
             feed: None,
         });
         let native = crew.config();

@@ -54,10 +54,15 @@ impl ModelServer {
                     };
                     let index = count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                     let stream = respond(index, body).await;
-                    let reply = format!(
-                        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{stream}",
-                        stream.len()
-                    );
+                    // A whole response (an error), or the events of a turn.
+                    let reply = if stream.starts_with("HTTP/1.1 ") {
+                        stream
+                    } else {
+                        format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{stream}",
+                            stream.len()
+                        )
+                    };
                     let _ = socket.write_all(reply.as_bytes()).await;
                 });
             }
@@ -68,6 +73,39 @@ impl ModelServer {
     pub fn client(&self) -> LLMClient {
         LLMClient::new().with_openai_client(
             arko_ai::providers::openai::OpenAIClient::new("test-key").with_base_url(&self.url),
+        )
+    }
+
+    /// A client of this server over a ChatGPT login (with a token that
+    /// doesn't expire), where OpenAI models accept the backend's input
+    /// limit.
+    pub fn chatgpt_client(&self) -> LLMClient {
+        use base64::Engine;
+        let part = |json: &str| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(json);
+        let token = format!(
+            "{}.{}.signature",
+            part(r#"{"alg":"none"}"#),
+            part(r#"{"exp":4102444800}"#)
+        );
+        LLMClient::new().with_openai_client(
+            arko_ai::providers::openai::OpenAIClient::new_chatgpt_oauth(&token, None, "account")
+                .with_base_url(&self.url),
+        )
+    }
+
+    /// A client whose Gemini requests come here: answer them with
+    /// [`gemini_tool_call`].
+    pub fn gemini_client(&self) -> LLMClient {
+        LLMClient::new().with_google_client(
+            arko_ai::providers::google::GoogleClient::new("AIza-test").with_base_url(&self.url),
+        )
+    }
+
+    /// A client whose OpenRouter requests come here: answer them with
+    /// [`openrouter_tool_call`].
+    pub fn openrouter_client(&self) -> LLMClient {
+        LLMClient::new().with_openrouter_client(
+            arko_ai::OpenRouterClient::new("sk-or-test").with_base_url(&self.url),
         )
     }
 }
@@ -98,10 +136,75 @@ pub fn tool_call(id: &str, name: &str, arguments: Value) -> String {
     .collect()
 }
 
+/// `turn` (a model turn), reporting `tokens` of input.
+pub fn with_input(turn: String, tokens: usize) -> String {
+    turn.replace("\"input_tokens\":10", &format!("\"input_tokens\":{tokens}"))
+}
+
+/// The answer to a request over the model's input limit, as OpenAI gives
+/// it.
+pub fn overflow() -> String {
+    let body = serde_json::json!({"error": {
+        "message": "Your input exceeds the context window of this model. Please adjust your input and try again.",
+        "type": "invalid_request_error", "param": "input", "code": "context_length_exceeded",
+    }})
+    .to_string();
+    format!(
+        "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    )
+}
+
 pub fn complete(id: &str, report: &str) -> String {
     tool_call(
         id,
         "complete_task",
         serde_json::json!({ "summary": report }),
     )
+}
+
+/// An OpenRouter (Chat Completions) stream calling the tool `name`, which
+/// OpenRouter says cost `cost` dollars.
+pub fn openrouter_tool_call(id: &str, name: &str, arguments: Value, cost: f64) -> String {
+    let chunk = |delta: Value, finish: Option<&str>| {
+        serde_json::json!({
+            "id": format!("gen-{id}"), "object": "chat.completion.chunk", "created": 1,
+            "model": "anthropic/claude-opus-5.5", "provider": "Anthropic",
+            "choices": [{"index": 0, "delta": delta, "finish_reason": finish}],
+        })
+    };
+    let call = chunk(
+        serde_json::json!({"role": "assistant", "tool_calls": [{
+            "index": 0, "id": format!("call_{id}"), "type": "function",
+            "function": {"name": name, "arguments": arguments.to_string()},
+        }]}),
+        None,
+    );
+    let mut usage = chunk(serde_json::json!({}), Some("tool_calls"));
+    usage["usage"] = serde_json::json!({
+        "prompt_tokens": 1000, "completion_tokens": 20, "total_tokens": 1020, "cost": cost,
+    });
+    let mut stream: String = [call, usage]
+        .iter()
+        .map(|chunk| format!("data: {chunk}\n\n"))
+        .collect();
+    stream.push_str("data: [DONE]\n\n");
+    stream
+}
+
+/// A Gemini (Interactions API) stream calling the tool `name`.
+pub fn gemini_tool_call(id: &str, name: &str, arguments: Value) -> String {
+    [
+        serde_json::json!({"event_type": "step.start", "index": 0,
+            "step": {"type": "function_call", "id": format!("call_{id}"), "name": name}}),
+        serde_json::json!({"event_type": "step.delta", "index": 0,
+            "delta": {"type": "arguments_delta", "arguments": arguments.to_string()}}),
+        serde_json::json!({"event_type": "step.stop", "index": 0}),
+        serde_json::json!({"event_type": "interaction.completed", "interaction": {
+            "id": format!("int_{id}"), "status": "requires_action",
+            "usage": {"total_input_tokens": 1000, "total_output_tokens": 20}}}),
+    ]
+    .iter()
+    .map(|event| format!("data: {event}\n\n"))
+    .collect()
 }
