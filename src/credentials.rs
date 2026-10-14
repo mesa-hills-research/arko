@@ -197,7 +197,7 @@ pub fn switch(name: &str) -> Result<Option<bool>, String> {
         "1" | "true" | "yes" | "on" => Ok(Some(true)),
         "0" | "false" | "no" | "off" => Ok(Some(false)),
         _ => Err(format!(
-            "{name} ({}) is `{value}`; set it to 1 or 0",
+            "{name} ({}) is `{value}`. Set it to 1 or 0",
             describe(&source)
         )),
     }
@@ -239,20 +239,20 @@ pub enum Need {
 impl Need {
     /// What is missing, as an error where the setup screen can't be shown.
     pub fn message(&self) -> String {
-        let setup = "; or run `fin --setup` in a terminal to enter it";
+        let setup = "run `fin --setup` in a terminal to enter it";
         let key = |model: &str, name: &str| {
-            format!("{model} needs {name} (in the environment or a .env file){setup}")
+            format!("{model} needs {name}: set it in the environment or a .env file, or {setup}")
         };
         match self {
             Need::Any => format!(
-                "no credentials: set ANTHROPIC_API_KEY (Claude models), OPENAI_API_KEY (OpenAI models), GEMINI_API_KEY (Gemini models) or OPENROUTER_API_KEY (any model on OpenRouter), in the environment or a .env file; sign in to ChatGPT with `codex login`; or install Claude Code for Claude models on your Claude plan{setup}"
+                "no credentials: set ANTHROPIC_API_KEY (Claude models), OPENAI_API_KEY (OpenAI models), GEMINI_API_KEY (Gemini models) or OPENROUTER_API_KEY (any model on OpenRouter) in the environment or a .env file, sign in to ChatGPT with `codex login`, install Claude Code for Claude models on your Claude plan, or {setup}"
             ),
             Need::AnthropicKey { model } => key(model, ANTHROPIC_KEY),
             Need::OpenAiKey { model } => key(model, OPENAI_KEY),
             Need::GeminiKey { model } => key(model, "GEMINI_API_KEY (or GOOGLE_API_KEY)"),
             Need::OpenRouterKey { model } => key(model, OPENROUTER_KEY),
             Need::ChatGptLogin { model, problem } => format!(
-                "{model} needs a ChatGPT login (`codex login`): {problem}{setup}. A new session can use OPENAI_API_KEY instead: --openai-auth api-key"
+                "{model} needs a ChatGPT login (`codex login`): {problem}. Or {setup}. A new session can use OPENAI_API_KEY instead: --openai-auth api-key"
             ),
             Need::ClaudeCode {
                 model,
@@ -499,7 +499,7 @@ fn cancelled() -> String {
 /// Asks for `key`, saves it in fin's `.env` and uses it in this run.
 fn ask_key(out: &Output, editor: &mut Editor, dotenv: &Path, key: &Key) -> Result<(), String> {
     out.line(&out.dim(&format!(
-        "Paste {} (from {}; the input is hidden). An empty line quits.",
+        "Paste {} (from {}). The input is hidden, and an empty line quits.",
         key.what, key.from
     )));
     let prompt = format!("{}: ", capitalized(key.what));
@@ -510,7 +510,7 @@ fn ask_key(out: &Output, editor: &mut Editor, dotenv: &Path, key: &Key) -> Resul
             return Err(cancelled());
         }
         if value.chars().any(char::is_whitespace) {
-            out.line(&out.warn("An API key has no spaces in it; paste it again."));
+            out.line(&out.warn("An API key has no spaces in it. Paste it again."));
             continue;
         }
         if let Some(other) = mistaken_for(value, key) {
@@ -527,7 +527,7 @@ fn ask_key(out: &Output, editor: &mut Editor, dotenv: &Path, key: &Key) -> Resul
     };
     if !value.starts_with(key.prefix) {
         out.line(&out.warn(&format!(
-            "Note: {}s start with {}; this one doesn't, so requests may be refused.",
+            "Note: {}s start with {}. This one doesn't, so requests may be refused.",
             capitalized(without_article(key.what)),
             key.prefix
         )));
@@ -642,7 +642,7 @@ fn claude_code_ready(out: &Output, ready: &claude_code::Ready) -> Result<(), Str
 
 fn ask_login(out: &Output, editor: &mut Editor, dotenv: &Path) -> Result<(), String> {
     out.line(&out.dim(
-        "Give the path to a Codex auth.json holding a ChatGPT login (`codex login` writes ~/.codex/auth.json). Tab completes; an empty line quits.",
+        "Give the path to a Codex auth.json holding a ChatGPT login (`codex login` writes ~/.codex/auth.json). Tab completes, and an empty line quits.",
     ));
     let initial = CodexAuthFile::default_path()
         .filter(|path| path.is_file())
@@ -695,7 +695,7 @@ fn saved(out: &Output, dotenv: &Path, name: &str) {
     };
     if let Some(before) = before {
         out.line(&out.warn(&format!(
-            "Note: {before} comes first in later runs; this run uses what you entered."
+            "Note: {before} comes first in later runs. This run uses what you entered."
         )));
     }
     out.line("");

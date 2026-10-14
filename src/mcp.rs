@@ -143,12 +143,12 @@ fn server(
     if let Some(kind) = entry.get("type").and_then(Value::as_str)
         && kind != "stdio"
     {
-        return Err(format!("is a `{kind}` server; {stdio_only}"));
+        return Err(format!("is a `{kind}` server, and {stdio_only}"));
     }
     let command = match entry.get("command").and_then(Value::as_str) {
         Some(command) if !command.trim().is_empty() => command,
         _ if entry.contains_key("url") => {
-            return Err(format!("is an HTTP server (`url`); {stdio_only}"));
+            return Err(format!("is an HTTP server (`url`), and {stdio_only}"));
         }
         _ => return Err("has no `command`".into()),
     };
@@ -250,7 +250,7 @@ pub fn servers(
         for server in parsed.servers {
             match servers.iter().find(|taken| taken.name == server.name) {
                 Some(taken) => notes.push(format!(
-                    "MCP server `{}` in {} is also in {}; fin starts the one in {}",
+                    "MCP server `{}` in {} is also in {}, and fin starts the one in {}",
                     server.name,
                     server.file.display(),
                     taken.file.display(),
@@ -373,7 +373,7 @@ fn ask_to_start(workspace: &Path, parsed: &Parsed) -> Result<bool, String> {
         out.line(&out.dim(&format!("  (skipped: {why})")));
     }
     out.line(&out.dim(
-        "fin keeps your answer until the file's servers change; `--mcp-config .mcp.json` starts them whatever the answer.",
+        "fin keeps your answer until the file's servers change. `--mcp-config .mcp.json` starts them whatever the answer.",
     ));
     let mut editor = rustyline::DefaultEditor::new().map_err(|error| error.to_string())?;
     loop {

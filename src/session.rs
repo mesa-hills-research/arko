@@ -91,7 +91,7 @@ impl Session {
         let dir = root.join("sessions").join(id);
         if !dir.join(SETTINGS_FILE).is_file() {
             return Err(format!(
-                "no session `{id}` (looked in {}); `fin --sessions` lists them",
+                "no session `{id}` (looked in {}). `fin --sessions` lists them",
                 dir.display()
             ));
         }
@@ -175,7 +175,7 @@ pub fn data_root() -> Result<PathBuf, String> {
             })
     };
     base.map(|base| base.join("fin"))
-        .ok_or_else(|| "could not find your data directory; set FIN_HOME".to_string())
+        .ok_or_else(|| "could not find your data directory. Set FIN_HOME".to_string())
 }
 
 /// The sessions in `root`, newest first, with their settings.

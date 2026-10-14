@@ -688,7 +688,7 @@ impl Feed {
                 rate_limit,
                 ..
             } => {
-                let why = if *rate_limit { "rate limited; " } else { "" };
+                let why = if *rate_limit { "rate limited, " } else { "" };
                 let text = format!(
                     "{why}retrying in {:.0} s (attempt {attempt})",
                     *delay_ms as f64 / 1000.0

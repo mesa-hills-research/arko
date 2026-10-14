@@ -295,7 +295,7 @@ async fn run(args: Args) -> Result<ExitCode, String> {
         let workspace = workspace(&args)?;
         Some(session::latest_in(&root, &workspace).ok_or_else(|| {
             format!(
-                "no session to continue in {}; `fin --sessions` lists them",
+                "no session to continue in {}. `fin --sessions` lists them",
                 workspace.display()
             )
         })?)
@@ -348,7 +348,7 @@ async fn run(args: Args) -> Result<ExitCode, String> {
     let shell = Shell::detect(settings.windows_shell.unwrap_or(WindowsShell::Powershell));
     if new && args.shell.is_some() && !cfg!(windows) {
         eprintln!(
-            "fin: --shell picks the shell on Windows; here commands run in {}",
+            "fin: --shell picks the shell on Windows. Here commands run in {}",
             shell.name
         );
     }
@@ -766,13 +766,13 @@ fn new_settings(args: &Args) -> Result<Settings, String> {
             providers::choose_openai_auth(args.openai_auth, args.codex_auth.as_deref())?;
         if both {
             eprintln!(
-                "fin: this session reaches OpenAI models over your ChatGPT login (your plan), which comes before OPENAI_API_KEY; --openai-auth api-key (or FIN_OPENAI_AUTH=api-key in a .env file) starts sessions on the API key instead, billed per token"
+                "fin: this session reaches OpenAI models over your ChatGPT login (your plan), which comes before OPENAI_API_KEY. --openai-auth api-key (or FIN_OPENAI_AUTH=api-key in a .env file) starts sessions on the API key instead, billed per token"
             );
         }
         Some(auth)
     } else {
         if args.openai_auth.is_some() {
-            eprintln!("fin: --openai-auth is for OpenAI models; this session has none");
+            eprintln!("fin: --openai-auth is for OpenAI models, and this session has none");
         }
         None
     };
@@ -809,7 +809,7 @@ fn new_settings(args: &Args) -> Result<Settings, String> {
     let session_handover = main.handover_at.unwrap_or(200_000);
     if args.cache_1h && !main.cache_1h && !worker.cache_1h {
         eprintln!(
-            "fin: --cache-1h is for Claude models by API key or on OpenRouter (Claude Code chooses its own); this session has none, so it is ignored"
+            "fin: --cache-1h is for Claude models by API key or on OpenRouter (Claude Code chooses its own). This session has none, so it is ignored"
         );
     }
     let settings = Settings {
@@ -839,7 +839,7 @@ fn windows_shell(args: &Args) -> Result<WindowsShell, String> {
     match credentials::var(credentials::SHELL) {
         None => Ok(WindowsShell::Cmd),
         Some(value) => <WindowsShell as clap::ValueEnum>::from_str(value.trim(), true)
-            .map_err(|_| format!("FIN_SHELL is `{value}`; set it to cmd or powershell")),
+            .map_err(|_| format!("FIN_SHELL is `{value}`. Set it to cmd or powershell")),
     }
 }
 
@@ -924,7 +924,7 @@ impl Managers {
             config.shell_args = args.to_vec();
             TerminalManager::new(config).map_err(|error| {
                 format!(
-                    "could not open the session's terminal ({error}); is it open in another fin?"
+                    "could not open the session's terminal ({error}). Is it open in another fin?"
                 )
             })
         };
@@ -1068,7 +1068,7 @@ fn unoffered(saved: &SavedSetup, fresh: &[(&str, &arko_agents::AgentConfig)]) ->
         return None;
     }
     Some(format!(
-        "This session started without {}, so its agents don't get them; a new session does.",
+        "This session started without {}, so its agents don't get them. A new session does.",
         and_list(&parts)
     ))
 }
@@ -1541,7 +1541,7 @@ impl Harness {
         {
             self.say(
                 Level::Info,
-                "The last turn didn't finish (fin stopped while it ran); it continues now.",
+                "The last turn didn't finish (fin stopped while it ran), so it continues now.",
             );
             if let TurnEnd::Exit = self.turn(Prompt::Recover, input).await {
                 self.exiting = true;
@@ -1882,7 +1882,7 @@ impl Harness {
         {
             if others > 1 {
                 out.echo(&out.dim(&format!(
-                    "The QR code opens the first link{}; /remote qr INTERFACE shows another.",
+                    "The QR code opens the first link{}. /remote qr INTERFACE shows another.",
                     place(link)
                 )));
             }
@@ -1960,7 +1960,7 @@ impl Harness {
         if !argument.is_empty() {
             self.mirrored(|harness| {
                 harness.output.line(&harness.output.error(
-                    "/handover takes nothing after it; /handover-at sets the size the agent hands over at.",
+                    "/handover takes nothing after it. /handover-at sets the size the agent hands over at.",
                 ))
             });
             return;
@@ -1993,7 +1993,7 @@ impl Harness {
                     handover::shown(input)
                 ));
             }
-            text.push_str(". /handover-at 200k sets another size; /handover hands over now.");
+            text.push_str(". /handover-at 200k sets another size, and /handover hands over now.");
             self.mirrored(|harness| harness.output.line(&text));
             return;
         }
@@ -2754,7 +2754,7 @@ impl Harness {
         if !unread.is_empty() {
             self.say(
                 Level::Info,
-                "  (the agent finished before it read what you typed; it goes with your next message)",
+                "  (the agent finished before it read what you typed, so it goes with your next message)",
             );
             self.unread.extend(unread);
         }
@@ -2788,7 +2788,7 @@ impl Harness {
         if matches!(self.conversation, Conversation::New) {
             self.say(
                 Level::Info,
-                "This conversation can't go on; your next message starts a new one (/new). The session keeps the old one.",
+                "This conversation can't go on, so your next message starts a new one (/new). The session keeps the old one.",
             );
         }
     }
@@ -3182,7 +3182,7 @@ mod tests {
         };
         assert_eq!(
             unoffered(&saved, &[(MAIN, &main), (WORKER, &worker)]).unwrap(),
-            "This session started without workers that run in parallel, the file tools, questions to you (ask_user), and answers to you while it works (message_user), so its agents don't get them; a new session does."
+            "This session started without workers that run in parallel, the file tools, questions to you (ask_user), and answers to you while it works (message_user), so its agents don't get them. A new session does."
         );
     }
 
@@ -3282,7 +3282,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             note,
-            "This session started without the search index tools, the tools of the MCP servers github and db, and skills, so its agents don't get them; a new session does."
+            "This session started without the search index tools, the tools of the MCP servers github and db, and skills, so its agents don't get them. A new session does."
         );
     }
 

@@ -446,7 +446,7 @@ fn body(output: &str, log: &Path, log_truncated: bool) -> String {
         .nth(total - (MAX_OUTPUT_CHARS - HEAD_CHARS))
         .map_or(output.len(), |(index, _)| index);
     format!(
-        "{}\n[... {} characters left out; all of the output is in {}{truncated_log} ...]\n{}",
+        "{}\n[... {} characters left out, with all of the output in {}{truncated_log} ...]\n{}",
         &output[..head_end],
         total - MAX_OUTPUT_CHARS,
         log.display(),
@@ -553,7 +553,7 @@ mod tests {
             .unwrap();
         assert!(result.contains("\nline 1\nline 2\n"), "{}", &result[..200]);
         assert!(result.ends_with("line 20000"));
-        assert!(result.contains("characters left out; all of the output is in"));
+        assert!(result.contains("characters left out, with all of the output in"));
         assert!(result.chars().count() < MAX_OUTPUT_CHARS + 500);
     }
 

@@ -81,7 +81,7 @@ pub fn resolve_model(name: &str) -> Result<Model, String> {
         let model = registered(rest).map_err(|_| {
             format!(
                 "`{name}` names no Claude model: Claude Code runs Claude models, such as cc:opus (claude-opus-5-5) or cc:fable (claude-fable-5-1){}",
-                suggestion(rest).map(|close| format!("; did you mean cc:{close}?")).unwrap_or_default()
+                suggestion(rest).map(|close| format!(". Did you mean cc:{close}?")).unwrap_or_default()
             )
         })?;
         if model.provider != Provider::Anthropic {
@@ -215,7 +215,7 @@ pub fn generation(
         Provider::Anthropic | Provider::ClaudeCode => {
             if fast && !model.supports_anthropic_fast_mode() {
                 return Err(format!(
-                    "{} has no fast mode; Anthropic offers it on Claude Opus 5.5, Opus 5 and Opus 4.8",
+                    "{} has no fast mode: Anthropic offers it on Claude Opus 5.5, Opus 5 and Opus 4.8",
                     model_name(model)
                 ));
             }
@@ -341,7 +341,7 @@ pub fn choose_openai_auth(
     if let Some(value) = credentials::var(credentials::OPENAI_AUTH) {
         return <OpenAiAuth as clap::ValueEnum>::from_str(value.trim(), true)
             .map(|auth| (auth, false))
-            .map_err(|_| format!("FIN_OPENAI_AUTH is `{value}`; set it to chatgpt or api-key"));
+            .map_err(|_| format!("FIN_OPENAI_AUTH is `{value}`. Set it to chatgpt or api-key"));
     }
     let login = has_chatgpt_login(codex_auth);
     let key = credentials::var(credentials::OPENAI_KEY).is_some();
@@ -400,7 +400,7 @@ fn choose_default(
                     Some(needs) => (
                         None,
                         format!(
-                            "; its workers ran on {worker}, which needs {needs}, so they run on {} too",
+                            ". Its workers ran on {worker}, which needs {needs}, so they run on {} too",
                             last.main
                         ),
                     ),
@@ -419,7 +419,7 @@ fn choose_default(
         Some(needs) => match by_credentials {
             Some((main, why)) => Some(DefaultModels {
                 note: format!(
-                    "Your last session ran {}, which needs {needs}; this one runs {main}: {why} (-m picks another).",
+                    "Your last session ran {}, which needs {needs}. This one runs {main}: {why} (-m picks another).",
                     last.main
                 ),
                 main: main.to_string(),
@@ -427,7 +427,7 @@ fn choose_default(
             }),
             None => Some(DefaultModels {
                 note: format!(
-                    "This session runs {}, as your last one did; it needs {needs}.",
+                    "This session runs {}, as your last one did. It needs {needs}.",
                     last.main
                 ),
                 main: last.main,
@@ -669,7 +669,7 @@ fn client_with(
         .map_err(|error| need(error.to_string()))?;
         auth.credentials().map_err(|error| {
             need(format!(
-                "{} holds no ChatGPT login ({error}); sign in with `codex login`",
+                "{} holds no ChatGPT login ({error}). Sign in with `codex login`",
                 auth.path().display()
             ))
         })?;
@@ -784,7 +784,7 @@ fn apply_catalog(
         }
         let Some(listed) = catalog.get(&slug) else {
             return Err(format!(
-                "{name} isn't in OpenRouter's model catalog; https://openrouter.ai/models lists the slugs (such as anthropic/claude-opus-5.5)"
+                "{name} isn't in OpenRouter's model catalog. https://openrouter.ai/models lists the slugs (such as anthropic/claude-opus-5.5)"
             ));
         };
         if listed
@@ -1102,7 +1102,7 @@ mod tests {
             "{error}"
         );
         let error = resolve_model("cc:opsu").unwrap_err();
-        assert!(error.contains("did you mean cc:opus?"), "{error}");
+        assert!(error.contains("Did you mean cc:opus?"), "{error}");
         assert!(resolve_model("openrouter:").is_err());
         assert!(resolve_model("no-such-model-at-all").is_err());
     }
@@ -1570,14 +1570,14 @@ mod tests {
         assert_eq!(default.main, "claude-opus-5-5");
         assert_eq!(
             default.note,
-            "Your last session ran gemini-3.8-flash, which needs GEMINI_API_KEY; this one runs claude-opus-5-5: ANTHROPIC_API_KEY is set (-m picks another)."
+            "Your last session ran gemini-3.8-flash, which needs GEMINI_API_KEY. This one runs claude-opus-5-5: ANTHROPIC_API_KEY is set (-m picks another)."
         );
         // ...and without any other credential it stays, so the setup screen
         // asks for exactly what it needs.
         let default = choose_default(last("gemini-3.8-flash", None), no_gemini, None).unwrap();
         assert_eq!(default.main, "gemini-3.8-flash");
         assert!(
-            default.note.ends_with("it needs GEMINI_API_KEY."),
+            default.note.ends_with("It needs GEMINI_API_KEY."),
             "{}",
             default.note
         );
