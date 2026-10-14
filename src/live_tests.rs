@@ -1026,3 +1026,129 @@ async fn a_result_far_past_the_input_limit_is_shortened_before_sending() {
     let shortened = body(&bodies, "call_m1", "");
     assert!(shortened.contains("Shortened") && shortened.len() < 100_000);
 }
+
+/// The interface lists a machine may have, by how many links other
+/// devices can open.
+fn made_up(interfaces: &[(&str, &str)]) -> Vec<remote::Interface> {
+    interfaces
+        .iter()
+        .map(|(name, ip)| remote::Interface {
+            name: name.to_string(),
+            ip: ip.parse().unwrap(),
+            physical: None,
+        })
+        .collect()
+}
+
+/// `/remote qr` picks the first link other devices can open, or the one
+/// named; with none, or a name that has none, it says why.
+#[test]
+fn the_qr_code_shows_the_first_link_or_the_one_named() {
+    let any: std::net::SocketAddr = "0.0.0.0:8765".parse().unwrap();
+    let ranked =
+        |interfaces: &[(&str, &str)]| remote::ranked_links(any, "k", made_up(interfaces), None).0;
+    // None: only this machine.
+    let local = remote::ranked_links("127.0.0.1:8765".parse().unwrap(), "k", Vec::new(), None).0;
+    let error = qr_link(&local, "", "127.0.0.1:8765".parse().unwrap()).unwrap_err();
+    assert!(
+        error.starts_with("Only this machine can open the page (it listens on 127.0.0.1:8765)"),
+        "{error}"
+    );
+    let lonely = ranked(&[("lo", "127.0.0.1")]);
+    assert!(
+        qr_link(&lonely, "", any)
+            .unwrap_err()
+            .starts_with("Only this machine")
+    );
+    // One.
+    let one = ranked(&[("ens33", "192.168.1.12")]);
+    assert_eq!(
+        qr_link(&one, "", any).unwrap().interface.as_deref(),
+        Some("ens33")
+    );
+    assert_eq!(
+        qr_link(&one, "192.168.1.12", any)
+            .unwrap()
+            .interface
+            .as_deref(),
+        Some("ens33")
+    );
+    // Several: the LAN first, the others by name.
+    let several = ranked(&[
+        ("wg0-mullvad", "10.64.1.2"),
+        ("tailscale0", "100.101.102.103"),
+        ("ens33", "192.168.1.12"),
+    ]);
+    assert_eq!(
+        qr_link(&several, "", any).unwrap().interface.as_deref(),
+        Some("ens33")
+    );
+    assert_eq!(
+        qr_link(&several, "tailscale0", any).unwrap().kind,
+        remote::LinkKind::Tailscale
+    );
+    assert_eq!(
+        qr_link(&several, "wg0-mullvad", any).unwrap().kind,
+        remote::LinkKind::Vpn
+    );
+    // An unknown name, or this machine's.
+    for name in ["wlan9", "lo", "127.0.0.1"] {
+        assert_eq!(
+            qr_link(&several, name, any).unwrap_err(),
+            format!(
+                "The page has no link on `{name}`: its links are on ens33, tailscale0, wg0-mullvad."
+            )
+        );
+    }
+}
+
+/// `/remote qr` at the terminal: with the page off, on this machine only,
+/// and on every interface, where it draws the code of the first link,
+/// and says so for a name that has no link.
+#[tokio::test]
+async fn remote_qr_draws_the_code_or_says_why_not() {
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, _inputs, _sender) = harness(temp.path(), LLMClient::new(), true);
+    let shown = |harness: &mut Harness, interface: &str| {
+        harness.mirrored(|harness| harness.remote_qr(interface));
+        texts(&harness.feed, "output")
+            .last()
+            .cloned()
+            .unwrap_or_default()
+    };
+    assert_eq!(
+        shown(&mut harness, ""),
+        "The web page isn't on: /remote starts it."
+    );
+    harness
+        .start_remote(remote::Bind {
+            ip: std::net::Ipv4Addr::LOCALHOST.into(),
+            port: Some(0),
+        })
+        .await;
+    assert!(shown(&mut harness, "").starts_with("Only this machine can open the page"));
+    harness
+        .start_remote(remote::Bind {
+            ip: std::net::Ipv4Addr::UNSPECIFIED.into(),
+            port: Some(0),
+        })
+        .await;
+    let addr = harness.remote.as_ref().unwrap().addr();
+    let key = std::fs::read_to_string(harness.session.dir.join(remote::KEY_FILE)).unwrap();
+    let (links, _) = remote::links(addr, key.trim());
+    let code = shown(&mut harness, "");
+    match links.iter().find(|link| !link.loopback) {
+        // This machine has a network: the code of its best link.
+        Some(link) => {
+            assert!(code.starts_with(&link.url), "{code}");
+            assert!(code.lines().count() > 10, "{code}");
+        }
+        None => assert!(code.starts_with("Only this machine"), "{code}"),
+    }
+    let unknown = shown(&mut harness, "no-such-interface");
+    assert!(
+        unknown.starts_with("The page has no link on `no-such-interface`"),
+        "{unknown}"
+    );
+    harness.stop_remote().await;
+}

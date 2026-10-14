@@ -1583,6 +1583,7 @@ impl Harness {
                 let bind = self.remote_bind.map(|(bind, _)| bind).unwrap_or_default();
                 self.start_remote(bind).await;
             }
+            qr if qr == "qr" || qr.starts_with("qr ") => self.remote_qr(qr[2..].trim()),
             "off" => {
                 if self.remote.is_some() {
                     self.feed
@@ -1616,11 +1617,9 @@ impl Harness {
             }
             other => match remote::parse_bind(other) {
                 Ok(bind) => self.start_remote(bind).await,
-                Err(error) => self.output.line(
-                    &self
-                        .output
-                        .error(&format!("{error}. Or: /remote off, /remote new-key")),
-                ),
+                Err(error) => self.output.line(&self.output.error(&format!(
+                    "{error}. Or: /remote qr, /remote off, /remote new-key"
+                ))),
             },
         }
     }
@@ -1686,17 +1685,17 @@ impl Harness {
         }
     }
 
-    /// Prints the links to the page (with the key: never logged), and a QR
-    /// code of the first that other devices can open.
+    /// Prints the links to the page (with the key: never logged), best
+    /// first, and a QR code of the first that other devices can open.
     fn announce_remote(&self, addr: std::net::SocketAddr, key: &str) {
         let out = &self.output;
-        let links = remote::links(addr, key);
+        let (links, note) = remote::links(addr, key);
         let mut lines = Vec::new();
         for (n, link) in links.iter().enumerate() {
             let interface = link
                 .interface
                 .as_ref()
-                .map(|name| out.dim(&format!("  ({name})")))
+                .map(|name| out.dim(&format!("  ({name}, {})", link.kind.label())))
                 .unwrap_or_default();
             lines.push(format!(
                 "{} {}{interface}",
@@ -1709,6 +1708,9 @@ impl Harness {
             ));
         }
         out.line(&lines.join("\n"));
+        if let Some(note) = note {
+            out.line(&out.warn(&note));
+        }
         if links.iter().all(|link| link.loopback) {
             out.line(&out.dim(
                 "Only this machine can open it: for a phone, /remote 0.0.0.0 (the network's devices, Tailscale's too), or an SSH tunnel.",
@@ -1717,11 +1719,64 @@ impl Harness {
         out.line(&out.warn(
             "The link holds the session's key: whoever has it can follow this session and act in it. No TLS: on a network you don't trust, use an SSH tunnel or Tailscale. /remote off stops the page.",
         ));
+        let others = links.iter().filter(|link| !link.loopback).count();
         if glyphs::symbols() != glyphs::Symbols::Ascii
             && let Some(link) = links.iter().find(|link| !link.loopback)
             && let Some(code) = remote::qr_lines(&link.url)
         {
+            if others > 1 {
+                out.line(&out.dim(&format!(
+                    "The QR code opens the first link{}; /remote qr INTERFACE shows another.",
+                    place(link)
+                )));
+            }
             out.line(&code.join("\n"));
+        }
+    }
+
+    /// `/remote qr [INTERFACE]`: the QR code of the page's first link that
+    /// other devices can open, or of the one on `interface` (a name or an
+    /// address).
+    fn remote_qr(&self, interface: &str) {
+        let out = &self.output;
+        let Some(addr) = self.remote.as_ref().map(remote::Server::addr) else {
+            out.line("The web page isn't on: /remote starts it.");
+            return;
+        };
+        let key = match self.remote_key(false) {
+            Ok(key) => key,
+            Err(error) => {
+                out.line(&out.error(&format!("fin: {error}")));
+                return;
+            }
+        };
+        let (links, note) = remote::links(addr, &key);
+        if interface.is_empty()
+            && let Some(note) = note
+        {
+            out.line(&out.warn(&note));
+        }
+        let link = match qr_link(&links, interface, addr) {
+            Ok(link) => link,
+            Err(error) => {
+                out.line(&out.error(&error));
+                return;
+            }
+        };
+        if glyphs::symbols() == glyphs::Symbols::Ascii {
+            out.line(&format!(
+                "With FIN_SYMBOLS=ascii the terminal shows no QR code. The link{}: {}",
+                place(link),
+                link.url
+            ));
+            return;
+        }
+        match remote::qr_lines(&link.url) {
+            Some(code) => {
+                out.line(&format!("{}{}", link.url, out.dim(&place(link))));
+                out.line(&code.join("\n"));
+            }
+            None => out.line(&out.error("The link is too long for a QR code.")),
         }
     }
 
@@ -2081,7 +2136,7 @@ impl Harness {
                 out.line("/skills        the skills the agents can load");
                 out.line("/session       this session's ID, folder and models");
                 out.line(
-                    "/remote        the web page, for a phone or browser (/remote ADDR, /remote off, /remote new-key)",
+                    "/remote        the web page, for a phone or browser (/remote ADDR, /remote qr [INTERFACE], /remote off, /remote new-key)",
                 );
                 out.line(
                     "/outside       outside access: whether the agents may change paths outside the working directory (/outside on, /outside off)",
@@ -2701,6 +2756,42 @@ fn command(text: &str) -> Option<&str> {
 /// `/remote`, alone or with what follows it.
 fn is_remote_command(text: &str) -> bool {
     text == "/remote" || text.starts_with("/remote ")
+}
+
+/// The link `/remote qr` shows: the first other devices can open, or the
+/// one on `interface` (a name or an address). `Err` with what to tell the
+/// user when there is none, of a server on `addr`.
+fn qr_link<'a>(
+    links: &'a [remote::Link],
+    interface: &str,
+    addr: std::net::SocketAddr,
+) -> Result<&'a remote::Link, String> {
+    let mut others = links.iter().filter(|link| !link.loopback);
+    let link = if interface.is_empty() {
+        others.next()
+    } else {
+        others.find(|link| link.is(interface))
+    };
+    link.ok_or_else(|| {
+        if links.iter().all(|link| link.loopback) {
+            format!(
+                "Only this machine can open the page (it listens on {addr}), so there is no QR code: /remote 0.0.0.0 serves it to the network's devices."
+            )
+        } else {
+            format!(
+                "The page has no link on `{interface}`: its links are on {}.",
+                remote::link_names(links)
+            )
+        }
+    })
+}
+
+/// Where a link leads, as the terminal says it: ` (ens33, LAN)`.
+fn place(link: &remote::Link) -> String {
+    link.interface
+        .as_ref()
+        .map(|name| format!(" ({name}, {})", link.kind.label()))
+        .unwrap_or_default()
 }
 
 /// The commands that change a setting while the session runs, which take

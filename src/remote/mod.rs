@@ -14,6 +14,7 @@
 //! trades it for a session cookie. There is no TLS.
 
 mod feed;
+mod links;
 mod qr;
 mod render;
 mod server;
@@ -33,6 +34,7 @@ pub use feed::{
     Activity, CallStatus, Delivery, Feed, Item, Kind, Level, MAIN_AGENT, Question, Snapshot,
     Source, Update, WorkerChange, WorkerState, WorkerSummary,
 };
+pub use links::{HOST_VARIABLE, Interface, Kind as LinkKind, Link};
 pub use server::{Info, Server};
 
 /// The port served on when none is given; another free one when it is
@@ -245,55 +247,38 @@ pub fn start(
     })
 }
 
-/// A link to the page.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Link {
-    pub url: String,
-    /// The network interface, when the server listens on all of them.
-    pub interface: Option<String>,
-    pub loopback: bool,
+/// The links to a server on `addr`, with `key` in their fragments, best
+/// first (see [`links`](self::links)): on every interface's address when
+/// it listens on all of them, the one `FIN_REMOTE_HOST` names first. With
+/// what to tell the user when that names none of them.
+pub fn links(addr: SocketAddr, key: &str) -> (Vec<Link>, Option<String>) {
+    ranked_links(
+        addr,
+        key,
+        links::interfaces(),
+        crate::credentials::var(HOST_VARIABLE),
+    )
 }
 
-/// The links to a server on `addr`, with `key` in their fragments: on
-/// every interface's address when it listens on all of them (the other
-/// machines' first, this one's last).
-pub fn links(addr: SocketAddr, key: &str) -> Vec<Link> {
-    let link = |ip: IpAddr, interface: Option<String>| {
-        let host = match ip {
-            IpAddr::V6(ip) => format!("[{ip}]"),
-            IpAddr::V4(ip) => ip.to_string(),
-        };
-        Link {
-            url: format!("http://{host}:{}/#key={key}", addr.port()),
-            interface,
-            loopback: ip.is_loopback(),
-        }
-    };
-    if !addr.ip().is_unspecified() {
-        return vec![link(addr.ip(), None)];
-    }
-    let v6 = addr.ip().is_ipv6();
-    let mut links: Vec<Link> = if_addrs::get_if_addrs()
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|interface| !interface.is_loopback())
-        .filter(|interface| match interface.ip() {
-            IpAddr::V4(_) => !v6,
-            // Link-local addresses need a zone in the URL.
-            IpAddr::V6(ip) => v6 && (ip.segments()[0] & 0xffc0) != 0xfe80,
-        })
-        .map(|interface| link(interface.ip(), Some(interface.name)))
-        .collect();
-    links.dedup_by(|a, b| a.url == b.url);
-    links.push(link(
-        if v6 {
-            IpAddr::V6(std::net::Ipv6Addr::LOCALHOST)
-        } else {
-            IpAddr::V4(Ipv4Addr::LOCALHOST)
-        },
-        None,
-    ));
-    links
+/// [`links`] on `interfaces`, with `host` as `FIN_REMOTE_HOST`. It counts
+/// only where the server listens on every interface.
+pub fn ranked_links(
+    addr: SocketAddr,
+    key: &str,
+    interfaces: Vec<Interface>,
+    host: Option<String>,
+) -> (Vec<Link>, Option<String>) {
+    let mut ranked = links::links(addr, key, interfaces);
+    let note = host
+        .filter(|host| addr.ip().is_unspecified() && !host.trim().is_empty())
+        .and_then(|host| links::prefer(&mut ranked, host.trim()).err());
+    (ranked, note)
+}
+
+/// The interfaces (else the addresses) of the links other devices can
+/// open, as the user is told them.
+pub fn link_names(links: &[Link]) -> String {
+    links::names(links)
 }
 
 /// `text` without its terminal styles (the escape sequences of colors and
@@ -320,6 +305,11 @@ pub fn plain(text: &str) -> String {
 /// line), light modules drawn: for a terminal with a dark background.
 pub fn qr_lines(text: &str) -> Option<Vec<String>> {
     qr::lines(text)
+}
+
+/// `text` as a QR code in SVG, dark on light.
+pub fn qr_svg(text: &str) -> Option<String> {
+    qr::svg(text)
 }
 
 #[cfg(test)]
@@ -379,14 +369,42 @@ mod tests {
     fn links_carry_the_key_in_their_fragment() {
         let addr: SocketAddr = "127.0.0.1:8765".parse().unwrap();
         assert_eq!(
-            links(addr, "abc"),
+            links(addr, "abc").0,
             [Link {
                 url: "http://127.0.0.1:8765/#key=abc".into(),
                 interface: None,
+                kind: LinkKind::Loopback,
                 loopback: true
             }]
         );
-        let all = links("0.0.0.0:9000".parse().unwrap(), "abc");
+        let all = links("0.0.0.0:9000".parse().unwrap(), "abc").0;
+        // FIN_REMOTE_HOST counts only where the server listens on every
+        // interface, and one that names nothing changes nothing.
+        let interfaces = vec![
+            Interface {
+                name: "wg0-mullvad".into(),
+                ip: "10.64.1.2".parse().unwrap(),
+                physical: None,
+            },
+            Interface {
+                name: "ens33".into(),
+                ip: "192.168.1.12".parse().unwrap(),
+                physical: None,
+            },
+        ];
+        let any: SocketAddr = "0.0.0.0:9000".parse().unwrap();
+        let (ranked, note) = ranked_links(any, "k", interfaces.clone(), Some("wlan0".into()));
+        assert!(
+            note.unwrap()
+                .starts_with("FIN_REMOTE_HOST is `wlan0`, which none")
+        );
+        assert_eq!(ranked[0].interface.as_deref(), Some("ens33"));
+        let (ranked, note) =
+            ranked_links(any, "k", interfaces.clone(), Some(" wg0-mullvad ".into()));
+        assert!(note.is_none());
+        assert_eq!(ranked[0].interface.as_deref(), Some("wg0-mullvad"));
+        let (_, note) = ranked_links(addr, "k", interfaces, Some("wlan0".into()));
+        assert!(note.is_none());
         let last = all.last().unwrap();
         assert_eq!(last.url, "http://127.0.0.1:9000/#key=abc");
         assert!(all.iter().all(|link| link.url.ends_with(":9000/#key=abc")));

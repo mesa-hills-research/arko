@@ -76,6 +76,7 @@ impl Server {
         let addr = listener.local_addr()?;
         let (stop, closed) = watch::channel(false);
         let app = Arc::new(App {
+            addr,
             key,
             // Cookies don't tell ports apart: each server has its own.
             cookie: format!("fin_remote_{}", addr.port()),
@@ -166,6 +167,7 @@ fn router(app: Arc<App>) -> Router {
         .route("/api/message", axum::routing::post(message))
         .route("/api/answer", axum::routing::post(answer))
         .route("/api/stop", axum::routing::post(stop))
+        .route("/api/links", get(links))
         .layer(DefaultBodyLimit::max(MAX_BODY))
         .layer(axum::middleware::map_response(harden))
         .with_state(app)
@@ -201,6 +203,8 @@ async fn harden(mut response: Response) -> Response {
 }
 
 struct App {
+    /// Where the server listens.
+    addr: SocketAddr,
     key: String,
     /// The session cookie's name.
     cookie: String,
@@ -668,6 +672,40 @@ async fn answer(
     app.act(Action::Answer { question, text })
 }
 
+/// A link to the page for `GET /api/links`.
+#[derive(Serialize)]
+struct LinkOut {
+    url: String,
+    interface: Option<String>,
+    kind: super::LinkKind,
+    /// The link as a QR code, in SVG.
+    qr_svg: Option<String>,
+}
+
+/// `GET /api/links`: the links to the page, best first, with their QR
+/// codes, for opening it on another device. They hold the key, as the
+/// links fin prints do.
+async fn links(
+    State(app): State<Arc<App>>,
+    ConnectInfo(peer): Peer,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(refusal) = app.authorize(&headers, peer.ip()) {
+        return refusal.into_response();
+    }
+    let links: Vec<LinkOut> = super::links(app.addr, &app.key)
+        .0
+        .into_iter()
+        .map(|link| LinkOut {
+            qr_svg: super::qr_svg(&link.url),
+            url: link.url,
+            interface: link.interface,
+            kind: link.kind,
+        })
+        .collect();
+    axum::Json(links).into_response()
+}
+
 /// `POST /api/stop`: stops the turn, as Ctrl-C does.
 async fn stop(
     State(app): State<Arc<App>>,
@@ -848,6 +886,58 @@ mod tests {
                 .expect("the stream goes on");
             buffer.push_str(&String::from_utf8_lossy(&chunk));
         }
+    }
+
+    /// `GET /api/links` answers 401 without a session or the key, and
+    /// with one the page's links, best first, each with its kind and QR
+    /// code; from another site's page, 403.
+    #[tokio::test]
+    async fn the_links_with_their_qr_codes_need_a_session() {
+        let feed = Feed::new("main");
+        let served = serve_on(&feed, "0.0.0.0:0");
+        assert_eq!(
+            served.get("/api/links", None).await.status(),
+            StatusCode::UNAUTHORIZED
+        );
+        let cookie = served.login().await;
+        let response = served.get("/api/links", Some(&cookie)).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let links: Vec<serde_json::Value> = response.json().await.unwrap();
+        let last = links.last().unwrap();
+        assert_eq!(last["kind"], "loopback");
+        assert!(
+            last["url"]
+                .as_str()
+                .unwrap()
+                .ends_with(&format!("/#key={KEY}"))
+        );
+        for link in &links {
+            assert!(
+                link["qr_svg"].as_str().unwrap().starts_with("<svg"),
+                "{link}"
+            );
+            assert!(
+                ["lan", "tailscale", "other", "vpn", "loopback"]
+                    .contains(&link["kind"].as_str().unwrap())
+            );
+        }
+        let bearer = served
+            .http
+            .get(format!("{}/api/links", served.base))
+            .header(header::AUTHORIZATION, format!("Bearer {KEY}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(bearer.status(), StatusCode::OK);
+        let cross = served
+            .http
+            .get(format!("{}/api/links", served.base))
+            .header(header::COOKIE, &cookie)
+            .header("sec-fetch-site", "cross-site")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(cross.status(), StatusCode::FORBIDDEN);
     }
 
     /// The page is open to all; the API answers 401 without the key, and
