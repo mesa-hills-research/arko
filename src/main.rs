@@ -17,6 +17,7 @@
 //! run from the command line as `fin index ...`).
 
 mod agents;
+mod claude_code;
 mod credentials;
 mod crew;
 mod glyphs;
@@ -27,6 +28,7 @@ mod message;
 #[cfg(test)]
 mod mock_model;
 mod outside;
+mod providers;
 mod remote;
 mod session;
 mod shell;
@@ -42,7 +44,7 @@ use std::time::{Duration, Instant};
 use arko_agents::Tool;
 use arko_agents::builtins::ASK_USER_TOOL_NAME;
 use arko_agents::terminal::{TerminalConfig, TerminalManager, TerminalTool};
-use arko_ai::{CodexAuthFile, LLMClient, Provider};
+use arko_ai::LLMClient;
 use arko_workflows::notes::Note;
 use arko_workflows::persistence::{EventLog, PersistenceConfig};
 use arko_workflows::prelude::*;
@@ -52,8 +54,9 @@ use clap::Parser;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::agents::{AgentSettings, Effort, MAIN, ModelSettings, NO_LIMIT, WORKER, resolve_model};
-use crate::credentials::{ANTHROPIC_KEY, Need, VOYAGE_KEY};
+use crate::credentials::{Need, VOYAGE_KEY};
 use crate::crew::Crew;
+use crate::providers::{Failure, OpenAiAuth};
 use crate::remote::{Action, Delivery, Level, Source};
 use crate::session::{Session, Settings};
 use crate::shell::{Shell, ShellTool, WindowsShell};
@@ -74,18 +77,27 @@ struct Args {
     #[arg(short = 'p', long)]
     prompt: Option<String>,
 
-    /// The model: an ID, or opus, fable, sonnet, sol, astra or luna.
-    /// Default: opus with ANTHROPIC_API_KEY (or one in a .env file), else
-    /// sol with a ChatGPT login.
+    /// The model: an ID or alias (opus, fable, sonnet, sol, astra, luna,
+    /// gemini, flash); openrouter:<slug> for a model on OpenRouter
+    /// (openrouter:anthropic/claude-opus-5.5); or cc:<model> for a Claude
+    /// model in your installed Claude Code, on your Claude plan (cc:opus,
+    /// cc:fable). Default, by the credentials there are: opus with
+    /// ANTHROPIC_API_KEY, else sol with a ChatGPT login, else cc:opus with
+    /// Claude Code installed, else openrouter:anthropic/claude-opus-5.5
+    /// with OPENROUTER_API_KEY, else sol with OPENAI_API_KEY, else gemini
+    /// with GEMINI_API_KEY.
     #[arg(short, long)]
     model: Option<String>,
 
-    /// Reasoning effort.
+    /// Reasoning effort. Gemini thinks at low, medium or high (higher
+    /// efforts are high).
     #[arg(short, long, value_enum, default_value_t = Effort::Xhigh)]
     effort: Effort,
 
-    /// Fast mode: Anthropic's on Claude Opus 5.5 (priced at 2x), or Fast
-    /// mode over the ChatGPT login (uses more of the plan).
+    /// Fast mode: Anthropic's on Claude Opus 5.5 (priced at 2x; in Claude
+    /// Code, Claude Code's fast mode), or OpenAI's Fast mode (priced at 2x
+    /// with an API key; uses more of a ChatGPT plan). Gemini and OpenRouter
+    /// have none.
     #[arg(long)]
     fast: bool,
 
@@ -102,10 +114,12 @@ struct Args {
     #[arg(long)]
     worker_fast: bool,
 
-    /// Anthropic's 1-hour prompt cache for the Claude models, instead of
-    /// the 5-minute one: the cache outlasts pauses of up to an hour, and a
-    /// cache write costs 2x the input price instead of 1.25x. Default:
-    /// FIN_CACHE_1H (1 or 0, in the environment or a .env file).
+    /// Anthropic's 1-hour prompt cache for the Claude models (by API key
+    /// or on OpenRouter), instead of the 5-minute one: the cache outlasts
+    /// pauses of up to an hour, and a cache write costs 2x the input price
+    /// instead of 1.25x. Claude Code chooses its own (an hour on a Claude
+    /// plan). Default: FIN_CACHE_1H (1 or 0, in the environment or a .env
+    /// file).
     #[arg(long = "cache-1h", conflicts_with = "no_cache_1h")]
     cache_1h: bool,
 
@@ -120,9 +134,10 @@ struct Args {
 
     /// Input size, in tokens, at which an agent writes a handover report and
     /// continues in a fresh conversation. Default: 500000 on Claude models,
-    /// 250000 on the ChatGPT login (whose backend accepts 272000), 200000
-    /// on others (at most 80% of what the model accepts). When resuming, it
-    /// sets the main agent's size as /handover-at does (up to the size the
+    /// 250000 for OpenAI models on the ChatGPT login (whose backend accepts
+    /// 272000), 200000 on others (at most 80% of what the model accepts;
+    /// 100000 when OpenRouter's catalog can't say). When resuming, it sets
+    /// the main agent's size as /handover-at does (up to the size the
     /// session started with).
     #[arg(long)]
     handover_at: Option<usize>,
@@ -160,15 +175,22 @@ struct Args {
     #[arg(long)]
     codex_auth: Option<PathBuf>,
 
+    /// How a new session reaches OpenAI models: chatgpt (the ChatGPT login,
+    /// on your plan) or api-key (OPENAI_API_KEY, billed per token). The
+    /// session keeps it. Default: FIN_OPENAI_AUTH, else the ChatGPT login
+    /// when there is one, else the API key.
+    #[arg(long, value_enum)]
+    openai_auth: Option<OpenAiAuth>,
+
     /// The shell commands run in on Windows: cmd (cmd.exe) or powershell
     /// (PowerShell 7 where installed, else Windows PowerShell). Default:
     /// FIN_SHELL, else cmd. Elsewhere commands run in bash (else sh).
     #[arg(long, value_enum)]
     shell: Option<WindowsShell>,
 
-    /// Open the setup screen first: paste an Anthropic API key or a Voyage
-    /// API key, or give the path to a Codex auth.json. It is saved in fin's
-    /// folder.
+    /// Open the setup screen first: paste an API key (Anthropic, OpenAI,
+    /// Gemini, OpenRouter or Voyage), give the path to a Codex auth.json, or
+    /// check Claude Code. What you enter is saved in fin's folder.
     #[arg(long)]
     setup: bool,
 
@@ -278,10 +300,11 @@ async fn run(args: Args) -> Result<ExitCode, String> {
                 || args.cache_1h
                 || args.no_cache_1h
                 || args.shell.is_some()
+                || args.openai_auth.is_some()
             {
                 eprintln!(
                     "fin: a resumed session keeps the models and shell it was started with ({})",
-                    settings.main.describe()
+                    settings.describe(&settings.main)
                 );
             }
             if !settings.workspace.is_dir() {
@@ -296,7 +319,17 @@ async fn run(args: Args) -> Result<ExitCode, String> {
             if args.model.is_none() && default_model(&args).is_none() && can_ask {
                 credentials::setup(Some(&Need::Any))?;
             }
-            (None, new_settings(&args)?, true)
+            let mut settings = new_settings(&args)?;
+            let notes = providers::check_openrouter(
+                &mut settings,
+                args.handover_at.is_some(),
+                providers::openrouter_url(),
+            )
+            .await?;
+            for note in notes {
+                eprintln!("fin: {note}");
+            }
+            (None, settings, true)
         }
     };
 
@@ -311,16 +344,18 @@ async fn run(args: Args) -> Result<ExitCode, String> {
 
     // Missing credentials, or an auth file that fails, are asked for.
     let client = loop {
-        match client(&args, &settings) {
+        match providers::client(args.codex_auth.as_deref(), &settings) {
             Ok(client) => break Arc::new(client),
             Err(Failure::Need(need)) if can_ask => credentials::setup(Some(&need))?,
             Err(Failure::Need(need)) => return Err(need.message()),
             Err(Failure::Other(message)) => return Err(message),
         }
     };
+    let provider_setup = providers::Setup::new(settings.openai_auth);
     let agent_settings = AgentSettings {
         main: &settings.main,
         worker: &settings.worker,
+        providers: &provider_setup,
         max_workers: settings.max_workers,
         handover_at: settings.handover_at,
         show_thinking: settings.show_thinking,
@@ -636,28 +671,50 @@ fn workspace(args: &Args) -> Result<PathBuf, String> {
 
 fn new_settings(args: &Args) -> Result<Settings, String> {
     let workspace = workspace(args)?;
+    let name = |name: &str| Ok::<_, String>(providers::model_name(&resolve_model(name)?));
     let main_model = match &args.model {
-        Some(name) => resolve_model(name)?.id,
+        Some(model) => name(model)?,
         None => default_model(args)
             .ok_or_else(|| Need::Any.message())?
             .to_string(),
     };
-    // The 1-hour cache is Anthropic's; other models ignore it.
+    // The 1-hour cache is Anthropic's, by API key or on OpenRouter; other
+    // models ignore it.
     let want_1h = if args.cache_1h || args.no_cache_1h {
         args.cache_1h
     } else {
         credentials::switch(credentials::CACHE_1H)?.unwrap_or(false)
     };
     let cache_1h = |id: &str| {
-        want_1h && resolve_model(id).is_ok_and(|model| model.provider == Provider::Anthropic)
+        want_1h && resolve_model(id).is_ok_and(|model| providers::takes_cache_ttl(&model))
     };
-    // fin reaches OpenAI models over the ChatGPT login.
+    let worker_model = args.worker_model.as_deref().map(name).transpose()?;
+    // OpenAI models are all reached one way: the session keeps it.
+    let uses_openai = std::iter::once(&main_model)
+        .chain(&worker_model)
+        .any(|id| resolve_model(id).is_ok_and(|model| model.provider == arko_ai::Provider::OpenAI));
+    let openai_auth = if uses_openai {
+        let (auth, both) =
+            providers::choose_openai_auth(args.openai_auth, args.codex_auth.as_deref())?;
+        if both {
+            eprintln!(
+                "fin: this session reaches OpenAI models over your ChatGPT login (your plan), which comes before OPENAI_API_KEY; --openai-auth api-key (or FIN_OPENAI_AUTH=api-key in a .env file) starts sessions on the API key instead, billed per token"
+            );
+        }
+        Some(auth)
+    } else {
+        if args.openai_auth.is_some() {
+            eprintln!("fin: --openai-auth is for OpenAI models; this session has none");
+        }
+        None
+    };
+    // On the ChatGPT login, OpenAI models hand over below its backend's
+    // input limit.
     let handover_at = |id: &str| {
         args.handover_at.or_else(|| {
-            resolve_model(id).ok().map(|model| {
-                let chatgpt = model.provider == Provider::OpenAI;
-                agents::default_handover(&model, chatgpt)
-            })
+            resolve_model(id)
+                .ok()
+                .map(|model| agents::default_handover(&model, openai_auth))
         })
     };
     let main = ModelSettings {
@@ -667,17 +724,14 @@ fn new_settings(args: &Args) -> Result<Settings, String> {
         effort: args.effort,
         fast: args.fast,
     };
-    let worker = match &args.worker_model {
-        Some(name) => {
-            let model = resolve_model(name)?.id;
-            ModelSettings {
-                cache_1h: cache_1h(&model),
-                handover_at: handover_at(&model),
-                model,
-                effort: args.worker_effort.unwrap_or(args.effort),
-                fast: args.worker_fast,
-            }
-        }
+    let worker = match worker_model {
+        Some(model) => ModelSettings {
+            cache_1h: cache_1h(&model),
+            handover_at: handover_at(&model),
+            model,
+            effort: args.worker_effort.unwrap_or(args.effort),
+            fast: args.worker_fast,
+        },
         None => ModelSettings {
             effort: args.worker_effort.unwrap_or(main.effort),
             ..main.clone()
@@ -686,9 +740,11 @@ fn new_settings(args: &Args) -> Result<Settings, String> {
     // What sessions read before the handover was set per model.
     let session_handover = main.handover_at.unwrap_or(200_000);
     if args.cache_1h && !main.cache_1h && !worker.cache_1h {
-        eprintln!("fin: --cache-1h is for Claude models; this session has none, so it is ignored");
+        eprintln!(
+            "fin: --cache-1h is for Claude models by API key or on OpenRouter (Claude Code chooses its own); this session has none, so it is ignored"
+        );
     }
-    Ok(Settings {
+    let settings = Settings {
         workspace,
         main,
         worker,
@@ -700,7 +756,10 @@ fn new_settings(args: &Args) -> Result<Settings, String> {
         created: chrono::Utc::now(),
         windows_shell: Some(windows_shell(args)?),
         title: args.prompt.as_deref().map(|prompt| ui::cut(prompt, 80)),
-    })
+        openai_auth,
+    };
+    providers::check_openai_choices(&settings)?;
+    Ok(settings)
 }
 
 /// The shell a new session runs commands in on Windows: --shell, else
@@ -716,88 +775,9 @@ fn windows_shell(args: &Args) -> Result<WindowsShell, String> {
     }
 }
 
-/// Opus with an Anthropic key, else GPT-6.1 Sol with a ChatGPT login;
-/// `None` without either.
+/// The model of a new session without --model; `None` without credentials.
 fn default_model(args: &Args) -> Option<&'static str> {
-    if credentials::var(ANTHROPIC_KEY).is_some() {
-        Some("claude-opus-5-5")
-    } else if credentials::codex_auth(args.codex_auth.as_deref()).is_some()
-        || credentials::var("OPENAI_OAUTH_ACCESS_TOKEN").is_some()
-        || CodexAuthFile::default_path().is_some_and(|path| path.is_file())
-    {
-        Some("gpt-6.1-sol")
-    } else {
-        None
-    }
-}
-
-/// Why there is no model client.
-enum Failure {
-    /// Credentials are missing, or the auth file fails.
-    Need(Need),
-    Other(String),
-}
-
-/// The model client: Anthropic with an API key, OpenAI with the ChatGPT
-/// login only (never an OpenAI API key).
-fn client(args: &Args, settings: &Settings) -> Result<LLMClient, Failure> {
-    const NOT_USED: [&str; 4] = [
-        "OPENAI_API_KEY",
-        "GOOGLE_API_KEY",
-        "GEMINI_API_KEY",
-        "OPENROUTER_API_KEY",
-    ];
-    let auth_file = credentials::codex_auth(args.codex_auth.as_deref());
-    let from_file = auth_file.is_some();
-    let mut client = LLMClient::from_env_with(|name| {
-        if NOT_USED.contains(&name) || (from_file && name.starts_with("OPENAI_OAUTH_")) {
-            None
-        } else {
-            credentials::var(name)
-        }
-    })
-    .map_err(|error| Failure::Other(error.to_string()))?;
-    let openai_model = [&settings.main, &settings.worker]
-        .into_iter()
-        .find(|model| model.provider() == Ok(Provider::OpenAI));
-    if let Some(model) = openai_model
-        && !client.has_provider(&Provider::OpenAI)
-    {
-        let need = |problem: String| {
-            Failure::Need(Need::ChatGptLogin {
-                model: model.model.clone(),
-                problem,
-            })
-        };
-        let auth = match &auth_file {
-            Some(path) => CodexAuthFile::load(path),
-            None => CodexAuthFile::load_default(),
-        }
-        .map_err(|error| need(error.to_string()))?;
-        auth.credentials().map_err(|error| {
-            need(format!(
-                "{} holds no ChatGPT login ({error}); sign in with `codex login`",
-                auth.path().display()
-            ))
-        })?;
-        client = client
-            .with_codex_auth_file(&auth)
-            .map_err(|error| need(error.to_string()))?;
-    }
-    for model in [&settings.main, &settings.worker] {
-        let provider = model.provider().map_err(Failure::Other)?;
-        if !client.has_provider(&provider) {
-            let model = model.model.clone();
-            return Err(Failure::Need(match provider {
-                Provider::Anthropic => Need::AnthropicKey { model },
-                _ => Need::ChatGptLogin {
-                    model,
-                    problem: "no ChatGPT login found".into(),
-                },
-            }));
-        }
-    }
-    Ok(client)
+    providers::default_model(args.codex_auth.as_deref())
 }
 
 /// Logs go to the session's `fin.log`, not the terminal. `RUST_LOG` sets
@@ -1308,7 +1288,7 @@ impl Harness {
         out.line(&format!(
             "{} {} · {}",
             out.bold("fin"),
-            self.settings.main.describe(),
+            self.settings.describe(&self.settings.main),
             self.workers_summary()
         ));
         out.line(&out.dim(&format!(
@@ -1393,7 +1373,10 @@ impl Harness {
             n => format!("up to {n} workers"),
         };
         if self.settings.worker != self.settings.main {
-            text.push_str(&format!(" on {}", self.settings.worker.describe()));
+            text.push_str(&format!(
+                " on {}",
+                self.settings.describe(&self.settings.worker)
+            ));
         }
         text
     }
@@ -1653,7 +1636,7 @@ impl Harness {
             }
         };
         let info = remote::Info {
-            model: self.settings.main.describe(),
+            model: self.settings.describe(&self.settings.main),
             workspace: self.settings.workspace.display().to_string(),
             session: self.session.id.clone(),
         };
@@ -2111,13 +2094,13 @@ impl Harness {
                 out.line(&out.dim(&format!("{}", self.session.dir.display())));
                 out.line(&out.dim(&format!(
                     "main: {} · {}",
-                    self.settings.main.describe(),
+                    self.settings.describe(&self.settings.main),
                     if self.settings.max_workers == 0 {
                         "no workers".to_string()
                     } else {
                         format!(
                             "workers: {} ({})",
-                            self.settings.worker.describe(),
+                            self.settings.describe(&self.settings.worker),
                             match self.settings.max_workers {
                                 NO_LIMIT => "no limit".to_string(),
                                 n => format!("up to {n} at once"),
@@ -3031,6 +3014,7 @@ mod tests {
         let settings = AgentSettings {
             main: &opus,
             worker: &opus,
+            providers: &providers::Setup::new(None),
             max_workers: NO_LIMIT,
             handover_at: 200_000,
             show_thinking: false,
@@ -3117,6 +3101,7 @@ mod tests {
         let plain = AgentSettings {
             main: &opus,
             worker: &opus,
+            providers: &providers::Setup::new(None),
             max_workers: 4,
             handover_at: 200_000,
             show_thinking: false,
@@ -3191,10 +3176,12 @@ mod tests {
             created: chrono::Utc::now(),
             title: None,
             windows_shell: None,
+            openai_auth: None,
         };
         let agent_settings = AgentSettings {
             main: &luna,
             worker: &luna,
+            providers: &providers::Setup::new(None),
             max_workers: NO_LIMIT,
             handover_at: 200_000,
             show_thinking: false,
@@ -4170,5 +4157,381 @@ mod tests {
             "No workers yet: the agent starts them as it needs them.",
             ""
         ));
+    }
+
+    /// Puts `harness` on the models `main` and `worker` with `setup`, with
+    /// fin's shell and terminal tools (agents in Claude Code are offered
+    /// the tools registered for them, and only those). Returns the
+    /// terminal managers, to shut down after.
+    fn on_models(
+        harness: &mut Harness,
+        main: &ModelSettings,
+        worker: &ModelSettings,
+        setup: &providers::Setup,
+    ) -> Managers {
+        let shell = Shell::detect(WindowsShell::Cmd);
+        let managers = Managers::open(&harness.session, &shell).unwrap();
+        harness.tools = managers.tools(&shell, harness.handover.runs());
+        harness.outside = Arc::new(outside::Outside::new(
+            harness.settings.allow_outside_workspace,
+            managers.list(),
+            harness.settings.workspace.clone(),
+        ));
+        let agent_settings = AgentSettings {
+            main,
+            worker,
+            providers: setup,
+            max_workers: NO_LIMIT,
+            handover_at: 200_000,
+            show_thinking: false,
+            shell_name: shell.name,
+            mcp_tools: &[],
+            mcp_servers: &[],
+            skill_folders: &[],
+            index_tools: &[],
+            indexes: &[],
+        };
+        harness.main_config = agents::main_config(&agent_settings).unwrap();
+        harness.worker_config = agents::worker_config(&agent_settings).unwrap();
+        harness.settings.main = main.clone();
+        harness.settings.worker = worker.clone();
+        harness.open(false).unwrap();
+        managers
+    }
+
+    /// Claude Code settings that run arko's scripted stand-in for the
+    /// `claude` CLI, with its script, log and state in `fake`.
+    fn fake_claude_code(fake: &Path) -> providers::Setup {
+        let mut setup = providers::Setup::new(None);
+        let python = std::env::var("ARKO_TEST_PYTHON")
+            .unwrap_or_else(|_| if cfg!(windows) { "python" } else { "python3" }.into());
+        setup.claude_code.cli_path = Some(python.into());
+        setup.claude_code.cli_args = vec![
+            concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../arko_framework/arko_agents/tests/fixtures/fake_claude_agent.py"
+            )
+            .into(),
+        ];
+        for (name, file) in [
+            ("FAKE_CLAUDE_SCRIPT", "script.json"),
+            ("FAKE_CLAUDE_LOG", "log.jsonl"),
+            ("FAKE_CLAUDE_STATE", "state"),
+        ] {
+            setup
+                .claude_code
+                .env
+                .insert(name.into(), fake.join(file).display().to_string());
+        }
+        setup
+    }
+
+    /// The fake CLI's log, and the arguments it was started with.
+    fn fake_log(fake: &Path) -> (Vec<serde_json::Value>, Vec<String>) {
+        let log: Vec<serde_json::Value> = std::fs::read_to_string(fake.join("log.jsonl"))
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        let argv = serde_json::from_value(
+            log.iter().find(|entry| entry["event"] == "argv").unwrap()["argv"].clone(),
+        )
+        .unwrap();
+        (log, argv)
+    }
+
+    /// The argument after `flag`.
+    fn after(argv: &[String], flag: &str) -> Option<String> {
+        argv.iter()
+            .position(|arg| arg == flag)
+            .map(|index| argv[index + 1].clone())
+    }
+
+    /// A turn on a model on OpenRouter: fin sends OpenRouter's own
+    /// reasoning, the 1-hour cache on a Claude slug, and its tools, and the
+    /// cost is what OpenRouter reports.
+    #[tokio::test]
+    async fn a_turn_on_openrouter_sends_its_settings_and_counts_its_cost() {
+        use crate::mock_model::{ModelServer, openrouter_tool_call};
+        let bodies = Arc::new(Mutex::new(Vec::new()));
+        let seen = bodies.clone();
+        let server = ModelServer::start(Arc::new(move |_, body: String| {
+            seen.lock().unwrap().push(body);
+            Box::pin(async move {
+                openrouter_tool_call(
+                    "1",
+                    "complete_task",
+                    serde_json::json!({"summary": "Done on OpenRouter."}),
+                    0.0125,
+                )
+            })
+        }))
+        .await;
+        let temp = tempfile::tempdir().unwrap();
+        let (mut harness, mut inputs, _sender) =
+            harness(temp.path(), server.openrouter_client(), false);
+        let model = ModelSettings {
+            model: "openrouter:anthropic/claude-opus-5.5".into(),
+            effort: Effort::Xhigh,
+            fast: false,
+            cache_1h: true,
+            handover_at: Some(500_000),
+        };
+        let managers = on_models(&mut harness, &model, &model, &providers::Setup::new(None));
+        let end = tokio::time::timeout(
+            Duration::from_secs(30),
+            harness.turn(Prompt::User("Do it.".into()), &mut inputs),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(end, TurnEnd::Answered));
+        assert_eq!(summary(&harness), "Done on OpenRouter.");
+        let body: serde_json::Value = serde_json::from_str(&bodies.lock().unwrap()[0]).unwrap();
+        assert_eq!(body["model"], "anthropic/claude-opus-5.5");
+        assert_eq!(body["reasoning"]["effort"], "xhigh");
+        assert_eq!(body["cache_control"]["ttl"], "1h");
+        let tools: Vec<&str> = body["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|tool| tool["function"]["name"].as_str().unwrap())
+            .collect();
+        assert!(tools.contains(&"shell"), "{tools:?}");
+        assert!(
+            (harness.spent() - 0.0125).abs() < 1e-9,
+            "{}",
+            harness.spent()
+        );
+        harness.crew.as_ref().unwrap().shutdown().await;
+        managers.shutdown().await;
+    }
+
+    /// A turn on a Gemini model: fin sends its thinking level (xhigh
+    /// effort thinks high) and its tools, and the cost is priced from the
+    /// registry.
+    #[tokio::test]
+    async fn a_turn_on_gemini_sends_its_thinking_level_and_counts_its_cost() {
+        use crate::mock_model::{ModelServer, gemini_tool_call};
+        let bodies = Arc::new(Mutex::new(Vec::new()));
+        let seen = bodies.clone();
+        let server = ModelServer::start(Arc::new(move |_, body: String| {
+            seen.lock().unwrap().push(body);
+            Box::pin(async move {
+                gemini_tool_call(
+                    "1",
+                    "complete_task",
+                    serde_json::json!({"summary": "Done on Gemini."}),
+                )
+            })
+        }))
+        .await;
+        let temp = tempfile::tempdir().unwrap();
+        let (mut harness, mut inputs, _sender) =
+            harness(temp.path(), server.gemini_client(), false);
+        let model = ModelSettings {
+            model: "gemini-3.1-pro-preview".into(),
+            effort: Effort::Xhigh,
+            fast: false,
+            cache_1h: false,
+            handover_at: Some(200_000),
+        };
+        let managers = on_models(&mut harness, &model, &model, &providers::Setup::new(None));
+        let end = tokio::time::timeout(
+            Duration::from_secs(30),
+            harness.turn(Prompt::User("Do it.".into()), &mut inputs),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(end, TurnEnd::Answered));
+        assert_eq!(summary(&harness), "Done on Gemini.");
+        let body: serde_json::Value = serde_json::from_str(&bodies.lock().unwrap()[0]).unwrap();
+        assert_eq!(body["model"], "gemini-3.1-pro-preview");
+        assert_eq!(
+            body["generation_config"]["thinking_level"], "high",
+            "{body}"
+        );
+        assert!(body.to_string().contains("\"shell\""), "fin's tools");
+        // 1000 input tokens at $2/M and 20 output at $12/M.
+        assert!(
+            (harness.spent() - 0.00224).abs() < 1e-9,
+            "{}",
+            harness.spent()
+        );
+        harness.crew.as_ref().unwrap().shutdown().await;
+        managers.shutdown().await;
+    }
+
+    /// A turn on a Claude Code model (`cc:opus`), through arko's scripted
+    /// stand-in for the `claude` CLI: the CLI is offered fin's own tools and
+    /// none of Claude Code's, fin's shell runs the command and its guard
+    /// refuses one outside the working directory, and the turn's spending
+    /// shows as plan usage, not dollars.
+    #[tokio::test]
+    async fn a_turn_in_claude_code_runs_fin_s_tools_and_shows_plan_usage() {
+        let temp = tempfile::tempdir().unwrap();
+        let fake = temp.path().join("fake");
+        std::fs::create_dir_all(&fake).unwrap();
+        // Outside the working directory and the temporary directories,
+        // which the guard lets commands change; it doesn't exist, so a
+        // command the guard let through would change nothing.
+        let outside = format!("~/fin-guard-test-{}", uuid::Uuid::new_v4().simple());
+        let script = serde_json::json!([[
+            {"rate_limit": {"status": "allowed", "unifiedWindows": {
+                "five_hour": {"utilization": 0.12}, "seven_day": {"utilization": 0.03}}}},
+            {"text": "Making the file.", "input_tokens": 1200},
+            {"tool": "mcp__arko__shell", "input": {"command": "echo hi > made.txt"}},
+            {"tool": "mcp__arko__shell", "input": {"command": format!("rm -rf {outside}")}},
+            {"tool": "mcp__arko__complete_task", "input": {"summary": "Made it."}},
+        ]]);
+        std::fs::write(fake.join("script.json"), script.to_string()).unwrap();
+        let (mut harness, mut inputs, _sender) = harness(temp.path(), LLMClient::new(), false);
+        let cc = ModelSettings {
+            model: "cc:claude-opus-5-5".into(),
+            effort: Effort::High,
+            fast: false,
+            cache_1h: false,
+            handover_at: None,
+        };
+        let managers = on_models(&mut harness, &cc, &cc, &fake_claude_code(&fake));
+
+        let end = tokio::time::timeout(
+            Duration::from_secs(60),
+            harness.turn(Prompt::User("Make a file.".into()), &mut inputs),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(end, TurnEnd::Answered));
+        assert_eq!(summary(&harness), "Made it.");
+        let workspace = &harness.settings.workspace;
+        assert_eq!(
+            std::fs::read_to_string(workspace.join("made.txt"))
+                .unwrap()
+                .trim(),
+            "hi"
+        );
+
+        let (log, argv) = fake_log(&fake);
+        assert_eq!(
+            after(&argv, "--tools").as_deref(),
+            Some(""),
+            "no built-ins: {argv:?}"
+        );
+        assert_eq!(after(&argv, "--model").as_deref(), Some("claude-opus-5-5"));
+        assert_eq!(after(&argv, "--effort").as_deref(), Some("high"));
+        assert!(
+            after(&argv, "--system-prompt").is_some_and(|prompt| prompt.contains("You are fin")),
+            "fin's prompt replaces Claude Code's: {argv:?}"
+        );
+        let served: Vec<String> =
+            log.iter().find(|entry| entry["event"] == "tools").unwrap()["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|tool| tool["name"].as_str().unwrap().to_string())
+                .collect();
+        for tool in [
+            "shell",
+            "terminal_start",
+            "read_file",
+            "ask_user",
+            "start_agent",
+        ] {
+            assert!(served.iter().any(|name| name == tool), "{tool}: {served:?}");
+        }
+        let refused = log
+            .iter()
+            .filter(|entry| entry["event"] == "post")
+            .find(|entry| entry["tool"] == "mcp__arko__shell" && entry["is_error"] == true)
+            .expect("the command guard refused the rm");
+        assert!(
+            refused["output"]
+                .as_str()
+                .unwrap()
+                .contains("which is outside the working directory"),
+            "{refused}"
+        );
+
+        harness.flush_printer().await;
+        let stats = harness.stats.lock().unwrap().clone();
+        assert_eq!(
+            stats.plan_usage.as_deref(),
+            Some("Claude plan 5 h 12%, 7 d 3%")
+        );
+        assert_eq!(harness.spent(), 0.0, "the plan, not dollars");
+        let reading = remote::Meter::read(harness.gauges.as_ref());
+        assert_eq!(reading.cost, 0.0);
+        assert_eq!(
+            reading.plan_usage.as_deref(),
+            Some("Claude plan 5 h 12%, 7 d 3%")
+        );
+        harness.crew.as_ref().unwrap().shutdown().await;
+        managers.shutdown().await;
+    }
+
+    /// The workers can run on another provider than the main agent: here
+    /// the main agent is on the OpenAI mock and its worker in Claude Code,
+    /// with fin's tools only, and the worker's report reaches the main
+    /// agent.
+    #[tokio::test]
+    async fn a_worker_in_claude_code_reports_to_a_main_agent_elsewhere() {
+        use crate::mock_model::{ModelServer, complete, tool_call};
+        let server = ModelServer::start(Arc::new(move |_, body: String| {
+            Box::pin(async move {
+                if body.contains("There are 3 files.") {
+                    complete("m3", "Final: 3 files.")
+                } else if body.contains("Started r1") {
+                    complete("m2", "r1 is counting; its report follows.")
+                } else {
+                    tool_call(
+                        "m1",
+                        crew::START_AGENT,
+                        serde_json::json!({"agent": WORKER, "task": "Count the files."}),
+                    )
+                }
+            })
+        }))
+        .await;
+        let temp = tempfile::tempdir().unwrap();
+        let fake = temp.path().join("fake");
+        std::fs::create_dir_all(&fake).unwrap();
+        let script = serde_json::json!([[
+            {"tool": "mcp__arko__shell", "input": {"command": "ls | wc -l"}},
+            {"tool": "mcp__arko__complete_task", "input": {"summary": "There are 3 files."}},
+        ]]);
+        std::fs::write(fake.join("script.json"), script.to_string()).unwrap();
+        let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), false);
+        let luna = harness.settings.main.clone();
+        let cc = ModelSettings {
+            model: "cc:claude-fable-5-1".into(),
+            effort: Effort::Medium,
+            fast: false,
+            cache_1h: false,
+            handover_at: None,
+        };
+        let managers = on_models(&mut harness, &luna, &cc, &fake_claude_code(&fake));
+        assert!(harness.main_config.claude_code.is_none());
+        assert!(harness.worker_config.runs_in_claude_code());
+
+        let end = tokio::time::timeout(
+            Duration::from_secs(60),
+            harness.turn(Prompt::User("How many files?".into()), &mut inputs),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(end, TurnEnd::Answered));
+        if summary(&harness) != "Final: 3 files." {
+            let end =
+                tokio::time::timeout(Duration::from_secs(60), harness.finish_workers(&mut inputs))
+                    .await
+                    .unwrap();
+            assert!(matches!(end, TurnEnd::Answered));
+        }
+        assert_eq!(summary(&harness), "Final: 3 files.");
+        let (_, argv) = fake_log(&fake);
+        assert_eq!(after(&argv, "--tools").as_deref(), Some(""), "{argv:?}");
+        assert_eq!(after(&argv, "--model").as_deref(), Some("claude-fable-5-1"));
+        assert_eq!(after(&argv, "--effort").as_deref(), Some("medium"));
+        harness.crew.as_ref().unwrap().shutdown().await;
+        managers.shutdown().await;
     }
 }

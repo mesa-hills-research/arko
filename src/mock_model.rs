@@ -92,6 +92,22 @@ impl ModelServer {
                 .with_base_url(&self.url),
         )
     }
+
+    /// A client whose Gemini requests come here: answer them with
+    /// [`gemini_tool_call`].
+    pub fn gemini_client(&self) -> LLMClient {
+        LLMClient::new().with_google_client(
+            arko_ai::providers::google::GoogleClient::new("AIza-test").with_base_url(&self.url),
+        )
+    }
+
+    /// A client whose OpenRouter requests come here: answer them with
+    /// [`openrouter_tool_call`].
+    pub fn openrouter_client(&self) -> LLMClient {
+        LLMClient::new().with_openrouter_client(
+            arko_ai::OpenRouterClient::new("sk-or-test").with_base_url(&self.url),
+        )
+    }
 }
 
 impl Drop for ModelServer {
@@ -145,4 +161,50 @@ pub fn complete(id: &str, report: &str) -> String {
         "complete_task",
         serde_json::json!({ "summary": report }),
     )
+}
+
+/// An OpenRouter (Chat Completions) stream calling the tool `name`, which
+/// OpenRouter says cost `cost` dollars.
+pub fn openrouter_tool_call(id: &str, name: &str, arguments: Value, cost: f64) -> String {
+    let chunk = |delta: Value, finish: Option<&str>| {
+        serde_json::json!({
+            "id": format!("gen-{id}"), "object": "chat.completion.chunk", "created": 1,
+            "model": "anthropic/claude-opus-5.5", "provider": "Anthropic",
+            "choices": [{"index": 0, "delta": delta, "finish_reason": finish}],
+        })
+    };
+    let call = chunk(
+        serde_json::json!({"role": "assistant", "tool_calls": [{
+            "index": 0, "id": format!("call_{id}"), "type": "function",
+            "function": {"name": name, "arguments": arguments.to_string()},
+        }]}),
+        None,
+    );
+    let mut usage = chunk(serde_json::json!({}), Some("tool_calls"));
+    usage["usage"] = serde_json::json!({
+        "prompt_tokens": 1000, "completion_tokens": 20, "total_tokens": 1020, "cost": cost,
+    });
+    let mut stream: String = [call, usage]
+        .iter()
+        .map(|chunk| format!("data: {chunk}\n\n"))
+        .collect();
+    stream.push_str("data: [DONE]\n\n");
+    stream
+}
+
+/// A Gemini (Interactions API) stream calling the tool `name`.
+pub fn gemini_tool_call(id: &str, name: &str, arguments: Value) -> String {
+    [
+        serde_json::json!({"event_type": "step.start", "index": 0,
+            "step": {"type": "function_call", "id": format!("call_{id}"), "name": name}}),
+        serde_json::json!({"event_type": "step.delta", "index": 0,
+            "delta": {"type": "arguments_delta", "arguments": arguments.to_string()}}),
+        serde_json::json!({"event_type": "step.stop", "index": 0}),
+        serde_json::json!({"event_type": "interaction.completed", "interaction": {
+            "id": format!("int_{id}"), "status": "requires_action",
+            "usage": {"total_input_tokens": 1000, "total_output_tokens": 20}}}),
+    ]
+    .iter()
+    .map(|event| format!("data: {event}\n\n"))
+    .collect()
 }

@@ -555,6 +555,9 @@ fn agent_settings_of(harness: &Harness) -> AgentSettings<'_> {
         handover_at: harness.settings.handover_at,
         show_thinking: false,
         shell_name: "bash",
+        providers: Box::leak(Box::new(providers::Setup::new(
+            harness.settings.openai_auth,
+        ))),
         mcp_tools: &[],
         mcp_servers: &[],
         skill_folders: &[],
@@ -857,7 +860,10 @@ async fn a_chatgpt_session_hands_over_at_250k() {
     .await;
     let (mut harness, mut inputs, _sender) = harness(temp.path(), server.chatgpt_client(), true);
     let model = resolve_model(&harness.settings.main.model).unwrap();
-    harness.settings.main.handover_at = Some(agents::default_handover(&model, true));
+    harness.settings.main.handover_at = Some(agents::default_handover(
+        &model,
+        Some(providers::OpenAiAuth::ChatGpt),
+    ));
     assert_eq!(harness.settings.main.handover_at, Some(250_000));
     harness.main_config = agents::main_config(&agent_settings_of(&harness)).unwrap();
     let _managers = equip(&mut harness, false);
@@ -1151,4 +1157,84 @@ async fn remote_qr_draws_the_code_or_says_why_not() {
         "{unknown}"
     );
     harness.stop_remote().await;
+}
+
+/// Agents in Claude Code are offered fin's tools only, so outside access
+/// reaches them as it reaches the others: the command guard and the file
+/// tools' hook decide their calls, and they read the note.
+#[cfg(unix)]
+#[tokio::test]
+async fn outside_access_reaches_agents_in_claude_code() {
+    let temp = tempfile::tempdir().unwrap();
+    let fake = temp.path().join("fake");
+    std::fs::create_dir_all(&fake).unwrap();
+    let allowed = temp.path().join("outside.txt");
+    let refused = temp.path().join("outside-2.txt");
+    let command = outside_command();
+    let turn = |path: &Path, summary: &str| {
+        serde_json::json!([
+            {"tool": "mcp__arko__shell", "input": {"command": command}},
+            {"tool": "mcp__arko__write_file", "input": {"path": path.display().to_string(), "content": "x"}},
+            {"tool": "mcp__arko__complete_task", "input": {"summary": summary}},
+        ])
+    };
+    let script = serde_json::json!([turn(&allowed, "On."), turn(&refused, "Off.")]);
+    std::fs::write(fake.join("script.json"), script.to_string()).unwrap();
+    let (mut harness, mut inputs, _sender) = harness(temp.path(), LLMClient::new(), true);
+    let cc = ModelSettings {
+        model: "cc:claude-opus-5-5".into(),
+        effort: Effort::High,
+        fast: false,
+        cache_1h: false,
+        handover_at: None,
+    };
+    let managers = on_models(&mut harness, &cc, &cc, &fake_claude_code(&fake));
+    for (switch, message, reply) in [
+        ("/outside on", "Act outside.", "On."),
+        ("/outside off", "Again.", "Off."),
+    ] {
+        assert!(harness.live_command(switch, Source::Terminal));
+        let end = tokio::time::timeout(
+            Duration::from_secs(60),
+            harness.turn(Prompt::User(message.into()), &mut inputs),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(end, TurnEnd::Answered));
+        assert_eq!(summary(&harness), reply);
+    }
+    assert_eq!(std::fs::read_to_string(&allowed).unwrap(), "x");
+    assert!(!refused.exists());
+    let (log, _) = fake_log(&fake);
+    let results: Vec<(String, bool, String)> = log
+        .iter()
+        .filter(|entry| entry["event"] == "post")
+        .filter(|entry| {
+            entry["tool"] == "mcp__arko__shell" || entry["tool"] == "mcp__arko__write_file"
+        })
+        .map(|entry| {
+            (
+                entry["tool"].as_str().unwrap().to_string(),
+                entry["is_error"] == true,
+                entry["output"].as_str().unwrap_or_default().to_string(),
+            )
+        })
+        .collect();
+    assert_eq!(results.len(), 4, "{results:#?}");
+    assert!(!results[0].1 && !results[1].1, "on: {results:#?}");
+    assert!(
+        results[2].1 && results[2].2.contains(GUARD_REFUSAL),
+        "{results:#?}"
+    );
+    assert!(
+        results[3].1 && results[3].2.contains(HOOK_REFUSAL),
+        "{results:#?}"
+    );
+    let told = log
+        .iter()
+        .map(|entry| entry.to_string())
+        .collect::<String>();
+    assert!(told.contains(ON_NOTE) && told.contains(OFF_NOTE), "{told}");
+    harness.crew.as_ref().unwrap().shutdown().await;
+    managers.shutdown().await;
 }
