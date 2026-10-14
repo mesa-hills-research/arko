@@ -79,7 +79,7 @@ pub const COMMANDS: &[Command] = &[
     Command::screen(
         "/settings",
         "",
-        "the view, theme, mouse and the web page, in one place",
+        "the view, theme, mouse, outside access, handover size and web page",
     ),
     Command::session("/mcp", "the MCP servers and their tools"),
     Command::session("/skills", "the skills the agents can load"),
