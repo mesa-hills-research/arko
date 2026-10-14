@@ -323,13 +323,23 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
             if near { theme.warning() } else { theme.dim() },
         ));
     }
+    // On a plan, its usage, not dollars; what was billed, if anything;
+    // and what the session would cost at API list prices, where a plan
+    // paid for some of it.
     if let Some(plan) = &reading.plan_usage {
         left.push(sep());
-        // On a subscription: the plan's usage, not dollars.
         left.push(Span::styled(plan.clone(), theme.dim()));
-    } else if reading.cost >= 0.005 {
+    }
+    if reading.cost >= 0.005 {
         left.push(sep());
         left.push(Span::styled(format!("${:.2}", reading.cost), theme.dim()));
+    }
+    if let Some(api) = reading.api_price.filter(|api| *api >= 0.005) {
+        left.push(sep());
+        left.push(Span::styled(
+            format!("{} ${api:.2}", glyphs::render("≈")),
+            theme.dim(),
+        ));
     }
     let running = app
         .transcript

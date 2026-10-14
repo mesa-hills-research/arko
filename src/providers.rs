@@ -26,10 +26,12 @@ use std::time::Duration;
 
 use arko_ai::model::ModelType;
 use arko_ai::{
-    AnthropicCacheTtl, CodexAuthFile, GeminiThinkingLevel, GenerationConfig, LLMClient, Model,
-    OpenAIServiceTier, OpenRouterCatalog, OpenRouterReasoning, PlanUsage, Provider,
-    ReasoningConfig, ReasoningEffort, ReasoningSummary, ServiceTier, SubscriptionPlan,
+    AnthropicCacheTtl, BillingKind, CodexAuthFile, GeminiThinkingLevel, GenerationConfig,
+    LLMClient, Model, OpenAIServiceTier, OpenRouterCatalog, OpenRouterReasoning, PlanUsage,
+    Provider, ReasoningConfig, ReasoningEffort, ReasoningSummary, ServiceTier, SubscriptionPlan,
+    UsageInfo,
 };
+use arko_workflows::budget::{CostLedger, CostSource};
 use serde::{Deserialize, Serialize};
 
 use crate::agents::{Effort, ModelSettings, default_handover};
@@ -349,26 +351,217 @@ pub fn choose_openai_auth(
     })
 }
 
-/// The model of a new session without `--model`, by the credentials there
-/// are: Claude Opus 5.5 with an Anthropic API key, else GPT-6.1 Sol with a
-/// ChatGPT login, else Claude Opus 5.5 in Claude Code when `claude` is
-/// installed, else Opus on OpenRouter, Sol on an OpenAI API key, or Gemini
-/// 3.1 Pro on a Gemini key; `None` without any.
-pub fn default_model(codex_auth: Option<&Path>) -> Option<&'static str> {
-    if credentials::var(credentials::ANTHROPIC_KEY).is_some() {
-        Some("claude-opus-5-5")
-    } else if has_chatgpt_login(codex_auth) {
-        Some("gpt-6.1-sol")
-    } else if claude_code::find_cli().is_some() {
-        Some("cc:claude-opus-5-5")
-    } else if credentials::var(credentials::OPENROUTER_KEY).is_some() {
-        Some("openrouter:anthropic/claude-opus-5.5")
-    } else if credentials::var(credentials::OPENAI_KEY).is_some() {
-        Some("gpt-6.1-sol")
-    } else if gemini_key().is_some() {
-        Some("gemini-3.1-pro-preview")
+/// The models a new session takes without `--model`, and what to tell the
+/// user about where they came from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DefaultModels {
+    pub main: String,
+    /// The workers' model, when it differs from the main one.
+    pub worker: Option<String>,
+    pub note: String,
+}
+
+/// The models of a new session without `--model`: those of the last
+/// session started (its main model, and its workers' when they differed)
+/// while their credentials are still there, else the first model the
+/// credentials allow ([`model_by_credentials`]). When the last model's
+/// credential is gone and there is no other, it is still the default, so
+/// the setup screen asks for exactly that credential. `None` without
+/// either.
+pub fn default_models(codex_auth: Option<&Path>, root: &Path) -> Option<DefaultModels> {
+    choose_default(
+        LastModels::load(root),
+        |name| missing_credential(name, codex_auth),
+        model_by_credentials(codex_auth),
+    )
+}
+
+/// [`default_models`], from the last session's models, what a model needs
+/// that isn't there, and the model the credentials allow.
+fn choose_default(
+    last: Option<LastModels>,
+    missing: impl Fn(&str) -> Option<String>,
+    by_credentials: Option<(&'static str, &'static str)>,
+) -> Option<DefaultModels> {
+    let Some(last) = last else {
+        let (main, why) = by_credentials?;
+        return Some(DefaultModels {
+            note: format!("This session runs {main}: {why} (-m picks another)."),
+            main: main.to_string(),
+            worker: None,
+        });
+    };
+    match missing(&last.main) {
+        None => {
+            let worker = last.worker.filter(|worker| worker != &last.main);
+            let (worker, worker_note) = match worker {
+                Some(worker) => match missing(&worker) {
+                    None => (Some(worker.clone()), format!(", with workers on {worker}")),
+                    Some(needs) => (
+                        None,
+                        format!(
+                            "; its workers ran on {worker}, which needs {needs}, so they run on {} too",
+                            last.main
+                        ),
+                    ),
+                },
+                None => (None, String::new()),
+            };
+            Some(DefaultModels {
+                note: format!(
+                    "This session runs {}, as your last one did{worker_note} (-m picks another).",
+                    last.main
+                ),
+                main: last.main,
+                worker,
+            })
+        }
+        Some(needs) => match by_credentials {
+            Some((main, why)) => Some(DefaultModels {
+                note: format!(
+                    "Your last session ran {}, which needs {needs}; this one runs {main}: {why} (-m picks another).",
+                    last.main
+                ),
+                main: main.to_string(),
+                worker: None,
+            }),
+            None => Some(DefaultModels {
+                note: format!(
+                    "This session runs {}, as your last one did; it needs {needs}.",
+                    last.main
+                ),
+                main: last.main,
+                worker: None,
+            }),
+        },
+    }
+}
+
+/// The first model the credentials there are allow, and why: Claude Opus
+/// 5.5 in Claude Code when `claude` is installed and signed in (the Claude
+/// plan comes before a key billed per token), else Opus with an Anthropic
+/// API key, else GPT-6.1 Sol with a ChatGPT login, else Opus on OpenRouter,
+/// Sol on an OpenAI API key, or Gemini 3.1 Pro on a Gemini key, else Opus
+/// in a Claude Code that isn't signed in yet (the setup screen helps sign
+/// it in); `None` without any.
+pub fn model_by_credentials(codex_auth: Option<&Path>) -> Option<(&'static str, &'static str)> {
+    first_by_credentials(Credentials {
+        claude_code: claude_code::find_cli().map(|_| claude_code::check_recent().is_ok()),
+        anthropic: credentials::var(credentials::ANTHROPIC_KEY).is_some(),
+        chatgpt: has_chatgpt_login(codex_auth),
+        openrouter: credentials::var(credentials::OPENROUTER_KEY).is_some(),
+        openai: credentials::var(credentials::OPENAI_KEY).is_some(),
+        gemini: gemini_key().is_some(),
+    })
+}
+
+/// Which credentials there are, for [`first_by_credentials`].
+#[derive(Debug, Clone, Copy, Default)]
+struct Credentials {
+    /// Whether Claude Code is signed in, when it is installed.
+    claude_code: Option<bool>,
+    anthropic: bool,
+    chatgpt: bool,
+    openrouter: bool,
+    openai: bool,
+    gemini: bool,
+}
+
+/// [`model_by_credentials`]'s order.
+fn first_by_credentials(have: Credentials) -> Option<(&'static str, &'static str)> {
+    let opus_on_plan = "cc:claude-opus-5-5";
+    if have.claude_code == Some(true) {
+        Some((
+            opus_on_plan,
+            "Claude Code is signed in, on your Claude plan",
+        ))
+    } else if have.anthropic {
+        Some(("claude-opus-5-5", "ANTHROPIC_API_KEY is set"))
+    } else if have.chatgpt {
+        Some(("gpt-6.1-sol", "there is a ChatGPT login"))
+    } else if have.openrouter {
+        Some((
+            "openrouter:anthropic/claude-opus-5.5",
+            "OPENROUTER_API_KEY is set",
+        ))
+    } else if have.openai {
+        Some(("gpt-6.1-sol", "OPENAI_API_KEY is set"))
+    } else if have.gemini {
+        Some(("gemini-3.1-pro-preview", "GEMINI_API_KEY is set"))
+    } else if have.claude_code.is_some() {
+        Some((opus_on_plan, "Claude Code is installed"))
     } else {
         None
+    }
+}
+
+/// What the model `name` needs that isn't there, as fin's notes say it;
+/// `None` when its credential is there.
+fn missing_credential(name: &str, codex_auth: Option<&Path>) -> Option<String> {
+    let Ok(model) = resolve_model(name) else {
+        return Some("a model fin knows (it no longer knows this one)".to_string());
+    };
+    let missing = match model.provider {
+        Provider::Anthropic => credentials::var(credentials::ANTHROPIC_KEY).is_none(),
+        Provider::OpenAI => {
+            !has_chatgpt_login(codex_auth) && credentials::var(credentials::OPENAI_KEY).is_none()
+        }
+        Provider::Google => gemini_key().is_none(),
+        Provider::OpenRouter => credentials::var(credentials::OPENROUTER_KEY).is_none(),
+        Provider::ClaudeCode => {
+            return match claude_code::find_cli().map(|_| claude_code::check_recent()) {
+                Some(Ok(_)) => None,
+                Some(Err(_)) => Some("Claude Code signed in".to_string()),
+                None => Some("Claude Code, which isn't installed".to_string()),
+            };
+        }
+    };
+    missing.then(|| {
+        match model.provider {
+            Provider::Anthropic => "ANTHROPIC_API_KEY",
+            Provider::OpenAI => "a ChatGPT login or OPENAI_API_KEY",
+            Provider::Google => "GEMINI_API_KEY",
+            _ => "OPENROUTER_API_KEY",
+        }
+        .to_string()
+    })
+}
+
+/// The models of the last session started, kept in fin's folder for the
+/// next session's default.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LastModels {
+    pub main: String,
+    /// The workers' model, when it differed from the main one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker: Option<String>,
+}
+
+/// The file in fin's folder that holds [`LastModels`].
+const LAST_MODELS_FILE: &str = "last-model.json";
+
+impl LastModels {
+    /// The last session's models, if one was saved and can be read.
+    pub fn load(root: &Path) -> Option<Self> {
+        let text = std::fs::read_to_string(root.join(LAST_MODELS_FILE)).ok()?;
+        serde_json::from_str(&text).ok()
+    }
+
+    /// Keeps a new session's models for the next session's default. Only
+    /// sessions with a terminal count: a `-p` run is often a script or a
+    /// one-off, and its model shouldn't change what the next interactive
+    /// session starts on.
+    pub fn remember(root: &Path, settings: &Settings) -> std::io::Result<()> {
+        let last = Self {
+            main: settings.main.model.clone(),
+            worker: (settings.worker.model != settings.main.model)
+                .then(|| settings.worker.model.clone()),
+        };
+        std::fs::create_dir_all(root)?;
+        let path = root.join(LAST_MODELS_FILE);
+        let temporary = root.join(format!("{LAST_MODELS_FILE}.tmp"));
+        std::fs::write(&temporary, serde_json::to_string_pretty(&last)?)?;
+        std::fs::rename(temporary, path)
     }
 }
 
@@ -426,7 +619,7 @@ pub fn client(codex_auth: Option<&Path>, settings: &Settings) -> Result<LLMClien
         settings,
         credentials::var,
         credentials::codex_auth(codex_auth),
-        claude_code::check,
+        claude_code::check_recent,
     )
 }
 
@@ -630,18 +823,179 @@ pub fn plan_usage_text(usage: &PlanUsage) -> Option<String> {
     if windows.is_empty() {
         return None;
     }
-    let plan = match usage.plan {
-        Some(SubscriptionPlan::ClaudeCode) => "Claude plan",
-        // Reports saved before plans were named came from ChatGPT.
-        Some(SubscriptionPlan::ChatGpt) | None => "ChatGPT plan",
-    };
-    Some(format!("{plan} {}", windows.join(", ")))
+    Some(format!("{} {}", plan_name(usage.plan), windows.join(", ")))
 }
 
 /// Every plan's latest usage, in one line: a session with agents on both
 /// plans shows both.
 pub fn plan_usage_line(plans: &std::collections::BTreeMap<String, String>) -> Option<String> {
     (!plans.is_empty()).then(|| plans.values().cloned().collect::<Vec<_>>().join(" · "))
+}
+
+/// The key [`plan_usage_text`]'s report of `plan` is kept under, by plan
+/// (`Stats::plans`), and the plan as `/cost` names it.
+pub fn plan_name(plan: Option<SubscriptionPlan>) -> &'static str {
+    match plan {
+        Some(SubscriptionPlan::ClaudeCode) => "Claude plan",
+        // Reports saved before plans were named came from ChatGPT.
+        Some(SubscriptionPlan::ChatGpt) | None => "ChatGPT plan",
+    }
+}
+
+/// What a call would have cost at API list prices: its estimate when a
+/// plan covered it, else what it was billed.
+fn at_api_prices(usage: &UsageInfo, billed: f64) -> f64 {
+    if usage.billing == BillingKind::Subscription {
+        usage.total_cost
+    } else {
+        billed
+    }
+}
+
+/// What the session's usage would have cost at API list prices: what the
+/// calls billed per token cost, and the list-price estimate of those a
+/// plan covered (Claude Code, the ChatGPT login). `None` when nothing ran
+/// on a plan: what was billed says it all then.
+pub fn api_price(ledger: &CostLedger) -> Option<f64> {
+    let on_a_plan = ledger.entries.iter().any(|entry| {
+        matches!(&entry.source, CostSource::Agent { usage, .. } if usage.billing == BillingKind::Subscription)
+    });
+    on_a_plan.then(|| {
+        ledger
+            .entries
+            .iter()
+            .map(|entry| match &entry.source {
+                CostSource::Agent { usage, .. } => at_api_prices(usage, entry.amount),
+                CostSource::Manual { .. } => entry.amount,
+            })
+            .sum()
+    })
+}
+
+/// One line of `/cost`; a `detail` line is indented and dim.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CostLine {
+    pub text: String,
+    pub detail: bool,
+}
+
+/// One agent's (the main agent's, or the workers') calls, for `/cost`.
+#[derive(Default)]
+struct Part {
+    billed: f64,
+    api: f64,
+    input: usize,
+    output: usize,
+    /// The plan that covered its calls, when one did.
+    plan: Option<&'static str>,
+}
+
+impl Part {
+    fn tokens(&self) -> String {
+        format!(
+            "{}k input and {}k output tokens",
+            self.input / 1000,
+            self.output / 1000
+        )
+    }
+}
+
+/// `/cost`: what the session was billed, and, for what ran on a plan, what
+/// it would have cost at API prices and the plan's usage windows. The main
+/// agent and the workers are told apart when they were paid for
+/// differently (one on a plan, the other per token).
+pub fn cost_report(
+    ledger: &CostLedger,
+    settings: &Settings,
+    plans: &std::collections::BTreeMap<String, String>,
+) -> Vec<CostLine> {
+    let plan_of = |model: &ModelSettings| match resolve_model(&model.model).map(|m| m.provider) {
+        Ok(Provider::ClaudeCode) => Some(plan_name(Some(SubscriptionPlan::ClaudeCode))),
+        Ok(Provider::OpenAI) if settings.openai_auth != Some(OpenAiAuth::ApiKey) => {
+            Some(plan_name(Some(SubscriptionPlan::ChatGpt)))
+        }
+        _ => None,
+    };
+    let mut main = Part::default();
+    let mut workers = Part::default();
+    for entry in &ledger.entries {
+        let CostSource::Agent { agent_name, usage } = &entry.source else {
+            continue;
+        };
+        let (part, model) = if agent_name == crate::agents::MAIN {
+            (&mut main, &settings.main)
+        } else {
+            (&mut workers, &settings.worker)
+        };
+        part.billed += entry.amount;
+        part.api += at_api_prices(usage, entry.amount);
+        part.input += usage.input_tokens;
+        part.output += usage.output_tokens;
+        if usage.billing == BillingKind::Subscription {
+            part.plan = plan_of(model);
+        }
+    }
+    let line = |text: String| CostLine {
+        text,
+        detail: false,
+    };
+    let detail = |text: String| CostLine { text, detail: true };
+    let used = |part: &Part| part.input + part.output > 0;
+    let mut lines = vec![line(format!(
+        "${:.2} billed in this session · {}k input and {}k output tokens",
+        main.billed + workers.billed,
+        (main.input + workers.input) / 1000,
+        (main.output + workers.output) / 1000
+    ))];
+    let parts = [&main, &workers];
+    let paid_alike = !used(&main) || !used(&workers) || main.plan == workers.plan;
+    if paid_alike {
+        let plan = parts.iter().find_map(|part| part.plan);
+        if let Some(plan) = plan {
+            lines.push(line(format!(
+                "≈ ${:.2} at API prices: the {plan} covers it",
+                main.api + workers.api
+            )));
+        }
+        if used(&workers) {
+            lines.push(detail(match plan {
+                Some(_) => format!(
+                    "of which the workers: ≈ ${:.2} at API prices · {}",
+                    workers.api,
+                    workers.tokens()
+                ),
+                None => format!(
+                    "of which the workers: ${:.2} · {}",
+                    workers.billed,
+                    workers.tokens()
+                ),
+            }));
+        }
+    } else {
+        for (name, part) in [("main agent", &main), ("workers", &workers)] {
+            lines.push(detail(match part.plan {
+                Some(plan) => format!(
+                    "{name}: ≈ ${:.2} at API prices, on the {plan} · {}",
+                    part.api,
+                    part.tokens()
+                ),
+                None => format!(
+                    "{name}: ${:.2} billed per token · {}",
+                    part.billed,
+                    part.tokens()
+                ),
+            }));
+        }
+    }
+    // The plans' usage windows, as last reported.
+    for part in parts {
+        if let Some(windows) = part.plan.and_then(|plan| plans.get(plan))
+            && !lines.iter().any(|line| &line.text == windows)
+        {
+            lines.push(line(windows.clone()));
+        }
+    }
+    lines
 }
 
 /// What the agents' configurations take from the session's providers
@@ -1152,5 +1506,291 @@ mod tests {
         sol.fast = true;
         session.main = sol;
         assert!(check_openai_choices(&session).is_ok());
+    }
+
+    fn last(main: &str, worker: Option<&str>) -> Option<LastModels> {
+        Some(LastModels {
+            main: main.into(),
+            worker: worker.map(String::from),
+        })
+    }
+
+    /// The last session's models come first while their credentials are
+    /// there; else the credentials decide, and the note says why.
+    #[test]
+    fn the_last_session_s_models_are_the_default_while_they_can_run() {
+        let have_all = |_: &str| None;
+        let by_key = Some(("claude-opus-5-5", "ANTHROPIC_API_KEY is set"));
+        // No last session: the credentials decide.
+        let default = choose_default(None, have_all, by_key).unwrap();
+        assert_eq!(default.main, "claude-opus-5-5");
+        assert_eq!(
+            default.note,
+            "This session runs claude-opus-5-5: ANTHROPIC_API_KEY is set (-m picks another)."
+        );
+        assert_eq!(choose_default(None, have_all, None), None);
+
+        // The last models, workers included.
+        let default = choose_default(
+            last("cc:claude-opus-5-5", Some("gemini-3.8-flash")),
+            have_all,
+            by_key,
+        )
+        .unwrap();
+        assert_eq!(default.main, "cc:claude-opus-5-5");
+        assert_eq!(default.worker.as_deref(), Some("gemini-3.8-flash"));
+        assert_eq!(
+            default.note,
+            "This session runs cc:claude-opus-5-5, as your last one did, with workers on gemini-3.8-flash (-m picks another)."
+        );
+
+        // The workers' credential is gone: they run on the main model.
+        let no_gemini = |name: &str| {
+            name.starts_with("gemini")
+                .then(|| "GEMINI_API_KEY".to_string())
+        };
+        let default = choose_default(
+            last("cc:claude-opus-5-5", Some("gemini-3.8-flash")),
+            no_gemini,
+            by_key,
+        )
+        .unwrap();
+        assert_eq!(default.worker, None);
+        assert!(
+            default
+                .note
+                .contains("which needs GEMINI_API_KEY, so they run on cc:claude-opus-5-5 too"),
+            "{}",
+            default.note
+        );
+
+        // The main model's credential is gone: the credentials decide, and
+        // the note says why.
+        let default = choose_default(last("gemini-3.8-flash", None), no_gemini, by_key).unwrap();
+        assert_eq!(default.main, "claude-opus-5-5");
+        assert_eq!(
+            default.note,
+            "Your last session ran gemini-3.8-flash, which needs GEMINI_API_KEY; this one runs claude-opus-5-5: ANTHROPIC_API_KEY is set (-m picks another)."
+        );
+        // ...and without any other credential it stays, so the setup screen
+        // asks for exactly what it needs.
+        let default = choose_default(last("gemini-3.8-flash", None), no_gemini, None).unwrap();
+        assert_eq!(default.main, "gemini-3.8-flash");
+        assert!(
+            default.note.ends_with("it needs GEMINI_API_KEY."),
+            "{}",
+            default.note
+        );
+    }
+
+    /// Claude Code, signed in, comes before an Anthropic API key; one not
+    /// signed in comes last, after every key.
+    #[test]
+    fn the_claude_plan_comes_first_and_a_signed_out_claude_code_last() {
+        let first = |have: Credentials| first_by_credentials(have).map(|(model, _)| model);
+        let key = Credentials {
+            anthropic: true,
+            ..Credentials::default()
+        };
+        assert_eq!(first(key), Some("claude-opus-5-5"));
+        assert_eq!(
+            first(Credentials {
+                claude_code: Some(true),
+                ..key
+            }),
+            Some("cc:claude-opus-5-5")
+        );
+        assert_eq!(
+            first(Credentials {
+                claude_code: Some(false),
+                ..key
+            }),
+            Some("claude-opus-5-5")
+        );
+        assert_eq!(
+            first(Credentials {
+                claude_code: Some(false),
+                ..Credentials::default()
+            }),
+            Some("cc:claude-opus-5-5")
+        );
+        assert_eq!(
+            first(Credentials {
+                chatgpt: true,
+                openai: true,
+                ..Credentials::default()
+            }),
+            Some("gpt-6.1-sol")
+        );
+        assert_eq!(first(Credentials::default()), None);
+    }
+
+    #[test]
+    fn the_last_session_s_models_are_kept_in_fin_s_folder() {
+        let root = tempfile::tempdir().unwrap();
+        assert_eq!(LastModels::load(root.path()), None);
+        let mut session = settings(model("cc:opus"), model("cc:opus"));
+        LastModels::remember(root.path(), &session).unwrap();
+        assert_eq!(
+            LastModels::load(root.path()),
+            last("cc:claude-opus-5-5", None)
+        );
+        session.worker = model("flash");
+        LastModels::remember(root.path(), &session).unwrap();
+        assert_eq!(
+            LastModels::load(root.path()),
+            last("cc:claude-opus-5-5", Some("gemini-3.8-flash"))
+        );
+        std::fs::write(root.path().join(LAST_MODELS_FILE), "not json").unwrap();
+        assert_eq!(
+            LastModels::load(root.path()),
+            None,
+            "a damaged file is no default"
+        );
+    }
+
+    /// A ledger entry of `agent`'s: `api` dollars at API prices, of which
+    /// `billed` were billed (0 on a plan).
+    fn call(
+        agent: &str,
+        input: usize,
+        output: usize,
+        api: f64,
+        billed: f64,
+    ) -> arko_workflows::budget::CostEntry {
+        let usage = UsageInfo {
+            input_tokens: input,
+            output_tokens: output,
+            total_cost: api,
+            billing: if billed == 0.0 && api > 0.0 {
+                BillingKind::Subscription
+            } else {
+                BillingKind::Metered
+            },
+            billed_cost: Some(billed),
+            ..UsageInfo::default()
+        };
+        arko_workflows::budget::CostEntry {
+            amount: billed,
+            source: CostSource::Agent {
+                agent_name: agent.into(),
+                usage: Box::new(usage),
+            },
+            timestamp: chrono::Utc::now(),
+            metadata: None,
+        }
+    }
+
+    fn report(
+        session: &Settings,
+        entries: Vec<arko_workflows::budget::CostEntry>,
+    ) -> Vec<(bool, String)> {
+        let plans = std::collections::BTreeMap::from([
+            (
+                "Claude plan".to_string(),
+                "Claude plan 5 h 12%, 7 d 3%".to_string(),
+            ),
+            (
+                "ChatGPT plan".to_string(),
+                "ChatGPT plan 7 d 40%".to_string(),
+            ),
+        ]);
+        cost_report(&CostLedger { entries }, session, &plans)
+            .into_iter()
+            .map(|line| (line.detail, line.text))
+            .collect()
+    }
+
+    /// `/cost` on a plan shows what was billed, the API price and the
+    /// plan's windows; per token, what was billed; mixed, each part.
+    #[test]
+    fn the_cost_shows_api_prices_and_plan_usage_where_a_plan_pays() {
+        use crate::agents::{MAIN, WORKER};
+        // Claude Code, main agent and workers.
+        let cc = settings(model("cc:opus"), model("cc:opus"));
+        let entries = vec![
+            call(MAIN, 120_000, 8_000, 3.0, 0.0),
+            call(WORKER, 30_000, 2_000, 0.4, 0.0),
+        ];
+        assert_eq!(
+            report(&cc, entries.clone()),
+            [
+                (
+                    false,
+                    "$0.00 billed in this session · 150k input and 10k output tokens".to_string()
+                ),
+                (
+                    false,
+                    "≈ $3.40 at API prices: the Claude plan covers it".to_string()
+                ),
+                (
+                    true,
+                    "of which the workers: ≈ $0.40 at API prices · 30k input and 2k output tokens"
+                        .to_string()
+                ),
+                (false, "Claude plan 5 h 12%, 7 d 3%".to_string()),
+            ]
+        );
+        assert!((api_price(&CostLedger { entries }).unwrap() - 3.4).abs() < 1e-9);
+
+        // The ChatGPT login: its plan.
+        let sol = settings(model("sol"), model("sol"));
+        let lines = report(&sol, vec![call(MAIN, 50_000, 1_000, 0.9, 0.0)]);
+        assert_eq!(
+            lines[1].1,
+            "≈ $0.90 at API prices: the ChatGPT plan covers it"
+        );
+        assert_eq!(lines[2].1, "ChatGPT plan 7 d 40%");
+
+        // Per token: the cost, as before, and no API price line.
+        let opus = settings(model("opus"), model("opus"));
+        let entries = vec![
+            call(MAIN, 120_000, 8_000, 1.0, 1.0),
+            call(WORKER, 30_000, 2_000, 0.2, 0.2),
+        ];
+        assert_eq!(
+            report(&opus, entries.clone()),
+            [
+                (
+                    false,
+                    "$1.20 billed in this session · 150k input and 10k output tokens".to_string()
+                ),
+                (
+                    true,
+                    "of which the workers: $0.20 · 30k input and 2k output tokens".to_string()
+                ),
+            ]
+        );
+        assert_eq!(
+            api_price(&CostLedger { entries }),
+            None,
+            "nothing on a plan"
+        );
+
+        // Mixed: the main agent on the Claude plan, the workers per token.
+        let mixed = settings(model("cc:opus"), model("gemini"));
+        assert_eq!(
+            report(
+                &mixed,
+                vec![
+                    call(MAIN, 120_000, 8_000, 3.0, 0.0),
+                    call(WORKER, 30_000, 2_000, 0.5, 0.5),
+                ]
+            ),
+            [
+                (false, "$0.50 billed in this session · 150k input and 10k output tokens".to_string()),
+                (true, "main agent: ≈ $3.00 at API prices, on the Claude plan · 120k input and 8k output tokens".to_string()),
+                (true, "workers: $0.50 billed per token · 30k input and 2k output tokens".to_string()),
+                (false, "Claude plan 5 h 12%, 7 d 3%".to_string()),
+            ]
+        );
+        // Nothing yet.
+        assert_eq!(
+            report(&cc, Vec::new()),
+            [(
+                false,
+                "$0.00 billed in this session · 0k input and 0k output tokens".to_string()
+            )]
+        );
     }
 }
