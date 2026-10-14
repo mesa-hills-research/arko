@@ -7,13 +7,14 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::Span;
 
 use super::theme::Theme;
-use super::wrap::{self, width as text_width};
+use super::wrap::{self, Wrapped, width as text_width};
 use crate::glyphs;
 
-/// `text` as markdown, in lines wrapped to `width` columns.
-pub fn render(text: &str, base: Style, theme: &Theme, width: usize) -> Vec<Vec<Span<'static>>> {
+/// `text` as markdown, in lines wrapped to `width` columns: with what a
+/// copy of each needs (a gutter isn't text, a wrapped line goes on).
+pub fn render(text: &str, base: Style, theme: &Theme, width: usize) -> Vec<Wrapped> {
     let text = wrap::clean(text);
-    let mut lines: Vec<Vec<Span<'static>>> = Vec::new();
+    let mut lines: Vec<Wrapped> = Vec::new();
     let mut fence: Option<String> = None;
     let mut blank = false;
     let gutter = glyphs::render("│ ").into_owned();
@@ -30,9 +31,8 @@ pub fn render(text: &str, base: Style, theme: &Theme, width: usize) -> Vec<Vec<S
                 // Code is drawn as it is, wrapped anywhere, beside a
                 // gutter that marks it.
                 let spans = [Span::styled(line.to_string(), theme.text())];
-                for mut wrapped in wrap::wrap(&spans, width.saturating_sub(2), 0) {
-                    wrapped.insert(0, Span::styled(gutter.clone(), theme.dim()));
-                    lines.push(wrapped);
+                for wrapped in wrap::wrap_lines(&spans, width.saturating_sub(2), 0) {
+                    lines.push(wrapped.decorated(Span::styled(gutter.clone(), theme.dim())));
                 }
             }
             blank = false;
@@ -45,7 +45,7 @@ pub fn render(text: &str, base: Style, theme: &Theme, width: usize) -> Vec<Vec<S
         if trimmed.is_empty() {
             // One blank line between blocks, however many there were.
             if !blank && !lines.is_empty() {
-                lines.push(Vec::new());
+                lines.push(Wrapped::line(Vec::new()));
             }
             blank = true;
             continue;
@@ -53,20 +53,19 @@ pub fn render(text: &str, base: Style, theme: &Theme, width: usize) -> Vec<Vec<S
         blank = false;
         if let Some(title) = heading(trimmed) {
             let style = base.add_modifier(Modifier::BOLD);
-            lines.extend(wrap::wrap(&inline(title, style, theme), width, 0));
+            lines.extend(wrap::wrap_lines(&inline(title, style, theme), width, 0));
             continue;
         }
         if is_rule(trimmed) {
             let rule = glyphs::render("─").repeat(width.min(40));
-            lines.push(vec![Span::styled(rule, theme.dim())]);
+            lines.push(Wrapped::line(vec![Span::styled(rule, theme.dim())]));
             continue;
         }
         if let Some(quoted) = trimmed.strip_prefix('>') {
             let quoted = quoted.strip_prefix(' ').unwrap_or(quoted);
             let spans = inline(quoted, theme.dim(), theme);
-            for mut wrapped in wrap::wrap(&spans, width.saturating_sub(2), 0) {
-                wrapped.insert(0, Span::styled(gutter.clone(), theme.dim()));
-                lines.push(wrapped);
+            for wrapped in wrap::wrap_lines(&spans, width.saturating_sub(2), 0) {
+                lines.push(wrapped.decorated(Span::styled(gutter.clone(), theme.dim())));
             }
             continue;
         }
@@ -80,21 +79,21 @@ pub fn render(text: &str, base: Style, theme: &Theme, width: usize) -> Vec<Vec<S
             let hang = text_width(&lead);
             let mut spans = vec![Span::styled(lead, base)];
             spans.extend(inline(item, base, theme));
-            lines.extend(wrap::wrap(&spans, width, hang));
+            lines.extend(wrap::wrap_lines(&spans, width, hang));
             continue;
         }
         if trimmed.starts_with('|') {
             // A table keeps its columns: as it is.
-            lines.extend(wrap::wrap(
+            lines.extend(wrap::wrap_lines(
                 &[Span::styled(line.to_string(), base)],
                 width,
                 0,
             ));
             continue;
         }
-        lines.extend(wrap::wrap(&inline(trimmed, base, theme), width, 0));
+        lines.extend(wrap::wrap_lines(&inline(trimmed, base, theme), width, 0));
     }
-    while lines.last().is_some_and(Vec::is_empty) {
+    while lines.last().is_some_and(|line| line.spans.is_empty()) {
         lines.pop();
     }
     lines
@@ -268,7 +267,12 @@ mod tests {
         let theme = Theme::terminal();
         render(text, theme.text(), &theme, width)
             .iter()
-            .map(|spans| spans.iter().map(|span| span.content.as_ref()).collect())
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect()
+            })
             .collect()
     }
 

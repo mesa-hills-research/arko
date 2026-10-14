@@ -26,7 +26,7 @@ use ratatui::text::{Line, Span};
 
 use super::markdown;
 use super::theme::Theme;
-use super::wrap::{self, width as text_width};
+use super::wrap::{self, Join, Wrapped, width as text_width};
 use crate::glyphs;
 use crate::remote::{
     CallStatus, Delivery, Item, Kind, Level, Snapshot, Source, Update, WorkerState, WorkerSummary,
@@ -81,7 +81,7 @@ struct Cached {
     /// What the lines were drawn for.
     width: usize,
     style: u64,
-    lines: Vec<Line<'static>>,
+    lines: Vec<Wrapped>,
 }
 
 /// What a block of the drawn transcript is.
@@ -128,13 +128,45 @@ struct Anchor {
     height: usize,
 }
 
+/// A row of the screen: the block it shows, and which of its lines (the
+/// blank line before a block, when it has one, is line 0).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RowRef {
+    key: u64,
+    line: usize,
+    /// The blank line before the block.
+    gap: bool,
+}
+
+/// A place in the transcript's text: a block (by its key), a line of it,
+/// and a column. It stays on its text as the screen scrolls.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Point {
+    pub key: u64,
+    pub line: usize,
+    pub col: usize,
+}
+
+/// Text the reader highlighted with the mouse: from where the drag began
+/// (`anchor`) to where it is (`head`), in the view and at the width it was
+/// made in.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Selection {
+    pub anchor: Point,
+    pub head: Point,
+    filter: Filter,
+    width: usize,
+}
+
 /// What was drawn where, for the mouse.
 #[derive(Debug, Clone, Default)]
 pub struct Drawn {
     /// The transcript's area.
     pub area: Rect,
-    /// The key of the block on each row of the area.
-    rows: Vec<Option<u64>>,
+    /// What each row of the area shows.
+    rows: Vec<Option<RowRef>>,
+    /// Where the screen's top was: what holding the view still keeps.
+    top: Option<Anchor>,
     /// The "new" marker's area, while it shows.
     pub marker: Option<Rect>,
     /// The keys of the counted turns' lines.
@@ -142,12 +174,17 @@ pub struct Drawn {
 }
 
 impl Drawn {
-    /// The block on the screen's row `y`.
+    /// The block on the screen's row `y` (not the blank line before it).
     pub fn key_at(&self, x: u16, y: u16) -> Option<u64> {
         if !self.area.contains(ratatui::layout::Position { x, y }) {
             return None;
         }
-        self.rows.get((y - self.area.y) as usize).copied().flatten()
+        self.rows
+            .get((y - self.area.y) as usize)
+            .copied()
+            .flatten()
+            .filter(|row| !row.gap)
+            .map(|row| row.key)
     }
 }
 
@@ -160,9 +197,11 @@ pub struct Transcript {
     /// The view's height in lines when following stopped (and the view it
     /// was): the marker counts the lines that came since.
     baseline: Option<(Filter, usize)>,
-    /// The selected item (clicked): it is highlighted, shows its details,
-    /// and is what a copy copies.
-    pub selected: Option<u64>,
+    /// The text highlighted with the mouse.
+    pub selection: Option<Selection>,
+    /// The view holds still (a drag selects text): it doesn't follow new
+    /// output, even at the bottom.
+    hold: bool,
     /// The lines drawn last, by row.
     pub drawn: Drawn,
     /// Lines a scroll moved while the screen was not drawn yet.
@@ -182,7 +221,8 @@ impl Transcript {
             workers: Vec::new(),
             anchor: None,
             baseline: None,
-            selected: None,
+            selection: None,
+            hold: false,
             drawn: Drawn::default(),
             pending_scroll: 0,
         }
@@ -208,6 +248,8 @@ impl Transcript {
                 self.entries.push_back(Entry { item, cache: None });
                 self.trim();
             }
+            // (Text added at an item's end leaves what is highlighted
+            // where it is: a drag over streaming text still copies it.)
             Update::Append { id, text } => {
                 if let Some(entry) = self.find_mut(id) {
                     entry.item.text.push_str(&text);
@@ -215,6 +257,7 @@ impl Transcript {
                 }
             }
             Update::Change(item) => {
+                self.changed(item.id);
                 if let Some(entry) = self.find_mut(item.id) {
                     entry.item = item;
                     entry.cache = None;
@@ -225,6 +268,17 @@ impl Transcript {
                 None => self.workers.push(summary),
             },
             Update::Activity => {}
+        }
+    }
+
+    /// The item `id` changes (a call's outcome came): a selection over it
+    /// may no longer be on the text it highlighted, so it goes.
+    fn changed(&mut self, id: u64) {
+        if let Some(selection) = &self.selection {
+            let (a, b) = (selection.anchor.key, selection.head.key);
+            if a.min(b) <= id && id <= a.max(b) {
+                self.selection = None;
+            }
         }
     }
 
@@ -320,30 +374,11 @@ impl Transcript {
         self.pending_scroll = i64::MIN / 2;
     }
 
-    /// The text to copy of the item `id`: as written, without the view's
-    /// margins or line breaks.
-    pub fn copy_text(&self, id: u64) -> Option<String> {
-        let item = self.item(id)?;
-        if item.kind == Kind::WorkerLine {
-            let worker = item.worker.as_deref().and_then(|w| self.worker(w))?;
-            return Some(worker_text(worker));
-        }
-        let mut text = item.text.clone();
-        if let Some(outcome) = &item.outcome {
-            text.push_str(&format!(" · {outcome}"));
-        }
-        if let Some(detail) = &item.detail {
-            text.push('\n');
-            text.push_str(detail);
-        }
-        Some(text)
-    }
-
     /// The blocks of `filter`'s view of the items, at `width`.
     fn blocks(&mut self, filter: &Filter, theme: &Theme, width: usize) -> Vec<Block> {
         // A worker's own view doesn't name it on every line.
         let own = matches!(filter, Filter::Worker(_));
-        let style = theme_key(theme) ^ self.selected.unwrap_or(0).rotate_left(17) ^ u64::from(own);
+        let style = theme_key(theme) ^ u64::from(own);
         let mut blocks: Vec<Block> = Vec::new();
         if let Filter::Worker(id) = filter
             && let Some(worker) = self.worker(id)
@@ -409,7 +444,6 @@ impl Transcript {
             last_group = Some(group);
             let lines = match &shown {
                 Shown::Entry(index) => {
-                    let selected = self.selected == Some(self.entries[*index].item.id);
                     let entry = &mut self.entries[*index];
                     let fresh = entry
                         .cache
@@ -419,7 +453,7 @@ impl Transcript {
                         entry.cache = Some(Cached {
                             width,
                             style,
-                            lines: entry_lines(&entry.item, theme, width, selected, own),
+                            lines: entry_lines(&entry.item, theme, width, own),
                         });
                     }
                     entry.cache.as_ref().map_or(0, |c| c.lines.len())
@@ -471,6 +505,15 @@ impl Transcript {
     pub fn draw(&mut self, buffer: &mut Buffer, area: Rect, filter: &Filter, theme: &Theme) {
         let width = area.width as usize;
         let height = area.height as usize;
+        // A selection made in another view, or at another width (its lines
+        // wrapped otherwise), is gone.
+        if self
+            .selection
+            .as_ref()
+            .is_some_and(|selection| selection.filter != *filter || selection.width != width)
+        {
+            self.selection = None;
+        }
         let blocks = self.blocks(filter, theme, width);
         let total: usize = blocks.iter().map(Block::height).sum();
         let bottom = total.saturating_sub(height);
@@ -508,72 +551,94 @@ impl Transcript {
             self.pending_scroll = 0;
         }
         top = top.min(bottom);
-        if top >= bottom {
-            // At the bottom: following again.
-            if self.anchor.is_some() {
-                self.anchor = None;
-            }
-        } else {
+        // The block at the top, and how far into it.
+        let here = (!blocks.is_empty()).then(|| {
             let index = starts
                 .partition_point(|start| *start <= top)
                 .saturating_sub(1);
-            let block = &blocks[index];
-            // Following stopped (or the view changed): what comes from
-            // here on is new.
-            if self
-                .baseline
-                .as_ref()
-                .is_none_or(|(view, _)| view != filter)
-            {
-                self.baseline = Some((filter.clone(), total));
-            }
-            self.anchor = Some(Anchor {
-                key: block.key,
+            Anchor {
+                key: blocks[index].key,
                 offset: top - starts[index],
-                height: block.height(),
-            });
+                height: blocks[index].height(),
+            }
+        });
+        match here {
+            // At the bottom: following again (unless a drag holds it).
+            _ if top >= bottom && !self.hold => self.anchor = None,
+            Some(here) => {
+                // Following stopped (or the view changed): what comes from
+                // here on is new.
+                if self
+                    .baseline
+                    .as_ref()
+                    .is_none_or(|(view, _)| view != filter)
+                {
+                    self.baseline = Some((filter.clone(), total));
+                }
+                self.anchor = Some(here);
+            }
+            None => self.anchor = None,
         }
         if self.anchor.is_none() {
             self.baseline = None;
         }
 
+        // The selection's ends, in the order of the text.
+        let range = self.selection.as_ref().and_then(|selection| {
+            let place = |point: Point| {
+                blocks
+                    .iter()
+                    .position(|block| block.key == point.key)
+                    .map(|index| (index, point.line, point.col))
+            };
+            let (a, b) = (place(selection.anchor)?, place(selection.head)?);
+            Some(if a <= b { (a, b) } else { (b, a) })
+        });
+        if self.selection.is_some() && range.is_none() {
+            // Its text left the view (or the history).
+            self.selection = None;
+        }
+        let highlight = if theme.is_terminal() {
+            Style::new().add_modifier(Modifier::REVERSED)
+        } else {
+            Style::new().bg(theme.selection)
+        };
+
         // The lines on the screen.
         buffer.set_style(area, theme.base());
-        let mut rows: Vec<Option<u64>> = vec![None; height];
+        let mut rows: Vec<Option<RowRef>> = vec![None; height];
         let first = starts
             .partition_point(|start| *start <= top)
             .saturating_sub(1);
         let mut y = 0usize;
         let mut skip = top.saturating_sub(starts.get(first).copied().unwrap_or(0));
-        for block in blocks.iter().skip(first) {
+        for (index, block) in blocks.iter().enumerate().skip(first) {
             if y >= height {
                 break;
             }
-            let lines = self.block_lines(block, theme, width);
-            let selected = match &block.shown {
-                Shown::Entry(index) => self.selected == Some(self.entries[*index].item.id),
-                _ => false,
-            };
-            let mut rendered: Vec<Option<&Line>> = Vec::new();
-            if block.gap {
-                rendered.push(None);
-            }
-            rendered.extend(lines.iter().map(Some));
-            for line in rendered.into_iter().skip(skip) {
+            for (line, wrapped) in self
+                .block_rows(block, theme, width)
+                .iter()
+                .enumerate()
+                .skip(skip)
+            {
                 if y >= height {
                     break;
                 }
                 let row = area.y + y as u16;
-                if let Some(line) = line {
-                    if selected && !theme.is_terminal() {
-                        buffer.set_style(
-                            Rect::new(area.x, row, area.width, 1),
-                            Style::new().bg(theme.selection),
-                        );
+                buffer.set_line(area.x, row, &Line::from(wrapped.spans.clone()), area.width);
+                if let Some((from, to)) =
+                    range.and_then(|range| selected_columns(range, (index, line), wrapped))
+                {
+                    for x in from..to.min(width) {
+                        buffer[(area.x + x as u16, row)].set_style(highlight);
                     }
-                    buffer.set_line(area.x, row, line, area.width);
-                    rows[y] = Some(block.key);
                 }
+                rows[y] = Some(RowRef {
+                    key: block.key,
+                    line,
+                    gap: block.gap && line == 0,
+                });
                 y += 1;
             }
             skip = 0;
@@ -587,6 +652,7 @@ impl Transcript {
         self.drawn = Drawn {
             area,
             rows,
+            top: here,
             marker: None,
             counters: blocks
                 .iter()
@@ -594,7 +660,7 @@ impl Transcript {
                 .map(|block| block.key)
                 .collect(),
         };
-        if self.anchor.is_some() && area.height > 0 {
+        if self.anchor.is_some() && area.height > 0 && top < bottom {
             let text = if new > 0 {
                 format!(
                     " {} {new} new line{} ",
@@ -614,15 +680,30 @@ impl Transcript {
         }
     }
 
+    /// A block's lines, with the blank line before it when it has one.
+    fn block_rows(&self, block: &Block, theme: &Theme, width: usize) -> Vec<Wrapped> {
+        let mut rows = Vec::with_capacity(block.lines + 1);
+        if block.gap {
+            rows.push(Wrapped::line(Vec::new()));
+        }
+        rows.extend(self.block_lines(block, theme, width));
+        rows
+    }
+
     /// A block's lines (from the cache for an entry).
-    fn block_lines(&self, block: &Block, theme: &Theme, width: usize) -> Vec<Line<'static>> {
+    fn block_lines(&self, block: &Block, theme: &Theme, width: usize) -> Vec<Wrapped> {
+        let margin = |line: Line<'static>| {
+            let mut line = Wrapped::line(line.spans);
+            line.skip = MARGIN;
+            line
+        };
         match &block.shown {
             Shown::Entry(index) => self.entries[*index]
                 .cache
                 .as_ref()
                 .map(|c| c.lines.clone())
                 .unwrap_or_default(),
-            Shown::Worker(id) => vec![worker_line(self.worker(id), id, theme, width)],
+            Shown::Worker(id) => vec![margin(worker_line(self.worker(id), id, theme, width))],
             Shown::Heading(id) => self
                 .worker(id)
                 .map(|worker| heading_lines(worker, theme, width))
@@ -649,10 +730,257 @@ impl Transcript {
                 if *running > 0 {
                     spans.push(Span::styled(" · running".to_string(), theme.dim()));
                 }
-                vec![Line::from(spans)]
+                vec![margin(Line::from(spans))]
             }
         }
     }
+
+    // ----- selecting text with the mouse -----
+
+    /// The place in the text at the screen's `x`, `y`, as last drawn: above
+    /// the transcript is its first line's start, below it (or past its
+    /// text) its last line's end. `None` when nothing was drawn.
+    pub fn point_at(&self, x: u16, y: u16) -> Option<Point> {
+        let area = self.drawn.area;
+        let drawn: Vec<(usize, RowRef)> = self
+            .drawn
+            .rows
+            .iter()
+            .enumerate()
+            .filter_map(|(row, at)| at.map(|at| (row, at)))
+            .collect();
+        let (first, last) = (drawn.first()?, drawn.last()?);
+        if y < area.y {
+            return Some(Point {
+                key: first.1.key,
+                line: first.1.line,
+                col: 0,
+            });
+        }
+        let row = (y - area.y) as usize;
+        let at = drawn.iter().rev().find(|(r, _)| *r <= row).unwrap_or(first);
+        let past = y >= area.bottom() || row > last.0;
+        Some(Point {
+            key: at.1.key,
+            line: at.1.line,
+            col: if past {
+                usize::MAX / 2
+            } else {
+                x.saturating_sub(area.x) as usize
+            },
+        })
+    }
+
+    /// Highlights from `anchor` to `head`, in `filter`'s view.
+    pub fn select(&mut self, anchor: Point, head: Point, filter: &Filter) {
+        self.selection = Some(Selection {
+            anchor,
+            head,
+            filter: filter.clone(),
+            width: self.drawn.area.width as usize,
+        });
+    }
+
+    /// Holds the view still while a drag selects text: new output doesn't
+    /// move the text under the mouse (it comes below, counted by the
+    /// marker), as when the reader scrolls up.
+    pub fn hold(&mut self) {
+        if self.anchor.is_none() {
+            self.anchor = self.drawn.top;
+        }
+        self.hold = true;
+    }
+
+    /// The drag ended: at the bottom, the view follows again.
+    pub fn release(&mut self) {
+        self.hold = false;
+    }
+
+    /// The lines of the block `key` in `filter`'s view.
+    fn rows_of(&mut self, key: u64, filter: &Filter, theme: &Theme) -> Option<Vec<Wrapped>> {
+        let width = self.drawn.area.width as usize;
+        let blocks = self.blocks(filter, theme, width);
+        let block = blocks.iter().find(|block| block.key == key)?;
+        Some(self.block_rows(block, theme, width))
+    }
+
+    /// The word at `point`: what a double click selects.
+    pub fn word_at(
+        &mut self,
+        point: Point,
+        filter: &Filter,
+        theme: &Theme,
+    ) -> Option<(Point, Point)> {
+        let rows = self.rows_of(point.key, filter, theme)?;
+        let line = rows.get(point.line)?;
+        let cells = cells(line);
+        let at = cells.iter().position(|(_, col, w)| point.col < col + w)?;
+        if at < line_skip(line, &cells) || cells[at].0.is_whitespace() {
+            return None;
+        }
+        let word = |c: char| !c.is_whitespace();
+        let mut start = at;
+        while start > 0 && word(cells[start - 1].0) && cells[start - 1].1 >= line.skip {
+            start -= 1;
+        }
+        let mut end = at;
+        while end + 1 < cells.len() && word(cells[end + 1].0) {
+            end += 1;
+        }
+        Some((
+            Point {
+                col: cells[start].1,
+                ..point
+            },
+            Point {
+                col: cells[end].1,
+                ..point
+            },
+        ))
+    }
+
+    /// The line at `point`, as the text has it (the display lines it was
+    /// wrapped into): what a triple click selects.
+    pub fn line_at(
+        &mut self,
+        point: Point,
+        filter: &Filter,
+        theme: &Theme,
+    ) -> Option<(Point, Point)> {
+        let rows = self.rows_of(point.key, filter, theme)?;
+        rows.get(point.line)?;
+        let mut first = point.line;
+        while first > 0 && rows[first].join != Join::Break {
+            first -= 1;
+        }
+        let mut last = point.line;
+        while last + 1 < rows.len() && rows[last + 1].join != Join::Break {
+            last += 1;
+        }
+        Some((
+            Point {
+                line: first,
+                col: 0,
+                ..point
+            },
+            Point {
+                line: last,
+                col: usize::MAX / 2,
+                ..point
+            },
+        ))
+    }
+
+    /// The highlighted text, as written: without the view's margins,
+    /// gutters and indents, and with the lines wrapped only for the screen
+    /// joined again.
+    pub fn selected_text(&mut self, filter: &Filter, theme: &Theme) -> Option<String> {
+        let selection = self.selection.clone()?;
+        let width = self.drawn.area.width as usize;
+        let blocks = self.blocks(filter, theme, width);
+        let place = |point: Point| {
+            blocks
+                .iter()
+                .position(|block| block.key == point.key)
+                .map(|index| (index, point.line, point.col))
+        };
+        let (a, b) = (place(selection.anchor)?, place(selection.head)?);
+        let range = if a <= b { (a, b) } else { (b, a) };
+        let mut text = String::new();
+        let mut started = false;
+        for index in range.0.0..=range.1.0 {
+            for (line, wrapped) in self
+                .block_rows(&blocks[index], theme, width)
+                .iter()
+                .enumerate()
+            {
+                let Some((from, to)) = selected_columns(range, (index, line), wrapped) else {
+                    // A blank line (or one with no text) inside the
+                    // selection is still a line of it.
+                    let inside = (index, line) > (range.0.0, range.0.1)
+                        && (index, line) < (range.1.0, range.1.1);
+                    if inside && started {
+                        text.push('\n');
+                    }
+                    continue;
+                };
+                if started {
+                    text.push_str(match wrapped.join {
+                        Join::Break => "\n",
+                        Join::Space => " ",
+                        Join::Direct => "",
+                    });
+                }
+                started = true;
+                text.push_str(&columns(wrapped, from, to));
+            }
+        }
+        let text = text.trim_end().to_string();
+        (!text.is_empty()).then_some(text)
+    }
+}
+
+/// A line's characters, with the column each starts at and its width.
+fn cells(line: &Wrapped) -> Vec<(char, usize, usize)> {
+    let mut cells = Vec::new();
+    let mut col = 0;
+    for span in &line.spans {
+        for c in span.content.chars() {
+            let w = wrap::char_width(c);
+            cells.push((c, col, w));
+            col += w;
+        }
+    }
+    cells
+}
+
+/// The index of a line's first cell of text (after its decoration).
+fn line_skip(line: &Wrapped, cells: &[(char, usize, usize)]) -> usize {
+    cells
+        .iter()
+        .position(|(_, col, _)| *col >= line.skip)
+        .unwrap_or(cells.len())
+}
+
+/// The columns of `line` (the `at`'th line of a block, as (block, line))
+/// that `range` covers, within its text: `None` when it covers none.
+fn selected_columns(
+    range: ((usize, usize, usize), (usize, usize, usize)),
+    at: (usize, usize),
+    line: &Wrapped,
+) -> Option<(usize, usize)> {
+    let ((start_block, start_line, start_col), (end_block, end_line, end_col)) = range;
+    if at < (start_block, start_line) || at > (end_block, end_line) {
+        return None;
+    }
+    let end = cells(line)
+        .iter()
+        .rev()
+        .find(|(c, _, _)| !c.is_whitespace())
+        .map_or(0, |(_, col, w)| col + w)
+        .saturating_sub(line.tail);
+    let from = if at == (start_block, start_line) {
+        start_col.max(line.skip)
+    } else {
+        line.skip
+    };
+    let to = if at == (end_block, end_line) {
+        end_col.saturating_add(1).min(end)
+    } else {
+        end
+    };
+    (from < to).then_some((from, to))
+}
+
+/// The text of `line` in columns `from` to `to`.
+fn columns(line: &Wrapped, from: usize, to: usize) -> String {
+    cells(line)
+        .into_iter()
+        .filter(|(_, col, _)| *col >= from && *col < to)
+        .map(|(c, _, _)| c)
+        .collect::<String>()
+        .trim_end()
+        .to_string()
 }
 
 /// What a view shows.
@@ -752,14 +1080,9 @@ fn theme_key(theme: &Theme) -> u64 {
 /// the tool lines' markers use.
 const MARGIN: usize = 2;
 
-/// An item's lines at `width` (margins included).
-fn entry_lines(
-    item: &Item,
-    theme: &Theme,
-    width: usize,
-    selected: bool,
-    own: bool,
-) -> Vec<Line<'static>> {
+/// An item's lines at `width` (margins included), with what a copy of each
+/// needs. `own`: in its worker's own view, a worker's lines don't name it.
+fn entry_lines(item: &Item, theme: &Theme, width: usize, own: bool) -> Vec<Wrapped> {
     let inner = width.saturating_sub(MARGIN).max(1);
     let blank = || Span::raw(" ".repeat(MARGIN));
     let mark = |symbol: &str, style: Style| {
@@ -777,52 +1100,57 @@ fn entry_lines(
             )]
         }
     };
-    // The selected item's bar, in the margin.
-    let bar = |default: Span<'static>| {
-        if selected {
-            mark("▎", theme.accent())
-        } else {
-            default
-        }
-    };
     match item.kind {
         Kind::User => {
             let mut lines = plain(&item.text, theme.text(), inner);
             if let Some(tag) = user_tag(item) {
+                // (Not the user's text: a copy leaves it out.)
                 let tag = Span::styled(format!("  {tag}"), theme.dim());
+                let tag_width = text_width(&tag.content);
                 match lines.last_mut() {
-                    Some(last) if spans_width(last) + text_width(&tag.content) <= inner => {
-                        last.push(tag)
+                    Some(last) if spans_width(&last.spans) + tag_width <= inner => {
+                        last.spans.push(tag);
+                        last.tail += tag_width;
                     }
-                    _ => lines.push(vec![tag]),
+                    _ => {
+                        let mut line = Wrapped::line(vec![tag]);
+                        line.skip = tag_width;
+                        lines.push(line);
+                    }
                 }
             }
             wrap::prefixed(lines, mark("▎", theme.accent()), mark("▎", theme.accent()))
         }
         Kind::Text | Kind::Reply | Kind::Output => {
+            // A command's warning or error keeps its colour.
+            let style = match (item.kind, item.level) {
+                (Kind::Output, Some(Level::Warn)) => theme.warning(),
+                (Kind::Output, Some(Level::Error)) => theme.error(),
+                _ => theme.text(),
+            };
             let lines = if item.kind == Kind::Output {
-                plain(&item.text, theme.text(), inner)
+                plain(&item.text, style, inner)
             } else {
-                markdown::render(&item.text, theme.text(), theme, inner)
+                markdown::render(&item.text, style, theme, inner)
             };
             let lines = if lines.is_empty() {
-                vec![Vec::new()]
+                vec![Wrapped::line(Vec::new())]
             } else {
                 lines
             };
-            wrap::prefixed(lines, bar(blank()), bar(blank()))
+            wrap::prefixed(lines, blank(), blank())
         }
         Kind::Message => {
             let lines = markdown::render(&item.text, theme.text(), theme, inner);
-            wrap::prefixed(lines, bar(mark("✉", theme.dim())), bar(blank()))
+            wrap::prefixed(lines, mark("✉", theme.dim()), blank())
         }
         Kind::Question => {
-            let mut lines = vec![vec![Span::styled(
+            let mut lines = vec![Wrapped::line(vec![Span::styled(
                 "The agent asks:".to_string(),
                 theme.accent().add_modifier(Modifier::BOLD),
-            )]];
+            )])];
             lines.extend(markdown::render(&item.text, theme.text(), theme, inner));
-            wrap::prefixed(lines, bar(mark("?", theme.accent())), bar(blank()))
+            wrap::prefixed(lines, mark("?", theme.accent()), blank())
         }
         Kind::Call => {
             let mut spans = worker_prefix(item);
@@ -853,15 +1181,11 @@ fn entry_lines(
                 )),
             }
             let marker_style = if failed { theme.error() } else { theme.dim() };
-            let mut lines = wrap::prefixed(
-                wrap::wrap(&spans, inner, 2),
-                bar(mark("▸", marker_style)),
-                bar(blank()),
-            );
-            if selected && let Some(detail) = &item.detail {
-                lines.extend(gutter(detail, theme.dim(), theme, inner));
-            }
-            lines
+            wrap::prefixed(
+                wrap::wrap_lines(&spans, inner, 2),
+                mark("▸", marker_style),
+                blank(),
+            )
         }
         Kind::Result => {
             let style = match item.level {
@@ -887,9 +1211,9 @@ fn entry_lines(
             let mut spans = worker_prefix(item);
             spans.push(Span::styled(item.text.clone(), style));
             wrap::prefixed(
-                wrap::wrap(&spans, inner, 0),
-                bar(mark(symbol, style)),
-                bar(blank()),
+                wrap::wrap_lines(&spans, inner, 0),
+                mark(symbol, style),
+                blank(),
             )
         }
         Kind::Turn => {
@@ -898,8 +1222,7 @@ fn entry_lines(
             let fill = inner.saturating_sub(text_width(&text));
             let mut spans = vec![Span::styled(text, theme.dim())];
             spans.push(Span::styled(rule.repeat(fill), theme.dim()));
-            let lines = wrap::wrap(&spans, inner, 0);
-            wrap::prefixed(lines, blank(), blank())
+            wrap::prefixed(wrap::wrap_lines(&spans, inner, 0), blank(), blank())
         }
         // Drawn from the worker's summary.
         Kind::WorkerLine => Vec::new(),
@@ -924,11 +1247,11 @@ fn user_tag(item: &Item) -> Option<String> {
 }
 
 /// `text` as it is, wrapped.
-fn plain(text: &str, style: Style, width: usize) -> Vec<Vec<Span<'static>>> {
+fn plain(text: &str, style: Style, width: usize) -> Vec<Wrapped> {
     let text = wrap::clean(&glyphs::render(text));
     let mut lines = Vec::new();
     for line in text.split('\n') {
-        lines.extend(wrap::wrap(
+        lines.extend(wrap::wrap_lines(
             &[Span::styled(line.to_string(), style)],
             width,
             0,
@@ -938,15 +1261,13 @@ fn plain(text: &str, style: Style, width: usize) -> Vec<Vec<Span<'static>>> {
 }
 
 /// `text` beside a gutter, under its call: a command's output, an error.
-fn gutter(text: &str, style: Style, theme: &Theme, width: usize) -> Vec<Line<'static>> {
+/// (The gutter isn't copied.)
+fn gutter(text: &str, style: Style, theme: &Theme, width: usize) -> Vec<Wrapped> {
     let lines = plain(text, style, width.saturating_sub(2).max(1));
     let side = Span::styled(format!("  {}", glyphs::render("│ ")), theme.dim());
     lines
         .into_iter()
-        .map(|mut spans| {
-            spans.insert(0, side.clone());
-            Line::from(spans)
-        })
+        .map(|line| line.decorated(side.clone()))
         .collect()
 }
 
@@ -1047,7 +1368,7 @@ fn worker_line(
 }
 
 /// A worker view's heading: the worker's ID, task and state.
-fn heading_lines(worker: &WorkerSummary, theme: &Theme, width: usize) -> Vec<Line<'static>> {
+fn heading_lines(worker: &WorkerSummary, theme: &Theme, width: usize) -> Vec<Wrapped> {
     let inner = width.saturating_sub(MARGIN).max(1);
     let (word, style) = state(worker, theme);
     let mut spans = vec![
@@ -1063,20 +1384,10 @@ fn heading_lines(worker: &WorkerSummary, theme: &Theme, width: usize) -> Vec<Lin
         spans.push(Span::styled(format!(" · {time}"), theme.dim()));
     }
     wrap::prefixed(
-        wrap::wrap(&spans, inner, 0),
+        wrap::wrap_lines(&spans, inner, 0),
         Span::raw("  "),
         Span::raw("  "),
     )
-}
-
-/// A worker's summary as text, to copy.
-fn worker_text(worker: &WorkerSummary) -> String {
-    let mut text = format!("{} {}", worker.id, worker.title);
-    if let Some(report) = &worker.report {
-        text.push_str("\n\n");
-        text.push_str(report);
-    }
-    text
 }
 
 #[cfg(test)]
@@ -1178,6 +1489,77 @@ mod tests {
         let bottom = rows(&mut t, &filter, 30, 6);
         assert!(t.following());
         assert!(bottom[5].contains("more and more"));
+    }
+
+    /// A selection copies what the screen shows as it is written: without
+    /// the margins, the code's gutter and the output's prefix, and with a
+    /// line the screen wrapped joined again.
+    #[test]
+    fn a_selection_copies_clean_text() {
+        let mut t = Transcript::new();
+        t.apply(Update::Item(item(
+            1,
+            Kind::Reply,
+            "A long line that the screen wraps into two\n\n```\nfn main() {}\n```",
+        )));
+        let mut call = item(2, Kind::Call, "$ ls");
+        call.status = Some(CallStatus::Ok);
+        call.outcome = Some("2 files".into());
+        t.apply(Update::Item(call));
+        let mut result = item(3, Kind::Result, "exit code 0, 0.1 s").detail("a.rs\nb.rs");
+        result.call = Some(2);
+        t.apply(Update::Item(result));
+        let filter = full();
+        let screen = rows(&mut t, &filter, 30, 12);
+        assert_eq!(screen[0], "  A long line that the screen");
+        assert_eq!(screen[1], "  wraps into two");
+        let (from, to) = (t.point_at(0, 0).unwrap(), t.point_at(29, 11).unwrap());
+        t.select(from, to, &filter);
+        assert_eq!(
+            t.selected_text(&filter, &Theme::terminal()).unwrap(),
+            "A long line that the screen wraps into two\n\nfn main() {}\n\n$ ls · ✓ 2 files\na.rs\nb.rs"
+        );
+        // Part of a line: from its column to the other's.
+        let (from, to) = (t.point_at(4, 0).unwrap(), t.point_at(12, 0).unwrap());
+        t.select(from, to, &filter);
+        assert_eq!(
+            t.selected_text(&filter, &Theme::terminal()).unwrap(),
+            "long line"
+        );
+        // It is highlighted, from its first cell to its last.
+        let area = Rect::new(0, 0, 30, 12);
+        let mut buffer = Buffer::empty(area);
+        t.draw(&mut buffer, area, &filter, &Theme::terminal());
+        let reversed = |x: u16| buffer[(x, 0)].modifier.contains(Modifier::REVERSED);
+        assert!(!reversed(3) && reversed(4) && reversed(12) && !reversed(13));
+        // Text added to an item keeps it; another width (lines wrapped
+        // otherwise) takes it away.
+        t.apply(Update::Append {
+            id: 1,
+            text: " more".into(),
+        });
+        assert!(t.selection.is_some());
+        rows(&mut t, &filter, 26, 12);
+        assert!(t.selection.is_none());
+    }
+
+    /// While a drag holds the view, output that comes doesn't move the
+    /// text under the mouse, even at the bottom.
+    #[test]
+    fn a_drag_holds_the_text_still() {
+        let mut t = Transcript::new();
+        for id in 1..=5 {
+            t.apply(Update::Item(item(id, Kind::Output, &format!("line {id}"))));
+        }
+        let filter = full();
+        let before = rows(&mut t, &filter, 20, 4);
+        t.hold();
+        t.apply(Update::Item(item(6, Kind::Output, "line 6")));
+        let held = rows(&mut t, &filter, 20, 4);
+        assert_eq!(held[..3], before[..3]);
+        t.release();
+        t.follow();
+        assert_eq!(rows(&mut t, &filter, 20, 4)[3], "  line 6");
     }
 
     /// Old items leaving the history don't shift the screen.

@@ -178,15 +178,16 @@ impl Screen {
     }
 }
 
-/// Mouse reports for clicks and the wheel only: no motion, which crossterm's
-/// own command asks for too (any-event tracking, crossterm/src/event.rs:329)
-/// and which would wake the view at every move of the mouse.
+/// Mouse reports for buttons, the wheel and drags (motion while a button is
+/// down, to select text): not every motion, which crossterm's own command
+/// asks for too (any-event tracking, crossterm/src/event.rs:329) and which
+/// would wake the view at every move of the mouse.
 struct EnableMouse;
 
 impl Command for EnableMouse {
     fn write_ansi(&self, f: &mut impl std::fmt::Write) -> std::fmt::Result {
-        // Button presses (and the wheel), in SGR coordinates.
-        f.write_str("\x1b[?1000h\x1b[?1006h")
+        // Buttons and the wheel, drags, in SGR coordinates.
+        f.write_str("\x1b[?1000h\x1b[?1002h\x1b[?1006h")
     }
 
     #[cfg(windows)]
@@ -419,7 +420,6 @@ async fn run(
                         crossterm::clipboard::CopyToClipboard::to_clipboard_from(text.as_bytes())
                     );
                     clipboard::system(text);
-                    app.say("Copied");
                 }
                 Effect::Mouse(on) => {
                     let _ = if on {

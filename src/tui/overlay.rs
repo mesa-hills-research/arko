@@ -171,13 +171,18 @@ pub const KEYS: &[(&str, &str)] = &[
     ("Ctrl+O", "next view: full, quiet, messages"),
     ("Ctrl+T", "the agent list: Enter shows a worker's own work"),
     ("Esc", "close, go back, or put the agent's question off"),
-    (
-        "Ctrl+C",
-        "copy the selected message, else stop the turn, else clear",
-    ),
+    ("Ctrl+C", "stop the turn, else clear the box"),
     ("Ctrl+D", "quit, when the box is empty (as /exit)"),
     ("Ctrl+L", "draw the screen again"),
-    ("Click", "select a message to copy, or open a worker's line"),
+    ("Drag", "select text, and it is copied when you let go"),
+    (
+        "Double-click",
+        "select a word and copy it (a triple click a line)",
+    ),
+    (
+        "Click",
+        "open a worker's line, a row of the agent list or a count of calls",
+    ),
 ];
 
 fn help(frame: &mut Frame, app: &App, area: Rect, scroll: usize) {
@@ -223,7 +228,7 @@ fn help(frame: &mut Frame, app: &App, area: Rect, scroll: usize) {
     }
     lines.push(Line::default());
     lines.push(Line::from(Span::styled(
-        "Shift-drag selects text in most terminals while the mouse scrolls. /settings turns the mouse off.",
+        "Shift-drag uses the terminal's own selection in most terminals. /settings turns the mouse off.",
         theme.dim(),
     )));
     let height = (lines.len() as u16 + 4).min(area.height);
@@ -319,9 +324,9 @@ fn settings(frame: &mut Frame, app: &App, area: Rect, selected: usize) {
                 "Mouse",
                 choices(theme, &["on", "off"], usize::from(!app.mouse)),
                 if app.mouse {
-                    "The wheel scrolls and a click selects a message. Shift-drag selects text.".to_string()
+                    "The wheel scrolls, and a drag selects text and copies it.".to_string()
                 } else {
-                    "The terminal selects text, and PgUp and PgDn scroll.".to_string()
+                    "The terminal's own selection applies, and PgUp and PgDn scroll.".to_string()
                 },
             ),
             SettingsRow::Outside => (

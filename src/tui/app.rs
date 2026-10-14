@@ -23,6 +23,23 @@ use crate::ui::Input;
 const AGAIN: Duration = Duration::from_secs(3);
 /// Lines a wheel notch scrolls.
 const WHEEL: i64 = 3;
+/// Clicks this close together, on one cell, are a double or triple click.
+const MULTI_CLICK: Duration = Duration::from_millis(400);
+
+/// The left button pressed in the transcript: where the press began in the
+/// text, where the mouse is, and whether it moved (a drag selects text).
+#[derive(Debug, Clone, Copy)]
+struct Press {
+    anchor: super::transcript::Point,
+    at: (u16, u16),
+    dragged: bool,
+    /// A double or triple click chose what is highlighted (a word, a
+    /// line): it stays so unless the mouse drags on.
+    chosen: bool,
+    /// The view followed the bottom when the button went down: a click
+    /// (no drag) leaves it following.
+    following: bool,
+}
 
 /// What the session is, for the status line, the title and the overlays.
 #[derive(Debug, Clone, Default)]
@@ -98,6 +115,10 @@ pub struct App {
     pub list_focus: Option<usize>,
     /// When the view started: the agent list shows the workers since.
     started_ms: i64,
+    /// The left button, while it is down over the transcript.
+    press: Option<Press>,
+    /// The last click: when, where, and how many in a row.
+    last_click: Option<(Instant, u16, u16, u8)>,
     /// Where the agent list was drawn, and the row of its first line: for
     /// the mouse.
     pub list_drawn: (ratatui::layout::Rect, usize),
@@ -154,6 +175,8 @@ impl App {
             list_focus: None,
             started_ms: chrono::Utc::now().timestamp_millis(),
             list_drawn: Default::default(),
+            press: None,
+            last_click: None,
         }
     }
 
@@ -256,6 +279,8 @@ impl App {
         if key.kind == KeyEventKind::Release {
             return;
         }
+        // A key press clears what the mouse highlighted.
+        self.transcript.selection = None;
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let alt = key.modifiers.contains(KeyModifiers::ALT);
         let shift = key.modifiers.contains(KeyModifiers::SHIFT);
@@ -384,7 +409,6 @@ impl App {
         if !self.editor.starts_with('/') {
             self.put_off = None;
         }
-        self.transcript.selected = None;
     }
 
     /// A paste the terminal marked.
@@ -420,8 +444,6 @@ impl App {
     fn escape(&mut self) {
         if !self.menu_items().is_empty() {
             self.menu.dismissed = Some(self.editor.shown());
-        } else if self.transcript.selected.is_some() {
-            self.transcript.selected = None;
         } else if self.watching.is_some() {
             self.watching = None;
             self.transcript.follow();
@@ -434,16 +456,9 @@ impl App {
         }
     }
 
-    /// Ctrl+C: copies the selected message; else stops the turn; else
-    /// clears the box; else, pressed twice, quits.
+    /// Ctrl+C: stops the turn; else clears the box; else, pressed twice,
+    /// quits. (It never copies: letting go of a drag does.)
     fn interrupt(&mut self) {
-        if let Some(id) = self.transcript.selected {
-            if let Some(text) = self.transcript.copy_text(id) {
-                self.effects.push(Effect::Copy(text));
-            }
-            self.transcript.selected = None;
-            return;
-        }
         if self.activity.working {
             if self.stopping {
                 self.say("Stopping: the agents get up to 10 s to end");
@@ -556,7 +571,7 @@ impl App {
     /// Shows the worker `id`'s own transcript (`None`: the main one).
     pub fn watch(&mut self, id: Option<String>) {
         self.watching = id;
-        self.transcript.selected = None;
+        self.transcript.selection = None;
         self.transcript.follow();
     }
 
@@ -631,6 +646,7 @@ impl App {
                 Some(reply) => {
                     let reply = reply.to_string();
                     self.effects.push(Effect::Copy(reply));
+                    self.say("Copied the last reply");
                 }
                 None => self.say("No reply to copy yet"),
             },
@@ -848,11 +864,12 @@ impl App {
 
     // ----- the mouse -----
 
+    /// The mouse: the wheel scrolls; a drag over the transcript highlights
+    /// text, copied when the button is let go (a double click a word, a
+    /// triple click a line); a click (no drag) opens what it is on.
     pub fn mouse(&mut self, event: MouseEvent) {
-        let at = ratatui::layout::Position {
-            x: event.column,
-            y: event.row,
-        };
+        let (x, y) = (event.column, event.row);
+        let at = ratatui::layout::Position { x, y };
         match event.kind {
             // Over the help, the wheel scrolls it.
             MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
@@ -866,57 +883,176 @@ impl App {
                     };
                 }
             }
+            // (While a drag selects, the text under the mouse is read again
+            // once the screen is drawn: the selection grows as it scrolls.)
             MouseEventKind::ScrollUp => self.transcript.scroll(-WHEEL),
             MouseEventKind::ScrollDown => self.transcript.scroll(WHEEL),
             MouseEventKind::Down(MouseButton::Left) => {
                 if self.overlay.is_some() {
                     return;
                 }
-                // A row of the agent list shows that agent's transcript.
-                let (list, first) = self.list_drawn;
-                if list.contains(at) {
-                    let row = first + (at.y - list.y) as usize;
-                    if let Some(agent) = self.list().get(row) {
-                        let id = agent.map(|w| w.id.clone());
-                        self.watch(id);
+                // A click clears what was highlighted.
+                self.transcript.selection = None;
+                let now = Instant::now();
+                let count = match self.last_click {
+                    Some((when, cx, cy, count))
+                        if now.duration_since(when) < MULTI_CLICK && (cx, cy) == (x, y) =>
+                    {
+                        count % 3 + 1
                     }
-                    return;
-                }
-                if self
+                    _ => 1,
+                };
+                self.last_click = Some((now, x, y, count));
+                let on_marker = self
                     .transcript
                     .drawn
                     .marker
-                    .is_some_and(|rect| rect.contains(at))
-                {
-                    self.transcript.follow();
+                    .is_some_and(|rect| rect.contains(at));
+                if on_marker || !self.transcript.drawn.area.contains(at) {
                     return;
                 }
-                let Some(key) = self.transcript.drawn.key_at(event.column, event.row) else {
+                let Some(point) = self.transcript.point_at(x, y) else {
                     return;
                 };
-                // A turn's counted calls open in the Full view.
-                if self.transcript.is_counter(key) {
-                    self.set_view(View::Full);
-                    self.transcript.show(key);
+                let filter = self.filter();
+                let theme = self.theme.clone();
+                let span = match count {
+                    2 => self.transcript.word_at(point, &filter, &theme),
+                    3 => self.transcript.line_at(point, &filter, &theme),
+                    _ => None,
+                };
+                // The text under the mouse holds still from the press: what
+                // the press found is what a drag starts from.
+                let following = self.transcript.following();
+                self.transcript.hold();
+                self.press = Some(match span {
+                    Some((from, to)) => {
+                        self.transcript.select(from, to, &filter);
+                        Press {
+                            anchor: from,
+                            at: (x, y),
+                            dragged: true,
+                            chosen: true,
+                            following,
+                        }
+                    }
+                    None => Press {
+                        anchor: point,
+                        at: (x, y),
+                        dragged: false,
+                        chosen: false,
+                        following,
+                    },
+                });
+            }
+            MouseEventKind::Drag(MouseButton::Left) => {
+                let filter = self.filter();
+                let Some(press) = &mut self.press else {
+                    return;
+                };
+                if press.at == (x, y) {
                     return;
                 }
-                // A worker's line opens its own transcript.
-                if let Some(item) = self.transcript.item(key)
-                    && let Some(worker) = item.worker.clone()
-                    && self.watching.is_none()
-                {
-                    self.watch(Some(worker));
-                    return;
+                press.dragged = true;
+                press.chosen = false;
+                press.at = (x, y);
+                let anchor = press.anchor;
+                if let Some(head) = self.transcript.point_at(x, y) {
+                    self.transcript.select(anchor, head, &filter);
                 }
-                if self.transcript.item(key).is_some() {
-                    self.transcript.selected = if self.transcript.selected == Some(key) {
-                        None
-                    } else {
-                        Some(key)
-                    };
+            }
+            MouseEventKind::Up(MouseButton::Left) => {
+                self.transcript.release();
+                match self.press.take() {
+                    Some(press) if press.dragged => self.copy_selection(),
+                    // A click (no drag) never copies: it opens what it is on.
+                    press => {
+                        if press.is_some_and(|press| press.following) {
+                            self.transcript.follow();
+                        }
+                        self.click(at);
+                    }
                 }
             }
             _ => {}
+        }
+    }
+
+    /// After a frame: a drag's end follows the text now under the mouse
+    /// (the wheel may have scrolled it).
+    pub fn after_draw(&mut self) {
+        let filter = self.filter();
+        if let Some(press) = &self.press
+            && press.dragged
+            && !press.chosen
+            && self.transcript.selection.is_some()
+            && let Some(head) = self.transcript.point_at(press.at.0, press.at.1)
+        {
+            let anchor = press.anchor;
+            self.transcript.select(anchor, head, &filter);
+        }
+    }
+
+    /// Copies what is highlighted, and says how much.
+    fn copy_selection(&mut self) {
+        let filter = self.filter();
+        let theme = self.theme.clone();
+        let Some(text) = self.transcript.selected_text(&filter, &theme) else {
+            return;
+        };
+        let lines = text.lines().count();
+        let said = if lines > 1 {
+            format!("Copied {lines} lines")
+        } else {
+            let count = text.chars().count();
+            format!(
+                "Copied {count} character{}",
+                if count == 1 { "" } else { "s" }
+            )
+        };
+        self.effects.push(Effect::Copy(text));
+        self.say(said);
+    }
+
+    /// A click (no drag) at `at`: a row of the agent list shows that
+    /// agent, the "new" marker goes to the end, a turn's counted calls
+    /// open in the Full view, and a worker's line opens its transcript.
+    /// Elsewhere it does nothing.
+    fn click(&mut self, at: ratatui::layout::Position) {
+        if self.overlay.is_some() {
+            return;
+        }
+        let (list, first) = self.list_drawn;
+        if list.contains(at) {
+            let row = first + (at.y - list.y) as usize;
+            if let Some(agent) = self.list().get(row) {
+                let id = agent.map(|w| w.id.clone());
+                self.watch(id);
+            }
+            return;
+        }
+        if self
+            .transcript
+            .drawn
+            .marker
+            .is_some_and(|rect| rect.contains(at))
+        {
+            self.transcript.follow();
+            return;
+        }
+        let Some(key) = self.transcript.drawn.key_at(at.x, at.y) else {
+            return;
+        };
+        if self.transcript.is_counter(key) {
+            self.set_view(View::Full);
+            self.transcript.show(key);
+            return;
+        }
+        if let Some(item) = self.transcript.item(key)
+            && let Some(worker) = item.worker.clone()
+            && self.watching.is_none()
+        {
+            self.watch(Some(worker));
         }
     }
 
@@ -1121,15 +1257,22 @@ pub(super) mod tests {
         // Esc in the box leaves the worker's view.
         press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
         assert_eq!(app.watching, None);
-        // A click on a row of the list shows that agent.
+        // A click on a row of the list (pressed and let go) shows that
+        // agent, and copies nothing.
         app.list_drawn = (ratatui::layout::Rect::new(0, 20, 80, 2), 0);
-        app.mouse(MouseEvent {
-            kind: MouseEventKind::Down(MouseButton::Left),
-            column: 5,
-            row: 21,
-            modifiers: KeyModifiers::NONE,
-        });
+        for kind in [
+            MouseEventKind::Down(MouseButton::Left),
+            MouseEventKind::Up(MouseButton::Left),
+        ] {
+            app.mouse(MouseEvent {
+                kind,
+                column: 5,
+                row: 21,
+                modifiers: KeyModifiers::NONE,
+            });
+        }
         assert_eq!(app.watching.as_deref(), Some("r1"));
+        assert!(app.take_effects().is_empty());
     }
 
     #[test]

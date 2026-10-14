@@ -85,6 +85,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     app.transcript
         .draw(frame.buffer_mut(), transcript, &filter, &theme);
     overlay::draw(frame, app, transcript, area);
+    app.after_draw();
 }
 
 /// The input box: the text between two rules the width of the screen (no
@@ -378,8 +379,6 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
     } else {
         let pairs: &[(&str, &str)] = if app.list_focus.is_some() {
             &[("Enter", "view"), ("Esc", "back to the box")]
-        } else if app.transcript.selected.is_some() {
-            &[("Ctrl+C", "copy"), ("Esc", "deselect")]
         } else if app.watching.is_some() {
             &[("Esc", "back")]
         } else if app.activity.working && app.activity.question.is_none() {
@@ -423,7 +422,11 @@ fn draw_question(frame: &mut Frame, app: &App, above: Rect) -> u16 {
         return 0;
     };
     let inner_width = (above.width as usize).saturating_sub(4).max(4);
-    let mut lines = markdown::render(&question.text, theme.text(), theme, inner_width);
+    let mut lines: Vec<Vec<Span<'static>>> =
+        markdown::render(&question.text, theme.text(), theme, inner_width)
+            .into_iter()
+            .map(|line| line.spans)
+            .collect();
     let room = (above.height as usize / 2).saturating_sub(2).max(1);
     if lines.len() > room {
         lines.truncate(room.saturating_sub(1));
@@ -633,6 +636,68 @@ mod tests {
         );
         assert!(rows[3].ends_with("WORKER|main"), "{rows:?}");
         assert_eq!(rows[6], " › /wa");
+    }
+
+    fn mouse(app: &mut App, kind: crossterm::event::MouseEventKind, x: u16, y: u16) {
+        app.mouse(crossterm::event::MouseEvent {
+            kind,
+            column: x,
+            row: y,
+            modifiers: KeyModifiers::NONE,
+        });
+    }
+
+    /// Letting go of a drag copies what it highlighted, and says how much;
+    /// a click copies nothing; a double click copies a word.
+    #[test]
+    fn a_drag_copies_and_a_click_does_not() {
+        use crate::tui::app::Effect;
+        use crossterm::event::{MouseButton, MouseEventKind};
+        let mut app = app();
+        let mut item = Item::new(Kind::Reply, "Hello there, reader.");
+        item.id = 1;
+        app.update(Update::Item(item), Activity::default);
+        screen(&mut app, 40, 8);
+        let left = MouseButton::Left;
+        mouse(&mut app, MouseEventKind::Down(left), 3, 0);
+        mouse(&mut app, MouseEventKind::Up(left), 3, 0);
+        assert!(app.take_effects().is_empty());
+        mouse(&mut app, MouseEventKind::Down(left), 8, 0);
+        mouse(&mut app, MouseEventKind::Drag(left), 15, 0);
+        screen(&mut app, 40, 8);
+        mouse(&mut app, MouseEventKind::Drag(left), 21, 0);
+        mouse(&mut app, MouseEventKind::Up(left), 21, 0);
+        assert_eq!(app.take_effects(), [Effect::Copy("there, reader.".into())]);
+        assert_eq!(app.hint(), Some("Copied 14 characters"));
+        // The highlight stays until a key is pressed.
+        assert!(app.transcript.selection.is_some());
+        app.key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+        assert!(app.transcript.selection.is_none());
+        // (Frames are drawn between the clicks, as in the terminal.)
+        for kind in [
+            MouseEventKind::Down(left),
+            MouseEventKind::Up(left),
+            MouseEventKind::Down(left),
+            MouseEventKind::Up(left),
+        ] {
+            mouse(&mut app, kind, 9, 0);
+            screen(&mut app, 40, 8);
+        }
+        assert_eq!(app.take_effects(), [Effect::Copy("there,".into())]);
+        // A triple click (on another cell, so the count starts over): the
+        // second click copies the word, the third the line.
+        for _ in 0..3 {
+            mouse(&mut app, MouseEventKind::Down(left), 10, 0);
+            screen(&mut app, 40, 8);
+            mouse(&mut app, MouseEventKind::Up(left), 10, 0);
+        }
+        assert_eq!(
+            app.take_effects(),
+            [
+                Effect::Copy("there,".into()),
+                Effect::Copy("Hello there, reader.".into())
+            ]
+        );
     }
 
     #[test]

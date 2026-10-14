@@ -5,7 +5,7 @@
 //! every item's height to scroll without drawing it.
 
 use ratatui::style::Style;
-use ratatui::text::{Line, Span};
+use ratatui::text::Span;
 use unicode_width::UnicodeWidthChar;
 
 /// The display width of `c`: 0 for marks that join the character before.
@@ -45,23 +45,75 @@ pub fn clean(text: &str) -> String {
     clean
 }
 
+/// How a display line follows the one before it in the text it shows:
+/// what a copy puts between them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Join {
+    /// A line of its own: the text has a line break there.
+    Break,
+    /// The text goes on, wrapped at a space.
+    Space,
+    /// The text goes on, a word too long for a line broken.
+    Direct,
+}
+
+/// A display line, and what a copy of it needs: how it follows the line
+/// before, and how many columns at its start (a margin, a gutter, a
+/// hanging indent) and its end (a tag) aren't its text.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Wrapped {
+    pub spans: Vec<Span<'static>>,
+    pub join: Join,
+    pub skip: usize,
+    pub tail: usize,
+}
+
+impl Wrapped {
+    /// A line of its own, all text.
+    pub fn line(spans: Vec<Span<'static>>) -> Self {
+        Self {
+            spans,
+            join: Join::Break,
+            skip: 0,
+            tail: 0,
+        }
+    }
+
+    /// This line with `span` before it, as decoration (not copied).
+    pub fn decorated(mut self, span: Span<'static>) -> Self {
+        self.skip += width(&span.content);
+        self.spans.insert(0, span);
+        self
+    }
+}
+
 /// One logical line, as styled spans, wrapped to `width` columns: at
 /// spaces where it can be, else in the middle of a word too long for a
 /// line. Spaces at the break are dropped. `hang` is the indent of the
 /// lines after the first (a list item's text lines up under its text).
 pub fn wrap(spans: &[Span<'_>], width: usize, hang: usize) -> Vec<Vec<Span<'static>>> {
+    wrap_lines(spans, width, hang)
+        .into_iter()
+        .map(|line| line.spans)
+        .collect()
+}
+
+/// [`wrap`], with how each line joins the one before it, for copying.
+pub fn wrap_lines(spans: &[Span<'_>], width: usize, hang: usize) -> Vec<Wrapped> {
     let width = width.max(1);
     let chars: Vec<(char, Style)> = spans
         .iter()
         .flat_map(|span| span.content.chars().map(move |c| (c, span.style)))
         .collect();
-    let mut lines: Vec<Vec<(char, Style)>> = Vec::new();
+    // Each line, and how it follows the one before.
+    let mut lines: Vec<(Vec<(char, Style)>, Join)> = Vec::new();
     let mut line: Vec<(char, Style)> = Vec::new();
+    let mut join = Join::Break;
     let mut used = 0;
     // Where the line can break: after its last space, with the width
     // before it.
     let mut last_space: Option<(usize, usize)> = None;
-    let room = |lines: &Vec<Vec<(char, Style)>>| {
+    let room = |lines: &Vec<(Vec<(char, Style)>, Join)>| {
         if lines.is_empty() {
             width
         } else {
@@ -71,17 +123,19 @@ pub fn wrap(spans: &[Span<'_>], width: usize, hang: usize) -> Vec<Vec<Span<'stat
     for (c, style) in chars {
         let w = char_width(c);
         if used + w > room(&lines) && !line.is_empty() {
-            let rest = match last_space {
+            let (rest, next) = match last_space {
                 // Break after the space; the next line starts with the
                 // word that didn't fit.
-                Some((at, _)) if c != ' ' => line.split_off(at),
-                _ => Vec::new(),
+                Some((at, _)) if c != ' ' => (line.split_off(at), Join::Space),
+                _ if c == ' ' => (Vec::new(), Join::Space),
+                _ => (Vec::new(), Join::Direct),
             };
             // Spaces at the end of a line aren't drawn.
             while line.last().is_some_and(|(c, _)| *c == ' ') {
                 line.pop();
             }
-            lines.push(std::mem::take(&mut line));
+            lines.push((std::mem::take(&mut line), join));
+            join = next;
             line = rest;
             used = line.iter().map(|(c, _)| char_width(*c)).sum();
             last_space = None;
@@ -95,17 +149,22 @@ pub fn wrap(spans: &[Span<'_>], width: usize, hang: usize) -> Vec<Vec<Span<'stat
             last_space = Some((line.len(), used));
         }
     }
-    lines.push(line);
+    lines.push((line, join));
     lines
         .into_iter()
         .enumerate()
-        .map(|(n, chars)| {
-            let mut spans = Vec::new();
+        .map(|(n, (chars, join))| {
+            let line = Wrapped {
+                spans: merge(&chars),
+                join,
+                skip: 0,
+                tail: 0,
+            };
             if n > 0 && hang > 0 {
-                spans.push(Span::raw(" ".repeat(hang)));
+                line.decorated(Span::raw(" ".repeat(hang)))
+            } else {
+                line
             }
-            spans.extend(merge(&chars));
-            spans
         })
         .collect()
 }
@@ -132,18 +191,11 @@ fn merge(chars: &[(char, Style)]) -> Vec<Span<'static>> {
 
 /// `prefix` before the first of `lines`, and `rest` (as wide) before the
 /// others: a margin, such as the user's bar or a tool line's indent.
-pub fn prefixed(
-    lines: Vec<Vec<Span<'static>>>,
-    prefix: Span<'static>,
-    rest: Span<'static>,
-) -> Vec<Line<'static>> {
+pub fn prefixed(lines: Vec<Wrapped>, prefix: Span<'static>, rest: Span<'static>) -> Vec<Wrapped> {
     lines
         .into_iter()
         .enumerate()
-        .map(|(n, mut spans)| {
-            spans.insert(0, if n == 0 { prefix.clone() } else { rest.clone() });
-            Line::from(spans)
-        })
+        .map(|(n, line)| line.decorated(if n == 0 { prefix.clone() } else { rest.clone() }))
         .collect()
 }
 
@@ -187,6 +239,18 @@ mod tests {
         assert_eq!(
             text(&wrap(&[Span::raw("日本語です")], 4, 0)),
             ["日本", "語で", "す"]
+        );
+    }
+
+    /// A line wrapped at a space joins back with one; a word broken
+    /// joins back directly; a hanging indent isn't text.
+    #[test]
+    fn wrapped_lines_say_how_they_join() {
+        let lines = wrap_lines(&[Span::raw("the quick brownfoxjumps")], 10, 2);
+        let shown: Vec<(Join, usize)> = lines.iter().map(|line| (line.join, line.skip)).collect();
+        assert_eq!(
+            shown,
+            [(Join::Break, 0), (Join::Space, 2), (Join::Direct, 2)]
         );
     }
 
