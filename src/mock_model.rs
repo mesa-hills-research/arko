@@ -136,13 +136,16 @@ pub fn tool_call(id: &str, name: &str, arguments: Value) -> String {
     .collect()
 }
 
-/// `turn` (a model turn), reporting `tokens` of input.
+/// `turn` (a model turn), reporting `tokens` of input. (Only the live
+/// tests that run on Unix use it.)
+#[cfg_attr(not(unix), allow(dead_code))]
 pub fn with_input(turn: String, tokens: usize) -> String {
     turn.replace("\"input_tokens\":10", &format!("\"input_tokens\":{tokens}"))
 }
 
 /// The answer to a request over the model's input limit, as OpenAI gives
-/// it.
+/// it. (Only the live tests that run on Unix use it.)
+#[cfg_attr(not(unix), allow(dead_code))]
 pub fn overflow() -> String {
     let body = serde_json::json!({"error": {
         "message": "Your input exceeds the context window of this model. Please adjust your input and try again.",

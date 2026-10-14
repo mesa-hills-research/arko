@@ -9,7 +9,6 @@
 //! or a `.env`) puts its link first, whatever the ranking says.
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
-use std::path::Path;
 
 use serde::Serialize;
 
@@ -72,7 +71,7 @@ pub fn interfaces() -> Vec<Interface> {
 #[cfg(target_os = "linux")]
 fn physical(name: &str) -> Option<bool> {
     Some(
-        Path::new("/sys/class/net")
+        std::path::Path::new("/sys/class/net")
             .join(name)
             .join("device")
             .exists(),

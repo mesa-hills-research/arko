@@ -480,6 +480,7 @@ impl Feed {
     }
 
     /// The workers, in the order they started.
+    #[cfg(test)]
     pub fn workers(&self) -> Vec<WorkerSummary> {
         self.lock()
             .workers

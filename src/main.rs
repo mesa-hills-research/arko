@@ -3140,7 +3140,9 @@ impl UserInputHandler for Asker {
 mod tests {
     use super::*;
 
-    /// The live settings' end-to-end tests, in their own file.
+    /// The live settings' end-to-end tests, in their own file. Most run
+    /// only on Unix, so their helpers go unused elsewhere.
+    #[cfg_attr(not(unix), allow(dead_code))]
     mod live {
         use super::*;
         include!("live_tests.rs");

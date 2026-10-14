@@ -152,6 +152,8 @@ pub fn depth() -> Depth {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Corners {
     Square,
+    /// Only debug builds choose it, for now.
+    #[cfg_attr(not(debug_assertions), allow(dead_code))]
     Rounded,
 }
 

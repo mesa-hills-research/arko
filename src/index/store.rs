@@ -17,6 +17,7 @@ pub const MANIFEST_FILE: &str = "index.json";
 /// arko_index's index2 state in an index's folder.
 pub const STATE_DIR: &str = "state";
 /// The inotify watcher's state (Linux).
+#[cfg(any(target_os = "linux", test))]
 pub const WATCH2_DIR: &str = "watch2";
 /// The polling watcher's state (other systems, or where inotify fails).
 pub const WATCH_DIR: &str = "watch";
@@ -210,6 +211,7 @@ impl Layout {
     pub fn state(&self) -> PathBuf {
         self.dir.join(STATE_DIR)
     }
+    #[cfg(any(target_os = "linux", test))]
     pub fn watch2(&self) -> PathBuf {
         self.dir.join(WATCH2_DIR)
     }
