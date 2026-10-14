@@ -1,15 +1,19 @@
-//! How the agents' calls and results read on the page: as the terminal
-//! shows them, without its styles, and with the long parts (a worker's
-//! task, a multi-line command, a handover report) kept whole as details.
+//! How the agents' calls and results read in the feed: as the terminal
+//! shows them, without its styles, with the long parts (a worker's task, a
+//! multi-line command, a handover report) kept whole as details, and with
+//! each result told in a few words on its call's line.
 
 use std::collections::HashMap;
 
-use arko_agents::builtins::ASK_USER_TOOL_NAME;
+use arko_agents::builtins::{
+    APPLY_DIFF_TOOL_NAME, ASK_USER_TOOL_NAME, LIST_FILES_TOOL_NAME, READ_FILE_TOOL_NAME,
+    WRITE_FILE_TOOL_NAME,
+};
 use arko_agents::handover::{HANDOVER_REPORT_PARAM_NAME, HANDOVER_REPORT_TOOL_NAME};
 use arko_workflows::services::RUN_WORKFLOW_AGENT_TOOL_NAME;
 use serde_json::Value;
 
-use super::feed::{Item, Kind, Level};
+use super::feed::{CallStatus, Item, Kind, Level};
 use crate::crew;
 use crate::message;
 use crate::shell::SHELL_TOOL_NAME;
@@ -37,8 +41,9 @@ fn flag(parameters: &Parameters, name: &str) -> bool {
     }
 }
 
-/// How a call of the main agent shows; `None` for calls not shown (its
-/// question is shown as fin asks it, its reply as the turn ends).
+/// How a call of an agent (the main one or a worker) shows; `None` for
+/// calls not shown (a question is shown as fin asks it, a reply or a
+/// worker's report as it ends).
 pub fn call(tool: &str, parameters: &Parameters) -> Option<Item> {
     let call = |line: String| Item::new(Kind::Call, line);
     Some(match tool {
@@ -131,67 +136,200 @@ fn long(text: &str, limit: usize) -> String {
     }
 }
 
-/// Whether the result of the main agent's `tool` is shown.
-pub fn shows_result(tool: &str) -> bool {
-    !matches!(
-        tool,
-        "complete_task" | ASK_USER_TOOL_NAME | HANDOVER_REPORT_TOOL_NAME | crew::START_AGENT
-    ) && tool != message::MESSAGE_USER
+/// What became of a call, from its result.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Outcome {
+    pub status: CallStatus,
+    /// A few words for the call's own line: "12 passed", "exit 1", "r2".
+    pub text: Option<String>,
+    /// A block to show under the call: a command's first lines of output.
+    pub block: Option<Item>,
 }
 
-/// A result of the main agent's `tool`, in brief: a command's status with
-/// its first lines of output, else the first line and a count of the
-/// others.
-pub fn result(tool: &str, output: &str) -> Option<Item> {
-    if tool == SHELL_TOOL_NAME {
-        let mut lines = output.lines();
-        let status = lines.next().unwrap_or_default();
-        let rest: Vec<&str> = lines.collect();
-        let mut shown: Vec<String> = Vec::new();
-        if !(rest.len() == 1 && rest[0] == "(no output)") {
-            shown.extend(rest.iter().take(SHOWN_LINES).map(|line| cut(line, 300)));
-            if rest.len() > SHOWN_LINES {
-                shown.push(format!("… {} more lines", rest.len() - SHOWN_LINES));
+impl Outcome {
+    fn ok(text: impl Into<String>) -> Self {
+        let text = text.into();
+        Self {
+            status: CallStatus::Ok,
+            text: (!text.trim().is_empty()).then_some(text),
+            block: None,
+        }
+    }
+
+    /// A call that failed with `message` (an error, a rejection): its
+    /// first words on the call's line, and the whole of a longer message
+    /// as a block under it.
+    pub fn failed(message: &str) -> Self {
+        // arko's "Tool 'shell' execution failed: ..." names what the line
+        // already shows.
+        let message = message.trim();
+        let message = message
+            .strip_prefix("Tool '")
+            .and_then(|rest| rest.split_once("' execution failed: "))
+            .map_or(message, |(_, why)| why.trim());
+        let text = cut(message.lines().next().unwrap_or_default(), OUTCOME_CHARS);
+        let block = (message != text)
+            .then(|| Item::new(Kind::Result, clip(message, 600)).level(Level::Error));
+        Self {
+            status: CallStatus::Failed,
+            text: (!text.is_empty()).then_some(text),
+            block,
+        }
+    }
+}
+
+/// `text`, at most `limit` characters of it, with its line breaks.
+fn clip(text: &str, limit: usize) -> String {
+    match text.char_indices().nth(limit) {
+        Some((end, _)) => format!("{}…", &text[..end]),
+        None => text.to_string(),
+    }
+}
+
+/// The longest outcome on a call's line, in characters.
+const OUTCOME_CHARS: usize = 60;
+
+/// What the result `output` of a call of `tool` says, in brief.
+pub fn outcome(tool: &str, output: &str) -> Outcome {
+    let lines = || {
+        output
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .count()
+    };
+    let plural = |count: usize, one: &str, many: &str| {
+        format!("{count} {}", if count == 1 { one } else { many })
+    };
+    match tool {
+        SHELL_TOOL_NAME => command_outcome(output),
+        READ_FILE_TOOL_NAME => Outcome::ok(plural(lines(), "line", "lines")),
+        LIST_FILES_TOOL_NAME => Outcome::ok(plural(lines(), "entry", "entries")),
+        WRITE_FILE_TOOL_NAME | HANDOVER_REPORT_TOOL_NAME => Outcome::ok(""),
+        APPLY_DIFF_TOOL_NAME => {
+            // "Successfully applied all 2 diff block(s) ..." or "Applied 1
+            // of 2 diff block(s) ...".
+            let first = output.lines().next().unwrap_or_default();
+            let numbers: Vec<usize> = first
+                .split(|c: char| !c.is_ascii_digit())
+                .filter_map(|word| word.parse().ok())
+                .collect();
+            match numbers.as_slice() {
+                [all] if first.starts_with("Successfully") => {
+                    Outcome::ok(plural(*all, "edit", "edits"))
+                }
+                [done, all, ..] if first.starts_with("Applied") => Outcome {
+                    status: CallStatus::Failed,
+                    text: Some(format!("{done} of {all} edits")),
+                    block: Some(
+                        Item::new(Kind::Result, cut(first, 160))
+                            .detail(output.lines().skip(1).collect::<Vec<_>>().join("\n"))
+                            .level(Level::Warn),
+                    ),
+                },
+                _ => Outcome::ok(cut(first, OUTCOME_CHARS)),
             }
         }
-        let item = Item::new(Kind::Result, status).detail(shown.join("\n"));
-        return Some(if status.starts_with("exit code 0,") {
-            item
-        } else {
-            item.level(Level::Warn)
-        });
+        crew::START_AGENT => {
+            // "Started r2 (agent `worker`)." or "Queued r2 ...".
+            let mut words = output.split_whitespace();
+            match (words.next(), words.next()) {
+                (Some("Started"), Some(id)) => Outcome::ok(id),
+                (Some("Queued"), Some(id)) => Outcome::ok(format!("{id} queued")),
+                _ => Outcome::ok(cut(output, OUTCOME_CHARS)),
+            }
+        }
+        crew::MESSAGE_AGENT if output.starts_with("Sent") => Outcome::ok("sent"),
+        RUN_WORKFLOW_AGENT_TOOL_NAME => {
+            Outcome::ok(format!("reported ({})", plural(lines(), "line", "lines")))
+        }
+        _ => Outcome::ok(
+            output
+                .lines()
+                .find(|line| !line.trim().is_empty())
+                .map(|line| cut(line, OUTCOME_CHARS))
+                .unwrap_or_default(),
+        ),
     }
-    let first = output.lines().find(|line| !line.trim().is_empty())?;
-    let count = output.lines().count();
-    let more = if count > 1 && tool != RUN_WORKFLOW_AGENT_TOOL_NAME {
-        format!(" ({count} lines)")
-    } else {
-        String::new()
-    };
-    Some(Item::new(
-        Kind::Result,
-        if tool == RUN_WORKFLOW_AGENT_TOOL_NAME {
-            format!(
-                "the worker reported ({count} line{})",
-                if count == 1 { "" } else { "s" }
-            )
-        } else {
-            format!("{}{more}", cut(first, 160))
-        },
-    ))
 }
 
-/// A worker's call, briefly, with what it says in full; `None` for calls
-/// not shown (its report is shown as it finishes).
-pub fn worker_call(tool: &str, parameters: &Parameters) -> Option<(String, Option<String>)> {
-    match tool {
-        "complete_task" => None,
-        crew::MESSAGE_AGENT => Some((
-            format!("message to {}", text(parameters, "to")),
-            Some(text(parameters, "message").trim().to_string()),
-        )),
-        _ => Some((ui::brief(tool, parameters), None)),
+/// A shell command's outcome: its tests' counts when it ran tests, else
+/// its time, or how it failed; with its first lines of output as a block.
+fn command_outcome(output: &str) -> Outcome {
+    let mut lines = output.lines();
+    let status = lines.next().unwrap_or_default();
+    let rest: Vec<&str> = lines.collect();
+    let ok = status.starts_with("exit code 0,");
+    // "exit code 1, 2.0 s", "cancelled, 0.4 s", "stopped after 60 s (timeout_seconds), 60.0 s"
+    let (how, time) = status.rsplit_once(", ").unwrap_or((status, ""));
+    let tests = tests(&rest);
+    let text = if ok {
+        tests.unwrap_or_else(|| time.to_string())
+    } else {
+        let how = match how.strip_prefix("exit code ") {
+            Some(code) => format!("exit {code}"),
+            None => how.to_string(),
+        };
+        match tests {
+            Some(tests) => format!("{how} · {tests}"),
+            None => how,
+        }
+    };
+    let mut shown: Vec<String> = Vec::new();
+    if !(rest.len() == 1 && rest[0] == "(no output)") {
+        shown.extend(rest.iter().take(SHOWN_LINES).map(|line| cut(line, 300)));
+        if rest.len() > SHOWN_LINES {
+            shown.push(format!("… {} more lines", rest.len() - SHOWN_LINES));
+        }
     }
+    let block = (!shown.is_empty()).then(|| {
+        let block = Item::new(Kind::Result, status).detail(shown.join("\n"));
+        if ok { block } else { block.level(Level::Warn) }
+    });
+    Outcome {
+        status: if ok {
+            CallStatus::Ok
+        } else {
+            CallStatus::Failed
+        },
+        text: Some(cut(&text, OUTCOME_CHARS)).filter(|text| !text.is_empty()),
+        block,
+    }
+}
+
+/// The counts of a test run's summary lines (cargo's `test result:`,
+/// pytest's `=== 3 passed in 0.2s ===`, jest's `Tests: 3 passed`), added
+/// up: "12 passed", or "1 failed, 11 passed".
+fn tests(lines: &[&str]) -> Option<String> {
+    let (mut passed, mut failed, mut found) = (0usize, 0usize, false);
+    for line in lines {
+        let line = line.trim();
+        let summary = line.starts_with("test result:")
+            || line.starts_with("Tests:")
+            || (line.starts_with("==") && line.ends_with("==") && line.contains(" in "));
+        if !summary {
+            continue;
+        }
+        let words: Vec<&str> = line
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .filter(|word| !word.is_empty())
+            .collect();
+        for pair in words.windows(2) {
+            if let Ok(count) = pair[0].parse::<usize>() {
+                match pair[1] {
+                    "passed" => (passed, found) = (passed + count, true),
+                    "failed" => (failed, found) = (failed + count, true),
+                    _ => {}
+                }
+            }
+        }
+    }
+    found.then(|| {
+        if failed > 0 {
+            format!("{failed} failed, {passed} passed")
+        } else {
+            format!("{passed} passed")
+        }
+    })
 }
 
 #[cfg(test)]
@@ -232,18 +370,69 @@ mod tests {
         .unwrap();
         assert_eq!((item.kind, item.text.as_str()), (Kind::Message, "Halfway."));
         assert!(call(ASK_USER_TOOL_NAME, &params(&[])).is_none());
+        let item = call(
+            crew::MESSAGE_AGENT,
+            &params(&[("to", "lead".into()), ("message", "Done?".into())]),
+        )
+        .unwrap();
+        assert_eq!(item.text, "message lead: Done?");
+    }
+
+    /// A result is told in a few words on its call's line; a command's
+    /// output also comes as a block.
+    #[test]
+    fn results_are_told_in_a_few_words() {
+        let told = |tool: &str, output: &str| {
+            let outcome = outcome(tool, output);
+            (outcome.status, outcome.text.unwrap_or_default())
+        };
         assert_eq!(
-            result("read_file", "1 | fn main() {}\n2 | }\n")
-                .unwrap()
-                .text,
-            "1 | fn main() {} (2 lines)"
+            told("read_file", "1 | fn main() {}\n2 | }\n"),
+            (CallStatus::Ok, "2 lines".into())
         );
         assert_eq!(
-            worker_call(
-                crew::MESSAGE_AGENT,
-                &params(&[("to", "lead".into()), ("message", "Done?".into())])
+            told(crew::START_AGENT, "Started r2 (agent `worker`)."),
+            (CallStatus::Ok, "r2".into())
+        );
+        assert_eq!(
+            told(
+                "apply_diff",
+                "Applied 1 of 2 diff block(s) to 'a.rs'.\nDetails:\n  Block 2: FAILURE"
             ),
-            Some(("message to lead".into(), Some("Done?".into())))
+            (CallStatus::Failed, "1 of 2 edits".into())
         );
+        let cargo = "exit code 0, 9.1 s\nrunning 12 tests\ntest result: ok. 10 passed; 0 failed; 1 ignored\ntest result: ok. 2 passed; 0 failed";
+        assert_eq!(
+            told(SHELL_TOOL_NAME, cargo),
+            (CallStatus::Ok, "12 passed".into())
+        );
+        let failed = outcome(
+            SHELL_TOOL_NAME,
+            "exit code 101, 3.0 s\n===== 1 failed, 4 passed in 0.31s =====",
+        );
+        assert_eq!(failed.status, CallStatus::Failed);
+        assert_eq!(
+            failed.text.as_deref(),
+            Some("exit 101 · 1 failed, 4 passed")
+        );
+        let block = failed.block.unwrap();
+        assert_eq!(
+            (block.kind, block.level, block.text.as_str()),
+            (Kind::Result, Some(Level::Warn), "exit code 101, 3.0 s")
+        );
+        assert_eq!(
+            told(SHELL_TOOL_NAME, "exit code 0, 0.2 s\n(no output)"),
+            (CallStatus::Ok, "0.2 s".into())
+        );
+        assert!(
+            outcome(SHELL_TOOL_NAME, "exit code 0, 0.2 s\n(no output)")
+                .block
+                .is_none(),
+            "no output, no block"
+        );
+        let failed = Outcome::failed("Tool 'x' execution failed: boom\nat line 3");
+        assert_eq!(failed.text.as_deref(), Some("boom"));
+        assert_eq!(failed.block.unwrap().text, "boom\nat line 3");
+        assert!(Outcome::failed("short").block.is_none());
     }
 }

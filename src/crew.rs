@@ -14,7 +14,7 @@ use arko_ai::prompt_cache::PromptCacheLifetime;
 use arko_ai::{AnthropicCacheTtl, Provider};
 use arko_workflows::prelude::*;
 use arko_workflows::subagents::{
-    GitWorktreeProvider, StartRequest, SubagentEventKind, SubagentsConfig,
+    GitWorktreeProvider, StartRequest, SubagentEventKind, SubagentState, SubagentsConfig,
 };
 use async_trait::async_trait;
 use serde_json::Value;
@@ -136,6 +136,29 @@ impl Crew {
             old.abort();
         }
         let mut events = workflow.subscribe_subagents();
+        if let Some(feed) = &self.setup.feed {
+            // The workers of a resumed session, for the clients' lists.
+            for run in workflow.subagents() {
+                let state = match run.state {
+                    SubagentState::Queued => remote::WorkerState::Queued,
+                    SubagentState::Running => remote::WorkerState::Running,
+                    SubagentState::Finished => remote::WorkerState::Finished,
+                    SubagentState::Failed => remote::WorkerState::Failed,
+                    SubagentState::Stopped | SubagentState::Interrupted => {
+                        remote::WorkerState::Stopped
+                    }
+                    SubagentState::Closed if run.report.is_some() => remote::WorkerState::Finished,
+                    SubagentState::Closed => remote::WorkerState::Stopped,
+                };
+                feed.worker_restored(
+                    &run.handle,
+                    &run.task,
+                    state,
+                    run.report.as_deref(),
+                    run.since.timestamp_millis(),
+                );
+            }
+        }
         if self.has_mail() {
             let _ = self.wake.send(());
         }
@@ -153,7 +176,7 @@ impl Crew {
                     Err(_) => break,
                 };
                 let Some(crew) = weak.upgrade() else { break };
-                let text = match event.kind {
+                let text = match event.kind.clone() {
                     SubagentEventKind::Queued => Some(format!("{} queued", event.handle)),
                     SubagentEventKind::Started => Some(format!("{} started", event.handle)),
                     SubagentEventKind::Resumed => Some(format!("{} resumed", event.handle)),
@@ -177,13 +200,42 @@ impl Crew {
                     crew.setup
                         .output
                         .line(&crew.setup.output.dim(&format!("  ↳ {text}")));
-                    if let Some(feed) = &crew.setup.feed {
-                        feed.notice(remote::Level::Info, &text);
-                    }
+                }
+                if let Some(feed) = &crew.setup.feed {
+                    crew.tell_feed(feed, &event.handle, event.run_id, &event.kind);
                 }
                 let _ = crew.wake.send(());
             }
         }));
+    }
+
+    /// What became of a worker, for the feed: its summary and placeholder
+    /// follow its runs.
+    fn tell_feed(&self, feed: &remote::Feed, handle: &str, run: Uuid, kind: &SubagentEventKind) {
+        use remote::WorkerChange;
+        let change = match kind {
+            SubagentEventKind::Queued => WorkerChange::Queued,
+            SubagentEventKind::Started | SubagentEventKind::Resumed => WorkerChange::Started,
+            SubagentEventKind::Finished { summary } => WorkerChange::Finished { report: summary },
+            SubagentEventKind::Failed { error } => WorkerChange::Failed { error },
+            SubagentEventKind::Stopped { reason, .. } => WorkerChange::Stopped { reason },
+            SubagentEventKind::WorkspaceRemoved => {
+                feed.notice(remote::Level::Info, &format!("{handle} worktree removed"));
+                return;
+            }
+            _ => return,
+        };
+        let task = self
+            .workflow()
+            .and_then(|workflow| {
+                workflow
+                    .subagents()
+                    .into_iter()
+                    .find(|record| record.run_id == run)
+            })
+            .map(|record| record.task)
+            .unwrap_or_default();
+        feed.worker(handle, &task, change);
     }
 
     fn workflow(&self) -> Option<Arc<Workflow>> {

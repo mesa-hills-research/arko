@@ -26,7 +26,13 @@ use base64::Engine;
 use serde::Serialize;
 use tokio::sync::mpsc;
 
-pub use feed::{Delivery, Feed, Level, Source};
+// The page's server and the terminal's full-screen view are both clients
+// of the feed.
+#[allow(unused_imports)]
+pub use feed::{
+    Activity, CallStatus, Delivery, Feed, Item, Kind, Level, MAIN_AGENT, Question, Snapshot,
+    Source, Update, WorkerChange, WorkerState, WorkerSummary,
+};
 pub use server::{Info, Server};
 
 /// The port served on when none is given; another free one when it is
@@ -66,6 +72,18 @@ pub struct Reading {
     pub workers_running: Vec<String>,
     /// Each worker, a line or two (as `/workers` says them).
     pub workers: Option<String>,
+    /// The settings a client may change (with commands).
+    pub settings: LiveSettings,
+}
+
+/// The session's settings that can change while it runs.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct LiveSettings {
+    /// The agents may work outside the workspace.
+    pub outside: bool,
+    /// The main agent hands over at this many input tokens; 0 when it is
+    /// not known.
+    pub handover_at: usize,
 }
 
 /// A random token of `bytes` bytes, in URL-safe base64.

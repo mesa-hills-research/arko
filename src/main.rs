@@ -2500,6 +2500,7 @@ impl remote::Meter for Gauges {
             workers: crew
                 .filter(|crew| !crew.is_empty())
                 .map(|crew| crew.describe()),
+            settings: remote::LiveSettings::default(),
         }
     }
 }
@@ -2930,7 +2931,31 @@ mod tests {
         assert!(matches!(end, TurnEnd::Answered));
         assert_eq!(summary(&harness), "The blue branch is checked.");
         harness.flush_printer().await;
-        assert!(has(&harness.feed, "worker", "message to lead", ""));
+        assert!(has(
+            &harness.feed,
+            "call",
+            "message lead: Which branch should I check?",
+            ""
+        ));
+        // The worker's own transcript, its place in the lead's, and its
+        // summary.
+        let (snapshot, _) = harness.feed.subscribe();
+        assert!(
+            snapshot
+                .items
+                .iter()
+                .any(|item| item.kind == remote::Kind::WorkerLine
+                    && item.agent == remote::MAIN_AGENT
+                    && item.worker.as_deref() == Some("r1"))
+        );
+        assert!(snapshot.items.iter().any(|item| item.agent == "r1"
+            && item.kind == remote::Kind::Reply
+            && item.text == "Blue branch checked."));
+        let r1 = &snapshot.workers[0];
+        assert_eq!(r1.id, "r1");
+        assert_eq!(r1.title, "Check a branch after asking which one.");
+        assert_eq!(r1.state, remote::WorkerState::Finished);
+        assert_eq!(r1.tool_calls, 2);
         let ledger = harness.workflow().context().budget.total_spent();
         assert!(harness.crew.as_ref().unwrap().spent().0 > 0.0);
         assert_eq!(harness.spent(), ledger);
@@ -3496,8 +3521,9 @@ mod tests {
 
     /// The page's history, as (kind, text, delivery).
     fn shown(feed: &remote::Feed) -> Vec<(String, String, String)> {
-        let (items, _, _) = feed.subscribe();
-        items
+        feed.subscribe()
+            .0
+            .items
             .iter()
             .map(|item| {
                 let item = serde_json::to_value(item).unwrap();

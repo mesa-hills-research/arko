@@ -466,10 +466,11 @@ async fn session_open(
     (StatusCode::NO_CONTENT, [(header::SET_COOKIE, cookie)]).into_response()
 }
 
-/// `GET /api/events`: the stream. It starts with `reset` (the history and
-/// the status), then sends `item` (a new item), `append` (more text for
-/// an item) and `status` events. A stream that falls behind starts over
-/// with a `reset`.
+/// `GET /api/events`: the stream. It starts with `reset` (the history, the
+/// workers and the status), then sends `item` (a new item), `append` (more
+/// text for an item), `change` (an item, changed: a call's outcome),
+/// `worker` (a worker's summary) and `status` events. A stream that falls
+/// behind starts over with a `reset`.
 async fn events(
     State(app): State<Arc<App>>,
     ConnectInfo(peer): Peer,
@@ -480,7 +481,7 @@ async fn events(
     }
     let mut stream = Stream {
         closed: app.closed.clone(),
-        updates: app.feed.subscribe().2,
+        updates: app.feed.subscribe().1,
         app,
         pending: VecDeque::new(),
         status: String::new(),
@@ -509,15 +510,20 @@ struct Stream {
 impl Stream {
     /// Starts over: the history and the status.
     fn reset(&mut self) {
-        let (items, activity, updates) = self.app.feed.subscribe();
+        let (snapshot, updates) = self.app.feed.subscribe();
         self.updates = updates;
         self.pending.clear();
-        self.status = self.app.status(&activity);
+        self.status = self.app.status(&snapshot.activity);
         let status: serde_json::Value = serde_json::from_str(&self.status).unwrap_or_default();
         self.pending.push_back(
-            Event::default()
-                .event("reset")
-                .data(serde_json::json!({ "items": items, "status": status }).to_string()),
+            Event::default().event("reset").data(
+                serde_json::json!({
+                    "items": snapshot.items,
+                    "workers": snapshot.workers,
+                    "status": status,
+                })
+                .to_string(),
+            ),
         );
     }
 
@@ -541,6 +547,16 @@ impl Stream {
                 Event::default()
                     .event("append")
                     .data(serde_json::json!({ "id": id, "text": text }).to_string()),
+            ),
+            Update::Change(item) => self.pending.push_back(
+                Event::default()
+                    .event("change")
+                    .data(serde_json::to_string(&item).unwrap_or_default()),
+            ),
+            Update::Worker(summary) => self.pending.push_back(
+                Event::default()
+                    .event("worker")
+                    .data(serde_json::to_string(&summary).unwrap_or_default()),
             ),
             Update::Activity => self.send_status(),
         }
@@ -968,6 +984,8 @@ mod tests {
         assert_eq!(reset["items"][0]["text"], "Resumed.");
         assert_eq!(reset["status"]["working"], false);
         assert_eq!(reset["status"]["cost"], 1.25);
+        assert_eq!(reset["status"]["settings"]["outside"], false);
+        assert_eq!(reset["workers"], serde_json::json!([]));
 
         feed.turn_started();
         let chunk = |text: &str| WorkflowEvent {
@@ -987,6 +1005,49 @@ mod tests {
         assert_eq!(events[1].1["text"], "Look");
         assert_eq!(events[2].1["text"], "ing.");
         assert_eq!(events[2].1["id"], events[1].1["id"]);
+
+        // A call's outcome comes as a change of it; a worker's summary as
+        // `worker`.
+        let call = uuid::Uuid::new_v4();
+        let event = |event: AgentEvent| WorkflowEvent {
+            timestamp: chrono::Utc::now(),
+            workflow_run_id: uuid::Uuid::nil(),
+            agent_name: "main".into(),
+            agent_run_id: uuid::Uuid::nil(),
+            event,
+        };
+        feed.event(
+            &event(AgentEvent::ToolCallFormatted {
+                tool_call_id: call,
+                tool_name: "read_file".into(),
+                parameters: [("path".to_string(), "a.rs".into())].into(),
+            }),
+            None,
+        );
+        feed.event(
+            &event(AgentEvent::ToolResult {
+                tool_call_id: call,
+                tool_name: "read_file".into(),
+                output: "1 | a\n2 | b".into(),
+            }),
+            None,
+        );
+        feed.worker(
+            "r1",
+            "Count the files.",
+            super::super::WorkerChange::Started,
+        );
+        let events = read_until(&mut stream, &mut buffer, |name, _| name == "worker").await;
+        let names: Vec<&str> = events.iter().map(|(name, _)| name.as_str()).collect();
+        assert_eq!(names, ["item", "change", "item", "worker"]);
+        assert_eq!(events[0].1["status"], "running");
+        assert_eq!(events[1].1["id"], events[0].1["id"]);
+        assert_eq!(events[1].1["status"], "ok");
+        assert_eq!(events[1].1["outcome"], "2 lines");
+        assert_eq!(events[2].1["kind"], "worker_line");
+        assert_eq!(events[2].1["worker"], "r1");
+        assert_eq!(events[3].1["title"], "Count the files.");
+        assert_eq!(events[3].1["state"], "running");
     }
 
     /// Messages, answers and stops come out as actions; an answer to a
