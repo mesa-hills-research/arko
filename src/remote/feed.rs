@@ -772,8 +772,16 @@ impl Feed {
 
     /// A command's output.
     pub fn output(&self, text: &str) {
+        self.output_at(text, None);
+    }
+
+    /// A command's output at `level`: a warning (or an error) keeps its
+    /// colour in the clients.
+    pub fn output_at(&self, text: &str, level: Option<Level>) {
         if !text.trim().is_empty() {
-            self.add(Item::new(Kind::Output, text.trim_end()));
+            let mut item = Item::new(Kind::Output, text.trim_end());
+            item.level = level;
+            self.add(item);
         }
     }
 

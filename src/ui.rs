@@ -149,6 +149,18 @@ impl Output {
         }
     }
 
+    /// The same output, but always in colour: a command's lines as the
+    /// feed takes them, which keep their warnings' level that way.
+    pub fn colored(mut self) -> Self {
+        self.color = true;
+        self
+    }
+
+    /// Whether lines are printed in colour.
+    pub fn in_color(&self) -> bool {
+        self.color
+    }
+
     fn paint(&self, code: &str, text: &str) -> String {
         if self.color && !text.is_empty() {
             format!("\x1b[{code}m{text}\x1b[0m")
@@ -167,6 +179,18 @@ impl Output {
 
     pub fn accent(&self, text: &str) -> String {
         self.paint("36", text)
+    }
+
+    /// The level of a line [`warn`](Self::warn) or [`error`](Self::error)
+    /// coloured (in colour), else `None`.
+    pub fn level_of(text: &str) -> Option<remote::Level> {
+        if text.starts_with("\x1b[33m") {
+            Some(remote::Level::Warn)
+        } else if text.starts_with("\x1b[31m") {
+            Some(remote::Level::Error)
+        } else {
+            None
+        }
     }
 
     pub fn warn(&self, text: &str) -> String {

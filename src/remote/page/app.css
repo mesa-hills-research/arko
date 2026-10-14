@@ -461,6 +461,10 @@ details.call pre, .row.result pre {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+/* A command's warning or error (an /exit with workers running, a server
+   that didn't start) keeps its colour. */
+.row.output.level-warn pre { color: var(--warn); }
+.row.output.level-error pre { color: var(--error); }
 
 .row.question { border-left: 3px solid var(--warn-mark); padding: 2px 0 2px 12px; }
 .row.question .label { color: var(--warn); }

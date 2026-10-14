@@ -1626,12 +1626,29 @@ impl Harness {
             to: self.output.clone(),
             lines: lines.clone(),
         };
-        let mirror = Arc::new(Output::new(Some(Box::new(tee)), false));
+        // In colour, so that each line's level (a warning, an error) is
+        // known; Tee prints it plain where the terminal has no colour.
+        let mirror = Arc::new(Output::new(Some(Box::new(tee)), false).colored());
         let output = std::mem::replace(&mut self.output, mirror);
         let result = run(self);
         self.output = output;
-        let text = lock(&lines).join("\n");
-        self.feed.output(&remote::plain(&text));
+        // The lines of one level go together, as one block of output.
+        let lines = std::mem::take(&mut *lock(&lines));
+        let mut block: Vec<String> = Vec::new();
+        let mut level = None;
+        for (line_level, line) in lines {
+            if line_level != level && !block.is_empty() {
+                self.feed
+                    .output_at(&remote::plain(&block.join("\n")), level);
+                block.clear();
+            }
+            level = line_level;
+            block.push(line);
+        }
+        if !block.is_empty() {
+            self.feed
+                .output_at(&remote::plain(&block.join("\n")), level);
+        }
         result
     }
 
@@ -2975,15 +2992,20 @@ impl remote::Meter for Gauges {
 /// for the remote page.
 struct Tee {
     to: Arc<Output>,
-    lines: Arc<Mutex<Vec<String>>>,
+    /// Each line, with its level.
+    lines: Arc<Mutex<Vec<(Option<Level>, String)>>>,
 }
 
 impl rustyline::ExternalPrinter for Tee {
     fn print(&mut self, text: String) -> rustyline::Result<()> {
         let text = text.strip_suffix('\n').unwrap_or(&text);
         // (The feed gets the whole output when the command ends.)
-        self.to.echo(text);
-        lock(&self.lines).push(text.to_string());
+        if self.to.in_color() {
+            self.to.echo(text);
+        } else {
+            self.to.echo(&remote::plain(text));
+        }
+        lock(&self.lines).push((Output::level_of(text), text.to_string()));
         Ok(())
     }
 }
@@ -4176,6 +4198,38 @@ mod tests {
         .unwrap();
         assert_eq!(message, Action::Message("Thanks.".into()));
         harness.stop_remote().await;
+    }
+
+    /// A command's warning (or error) reaches the feed with its level, so
+    /// the clients show it in its colour; its other lines stay plain.
+    #[tokio::test]
+    async fn a_commands_warnings_keep_their_level_in_the_feed() {
+        let temp = tempfile::tempdir().unwrap();
+        let (mut harness, _inputs, _sender) = harness(temp.path(), LLMClient::new(), true);
+        harness.mirrored(|harness| {
+            let out = harness.output.clone();
+            out.line("All is well.");
+            out.line(&out.warn("1 worker is running: /exit again stops it."));
+            out.line(&out.error("The server didn't start."));
+        });
+        let (snapshot, _) = harness.feed.subscribe();
+        let outputs: Vec<(String, Option<Level>)> = snapshot
+            .items
+            .iter()
+            .filter(|item| item.kind == remote::Kind::Output)
+            .map(|item| (item.text.clone(), item.level))
+            .collect();
+        assert_eq!(
+            outputs,
+            [
+                ("All is well.".to_string(), None),
+                (
+                    "1 worker is running: /exit again stops it.".to_string(),
+                    Some(Level::Warn)
+                ),
+                ("The server didn't start.".to_string(), Some(Level::Error)),
+            ]
+        );
     }
 
     /// Commands sent from the page run, and their output shows on it; the
