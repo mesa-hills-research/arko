@@ -495,9 +495,25 @@ fn first_by_credentials(have: Credentials) -> Option<(&'static str, &'static str
     }
 }
 
+/// What a provider's models need, as fin's notes say it.
+pub fn credential_name(provider: &Provider) -> &'static str {
+    match provider {
+        Provider::Anthropic => "ANTHROPIC_API_KEY",
+        Provider::OpenAI => "a ChatGPT login or OPENAI_API_KEY",
+        Provider::Google => "GEMINI_API_KEY",
+        Provider::OpenRouter => "OPENROUTER_API_KEY",
+        Provider::ClaudeCode => "Claude Code signed in",
+    }
+}
+
+/// A provider's name in `remote::Models::reachable`.
+pub fn provider_key(provider: &Provider) -> &'static str {
+    provider.as_telemetry_str()
+}
+
 /// What the model `name` needs that isn't there, as fin's notes say it;
 /// `None` when its credential is there.
-fn missing_credential(name: &str, codex_auth: Option<&Path>) -> Option<String> {
+pub fn missing_credential(name: &str, codex_auth: Option<&Path>) -> Option<String> {
     let Ok(model) = resolve_model(name) else {
         return Some("a model fin knows (it no longer knows this one)".to_string());
     };
@@ -525,6 +541,241 @@ fn missing_credential(name: &str, codex_auth: Option<&Path>) -> Option<String> {
         }
         .to_string()
     })
+}
+
+/// How a session reaches OpenAI models when none of its models is one,
+/// read through `var`: the ChatGPT login when there is one (unless
+/// FIN_OPENAI_AUTH says api-key and there is a key), else the API key;
+/// `None` without either.
+fn available_openai_auth(
+    var: &impl Fn(&str) -> Option<String>,
+    auth_file: Option<&Path>,
+) -> Option<OpenAiAuth> {
+    let login = (var("OPENAI_OAUTH_ACCESS_TOKEN").is_some()
+        && var("OPENAI_OAUTH_ACCOUNT_ID").is_some())
+        || auth_file.is_some_and(Path::is_file)
+        || (auth_file.is_none()
+            && CodexAuthFile::default_path().is_some_and(|path| path.is_file()));
+    let key = var(credentials::OPENAI_KEY).is_some();
+    let wants_key = var(credentials::OPENAI_AUTH)
+        .is_some_and(|value| value.trim().eq_ignore_ascii_case("api-key"));
+    match (login, key) {
+        (_, true) if wants_key => Some(OpenAiAuth::ApiKey),
+        (true, _) => Some(OpenAiAuth::ChatGpt),
+        (false, true) => Some(OpenAiAuth::ApiKey),
+        (false, false) => None,
+    }
+}
+
+/// How this process reaches OpenAI models when the session's models
+/// don't say (its client was built so): see [`client`].
+pub fn spare_openai_auth(codex_auth: Option<&Path>) -> Option<OpenAiAuth> {
+    available_openai_auth(
+        &credentials::var,
+        credentials::codex_auth(codex_auth).as_deref(),
+    )
+}
+
+/// The reasoning efforts `model` takes, from fin's five, lowest first:
+/// those the provider accepts for it (arko checks OpenAI's per model as it
+/// builds a request; these follow its rules). Empty for a model that
+/// doesn't reason.
+pub fn efforts(model: &Model) -> Vec<Effort> {
+    use Effort::{High, Low, Max, Medium, Xhigh};
+    let all = vec![Low, Medium, High, Xhigh, Max];
+    match model.provider {
+        Provider::Anthropic | Provider::ClaudeCode => {
+            let mut efforts = vec![Low, Medium, High];
+            if model.supports_anthropic_xhigh_effort() {
+                efforts.push(Xhigh);
+            }
+            if model.supports_anthropic_max_effort() {
+                efforts.push(Max);
+            }
+            efforts
+        }
+        Provider::OpenAI if model.model_type != ModelType::Reasoning => Vec::new(),
+        Provider::OpenAI => {
+            let id = model.id.as_str();
+            let pro = |version: &str| id.starts_with(&format!("gpt-{version}-pro"));
+            if model.is_openai_gpt_6_astra()
+                || model.is_openai_gpt_6_sol_or_luna()
+                || model.is_openai_gpt_5_6()
+            {
+                all
+            } else if pro("5.5") || pro("5.4") || pro("5.2") {
+                vec![Medium, High, Xhigh]
+            } else if pro("5") {
+                vec![High]
+            } else if id.starts_with("gpt-5.5")
+                || id.starts_with("gpt-5.4")
+                || id.starts_with("gpt-5.2")
+                || id.starts_with("gpt-5.3")
+            {
+                vec![Low, Medium, High, Xhigh]
+            } else {
+                vec![Low, Medium, High]
+            }
+        }
+        Provider::Google if model.model_type != ModelType::Reasoning => Vec::new(),
+        Provider::Google if model.is_gemini_3_pro() => vec![Low, High],
+        Provider::Google => vec![Low, Medium, High],
+        // OpenRouter maps each effort to the model's own levels.
+        Provider::OpenRouter => all,
+    }
+}
+
+/// The effort `model` runs at when `wanted` was asked for without a check:
+/// `wanted` when it takes it, else the highest it takes below it, else its
+/// lowest. (A model that doesn't reason keeps `wanted`, which it ignores.)
+pub fn fit_effort(model: &Model, wanted: Effort) -> Effort {
+    let efforts = efforts(model);
+    if efforts.is_empty() || efforts.contains(&wanted) {
+        return wanted;
+    }
+    efforts
+        .iter()
+        .rev()
+        .find(|effort| **effort < wanted)
+        .or(efforts.first())
+        .copied()
+        .unwrap_or(wanted)
+}
+
+/// An effort's name (`low` … `max`), or what the names are.
+pub fn parse_effort(text: &str) -> Result<Effort, String> {
+    <Effort as clap::ValueEnum>::from_str(text.trim(), true).map_err(|_| {
+        format!("`{text}` isn't an effort. The efforts are low, medium, high, xhigh and max.")
+    })
+}
+
+/// What the user is told when `model` can't be used: it needs `needs`
+/// (from [`missing_credential`] or [`credential_name`]), and how to get it.
+pub fn needs_text(model: &str, needs: &str) -> String {
+    if needs == "Claude Code signed in" {
+        format!("{model} needs Claude Code signed in. Sign in with `claude auth login`.")
+    } else if needs.starts_with("Claude Code") {
+        format!("{model} needs {needs}.")
+    } else {
+        format!(
+            "{model} needs {needs}, which fin reads as it starts, from the environment or a .env file."
+        )
+    }
+}
+
+/// The efforts `model` takes, as a sentence's list: `low, medium or high`.
+pub fn efforts_text(model: &Model) -> String {
+    let names: Vec<String> = efforts(model).iter().map(Effort::to_string).collect();
+    match names.as_slice() {
+        [] => "no effort (it doesn't reason)".to_string(),
+        [one] => one.clone(),
+        [rest @ .., last] => format!("{} or {last}", rest.join(", ")),
+    }
+}
+
+/// A group of the models `/model` offers: one way to reach them, and what
+/// it needs when that isn't there.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelGroup {
+    /// The way, as the picker heads it: "Claude Code, on your Claude plan".
+    pub name: String,
+    /// What the way needs that isn't there; its models can't be chosen.
+    pub needs: Option<String>,
+    /// Each model: its name as `/model` takes it, and its alias.
+    pub models: Vec<(String, &'static str)>,
+}
+
+/// The models `/model` offers, by the way they are reached: Claude Code,
+/// the Anthropic API, OpenAI, Gemini and OpenRouter, the ways that can be
+/// used first. `needs` says what a model (a way's first) needs that isn't
+/// there, and `openai_auth` how OpenAI models are reached. `current` (the
+/// agents' models now) are listed in their group when the list leaves
+/// them out.
+pub fn model_menu(
+    needs: impl Fn(&str) -> Option<String>,
+    openai_auth: Option<OpenAiAuth>,
+    current: &[&str],
+) -> Vec<ModelGroup> {
+    let openai = match openai_auth {
+        Some(OpenAiAuth::ApiKey) => "OpenAI, with your API key",
+        _ => "OpenAI, on your ChatGPT plan",
+    };
+    let groups: [(String, &str, &[(&str, &'static str)]); 5] = [
+        (
+            "Claude Code, on your Claude plan".to_string(),
+            "cc:claude-opus-5-5",
+            &[
+                ("cc:claude-opus-5-5", "cc:opus"),
+                ("cc:claude-fable-5-1", "cc:fable"),
+                ("cc:claude-sonnet-5-5", "cc:sonnet"),
+            ],
+        ),
+        (
+            "Anthropic API, billed per token".to_string(),
+            "claude-opus-5-5",
+            &[
+                ("claude-opus-5-5", "opus"),
+                ("claude-fable-5-1", "fable"),
+                ("claude-sonnet-5-5", "sonnet"),
+            ],
+        ),
+        (
+            openai.to_string(),
+            "gpt-6.1-sol",
+            &[
+                ("gpt-6.1-sol", "sol"),
+                ("gpt-6-astra", "astra"),
+                ("gpt-6-luna", "luna"),
+            ],
+        ),
+        (
+            "Google Gemini, billed per token".to_string(),
+            "gemini-3.1-pro-preview",
+            &[
+                ("gemini-3.1-pro-preview", "gemini"),
+                ("gemini-3.8-flash", "flash"),
+            ],
+        ),
+        (
+            "OpenRouter, billed per token".to_string(),
+            "openrouter:anthropic/claude-opus-5.5",
+            &[("openrouter:anthropic/claude-opus-5.5", "")],
+        ),
+    ];
+    let mut menu: Vec<ModelGroup> = groups
+        .into_iter()
+        .map(|(name, sample, models)| ModelGroup {
+            name,
+            needs: needs(sample),
+            models: models
+                .iter()
+                .map(|(model, alias)| (model.to_string(), *alias))
+                .collect(),
+        })
+        .collect();
+    // The agents' own models, where the list leaves them out.
+    for name in current {
+        if menu
+            .iter()
+            .any(|group| group.models.iter().any(|(model, _)| model == name))
+        {
+            continue;
+        }
+        let Ok(model) = resolve_model(name) else {
+            continue;
+        };
+        let group = match model.provider {
+            Provider::ClaudeCode => 0,
+            Provider::Anthropic => 1,
+            Provider::OpenAI => 2,
+            Provider::Google => 3,
+            Provider::OpenRouter => 4,
+        };
+        menu[group].models.push((name.to_string(), ""));
+    }
+    // The ways that can be used first, in their order.
+    menu.sort_by_key(|group| group.needs.is_some());
+    menu
 }
 
 /// The models of the last session started, kept in fin's folder for the
@@ -638,20 +889,46 @@ fn client_with(
         .map_err(Failure::Other)?;
     let uses = |provider: Provider| models.iter().any(|(_, model)| model.provider == provider);
     // Sessions saved before the choice existed reached OpenAI models over
-    // the ChatGPT login.
-    let auth = uses(Provider::OpenAI).then(|| settings.openai_auth.unwrap_or(OpenAiAuth::ChatGpt));
-    let mut client = LLMClient::from_env_with(|name| {
-        let wanted = if name.starts_with("OPENAI_OAUTH_") {
-            auth == Some(OpenAiAuth::ChatGpt) && auth_file.is_none()
-        } else if name == credentials::OPENAI_KEY {
-            auth == Some(OpenAiAuth::ApiKey)
-        } else {
-            true
+    // the ChatGPT login. A session without OpenAI models still gets OpenAI
+    // when there is a credential for it, one way only, so that `/model
+    // worker` can move workers there after the conversation has started.
+    let spare = !uses(Provider::OpenAI);
+    let auth = match uses(Provider::OpenAI) {
+        true => Some(settings.openai_auth.unwrap_or(OpenAiAuth::ChatGpt)),
+        false => available_openai_auth(&var, auth_file.as_deref()),
+    };
+    let from_env = |auth: Option<OpenAiAuth>| {
+        LLMClient::from_env_with(|name| {
+            let wanted = if name.starts_with("OPENAI_OAUTH_") {
+                auth == Some(OpenAiAuth::ChatGpt) && auth_file.is_none()
+            } else if name == credentials::OPENAI_KEY {
+                auth == Some(OpenAiAuth::ApiKey)
+            } else {
+                true
+            };
+            wanted.then(|| var(name)).flatten()
+        })
+    };
+    let mut client = match (from_env(auth), spare) {
+        (Ok(client), _) => client,
+        // A spare OpenAI login that fails (part of the OPENAI_OAUTH_*
+        // variables) is left out: no model of the session needs it.
+        (Err(_), true) => from_env(None).map_err(|error| Failure::Other(error.to_string()))?,
+        (Err(error), false) => return Err(Failure::Other(error.to_string())),
+    };
+    if spare && auth == Some(OpenAiAuth::ChatGpt) && !client.has_provider(&Provider::OpenAI) {
+        let file = match &auth_file {
+            Some(path) => CodexAuthFile::load(path),
+            None => CodexAuthFile::load_default(),
         };
-        wanted.then(|| var(name)).flatten()
-    })
-    .map_err(|error| Failure::Other(error.to_string()))?;
-    if auth == Some(OpenAiAuth::ChatGpt) && !client.has_provider(&Provider::OpenAI) {
+        if let Ok(file) = file
+            && file.credentials().is_ok()
+            && let Ok(with) = client.clone().with_codex_auth_file(&file)
+        {
+            client = with;
+        }
+    }
+    if !spare && auth == Some(OpenAiAuth::ChatGpt) && !client.has_provider(&Provider::OpenAI) {
         let (model, _) = models
             .iter()
             .find(|(_, model)| model.provider == Provider::OpenAI)
@@ -1251,6 +1528,7 @@ mod tests {
             title: None,
             windows_shell: None,
             openai_auth: None,
+            own_worker_model: false,
         }
     }
 
@@ -1792,5 +2070,74 @@ mod tests {
                 "$0.00 billed in this session · 0k input and 0k output tokens".to_string()
             )]
         );
+    }
+
+    /// The picker offers only the efforts each model takes, and a model
+    /// switched to without one gets the nearest to the effort before.
+    #[test]
+    fn each_model_takes_its_own_efforts() {
+        use Effort::{High, Low, Max, Medium, Xhigh};
+        let efforts = |name: &str| efforts(&resolve_model(name).unwrap());
+        assert_eq!(efforts("opus"), [Low, Medium, High, Xhigh, Max]);
+        assert_eq!(efforts("cc:fable"), [Low, Medium, High, Xhigh, Max]);
+        assert_eq!(efforts("sol"), [Low, Medium, High, Xhigh, Max]);
+        assert_eq!(
+            efforts("gpt-5.4-nano-2026-03-17"),
+            [Low, Medium, High, Xhigh]
+        );
+        assert_eq!(efforts("gemini"), [Low, Medium, High]);
+        assert_eq!(efforts("gemini-3-pro-preview"), [Low, High]);
+        assert!(efforts("gemini-2.0-flash").is_empty(), "it doesn't reason");
+        assert_eq!(efforts("openrouter:x/y"), [Low, Medium, High, Xhigh, Max]);
+        let fit = |name: &str, effort| fit_effort(&resolve_model(name).unwrap(), effort);
+        assert_eq!(fit("gemini", Xhigh), High);
+        assert_eq!(fit("gemini-3-pro-preview", Medium), Low);
+        assert_eq!(fit("opus", Medium), Medium);
+        assert_eq!(
+            efforts_text(&resolve_model("gemini").unwrap()),
+            "low, medium or high"
+        );
+        assert_eq!(parse_effort("XHigh"), Ok(Xhigh));
+        assert!(
+            parse_effort("extreme")
+                .unwrap_err()
+                .contains("low, medium, high, xhigh and max")
+        );
+    }
+
+    /// The menu lists the ways that can be used first, says what the
+    /// others need, and lists the agents' own models where it leaves them
+    /// out.
+    #[test]
+    fn the_model_menu_puts_what_can_be_used_first() {
+        let needs = |name: &str| (!name.starts_with("gpt-")).then(|| format!("what {name} needs"));
+        let menu = model_menu(
+            needs,
+            Some(OpenAiAuth::ApiKey),
+            &["gpt-5.6-terra", "gpt-6.1-sol"],
+        );
+        assert_eq!(menu[0].name, "OpenAI, with your API key");
+        assert_eq!(menu[0].needs, None);
+        let names: Vec<&str> = menu[0]
+            .models
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect();
+        assert_eq!(
+            names,
+            ["gpt-6.1-sol", "gpt-6-astra", "gpt-6-luna", "gpt-5.6-terra"]
+        );
+        assert!(menu[1..].iter().all(|group| group.needs.is_some()));
+        assert_eq!(menu[1].name, "Claude Code, on your Claude plan");
+        assert_eq!(
+            menu[1].models[0],
+            ("cc:claude-opus-5-5".to_string(), "cc:opus")
+        );
+        // Every model listed is one fin knows.
+        for group in &menu {
+            for (name, _) in &group.models {
+                assert!(resolve_model(name).is_ok(), "{name}");
+            }
+        }
     }
 }

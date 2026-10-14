@@ -1,14 +1,14 @@
 //! Native subagent configuration and the session's worker status display.
 //! arko owns the runs, mail, checkpoints, costs and isolated workspaces.
 
-use std::collections::HashMap;
-use std::path::PathBuf;
+use std::collections::{BTreeMap, HashMap};
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
 use arko_agents::{
-    AgentConfig, TaskContext, Tool, ToolDefinition, ToolError, ToolParameterDefinition,
-    ToolParameterType, ToolTypeDetails,
+    AgentConfig, AgentLLMConfig, ClaudeCodeSettings, HandoverConfig, TaskContext, Tool,
+    ToolDefinition, ToolError, ToolParameterDefinition, ToolParameterType, ToolTypeDetails,
 };
 use arko_ai::AnthropicCacheTtl;
 use arko_ai::prompt_cache::PromptCacheLifetime;
@@ -17,6 +17,7 @@ use arko_workflows::subagents::{
     GitWorktreeProvider, StartRequest, SubagentEventKind, SubagentState, SubagentsConfig,
 };
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::mpsc;
 use uuid::Uuid;
@@ -62,9 +63,128 @@ pub struct Setup {
     pub feed: Option<remote::Feed>,
 }
 
+/// What a worker run starts with that the workers' model decides: the
+/// model with its generation settings (the prompt cache's lifetime too),
+/// Claude Code's settings, and the handover size.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkerModel {
+    pub llm_config: AgentLLMConfig,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claude_code: Option<ClaudeCodeSettings>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handover: Option<HandoverConfig>,
+}
+
+impl WorkerModel {
+    /// What `config` (a worker's configuration) starts a run with.
+    pub fn of(config: &AgentConfig) -> Self {
+        Self {
+            llm_config: config.llm_config.clone(),
+            claude_code: config.claude_code.clone(),
+            handover: config.handover.clone(),
+        }
+    }
+
+    fn apply(&self, config: &mut AgentConfig) {
+        config.llm_config = self.llm_config.clone();
+        config.claude_code = self.claude_code.clone();
+        config.handover = self.handover.clone();
+    }
+}
+
+/// The model new workers start on, with their default prompt cache (the
+/// 1-hour one or not) and its lifetime, for `/workers`.
+#[derive(Debug, Clone)]
+pub struct NewWorkers {
+    pub model: WorkerModel,
+    pub cache_1h: bool,
+    pub cache_lifetime: PromptCacheLifetime,
+    /// OpenAI models run on the ChatGPT login (whose prompt cache lives
+    /// differently).
+    pub chatgpt: bool,
+}
+
+/// The workers' models: what new workers start on, and what each run
+/// started on. A run keeps its own when it resumes (fin restarted) or is
+/// continued (`message_agent`, a follow-up), whatever new workers start
+/// on by then.
+///
+/// arko continues a run from its saved task, but checks it against the
+/// configuration the start hook gives the run again (as a workflow is
+/// rebuilt from a checkpoint), and a difference stops the session from
+/// resuming. So the hook records each run's configuration as the run
+/// starts (in the session's folder, before the run is saved), and gives
+/// the same again every time after.
+struct WorkerModels {
+    /// The record, in the session's folder.
+    path: PathBuf,
+    new: Option<NewWorkers>,
+    runs: BTreeMap<Uuid, WorkerModel>,
+    /// The crew is attached to its workflow, whose start hook calls are
+    /// starts. Before (while a checkpoint is read back), a call for a run
+    /// without a record is the check of a run saved before records
+    /// existed: it gets the configuration it started with, as then.
+    attached: bool,
+}
+
+/// The file in the session's folder that holds each worker run's model.
+const WORKER_MODELS_FILE: &str = "worker-models.json";
+
+impl WorkerModels {
+    fn load(session_dir: &Path) -> Self {
+        let path = session_dir.join(WORKER_MODELS_FILE);
+        let runs = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|text| serde_json::from_str(&text).ok())
+            .unwrap_or_default();
+        Self {
+            path,
+            new: None,
+            runs,
+            attached: false,
+        }
+    }
+
+    /// Writes the record, before the run it was made for starts.
+    fn save(&self) -> Result<(), String> {
+        let failed = |error: std::io::Error| {
+            format!(
+                "fin could not record the worker's model in {}: {error}",
+                self.path.display()
+            )
+        };
+        let text = serde_json::to_string_pretty(&self.runs).map_err(|error| error.to_string())?;
+        let temporary = self.path.with_extension("json.tmp");
+        std::fs::write(&temporary, text).map_err(failed)?;
+        std::fs::rename(&temporary, &self.path).map_err(failed)
+    }
+}
+
+/// The prompt cache a worker run asks for in `start_agent`'s `cache`, else
+/// `default_1h`, on the models that take one: on `config`.
+fn apply_cache(
+    request: &StartRequest,
+    config: &mut AgentConfig,
+    default_1h: bool,
+) -> Result<(), String> {
+    let chosen = request.parameters.get(CACHE_PARAM).and_then(Value::as_str);
+    let one_hour = match chosen {
+        Some("1h") => true,
+        Some("5m") => false,
+        Some(other) => return Err(format!("cache is 5m or 1h, not {other}")),
+        None => default_1h,
+    };
+    if crate::providers::takes_cache_ttl(&config.llm_config.model) {
+        config.llm_config.generation_config.anthropic_cache_ttl =
+            one_hour.then_some(AnthropicCacheTtl::OneHour);
+    }
+    Ok(())
+}
+
 /// A view of one workflow's subagents. It has no worker runtime or mailbox.
 pub struct Crew {
     setup: Setup,
+    models: Arc<Mutex<WorkerModels>>,
     workflow: Mutex<Weak<Workflow>>,
     lead: Mutex<Option<Uuid>>,
     wake: mpsc::UnboundedSender<()>,
@@ -76,6 +196,7 @@ impl Crew {
         let (wake, woken) = mpsc::unbounded_channel();
         (
             Arc::new(Self {
+                models: Arc::new(Mutex::new(WorkerModels::load(&setup.session_dir))),
                 setup,
                 workflow: Mutex::new(Weak::new()),
                 lead: Mutex::new(None),
@@ -88,23 +209,34 @@ impl Crew {
 
     pub fn config(&self) -> SubagentsConfig {
         let default_1h = self.setup.cache_1h;
+        let models = self.models.clone();
         let mut config = SubagentsConfig::default()
             .offer_blocking_tool(false)
             .questions_to_lead(true)
             .workspace_provider(Arc::new(GitWorktreeProvider::new(self.setup.session_dir.join("worktrees"))
                 .branch_prefix(format!("fin/{}/", self.setup.session_id))))
             .hook(Arc::new(move |request: &StartRequest, config: &mut AgentConfig| {
-                let chosen = request.parameters.get(CACHE_PARAM).and_then(Value::as_str);
-                let one_hour = match chosen {
-                    Some("1h") => true,
-                    Some("5m") => false,
-                    Some(other) => return Err(format!("cache is 5m or 1h, not {other}")),
-                    None => default_1h,
-                };
-                if crate::providers::takes_cache_ttl(&config.llm_config.model) {
-                    config.llm_config.generation_config.anthropic_cache_ttl = one_hour.then_some(AnthropicCacheTtl::OneHour);
+                let mut models = models.lock().unwrap();
+                // A run seen before: what it started with, always.
+                if let Some(started) = models.runs.get(&request.run_id) {
+                    started.apply(config);
+                    return Ok(());
                 }
-                Ok(())
+                if !models.attached {
+                    // A run saved before records existed, checked as a
+                    // checkpoint is read back.
+                    return apply_cache(request, config, default_1h);
+                }
+                // A start: on the model new workers start on, recorded
+                // before the run starts.
+                let mut one_hour = default_1h;
+                if let Some(new) = &models.new {
+                    new.model.apply(config);
+                    one_hour = new.cache_1h;
+                }
+                apply_cache(request, config, one_hour)?;
+                models.runs.insert(request.run_id, WorkerModel::of(config));
+                models.save()
             }))
             .start_parameter(ToolParameterDefinition {
                 name: CACHE_PARAM.into(),
@@ -122,8 +254,69 @@ impl Crew {
         config.workspaces_anywhere()
     }
 
+    /// The model new workers start on from now on.
+    pub fn set_new_workers(&self, new: NewWorkers) {
+        self.models.lock().unwrap().new = Some(new);
+    }
+
+    /// What new workers start on, if it was set.
+    pub fn new_workers(&self) -> Option<NewWorkers> {
+        self.models.lock().unwrap().new.clone()
+    }
+
+    /// Before a workflow is built from a checkpoint: the start hook's calls
+    /// until it is attached are checks of the saved runs.
+    pub fn detach(&self) {
+        self.models.lock().unwrap().attached = false;
+    }
+
+    /// Records the model of each worker run that has no record yet (runs
+    /// of fin before records existed), as it started: so that it keeps it
+    /// once new workers start on another. Called as that changes. Returns
+    /// how many workers the session has started.
+    pub fn keep_started_models(&self) -> Result<usize, String> {
+        let Some(workflow) = self.workflow() else {
+            return Ok(0);
+        };
+        let mut models = self.models.lock().unwrap();
+        let mut added = false;
+        let started = workflow.subagents();
+        for run in &started {
+            if models.runs.contains_key(&run.run_id) {
+                continue;
+            }
+            let Some(mut config) = workflow.context().agent_configs.get(&run.agent).cloned() else {
+                continue;
+            };
+            let request = StartRequest {
+                workflow_run_id: Uuid::nil(),
+                run_id: run.run_id,
+                handle: run.handle.clone(),
+                agent: run.agent.clone(),
+                caller_run_id: run.caller_run_id,
+                caller_agent: String::new(),
+                task: String::new(),
+                parameters: run.parameters.clone(),
+            };
+            if apply_cache(&request, &mut config, self.setup.cache_1h).is_ok() {
+                models.runs.insert(run.run_id, WorkerModel::of(&config));
+                added = true;
+            }
+        }
+        if added {
+            models.save()?;
+        }
+        Ok(started.len())
+    }
+
+    /// The model worker run `run` started on, when fin recorded it.
+    pub fn run_model(&self, run: Uuid) -> Option<WorkerModel> {
+        self.models.lock().unwrap().runs.get(&run).cloned()
+    }
+
     pub fn attach(self: &Arc<Self>, workflow: &Arc<Workflow>, lead: Option<Uuid>) {
         *self.workflow.lock().unwrap() = Arc::downgrade(workflow);
+        self.models.lock().unwrap().attached = true;
         // A crash before the fresh lead's first tool can leave its workers
         // owned by the previous lead. Keep that owner until lead_run transfers it.
         *self.lead.lock().unwrap() = workflow
@@ -287,7 +480,28 @@ impl Crew {
                         let status = format!("{:?}", run.state).to_lowercase();
                         let mut line =
                             format!("{}  {status}  {}", run.handle, ui::cut(&run.task, 100));
-                        let mut lifetime = self.setup.cache_lifetime;
+                        // A run on another model than new workers' says it.
+                        let started = self.run_model(run.run_id);
+                        let new = self.new_workers();
+                        if let (Some(started), Some(new)) = (&started, &new)
+                            && started.llm_config.model.id != new.model.llm_config.model.id
+                        {
+                            line.push_str(&format!(
+                                "\n  runs {}, the model it started on",
+                                crate::providers::model_name(&started.llm_config.model)
+                            ));
+                        }
+                        let mut lifetime = match (&started, &new) {
+                            (Some(started), Some(new)) => {
+                                arko_ai::prompt_cache::prompt_cache_lifetime(
+                                    &started.llm_config.model,
+                                    &started.llm_config.generation_config,
+                                    new.chatgpt,
+                                )
+                            }
+                            (None, Some(new)) => new.cache_lifetime,
+                            _ => self.setup.cache_lifetime,
+                        };
                         if workflow
                             .context()
                             .agent_configs

@@ -738,4 +738,62 @@ mod tests {
         let rows = screen(&mut app, 40, 7);
         assert_eq!(rows[0], "  Hello there.");
     }
+
+    /// The picker's two steps, drawn: a box with the whose-model title,
+    /// the models in aligned columns with the one now marked, the ways that
+    /// can't be used with what they need, the efforts with Back, and the
+    /// keys as keycaps.
+    #[test]
+    fn the_model_picker_draws_both_steps() {
+        let mut app = app();
+        app.model_needs = |reachable, name| {
+            if name.starts_with("cc:") {
+                Some("Claude Code signed in".into())
+            } else {
+                crate::tui::model_picker::needs(reachable, name)
+            }
+        };
+        app.set_reading(crate::remote::Reading {
+            models: crate::remote::Models {
+                main: "gpt-6-luna".into(),
+                main_effort: "high".into(),
+                workers: "gpt-6-luna".into(),
+                workers_effort: "high".into(),
+                workers_follow: true,
+                reachable: vec!["openai".into()],
+                openai_auth: Some("OpenAI API key".into()),
+                has_workers: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        app.open_model(crate::model_command::Target::Main);
+        let rows = screen(&mut app, 100, 30).join("\n");
+        assert!(rows.contains("┌ Main agent's model "), "{rows}");
+        assert!(rows.contains("OpenAI, with your API key"), "{rows}");
+        assert!(
+            rows.contains("▸ gpt-6-luna   luna   now, high effort"),
+            "{rows}"
+        );
+        assert!(rows.contains("  gpt-6.1-sol  sol"), "{rows}");
+        assert!(
+            rows.contains("Google Gemini, billed per token  needs GEMINI_API_KEY"),
+            "{rows}"
+        );
+        assert!(
+            rows.contains("Another model…  a model ID, an alias or openrouter:<slug>"),
+            "{rows}"
+        );
+        assert!(rows.contains(" Enter  next   Esc  close"), "{rows}");
+        app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        let rows = screen(&mut app, 100, 30).join("\n");
+        assert!(
+            rows.contains("┌ Main agent's effort on gpt-6-luna "),
+            "{rows}"
+        );
+        assert!(rows.contains("▸ high    thinks more  now"), "{rows}");
+        assert!(rows.contains("  max     thinks most, slowest"), "{rows}");
+        assert!(rows.contains("← Back to the models"), "{rows}");
+        assert!(rows.contains(" Enter  apply   Esc  back"), "{rows}");
+    }
 }

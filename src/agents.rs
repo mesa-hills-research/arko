@@ -27,7 +27,9 @@ pub const MAIN: &str = "main";
 /// The agent `main` hands tasks to.
 pub const WORKER: &str = "worker";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, clap::ValueEnum,
+)]
 #[serde(rename_all = "lowercase")]
 pub enum Effort {
     Low,

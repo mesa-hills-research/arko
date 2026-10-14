@@ -81,6 +81,13 @@ pub const COMMANDS: &[Command] = &[
         "",
         "the view, theme, mouse, outside access, handover size and web page",
     ),
+    Command {
+        name: "/model",
+        args: "[MODEL] [EFFORT] | worker [MODEL|main] [EFFORT]",
+        about: "the main agent's model and effort before the conversation starts (/model sol high), or the model of workers started from now on, at any time (/model worker fable). /model worker main makes the workers follow the main agent's model again",
+        aliases: &[],
+        runs: Runs::Session,
+    },
     Command::session("/mcp", "the MCP servers and their tools"),
     Command::session("/skills", "the skills the agents can load"),
     Command::session("/session", "this session's ID, folder and models"),

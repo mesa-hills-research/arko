@@ -15,6 +15,7 @@ mod app;
 mod clipboard;
 mod input;
 mod markdown;
+mod model_picker;
 mod overlay;
 mod prefs;
 mod screen;
@@ -322,7 +323,7 @@ async fn run(
     let mut title = String::new();
     let mut enter: Option<Instant> = None;
     let mut burst: Option<Burst> = None;
-    app.reading = setup.meter.read();
+    app.set_reading(setup.meter.read());
     loop {
         if draw_now {
             draw(&mut terminal, &mut app);
@@ -383,7 +384,7 @@ async fn run(
                 let reading = setup.meter.read();
                 let workers = app.transcript.workers().iter().any(|w| w.state.is_active());
                 if reading != app.reading || app.activity.working || workers || app.hint.is_some() {
-                    app.reading = reading;
+                    app.set_reading(reading);
                     dirty = true;
                 }
             }

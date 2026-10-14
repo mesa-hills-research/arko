@@ -28,6 +28,7 @@ mod mcp;
 mod message;
 #[cfg(test)]
 mod mock_model;
+mod model_command;
 mod outside;
 mod providers;
 mod remote;
@@ -71,7 +72,7 @@ use crate::ui::{Control, Input, Output, Stats};
     name = "fin",
     version,
     about = "A general-purpose agent for the terminal: a shell, background jobs, file tools and workers that run in parallel.",
-    after_help = "Credentials: ANTHROPIC_API_KEY for Claude models. For OpenAI models, a ChatGPT login or OPENAI_API_KEY, one per session (--openai-auth). The ChatGPT login is a Codex auth.json (--codex-auth, else FIN_CODEX_AUTH, else Codex's own from `codex login`), or OPENAI_OAUTH_ACCESS_TOKEN with OPENAI_OAUTH_ACCOUNT_ID. GEMINI_API_KEY (or GOOGLE_API_KEY) for Gemini models, and OPENROUTER_API_KEY for openrouter: models. cc: models run in your installed Claude Code (`claude`, signed in with `claude auth login`) on your Claude plan, never on ANTHROPIC_API_KEY. When the model's credential is missing, fin asks for it on a setup screen and saves it in fin's .env. --setup opens that screen.\n\nSettings: the API keys above, FIN_CODEX_AUTH, FIN_OPENAI_AUTH (chatgpt or api-key), FIN_CACHE_1H (1 turns on --cache-1h), FIN_SHELL (cmd or powershell, on Windows), FIN_SYMBOLS, FIN_THEME, FIN_REMOTE_HOST and VOYAGE_API_KEY can be in the environment or in a .env file. fin reads the nearest .env in the current directory or a parent, then the one in fin's folder (FIN_HOME, else fin in your data directory, such as ~/.local/share/fin).\n\nThe screen: in a terminal, fin shows the session full screen (--repl keeps the line prompt). Enter sends, and Ctrl+J (or Shift+Enter where the terminal reports it) starts a new line. While the agent works, what you send adds to its task. Ctrl+O switches the view between full, quiet (each worker as one line) and messages. Ctrl+T, or ↓ from the input, reaches the agent list, where Enter shows a worker's own work and Esc goes back. Ctrl+C stops the turn, and the workers go on. Drag over the transcript to select text, and it is copied when you let go. A double click copies a word, and a triple click a line. /help lists the keys, and /settings holds the view, the theme and its previews, the mouse, outside access, the handover size and the web page.\n\nThemes: FIN_THEME picks a theme by name, such as \"macOS Classic Light\" or \"Windows Dark\". The default is macOS Classic Dark, and `terminal` keeps the terminal's own colours. Your own themes go in the themes folder in fin's folder, in GPUI Kit's theme format. The theme list in /settings shows a theme when you rest on it, and Previews off there shows none until you choose one.\n\nOutside access: the agents change files only inside the working directory. /outside on, or --allow-outside-workspace (also when resuming), lets commands and the file tools change paths outside it too, and /outside off stops that. The agents are told when it changes, and workers follow it. Protected paths, such as the home directory itself, stay refused.\n\nHandovers: when the main agent's input reaches the handover size (500k tokens on Claude models, 250k on the ChatGPT login, 200k on others), it writes a report and goes on from it in a fresh conversation. /handover-at SIZE lowers the size for the session, and /handover hands over now.\n\nCost: /cost shows what the session billed. For work on a Claude or ChatGPT plan, it also shows the cost at API prices and the plan's usage.\n\nMCP servers: fin starts those set up in --mcp-config files, in the project's .mcp.json (it asks first, and remembers the answer until the file's servers change) and in mcp.json in fin's folder. They use Claude Code's format ({\"mcpServers\": {\"name\": {\"command\": ..., \"args\": [...], \"env\": {...}}}}) and talk over standard input and output. Skills: folders with a SKILL.md, in the project's .agents/skills, .claude/skills or .skills, in skills in fin's folder, or in ~/.agents/skills or ~/.claude/skills.\n\nSearch indexes: `fin index create [PATH]` indexes a codebase or its docs, in any directory (the agents can create indexes too). fin keeps the working directory's indexes current while it runs, and other indexes once the agent searches them. The agents' searches return the top results' whole functions and sections. `fin index --help` lists the commands. Without VOYAGE_API_KEY, search is by keywords only.\n\nWorkers: the agent starts them to work in parallel while it goes on, each in the working directory or in a git worktree of its own (made in the session's folder, on a branch fin/<session>/<worker>). Their reports reach it as they finish. /workers lists them, /watch shows one's own work, and /stop-workers stops them.\n\nRemote: --remote (or /remote during a session) serves a web page for following the session and taking part in it from a browser, such as a phone's. It has the same views as the screen, and its settings change outside access and the handover size and show links for other devices. fin prints the links best first: the local network's, then Tailscale's, then other addresses, with VPN tunnels last. FIN_REMOTE_HOST (an interface or an address) puts its link first. The QR code is for the first link, and /remote qr [INTERFACE] draws one again. The link holds the session's key (kept in the session's folder), which the page trades for a cookie. fin listens on 127.0.0.1:8765 by default, and --remote 0.0.0.0 (or 0.0.0.0:PORT) lets in the devices on your network, or on your tailnet with Tailscale. The page is served without TLS. On a network you don't trust, reach it through an SSH tunnel (ssh -L 8765:127.0.0.1:8765 HOST, then open the link on your side) or Tailscale. /remote off stops it and ends its sessions, and /remote new-key makes a new key.\n\nSymbols: the classic Windows console (cmd.exe or PowerShell outside Windows Terminal) shows characters its fonts lack as question marks, so there fin prints stand-ins those fonts have. FIN_SYMBOLS sets the symbols: full, basic (those stand-ins) or ascii.\n\nCommands: /new, /cost, /workers, /watch, /stop-workers, /view, /copy, /settings, /mcp, /skills, /session, /remote, /outside, /handover, /handover-at, /help, /exit."
+    after_help = "Credentials: ANTHROPIC_API_KEY for Claude models. For OpenAI models, a ChatGPT login or OPENAI_API_KEY, one per session (--openai-auth). The ChatGPT login is a Codex auth.json (--codex-auth, else FIN_CODEX_AUTH, else Codex's own from `codex login`), or OPENAI_OAUTH_ACCESS_TOKEN with OPENAI_OAUTH_ACCOUNT_ID. GEMINI_API_KEY (or GOOGLE_API_KEY) for Gemini models, and OPENROUTER_API_KEY for openrouter: models. cc: models run in your installed Claude Code (`claude`, signed in with `claude auth login`) on your Claude plan, never on ANTHROPIC_API_KEY. When the model's credential is missing, fin asks for it on a setup screen and saves it in fin's .env. --setup opens that screen.\n\nSettings: the API keys above, FIN_CODEX_AUTH, FIN_OPENAI_AUTH (chatgpt or api-key), FIN_CACHE_1H (1 turns on --cache-1h), FIN_SHELL (cmd or powershell, on Windows), FIN_SYMBOLS, FIN_THEME, FIN_REMOTE_HOST and VOYAGE_API_KEY can be in the environment or in a .env file. fin reads the nearest .env in the current directory or a parent, then the one in fin's folder (FIN_HOME, else fin in your data directory, such as ~/.local/share/fin).\n\nThe screen: in a terminal, fin shows the session full screen (--repl keeps the line prompt). Enter sends, and Ctrl+J (or Shift+Enter where the terminal reports it) starts a new line. While the agent works, what you send adds to its task. Ctrl+O switches the view between full, quiet (each worker as one line) and messages. Ctrl+T, or ↓ from the input, reaches the agent list, where Enter shows a worker's own work and Esc goes back. Ctrl+C stops the turn, and the workers go on. Drag over the transcript to select text, and it is copied when you let go. A double click copies a word, and a triple click a line. /help lists the keys, and /settings holds the view, the theme and its previews, the mouse, outside access, the handover size and the web page.\n\nThemes: FIN_THEME picks a theme by name, such as \"macOS Classic Light\" or \"Windows Dark\". The default is macOS Classic Dark, and `terminal` keeps the terminal's own colours. Your own themes go in the themes folder in fin's folder, in GPUI Kit's theme format. The theme list in /settings shows a theme when you rest on it, and Previews off there shows none until you choose one.\n\nOutside access: the agents change files only inside the working directory. /outside on, or --allow-outside-workspace (also when resuming), lets commands and the file tools change paths outside it too, and /outside off stops that. The agents are told when it changes, and workers follow it. Protected paths, such as the home directory itself, stay refused.\n\nModels: --model (-m) and --effort set the main agent's model, and --worker-model and --worker-effort the workers'. Before the conversation starts, /model MODEL [EFFORT] changes the main agent's model. After that the main agent keeps its model for the conversation, and /model worker MODEL [EFFORT] sets the model of workers started from now on. /model worker main makes them follow the main agent again. A worker keeps the model it started on, also when it is resumed or continued. /model and /model worker without a model open a picker of the models you can use.\n\nHandovers: when the main agent's input reaches the handover size (500k tokens on Claude models, 250k on the ChatGPT login, 200k on others), it writes a report and goes on from it in a fresh conversation. /handover-at SIZE lowers the size for the session, and /handover hands over now.\n\nCost: /cost shows what the session billed. For work on a Claude or ChatGPT plan, it also shows the cost at API prices and the plan's usage.\n\nMCP servers: fin starts those set up in --mcp-config files, in the project's .mcp.json (it asks first, and remembers the answer until the file's servers change) and in mcp.json in fin's folder. They use Claude Code's format ({\"mcpServers\": {\"name\": {\"command\": ..., \"args\": [...], \"env\": {...}}}}) and talk over standard input and output. Skills: folders with a SKILL.md, in the project's .agents/skills, .claude/skills or .skills, in skills in fin's folder, or in ~/.agents/skills or ~/.claude/skills.\n\nSearch indexes: `fin index create [PATH]` indexes a codebase or its docs, in any directory (the agents can create indexes too). fin keeps the working directory's indexes current while it runs, and other indexes once the agent searches them. The agents' searches return the top results' whole functions and sections. `fin index --help` lists the commands. Without VOYAGE_API_KEY, search is by keywords only.\n\nWorkers: the agent starts them to work in parallel while it goes on, each in the working directory or in a git worktree of its own (made in the session's folder, on a branch fin/<session>/<worker>). Their reports reach it as they finish. /workers lists them, /watch shows one's own work, and /stop-workers stops them.\n\nRemote: --remote (or /remote during a session) serves a web page for following the session and taking part in it from a browser, such as a phone's. It has the same views as the screen, and its settings change outside access and the handover size and show links for other devices. fin prints the links best first: the local network's, then Tailscale's, then other addresses, with VPN tunnels last. FIN_REMOTE_HOST (an interface or an address) puts its link first. The QR code is for the first link, and /remote qr [INTERFACE] draws one again. The link holds the session's key (kept in the session's folder), which the page trades for a cookie. fin listens on 127.0.0.1:8765 by default, and --remote 0.0.0.0 (or 0.0.0.0:PORT) lets in the devices on your network, or on your tailnet with Tailscale. The page is served without TLS. On a network you don't trust, reach it through an SSH tunnel (ssh -L 8765:127.0.0.1:8765 HOST, then open the link on your side) or Tailscale. /remote off stops it and ends its sessions, and /remote new-key makes a new key.\n\nSymbols: the classic Windows console (cmd.exe or PowerShell outside Windows Terminal) shows characters its fonts lack as question marks, so there fin prints stand-ins those fonts have. FIN_SYMBOLS sets the symbols: full, basic (those stand-ins) or ascii.\n\nCommands: /new, /model, /cost, /workers, /watch, /stop-workers, /view, /copy, /settings, /mcp, /skills, /session, /remote, /outside, /handover, /handover-at, /help, /exit."
 )]
 struct Args {
     /// Send this message, print the reply and exit. Progress goes to
@@ -510,6 +511,7 @@ async fn run(args: Args) -> Result<ExitCode, String> {
         feed.clone(),
     ));
     let gauges = Arc::new(Gauges {
+        models: Mutex::default(),
         workflow: Mutex::new(None),
         crew: Mutex::new(None),
         stats: stats.clone(),
@@ -557,6 +559,7 @@ async fn run(args: Args) -> Result<ExitCode, String> {
 
     let mut harness = Harness {
         settings,
+        providers: provider_setup.clone(),
         session,
         client,
         main_config,
@@ -592,6 +595,8 @@ async fn run(args: Args) -> Result<ExitCode, String> {
     };
     harness.project = project_instructions(&harness.settings.workspace);
     harness.open(!new)?;
+    harness.start_new_workers();
+    harness.publish_models();
     harness.outside_at_start(new, args.allow_outside_workspace);
     if !new && let Some(tokens) = args.handover_at {
         harness.handover_at_start(tokens);
@@ -792,6 +797,9 @@ fn new_settings(args: &Args) -> Result<Settings, String> {
         effort: args.effort,
         fast: args.fast,
     };
+    // A workers' model of their own (`--worker-model`, or the last
+    // session's) doesn't follow the main agent's.
+    let own_worker_model = worker_model.is_some();
     let worker = match worker_model {
         Some(model) => ModelSettings {
             cache_1h: cache_1h(&model),
@@ -825,6 +833,7 @@ fn new_settings(args: &Args) -> Result<Settings, String> {
         windows_shell: Some(windows_shell(args)?),
         title: args.prompt.as_deref().map(|prompt| ui::cut(prompt, 80)),
         openai_auth,
+        own_worker_model,
     };
     providers::check_openai_choices(&settings)?;
     Ok(settings)
@@ -1129,6 +1138,10 @@ enum News {
 
 struct Harness {
     settings: Settings,
+    /// What the agents' configurations take from the providers (how the
+    /// session reaches OpenAI models, how Claude Code runs): `/model`
+    /// builds them again with it.
+    providers: providers::Setup,
     session: Session,
     client: Arc<LLMClient>,
     main_config: arko_agents::AgentConfig,
@@ -1302,6 +1315,10 @@ impl Harness {
         builder = builder.hook(HookPoint::PreToolExecution, self.outside.hook());
         if let Some(checkpoint) = checkpoint {
             builder = builder.resume_from(checkpoint);
+            // The saved workers' runs are checked as the workflow is built.
+            if let Some(crew) = &self.crew {
+                crew.detach();
+            }
         }
         let workflow = Arc::new(builder.build().map_err(|error| error.to_string())?);
         let mut configs = vec![config(MAIN, &self.main_config)];
@@ -1948,6 +1965,7 @@ impl Harness {
         self.feed.user(command, source, Delivery::Command);
         match name {
             "/outside" => self.outside_command(argument, source),
+            "/model" => self.model_command(argument, source),
             "/handover" => self.handover_command(argument, source),
             _ => self.handover_at_command(argument, source),
         }
@@ -2382,6 +2400,8 @@ impl Harness {
         self.exit_warned = false;
         self.news_hint_shown = false;
         self.feed.turn_started();
+        // The main agent's model is the conversation's from now on.
+        self.publish_models();
         let workflow = self.workflow().clone();
         // A message after a stop goes to the stopped task, which resumes.
         let resumes = !matches!(prompt, Prompt::Recover)
@@ -2911,8 +2931,8 @@ fn place(link: &remote::Link) -> String {
 }
 
 /// The commands that change a setting while the session runs, which take
-/// an argument: `/outside`, `/handover`, `/handover-at`.
-const LIVE_COMMANDS: [&str; 3] = ["/outside", "/handover", "/handover-at"];
+/// an argument: `/outside`, `/model`, `/handover`, `/handover-at`.
+const LIVE_COMMANDS: [&str; 4] = ["/outside", "/model", "/handover", "/handover-at"];
 
 /// What the user is told of a handover asked for.
 fn handover_text(asked: handover::Asked) -> &'static str {
@@ -3023,6 +3043,8 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 /// The session's figures for the remote page's status, read as the page
 /// asks. The workflow and its worker view are refreshed on session resume.
 struct Gauges {
+    /// The agents' models, as the harness last published them.
+    models: Mutex<remote::Models>,
     workflow: Mutex<Option<Arc<Workflow>>>,
     crew: Mutex<Option<Arc<Crew>>>,
     stats: Arc<Mutex<Stats>>,
@@ -3050,6 +3072,7 @@ impl remote::Meter for Gauges {
                 outside: self.outside.is_on(),
                 handover_at: self.handover.at(),
             },
+            models: lock(&self.models).clone(),
         }
     }
 }
@@ -3121,6 +3144,12 @@ mod tests {
     mod live {
         use super::*;
         include!("live_tests.rs");
+    }
+
+    /// `/model`'s end-to-end tests, in their own file.
+    mod model {
+        use super::*;
+        include!("model_tests.rs");
     }
 
     #[test]
@@ -3316,6 +3345,7 @@ mod tests {
             title: None,
             windows_shell: None,
             openai_auth: None,
+            own_worker_model: false,
         };
         let agent_settings = AgentSettings {
             main: &luna,
@@ -3361,6 +3391,7 @@ mod tests {
             feed.clone(),
         ));
         let gauges = Arc::new(Gauges {
+            models: Mutex::default(),
             workflow: Mutex::new(None),
             crew: Mutex::new(None),
             stats: stats.clone(),
@@ -3369,6 +3400,7 @@ mod tests {
         });
         let mut harness = Harness {
             settings,
+            providers: providers::Setup::new(None),
             session,
             client,
             main_config,
@@ -4371,7 +4403,9 @@ mod tests {
         harness.worker_config = agents::worker_config(&agent_settings).unwrap();
         harness.settings.main = main.clone();
         harness.settings.worker = worker.clone();
+        harness.providers = setup.clone();
         harness.open(false).unwrap();
+        harness.start_new_workers();
         managers
     }
 

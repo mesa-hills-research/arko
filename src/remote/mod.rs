@@ -86,6 +86,36 @@ pub struct Reading {
     pub workers: Option<String>,
     /// The settings a client may change (with commands).
     pub settings: LiveSettings,
+    /// The agents' models, as `/model` changes them.
+    pub models: Models,
+}
+
+/// The agents' models, as `/model` changes them.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct Models {
+    /// The main agent's model as `/model` takes it (`gpt-6.1-sol`), and its
+    /// effort (`high`).
+    pub main: String,
+    pub main_effort: String,
+    /// The model workers start on, and their effort.
+    pub workers: String,
+    pub workers_effort: String,
+    /// The workers follow the main agent's model.
+    pub workers_follow: bool,
+    /// The conversation has started: the main agent keeps its model, and
+    /// `/model worker` changes the workers started from now on.
+    pub started: bool,
+    /// The banner's rows for the main agent's model and the workers.
+    pub banner_model: String,
+    pub banner_workers: String,
+    /// The providers the session's client reaches (`anthropic`, `openai`,
+    /// `gemini`, `openrouter`): `/model` offers their models.
+    pub reachable: Vec<String>,
+    /// How the session reaches OpenAI models (`ChatGPT login`, `OpenAI API
+    /// key`), when it can.
+    pub openai_auth: Option<String>,
+    /// The session has workers (not `--workers 0`).
+    pub has_workers: bool,
 }
 
 /// The session's settings that can change while it runs.

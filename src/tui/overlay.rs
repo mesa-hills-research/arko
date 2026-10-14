@@ -27,6 +27,16 @@ pub enum Overlay {
     Settings { row: usize, picker: Option<Picker> },
     /// The web page's links as QR codes; `link` is the one shown.
     Remote { link: usize, since: Instant },
+    /// `/model`'s picker.
+    Model(super::model_picker::ModelPicker),
+    /// `/model` once the conversation has started: the main agent keeps
+    /// its model, and (`workers`) the workers' picker is offered; `choice`
+    /// is the button on.
+    ModelNotice {
+        text: String,
+        workers: bool,
+        choice: usize,
+    },
 }
 
 /// A setting.
@@ -81,7 +91,7 @@ pub fn hints(theme: &Theme, pairs: &[(&str, &str)]) -> Vec<Span<'static>> {
 }
 
 /// A bordered box in `area`, on the overlay's surface, titled `title`.
-fn frame_box(frame: &mut Frame, area: Rect, theme: &Theme, title: &str) -> Rect {
+pub(super) fn frame_box(frame: &mut Frame, area: Rect, theme: &Theme, title: &str) -> Rect {
     frame.render_widget(Clear, area);
     let block = Block::default()
         .borders(Borders::ALL)
@@ -102,7 +112,7 @@ fn frame_box(frame: &mut Frame, area: Rect, theme: &Theme, title: &str) -> Rect 
 }
 
 /// A box `width` by `height`, centred in `area` (as much as fits).
-fn centred(area: Rect, width: u16, height: u16) -> Rect {
+pub(super) fn centred(area: Rect, width: u16, height: u16) -> Rect {
     let width = width.min(area.width);
     let height = height.min(area.height);
     Rect::new(
@@ -114,7 +124,7 @@ fn centred(area: Rect, width: u16, height: u16) -> Rect {
 }
 
 /// Draws `lines` in `area`, from `scroll` on.
-fn put(frame: &mut Frame, area: Rect, lines: &[Line<'static>], scroll: usize) {
+pub(super) fn put(frame: &mut Frame, area: Rect, lines: &[Line<'static>], scroll: usize) {
     for (row, line) in lines
         .iter()
         .skip(scroll)
@@ -140,6 +150,12 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect, screen: Rect) {
             None => settings(frame, app, area, *row),
         },
         Overlay::Remote { link, since } => page(frame, app, screen, *link, *since),
+        Overlay::Model(picker) => super::model_picker::draw(frame, &app.theme, area, picker),
+        Overlay::ModelNotice {
+            text,
+            workers,
+            choice,
+        } => super::model_picker::draw_notice(frame, &app.theme, area, text, *choice, *workers),
     }
 }
 
@@ -254,7 +270,7 @@ fn help(frame: &mut Frame, app: &App, area: Rect, scroll: usize) {
 }
 
 /// Keys along the bottom border of `rect`, on the right.
-fn footer(frame: &mut Frame, rect: Rect, theme: &Theme, pairs: &[(&str, &str)]) {
+pub(super) fn footer(frame: &mut Frame, rect: Rect, theme: &Theme, pairs: &[(&str, &str)]) {
     let pairs: Vec<(String, &str)> = pairs
         .iter()
         .map(|(key, what)| (glyphs::render(key).into_owned(), *what))

@@ -48,9 +48,21 @@ pub struct Settings {
     /// login.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub openai_auth: Option<OpenAiAuth>,
+    /// The workers' model was chosen on its own (`--worker-model`, `/model
+    /// worker`), so it stays when the main agent's changes. False in
+    /// sessions saved before it existed, whose workers followed the main
+    /// agent when their models matched.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub own_worker_model: bool,
 }
 
 impl Settings {
+    /// Whether the workers run the main agent's model, and follow it when
+    /// it changes before the conversation starts.
+    pub fn workers_follow_main(&self) -> bool {
+        !self.own_worker_model && self.worker.model == self.main.model
+    }
+
     /// `model`'s settings as the banner and `/session` say them, with how
     /// the session reaches it when that isn't in its name (OpenAI models).
     pub fn describe(&self, model: &ModelSettings) -> String {
@@ -233,6 +245,7 @@ mod tests {
             title: None,
             windows_shell: None,
             openai_auth: None,
+            own_worker_model: false,
         }
     }
 

@@ -11,11 +11,13 @@ use crossterm::event::{
 };
 
 use super::input::Editor;
+use super::model_picker::{self, ModelPicker, Outcome};
 use super::overlay::{Overlay, Picker, SettingsRow};
 use super::prefs::Prefs;
 use super::theme::{self, Catalog, Depth, Theme};
 use super::transcript::{Filter, Transcript, View};
 use crate::commands::{self, Runs};
+use crate::model_command::Target;
 use crate::remote::{Activity, Reading, Snapshot, Update};
 use crate::ui::Input;
 
@@ -128,6 +130,10 @@ pub struct App {
     /// Where the agent list was drawn, and the row of its first line: for
     /// the mouse.
     pub list_drawn: (ratatui::layout::Rect, usize),
+    /// What a model needs that the session doesn't have, for `/model`'s
+    /// picker (from the providers the session reaches, and Claude Code's
+    /// login).
+    pub model_needs: fn(&[String], &str) -> Option<String>,
 }
 
 impl App {
@@ -183,7 +189,54 @@ impl App {
             list_drawn: Default::default(),
             press: None,
             last_click: None,
+            model_needs: model_picker::needs,
         }
+    }
+
+    /// The session's figures now: the banner follows its models.
+    pub fn set_reading(&mut self, reading: Reading) {
+        if let Some(banner) = &mut self.transcript.banner
+            && !reading.models.banner_model.is_empty()
+        {
+            banner.model = reading.models.banner_model.clone();
+            banner.workers = reading.models.banner_workers.clone();
+        }
+        self.reading = reading;
+    }
+
+    /// `/model`'s picker for `target`. Once the conversation has started,
+    /// `/model` (the main agent's) opens a note instead: the main agent
+    /// keeps its model, and the workers' picker is a key away.
+    pub fn open_model(&mut self, target: Target) {
+        let models = self.reading.models.clone();
+        if models.main.is_empty() {
+            // (The session hasn't said its models yet: it answers.)
+            self.send(match target {
+                Target::Main => "/model",
+                Target::Workers => "/model worker",
+            });
+            return;
+        }
+        if target == Target::Main && models.started {
+            self.overlay = Some(Overlay::ModelNotice {
+                text: format!(
+                    "The main agent keeps {} ({} effort) for this conversation. /model worker sets the model for workers started from now on.",
+                    models.main, models.main_effort
+                ),
+                workers: models.has_workers,
+                choice: 0,
+            });
+            return;
+        }
+        if target == Target::Workers && !models.has_workers {
+            self.say("This session has no workers");
+            return;
+        }
+        let needs = self.model_needs;
+        let reachable = models.reachable.clone();
+        self.overlay = Some(Overlay::Model(ModelPicker::open(target, &models, |name| {
+            needs(&reachable, name)
+        })));
     }
 
     /// What the view asked for since last time.
@@ -609,6 +662,18 @@ impl App {
                     self.overlay = Some(Overlay::Help { scroll: 0 });
                     true
                 }
+                // Without a model, the picker; with one, the session.
+                ("/model", _) => match rest {
+                    "" => {
+                        self.open_model(Target::Main);
+                        true
+                    }
+                    "worker" | "workers" => {
+                        self.open_model(Target::Workers);
+                        true
+                    }
+                    _ => false,
+                },
                 ("/remote", _) => {
                     // The page starts (or stops) in the session; its links
                     // show in an overlay that stays (`qr IFACE`: that one's).
@@ -719,6 +784,39 @@ impl App {
                 _ => Some(Overlay::Remote { link, since }),
             },
             Overlay::Settings { row, picker } => self.settings_key(key, row, picker, close),
+            Overlay::Model(mut picker) => match picker.key(key, close) {
+                Outcome::Stay => Some(Overlay::Model(picker)),
+                Outcome::Close => None,
+                Outcome::Apply { line, said } => {
+                    self.send(&line);
+                    self.say(said);
+                    None
+                }
+            },
+            Overlay::ModelNotice {
+                text,
+                workers,
+                choice,
+            } => match key.code {
+                _ if close => None,
+                KeyCode::Left | KeyCode::Right | KeyCode::Tab if workers => {
+                    Some(Overlay::ModelNotice {
+                        text,
+                        workers,
+                        choice: 1 - choice,
+                    })
+                }
+                KeyCode::Enter if workers && choice == 0 => {
+                    self.open_model(Target::Workers);
+                    return;
+                }
+                KeyCode::Enter => None,
+                _ => Some(Overlay::ModelNotice {
+                    text,
+                    workers,
+                    choice,
+                }),
+            },
         };
     }
 
@@ -1487,5 +1585,185 @@ pub(super) mod tests {
         press(&mut app, KeyCode::Right, KeyModifiers::NONE);
         press(&mut app, KeyCode::Left, KeyModifiers::NONE);
         assert_eq!(sent(&mut app), ["/handover-at 300k", "/handover-at 200k"]);
+    }
+
+    /// The session's models, as it publishes them: luna for both agents,
+    /// the conversation not started, OpenAI reachable with an API key.
+    fn models(started: bool) -> crate::remote::Models {
+        crate::remote::Models {
+            main: "gpt-6-luna".into(),
+            main_effort: "high".into(),
+            workers: "gpt-6-luna".into(),
+            workers_effort: "high".into(),
+            workers_follow: true,
+            started,
+            banner_model: "gpt-6-luna (high effort) via OpenAI API key".into(),
+            banner_workers: "parallel workers".into(),
+            reachable: vec!["openai".into()],
+            openai_auth: Some("OpenAI API key".into()),
+            has_workers: true,
+        }
+    }
+
+    /// A picker that doesn't ask Claude Code (whose login differs from one
+    /// machine to the next): it needs signing in.
+    fn hermetic(app: &mut App) {
+        app.model_needs = |reachable, name| {
+            if name.starts_with("cc:") {
+                Some("Claude Code signed in".into())
+            } else {
+                model_picker::needs(reachable, name)
+            }
+        };
+    }
+
+    fn picker(app: &App) -> &ModelPicker {
+        match &app.overlay {
+            Some(Overlay::Model(picker)) => picker,
+            other => panic!("no picker: {other:?}"),
+        }
+    }
+
+    /// `/model` before the start: the models, on the one now, then its
+    /// efforts with Back, and Enter sends the line and says it.
+    #[test]
+    fn the_model_picker_chooses_a_model_then_an_effort() {
+        let mut app = app();
+        hermetic(&mut app);
+        app.set_reading(Reading {
+            models: models(false),
+            ..Reading::default()
+        });
+        type_text(&mut app, "/model");
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        let open = picker(&app);
+        assert_eq!(open.title(), "Main agent's model");
+        assert!(
+            matches!(&open.rows[open.selected], model_picker::Row::Model { name, .. } if name == "gpt-6-luna")
+        );
+        // The ways that can't be used are one row each, not chosen.
+        assert!(open.rows.iter().any(|row| matches!(row, model_picker::Row::Unavailable { needs, .. } if needs == "GEMINI_API_KEY")));
+        assert!(sent(&mut app).is_empty());
+        // Up to sol, then its efforts, on the effort now.
+        press(&mut app, KeyCode::Up, KeyModifiers::NONE);
+        press(&mut app, KeyCode::Up, KeyModifiers::NONE);
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        let efforts = picker(&app);
+        assert_eq!(efforts.title(), "Main agent's effort on gpt-6.1-sol");
+        assert!(
+            matches!(&efforts.step, model_picker::Step::Efforts { efforts, selected, .. } if efforts.len() == 5 && *selected == 2)
+        );
+        // Back, and Esc, go to the models.
+        for _ in 0..3 {
+            press(&mut app, KeyCode::Down, KeyModifiers::NONE);
+        }
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(picker(&app).step, model_picker::Step::Models);
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!(picker(&app).step, model_picker::Step::Models);
+        // Astra at xhigh.
+        press(&mut app, KeyCode::Down, KeyModifiers::NONE);
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        press(&mut app, KeyCode::Down, KeyModifiers::NONE);
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert!(app.overlay.is_none());
+        assert_eq!(sent(&mut app), ["/model gpt-6-astra xhigh"]);
+        assert_eq!(
+            app.hint.as_ref().map(|(text, _)| text.as_str()),
+            Some("The main agent runs gpt-6-astra at xhigh effort")
+        );
+        // With a model, the line goes to the session as typed.
+        type_text(&mut app, "/model sol high");
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(sent(&mut app), ["/model sol high"]);
+    }
+
+    /// Once the conversation has started, `/model` says the main agent
+    /// keeps its model and offers the workers' picker, which can make them
+    /// follow the main agent or take a model typed.
+    #[test]
+    fn after_the_start_model_offers_the_workers_picker() {
+        let mut app = app();
+        hermetic(&mut app);
+        app.set_reading(Reading {
+            models: models(true),
+            ..Reading::default()
+        });
+        type_text(&mut app, "/model");
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert!(
+            matches!(&app.overlay, Some(Overlay::ModelNotice { text, workers: true, choice: 0 }) if text.starts_with("The main agent keeps gpt-6-luna (high effort) for this conversation."))
+        );
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        let workers = picker(&app);
+        assert_eq!(workers.title(), "Model of workers started from now on");
+        assert!(matches!(
+            workers.rows[workers.selected],
+            model_picker::Row::FollowMain { .. }
+        ));
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(sent(&mut app), ["/model worker main"]);
+
+        // A model typed: one fin doesn't know says what was meant, one it
+        // can't reach what it needs.
+        type_text(&mut app, "/model worker");
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        press(&mut app, KeyCode::End, KeyModifiers::NONE);
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        type_text(&mut app, "opsu");
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert!(
+            matches!(&picker(&app).step, model_picker::Step::Typing { error: Some(error), .. } if error.contains("Did you mean opus?"))
+        );
+        for _ in 0..4 {
+            press(&mut app, KeyCode::Backspace, KeyModifiers::NONE);
+        }
+        type_text(&mut app, "fable");
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert!(
+            matches!(&picker(&app).step, model_picker::Step::Typing { error: Some(error), .. } if error == "claude-fable-5-1 needs ANTHROPIC_API_KEY, which fin reads as it starts, from the environment or a .env file.")
+        );
+        for _ in 0..5 {
+            press(&mut app, KeyCode::Backspace, KeyModifiers::NONE);
+        }
+        type_text(&mut app, "gpt-6-astra");
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(sent(&mut app), ["/model worker gpt-6-astra high"]);
+        assert_eq!(
+            app.hint.as_ref().map(|(text, _)| text.as_str()),
+            Some("Workers started from now on run gpt-6-astra at high effort")
+        );
+    }
+
+    /// The banner's Model row follows the session's.
+    #[test]
+    fn the_banner_follows_the_models() {
+        let mut app = app();
+        app.transcript.banner = Some(crate::tui::Banner {
+            model: "gpt-6-luna (high effort)".into(),
+            workers: "parallel workers".into(),
+            workspace: "/work".into(),
+            session: "s".into(),
+            project: None,
+            tools: Vec::new(),
+            notes: Vec::new(),
+        });
+        let mut reading = Reading::default();
+        app.set_reading(reading.clone());
+        assert_eq!(
+            app.transcript.banner.as_ref().unwrap().model,
+            "gpt-6-luna (high effort)"
+        );
+        reading.models.banner_model = "gpt-6.1-sol (high effort)".into();
+        reading.models.banner_workers = "parallel workers on gpt-6-astra (high effort)".into();
+        app.set_reading(reading);
+        let banner = app.transcript.banner.as_ref().unwrap();
+        assert_eq!(banner.model, "gpt-6.1-sol (high effort)");
+        assert_eq!(
+            banner.workers,
+            "parallel workers on gpt-6-astra (high effort)"
+        );
     }
 }
