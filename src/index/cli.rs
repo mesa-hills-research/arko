@@ -39,7 +39,7 @@ pub enum IndexCommand {
         /// Lexical only: no embeddings
         #[arg(long)]
         no_embed: bool,
-        /// Token cap of each embedding run (default 5M; 200k, 5M, 5000000)
+        /// Token cap of each embedding run, such as 200k, 5M or 5000000 (default 5M)
         #[arg(long, value_parser = count_arg)]
         max_embed_tokens: Option<u64>,
         /// Build and estimate only: embed later (fin's monitoring or `fin index embed`)
@@ -68,7 +68,7 @@ pub enum IndexCommand {
         #[arg(long, short = 'n', default_value_t = engine::DEFAULT_LIMIT)]
         limit: usize,
         /// Only results under this path (absolute, or relative to the current
-        /// directory); without --index, it picks the indexes too
+        /// directory). Without --index, it picks the indexes too
         #[arg(long)]
         path_prefix: Option<String>,
         /// Only chunks of this language (rust, python, markdown, ...)
