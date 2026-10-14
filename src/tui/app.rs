@@ -220,7 +220,7 @@ impl App {
         if target == Target::Main && models.started {
             self.overlay = Some(Overlay::ModelNotice {
                 text: format!(
-                    "The main agent keeps {} ({} effort) for this conversation. /model worker sets the model for workers started from now on.",
+                    "The main agent keeps {} ({} effort) for this session. /model worker sets the model for workers started from now on.",
                     models.main, models.main_effort
                 ),
                 workers: models.has_workers,
@@ -1693,7 +1693,7 @@ pub(super) mod tests {
         type_text(&mut app, "/model");
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         assert!(
-            matches!(&app.overlay, Some(Overlay::ModelNotice { text, workers: true, choice: 0 }) if text.starts_with("The main agent keeps gpt-6-luna (high effort) for this conversation."))
+            matches!(&app.overlay, Some(Overlay::ModelNotice { text, workers: true, choice: 0 }) if text.starts_with("The main agent keeps gpt-6-luna (high effort) for this session."))
         );
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         let workers = picker(&app);

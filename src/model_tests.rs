@@ -127,7 +127,7 @@ async fn before_the_start_model_sets_the_main_agent_and_after_it_says_it_keeps_i
     harness.conversation = Conversation::New;
     assert!(harness.live_command("/model luna", Source::Terminal));
     assert!(said(&harness.feed).contains(
-        "The main agent keeps gpt-6.1-sol (high effort) for this conversation. /model worker sets the model for workers started from now on."
+        "The main agent keeps gpt-6.1-sol (high effort) for this session. /model worker sets the model for workers started from now on."
     ));
     assert_eq!(harness.settings.main.model, "gpt-6.1-sol");
     harness.crew.as_ref().unwrap().shutdown().await;
@@ -231,7 +231,7 @@ async fn a_worker_keeps_the_model_it_started_on_and_new_ones_start_on_the_new_on
     // Workers started from now on run sol.
     assert!(harness.live_command("/model worker sol high", Source::Terminal));
     assert!(said(&harness.feed).contains(
-        "Workers started from now on run gpt-6.1-sol (high effort). The main agent keeps gpt-6-luna (high effort) for this conversation, and the workers started before keep theirs."
+        "Workers started from now on run gpt-6.1-sol (high effort). The main agent keeps gpt-6-luna (high effort) for this session, and the workers started before keep theirs."
     ));
     assert_eq!(harness.session.load_settings().unwrap().worker.model, "gpt-6.1-sol");
     let reading = remote::Meter::read(harness.gauges.as_ref());

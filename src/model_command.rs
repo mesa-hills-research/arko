@@ -109,7 +109,7 @@ impl Harness {
         match request {
             Request::Show(Target::Main) => Ok(if started {
                 format!(
-                    "The main agent keeps {} for this conversation. /model worker sets the model for workers started from now on.",
+                    "The main agent keeps {} for this session. /model worker sets the model for workers started from now on.",
                     shown(&self.settings.main)
                 )
             } else {
@@ -128,7 +128,7 @@ impl Harness {
                 target: Target::Main,
                 ..
             } if started => Ok(format!(
-                "The main agent keeps {} for this conversation. /model worker sets the model for workers started from now on.",
+                "The main agent keeps {} for this session. /model worker sets the model for workers started from now on.",
                 shown(&self.settings.main)
             )),
             Request::Set {
@@ -315,11 +315,11 @@ impl Harness {
         };
         Ok(match follows {
             true => format!(
-                "Workers started from now on follow the main agent's model, {}. The main agent keeps it for this conversation{before}.",
+                "Workers started from now on follow the main agent's model, {}. The main agent keeps it for this session{before}.",
                 shown(&self.settings.worker)
             ),
             false => format!(
-                "Workers started from now on run {}. The main agent keeps {} for this conversation{before}.",
+                "Workers started from now on run {}. The main agent keeps {} for this session{before}.",
                 shown(&self.settings.worker),
                 shown(&self.settings.main)
             ),
