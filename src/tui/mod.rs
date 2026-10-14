@@ -46,6 +46,7 @@ use crate::glyphs;
 use crate::remote;
 use crate::ui::{self, Input, Output};
 use app::{App, Effect, Info};
+pub use transcript::Banner;
 
 /// How long Enter waits to see if more keys follow it: keys that come
 /// together are a paste the terminal didn't mark (the classic Windows
@@ -67,6 +68,8 @@ pub struct Setup {
     pub session_dir: PathBuf,
     pub workspace: PathBuf,
     pub handover_at: usize,
+    /// The session's facts, for the banner.
+    pub banner: Banner,
 }
 
 /// The view while it runs.
@@ -136,6 +139,7 @@ pub fn start(setup: Setup, output: &Arc<Output>) -> Option<Screen> {
     };
     let editor = input::Editor::new(input::History::load(Some(history)));
     let mut app = App::new(snapshot, editor, info, catalog, depth);
+    app.transcript.banner = Some(setup.banner.clone());
     app.shift_enter = terminal.1;
     if !app.mouse {
         let _ = execute!(std::io::stdout(), DisableMouseCapture);

@@ -66,6 +66,11 @@ pub struct Wrapped {
     pub join: Join,
     pub skip: usize,
     pub tail: usize,
+    /// It has no text at all (a box's border): a copy leaves it out.
+    pub bare: bool,
+    /// What a copy of the whole line takes, where the screen shows it
+    /// shortened (a long path).
+    pub whole: Option<String>,
 }
 
 impl Wrapped {
@@ -76,6 +81,8 @@ impl Wrapped {
             join: Join::Break,
             skip: 0,
             tail: 0,
+            bare: false,
+            whole: None,
         }
     }
 
@@ -159,6 +166,8 @@ pub fn wrap_lines(spans: &[Span<'_>], width: usize, hang: usize) -> Vec<Wrapped>
                 join,
                 skip: 0,
                 tail: 0,
+                bare: false,
+                whole: None,
             };
             if n > 0 && hang > 0 {
                 line.decorated(Span::raw(" ".repeat(hang)))

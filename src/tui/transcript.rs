@@ -84,9 +84,26 @@ struct Cached {
     lines: Vec<Wrapped>,
 }
 
+/// The session's top-level facts: the box that opens the transcript.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Banner {
+    pub model: String,
+    pub workers: String,
+    pub workspace: String,
+    pub session: String,
+    /// The project's instructions file, when one was loaded.
+    pub project: Option<String>,
+    /// MCP servers, skills, indexes.
+    pub tools: Vec<String>,
+    /// Short notes, a warning's with its level.
+    pub notes: Vec<(String, Option<Level>)>,
+}
+
 /// What a block of the drawn transcript is.
 #[derive(Debug, Clone, PartialEq)]
 enum Shown {
+    /// The session's banner, first.
+    Banner,
     /// An entry's lines.
     Entry(usize),
     /// A worker's summary, where it started (`worker_line`).
@@ -197,6 +214,8 @@ pub struct Transcript {
     /// The view's height in lines when following stopped (and the view it
     /// was): the marker counts the lines that came since.
     baseline: Option<(Filter, usize)>,
+    /// The session's banner, which opens the main transcript.
+    pub banner: Option<Banner>,
     /// The text highlighted with the mouse.
     pub selection: Option<Selection>,
     /// The view holds still (a drag selects text): it doesn't follow new
@@ -221,6 +240,7 @@ impl Transcript {
             workers: Vec::new(),
             anchor: None,
             baseline: None,
+            banner: None,
             selection: None,
             hold: false,
             drawn: Drawn::default(),
@@ -380,6 +400,15 @@ impl Transcript {
         let own = matches!(filter, Filter::Worker(_));
         let style = theme_key(theme) ^ u64::from(own);
         let mut blocks: Vec<Block> = Vec::new();
+        // (Key 0: before every item. It scrolls away with them.)
+        if let (Filter::Main(_), Some(banner)) = (filter, &self.banner) {
+            blocks.push(Block {
+                key: 0,
+                shown: Shown::Banner,
+                gap: false,
+                lines: banner_lines(banner, theme, width).len(),
+            });
+        }
         if let Filter::Worker(id) = filter
             && let Some(worker) = self.worker(id)
         {
@@ -698,6 +727,11 @@ impl Transcript {
             line
         };
         match &block.shown {
+            Shown::Banner => self
+                .banner
+                .as_ref()
+                .map(|banner| banner_lines(banner, theme, width))
+                .unwrap_or_default(),
             Shown::Entry(index) => self.entries[*index]
                 .cache
                 .as_ref()
@@ -895,11 +929,11 @@ impl Transcript {
                 .enumerate()
             {
                 let Some((from, to)) = selected_columns(range, (index, line), wrapped) else {
-                    // A blank line (or one with no text) inside the
-                    // selection is still a line of it.
+                    // A blank line inside the selection is still a line of
+                    // it (a border isn't).
                     let inside = (index, line) > (range.0.0, range.0.1)
                         && (index, line) < (range.1.0, range.1.1);
-                    if inside && started {
+                    if inside && started && !wrapped.bare {
                         text.push('\n');
                     }
                     continue;
@@ -912,7 +946,13 @@ impl Transcript {
                     });
                 }
                 started = true;
-                text.push_str(&columns(wrapped, from, to));
+                // A line shown shortened, selected whole, is copied whole.
+                match &wrapped.whole {
+                    Some(whole) if from <= wrapped.skip && to >= text_end(wrapped) => {
+                        text.push_str(whole)
+                    }
+                    _ => text.push_str(&columns(wrapped, from, to)),
+                }
             }
         }
         let text = text.trim_end().to_string();
@@ -950,15 +990,10 @@ fn selected_columns(
     line: &Wrapped,
 ) -> Option<(usize, usize)> {
     let ((start_block, start_line, start_col), (end_block, end_line, end_col)) = range;
-    if at < (start_block, start_line) || at > (end_block, end_line) {
+    if line.bare || at < (start_block, start_line) || at > (end_block, end_line) {
         return None;
     }
-    let end = cells(line)
-        .iter()
-        .rev()
-        .find(|(c, _, _)| !c.is_whitespace())
-        .map_or(0, |(_, col, w)| col + w)
-        .saturating_sub(line.tail);
+    let end = text_end(line);
     let from = if at == (start_block, start_line) {
         start_col.max(line.skip)
     } else {
@@ -970,6 +1005,16 @@ fn selected_columns(
         end
     };
     (from < to).then_some((from, to))
+}
+
+/// The column after a line's text (its tail not counted).
+fn text_end(line: &Wrapped) -> usize {
+    cells(line)
+        .iter()
+        .rev()
+        .find(|(c, _, _)| !c.is_whitespace())
+        .map_or(0, |(_, col, w)| col + w)
+        .saturating_sub(line.tail)
 }
 
 /// The text of `line` in columns `from` to `to`.
@@ -1227,6 +1272,184 @@ fn entry_lines(item: &Item, theme: &Theme, width: usize, own: bool) -> Vec<Wrapp
         // Drawn from the worker's summary.
         Kind::WorkerLine => Vec::new(),
     }
+}
+
+/// The banner gets no wider than this: a header, not a wall.
+const BANNER_WIDTH: usize = 100;
+/// Its labels' column.
+const BANNER_LABELS: usize = 11;
+
+/// The banner, boxed: the title, a row for each fact (its label and its
+/// value), and the notes under a rule. A copy takes the values and notes,
+/// not the box or the labels.
+fn banner_lines(banner: &Banner, theme: &Theme, width: usize) -> Vec<Wrapped> {
+    let set = theme.borders();
+    let (tee_left, tee_right) = match glyphs::symbols() {
+        glyphs::Symbols::Ascii => ("+".to_string(), "+".to_string()),
+        _ => (
+            glyphs::render("├").into_owned(),
+            glyphs::render("┤").into_owned(),
+        ),
+    };
+    let border = if theme.is_terminal() {
+        theme.dim()
+    } else {
+        Style::new().fg(theme.border)
+    };
+    // As wide as the transcript, up to a header's width.
+    let outer = width.saturating_sub(MARGIN).clamp(24, BANNER_WIDTH);
+    let inner = outer - 4;
+    let edge = |left: &str, right: &str, title: Option<&str>| {
+        let mut spans = vec![
+            Span::raw(" ".repeat(MARGIN)),
+            Span::styled(left.to_string(), border),
+        ];
+        let mut used = 2;
+        if let Some(title) = title {
+            spans.push(Span::styled(
+                format!(" {title} "),
+                theme.text().add_modifier(Modifier::BOLD),
+            ));
+            used += text_width(title) + 2;
+        }
+        spans.push(Span::styled(
+            set.horizontal_top.repeat(outer.saturating_sub(used)),
+            border,
+        ));
+        spans.push(Span::styled(right.to_string(), border));
+        let mut line = Wrapped::line(spans);
+        line.bare = true;
+        line
+    };
+    // A line in the box: `lead` (a label, or nothing) and the text, with
+    // the box's sides; the copy starts after the lead.
+    let boxed = |lead: Span<'static>, text: Vec<Span<'static>>, join: Join| {
+        let lead_width = text_width(&lead.content);
+        let used = lead_width
+            + text
+                .iter()
+                .map(|span| text_width(&span.content))
+                .sum::<usize>();
+        let pad = inner.saturating_sub(used);
+        let mut spans = vec![
+            Span::raw(" ".repeat(MARGIN)),
+            Span::styled(format!("{} ", set.vertical_left), border),
+            lead,
+        ];
+        spans.extend(text);
+        spans.push(Span::raw(" ".repeat(pad)));
+        spans.push(Span::styled(format!(" {}", set.vertical_right), border));
+        Wrapped {
+            spans,
+            join,
+            skip: MARGIN + 2 + lead_width,
+            tail: pad + 2,
+            bare: false,
+            whole: None,
+        }
+    };
+    let value_width = inner.saturating_sub(BANNER_LABELS).max(1);
+    // A row's value, shortened to fit: a copy of the row takes it whole.
+    let row = |label: &str, value: &str, shown: String| {
+        let mut line = boxed(
+            Span::styled(format!("{label:<BANNER_LABELS$}"), theme.dim()),
+            vec![Span::styled(shown.clone(), theme.text())],
+            Join::Break,
+        );
+        if shown != value {
+            line.whole = Some(value.to_string());
+        }
+        line
+    };
+    let mut lines = vec![edge(set.top_left, set.top_right, Some("fin"))];
+    lines.push(row(
+        "Model",
+        &banner.model,
+        cut_end(&banner.model, value_width),
+    ));
+    lines.push(row(
+        "Workers",
+        &banner.workers,
+        cut_end(&banner.workers, value_width),
+    ));
+    lines.push(row(
+        "Workspace",
+        &banner.workspace,
+        cut_middle(&banner.workspace, value_width),
+    ));
+    lines.push(row(
+        "Session",
+        &banner.session,
+        cut_end(&banner.session, value_width),
+    ));
+    if let Some(project) = &banner.project {
+        lines.push(row("Project", project, cut_end(project, value_width)));
+    }
+    if !banner.tools.is_empty() {
+        let tools = banner.tools.join(" · ");
+        let spans = [Span::styled(tools, theme.text())];
+        // Tools may take more than a line: under their value.
+        for (n, line) in wrap::wrap_lines(&spans, value_width, 0)
+            .into_iter()
+            .enumerate()
+        {
+            let label = if n == 0 { "Tools" } else { "" };
+            lines.push(boxed(
+                Span::styled(format!("{label:<BANNER_LABELS$}"), theme.dim()),
+                line.spans,
+                line.join,
+            ));
+        }
+    }
+    if !banner.notes.is_empty() {
+        lines.push(edge(&tee_left, &tee_right, None));
+        for (note, level) in &banner.notes {
+            let style = match level {
+                Some(Level::Warn) => theme.warning(),
+                Some(Level::Error) => theme.error(),
+                _ => theme.dim(),
+            };
+            let spans = [Span::styled(note.clone(), style)];
+            for line in wrap::wrap_lines(&spans, inner, 0) {
+                lines.push(boxed(Span::raw(""), line.spans, line.join));
+            }
+        }
+    }
+    lines.push(edge(set.bottom_left, set.bottom_right, None));
+    lines
+}
+
+/// `text` in `width` columns, cut at its end with an ellipsis.
+fn cut_end(text: &str, width: usize) -> String {
+    if text_width(text) <= width {
+        return text.to_string();
+    }
+    let mut cut = String::new();
+    let mut used = 0;
+    for c in text.chars() {
+        let w = wrap::char_width(c);
+        if used + w + 1 > width {
+            break;
+        }
+        cut.push(c);
+        used += w;
+    }
+    cut + &glyphs::render("…")
+}
+
+/// `text` in `width` columns, cut in its middle with an ellipsis: a path
+/// keeps its start and its end (the folder that matters).
+fn cut_middle(text: &str, width: usize) -> String {
+    if text_width(text) <= width {
+        return text.to_string();
+    }
+    let chars: Vec<char> = text.chars().collect();
+    let room = width.saturating_sub(1);
+    let head = room / 2;
+    let tail = room - head;
+    let start: String = chars.iter().take(head).collect();
+    let end: String = chars[chars.len().saturating_sub(tail)..].iter().collect();
+    format!("{start}{}{end}", glyphs::render("…"))
 }
 
 /// What the user's text became, when it isn't the usual (a new turn).
@@ -1541,6 +1764,55 @@ mod tests {
         assert!(t.selection.is_some());
         rows(&mut t, &filter, 26, 12);
         assert!(t.selection.is_none());
+    }
+
+    /// The banner is a box that fits the screen: its long path cut in the
+    /// middle, its notes under a rule; a copy takes the values and notes,
+    /// not the box or the labels.
+    #[test]
+    fn the_banner_is_a_box_whose_copy_is_its_values() {
+        let mut t = Transcript::new();
+        t.banner = Some(Banner {
+            model: "Claude Opus 5.5 (xhigh)".into(),
+            workers: "parallel workers".into(),
+            workspace: format!("/home/someone/{}/project", "deep/".repeat(20)),
+            session: "20261014-101010-abcd".into(),
+            project: Some("AGENTS.md".into()),
+            tools: vec!["1 skill".into()],
+            notes: vec![("Outside access is on.".into(), Some(Level::Warn))],
+        });
+        let filter = full();
+        let screen = rows(&mut t, &filter, 80, 14);
+        assert_eq!(screen[0], format!("  ┌ fin {}┐", "─".repeat(71)));
+        assert_eq!(
+            screen[1],
+            format!("  │ Model      Claude Opus 5.5 (xhigh){} │", " ".repeat(40))
+        );
+        assert!(
+            screen[3].starts_with("  │ Workspace  /home/someone/deep/"),
+            "{screen:?}"
+        );
+        assert!(screen[3].contains("…") && screen[3].ends_with("/project │"));
+        assert!(screen.iter().all(|row| text_width(row) <= 80));
+        assert_eq!(screen[7], format!("  ├{}┤", "─".repeat(76)));
+        assert!(screen[8].starts_with("  │ Outside access is on."));
+        assert_eq!(screen[9], format!("  └{}┘", "─".repeat(76)));
+        let (from, to) = (t.point_at(0, 0).unwrap(), t.point_at(79, 9).unwrap());
+        t.select(from, to, &filter);
+        let copied = t.selected_text(&filter, &Theme::terminal()).unwrap();
+        // (The path whole, as it is, not as the screen shortens it.)
+        let path = format!("/home/someone/{}/project", "deep/".repeat(20));
+        assert!(
+            copied.starts_with(&format!(
+                "Claude Opus 5.5 (xhigh)\nparallel workers\n{path}\n"
+            )),
+            "{copied}"
+        );
+        assert!(
+            copied.ends_with("20261014-101010-abcd\nAGENTS.md\n1 skill\nOutside access is on."),
+            "{copied}"
+        );
+        assert!(!copied.contains('│') && !copied.contains("Model"));
     }
 
     /// While a drag holds the view, output that comes doesn't move the

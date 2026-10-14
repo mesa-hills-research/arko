@@ -643,17 +643,14 @@ async fn run(args: Args) -> Result<ExitCode, String> {
                             .main
                             .handover_at
                             .unwrap_or(harness.settings.handover_at),
+                        // (With what fin said before the screen opened.)
+                        banner: harness.header(std::mem::take(&mut *lock(&STARTUP_NOTES))),
                     },
                     &output,
                 )
             })
             .flatten();
-        harness.banner(new);
-        if screen.is_some() {
-            for note in std::mem::take(&mut *lock(&STARTUP_NOTES)) {
-                harness.feed.notice(Level::Info, &note);
-            }
-        }
+        harness.banner(new, screen.is_some());
         if let Some(bind) = remote_bind {
             harness.start_remote(bind).await;
         }
@@ -708,7 +705,7 @@ async fn run(args: Args) -> Result<ExitCode, String> {
 }
 
 /// What fin said before the session started (the default model's note):
-/// the full-screen view opens over it, so its opening lines say it again.
+/// the full-screen view opens over it, so its banner says it again.
 static STARTUP_NOTES: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
 /// The working directory the flags name, made absolute.
@@ -1355,7 +1352,71 @@ impl Harness {
         Ok(())
     }
 
-    fn banner(&self, new: bool) {
+    /// What the full-screen view's banner shows: the session's top-level
+    /// facts, and its notes (`notes` first: what fin said before the
+    /// session started).
+    fn header(&self, notes: Vec<String>) -> tui::Banner {
+        let mut tools = Vec::new();
+        tools.extend(self.mcp.summary());
+        let mut notes: Vec<(String, Option<Level>)> =
+            notes.into_iter().map(|note| (note, None)).collect();
+        match skills::list(&self.skill_folders, &self.settings.workspace) {
+            Ok(skills) => {
+                let count = skills.on_demand_skills.len() + skills.auto_loaded_skills.len();
+                if count > 0 {
+                    tools.push(format!(
+                        "{count} skill{}",
+                        if count == 1 { "" } else { "s" }
+                    ));
+                }
+            }
+            Err(error) => notes.push((
+                format!("The skills couldn't be read: {error}"),
+                Some(Level::Warn),
+            )),
+        }
+        tools.extend(self.indexes.as_ref().and_then(|indexes| indexes.summary()));
+        if let Some(crew) = &self.crew
+            && !crew.is_empty()
+        {
+            notes.push((
+                "The session's workers are kept. /workers lists them.".to_string(),
+                None,
+            ));
+        }
+        if let Some(note) = &self.unoffered {
+            notes.push((note.clone(), Some(Level::Warn)));
+        }
+        if self.outside.is_on() {
+            notes.push((
+                "Outside access is on: the agents may change files outside the working directory. /outside off turns it off."
+                    .to_string(),
+                Some(Level::Warn),
+            ));
+        }
+        tui::Banner {
+            model: self.settings.describe(&self.settings.main),
+            workers: self.workers_summary(),
+            workspace: self.settings.workspace.display().to_string(),
+            session: self.session.id.clone(),
+            project: self.project.as_ref().map(|(name, _)| name.clone()),
+            tools,
+            notes,
+        }
+    }
+
+    /// The session's top-level facts at the line prompt (`boxed`: the
+    /// full-screen view draws them as its banner instead), then the start
+    /// of a new conversation or a resumed one.
+    fn banner(&self, new: bool, boxed: bool) {
+        if !boxed {
+            self.loose_banner();
+        }
+        self.banner_end(new);
+    }
+
+    /// The facts as lines, as the line prompt shows them.
+    fn loose_banner(&self) {
         let out = &self.output;
         out.line(&format!(
             "{} {} · {}",
@@ -1404,6 +1465,11 @@ impl Harness {
         if self.outside.is_on() {
             out.line(&out.warn(&self.outside.describe()));
         }
+    }
+
+    /// A new conversation's hint, or a resumed one's history and notice.
+    fn banner_end(&self, new: bool) {
+        let out = &self.output;
         if new {
             out.echo(&out.dim(
                 "Type a message (end a line with \\ to continue it). While the agent works, what you type adds to its task, and Ctrl-C stops the turn. /help lists the commands.",
