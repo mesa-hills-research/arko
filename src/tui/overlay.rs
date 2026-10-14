@@ -152,13 +152,13 @@ pub const KEYS: &[(&str, &str)] = &[
     ),
     (
         "↑ ↓",
-        "earlier messages, from the first or last line; ↓ goes on to the agent list",
+        "earlier messages from the first or last line, then ↓ goes to the agent list",
     ),
     ("Tab", "complete a command in the menu"),
     ("Ctrl+A E B F", "line start, end, back, forward (readline)"),
     (
         "Ctrl+K U W Y",
-        "cut to end, to start, word back; paste the cut",
+        "cut to the end, to the start or a word back, and paste the cut",
     ),
     (
         "PgUp PgDn",
@@ -177,10 +177,7 @@ pub const KEYS: &[(&str, &str)] = &[
     ),
     ("Ctrl+D", "quit, when the box is empty (as /exit)"),
     ("Ctrl+L", "draw the screen again"),
-    (
-        "Click",
-        "select a message to copy; a worker's line opens it",
-    ),
+    ("Click", "select a message to copy, or open a worker's line"),
 ];
 
 fn help(frame: &mut Frame, app: &App, area: Rect, scroll: usize) {
@@ -226,7 +223,7 @@ fn help(frame: &mut Frame, app: &App, area: Rect, scroll: usize) {
     }
     lines.push(Line::default());
     lines.push(Line::from(Span::styled(
-        "Shift-drag selects text natively in most terminals while the mouse scrolls; /settings turns the mouse off.",
+        "Shift-drag selects text in most terminals while the mouse scrolls. /settings turns the mouse off.",
         theme.dim(),
     )));
     let height = (lines.len() as u16 + 4).min(area.height);
@@ -298,9 +295,9 @@ fn settings(frame: &mut Frame, app: &App, area: Rect, selected: usize) {
                     View::ALL.iter().position(|v| *v == app.view).unwrap_or(0),
                 ),
                 match app.view {
-                    View::Full => "Everything, the workers' calls too.",
-                    View::Quiet => "The main agent's work; a line for each worker.",
-                    View::Messages => "What was said; a line counts each turn's tools.",
+                    View::Full => "Everything, with the workers' calls inline.",
+                    View::Quiet => "Each worker as one line that updates in place.",
+                    View::Messages => "Just the messages, with a count of each turn's tool calls.",
                 }
                 .to_string(),
             ),
@@ -314,7 +311,7 @@ fn settings(frame: &mut Frame, app: &App, area: Rect, selected: usize) {
                 if app.depth == Depth::Ansi16 {
                     "This terminal shows 16 colours: its own are used.".to_string()
                 } else {
-                    "Enter opens the themes; moving through them previews each.".to_string()
+                    "Enter opens the themes, and moving through them previews each.".to_string()
                 },
             ),
             SettingsRow::Mouse => (
@@ -322,9 +319,9 @@ fn settings(frame: &mut Frame, app: &App, area: Rect, selected: usize) {
                 "Mouse",
                 choices(theme, &["on", "off"], usize::from(!app.mouse)),
                 if app.mouse {
-                    "The wheel scrolls; click selects; Shift-drag selects text.".to_string()
+                    "The wheel scrolls and a click selects a message. Shift-drag selects text.".to_string()
                 } else {
-                    "The terminal selects text; PgUp and PgDn scroll.".to_string()
+                    "The terminal selects text, and PgUp and PgDn scroll.".to_string()
                 },
             ),
             SettingsRow::Outside => (

@@ -113,7 +113,7 @@ pub const COMMANDS: &[Command] = &[
     Command {
         name: "/exit",
         args: "",
-        about: "quit (Ctrl-D too); the session is saved",
+        about: "quit, with the session saved (Ctrl-D too)",
         aliases: &["/quit"],
         runs: Runs::Session,
     },

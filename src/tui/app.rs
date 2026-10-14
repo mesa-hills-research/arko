@@ -241,7 +241,7 @@ impl App {
             && self.answered != Some(question.id)
             && !self.editor.is_empty()
         {
-            self.say("The question was answered elsewhere; your text is a message now");
+            self.say("The question was answered elsewhere. Your text is a message now");
         }
         self.activity = activity;
         !self.focused && (asked || finished)

@@ -110,7 +110,7 @@ pub fn start(setup: Setup, output: &Arc<Output>) -> Option<Screen> {
         Err(error) => {
             close();
             eprintln!(
-                "fin: the full-screen view couldn't start ({error}); here is the line prompt"
+                "fin: the full-screen view couldn't start ({error}), so fin uses the line prompt"
             );
             if let Some(printer) = ui::spawn_input(history, setup.input.clone()) {
                 output.attach(printer);
