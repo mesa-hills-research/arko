@@ -313,7 +313,7 @@ impl Embedder for VoyageEmbedder {
                     attempt += 1;
                     let wait = self.backoff.next_delay(attempt, error.retry_after());
                     log::warn!(
-                        "Voyage embedding request failed ({error}); retry {attempt} in {:.1} s",
+                        "Voyage embedding request failed ({error}), retry {attempt} in {:.1} s",
                         wait.as_secs_f64()
                     );
                     if self.pause(wait) {

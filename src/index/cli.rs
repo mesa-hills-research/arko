@@ -197,7 +197,7 @@ fn one(indexes: &Indexes, index: Option<&str>, cwd: &Path) -> Result<Found, Stri
             .map(|found| found.manifest.name.as_str())
             .collect();
         return Err(format!(
-            "several indexes cover {}: {}; name one",
+            "several indexes cover {} ({}): name one",
             cwd.display(),
             names.join(", ")
         ));
@@ -361,7 +361,7 @@ async fn run(indexes: &Arc<Indexes>, cmd: IndexCommand, cwd: &Path) -> Result<Ex
             .await?;
             match built {
                 Some(record) => println!(
-                    "Rebuilt {}: {} chunks in {} files ({:.1} s); {}.",
+                    "Rebuilt {}: {} chunks in {} files ({:.1} s). {}.",
                     found.manifest.name,
                     fmt_count(record.chunks),
                     fmt_count(record.files),
@@ -387,7 +387,7 @@ async fn run(indexes: &Arc<Indexes>, cmd: IndexCommand, cwd: &Path) -> Result<Ex
             let found = one(indexes, index.as_deref(), cwd)?;
             if !estimate && !indexes.has_key() {
                 return Err(format!(
-                    "embedding needs {} (fin reads it from its .env; see fin --setup)",
+                    "embedding needs {}, which fin reads from its .env (see fin --setup)",
                     embed::KEY_NAME
                 ));
             }
@@ -515,7 +515,7 @@ async fn embed_with_progress(
     let result = blocking(move || {
         let progress = move |update: &EmbedProgress| {
             eprint!(
-                "\rembedding: {}/{} texts, {} tokens ({}); {}/{} chunks have vectors   ",
+                "\rembedding: {}/{} texts, {} tokens ({}), and {}/{} chunks have vectors   ",
                 fmt_count(update.texts),
                 fmt_count(update.total),
                 fmt_count(update.tokens),

@@ -148,7 +148,7 @@ pub fn open_changes(
                 OpenError::Busy => return Err(OpenError::Busy),
                 OpenError::Failed(error) => {
                     log::warn!(
-                        "index: inotify watcher for {} failed ({error}); polling instead",
+                        "index: inotify watcher for {} failed ({error}), polling instead",
                         root.display()
                     );
                 }

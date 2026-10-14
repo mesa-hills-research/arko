@@ -647,7 +647,7 @@ pub fn format_status(reports: &[IndexReport], spent: Option<(u64, f64)>) -> Stri
         ));
         match (report.chunks, &manifest.last_build) {
             (Some(chunks), Some(build)) => out.push_str(&format!(
-                "  {} chunks in {} files; built {} ({:.1} s)\n",
+                "  {} chunks in {} files, built {} ({:.1} s)\n",
                 fmt_count(chunks),
                 fmt_count(build.files),
                 build.at.map(fmt_ago).unwrap_or_else(|| "earlier".into()),
@@ -677,12 +677,12 @@ pub fn format_status(reports: &[IndexReport], spent: Option<(u64, f64)>) -> Stri
                 line.push_str(&format!(" (no {}: lexical search only)", embed::KEY_NAME));
             } else if manifest.cap_reached {
                 line.push_str(&format!(
-                    " (the last run stopped at its cap of {} tokens; index_manage action=embed continues)",
+                    " (the last run stopped at its cap of {} tokens, and index_manage action=embed continues)",
                     fmt_count(manifest.max_embed_tokens)
                 ));
             }
             line.push_str(&format!(
-                "; spent {} tokens ({}) in all",
+                ", with {} tokens ({}) spent in all",
                 fmt_count(manifest.embed_tokens),
                 fmt_dollars(manifest.embed_cost)
             ));
@@ -693,12 +693,12 @@ pub fn format_status(reports: &[IndexReport], spent: Option<(u64, f64)>) -> Stri
             }
         }
         let mut monitor = format!(
-            "  monitor: {}; {}",
+            "  monitor: {}, {}",
             if manifest.monitor { "on" } else { "off" },
             report.watch.describe()
         );
         if report.pending_changes > 0 {
-            monitor.push_str("; changes waiting for a rebuild");
+            monitor.push_str(", with changes waiting for a rebuild");
         }
         out.push_str(&monitor);
         out.push('\n');

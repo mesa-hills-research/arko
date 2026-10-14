@@ -386,7 +386,7 @@ pub fn validate_root(
         }
         if home.starts_with(&root) {
             return Err(format!(
-                "refusing to index {}: it contains the home directory; index a project folder",
+                "refusing to index {}, which contains the home directory: index a project folder",
                 root.display()
             ));
         }

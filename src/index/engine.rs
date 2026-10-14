@@ -723,7 +723,7 @@ impl Indexes {
                         .map(|found| found.manifest.name.as_str())
                         .collect();
                     return Err(format!(
-                        "{} has several indexes: {}; name one",
+                        "{} has several indexes ({}): name one",
                         many[0].manifest.root.display(),
                         names.join(", ")
                     ));
@@ -738,7 +738,7 @@ impl Indexes {
             format!("no index named {name:?}: there are no indexes yet (create one)")
         } else {
             format!(
-                "no index named {name:?}; the indexes are: {}",
+                "no index named {name:?}: the indexes are {}",
                 names.join(", ")
             )
         })
@@ -763,7 +763,7 @@ impl Indexes {
         let all = self.all();
         let mut message = format!("no index covers {}", cwd.display());
         if all.is_empty() {
-            message.push_str("; there are no indexes yet: create one with index_create");
+            message.push_str(": there are no indexes yet (create one with index_create)");
         } else {
             let names: Vec<String> = all
                 .iter()
@@ -776,7 +776,7 @@ impl Indexes {
                 })
                 .collect();
             message.push_str(&format!(
-                "; name one of: {}; or create one with index_create",
+                ": create one with index_create, or name one of {}",
                 names.join(", ")
             ));
         }
@@ -1255,7 +1255,7 @@ impl Indexes {
                         if !busy_reported {
                             busy_reported = true;
                             self.event(&format!(
-                                "{name}: another fin process is watching it; this one takes over when it stops"
+                                "{name}: another fin process is watching it, and this one takes over when it stops"
                             ));
                         }
                         reopen_at = Instant::now() + self.timing.busy_retry;
@@ -1295,7 +1295,7 @@ impl Indexes {
                     }
                     Ok(None) => {}
                     Err(error) => {
-                        self.event(&format!("{name}: watcher failed: {error}; reopening"));
+                        self.event(&format!("{name}: watcher failed ({error}), reopening"));
                         lock(&entry.live).watch = WatchState::Failed(error);
                         changes = None;
                         reopen_at = Instant::now() + Duration::from_secs(5);
@@ -1455,7 +1455,7 @@ impl Indexes {
                 {
                     match self.run_embed(entry, FRESHEN_EMBED_TOKENS, false, None, None) {
                         Ok(summary) if summary.cap_reached => notes.push(format!(
-                            "{name}: {}/{} chunks have vectors; the rest are found by keywords until an interactive fin monitors it (or `fin index embed`)",
+                            "{name}: {}/{} chunks have vectors, and the rest are found by keywords until an interactive fin monitors it (or `fin index embed`)",
                             fmt_count(summary.embedded),
                             fmt_count(summary.docs)
                         )),
@@ -1584,7 +1584,7 @@ impl Indexes {
             Ok(status) => status,
             Err(error) => {
                 output.notes.push(format!(
-                    "{name}: not built yet ({error}); index_manage action=rebuild builds it"
+                    "{name}: not built yet ({error}), and index_manage action=rebuild builds it"
                 ));
                 return Ok(Vec::new());
             }
@@ -1604,7 +1604,7 @@ impl Indexes {
                 )),
                 None => None,
                 Some(info) if !self.backend.can_embed(&info.embedder) => Some(format!(
-                    "semantic search needs {} (fin reads it from its .env; see fin --setup)",
+                    "semantic search needs {}, which fin reads from its .env (see fin --setup)",
                     embed::KEY_NAME
                 )),
                 Some(_) if vectors == 0 => Some(format!(
@@ -1635,12 +1635,12 @@ impl Indexes {
             let why = if status.embedding {
                 "embedding in progress"
             } else if manifest.cap_reached {
-                "the last embedding run stopped at its token cap; index_manage action=embed continues"
+                "the last embedding run stopped at its token cap, and index_manage action=embed continues"
             } else {
                 "the rest are queued"
             };
             output.notes.push(format!(
-                "{name}: {}/{} chunks have vectors ({why}); the others are found by keywords only",
+                "{name}: {}/{} chunks have vectors ({why}). The others are found by keywords only",
                 fmt_count(vectors),
                 fmt_count(info.docs)
             ));
@@ -1649,7 +1649,7 @@ impl Indexes {
             let live = lock(&entry.live);
             if live.dirty && live.changes > 0 {
                 output.notes.push(format!(
-                    "{name}: files changed since the last build; a rebuild is pending ({})",
+                    "{name}: files changed since the last build, so a rebuild is pending ({})",
                     live.watch.describe()
                 ));
             }
@@ -1668,7 +1668,7 @@ impl Indexes {
             Ok(results) => results,
             Err(error) if mode != Mode::Lexical => {
                 output.notes.push(format!(
-                    "{name}: semantic search failed ({error}); searched by keywords"
+                    "{name}: semantic search failed ({error}), so it searched by keywords"
                 ));
                 mode = Mode::Lexical;
                 let request = SearchRequest::new(query.text)
@@ -1992,7 +1992,7 @@ impl Indexes {
             Action::Rebuild => {
                 let record = self.build(&entry, &found.manifest, Caller::Interactive)?;
                 let mut text = format!(
-                    "Rebuilt {name}: {} chunks ({:.1} s); {}.",
+                    "Rebuilt {name}: {} chunks ({:.1} s). {}.",
                     fmt_count(record.chunks),
                     record.seconds,
                     record.summary
@@ -2009,7 +2009,7 @@ impl Indexes {
             Action::Embed { max_tokens, wait } => {
                 if !self.backend.has_key() {
                     return Err(format!(
-                        "embedding needs {} (fin reads it from its .env; see fin --setup)",
+                        "embedding needs {}, which fin reads from its .env (see fin --setup)",
                         embed::KEY_NAME
                     ));
                 }
@@ -2045,7 +2045,7 @@ impl Indexes {
                         let _ = thread.join();
                     }
                     return Ok(format!(
-                        "{name} is no longer monitored; it is brought up to date when searched."
+                        "{name} is no longer monitored, so it is brought up to date when searched."
                     ));
                 }
                 if self.monitor {
@@ -2064,7 +2064,7 @@ impl Indexes {
                 std::fs::remove_dir_all(&found.layout.dir)
                     .map_err(|error| format!("{}: {error}", found.layout.dir.display()))?;
                 Ok(format!(
-                    "Removed the index {name} of {}; the indexed files are untouched.",
+                    "Removed the index {name} of {}. The indexed files are untouched.",
                     found.manifest.root.display()
                 ))
             }
@@ -2195,7 +2195,7 @@ fn changed_since(file: &Path, built: Option<DateTime<Utc>>) -> bool {
 impl EmbedSummary {
     pub fn line(&self) -> String {
         let mut line = format!(
-            "embedded {} texts for {} tokens ({}); {}/{} chunks have vectors",
+            "embedded {} texts for {} tokens ({}), and {}/{} chunks have vectors",
             fmt_count(self.new),
             fmt_count(self.tokens),
             fmt_dollars(self.dollars),
@@ -2204,16 +2204,16 @@ impl EmbedSummary {
         );
         if self.cap_reached {
             line.push_str(&format!(
-                "; stopped at the cap of {} tokens (~{} tokens left: embed again with a higher max_tokens to continue)",
+                ". The run stopped at the cap of {} tokens (~{} tokens left: embed again with a higher max_tokens to continue)",
                 fmt_count(self.cap),
                 fmt_count(self.not_embedded_tokens)
             ));
         } else if self.stopped {
-            line.push_str("; stopped before it finished (a later run continues)");
+            line.push_str(". The run stopped before it finished (a later run continues)");
         }
         if self.too_long > 0 {
             line.push_str(&format!(
-                "; {} chunks are too long to embed (found by keywords)",
+                ". {} chunks are too long to embed (found by keywords)",
                 fmt_count(self.too_long)
             ));
         }
@@ -2231,7 +2231,7 @@ impl Estimate {
             );
         }
         format!(
-            "embedding {} chunks would take ~{} tokens (~{} with {}); {}/{} chunks have vectors",
+            "embedding {} chunks would take ~{} tokens (~{} with {}), and {}/{} chunks have vectors",
             fmt_count(self.texts),
             fmt_count(self.tokens),
             fmt_dollars(self.dollars),
