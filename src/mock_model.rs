@@ -70,6 +70,11 @@ impl ModelServer {
         Self { url, task }
     }
 
+    /// Where it listens: `http://127.0.0.1:PORT`.
+    pub fn url(&self) -> &str {
+        &self.url
+    }
+
     pub fn client(&self) -> LLMClient {
         LLMClient::new().with_openai_client(
             arko_ai::providers::openai::OpenAIClient::new("test-key").with_base_url(&self.url),

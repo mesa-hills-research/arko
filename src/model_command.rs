@@ -191,9 +191,9 @@ impl Harness {
     }
 
     /// An error with what `model` needs when this session can't reach it:
-    /// its client (which has every provider whose credential was there as
-    /// fin started) has no client for its provider, or Claude Code isn't
-    /// installed and signed in.
+    /// its client has no client for its provider (whose key wasn't there as
+    /// fin started nor added with `/keys`, or was removed), or Claude Code
+    /// isn't installed and signed in.
     fn can_reach(&self, model: &Model) -> Result<(), String> {
         match self.needs(model) {
             Some(needs) => Err(providers::needs_text(&providers::model_name(model), &needs)),
@@ -207,9 +207,17 @@ impl Harness {
             Provider::ClaudeCode => {
                 providers::missing_credential(&providers::model_name(model), None)
             }
-            provider if self.client.has_provider(provider) => None,
+            provider if self.keys.reaches(provider) => None,
             provider => Some(providers::credential_name(provider).to_string()),
         }
+    }
+
+    /// How the session reaches OpenAI models when its models don't say: as
+    /// its client does, else as a new session would.
+    fn openai_auth(&self) -> Option<OpenAiAuth> {
+        self.keys
+            .openai_auth()
+            .or_else(|| providers::spare_openai_auth(None))
     }
 
     /// The main agent's model, before the conversation starts: the agents
@@ -218,7 +226,7 @@ impl Harness {
         let mut settings = self.settings.clone();
         let follow = settings.workers_follow_main();
         if model.provider == Provider::OpenAI && settings.openai_auth.is_none() {
-            settings.openai_auth = providers::spare_openai_auth(None);
+            settings.openai_auth = self.openai_auth();
         }
         let old_main = settings.main.clone();
         settings.main = switched(&old_main, model, effort, settings.openai_auth);
@@ -261,7 +269,7 @@ impl Harness {
         settings.worker = match model {
             Some((model, effort)) => {
                 if model.provider == Provider::OpenAI && settings.openai_auth.is_none() {
-                    settings.openai_auth = providers::spare_openai_auth(None);
+                    settings.openai_auth = self.openai_auth();
                 }
                 switched(&settings.worker, model, effort, settings.openai_auth)
             }
@@ -428,20 +436,11 @@ impl Harness {
             started: self.conversation_started(),
             banner_model: self.settings.describe(&self.settings.main),
             banner_workers: self.workers_summary(),
-            reachable: [
-                Provider::Anthropic,
-                Provider::OpenAI,
-                Provider::Google,
-                Provider::OpenRouter,
-            ]
-            .iter()
-            .filter(|provider| self.client.has_provider(provider))
-            .map(|provider| providers::provider_key(provider).to_string())
-            .collect(),
+            reachable: self.keys.reachable(),
             openai_auth: self
                 .settings
                 .openai_auth
-                .or_else(|| providers::spare_openai_auth(None))
+                .or_else(|| self.openai_auth())
                 .map(|auth| auth.describe().to_string()),
             has_workers: self.settings.max_workers > 0 && self.crew.is_some(),
         };

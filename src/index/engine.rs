@@ -22,7 +22,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -385,7 +385,9 @@ pub struct Indexes {
     data_root: PathBuf,
     workspace: PathBuf,
     home: Option<PathBuf>,
-    backend: Backend,
+    /// Where embeddings come from: the Voyage key changes while fin runs
+    /// ([`Indexes::set_voyage_key`]).
+    backend: RwLock<Backend>,
     monitor: bool,
     handle: Handle,
     timing: Timing,
@@ -402,7 +404,7 @@ impl std::fmt::Debug for Indexes {
         f.debug_struct("Indexes")
             .field("data_root", &self.data_root)
             .field("workspace", &self.workspace)
-            .field("backend", &self.backend)
+            .field("backend", &self.backend())
             .field("monitor", &self.monitor)
             .finish_non_exhaustive()
     }
@@ -452,7 +454,7 @@ impl Indexes {
             data_root: data_root.to_path_buf(),
             workspace,
             home,
-            backend,
+            backend: RwLock::new(backend),
             monitor,
             handle,
             timing,
@@ -507,7 +509,39 @@ impl Indexes {
 
     /// Whether a Voyage key is set.
     pub fn has_key(&self) -> bool {
-        self.backend.has_key()
+        self.backend().has_key()
+    }
+
+    /// Where embeddings come from now.
+    fn backend(&self) -> Backend {
+        self.backend
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Sets the Voyage key (none: lexical indexes and search only) for what
+    /// starts from now on: searches, builds and embedding runs. With a key,
+    /// the watched indexes that lack vectors start embedding, as when their
+    /// watchers started.
+    pub fn set_voyage_key(self: &Arc<Self>, key: Option<String>) {
+        *self
+            .backend
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Backend::voyage(key);
+        if !self.has_key() {
+            return;
+        }
+        let entries: Vec<Arc<Entry>> = lock(&self.entries).values().cloned().collect();
+        for entry in entries {
+            let watching = matches!(lock(&entry.live).watch, WatchState::Watching { .. });
+            if watching
+                && index2::status(&entry.layout.state()).is_ok()
+                && Self::embedding_incomplete(&entry)
+            {
+                self.request_embed(&entry, None, false);
+            }
+        }
     }
 
     /// One line for fin's banner: the indexes of the workspace, e.g.
@@ -542,7 +576,7 @@ impl Indexes {
             if parts.len() == 1 { "index" } else { "indexes" },
             parts.join(", ")
         );
-        if !self.backend.has_key() && related.iter().any(|found| found.manifest.embed) {
+        if !self.backend().has_key() && related.iter().any(|found| found.manifest.embed) {
             line.push_str(&format!(" · semantic search needs {}", embed::KEY_NAME));
         }
         Some(line)
@@ -888,7 +922,7 @@ impl Indexes {
         // ones; a build without a model would remove them.
         let embedder = if manifest.embed {
             let descriptor = Backend::descriptor(&manifest.model)?;
-            Some(self.backend.embedder(&descriptor, &self.handle, None)?)
+            Some(self.backend().embedder(&descriptor, &self.handle, None)?)
         } else {
             None
         };
@@ -958,7 +992,7 @@ impl Indexes {
             stop.stop("fin is exiting");
         }
         let embedder = self
-            .backend
+            .backend()
             .embedder(&info.embedder, &self.handle, Some(stop.clone()))?;
         let model = info.embedder.model.clone();
         let billed = AtomicU64::new(0);
@@ -1052,7 +1086,7 @@ impl Indexes {
         cap: Option<u64>,
         explicit: bool,
     ) -> bool {
-        if self.stopping() || !self.backend.has_key() {
+        if self.stopping() || !self.backend().has_key() {
             return false;
         }
         let Ok(manifest) = store::load_manifest(&entry.layout.dir) else {
@@ -1449,7 +1483,7 @@ impl Indexes {
                 if self.monitor {
                     self.request_embed(entry, None, false);
                 } else if manifest.embed
-                    && self.backend.has_key()
+                    && self.backend().has_key()
                     && !manifest.cap_reached
                     && Self::embedding_incomplete(entry)
                 {
@@ -1603,8 +1637,8 @@ impl Indexes {
                     "{name} has no embeddings (index_manage action=embed adds them)"
                 )),
                 None => None,
-                Some(info) if !self.backend.can_embed(&info.embedder) => Some(format!(
-                    "semantic search needs {}, which fin reads from its .env (see fin --setup)",
+                Some(info) if !self.backend().can_embed(&info.embedder) => Some(format!(
+                    "semantic search needs {}, which the user can add with /keys",
                     embed::KEY_NAME
                 )),
                 Some(_) if vectors == 0 => Some(format!(
@@ -1623,7 +1657,7 @@ impl Indexes {
             let usable = vectors > 0
                 && info
                     .as_ref()
-                    .is_some_and(|info| self.backend.can_embed(&info.embedder));
+                    .is_some_and(|info| self.backend().can_embed(&info.embedder));
             if !usable {
                 mode = Mode::Lexical;
             }
@@ -1655,9 +1689,11 @@ impl Indexes {
             }
         }
         let embedder = match (&info, mode) {
-            (Some(info), Mode::Dense | Mode::Hybrid) => {
-                Some(self.backend.embedder(&info.embedder, &self.handle, None)?)
-            }
+            (Some(info), Mode::Dense | Mode::Hybrid) => Some(self.backend().embedder(
+                &info.embedder,
+                &self.handle,
+                None,
+            )?),
             _ => None,
         };
         let request = SearchRequest::new(query.text)
@@ -1783,7 +1819,7 @@ impl Indexes {
             pending_changes: pending,
             embed_running_here: running,
             last_embed: last,
-            has_key: self.backend.has_key(),
+            has_key: self.backend().has_key(),
         }
     }
 
@@ -1868,7 +1904,7 @@ impl Indexes {
         manifest.name = name;
         manifest.root = root.clone();
         manifest.kind = kind;
-        manifest.model = self.backend.model_for(kind);
+        manifest.model = self.backend().model_for(kind);
         manifest.embed = embed;
         manifest.rules = rules;
         manifest.monitor = args.monitor;
@@ -1938,7 +1974,7 @@ impl Indexes {
         let mut estimate = None;
         let embedding = if !manifest.embed {
             EmbedPlan::Off
-        } else if !self.backend.has_key() {
+        } else if !self.backend().has_key() {
             EmbedPlan::NoKey
         } else {
             estimate = Some(self.estimate(&entry));
@@ -2007,9 +2043,9 @@ impl Indexes {
                 Ok(format!("{name}: {}", estimate.line()))
             }
             Action::Embed { max_tokens, wait } => {
-                if !self.backend.has_key() {
+                if !self.backend().has_key() {
                     return Err(format!(
-                        "embedding needs {}, which fin reads from its .env (see fin --setup)",
+                        "embedding needs {}, which the user can add with /keys",
                         embed::KEY_NAME
                     ));
                 }

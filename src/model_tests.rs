@@ -88,7 +88,7 @@ async fn before_the_start_model_sets_the_main_agent_and_after_it_says_it_keeps_i
     // A provider the session can't reach says what it needs.
     assert!(harness.live_command("/model gemini high", Source::Terminal));
     assert!(said(&harness.feed).contains(
-        "gemini-3.1-pro-preview needs GEMINI_API_KEY, which fin reads as it starts, from the environment or a .env file."
+        "gemini-3.1-pro-preview needs GEMINI_API_KEY. /keys adds API keys."
     ));
 
     assert!(harness.live_command("/model sol high", Source::Terminal));

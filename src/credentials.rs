@@ -9,9 +9,9 @@
 //! (VOYAGE_API_KEY), which the setup screen also takes.
 //!
 //! What the screen takes is saved in fin's own `.env` (in its folder,
-//! readable only by the user) and used in this run at once. Nothing read
-//! here is put in the environment, so the commands the agents run don't
-//! see it.
+//! readable only by the user) and used in this run at once, and so is what
+//! the keys menu (`/keys`, see `keys`) takes. Nothing read here is put in the
+//! environment, so the commands the agents run don't see it.
 
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -70,9 +70,13 @@ const DOTENV_KEYS: [&str; 13] = [
     crate::remote::HOST_VARIABLE,
 ];
 
-/// What was entered on the setup screen in this run: it comes before every
-/// other source.
+/// What was entered on the setup screen or in the keys menu in this run: it
+/// comes before every other source.
 static ENTERED: Mutex<Vec<(&str, String)>> = Mutex::new(Vec::new());
+
+/// The settings removed from fin's own `.env` in this run: what it held as
+/// fin started is no longer read.
+static FORGOTTEN: Mutex<Vec<&str>> = Mutex::new(Vec::new());
 
 /// Where a setting comes from.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -82,8 +86,9 @@ pub enum Source {
     DotEnv(PathBuf),
 }
 
-/// A setting, if it is set: entered on the setup screen, else from the
-/// environment, else (the settings fin reads there) from a `.env` file.
+/// A setting, if it is set: entered on the setup screen or in the keys
+/// menu, else from the environment, else (the settings fin reads there) from
+/// a `.env` file.
 pub fn var(name: &str) -> Option<String> {
     lookup(name).map(|(value, _)| value)
 }
@@ -92,15 +97,18 @@ fn lookup(name: &str) -> Option<(String, Source)> {
     if let Some(value) = entered(name) {
         return Some((value, Source::Entered));
     }
+    // A Gemini key entered in this run comes before the older name too,
+    // which arko reads first.
+    if name == GOOGLE_KEY && entered(GEMINI_KEY).is_some() {
+        return None;
+    }
     if let Some(value) = std::env::var(name)
         .ok()
         .filter(|value| !value.trim().is_empty())
     {
         return Some((value, Source::Environment));
     }
-    dotenv()
-        .get(name)
-        .map(|(value, path)| (value.clone(), Source::DotEnv(path.clone())))
+    dotenv_entry(name).map(|(value, path)| (value, Source::DotEnv(path)))
 }
 
 fn entered(name: &str) -> Option<String> {
@@ -139,7 +147,19 @@ fn dotenv() -> &'static HashMap<&'static str, (String, PathBuf)> {
     })
 }
 
-/// fin's own `.env`, in its folder: where the setup screen saves.
+/// The `.env` setting `name` with the file it came from, unless it was
+/// removed from fin's own `.env` in this run.
+fn dotenv_entry(name: &str) -> Option<(String, PathBuf)> {
+    let (value, path) = dotenv().get(name)?;
+    let forgotten = FORGOTTEN.lock().unwrap().contains(&name);
+    if forgotten && fin_dotenv().is_ok_and(|fin| fin == *path) {
+        return None;
+    }
+    Some((value.clone(), path.clone()))
+}
+
+/// fin's own `.env`, in its folder: where the setup screen and the keys
+/// menu save.
 pub fn fin_dotenv() -> Result<PathBuf, String> {
     Ok(session::data_root()?.join(".env"))
 }
@@ -278,48 +298,247 @@ pub fn can_ask() -> bool {
     std::io::stdin().is_terminal() && std::io::stdout().is_terminal()
 }
 
-/// An API key the setup screen takes.
-struct Key {
-    name: &'static str,
+/// An API key fin takes: on the setup screen and in the keys menu.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Key {
+    /// The provider, as the keys menu names it: "Anthropic".
+    pub provider: &'static str,
+    /// The provider as `/keys add` takes it: "anthropic".
+    pub id: &'static str,
+    pub name: &'static str,
     /// What it is, with its article: "an Anthropic API key".
-    what: &'static str,
+    pub what: &'static str,
     /// Where to get one.
-    from: &'static str,
+    pub from: &'static str,
     /// How its keys start.
-    prefix: &'static str,
+    pub prefix: &'static str,
+    /// What it is for, as a sentence.
+    pub purpose: &'static str,
 }
 
-const ANTHROPIC: Key = Key {
+pub const ANTHROPIC: Key = Key {
+    provider: "Anthropic",
+    id: "anthropic",
     name: ANTHROPIC_KEY,
     what: "an Anthropic API key",
     from: "console.anthropic.com",
     prefix: "sk-ant-",
+    purpose: "For Claude models on the Anthropic API, billed per token.",
 };
-const OPENAI: Key = Key {
+pub const OPENAI: Key = Key {
+    provider: "OpenAI",
+    id: "openai",
     name: OPENAI_KEY,
     what: "an OpenAI API key",
     from: "platform.openai.com/api-keys",
     prefix: "sk-",
+    purpose: "For OpenAI models, billed per token.",
 };
-const GEMINI: Key = Key {
+pub const GEMINI: Key = Key {
+    provider: "Google Gemini",
+    id: "gemini",
     name: GEMINI_KEY,
     what: "a Gemini API key",
     from: "aistudio.google.com/apikey",
     prefix: "AIza",
+    purpose: "For Google's Gemini models, billed per token.",
 };
-const OPENROUTER: Key = Key {
+pub const OPENROUTER: Key = Key {
+    provider: "OpenRouter",
+    id: "openrouter",
     name: OPENROUTER_KEY,
     what: "an OpenRouter API key",
     from: "openrouter.ai/keys",
     prefix: "sk-or-",
+    purpose: "For the models OpenRouter serves (openrouter:<slug>), billed per token.",
 };
-const VOYAGE: Key = Key {
+pub const VOYAGE: Key = Key {
+    provider: "Voyage",
+    id: "voyage",
     name: VOYAGE_KEY,
     what: "a Voyage API key",
     from: "dashboard.voyageai.com",
     prefix: "pa-",
+    purpose: "The search indexes embed with it, to search by meaning.",
 };
-const KEYS: [&Key; 5] = [&ANTHROPIC, &OPENAI, &GEMINI, &OPENROUTER, &VOYAGE];
+/// The API keys, in the keys menu's order.
+pub const KEYS: [&Key; 5] = [&ANTHROPIC, &OPENAI, &GEMINI, &OPENROUTER, &VOYAGE];
+
+/// The key `/keys add` and `/keys remove` name: `anthropic`, `openai`,
+/// `gemini` (or `google`), `openrouter` or `voyage`.
+pub fn key_named(word: &str) -> Option<&'static Key> {
+    let word = word.trim().to_ascii_lowercase();
+    let word = if word == "google" { "gemini" } else { &word };
+    KEYS.into_iter().find(|key| key.id == word)
+}
+
+/// Where the key in use comes from, as the keys menu says it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KeySource {
+    /// fin's own `.env`, at this path: saved there on the setup screen or in
+    /// the keys menu.
+    Fin(PathBuf),
+    /// fin's environment.
+    Environment,
+    /// Another `.env` file.
+    DotEnv(PathBuf),
+}
+
+/// An API key as the keys menu shows it, without its value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeyState {
+    pub key: &'static Key,
+    /// The key in use, masked ([`masked`]); `None` when none is set.
+    pub masked: Option<String>,
+    /// The variable it is read from: GOOGLE_API_KEY for a Gemini key under
+    /// its older name.
+    pub variable: &'static str,
+    pub source: Option<KeySource>,
+}
+
+impl KeyState {
+    /// Whether the keys menu can remove it: fin saved it.
+    pub fn removable(&self) -> bool {
+        matches!(self.source, Some(KeySource::Fin(_)))
+    }
+}
+
+/// Every API key's state, in the keys menu's order.
+pub fn key_states() -> Vec<KeyState> {
+    KEYS.into_iter().map(key_state).collect()
+}
+
+/// `key`'s state now.
+pub fn key_state(key: &'static Key) -> KeyState {
+    let fin = fin_dotenv().ok();
+    match in_use(key) {
+        None => KeyState {
+            key,
+            masked: None,
+            variable: key.name,
+            source: None,
+        },
+        Some((variable, value, source)) => KeyState {
+            key,
+            masked: Some(masked(&value, key.prefix)),
+            variable,
+            source: Some(match source {
+                Source::Entered => KeySource::Fin(fin.unwrap_or_default()),
+                Source::Environment => KeySource::Environment,
+                Source::DotEnv(path) if fin.as_ref() == Some(&path) => KeySource::Fin(path),
+                Source::DotEnv(path) => KeySource::DotEnv(path),
+            }),
+        },
+    }
+}
+
+/// The value of `key` in use (for the session's model client and search
+/// indexes), if one is set.
+pub fn key_value(key: &Key) -> Option<String> {
+    in_use(key).map(|(_, value, _)| value)
+}
+
+/// The key in use for `key`: the variable it is read as, its value and
+/// where it comes from. A Gemini key is read as GOOGLE_API_KEY first, as
+/// arko reads it (unless one was entered in this run).
+fn in_use(key: &Key) -> Option<(&'static str, String, Source)> {
+    if key.name == GEMINI_KEY
+        && let Some((value, source)) = lookup(GOOGLE_KEY)
+    {
+        return Some((GOOGLE_KEY, value, source));
+    }
+    lookup(key.name).map(|(value, source)| (key.name, value, source))
+}
+
+/// `value` as fin shows a key: its provider's `prefix` (when it starts with
+/// it) and its last 4 characters, `sk-ant-…a1b2`. A short key shows no end.
+pub fn masked(value: &str, prefix: &str) -> String {
+    let start = if value.starts_with(prefix) {
+        prefix
+    } else {
+        ""
+    };
+    let count = value.chars().count();
+    if count >= start.chars().count() + 12 {
+        let end: String = value.chars().skip(count - 4).collect();
+        format!("{start}…{end}")
+    } else {
+        format!("{start}…")
+    }
+}
+
+/// Why `value` (pasted as `key`) can't be it: it has spaces, or it is
+/// another provider's key.
+pub fn check_pasted(value: &str, key: &Key) -> Result<(), String> {
+    if value.chars().any(char::is_whitespace) {
+        return Err("An API key has no spaces in it. Paste it again.".into());
+    }
+    if let Some(other) = mistaken_for(value, key) {
+        return Err(format!(
+            "That looks like {} (it starts with {}), not {}. Paste the {}.",
+            other.what,
+            other.prefix,
+            key.what,
+            without_article(key.what)
+        ));
+    }
+    Ok(())
+}
+
+/// What saving a key or removing one says: what was done, and a note on
+/// what comes before it in later runs.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Saved {
+    pub said: String,
+    pub note: Option<String>,
+}
+
+/// Saves `value` as `key` in fin's `.env` and uses it in this run, as the
+/// setup screen does.
+pub fn save_key(key: &'static Key, value: &str) -> Result<Saved, String> {
+    let dotenv = fin_dotenv()?;
+    save(&dotenv, key.name, value)?;
+    FORGOTTEN.lock().unwrap().retain(|name| *name != key.name);
+    enter(key.name, value.to_string());
+    Ok(saved_text(&dotenv, key.name))
+}
+
+/// Removes `key` from fin's `.env` and from this run, when fin saved the
+/// key in use ([`KeyState::removable`]). Returns its state after: the key
+/// another source sets, if one does.
+pub fn remove_key(key: &'static Key) -> Result<KeyState, String> {
+    let state = key_state(key);
+    let Some(KeySource::Fin(path)) = &state.source else {
+        return Err(match &state.source {
+            None => format!("No {} is set.", without_article(key.what)),
+            Some(source) => format!(
+                "fin didn't save this key. It comes from {}, so change it there.",
+                source_text(source, state.variable)
+            ),
+        });
+    };
+    unset(path, state.variable)?;
+    ENTERED
+        .lock()
+        .unwrap()
+        .retain(|(name, _)| *name != state.variable);
+    let mut forgotten = FORGOTTEN.lock().unwrap();
+    if !forgotten.contains(&state.variable) {
+        forgotten.push(state.variable);
+    }
+    drop(forgotten);
+    Ok(key_state(key))
+}
+
+/// Where a key comes from, as a sentence names it: "ANTHROPIC_API_KEY in
+/// fin's environment".
+pub fn source_text(source: &KeySource, variable: &str) -> String {
+    match source {
+        KeySource::Fin(path) => format!("{variable} in fin's .env ({})", path.display()),
+        KeySource::Environment => format!("{variable} in fin's environment"),
+        KeySource::DotEnv(path) => format!("{variable} in {}", path.display()),
+    }
+}
 
 /// What the setup screen's menu offers.
 #[derive(Clone, Copy)]
@@ -502,40 +721,58 @@ fn ask_key(out: &Output, editor: &mut Editor, dotenv: &Path, key: &Key) -> Resul
         "Paste {} (from {}). The input is hidden, and an empty line quits.",
         key.what, key.from
     )));
-    let prompt = format!("{}: ", capitalized(key.what));
-    let value = loop {
-        let value = read(editor, &prompt, "", true)?;
-        let value = value.trim();
-        if value.is_empty() {
-            return Err(cancelled());
-        }
-        if value.chars().any(char::is_whitespace) {
-            out.line(&out.warn("An API key has no spaces in it. Paste it again."));
-            continue;
-        }
-        if let Some(other) = mistaken_for(value, key) {
-            out.line(&out.warn(&format!(
-                "That looks like {} (it starts with {}), not {}: paste the {} (an empty line quits).",
-                other.what,
-                other.prefix,
-                key.what,
-                without_article(key.what)
-            )));
-            continue;
-        }
-        break value.to_string();
-    };
-    if !value.starts_with(key.prefix) {
-        out.line(&out.warn(&format!(
-            "Note: {}s start with {}. This one doesn't, so requests may be refused.",
-            capitalized(without_article(key.what)),
-            key.prefix
-        )));
+    let value = ask_value(out, editor, key)?;
+    if let Some(note) = prefix_note(&value, key) {
+        out.line(&out.warn(&note));
     }
     save(dotenv, key.name, &value)?;
     enter(key.name, value);
     saved(out, dotenv, key.name);
     Ok(())
+}
+
+/// Reads `key` with the input hidden until it looks like one: an error when
+/// the line is empty or the user presses Ctrl-C.
+fn ask_value(out: &Output, editor: &mut Editor, key: &Key) -> Result<String, String> {
+    let prompt = format!("{}: ", capitalized(key.what));
+    loop {
+        let value = read(editor, &prompt, "", true)?;
+        let value = value.trim();
+        if value.is_empty() {
+            return Err(cancelled());
+        }
+        match check_pasted(value, key) {
+            Ok(()) => return Ok(value.to_string()),
+            Err(problem) => out.line(&out.warn(&problem)),
+        }
+    }
+}
+
+/// The note on a key that doesn't start as `key`'s do.
+pub fn prefix_note(value: &str, key: &Key) -> Option<String> {
+    (!value.starts_with(key.prefix)).then(|| {
+        format!(
+            "Note: {}s start with {}. This one doesn't, so requests may be refused.",
+            capitalized(without_article(key.what)),
+            key.prefix
+        )
+    })
+}
+
+/// The line prompt's `/keys add`: reads `key` with the input hidden, as the
+/// setup screen does. `None` when the user leaves it empty or presses
+/// Ctrl-C.
+pub fn read_key(out: &Output, key: &Key) -> Result<Option<String>, String> {
+    out.line(&out.dim(&format!(
+        "Paste {} (from {}). The input is hidden, and an empty line goes back.",
+        key.what, key.from
+    )));
+    let mut editor = Prompt::editor()?;
+    match ask_value(out, &mut editor, key) {
+        Ok(value) => Ok(Some(value)),
+        Err(error) if error == cancelled() => Ok(None),
+        Err(error) => Err(error),
+    }
 }
 
 /// The other provider's key `value` looks like, when it has that key's
@@ -679,30 +916,48 @@ fn ask_login(out: &Output, editor: &mut Editor, dotenv: &Path) -> Result<(), Str
 
 /// Says where the setting was saved, and what comes before it in later runs.
 fn saved(out: &Output, dotenv: &Path, name: &str) {
-    out.line(&format!(
-        "Saved as {name} in {} (readable only by you).",
-        dotenv.display()
-    ));
-    let before = if std::env::var(name).is_ok_and(|value| !value.trim().is_empty()) {
-        Some(format!("{name} in your environment"))
-    } else {
-        match dotenv_get(name) {
-            Some(path) if path != dotenv => {
-                Some(format!("{} (it sets {name} too)", path.display()))
-            }
-            _ => None,
-        }
-    };
-    if let Some(before) = before {
-        out.line(&out.warn(&format!(
-            "Note: {before} comes first in later runs. This run uses what you entered."
-        )));
+    let saved = saved_text(dotenv, name);
+    out.line(&saved.said);
+    if let Some(note) = &saved.note {
+        out.line(&out.warn(note));
     }
     out.line("");
 }
 
+/// Where the setting `name` was saved, and what comes before it in later
+/// runs: the environment or another `.env` (for a Gemini key, under its
+/// older name too).
+fn saved_text(dotenv: &Path, name: &str) -> Saved {
+    let names: &[&str] = if name == GEMINI_KEY {
+        &[GOOGLE_KEY, GEMINI_KEY]
+    } else {
+        &[name]
+    };
+    let before = names.iter().find_map(|name| {
+        if std::env::var(name).is_ok_and(|value| !value.trim().is_empty()) {
+            Some(format!("{name} in your environment"))
+        } else {
+            match dotenv_get(name) {
+                Some(path) if path != dotenv => {
+                    Some(format!("{} (it sets {name} too)", path.display()))
+                }
+                _ => None,
+            }
+        }
+    });
+    Saved {
+        said: format!(
+            "Saved as {name} in {} (readable only by you).",
+            dotenv.display()
+        ),
+        note: before.map(|before| {
+            format!("Note: {before} comes first in later runs. This run uses what you entered.")
+        }),
+    }
+}
+
 fn dotenv_get(name: &str) -> Option<PathBuf> {
-    dotenv().get(name).map(|(_, path)| path.clone())
+    dotenv_entry(name).map(|(_, path)| path)
 }
 
 /// Sets `name` to `value` in the `.env` file at `path`, keeping its other
@@ -735,6 +990,35 @@ fn save(path: &Path, name: &str, value: &str) -> Result<(), String> {
     if let Some(folder) = path.parent() {
         std::fs::create_dir_all(folder).map_err(failed)?;
     }
+    write_private(path, &text).map_err(failed)
+}
+
+/// Removes the lines that set `name` from the `.env` file at `path`,
+/// keeping its other lines. A file without one is left alone.
+fn unset(path: &Path, name: &str) -> Result<(), String> {
+    let failed = |error: std::io::Error| format!("could not change {}: {error}", path.display());
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(failed(error)),
+    };
+    if !text.lines().any(|line| sets(line, name)) {
+        return Ok(());
+    }
+    let mut kept: String = text
+        .lines()
+        .filter(|line| !sets(line, name))
+        .collect::<Vec<_>>()
+        .join("\n");
+    if !kept.is_empty() {
+        kept.push('\n');
+    }
+    write_private(path, &kept).map_err(failed)
+}
+
+/// Writes `text` to `path` through a temporary file, readable only by the
+/// user.
+fn write_private(path: &Path, text: &str) -> std::io::Result<()> {
     let temporary = path.with_file_name(".env.tmp");
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create(true).truncate(true);
@@ -742,10 +1026,10 @@ fn save(path: &Path, name: &str, value: &str) -> Result<(), String> {
     std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
     {
         use std::io::Write;
-        let mut file = options.open(&temporary).map_err(failed)?;
-        file.write_all(text.as_bytes()).map_err(failed)?;
+        let mut file = options.open(&temporary)?;
+        file.write_all(text.as_bytes())?;
     }
-    std::fs::rename(&temporary, path).map_err(failed)
+    std::fs::rename(&temporary, path)
 }
 
 /// Whether a `.env` line sets `name`.
@@ -1010,6 +1294,52 @@ mod tests {
         ] {
             assert!(message.contains(name), "{name}: {message}");
         }
+    }
+
+    /// A key shows its provider's prefix and its last 4 characters at most.
+    #[test]
+    fn a_key_shows_masked() {
+        assert_eq!(
+            masked("sk-ant-api03-0123456789abcdefa1b2", ANTHROPIC.prefix),
+            "sk-ant-…a1b2"
+        );
+        assert_eq!(masked("sk-proj-0123456789wxyz", OPENAI.prefix), "sk-…wxyz");
+        assert_eq!(masked("0123456789abcdef", ANTHROPIC.prefix), "…cdef");
+        assert_eq!(masked("sk-ant-short", ANTHROPIC.prefix), "sk-ant-…");
+        assert_eq!(masked("tiny", OPENAI.prefix), "…");
+        assert_eq!(key_named("Google"), Some(&GEMINI));
+        assert_eq!(key_named("voyage"), Some(&VOYAGE));
+        assert_eq!(key_named("azure"), None);
+        assert!(check_pasted("sk-proj-1 2", &OPENAI).is_err());
+        assert!(check_pasted("pa-0123", &OPENAI).unwrap_err().starts_with(
+            "That looks like a Voyage API key (it starts with pa-), not an OpenAI API key."
+        ));
+        assert_eq!(check_pasted("sk-proj-0123", &OPENAI), Ok(()));
+    }
+
+    /// Removing a setting keeps the file's other lines, and the file stays
+    /// readable only by the user.
+    #[test]
+    fn unsetting_removes_the_setting_and_keeps_the_rest() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join(".env");
+        unset(&path, ANTHROPIC_KEY).unwrap();
+        assert!(!path.exists(), "nothing to remove from");
+        std::fs::write(
+            &path,
+            "OTHER=1\nexport ANTHROPIC_API_KEY=old\n# note\nANTHROPIC_API_KEY=new\n",
+        )
+        .unwrap();
+        unset(&path, ANTHROPIC_KEY).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "OTHER=1\n# note\n");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+        unset(&path, OPENAI_KEY).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "OTHER=1\n# note\n");
     }
 
     #[test]

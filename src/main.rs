@@ -24,6 +24,7 @@ mod crew;
 mod glyphs;
 mod handover;
 mod index;
+mod keys;
 mod mcp;
 mod message;
 #[cfg(test)]
@@ -453,6 +454,23 @@ async fn run(args: Args) -> Result<ExitCode, String> {
             None
         }
     };
+    // What the remote page shows, kept from the start so that a page
+    // opened later has the history.
+    let feed = remote::Feed::new(MAIN);
+    let keys = keys::Keys::new(
+        client.clone(),
+        keys::openai_way(&client).await,
+        indexes.clone(),
+        Some(feed.clone()),
+    );
+    // Debug builds on a local test model server check keys there too.
+    #[cfg(debug_assertions)]
+    if let Some(url) = std::env::var("FIN_TEST_MODEL_URL")
+        .ok()
+        .filter(|url| !url.is_empty())
+    {
+        keys.use_local(&url);
+    }
     let mcp_tools = mcp.tool_names();
     let mcp_started = mcp.started();
     let known_indexes = indexes
@@ -491,15 +509,16 @@ async fn run(args: Args) -> Result<ExitCode, String> {
         if full_screen {
             None
         } else {
-            ui::spawn_input(root.join("history.txt"), input_sender.clone())
+            ui::spawn_input(
+                root.join("history.txt"),
+                input_sender.clone(),
+                Some(keys.clone()),
+            )
         }
     };
     let interactive = printer.is_some() || full_screen;
     let output = Arc::new(Output::new(printer, one_shot));
     let stats = Arc::new(Mutex::new(Stats::default()));
-    // What the remote page shows, kept from the start so that a page
-    // opened later has the history.
-    let feed = remote::Feed::new(MAIN);
     let (remote_actions, remote_input) = mpsc::unbounded_channel();
     let handover = Arc::new(handover::Handover::new(
         runs,
@@ -517,6 +536,7 @@ async fn run(args: Args) -> Result<ExitCode, String> {
         stats: stats.clone(),
         outside: outside.clone(),
         handover: handover.clone(),
+        keys: keys.clone(),
     });
     // The main agent's questions are put to the user at the prompt; with
     // no terminal, it is told there is no one to ask.
@@ -539,6 +559,10 @@ async fn run(args: Args) -> Result<ExitCode, String> {
                 )
                 .await,
             feed: Some(feed.clone()),
+            refuse: Some({
+                let keys = keys.clone();
+                Arc::new(move |model: &arko_ai::Model| keys.refusal(model))
+            }),
         });
         (Some(crew), Some(woken))
     } else {
@@ -562,6 +586,7 @@ async fn run(args: Args) -> Result<ExitCode, String> {
         providers: provider_setup.clone(),
         session,
         client,
+        keys,
         main_config,
         worker_config,
         tools,
@@ -650,6 +675,7 @@ async fn run(args: Args) -> Result<ExitCode, String> {
                             .unwrap_or(harness.settings.handover_at),
                         // (With what fin said before the screen opened.)
                         banner: harness.header(std::mem::take(&mut *lock(&STARTUP_NOTES))),
+                        keys: harness.keys.clone(),
                     },
                     &output,
                 )
@@ -1144,6 +1170,9 @@ struct Harness {
     providers: providers::Setup,
     session: Session,
     client: Arc<LLMClient>,
+    /// The API keys: what the client and the search indexes use, and which
+    /// providers the session reaches (`/keys`).
+    keys: Arc<keys::Keys>,
     main_config: arko_agents::AgentConfig,
     worker_config: arko_agents::AgentConfig,
     tools: Vec<Arc<dyn Tool>>,
@@ -1966,6 +1995,7 @@ impl Harness {
         match name {
             "/outside" => self.outside_command(argument, source),
             "/model" => self.model_command(argument, source),
+            "/keys" => self.keys_command(argument, source),
             "/handover" => self.handover_command(argument, source),
             _ => self.handover_at_command(argument, source),
         }
@@ -2931,8 +2961,8 @@ fn place(link: &remote::Link) -> String {
 }
 
 /// The commands that change a setting while the session runs, which take
-/// an argument: `/outside`, `/model`, `/handover`, `/handover-at`.
-const LIVE_COMMANDS: [&str; 4] = ["/outside", "/model", "/handover", "/handover-at"];
+/// an argument: `/outside`, `/model`, `/handover`, `/handover-at`, `/keys`.
+const LIVE_COMMANDS: [&str; 5] = ["/outside", "/model", "/handover", "/handover-at", "/keys"];
 
 /// What the user is told of a handover asked for.
 fn handover_text(asked: handover::Asked) -> &'static str {
@@ -3050,6 +3080,9 @@ struct Gauges {
     stats: Arc<Mutex<Stats>>,
     outside: Arc<outside::Outside>,
     handover: Arc<handover::Handover>,
+    /// The providers the session reaches, which a key added or removed
+    /// changes.
+    keys: Arc<keys::Keys>,
 }
 
 impl remote::Meter for Gauges {
@@ -3072,7 +3105,17 @@ impl remote::Meter for Gauges {
                 outside: self.outside.is_on(),
                 handover_at: self.handover.at(),
             },
-            models: lock(&self.models).clone(),
+            models: {
+                let mut models = lock(&self.models).clone();
+                models.reachable = self.keys.reachable();
+                if models.openai_auth.is_none() {
+                    models.openai_auth = self
+                        .keys
+                        .openai_auth()
+                        .map(|auth| auth.describe().to_string());
+                }
+                models
+            },
         }
     }
 }
@@ -3152,6 +3195,12 @@ mod tests {
     mod model {
         use super::*;
         include!("model_tests.rs");
+    }
+
+    /// `/keys`'s end-to-end tests, in their own file.
+    mod api_keys {
+        use super::*;
+        include!("keys_tests.rs");
     }
 
     #[test]
@@ -3371,6 +3420,16 @@ mod tests {
         let output = Arc::new(Output::new(None, true));
         let stats = Arc::new(Mutex::new(Stats::default()));
         let feed = remote::Feed::new(MAIN);
+        // (A ChatGPT login's client counts as a key's here: no test
+        // depends on the difference.)
+        let keys = keys::Keys::new(
+            client.clone(),
+            client
+                .has_provider(&arko_ai::Provider::OpenAI)
+                .then_some(providers::OpenAiAuth::ApiKey),
+            None,
+            Some(feed.clone()),
+        );
         let (crew, woken) = Crew::new(crew::Setup {
             session_id: session.id.clone(),
             session_dir: session.dir.clone(),
@@ -3381,6 +3440,10 @@ mod tests {
                 300,
             )),
             feed: Some(feed.clone()),
+            refuse: Some({
+                let keys = keys.clone();
+                Arc::new(move |model: &arko_ai::Model| keys.refusal(model))
+            }),
         });
         let (questions_sender, questions) = mpsc::unbounded_channel();
         let (input_sender, receiver) = mpsc::unbounded_channel();
@@ -3399,12 +3462,14 @@ mod tests {
             stats: stats.clone(),
             outside: outside.clone(),
             handover: handover.clone(),
+            keys: keys.clone(),
         });
         let mut harness = Harness {
             settings,
             providers: providers::Setup::new(None),
             session,
             client,
+            keys,
             main_config,
             worker_config,
             tools: Vec::new(),

@@ -79,12 +79,19 @@ pub const COMMANDS: &[Command] = &[
     Command::screen(
         "/settings",
         "",
-        "the view, theme, mouse, outside access, handover size and web page",
+        "the view, theme, mouse, outside access, handover size, web page and API keys",
     ),
     Command {
         name: "/model",
         args: "[MODEL] [EFFORT] | worker [MODEL|main] [EFFORT]",
         about: "the main agent's model and effort before the conversation starts (/model sol high), or the model of workers started from now on, at any time (/model worker fable). /model worker main makes the workers follow the main agent's model again",
+        aliases: &[],
+        runs: Runs::Session,
+    },
+    Command {
+        name: "/keys",
+        args: "[add|remove PROVIDER]",
+        about: "the API keys for Anthropic, OpenAI, Gemini, OpenRouter and Voyage: add, replace or remove one, and use it at once (/keys add openai)",
         aliases: &[],
         runs: Runs::Session,
     },

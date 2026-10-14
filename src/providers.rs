@@ -657,9 +657,7 @@ pub fn needs_text(model: &str, needs: &str) -> String {
     } else if needs.starts_with("Claude Code") {
         format!("{model} needs {needs}.")
     } else {
-        format!(
-            "{model} needs {needs}, which fin reads as it starts, from the environment or a .env file."
-        )
+        format!("{model} needs {needs}. /keys adds API keys.")
     }
 }
 

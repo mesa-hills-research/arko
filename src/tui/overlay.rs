@@ -1,6 +1,7 @@
 //! What opens over the transcript for a moment: the help, the settings
-//! (with the theme picker), the web page's QR code, and the worker
-//! switcher. Rare actions don't get permanent room; each closes with Esc.
+//! (with the theme picker), the API keys, the web page's QR code, and the
+//! worker switcher. Rare actions don't get permanent room; each closes with
+//! Esc.
 
 use std::time::Instant;
 
@@ -37,6 +38,8 @@ pub enum Overlay {
         workers: bool,
         choice: usize,
     },
+    /// The API keys (`/keys`).
+    Keys(super::keys_menu::KeysMenu),
 }
 
 /// A setting.
@@ -49,6 +52,7 @@ pub enum SettingsRow {
     Outside,
     Handover,
     Page,
+    Keys,
 }
 
 /// The handover sizes ← and → step through, in tokens.
@@ -156,6 +160,7 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect, screen: Rect) {
             workers,
             choice,
         } => super::model_picker::draw_notice(frame, &app.theme, area, text, *choice, *workers),
+        Overlay::Keys(menu) => super::keys_menu::draw(frame, &app.theme, area, menu),
     }
 }
 
@@ -311,6 +316,8 @@ fn settings(frame: &mut Frame, app: &App, area: Rect, selected: usize) {
     let page_on = super::page().is_some();
     let label_width = 14;
     let mut lines: Vec<Line<'static>> = Vec::new();
+    // The last line of the chosen row's description: kept in view.
+    let mut chosen_end = 0;
     let mut section = "";
     for (n, row) in rows.iter().enumerate() {
         let (group, label, value, about): (&str, &str, Vec<Span<'static>>, String) = match row {
@@ -388,6 +395,20 @@ fn settings(frame: &mut Frame, app: &App, area: Rect, selected: usize) {
                 "Follow and drive this session from a browser (/remote shows its code)."
                     .to_string(),
             ),
+            SettingsRow::Keys => {
+                let states = (app.key_states)();
+                let set = states.iter().filter(|state| state.masked.is_some()).count();
+                (
+                    "Providers",
+                    "API keys",
+                    vec![
+                        Span::styled(format!(" {set} of {} set ", states.len()), theme.text()),
+                        Span::styled(glyphs::render("›").into_owned(), theme.dim()),
+                    ],
+                    "The model providers' keys, and Voyage's for the search indexes. Enter opens them."
+                        .to_string(),
+                )
+            }
         };
         if group != section {
             if !lines.is_empty() {
@@ -425,6 +446,7 @@ fn settings(frame: &mut Frame, app: &App, area: Rect, selected: usize) {
                 spans.extend(line);
                 lines.push(Line::from(spans));
             }
+            chosen_end = lines.len() - 1;
         }
     }
     let width = 72.min(area.width.saturating_sub(2));
@@ -437,7 +459,9 @@ fn settings(frame: &mut Frame, app: &App, area: Rect, selected: usize) {
         inner.width.saturating_sub(2),
         inner.height.saturating_sub(2),
     );
-    put(frame, body, &lines, 0);
+    // A short terminal scrolls the rows, so the chosen one shows whole.
+    let scroll = (chosen_end + 1).saturating_sub(body.height as usize);
+    put(frame, body, &lines, scroll);
     footer(
         frame,
         rect,

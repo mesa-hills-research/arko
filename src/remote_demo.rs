@@ -235,6 +235,7 @@ async fn remote_page_demo() {
         stats: harness.stats.clone(),
         outside: harness.outside.clone(),
         handover: harness.handover.clone(),
+        keys: harness.keys.clone(),
     });
     harness.open(false).unwrap();
     let _ = feed_cell.set(harness.feed.clone());

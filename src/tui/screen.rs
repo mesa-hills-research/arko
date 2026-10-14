@@ -571,6 +571,52 @@ mod tests {
             .collect()
     }
 
+    /// The API keys menu over an 80-column screen, and the settings' row
+    /// that opens it.
+    #[test]
+    fn the_keys_menu_fits_an_80_column_screen() {
+        use crate::tui::overlay::{Overlay, SettingsRow};
+        let mut app = app();
+        app.key_states = crate::tui::keys_menu::tests::states;
+        app.open_keys("", None);
+        let rows = screen(&mut app, 80, 24);
+        println!("{}", rows.join("\n"));
+        assert!(
+            rows.iter()
+                .any(|row| row.contains("│ ▸ Anthropic      sk-ant-…a1b2    saved by fin")),
+            "{rows:#?}"
+        );
+        app.open_keys("add voyage", None);
+        let rows = screen(&mut app, 80, 24);
+        println!("{}", rows.join("\n"));
+        assert!(
+            rows.iter()
+                .any(|row| row.contains("with Voyage by embedding one word")),
+            "{rows:#?}"
+        );
+        let row = app
+            .settings_rows()
+            .iter()
+            .position(|row| *row == SettingsRow::Keys)
+            .unwrap();
+        app.overlay = Some(Overlay::Settings { row, picker: None });
+        let rows = screen(&mut app, 80, 30);
+        println!("{}", rows.join("\n"));
+        assert!(
+            rows.iter()
+                .any(|row| row.contains("▸ API keys       3 of 5 set ›")),
+            "{rows:#?}"
+        );
+        // A 24-row terminal scrolls the settings to show the row whole.
+        let rows = screen(&mut app, 80, 24);
+        println!("{}", rows.join("\n"));
+        assert!(
+            rows.iter()
+                .any(|row| row.contains("search indexes. Enter opens them.")),
+            "{rows:#?}"
+        );
+    }
+
     #[test]
     fn the_empty_screen_has_the_status_line_and_a_message_box() {
         let mut app = app();

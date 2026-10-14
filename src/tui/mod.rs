@@ -14,6 +14,7 @@
 mod app;
 mod clipboard;
 mod input;
+mod keys_menu;
 mod markdown;
 mod model_picker;
 mod overlay;
@@ -71,6 +72,8 @@ pub struct Setup {
     pub handover_at: usize,
     /// The session's facts, for the banner.
     pub banner: Banner,
+    /// The API keys, which the keys menu adds and removes.
+    pub keys: Arc<crate::keys::Keys>,
 }
 
 /// The view while it runs.
@@ -116,7 +119,9 @@ pub fn start(setup: Setup, output: &Arc<Output>) -> Option<Screen> {
             eprintln!(
                 "fin: the full-screen view couldn't start ({error}), so fin uses the line prompt"
             );
-            if let Some(printer) = ui::spawn_input(history, setup.input.clone()) {
+            if let Some(printer) =
+                ui::spawn_input(history, setup.input.clone(), Some(setup.keys.clone()))
+            {
                 output.attach(printer);
             }
             return None;
@@ -323,6 +328,8 @@ async fn run(
     let mut title = String::new();
     let mut enter: Option<Instant> = None;
     let mut burst: Option<Burst> = None;
+    // What the session did with the keys the menu sent.
+    let (keys_done, mut keys_results) = mpsc::unbounded_channel();
     app.set_reading(setup.meter.read());
     loop {
         if draw_now {
@@ -378,6 +385,12 @@ async fn run(
                 // Drawn at the next frame: streaming text doesn't redraw at
                 // every chunk.
                 dirty = true;
+            }
+            Some((key, outcome)) = keys_results.recv() => {
+                app.keys_done(key, outcome);
+                // The models it makes reachable, for `/model`'s picker.
+                app.set_reading(setup.meter.read());
+                draw_now = true;
             }
             _ = frames.tick(), if dirty => draw_now = true,
             _ = clock.tick() => {
@@ -448,6 +461,20 @@ async fn run(
                 }
                 Effect::Clear => {
                     let _ = terminal.clear();
+                }
+                Effect::AddKey { key, value } => {
+                    // Checked with the provider while the view goes on.
+                    let keys = setup.keys.clone();
+                    let done = keys_done.clone();
+                    tokio::spawn(async move {
+                        let outcome = keys.add(key, value).await;
+                        let _ = done.send((key, outcome));
+                    });
+                }
+                Effect::RemoveKey(key) => {
+                    let outcome = setup.keys.remove(key);
+                    app.keys_done(key, outcome);
+                    app.set_reading(setup.meter.read());
                 }
             }
             draw_now = true;

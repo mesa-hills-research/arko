@@ -244,12 +244,16 @@ pub fn stop_reading() {
 /// Starts reading the user's input on its own thread. With a terminal, the
 /// prompt is a line editor with history, and the returned printer prints
 /// above it; without one, lines are read from standard input as they come.
+/// `/keys add PROVIDER` is read here, with the key's input hidden, and
+/// added to `keys`: neither reaches the session as a line.
 pub fn spawn_input(
     history: PathBuf,
     sender: mpsc::UnboundedSender<Input>,
+    keys: Option<Arc<crate::keys::Keys>>,
 ) -> Option<Box<dyn ExternalPrinter + Send>> {
     if std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
         let (printer_sender, printer_receiver) = std::sync::mpsc::channel();
+        let runtime = tokio::runtime::Handle::try_current().ok();
         std::thread::spawn(move || {
             let config = rustyline::Config::builder()
                 .auto_add_history(true)
@@ -278,7 +282,15 @@ pub fn spawn_input(
             let prompt = glyphs::render(PROMPT).into_owned();
             while !CLOSING.load(Ordering::SeqCst) {
                 let input = match editor.readline(prompt.as_str()) {
-                    Ok(line) => Input::Line(joined(&line)),
+                    Ok(line) => {
+                        if let (Some(keys), Some(runtime)) = (&keys, &runtime)
+                            && let Some(key) = crate::keys::added_at_prompt(&line)
+                        {
+                            crate::keys::add_at_prompt(keys, key, runtime);
+                            continue;
+                        }
+                        Input::Line(joined(&line))
+                    }
                     Err(ReadlineError::Interrupted) => Input::Interrupt,
                     Err(_) => Input::Eof,
                 };

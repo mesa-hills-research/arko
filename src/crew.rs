@@ -61,7 +61,13 @@ pub struct Setup {
     /// The client's cache lifetime for the worker model and authentication.
     pub cache_lifetime: PromptCacheLifetime,
     pub feed: Option<remote::Feed>,
+    /// Why new workers can't start on a model, when they can't: its
+    /// provider's key was removed while fin runs.
+    pub refuse: Option<Refuse>,
 }
+
+/// See [`Setup::refuse`].
+pub type Refuse = Arc<dyn Fn(&arko_ai::Model) -> Option<String> + Send + Sync>;
 
 /// What a worker run starts with that the workers' model decides: the
 /// model with its generation settings (the prompt cache's lifetime too),
@@ -210,6 +216,7 @@ impl Crew {
     pub fn config(&self) -> SubagentsConfig {
         let default_1h = self.setup.cache_1h;
         let models = self.models.clone();
+        let refuse = self.setup.refuse.clone();
         let mut config = SubagentsConfig::default()
             .offer_blocking_tool(false)
             .questions_to_lead(true)
@@ -233,6 +240,13 @@ impl Crew {
                 if let Some(new) = &models.new {
                     new.model.apply(config);
                     one_hour = new.cache_1h;
+                }
+                // Not on a provider whose key was removed.
+                if let Some(why) = refuse
+                    .as_ref()
+                    .and_then(|refuse| refuse(&config.llm_config.model))
+                {
+                    return Err(why);
                 }
                 apply_cache(request, config, one_hour)?;
                 models.runs.insert(request.run_id, WorkerModel::of(config));
@@ -628,6 +642,7 @@ mod tests {
             cache_1h: true,
             cache_lifetime: PromptCacheLifetime::Known(Duration::from_secs(3600)),
             feed: None,
+            refuse: None,
         });
         let native = crew.config();
         assert_eq!(native.max_running.unwrap().get(), 2);

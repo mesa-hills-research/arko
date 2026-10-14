@@ -11,12 +11,15 @@ use crossterm::event::{
 };
 
 use super::input::Editor;
+use super::keys_menu::{self, KeysMenu};
 use super::model_picker::{self, ModelPicker, Outcome};
 use super::overlay::{Overlay, Picker, SettingsRow};
 use super::prefs::Prefs;
 use super::theme::{self, Catalog, Depth, Theme};
 use super::transcript::{Filter, Transcript, View};
 use crate::commands::{self, Runs};
+use crate::credentials::{Key, KeyState};
+use crate::keys::Secret;
 use crate::model_command::Target;
 use crate::remote::{Activity, Reading, Snapshot, Update};
 use crate::ui::Input;
@@ -73,6 +76,11 @@ pub enum Effect {
     Mouse(bool),
     /// Draw the whole screen again.
     Clear,
+    /// The session checks `value` as `key`, saves it and uses it (the
+    /// result comes to [`App::keys_done`]).
+    AddKey { key: &'static Key, value: Secret },
+    /// The session removes `key`, which fin saved.
+    RemoveKey(&'static Key),
 }
 
 /// The command menu's state.
@@ -134,6 +142,9 @@ pub struct App {
     /// picker (from the providers the session reaches, and Claude Code's
     /// login).
     pub model_needs: fn(&[String], &str) -> Option<String>,
+    /// The API keys as they are now, without their values, for the keys
+    /// menu.
+    pub key_states: fn() -> Vec<KeyState>,
 }
 
 impl App {
@@ -190,6 +201,7 @@ impl App {
             press: None,
             last_click: None,
             model_needs: model_picker::needs,
+            key_states: crate::credentials::key_states,
         }
     }
 
@@ -237,6 +249,30 @@ impl App {
         self.overlay = Some(Overlay::Model(ModelPicker::open(target, &models, |name| {
             needs(&reachable, name)
         })));
+    }
+
+    /// The API keys menu; `words` are what followed `/keys`, and `back_to`
+    /// the settings' row it was opened from.
+    pub fn open_keys(&mut self, words: &str, back_to: Option<usize>) {
+        self.overlay = Some(Overlay::Keys(KeysMenu::open(
+            (self.key_states)(),
+            words,
+            back_to,
+        )));
+    }
+
+    /// What the session did with a key the menu sent: the menu shows it,
+    /// or, closed, the status line.
+    pub fn keys_done(&mut self, key: &'static Key, outcome: crate::keys::Outcome) {
+        if let Some(Overlay::Keys(menu)) = &mut self.overlay {
+            menu.done(key, outcome, (self.key_states)());
+            return;
+        }
+        self.say(match outcome {
+            // (Only an addition ends while the menu is closed.)
+            crate::keys::Outcome::Done { .. } => format!("{} API key saved", key.provider),
+            crate::keys::Outcome::Failed(why) => why,
+        });
     }
 
     /// What the view asked for since last time.
@@ -470,8 +506,12 @@ impl App {
         }
     }
 
-    /// A paste the terminal marked.
+    /// A paste the terminal marked: into the box, or the keys menu's field.
     pub fn paste(&mut self, text: &str) {
+        if let Some(Overlay::Keys(menu)) = &mut self.overlay {
+            menu.paste(text);
+            return;
+        }
         if self.overlay.is_some() {
             return;
         }
@@ -662,6 +702,11 @@ impl App {
                     self.overlay = Some(Overlay::Help { scroll: 0 });
                     true
                 }
+                // A key is entered in the menu, never typed as a word.
+                ("/keys", _) => {
+                    self.open_keys(rest, None);
+                    true
+                }
                 // Without a model, the picker; with one, the session.
                 ("/model", _) => match rest {
                     "" => {
@@ -793,6 +838,20 @@ impl App {
                     None
                 }
             },
+            Overlay::Keys(mut menu) => match menu.key(key, close) {
+                keys_menu::Action::Stay => Some(Overlay::Keys(menu)),
+                keys_menu::Action::Close => menu
+                    .back_to
+                    .map(|row| Overlay::Settings { row, picker: None }),
+                keys_menu::Action::Add { key, value } => {
+                    self.effects.push(Effect::AddKey { key, value });
+                    Some(Overlay::Keys(menu))
+                }
+                keys_menu::Action::Remove(key) => {
+                    self.effects.push(Effect::RemoveKey(key));
+                    Some(Overlay::Keys(menu))
+                }
+            },
             Overlay::ModelNotice {
                 text,
                 workers,
@@ -835,6 +894,7 @@ impl App {
             rows.push(SettingsRow::Handover);
         }
         rows.push(SettingsRow::Page);
+        rows.push(SettingsRow::Keys);
         rows
     }
 
@@ -988,6 +1048,12 @@ impl App {
                         self.send("/remote");
                     }
                 }
+                // Opened forward only: ← has nothing to step back to.
+                SettingsRow::Keys if step > 0 => {
+                    self.open_keys("", Some(row));
+                    return self.overlay.take();
+                }
+                SettingsRow::Keys => {}
             }
         }
         Some(Overlay::Settings { row, picker: None })
@@ -1587,6 +1653,69 @@ pub(super) mod tests {
         assert_eq!(sent(&mut app), ["/handover-at 300k", "/handover-at 200k"]);
     }
 
+    /// The keys menu opens from the settings and goes back there, and from
+    /// `/keys add PROVIDER` on that key's field. A paste goes into the
+    /// field, never into the box, and the key reaches only the session's
+    /// keys.
+    #[test]
+    fn the_keys_menu_opens_from_the_settings_and_takes_a_paste() {
+        use crate::credentials;
+        use crate::keys::Outcome as KeyOutcome;
+        let mut app = app();
+        app.key_states = keys_menu::tests::states;
+        let row = app
+            .settings_rows()
+            .iter()
+            .position(|row| *row == SettingsRow::Keys)
+            .unwrap();
+        app.overlay = Some(Overlay::Settings { row, picker: None });
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert!(matches!(&app.overlay, Some(Overlay::Keys(menu)) if menu.back_to == Some(row)));
+        press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!(app.overlay, Some(Overlay::Settings { row, picker: None }));
+        app.overlay = None;
+
+        type_text(&mut app, "/keys add openai");
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert!(sent(&mut app).is_empty(), "the view handles /keys");
+        assert!(matches!(&app.overlay, Some(Overlay::Keys(menu))
+            if matches!(menu.step, keys_menu::Step::Entering { .. })));
+        let key = "sk-proj-0123456789abcdefwxyz";
+        app.paste(&format!("{key}\n"));
+        assert!(app.editor.is_empty());
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(
+            app.take_effects(),
+            [Effect::AddKey {
+                key: &credentials::OPENAI,
+                value: Secret::new(key)
+            }]
+        );
+        app.keys_done(
+            &credentials::OPENAI,
+            KeyOutcome::Done {
+                said: "OpenAI accepted the key, and fin saved it.".into(),
+                warnings: Vec::new(),
+            },
+        );
+        assert!(matches!(&app.overlay, Some(Overlay::Keys(menu))
+            if menu.step == keys_menu::Step::List && menu.said.is_some()));
+        press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert!(app.overlay.is_none());
+        // Closed, the status line says what became of it.
+        app.keys_done(
+            &credentials::OPENAI,
+            KeyOutcome::Failed("OpenAI refused sk-…wxyz (401), so it isn't saved.".into()),
+        );
+        assert_eq!(
+            app.hint(),
+            Some("OpenAI refused sk-…wxyz (401), so it isn't saved.")
+        );
+        // The box's history has the command, not the key.
+        app.editor.history_back();
+        assert_eq!(app.editor.text(), "/keys add openai");
+    }
+
     /// The session's models, as it publishes them: luna for both agents,
     /// the conversation not started, OpenAI reachable with an API key.
     fn models(started: bool) -> crate::remote::Models {
@@ -1722,7 +1851,7 @@ pub(super) mod tests {
         type_text(&mut app, "fable");
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         assert!(
-            matches!(&picker(&app).step, model_picker::Step::Typing { error: Some(error), .. } if error == "claude-fable-5-1 needs ANTHROPIC_API_KEY, which fin reads as it starts, from the environment or a .env file.")
+            matches!(&picker(&app).step, model_picker::Step::Typing { error: Some(error), .. } if error == "claude-fable-5-1 needs ANTHROPIC_API_KEY. /keys adds API keys.")
         );
         for _ in 0..5 {
             press(&mut app, KeyCode::Backspace, KeyModifiers::NONE);

@@ -541,6 +541,25 @@ fn without_a_key_indexes_are_lexical() {
     fixture.shutdown(&indexes);
 }
 
+/// A Voyage key set while fin runs (the keys menu) is used from then on,
+/// and removing it makes the indexes lexical again.
+#[test]
+fn the_voyage_key_changes_while_fin_runs() {
+    let fixture = Fixture::new();
+    let root = fixture.code_project();
+    let indexes = fixture.open(&root, Backend::voyage(None), false, fast(false));
+    indexes.create_blocking(&create_args(&root, None)).unwrap();
+    assert!(!indexes.has_key());
+    assert!(indexes.summary().unwrap().contains("VOYAGE_API_KEY"));
+    indexes.set_voyage_key(Some("pa-test".into()));
+    assert!(indexes.has_key());
+    let summary = indexes.summary().unwrap();
+    assert!(!summary.contains("VOYAGE_API_KEY"), "{summary}");
+    indexes.set_voyage_key(None);
+    assert!(!indexes.has_key());
+    fixture.shutdown(&indexes);
+}
+
 #[test]
 fn creating_refuses_bad_roots_and_names_uniquely() {
     let fixture = Fixture::new();
