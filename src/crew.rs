@@ -21,7 +21,7 @@ use serde_json::Value;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
-use crate::agents::{MAIN, NO_LIMIT};
+use crate::agents::NO_LIMIT;
 use crate::remote;
 use crate::ui::{self, Output};
 
@@ -334,26 +334,6 @@ impl Crew {
                 .count()
         })
     }
-    pub fn spent(&self) -> (f64, usize, usize) {
-        self.workflow().map_or((0.0, 0, 0), |workflow| {
-            let (input, output) = workflow
-                .result()
-                .agent_results
-                .iter()
-                .filter(|run| run.agent_name != MAIN)
-                .fold((0, 0), |(input, output), run| {
-                    (
-                        input + run.total_input_tokens(),
-                        output + run.total_output_tokens(),
-                    )
-                });
-            (
-                workflow.context().budget.agent_spent(crate::agents::WORKER),
-                input,
-                output,
-            )
-        })
-    }
     pub async fn shutdown(&self) {
         if let Some(workflow) = self.workflow() {
             // Stopping the workflow marks its unfinished subagents for resume.
@@ -419,6 +399,7 @@ impl Tool for LegacyTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agents::MAIN;
     use arko_agents::AgentLLMConfig;
 
     #[test]

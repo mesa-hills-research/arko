@@ -49,6 +49,7 @@ pub const SYMBOLS_TABLE: &[(char, &str, &str)] = &[
     ('·', "·", "|"),
     ('—', "—", "--"),
     ('–', "–", "-"),
+    ('≈', "≈", "~"),
 ];
 
 /// The symbols this terminal shows: FIN_SYMBOLS (in the environment or a
@@ -154,13 +155,14 @@ mod tests {
     }
 
     /// The `basic` stand-ins are characters the classic console's fonts
-    /// draw (WGL4: Latin-1, the arrows, box drawing, a few shapes and
-    /// punctuation), and the `ascii` ones are ASCII.
+    /// draw (WGL4: Latin-1, the arrows, box drawing, a few shapes,
+    /// punctuation and `≈`, which code page 437 has too), and the `ascii`
+    /// ones are ASCII.
     #[test]
     fn the_stand_ins_stay_in_their_sets() {
         let wgl4 = |c: char| {
             matches!(c as u32,
-                0x20..=0x7E | 0xA0..=0xFF | 0x2013 | 0x2014 | 0x2026 | 0x203A | 0x221A
+                0x20..=0x7E | 0xA0..=0xFF | 0x2013 | 0x2014 | 0x2026 | 0x203A | 0x221A | 0x2248
                 | 0x2190..=0x2195 | 0x2500..=0x257F | 0x25A0 | 0x25BA | 0x25CF)
         };
         for (symbol, basic, ascii) in SYMBOLS_TABLE {
@@ -176,6 +178,7 @@ mod tests {
             ("ui.rs", include_str!("ui.rs")),
             ("main.rs", include_str!("main.rs")),
             ("crew.rs", include_str!("crew.rs")),
+            ("providers.rs", include_str!("providers.rs")),
         ] {
             for c in source.chars().filter(|c| !c.is_ascii()) {
                 // Letters (in test strings and names) are shown as they are.

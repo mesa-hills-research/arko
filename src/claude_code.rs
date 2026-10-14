@@ -82,9 +82,30 @@ impl Ready {
 
 /// Finds `claude` on the PATH and checks that it is signed in.
 pub fn check() -> Result<Ready, Problem> {
-    let path = find_cli().ok_or(Problem::Missing)?;
-    check_at(&path)
+    let result = find_cli()
+        .ok_or(Problem::Missing)
+        .and_then(|path| check_at(&path));
+    *LAST_CHECK.lock().unwrap() = Some((Instant::now(), result.clone()));
+    result
 }
+
+/// The last check's result while it is fresh, else a new check: starting
+/// a session asks several times (for the default model, then for the
+/// session's client), and one `claude auth status` answers them all. The
+/// setup screen checks anew each time.
+pub fn check_recent() -> Result<Ready, Problem> {
+    let last = LAST_CHECK.lock().unwrap().clone();
+    match last {
+        Some((at, result)) if at.elapsed() < RECENT => result,
+        _ => check(),
+    }
+}
+
+/// How long a check stays fresh for [`check_recent`].
+const RECENT: Duration = Duration::from_secs(10);
+
+static LAST_CHECK: std::sync::Mutex<Option<(Instant, Result<Ready, Problem>)>> =
+    std::sync::Mutex::new(None);
 
 /// Checks that the Claude Code CLI at `path` is signed in: `claude auth
 /// status --json`, which makes no model request. An answer fin can't read
