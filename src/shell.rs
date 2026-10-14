@@ -171,11 +171,25 @@ fn find_program(name: &str) -> Option<PathBuf> {
 pub struct ShellTool {
     manager: Arc<TerminalManager>,
     shell: Shell,
+    /// Where the runs it is bound to keep their command channels.
+    runs: Option<Arc<crate::handover::Runs>>,
 }
 
 impl ShellTool {
     pub fn new(manager: Arc<TerminalManager>, shell: Shell) -> Self {
-        Self { manager, shell }
+        Self {
+            manager,
+            shell,
+            runs: None,
+        }
+    }
+
+    /// Keeps the command channel of each run the tool is bound to in
+    /// `runs`: every agent has the shell, so fin reaches every run there
+    /// (to ask for a handover).
+    pub fn keeping_runs(mut self, runs: Arc<crate::handover::Runs>) -> Self {
+        self.runs = Some(runs);
+        self
     }
 }
 
@@ -295,6 +309,16 @@ impl Tool for ShellTool {
     /// The call enforces its own time limit (`timeout_seconds`).
     fn uses_host_timeout(&self) -> bool {
         false
+    }
+
+    fn bind_runtime(
+        &self,
+        task_id: Uuid,
+        sender: tokio::sync::mpsc::WeakSender<arko_agents::UserCommand>,
+    ) {
+        if let Some(runs) = &self.runs {
+            runs.bind(task_id, sender);
+        }
     }
 
     async fn execute(

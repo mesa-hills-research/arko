@@ -11,7 +11,7 @@ use tokio::sync::Notify;
 fn equip(harness: &mut Harness, on: bool) -> Managers {
     let shell = Shell::detect(WindowsShell::Cmd);
     let managers = Managers::open(&harness.session, &shell).unwrap();
-    harness.tools = managers.tools(&shell);
+    harness.tools = managers.tools(&shell, harness.handover.runs());
     harness.outside = Arc::new(outside::Outside::new(
         on,
         managers.list(),
@@ -565,3 +565,464 @@ fn agent_settings_of(harness: &Harness) -> AgentSettings<'_> {
 
 /// The shell tool's name.
 const SHELL_TOOL: &str = crate::shell::SHELL_TOOL_NAME;
+
+/// The main agent's run as the last turn left it.
+fn handovers(harness: &Harness) -> usize {
+    match &harness.conversation {
+        Conversation::Answered(result) => result.task.handovers.len(),
+        _ => panic!("the conversation wasn't answered"),
+    }
+}
+
+/// What the mock model answers the requests of a conversation that hands
+/// over: the report when it is asked for (with the user's message `Second.`
+/// when the conversation has it unanswered, as the report request asks),
+/// `after` once the fresh conversation has it, else `before`.
+fn handing_over(body: &str, before: String, after: String) -> String {
+    if body.contains("REPORT:") {
+        after
+    } else if body.contains("Your conversation is getting long") {
+        let message = if body.contains("Second.") {
+            " The user's latest message, unanswered: Second."
+        } else {
+            ""
+        };
+        tool_call(
+            "report",
+            arko_agents::handover::HANDOVER_REPORT_TOOL_NAME,
+            serde_json::json!({"report": format!("REPORT: the work so far.{message}")}),
+        )
+    } else {
+        before
+    }
+}
+
+/// `/handover` while the agent works: it hands over at its next step, and
+/// the fresh conversation starts from its report.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_handover_asked_for_while_the_agent_works_happens_at_its_next_step() {
+    let temp = tempfile::tempdir().unwrap();
+    let bodies: Bodies = Arc::default();
+    let hold = Arc::new(Notify::new());
+    let server = ModelServer::start(Arc::new({
+        let (bodies, hold) = (bodies.clone(), hold.clone());
+        move |_, body: String| {
+            bodies.lock().unwrap().push(body.clone());
+            let hold = hold.clone();
+            Box::pin(async move {
+                if !body.contains("call_m1") && !body.contains("REPORT:") {
+                    hold.notified().await;
+                }
+                handing_over(
+                    &body,
+                    tool_call("m1", SHELL_TOOL, serde_json::json!({"command": "echo hi"})),
+                    complete("m2", "Done after the handover."),
+                )
+            })
+        }
+    }))
+    .await;
+    let (mut harness, mut inputs, sender) = harness(temp.path(), server.client(), true);
+    let _managers = equip(&mut harness, false);
+    let feed = harness.feed.clone();
+    let typing = tokio::spawn(async move {
+        until(|| feed.activity().working).await;
+        sender.send(Input::Line("/handover".into())).unwrap();
+        until(|| {
+            says(
+                &feed,
+                "output",
+                "The main agent hands over at its next step",
+            )
+        })
+        .await;
+        hold.notify_one();
+        sender
+    });
+    let end = tokio::time::timeout(
+        Duration::from_secs(30),
+        harness.turn(Prompt::User("Work on it.".into()), &mut inputs),
+    )
+    .await
+    .unwrap();
+    let _sender = typing.await.unwrap();
+    assert!(matches!(end, TurnEnd::Answered));
+    assert_eq!(summary(&harness), "Done after the handover.");
+    assert_eq!(handovers(&harness), 1);
+    // The report was asked for after the step, and the fresh conversation
+    // has the task and the report, not the step.
+    assert!(body(&bodies, "Your conversation is getting long", "").contains("call_m1"));
+    let fresh = body(&bodies, "REPORT:", "Your conversation is getting long");
+    assert!(
+        fresh.contains("Work on it.") && !fresh.contains("call_m1"),
+        "{fresh}"
+    );
+    assert!(says(&harness.feed, "notice", "handed over"));
+}
+
+/// `/handover` while no turn runs: nothing to hand over before the first
+/// message; after it, the agent hands over when the next message starts
+/// its turn, and the report carries that message.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_handover_asked_for_while_idle_happens_when_the_next_turn_starts() {
+    let temp = tempfile::tempdir().unwrap();
+    let bodies: Bodies = Arc::default();
+    let server = ModelServer::start(Arc::new({
+        let bodies = bodies.clone();
+        move |_, body: String| {
+            bodies.lock().unwrap().push(body.clone());
+            Box::pin(async move {
+                if !body.contains("Second.") {
+                    complete("a1", "First done.")
+                } else {
+                    handing_over(
+                        &body,
+                        tool_call("m1", SHELL_TOOL, serde_json::json!({"command": "echo hi"})),
+                        complete("a2", "Second done."),
+                    )
+                }
+            })
+        }
+    }))
+    .await;
+    let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
+    let _managers = equip(&mut harness, false);
+    assert!(harness.live_command("/handover", Source::Terminal));
+    assert!(says(
+        &harness.feed,
+        "output",
+        "There is no conversation to hand over"
+    ));
+    let end = harness
+        .turn(Prompt::User("First.".into()), &mut inputs)
+        .await;
+    assert!(matches!(end, TurnEnd::Answered));
+    harness.live_command("/handover now", Source::Terminal);
+    assert!(says(
+        &harness.feed,
+        "output",
+        "/handover takes nothing after it"
+    ));
+    harness.live_command("/handover", Source::Terminal);
+    assert!(says(
+        &harness.feed,
+        "output",
+        "The main agent hands over when your next message starts its turn"
+    ));
+    harness.live_command("/handover", Source::Terminal);
+    let end = tokio::time::timeout(
+        Duration::from_secs(30),
+        harness.turn(Prompt::User("Second.".into()), &mut inputs),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(end, TurnEnd::Answered));
+    assert_eq!(summary(&harness), "Second done.");
+    assert_eq!(handovers(&harness), 1);
+    // The report was asked for with the message, before the agent acted on
+    // it; the fresh conversation starts from the conversation's first
+    // message and the report, which has the new message.
+    let first = body(&bodies, "Second.", "");
+    assert!(
+        first.contains("Your conversation is getting long"),
+        "{first}"
+    );
+    assert!(!first.contains("call_m1"), "{first}");
+    let fresh = body(&bodies, "REPORT:", "Your conversation is getting long");
+    assert!(
+        fresh.contains("First.") && fresh.contains("Second."),
+        "{fresh}"
+    );
+}
+
+/// `/handover-at`: a size it can't read, one too small, one over what
+/// the configuration hands over at (it stops there), and one under the
+/// agent's context (it hands over when the next turn starts). The session
+/// and the page's status keep the size.
+#[cfg(unix)]
+#[tokio::test]
+async fn handover_sizes_are_checked_kept_and_acted_on() {
+    let temp = tempfile::tempdir().unwrap();
+    let server = ModelServer::start(Arc::new(move |_, body: String| {
+        Box::pin(async move {
+            if !body.contains("Second.") {
+                crate::mock_model::with_input(complete("a1", "First done."), 150_000)
+            } else {
+                handing_over(
+                    &body,
+                    tool_call("m1", SHELL_TOOL, serde_json::json!({"command": "echo hi"})),
+                    complete("a2", "Second done."),
+                )
+            }
+        })
+    }))
+    .await;
+    let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
+    let _managers = equip(&mut harness, false);
+    let end = harness
+        .turn(Prompt::User("First.".into()), &mut inputs)
+        .await;
+    assert!(matches!(end, TurnEnd::Answered));
+    harness.flush_printer().await;
+    until(|| harness.handover.input() == Some(150_000)).await;
+    let output = |harness: &mut Harness, command: &str| {
+        assert!(harness.live_command(command, Source::Terminal));
+        texts(&harness.feed, "output").last().unwrap().clone()
+    };
+    assert!(output(&mut harness, "/handover-at lots").contains("isn't a number of tokens"));
+    assert!(output(&mut harness, "/handover-at 5k").contains("too small"));
+    assert_eq!(harness.handover.at(), 200_000);
+    let capped = output(&mut harness, "/handover-at 300k");
+    assert!(
+        capped.starts_with("This session's main agent hands over at 200k at the latest"),
+        "{capped}"
+    );
+    assert_eq!(harness.handover.at(), 200_000);
+    let lowered = output(&mut harness, "/handover-at 100,000");
+    assert!(
+        lowered.starts_with("The main agent now hands over at 100k tokens of input."),
+        "{lowered}"
+    );
+    assert!(lowered.contains("Its context (150k) is over that already. The main agent hands over when your next message starts its turn"), "{lowered}");
+    assert_eq!(harness.handover.at(), 100_000);
+    assert_eq!(
+        harness.session.load_settings().unwrap().main_handover_at,
+        Some(100_000)
+    );
+    assert_eq!(
+        remote::Meter::read(harness.gauges.as_ref())
+            .settings
+            .handover_at,
+        100_000
+    );
+    assert!(output(&mut harness, "/handover-at").starts_with(
+        "The main agent hands over at 100k tokens of input (its latest request: 150k)."
+    ));
+    let end = tokio::time::timeout(
+        Duration::from_secs(30),
+        harness.turn(Prompt::User("Second.".into()), &mut inputs),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(end, TurnEnd::Answered));
+    assert_eq!(handovers(&harness), 1);
+}
+
+/// A size from the web page is announced at the terminal.
+#[tokio::test]
+async fn a_handover_size_set_from_the_web_page_is_announced() {
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, _inputs, _sender) = harness(temp.path(), LLMClient::new(), true);
+    harness.live_command("/handover-at 150k", Source::Web);
+    assert!(says(
+        &harness.feed,
+        "notice",
+        "The handover size was set to 150k from the web page."
+    ));
+    assert_eq!(harness.handover.at(), 150_000);
+}
+
+/// A session on the ChatGPT login hands over by itself at 250k: its
+/// configuration says so, and fin doesn't ask too.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_chatgpt_session_hands_over_at_250k() {
+    let temp = tempfile::tempdir().unwrap();
+    let bodies: Bodies = Arc::default();
+    let server = ModelServer::start(Arc::new({
+        let bodies = bodies.clone();
+        move |_, body: String| {
+            bodies.lock().unwrap().push(body.clone());
+            Box::pin(async move {
+                handing_over(
+                    &body,
+                    if body.contains("call_m1") {
+                        crate::mock_model::with_input(
+                            tool_call("m2", SHELL_TOOL, serde_json::json!({"command": "echo hi"})),
+                            251_000,
+                        )
+                    } else {
+                        crate::mock_model::with_input(
+                            tool_call("m1", SHELL_TOOL, serde_json::json!({"command": "echo hi"})),
+                            240_000,
+                        )
+                    },
+                    complete("m3", "Done."),
+                )
+            })
+        }
+    }))
+    .await;
+    let (mut harness, mut inputs, _sender) = harness(temp.path(), server.chatgpt_client(), true);
+    let model = resolve_model(&harness.settings.main.model).unwrap();
+    harness.settings.main.handover_at = Some(agents::default_handover(&model, true));
+    assert_eq!(harness.settings.main.handover_at, Some(250_000));
+    harness.main_config = agents::main_config(&agent_settings_of(&harness)).unwrap();
+    let _managers = equip(&mut harness, false);
+    harness.handover.set_at(250_000);
+    assert_eq!(harness.handover.configured(), 250_000);
+    let end = tokio::time::timeout(
+        Duration::from_secs(30),
+        harness.turn(Prompt::User("Work long.".into()), &mut inputs),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(end, TurnEnd::Answered));
+    assert_eq!(handovers(&harness), 1);
+    // Not at 240k; at 251k.
+    assert!(!body(&bodies, "call_m1", "call_m2").contains("Your conversation is getting long"));
+    assert!(body(&bodies, "Your conversation is getting long", "").contains("call_m2"));
+    assert!(says(
+        &harness.feed,
+        "notice",
+        "the conversation reached 251k tokens"
+    ));
+}
+
+/// A tool that returns `0` bytes of text: a large result.
+#[derive(Debug)]
+struct Big(usize);
+
+#[async_trait::async_trait]
+impl Tool for Big {
+    fn definition(&self) -> arko_agents::ToolDefinition {
+        arko_agents::ToolDefinition {
+            name: "big".into(),
+            description: "Returns a large text.".into(),
+            output_based_example: None,
+            parameters: Vec::new(),
+            parallel_safe: true,
+            tool_type_details: arko_agents::ToolTypeDetails::DeveloperDefined,
+            raw_json_schema_override: None,
+        }
+    }
+
+    async fn execute(
+        &self,
+        _: &arko_agents::TaskContext<'_>,
+        _: std::collections::HashMap<String, serde_json::Value>,
+    ) -> Result<String, arko_agents::ToolError> {
+        let line = "a line of the large result, as a log or a listing has them\n";
+        Ok(line.repeat(self.0 / line.len()))
+    }
+}
+
+/// How a turn on the ChatGPT login goes when its first call returns
+/// `bytes` of text at 240k tokens of input, 10k under the handover size:
+/// whether it ends answered, how many requests the backend refused for
+/// their size, the page's notices, the handovers, the reply and the
+/// requests' bodies. The mock backend counts a request's tokens as 240k
+/// for the first one plus 3 bytes a token for what was added since, and
+/// refuses one over 272k, as the ChatGPT backend does.
+async fn over_the_limit(bytes: usize) -> (bool, usize, Vec<String>, usize, String, Bodies) {
+    let temp = tempfile::tempdir().unwrap();
+    let bodies: Bodies = Arc::default();
+    let refused = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let server = ModelServer::start(Arc::new({
+        let (bodies, refused) = (bodies.clone(), refused.clone());
+        move |_, body: String| {
+            let tokens = {
+                let mut bodies = bodies.lock().unwrap();
+                bodies.push(body.clone());
+                240_000 + body.len().saturating_sub(bodies[0].len()) / 3
+            };
+            let refused = refused.clone();
+            Box::pin(async move {
+                if tokens > arko_ai::input_limit::CHATGPT_OAUTH_MAX_INPUT_TOKENS {
+                    refused.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    return crate::mock_model::overflow();
+                }
+                let turn = handing_over(
+                    &body,
+                    if body.contains("call_m1") {
+                        complete("m2", "Done without a handover.")
+                    } else {
+                        tool_call("m1", "big", serde_json::json!({}))
+                    },
+                    complete("m3", "Done after the handover."),
+                );
+                crate::mock_model::with_input(turn, tokens)
+            })
+        }
+    }))
+    .await;
+    let (mut harness, mut inputs, _sender) = harness(temp.path(), server.chatgpt_client(), true);
+    harness.settings.main.handover_at = Some(250_000);
+    harness.main_config = agents::main_config(&agent_settings_of(&harness)).unwrap();
+    harness
+        .main_config
+        .tool_config
+        .available_tool_names
+        .push("big".into());
+    let _managers = equip(&mut harness, false);
+    harness.tools.push(Arc::new(Big(bytes)));
+    harness.open(false).unwrap();
+    harness.handover.set_at(250_000);
+    assert_eq!(harness.handover.configured(), 250_000);
+    let end = tokio::time::timeout(
+        Duration::from_secs(30),
+        harness.turn(Prompt::User("Read the large result.".into()), &mut inputs),
+    )
+    .await
+    .unwrap();
+    harness.flush_printer().await;
+    let answered = matches!(end, TurnEnd::Answered);
+    let (handovers, reply) = if answered {
+        (handovers(&harness), summary(&harness))
+    } else {
+        (0, String::new())
+    };
+    (
+        answered,
+        refused.load(std::sync::atomic::Ordering::SeqCst),
+        texts(&harness.feed, "notice"),
+        handovers,
+        reply,
+        bodies,
+    )
+}
+
+/// One tool result (300 KB, about 100k tokens) takes the next request
+/// past the ChatGPT login's limit just before the handover size, by less
+/// than arko's lower bound (10 bytes a token) sees, so it goes into the
+/// conversation whole. arko asks for the handover report in that request,
+/// as its estimate is past the size; the backend refuses it, arko
+/// shortens the result and sends it again, and the handover goes ahead.
+/// The user sees the refusal as an error notice.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_result_past_the_input_limit_is_shortened_after_a_refusal_and_the_handover_goes_ahead() {
+    let (answered, refused, notices, handovers, reply, bodies) = over_the_limit(300_000).await;
+    assert!(answered, "{notices:#?}");
+    assert_eq!(reply, "Done after the handover.");
+    assert_eq!(handovers, 1);
+    assert_eq!(refused, 1);
+    assert!(
+        notices.iter().any(|text| text.starts_with(
+            "The request was over the model's input limit; the result of big was shortened and the request is sent again (1/2)"
+        )),
+        "{notices:#?}"
+    );
+    // The report was asked for in the request the result first went in.
+    let whole = body(&bodies, "call_m1", "Shortened");
+    assert!(whole.len() > 300_000 && whole.contains("Your conversation is getting long"));
+    assert!(body(&bodies, "Shortened", "REPORT:").contains("Your conversation is getting long"));
+}
+
+/// A result so large (1 MB) that even arko's lower bound puts the request
+/// past the limit: arko shortens it as it joins the conversation, before
+/// sending, and the backend refuses nothing. What is left is under the
+/// handover size, so this turn ends without one.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_result_far_past_the_input_limit_is_shortened_before_sending() {
+    let (answered, refused, notices, handovers, reply, bodies) = over_the_limit(1_000_000).await;
+    assert!(answered, "{notices:#?}");
+    assert_eq!(reply, "Done without a handover.");
+    assert_eq!(refused, 0, "{notices:#?}");
+    assert_eq!(handovers, 0);
+    let shortened = body(&bodies, "call_m1", "");
+    assert!(shortened.contains("Shortened") && shortened.len() < 100_000);
+}

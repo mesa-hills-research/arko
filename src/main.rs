@@ -20,6 +20,7 @@ mod agents;
 mod credentials;
 mod crew;
 mod glyphs;
+mod handover;
 mod index;
 mod mcp;
 mod message;
@@ -274,10 +275,9 @@ async fn run(args: Args) -> Result<ExitCode, String> {
                 || args.cache_1h
                 || args.no_cache_1h
                 || args.shell.is_some()
-                || args.handover_at.is_some()
             {
                 eprintln!(
-                    "fin: a resumed session keeps the models, shell and handover size it was started with ({})",
+                    "fin: a resumed session keeps the models and shell it was started with ({})",
                     settings.main.describe()
                 );
             }
@@ -417,7 +417,9 @@ async fn run(args: Args) -> Result<ExitCode, String> {
     };
     let main_config = agents::main_config(&agent_settings)?;
     let worker_config = agents::worker_config(&agent_settings)?;
-    let mut tools = managers.tools(&shell);
+    // Where the runs' command channels are kept, to ask for handovers.
+    let runs = Arc::new(handover::Runs::default());
+    let mut tools = managers.tools(&shell, runs.clone());
     tools.extend(mcp.tools().iter().cloned());
     if let Some(indexes) = &indexes {
         tools.extend(indexes.tools());
@@ -436,11 +438,21 @@ async fn run(args: Args) -> Result<ExitCode, String> {
     // opened later has the history.
     let feed = remote::Feed::new(MAIN);
     let (remote_actions, remote_input) = mpsc::unbounded_channel();
+    let handover = Arc::new(handover::Handover::new(
+        runs,
+        settings
+            .main_handover_at
+            .or(settings.main.handover_at)
+            .unwrap_or(settings.handover_at),
+        output.clone(),
+        feed.clone(),
+    ));
     let gauges = Arc::new(Gauges {
         workflow: Mutex::new(None),
         crew: Mutex::new(None),
         stats: stats.clone(),
         outside: outside.clone(),
+        handover: handover.clone(),
     });
     // The main agent's questions are put to the user at the prompt; with
     // no terminal, it is told there is no one to ask.
@@ -514,10 +526,14 @@ async fn run(args: Args) -> Result<ExitCode, String> {
         remote_bind: None,
         gauges,
         outside,
+        handover,
     };
     harness.project = project_instructions(&harness.settings.workspace);
     harness.open(!new)?;
     harness.outside_at_start(new, args.allow_outside_workspace);
+    if !new && let Some(tokens) = args.handover_at {
+        harness.handover_at_start(tokens);
+    }
     if one_shot && let Some(note) = &harness.unoffered {
         output.line(&output.warn(&format!("fin: {note}")));
     }
@@ -632,11 +648,13 @@ fn new_settings(args: &Args) -> Result<Settings, String> {
     let cache_1h = |id: &str| {
         want_1h && resolve_model(id).is_ok_and(|model| model.provider == Provider::Anthropic)
     };
+    // fin reaches OpenAI models over the ChatGPT login.
     let handover_at = |id: &str| {
         args.handover_at.or_else(|| {
-            resolve_model(id)
-                .ok()
-                .map(|model| agents::default_handover(&model))
+            resolve_model(id).ok().map(|model| {
+                let chatgpt = model.provider == Provider::OpenAI;
+                agents::default_handover(&model, chatgpt)
+            })
         })
     };
     let main = ModelSettings {
@@ -673,6 +691,7 @@ fn new_settings(args: &Args) -> Result<Settings, String> {
         worker,
         max_workers: args.workers.unwrap_or(NO_LIMIT),
         handover_at: session_handover,
+        main_handover_at: None,
         allow_outside_workspace: args.allow_outside_workspace,
         show_thinking: args.show_thinking,
         created: chrono::Utc::now(),
@@ -867,11 +886,12 @@ impl Managers {
         vec![self.commands.clone(), self.jobs.clone()]
     }
 
-    fn tools(&self, shell: &Shell) -> Vec<Arc<dyn Tool>> {
-        let mut tools: Vec<Arc<dyn Tool>> = vec![Arc::new(ShellTool::new(
-            self.commands.clone(),
-            shell.clone(),
-        ))];
+    /// The shell tool, which keeps the command channels of the runs it is
+    /// bound to in `runs`, and the terminal tools.
+    fn tools(&self, shell: &Shell, runs: Arc<handover::Runs>) -> Vec<Arc<dyn Tool>> {
+        let mut tools: Vec<Arc<dyn Tool>> = vec![Arc::new(
+            ShellTool::new(self.commands.clone(), shell.clone()).keeping_runs(runs),
+        )];
         for tool in TerminalTool::all(self.jobs.clone()) {
             tools.push(Arc::new(tool));
         }
@@ -1113,6 +1133,9 @@ struct Harness {
     gauges: Arc<Gauges>,
     /// Outside access, which the user turns on and off (`/outside`).
     outside: Arc<outside::Outside>,
+    /// The main agent's handover size, and the watch that asks for its
+    /// handovers (`/handover`, `/handover-at`).
+    handover: Arc<handover::Handover>,
 }
 
 impl Harness {
@@ -1234,6 +1257,13 @@ impl Harness {
             configs.push(config(WORKER, &self.worker_config));
         }
         self.outside.attach(&workflow, &configs);
+        self.handover.watch(
+            &workflow,
+            configs[0]
+                .handover
+                .as_ref()
+                .and_then(|handover| handover.at_input_tokens),
+        );
         let (control, controls) = mpsc::unbounded_channel();
         let task = tokio::spawn(ui::print_events(
             workflow.subscribe_events(),
@@ -1336,14 +1366,15 @@ impl Harness {
     /// The workers, as the banner and `/session` say it.
     /// When the agents hand over, as `/session` says it.
     fn handover_summary(&self) -> String {
-        let tokens = |model: &ModelSettings| {
-            format!(
-                "{}k tokens",
-                model.handover_at.unwrap_or(self.settings.handover_at) / 1000
-            )
-        };
-        let main = tokens(&self.settings.main);
-        let worker = tokens(&self.settings.worker);
+        let main = format!("{}k tokens", self.handover.at() / 1000);
+        let worker = format!(
+            "{}k tokens",
+            self.settings
+                .worker
+                .handover_at
+                .unwrap_or(self.settings.handover_at)
+                / 1000
+        );
         if self.settings.max_workers == 0 || main == worker {
             format!("handover at {main} of input")
         } else {
@@ -1451,6 +1482,7 @@ impl Harness {
                     "/new" => {
                         harness.conversation = Conversation::New;
                         harness.unread.clear();
+                        harness.handover.forget();
                         harness.output.line(
                             &harness
                                 .output
@@ -1702,10 +1734,146 @@ impl Harness {
             return false;
         };
         self.feed.user(command, source, Delivery::Command);
-        if name == "/outside" {
-            self.outside_command(argument, source);
+        match name {
+            "/outside" => self.outside_command(argument, source),
+            "/handover" => self.handover_command(argument, source),
+            _ => self.handover_at_command(argument, source),
         }
         true
+    }
+
+    /// `/handover`: the main agent hands over at its next step, or when
+    /// its next turn starts.
+    fn handover_command(&mut self, argument: &str, source: Source) {
+        if !argument.is_empty() {
+            self.mirrored(|harness| {
+                harness.output.line(&harness.output.error(
+                    "/handover takes nothing after it; /handover-at sets the size the agent hands over at.",
+                ))
+            });
+            return;
+        }
+        let Some(asked) = self.ask_handover() else {
+            self.mirrored(|harness| {
+                harness.output.line(
+                    "There is no conversation to hand over: your next message starts a new one.",
+                )
+            });
+            return;
+        };
+        if source == Source::Web && asked != handover::Asked::Already {
+            self.say(Level::Info, "A handover was asked for from the web page.");
+        }
+        self.mirrored(|harness| harness.output.line(handover_text(asked)));
+    }
+
+    /// `/handover-at`: the size the main agent hands over at, and with a
+    /// size, sets it.
+    fn handover_at_command(&mut self, argument: &str, source: Source) {
+        if argument.is_empty() {
+            let mut text = format!(
+                "The main agent hands over at {} tokens of input",
+                handover::shown(self.handover.at())
+            );
+            if let Some(input) = self.handover.input() {
+                text.push_str(&format!(
+                    " (its latest request: {})",
+                    handover::shown(input)
+                ));
+            }
+            text.push_str(". /handover-at 200k sets another size; /handover hands over now.");
+            self.mirrored(|harness| harness.output.line(&text));
+            return;
+        }
+        let tokens = match handover::parse_tokens(argument) {
+            Ok(tokens) => tokens,
+            Err(error) => {
+                self.mirrored(|harness| harness.output.line(&harness.output.error(&error)));
+                return;
+            }
+        };
+        let set = self.set_handover_at(tokens);
+        if source == Source::Web {
+            self.say(
+                Level::Info,
+                &format!(
+                    "The handover size was set to {} from the web page.",
+                    handover::shown(set)
+                ),
+            );
+        }
+        let lines = self.handover_set_lines(tokens, set);
+        self.mirrored(|harness| {
+            for line in &lines {
+                harness.output.line(line);
+            }
+        });
+    }
+
+    /// Asks the main agent for a handover: at its next step while it
+    /// works, else as its next turn starts. `None` when there is no
+    /// conversation to hand over.
+    fn ask_handover(&self) -> Option<handover::Asked> {
+        if self.feed.activity().working {
+            return Some(self.handover.ask_now());
+        }
+        let run = match &self.conversation {
+            Conversation::New => return None,
+            Conversation::Answered(result) => result.agent_run_id,
+            Conversation::Stopped(run) => run.result.agent_run_id,
+        };
+        Some(self.handover.ask_next(run))
+    }
+
+    /// `--handover-at` when resuming: the size the main agent hands over
+    /// at from now on.
+    fn handover_at_start(&mut self, tokens: usize) {
+        let set = self.set_handover_at(tokens);
+        for line in self.handover_set_lines(tokens, set) {
+            self.say(Level::Info, &line);
+        }
+    }
+
+    /// Sets the size the main agent hands over at, up to the one its
+    /// configuration hands over at by itself, and keeps it in the session.
+    /// Returns the size set.
+    fn set_handover_at(&mut self, tokens: usize) -> usize {
+        let set = self.handover.set_at(tokens);
+        self.settings.main_handover_at = Some(set);
+        if let Err(error) = self.session.save_settings(&self.settings) {
+            self.say(
+                Level::Error,
+                &format!("fin: could not save the session's settings: {error}"),
+            );
+        }
+        set
+    }
+
+    /// What the user is told when `tokens` was asked for and `set` set;
+    /// asks for the handover when the main agent's context is over it.
+    fn handover_set_lines(&self, tokens: usize, set: usize) -> Vec<String> {
+        let mut lines = vec![if set < tokens {
+            format!(
+                "This session's main agent hands over at {} at the latest: its conversation keeps the size it was started with. It now hands over at {}.",
+                handover::shown(self.handover.configured()),
+                handover::shown(set)
+            )
+        } else {
+            format!(
+                "The main agent now hands over at {} tokens of input.",
+                handover::shown(set)
+            )
+        }];
+        if let Some(input) = self.handover.input().filter(|input| *input >= set)
+            && let Some(asked) = self.ask_handover()
+        {
+            lines.push(format!(
+                "Its context ({}) is over that already. {}",
+                handover::shown(input),
+                handover_text(asked)
+            ));
+        }
+        lines
     }
 
     /// `/outside`: says whether outside access is on; `/outside on|off`
@@ -1917,6 +2085,12 @@ impl Harness {
                 );
                 out.line(
                     "/outside       outside access: whether the agents may change paths outside the working directory (/outside on, /outside off)",
+                );
+                out.line(
+                    "/handover      the main agent hands over now: it writes a report and goes on from it in a fresh conversation",
+                );
+                out.line(
+                    "/handover-at   the input size the main agent hands over at (/handover-at 200k)",
                 );
                 out.line("/exit          quit (Ctrl-D too); the session is saved");
                 out.line(&out.dim(
@@ -2530,8 +2704,21 @@ fn is_remote_command(text: &str) -> bool {
 }
 
 /// The commands that change a setting while the session runs, which take
-/// an argument: `/outside`.
-const LIVE_COMMANDS: [&str; 1] = ["/outside"];
+/// an argument: `/outside`, `/handover`, `/handover-at`.
+const LIVE_COMMANDS: [&str; 3] = ["/outside", "/handover", "/handover-at"];
+
+/// What the user is told of a handover asked for.
+fn handover_text(asked: handover::Asked) -> &'static str {
+    match asked {
+        handover::Asked::Now => {
+            "The main agent hands over at its next step: it writes a report of its work, then goes on from the report in a fresh conversation."
+        }
+        handover::Asked::Next => {
+            "The main agent hands over when your next message starts its turn: it writes a report of its work first, then goes on from the report in a fresh conversation."
+        }
+        handover::Asked::Already => "A handover is under way already.",
+    }
+}
 
 /// A live command, alone or with its argument: the command and the
 /// argument.
@@ -2633,6 +2820,7 @@ struct Gauges {
     crew: Mutex<Option<Arc<Crew>>>,
     stats: Arc<Mutex<Stats>>,
     outside: Arc<outside::Outside>,
+    handover: Arc<handover::Handover>,
 }
 
 impl remote::Meter for Gauges {
@@ -2650,7 +2838,7 @@ impl remote::Meter for Gauges {
                 .map(|crew| crew.describe()),
             settings: remote::LiveSettings {
                 outside: self.outside.is_on(),
-                ..remote::LiveSettings::default()
+                handover_at: self.handover.at(),
             },
         }
     }
@@ -2903,6 +3091,7 @@ mod tests {
             worker: luna.clone(),
             max_workers: NO_LIMIT,
             handover_at: 200_000,
+            main_handover_at: None,
             allow_outside_workspace: false,
             show_thinking: false,
             created: chrono::Utc::now(),
@@ -2945,11 +3134,18 @@ mod tests {
         let (input_sender, receiver) = mpsc::unbounded_channel();
         let (remote_actions, remote_input) = mpsc::unbounded_channel();
         let outside = Arc::new(outside::Outside::new(false, Vec::new(), workspace.clone()));
+        let handover = Arc::new(handover::Handover::new(
+            Arc::default(),
+            200_000,
+            output.clone(),
+            feed.clone(),
+        ));
         let gauges = Arc::new(Gauges {
             workflow: Mutex::new(None),
             crew: Mutex::new(None),
             stats: stats.clone(),
             outside: outside.clone(),
+            handover: handover.clone(),
         });
         let mut harness = Harness {
             settings,
@@ -2986,6 +3182,7 @@ mod tests {
             remote_bind: None,
             gauges,
             outside,
+            handover,
         };
         harness.open(false).unwrap();
         let inputs = Inputs {

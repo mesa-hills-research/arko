@@ -12,6 +12,7 @@ use arko_agents::{
     AgentConfig, AgentLLMConfig, AgentToolConfig, BuiltInEnvironmentDetail,
     EnvironmentDetailPlacement, EnvironmentDetailsConfig, HandoverConfig, PerToolConfigOverride,
 };
+use arko_ai::input_limit::effective_max_input_tokens;
 use arko_ai::{
     AnthropicCacheTtl, AnthropicReasoningEffort, GenerationConfig, Model, OpenAIEffort,
     OpenAIServiceTier, Provider, ReasoningConfig,
@@ -220,10 +221,27 @@ const INDEXES_NAMED: usize = 20;
 /// `max_workers` for no limit on how many workers run at once.
 pub const NO_LIMIT: u32 = u32::MAX;
 
+/// What the handover size leaves free below the input limit of the
+/// ChatGPT login's backend: the report request and the report the agent
+/// writes (a few thousand tokens), and the tool results of a step past
+/// the size. The size is checked before each request with its new tool
+/// results counted, so a step goes past it only by what the estimate
+/// misses, or when fin asks after a request reported its size.
+pub const CHATGPT_HANDOVER_ROOM: usize = 22_000;
+
 /// The input size, in tokens, at which an agent on `model` hands over
-/// unless `--handover-at` says otherwise: 500k on Claude models, 200k on
-/// others, and at most 80% of what the model accepts.
-pub fn default_handover(model: &Model) -> usize {
+/// unless `--handover-at` says otherwise: 500k on Claude models; over the
+/// ChatGPT login (`chatgpt_login`), what its backend accepts
+/// ([`CHATGPT_OAUTH_MAX_INPUT_TOKENS`](arko_ai::input_limit::CHATGPT_OAUTH_MAX_INPUT_TOKENS), 272k, which is less than the
+/// API's limit) less [`CHATGPT_HANDOVER_ROOM`], so 250k; 200k on others.
+/// Except over the ChatGPT login, at most 80% of what the model accepts.
+pub fn default_handover(model: &Model, chatgpt_login: bool) -> usize {
+    if chatgpt_login
+        && model.provider == Provider::OpenAI
+        && let Some(limit) = effective_max_input_tokens(model, true)
+    {
+        return limit.saturating_sub(CHATGPT_HANDOVER_ROOM);
+    }
     let tokens = match model.provider {
         Provider::Anthropic => 500_000,
         _ => 200_000,
@@ -784,18 +802,25 @@ mod tests {
     }
 
     #[test]
-    fn claude_models_hand_over_at_500k_and_others_at_200k() {
+    fn claude_models_hand_over_at_500k_chatgpt_at_250k_and_others_at_200k() {
         let opus = resolve_model("opus").unwrap();
-        assert_eq!(default_handover(&opus), 500_000);
+        assert_eq!(default_handover(&opus, false), 500_000);
+        assert_eq!(default_handover(&opus, true), 500_000);
         let sol = resolve_model("sol").unwrap();
-        assert_eq!(default_handover(&sol), 200_000);
+        // The ChatGPT backend's 272k, less the room: not the API's limit.
+        assert!(sol.max_input_tokens > 272_000);
+        assert_eq!(default_handover(&sol, true), 250_000);
+        assert_eq!(default_handover(&sol, false), 200_000);
         // Never past 80% of what the model accepts.
         let mut small = opus.clone();
         small.max_input_tokens = 200_000;
-        assert_eq!(default_handover(&small), 160_000);
+        assert_eq!(default_handover(&small, false), 160_000);
+        let mut small = sol.clone();
+        small.max_input_tokens = 128_000;
+        assert_eq!(default_handover(&small, true), 106_000);
 
         let mut main = model("opus", false);
-        main.handover_at = Some(default_handover(&opus));
+        main.handover_at = Some(default_handover(&opus, false));
         let worker = model("sol", false);
         let settings = settings(&main, &worker);
         let handover = |config: &AgentConfig| config.handover.clone().unwrap().at_input_tokens;

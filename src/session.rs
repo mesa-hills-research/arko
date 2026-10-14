@@ -22,6 +22,13 @@ pub struct Settings {
     /// `agents::NO_LIMIT` sets no limit.
     pub max_workers: u32,
     pub handover_at: usize,
+    /// The input size, in tokens, at which the main agent hands over, as
+    /// `/handover-at` (or `--handover-at` when resuming) last set it; `None`:
+    /// as its model settings say. fin asks for the handover at this size
+    /// (see `handover`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub main_handover_at: Option<usize>,
+    /// Outside access, as the session last had it (`/outside`).
     pub allow_outside_workspace: bool,
     /// Show the models' reasoning as they work (OpenAI models then also
     /// ask for reasoning summaries).
@@ -195,6 +202,7 @@ mod tests {
             worker: model,
             max_workers: 4,
             handover_at: 200_000,
+            main_handover_at: None,
             allow_outside_workspace: false,
             show_thinking: false,
             created,
