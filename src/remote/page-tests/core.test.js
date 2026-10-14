@@ -105,6 +105,15 @@ test('figures and workers read briefly', () => {
     ['context 142k/250k', '$3.20'],
   );
   assert.deepEqual(core.figures({ context_tokens: 900, cost: 0, plan_usage: 'ChatGPT plan 5 h 12%' }), ['context 900', '5 h 12%']);
+  assert.deepEqual(
+    core.figures({ cost: 0, api_price: 3.2, plan_usage: 'Claude plan 5 h 21%, 7 d 4%' }),
+    ['5 h 21%, 7 d 4%', '≈ $3.20'],
+  );
+  // A mixed session: the main agent on a plan, the workers on a key.
+  assert.deepEqual(
+    core.figures({ cost: 1.25, api_price: 4.5, plan_usage: 'Claude plan 5 h 21%' }),
+    ['5 h 21%', '$1.25', '≈ $4.50'],
+  );
   const words = core.workerWords(
     { id: 'r2', title: 'Fix flaky test', state: 'running', tool_calls: 18, started_at: 0, ended_at: null, last: '$ cargo test' },
     134_000,

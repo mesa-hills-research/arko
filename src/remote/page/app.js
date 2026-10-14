@@ -420,6 +420,15 @@
       }
     }
     $('empty').hidden = rows.length > 0;
+    if (!rows.length) {
+      // A worker of a resumed session ran before this history began.
+      const summary = worker && store.workers.get(worker);
+      $('empty').textContent = !worker
+        ? 'Nothing here yet.'
+        : summary && summary.report
+          ? 'Its work came before this page’s history began. Its report: ' + summary.report
+          : 'Nothing from it yet.';
+    }
     if (following) {
       setTop(log.scrollHeight);
       seen = newest();
@@ -505,8 +514,13 @@
     { passive: true },
   );
   document.addEventListener('keydown', (event) => {
-    if (event.target === text || event.target instanceof HTMLInputElement) return;
+    if (event.target === text || event.target instanceof HTMLInputElement || document.querySelector('dialog[open]')) return;
     if (['PageUp', 'ArrowUp', 'Home'].includes(event.key) || (event.key === ' ' && event.shiftKey)) letGo();
+    // End: back to the latest, as the pill does.
+    if (event.key === 'End' && !following) {
+      event.preventDefault();
+      follow();
+    }
   });
   $('jump').addEventListener('click', follow);
 
@@ -520,6 +534,7 @@
 
   function onReset(data) {
     const before = newest();
+    skew = null;
     if (!following) keep = place();
     store.reset(data.items, data.workers);
     nodes.clear();
@@ -533,11 +548,14 @@
   }
 
   function onItem(item) {
+    // This device's clock against fin's: the smallest gap a new item
+    // shows (the rest is the network's delay).
     const sample = Date.now() - item.at;
-    skew = skew === null ? sample : Math.min(skew, sample) * 0.9 + sample * 0.1;
+    skew = skew === null ? sample : Math.min(skew, sample);
     store.add(item);
     relayout = true;
     draw();
+    heard(item);
   }
 
   function onAppend(data) {
@@ -804,24 +822,27 @@
     loadLinks();
   });
 
-  /** A setting sent as a command, waiting for the status to show it. */
+  /**
+   * A command sent from the sheet (`/outside on`, `/handover-at 200k`,
+   * `/handover`), waiting for fin: `{ command, note, done(settings),
+   * lines }`. The status shows a setting once it changed; the lines are
+   * what fin answered in the transcript (an error for a bad value), shown
+   * under the setting so the reader needn't leave the sheet.
+   */
   let pending = null;
 
   function renderSettings() {
     const settings = (status && status.settings) || { outside: false, handover_at: 0 };
     const info = (status && status.info) || {};
     const switcher = $('outside-switch');
-    const shown = pending && pending.what === 'outside' ? pending.value : settings.outside;
-    switcher.setAttribute('aria-checked', String(shown));
-    switcher.setAttribute('aria-busy', String(Boolean(pending && pending.what === 'outside')));
+    const turning = pending && pending.outside !== undefined;
+    switcher.setAttribute('aria-checked', String(turning ? pending.outside : settings.outside));
+    switcher.setAttribute('aria-busy', String(Boolean(turning)));
     $('outside-about').textContent = settings.outside
       ? 'The agents may work anywhere on this computer.'
       : 'The agents stay in ' + (info.workspace || 'the workspace') + '.';
     $('handover-value').textContent = settings.handover_at ? C.tokens(settings.handover_at) + ' tokens' : 'Not set';
-    if (pending) {
-      const done = pending.what === 'outside' ? settings.outside === pending.value : settings.handover_at === pending.value;
-      if (done) settle(pending, true);
-    }
+    if (pending && pending.done && pending.done(settings)) settle(pending, true);
     const rows = [
       ['Model', info.model],
       ['Workspace', info.workspace],
@@ -844,29 +865,54 @@
     node.classList.toggle('error', Boolean(error));
   }
 
-  function settle(change, done) {
+  /** The command is through: it worked (`ok`), or fin said why not. */
+  function settle(change, ok) {
     clearTimeout(change.timer);
-    pending = null;
-    note(change.note, done ? '' : 'fin didn’t change it: see the transcript for why.', !done);
+    clearTimeout(change.wait);
+    if (pending === change) pending = null;
+    const said = change.lines.join('\n');
+    if (ok) note(change.note, said);
+    else note(change.note, said || 'fin didn’t change it: see the transcript for why.', true);
     renderSettings();
   }
 
-  /** Sends `command`, and waits (ten seconds at most) for the status to
-   * show `value`. */
-  async function setting(what, value, command, noteId) {
-    if (pending) return;
+  /** What fin says after the sheet's command: its answer, for the sheet. */
+  function heard(item) {
+    const change = pending;
+    if (!change) return;
+    if (item.kind === 'user' && item.delivery === 'command' && item.text === change.command) {
+      change.answered = true;
+      return;
+    }
+    if (!change.answered || !['output', 'notice'].includes(item.kind)) return;
+    change.lines.push(item.text);
+    if (!change.done) {
+      // A command that changes no setting (a handover) is through once fin answers.
+      settle(change, item.level !== 'error');
+      return;
+    }
+    // An answer, and the status still the same a moment later: it didn't take.
+    clearTimeout(change.wait);
+    change.wait = setTimeout(() => pending === change && settle(change, false), 1500);
+  }
+
+  /** Sends `command` from the sheet; `done(settings)` says when the
+   * status shows it took. */
+  async function command(text, noteId, done, outside) {
+    if (pending) return false;
     note(noteId, '');
-    const change = { what, value, note: noteId };
+    const change = { command: text, note: noteId, done, outside, lines: [] };
     pending = change;
     renderSettings();
-    if (!(await post('/api/message', { text: command }))) {
+    if (!(await post('/api/message', { text }))) {
       clearTimeout(change.timer);
       pending = null;
       renderSettings();
       note(noteId, $('error').textContent || 'Not sent.', true);
-      return;
+      return false;
     }
     change.timer = setTimeout(() => pending === change && settle(change, false), 10000);
+    return true;
   }
 
   $('outside-switch').addEventListener('click', () => {
@@ -874,7 +920,7 @@
     const on = Boolean(status && status.settings && status.settings.outside);
     if (on) {
       // Turning it off is the safe way: no question asked.
-      setting('outside', false, '/outside off', 'outside-note');
+      command('/outside off', 'outside-note', (settings) => !settings.outside, false);
     } else {
       $('outside-confirm').hidden = false;
       $('outside-allow').focus();
@@ -883,35 +929,27 @@
   $('outside-cancel').addEventListener('click', () => ($('outside-confirm').hidden = true));
   $('outside-allow').addEventListener('click', () => {
     $('outside-confirm').hidden = true;
-    setting('outside', true, '/outside on', 'outside-note');
+    command('/outside on', 'outside-note', (settings) => settings.outside, true);
   });
-
-  /** "250k", "250000" or "1.5M" as tokens. */
-  function readTokens(value) {
-    const match = value.trim().toLowerCase().replace(/[,_\s]/g, '').match(/^(\d+(?:\.\d+)?)(k|m)?$/);
-    if (!match) return null;
-    const n = parseFloat(match[1]) * (match[2] === 'k' ? 1e3 : match[2] === 'm' ? 1e6 : 1);
-    return Number.isFinite(n) && n >= 1000 ? Math.round(n) : null;
-  }
 
   $('handover-form').addEventListener('submit', (event) => {
     event.preventDefault();
-    const tokens = readTokens($('handover-input').value);
-    if (tokens === null) {
-      note('handover-note', 'Give a number of tokens, such as 250k.', true);
+    const size = $('handover-input').value.trim();
+    if (!size) {
+      note('handover-note', 'Give a size, such as 200k.', true);
       return;
     }
-    $('handover-input').value = '';
-    setting('handover', tokens, '/handover-at ' + tokens, 'handover-note');
+    const before = status && status.settings ? status.settings.handover_at : 0;
+    // fin reads the size ("200k", "200000") and says what's wrong with it.
+    command('/handover-at ' + size, 'handover-note', (settings) => settings.handover_at !== before).then((sent) => {
+      if (sent) $('handover-input').value = '';
+    });
   });
   $('handover-now').addEventListener('click', () => ($('handover-confirm').hidden = false));
   $('handover-cancel').addEventListener('click', () => ($('handover-confirm').hidden = true));
-  $('handover-go').addEventListener('click', async () => {
+  $('handover-go').addEventListener('click', () => {
     $('handover-confirm').hidden = true;
-    if (await post('/api/message', { text: '/handover' })) {
-      note('handover-note', 'Asked for a handover: the transcript shows it.');
-      $('settings').close();
-    }
+    command('/handover', 'handover-note', null);
   });
 
   /** The links to the page, with their codes, when fin offers them (the
@@ -960,7 +998,9 @@
     url.value = link.url;
     url.setAttribute('aria-label', 'Link');
     url.addEventListener('focus', () => url.select());
-    return [qr, element('div', 'link-where', link.interface || 'Link'), element('div', 'link-kind', KINDS[link.kind] || ''), url];
+    const words = element('div', 'link-text');
+    words.append(element('div', 'link-where', link.interface || 'Link'), element('div', 'link-kind', KINDS[link.kind] || ''), url);
+    return [qr, words];
   }
 
   /** fin's QR code, as an element: only shapes, never scripts or

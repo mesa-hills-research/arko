@@ -15,7 +15,8 @@ use crate::shell::{Shell, WindowsShell};
 use crate::ui::Input;
 
 /// Not a test: serves the web page for a scripted session, to try the
-/// page by hand. `FIN_DEMO_PORT` (8799) and `FIN_DEMO_SECONDS` (900);
+/// page by hand. `FIN_DEMO_HOST` (127.0.0.1), `FIN_DEMO_PORT` (8799) and
+/// `FIN_DEMO_SECONDS` (900);
 /// run with `cargo test remote_page_demo -- --ignored --nocapture` and
 /// open the link it prints. Messages: "Run the demo" (calls, two
 /// workers, a failed command, a question, a report), "demo:stream" (a
@@ -74,13 +75,25 @@ async fn remote_page_demo() {
                     _ => complete("w21", "The README's flags are current, except the note on --remote's port."),
                 };
             }
-            // The script the user's latest message names, and its step:
+            // The script the latest message names (a message after a stop
+            // comes as a note, after the last user message), and its step:
             // the results that came since.
             let last_user = body.rfind("\"role\":\"user\"").unwrap_or(0);
+            let latest = [
+                "Run the demo",
+                "demo:stream",
+                "demo:slow",
+                "demo:ask",
+                "demo:long",
+            ]
+            .into_iter()
+            .filter_map(|marker| body.rfind(marker).map(|at| (at, marker)))
+            .max()
+            .filter(|(at, _)| *at >= last_user);
             let after = |marker: &str| {
-                body[last_user..]
-                    .contains(marker)
-                    .then(|| body[last_user..].matches("function_call_output").count())
+                latest
+                    .filter(|(_, latest)| *latest == marker)
+                    .map(|(at, _)| body[at..].matches("function_call_output").count())
             };
             if let Some(step) = after("Run the demo") {
                 return match step {
@@ -138,9 +151,9 @@ async fn remote_page_demo() {
             if let Some(step) = after("demo:long") {
                 if step == 0 && let Some(feed) = feed.get() {
                     // "demo:long 500": that many.
-                    let count: usize = body[last_user..]
-                        .split("demo:long")
-                        .nth(1)
+                    let count: usize = body
+                        .rsplit("demo:long")
+                        .next()
                         .and_then(|rest| rest.trim_start().split(|c: char| !c.is_ascii_digit()).next())
                         .and_then(|digits| digits.parse().ok())
                         .unwrap_or(3500);
@@ -174,9 +187,22 @@ async fn remote_page_demo() {
     let temp = tempfile::tempdir().unwrap();
     let (mut harness, mut inputs, sender) =
         crate::tests::harness(temp.path(), server.client(), true);
+    // fin's shell, and the live switches the page's settings change.
     let shell = Shell::detect(WindowsShell::Powershell);
-    let managers = Managers::open(&harness.session, &shell, false).unwrap();
-    harness.tools = managers.tools(&shell);
+    let managers = Managers::open(&harness.session, &shell).unwrap();
+    harness.tools = managers.tools(&shell, harness.handover.runs());
+    harness.outside = Arc::new(crate::outside::Outside::new(
+        false,
+        managers.list(),
+        harness.settings.workspace.clone(),
+    ));
+    harness.gauges = Arc::new(crate::Gauges {
+        workflow: std::sync::Mutex::new(None),
+        crew: std::sync::Mutex::new(None),
+        stats: harness.stats.clone(),
+        outside: harness.outside.clone(),
+        handover: harness.handover.clone(),
+    });
     harness.open(false).unwrap();
     let _ = feed_cell.set(harness.feed.clone());
     let port = std::env::var("FIN_DEMO_PORT")
@@ -185,7 +211,10 @@ async fn remote_page_demo() {
         .unwrap_or(8799);
     harness
         .start_remote(remote::Bind {
-            ip: std::net::Ipv4Addr::LOCALHOST.into(),
+            ip: std::env::var("FIN_DEMO_HOST")
+                .ok()
+                .and_then(|host| host.parse().ok())
+                .unwrap_or(std::net::Ipv4Addr::LOCALHOST.into()),
             port: Some(port),
         })
         .await;

@@ -18,9 +18,8 @@
   <header class="top">
     <div class="status">
       <span id="state" class="state connecting"><span class="dot" aria-hidden="true"></span><span id="state-label">Connecting</span><span id="state-time" class="state-time"></span></span>
-      <span id="figures" class="figures"></span>
+      <span class="figures"><span id="outside" class="outside" hidden title="The agents may work outside the workspace">outside access</span><span id="figures"></span></span>
     </div>
-    <span id="outside" class="chip warn" hidden title="The agents may work outside the workspace">Outside</span>
     <div class="actions">
       <button id="workers-button" class="tool workers-button" type="button" hidden aria-haspopup="dialog"><span class="wdot" aria-hidden="true"></span><span id="workers-count">0 workers</span></button>
       <div class="views" role="radiogroup" aria-label="View">
@@ -48,7 +47,7 @@
       <div id="rows" class="rows"></div>
       <p id="empty" class="empty" hidden>Nothing here yet.</p>
     </main>
-    <button id="jump" class="jump" type="button" hidden><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 4v11M5 10l5 5 5-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg><span id="jump-text">Latest</span></button>
+    <button id="jump" class="jump" type="button" hidden><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 4v11M5 10l5 5 5-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg><span id="jump-text">Latest</span><kbd class="hint-key">End</kbd></button>
   </div>
 
   <footer class="bottom">

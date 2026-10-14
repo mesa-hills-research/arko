@@ -273,8 +273,11 @@
     if (status.context_tokens != null) {
       parts.push('context ' + tokens(status.context_tokens) + (handover ? '/' + tokens(handover) : ''));
     }
-    if (status.plan_usage) parts.push(status.plan_usage.replace(/^ChatGPT plan /, ''));
-    else if (status.cost > 0) parts.push('$' + status.cost.toFixed(2));
+    // A plan's usage ("Claude plan 5 h 21%, 7 d 4%"), what was billed,
+    // and what the usage on a plan would cost at API prices ("≈ $3.20").
+    if (status.plan_usage) parts.push(status.plan_usage.replace(/^.*?\bplan\s+/i, ''));
+    if (status.cost > 0) parts.push('$' + status.cost.toFixed(2));
+    if (status.api_price > 0) parts.push('≈ $' + status.api_price.toFixed(2));
     return parts;
   }
 
