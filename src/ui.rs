@@ -257,7 +257,7 @@ pub struct Stats {
     /// The subscription plans' usage windows, as last reported: one line
     /// for every plan the session's agents use (ChatGPT, Claude).
     pub plan_usage: Option<String>,
-    /// Each plan's part of `plan_usage`, by plan.
+    /// Each plan's part of `plan_usage`, by plan (`providers::plan_name`).
     pub plans: std::collections::BTreeMap<String, String>,
 }
 
@@ -521,7 +521,8 @@ impl EventPrinter {
             AgentEvent::PlanUsageReported(usage) => {
                 if let Some(text) = crate::providers::plan_usage_text(&usage) {
                     let mut stats = self.stats.lock().unwrap();
-                    stats.plans.insert(format!("{:?}", usage.plan), text);
+                    let plan = crate::providers::plan_name(usage.plan);
+                    stats.plans.insert(plan.to_string(), text);
                     stats.plan_usage = crate::providers::plan_usage_line(&stats.plans);
                 }
             }

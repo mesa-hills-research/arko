@@ -83,11 +83,14 @@ struct Args {
     /// gemini, flash); openrouter:<slug> for a model on OpenRouter
     /// (openrouter:anthropic/claude-opus-5.5); or cc:<model> for a Claude
     /// model in your installed Claude Code, on your Claude plan (cc:opus,
-    /// cc:fable). Default, by the credentials there are: opus with
-    /// ANTHROPIC_API_KEY, else sol with a ChatGPT login, else cc:opus with
-    /// Claude Code installed, else openrouter:anthropic/claude-opus-5.5
-    /// with OPENROUTER_API_KEY, else sol with OPENAI_API_KEY, else gemini
-    /// with GEMINI_API_KEY.
+    /// cc:fable). Default: the model of the last session you started
+    /// (with its workers' model, when that differed) while its credential
+    /// is there, else by the credentials there are: cc:opus with Claude
+    /// Code signed in, else opus with ANTHROPIC_API_KEY, else sol with a
+    /// ChatGPT login, else openrouter:anthropic/claude-opus-5.5 with
+    /// OPENROUTER_API_KEY, else sol with OPENAI_API_KEY, else gemini with
+    /// GEMINI_API_KEY. fin says which it took. Runs with -p don't change
+    /// the next default.
     #[arg(short, long)]
     model: Option<String>,
 
@@ -384,6 +387,12 @@ async fn run(args: Args) -> Result<ExitCode, String> {
         session
             .save_settings(&settings)
             .map_err(|error| format!("could not save the session: {error}"))?;
+        // The next session's default; see `providers::LastModels::remember`.
+        if args.prompt.is_none()
+            && let Err(error) = providers::LastModels::remember(&root, &settings)
+        {
+            eprintln!("fin: could not keep this session's models for the next one: {error}");
+        }
     }
     start_log(&session);
 
@@ -674,11 +683,17 @@ fn workspace(args: &Args) -> Result<PathBuf, String> {
 fn new_settings(args: &Args) -> Result<Settings, String> {
     let workspace = workspace(args)?;
     let name = |name: &str| Ok::<_, String>(providers::model_name(&resolve_model(name)?));
-    let main_model = match &args.model {
-        Some(model) => name(model)?,
-        None => default_model(args)
-            .ok_or_else(|| Need::Any.message())?
-            .to_string(),
+    let default = match &args.model {
+        Some(_) => None,
+        None => Some(default_model(args).ok_or_else(|| Need::Any.message())?),
+    };
+    let main_model = match (&args.model, &default) {
+        (Some(model), _) => name(model)?,
+        (None, Some(default)) => {
+            eprintln!("fin: {}", default.note);
+            name(&default.main)?
+        }
+        (None, None) => unreachable!("a default without --model"),
     };
     // The 1-hour cache is Anthropic's, by API key or on OpenRouter; other
     // models ignore it.
@@ -690,7 +705,15 @@ fn new_settings(args: &Args) -> Result<Settings, String> {
     let cache_1h = |id: &str| {
         want_1h && resolve_model(id).is_ok_and(|model| providers::takes_cache_ttl(&model))
     };
-    let worker_model = args.worker_model.as_deref().map(name).transpose()?;
+    // The last session's workers' model goes with its main model.
+    let worker_model = match &args.worker_model {
+        Some(model) => Some(name(model)?),
+        None => default
+            .as_ref()
+            .and_then(|default| default.worker.as_deref())
+            .map(name)
+            .transpose()?,
+    };
     // OpenAI models are all reached one way: the session keeps it.
     let uses_openai = std::iter::once(&main_model)
         .chain(&worker_model)
@@ -777,9 +800,10 @@ fn windows_shell(args: &Args) -> Result<WindowsShell, String> {
     }
 }
 
-/// The model of a new session without --model; `None` without credentials.
-fn default_model(args: &Args) -> Option<&'static str> {
-    providers::default_model(args.codex_auth.as_deref())
+/// The models of a new session without --model; `None` without
+/// credentials.
+fn default_model(args: &Args) -> Option<providers::DefaultModels> {
+    providers::default_models(args.codex_auth.as_deref(), &session::data_root().ok()?)
 }
 
 /// Logs go to the session's `fin.log`, not the terminal. `RUST_LOG` sets
@@ -2023,32 +2047,13 @@ impl Harness {
         let out = &self.output;
         match command {
             "/cost" => {
-                let workflow = self.workflow();
-                let result = workflow.result();
-                let (input, output) = result.agent_results.iter().fold((0, 0), |sum, run| {
-                    (
-                        sum.0 + run.total_input_tokens(),
-                        sum.1 + run.total_output_tokens(),
-                    )
-                });
-                let workers = self.crew.as_ref().map(|crew| crew.spent());
-                let (worker_dollars, worker_input, worker_output) =
-                    workers.unwrap_or((0.0, 0, 0));
-                out.line(&format!(
-                    "${:.2} billed in this session · {}k input and {}k output tokens",
-                    workflow.context().budget.total_spent(),
-                    input / 1000,
-                    output / 1000
-                ));
-                if worker_input + worker_output > 0 {
-                    out.line(&out.dim(&format!(
-                        "  of which the workers: ${worker_dollars:.2} · {}k input and {}k output tokens",
-                        worker_input / 1000,
-                        worker_output / 1000
-                    )));
-                }
-                if let Some(usage) = &self.stats.lock().unwrap().plan_usage {
-                    out.line(usage);
+                let plans = self.stats.lock().unwrap().plans.clone();
+                let ledger = self.workflow().cost_ledger();
+                for line in providers::cost_report(&ledger, &self.settings, &plans) {
+                    match line.detail {
+                        true => out.line(&out.dim(&format!("  {}", line.text))),
+                        false => out.line(&line.text),
+                    }
                 }
                 if let Some(indexes) = &self.indexes {
                     let (tokens, dollars) = indexes.spent();
@@ -2908,7 +2913,10 @@ impl remote::Meter for Gauges {
         let crew = lock(&self.crew).clone();
         let stats = lock(&self.stats).clone();
         remote::Reading {
-            cost: workflow.map_or(0.0, |workflow| workflow.context().budget.total_spent()),
+            cost: workflow
+                .as_ref()
+                .map_or(0.0, |workflow| workflow.context().budget.total_spent()),
+            api_price: workflow.and_then(|workflow| providers::api_price(&workflow.cost_ledger())),
             context_tokens: stats.context_tokens,
             plan_usage: stats.plan_usage,
             workers_running: crew.as_ref().map(|crew| crew.running()).unwrap_or_default(),
@@ -3399,9 +3407,14 @@ mod tests {
         assert_eq!(r1.state, remote::WorkerState::Finished);
         assert_eq!(r1.tool_calls, 2);
         let ledger = harness.workflow().context().budget.total_spent();
-        assert!(harness.crew.as_ref().unwrap().spent().0 > 0.0);
+        assert!(harness.workflow().cost_ledger().entries.iter().any(|entry| {
+            matches!(&entry.source, CostSource::Agent { agent_name, .. } if agent_name == WORKER)
+                && entry.amount > 0.0
+        }));
         assert_eq!(harness.spent(), ledger);
-        assert_eq!(remote::Meter::read(harness.gauges.as_ref()).cost, ledger);
+        let reading = remote::Meter::read(harness.gauges.as_ref());
+        assert_eq!(reading.cost, ledger);
+        assert_eq!(reading.api_price, None, "nothing ran on a plan");
         harness.crew.as_ref().unwrap().shutdown().await;
     }
 
@@ -4462,6 +4475,23 @@ mod tests {
         assert_eq!(harness.spent(), 0.0, "the plan, not dollars");
         let reading = remote::Meter::read(harness.gauges.as_ref());
         assert_eq!(reading.cost, 0.0);
+        // What the same calls would cost at Claude Opus 5.5's list prices.
+        let api_price = reading.api_price.unwrap();
+        assert!(api_price > 0.0, "{api_price}");
+        let plans = harness.stats.lock().unwrap().plans.clone();
+        let lines =
+            providers::cost_report(&harness.workflow().cost_ledger(), &harness.settings, &plans);
+        assert_eq!(
+            lines
+                .iter()
+                .map(|line| line.text.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "$0.00 billed in this session · 1k input and 0k output tokens",
+                &format!("≈ ${api_price:.2} at API prices: the Claude plan covers it"),
+                "Claude plan 5 h 12%, 7 d 3%",
+            ]
+        );
         assert_eq!(
             reading.plan_usage.as_deref(),
             Some("Claude plan 5 h 12%, 7 d 3%")
@@ -4533,6 +4563,112 @@ mod tests {
         assert_eq!(after(&argv, "--tools").as_deref(), Some(""), "{argv:?}");
         assert_eq!(after(&argv, "--model").as_deref(), Some("claude-fable-5-1"));
         assert_eq!(after(&argv, "--effort").as_deref(), Some("medium"));
+        harness.crew.as_ref().unwrap().shutdown().await;
+        managers.shutdown().await;
+    }
+
+    /// `/cost` on the ChatGPT login: nothing billed, what the calls would
+    /// cost at API prices, and the plan.
+    #[tokio::test]
+    async fn a_chatgpt_login_turn_bills_nothing_and_shows_its_api_price() {
+        use crate::mock_model::{ModelServer, complete};
+        let server = ModelServer::start(Arc::new(move |_, _| {
+            Box::pin(async move { complete("1", "Done.") })
+        }))
+        .await;
+        let temp = tempfile::tempdir().unwrap();
+        let (mut harness, mut inputs, _sender) =
+            harness(temp.path(), server.chatgpt_client(), false);
+        let end = tokio::time::timeout(
+            Duration::from_secs(30),
+            harness.turn(Prompt::User("Do it.".into()), &mut inputs),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(end, TurnEnd::Answered));
+        assert_eq!(harness.spent(), 0.0);
+        let reading = remote::Meter::read(harness.gauges.as_ref());
+        let api_price = reading.api_price.expect("the calls ran on the plan");
+        assert!(api_price > 0.0);
+        let lines = providers::cost_report(
+            &harness.workflow().cost_ledger(),
+            &harness.settings,
+            &Default::default(),
+        );
+        assert_eq!(
+            lines[0].text,
+            "$0.00 billed in this session · 0k input and 0k output tokens"
+        );
+        assert_eq!(
+            lines[1].text,
+            format!("≈ ${api_price:.2} at API prices: the ChatGPT plan covers it")
+        );
+        harness.crew.as_ref().unwrap().shutdown().await;
+    }
+
+    /// `/cost` in a mixed session: the main agent in Claude Code, on the
+    /// plan, and its worker on an API key, each part with its own figure.
+    #[tokio::test]
+    async fn a_mixed_session_s_cost_shows_each_part() {
+        use crate::mock_model::{ModelServer, complete};
+        let server = ModelServer::start(Arc::new(move |_, _| {
+            Box::pin(async move { complete("w", "There are 3 files.") })
+        }))
+        .await;
+        let temp = tempfile::tempdir().unwrap();
+        let fake = temp.path().join("fake");
+        std::fs::create_dir_all(&fake).unwrap();
+        let script = serde_json::json!([
+            [
+                {"tool": "mcp__arko__start_agent", "input": {"agent": WORKER, "task": "Count the files."}, "input_tokens": 2000},
+                {"tool": "mcp__arko__complete_task", "input": {"summary": "r1 is counting."}},
+            ],
+            [{"tool": "mcp__arko__complete_task", "input": {"summary": "Final: 3 files."}}],
+        ]);
+        std::fs::write(fake.join("script.json"), script.to_string()).unwrap();
+        let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), false);
+        let luna = harness.settings.main.clone();
+        let cc = ModelSettings {
+            model: "cc:claude-opus-5-5".into(),
+            effort: Effort::High,
+            fast: false,
+            cache_1h: false,
+            handover_at: None,
+        };
+        let managers = on_models(&mut harness, &cc, &luna, &fake_claude_code(&fake));
+        let end = tokio::time::timeout(
+            Duration::from_secs(60),
+            harness.turn(Prompt::User("How many files?".into()), &mut inputs),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(end, TurnEnd::Answered));
+        let end =
+            tokio::time::timeout(Duration::from_secs(60), harness.finish_workers(&mut inputs))
+                .await
+                .unwrap();
+        assert!(matches!(end, TurnEnd::Answered));
+        assert_eq!(summary(&harness), "Final: 3 files.");
+        let lines = providers::cost_report(
+            &harness.workflow().cost_ledger(),
+            &harness.settings,
+            &Default::default(),
+        );
+        let texts: Vec<&str> = lines.iter().map(|line| line.text.as_str()).collect();
+        assert_eq!(texts.len(), 3, "{texts:?}");
+        assert!(texts[0].contains("billed in this session"), "{texts:?}");
+        assert!(
+            texts[1].starts_with("main agent: ≈ $")
+                && texts[1].contains("at API prices, on the Claude plan"),
+            "{texts:?}"
+        );
+        assert!(
+            texts[2].starts_with("workers: $") && texts[2].contains("billed per token"),
+            "{texts:?}"
+        );
+        assert!(lines[1].detail && lines[2].detail);
+        let reading = remote::Meter::read(harness.gauges.as_ref());
+        assert!(reading.api_price.unwrap() > reading.cost && reading.cost > 0.0);
         harness.crew.as_ref().unwrap().shutdown().await;
         managers.shutdown().await;
     }

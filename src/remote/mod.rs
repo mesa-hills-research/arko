@@ -64,11 +64,19 @@ pub trait Meter: Send + Sync {
 /// The session's figures, for the page's status.
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct Reading {
-    /// What the session has cost, in dollars.
+    /// What the session has cost, in dollars: what was billed.
     pub cost: f64,
+    /// What the whole session's usage (the main agent's and the workers')
+    /// would have cost at API list prices, in dollars: `cost` plus the
+    /// list-price estimate of the calls a plan covered (Claude Code, the
+    /// ChatGPT login), which bill nothing per call. Present only when some
+    /// of it ran on a plan; for a session entirely on keys, `cost` says it
+    /// all.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub api_price: Option<f64>,
     /// The input of the main agent's latest model request, in tokens.
     pub context_tokens: Option<usize>,
-    /// The ChatGPT plan's usage windows.
+    /// The plans' usage windows (ChatGPT, Claude), as last reported.
     pub plan_usage: Option<String>,
     /// The workers running.
     pub workers_running: Vec<String>,
