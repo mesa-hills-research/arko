@@ -23,6 +23,11 @@ use crate::ui::Input;
 const AGAIN: Duration = Duration::from_secs(3);
 /// Lines a wheel notch scrolls.
 const WHEEL: i64 = 3;
+/// The theme picker previews the theme it is on once the selection has
+/// rested this long: holding a key repaints nothing, and quick steps
+/// repaint the screen less than 3 times a second (WCAG 2.3.1's threshold
+/// for flashes).
+pub const PREVIEW_REST: Duration = Duration::from_millis(350);
 /// Clicks this close together, on one cell, are a double or triple click.
 const MULTI_CLICK: Duration = Duration::from_millis(400);
 
@@ -719,7 +724,12 @@ impl App {
 
     /// The settings' rows, as this session has them.
     pub fn settings_rows(&self) -> Vec<SettingsRow> {
-        let mut rows = vec![SettingsRow::View, SettingsRow::Theme, SettingsRow::Mouse];
+        let mut rows = vec![
+            SettingsRow::View,
+            SettingsRow::Theme,
+            SettingsRow::Previews,
+            SettingsRow::Mouse,
+        ];
         if commands::find("/outside on").is_some() {
             rows.push(SettingsRow::Outside);
         }
@@ -738,8 +748,30 @@ impl App {
         close: bool,
     ) -> Option<Overlay> {
         if let Some(mut picker) = picker {
-            // The theme picker: moving previews; Enter keeps; Esc goes
-            // back to the theme before.
+            if let Some(choice) = picker.notice {
+                // The notice about flashing, over the picker: it is
+                // answered (and so never shown again) with Enter.
+                match key.code {
+                    _ if close => return Some(Overlay::Settings { row, picker: None }),
+                    KeyCode::Left | KeyCode::Right | KeyCode::Up | KeyCode::Down | KeyCode::Tab => {
+                        picker.notice = Some(1 - choice);
+                    }
+                    KeyCode::Enter => {
+                        picker.notice = None;
+                        self.prefs.flash_notice = true;
+                        self.prefs.theme_previews = Some(choice == 0);
+                        self.prefs.save(self.info.prefs.as_deref());
+                    }
+                    _ => {}
+                }
+                return Some(Overlay::Settings {
+                    row,
+                    picker: Some(picker),
+                });
+            }
+            // The theme picker: the theme it rests on is previewed (see
+            // `preview`). Enter keeps it at once, Esc goes back at once.
+            let before = picker.selected;
             match key.code {
                 _ if close => {
                     self.theme = self.catalog.theme(&picker.before, self.depth);
@@ -762,9 +794,11 @@ impl App {
                 }
                 _ => {}
             }
-            self.theme = self
-                .catalog
-                .theme(&picker.names[picker.selected].1, self.depth);
+            // Only a move starts the wait: keys that don't move it (at the
+            // list's end) leave the selection resting.
+            if picker.selected != before && self.previews() {
+                picker.moved = Some(Instant::now());
+            }
             return Some(Overlay::Settings {
                 row,
                 picker: Some(picker),
@@ -812,9 +846,18 @@ impl App {
                                 names,
                                 selected,
                                 before: self.theme.name.clone(),
+                                // The first time: the notice about
+                                // flashing, before any preview.
+                                notice: (!self.prefs.flash_notice).then_some(0),
+                                moved: None,
                             }),
                         });
                     }
+                }
+                SettingsRow::Previews => {
+                    self.prefs.theme_previews = Some(!self.previews());
+                    self.prefs.flash_notice = true;
+                    self.prefs.save(self.info.prefs.as_deref());
                 }
                 SettingsRow::Mouse => {
                     self.mouse = !self.mouse;
@@ -850,6 +893,43 @@ impl App {
             }
         }
         Some(Overlay::Settings { row, picker: None })
+    }
+
+    /// Whether the theme picker previews the theme it rests on.
+    pub fn previews(&self) -> bool {
+        self.prefs.theme_previews.unwrap_or(true)
+    }
+
+    /// When the picker's waiting preview is due: the runner wakes then.
+    pub fn preview_due(&self) -> Option<Instant> {
+        match &self.overlay {
+            Some(Overlay::Settings {
+                picker: Some(picker),
+                ..
+            }) => picker.moved.map(|moved| moved + PREVIEW_REST),
+            _ => None,
+        }
+    }
+
+    /// Shows the theme the picker rests on, once it has rested (`now`
+    /// past its due time): returns whether the screen changed.
+    pub fn preview(&mut self, now: Instant) -> bool {
+        let Some(Overlay::Settings {
+            picker: Some(picker),
+            ..
+        }) = &mut self.overlay
+        else {
+            return false;
+        };
+        match picker.moved {
+            Some(moved) if now >= moved + PREVIEW_REST => {
+                picker.moved = None;
+                let name = picker.names[picker.selected].1.clone();
+                self.theme = self.catalog.theme(&name, self.depth);
+                true
+            }
+            _ => false,
+        }
     }
 
     /// Whether the agents may work outside the workspace now.
@@ -1275,23 +1355,128 @@ pub(super) mod tests {
     }
 
     #[test]
+    fn the_flash_notice_is_answered_once_and_no_previews_holds() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("tui.json");
+        let session = || {
+            let info = Info {
+                prefs: Some(path.clone()),
+                ..Info::default()
+            };
+            App::new(
+                Snapshot::default(),
+                Editor::new(History::load(None)),
+                info,
+                Catalog::load(None),
+                Depth::Rgb,
+            )
+        };
+        let open = |app: &mut App| {
+            app.editor.set("/settings");
+            press(app, KeyCode::Enter, KeyModifiers::NONE);
+            press(app, KeyCode::Down, KeyModifiers::NONE);
+            press(app, KeyCode::Enter, KeyModifiers::NONE);
+        };
+        let notice = |app: &App| match &app.overlay {
+            Some(Overlay::Settings {
+                picker: Some(picker),
+                ..
+            }) => picker.notice,
+            _ => None,
+        };
+        let mut app = session();
+        open(&mut app);
+        assert_eq!(notice(&app), Some(0));
+        // Esc backs out of the notice and the picker, and the notice
+        // comes again next time.
+        press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert!(matches!(
+            app.overlay,
+            Some(Overlay::Settings { picker: None, .. })
+        ));
+        assert!(!Prefs::load(Some(&path)).flash_notice);
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(notice(&app), Some(0));
+        // No previews: kept in tui.json with the notice answered.
+        press(&mut app, KeyCode::Right, KeyModifiers::NONE);
+        assert_eq!(notice(&app), Some(1));
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        let saved = Prefs::load(Some(&path));
+        assert!(saved.flash_notice);
+        assert_eq!(saved.theme_previews, Some(false));
+        // A later session opens the picker without the notice, and moving
+        // changes nothing.
+        let mut app = session();
+        let before = app.theme.name.clone();
+        open(&mut app);
+        assert_eq!(notice(&app), None);
+        press(&mut app, KeyCode::Down, KeyModifiers::NONE);
+        assert_eq!(app.preview_due(), None);
+        assert_eq!(app.theme.name, before);
+        press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!(app.theme.name, before);
+        // The Previews row turns them back on.
+        press(&mut app, KeyCode::Down, KeyModifiers::NONE);
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert!(app.previews());
+        assert_eq!(Prefs::load(Some(&path)).theme_previews, Some(true));
+    }
+
+    #[test]
     fn the_theme_picker_previews_and_esc_goes_back() {
         let mut app = app();
-        assert_eq!(app.theme.name, "macOS Classic Dark");
+        let dark = "macOS Classic Dark";
+        assert_eq!(app.theme.name, dark);
+        let notice = |app: &App| match &app.overlay {
+            Some(Overlay::Settings {
+                picker: Some(picker),
+                ..
+            }) => picker.notice,
+            _ => None,
+        };
         app.editor.set("/settings");
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         press(&mut app, KeyCode::Down, KeyModifiers::NONE);
+        // The first time, the notice about flashing comes first, and keys
+        // choose in it: nothing is previewed.
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(notice(&app), Some(0));
         press(&mut app, KeyCode::Down, KeyModifiers::NONE);
-        assert_ne!(app.theme.name, "macOS Classic Dark");
-        press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
-        assert_eq!(app.theme.name, "macOS Classic Dark");
+        press(&mut app, KeyCode::Down, KeyModifiers::NONE);
+        assert_eq!(notice(&app), Some(0));
+        assert_eq!(app.theme.name, dark);
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(notice(&app), None);
+        assert!(app.prefs.flash_notice && app.previews());
+        // A move previews once the selection has rested, not before.
+        press(&mut app, KeyCode::Down, KeyModifiers::NONE);
+        let now = Instant::now();
+        assert!(!app.preview(now));
+        assert_eq!(app.theme.name, dark);
+        assert!(app.preview(now + PREVIEW_REST));
+        assert_ne!(app.theme.name, dark);
+        // Esc goes back at once.
+        press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!(app.theme.name, dark);
+        // The second time there is no notice. Enter keeps a theme at once.
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(notice(&app), None);
         press(&mut app, KeyCode::Up, KeyModifiers::NONE);
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         let chosen = app.theme.name.clone();
-        assert_ne!(chosen, "macOS Classic Dark");
+        assert_ne!(chosen, dark);
         assert_eq!(app.prefs.theme.as_deref(), Some(chosen.as_str()));
+        // With previews off, moving changes nothing until Enter.
+        press(&mut app, KeyCode::Down, KeyModifiers::NONE);
+        press(&mut app, KeyCode::Right, KeyModifiers::NONE);
+        assert!(!app.previews());
+        press(&mut app, KeyCode::Up, KeyModifiers::NONE);
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        press(&mut app, KeyCode::Down, KeyModifiers::NONE);
+        assert!(!app.preview(Instant::now() + PREVIEW_REST * 4));
+        assert_eq!(app.theme.name, chosen);
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert_ne!(app.theme.name, chosen);
         // The handover size steps to the next round size, as a command.
         let row = app
             .settings_rows()

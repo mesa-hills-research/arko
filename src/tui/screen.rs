@@ -707,6 +707,29 @@ mod tests {
     }
 
     #[test]
+    fn the_theme_picker_opens_with_the_flash_notice() {
+        let mut app = app();
+        for code in [KeyCode::Down, KeyCode::Enter] {
+            if code == KeyCode::Down {
+                app.editor.set("/settings");
+                app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+            }
+            app.key(KeyEvent::new(code, KeyModifiers::NONE));
+        }
+        let rows = screen(&mut app, 100, 30);
+        let all = rows.join("\n");
+        assert!(all.contains("Theme previews"), "{all}");
+        assert!(all.contains("flash"), "{all}");
+        assert!(all.contains(" Preview themes    No previews "), "{all}");
+        assert!(all.contains("Enter  go on"), "{all}");
+        // Answered, it is gone and the list shows.
+        app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        let all = screen(&mut app, 100, 30).join("\n");
+        assert!(!all.contains("Theme previews"), "{all}");
+        assert!(all.contains("Enter  keep"), "{all}");
+    }
+
+    #[test]
     fn the_transcript_fills_the_rest() {
         let mut app = app();
         let mut item = Item::new(Kind::Reply, "Hello **there**.");

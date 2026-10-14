@@ -34,6 +34,7 @@ pub enum Overlay {
 pub enum SettingsRow {
     View,
     Theme,
+    Previews,
     Mouse,
     Outside,
     Handover,
@@ -53,6 +54,12 @@ pub struct Picker {
     pub selected: usize,
     /// The theme when the picker opened: Esc goes back to it.
     pub before: String,
+    /// The notice about flashing, the first time the picker opens: the
+    /// choice it is on (0: previews, 1: none).
+    pub notice: Option<usize>,
+    /// When the selection last moved, while its preview waits for it to
+    /// rest.
+    pub moved: Option<std::time::Instant>,
 }
 
 /// A key, as one keycap: ` Ctrl+O `.
@@ -315,8 +322,20 @@ fn settings(frame: &mut Frame, app: &App, area: Rect, selected: usize) {
                 ],
                 if app.depth == Depth::Ansi16 {
                     "This terminal shows 16 colours: its own are used.".to_string()
+                } else if app.previews() {
+                    "Enter opens the themes, and resting on one previews it.".to_string()
                 } else {
-                    "Enter opens the themes, and moving through them previews each.".to_string()
+                    "Enter opens the themes. A theme shows when you choose it.".to_string()
+                },
+            ),
+            SettingsRow::Previews => (
+                "Look",
+                "Previews",
+                choices(theme, &["on", "off"], usize::from(!app.previews())),
+                if app.previews() {
+                    "Resting on a theme in the list shows it. Moving between light and dark themes makes the screen flash.".to_string()
+                } else {
+                    "The themes list changes nothing until you choose a theme with Enter.".to_string()
                 },
             ),
             SettingsRow::Mouse => (
@@ -453,6 +472,54 @@ fn theme_picker(frame: &mut Frame, app: &App, area: Rect, picker: &Picker) {
         .min(lines.len().saturating_sub(visible));
     put(frame, body, &lines, scroll);
     footer(frame, rect, theme, &[("Enter", "keep"), ("Esc", "back")]);
+    if let Some(choice) = picker.notice {
+        flash_notice(frame, app, area, choice);
+    }
+}
+
+/// The notice the theme picker opens with, once: previews can flash. It
+/// sits in front of the picker (a little wider, so it reads as its own
+/// box), comes before any preview, and offers the two ways on.
+fn flash_notice(frame: &mut Frame, app: &App, over: Rect, choice: usize) {
+    let theme = &app.theme;
+    let width = 56.min(over.width.saturating_sub(4)).max(20);
+    let inner = width.saturating_sub(4) as usize;
+    let text = "Resting on a theme in the list shows it. Moving between light and dark themes makes the whole screen flash. If flashing light affects you, choose No previews. Settings can change this later.";
+    let mut lines: Vec<Line<'static>> = wrap::wrap(&[Span::styled(text, theme.text())], inner, 0)
+        .into_iter()
+        .map(Line::from)
+        .collect();
+    lines.push(Line::default());
+    let options = ["Preview themes", "No previews"];
+    let mut row = Vec::new();
+    for (n, option) in options.iter().enumerate() {
+        if n > 0 {
+            row.push(Span::raw("  "));
+        }
+        let style = if n == choice {
+            theme.chosen()
+        } else {
+            theme.key()
+        };
+        row.push(Span::styled(format!(" {option} "), style));
+    }
+    lines.push(Line::from(row));
+    let height = (lines.len() as u16 + 4).min(over.height);
+    let rect = centred(over, width, height);
+    let inner_rect = frame_box(frame, rect, theme, "Theme previews");
+    let body = Rect::new(
+        inner_rect.x + 1,
+        inner_rect.y + 1,
+        inner_rect.width.saturating_sub(2),
+        inner_rect.height.saturating_sub(2),
+    );
+    put(frame, body, &lines, 0);
+    footer(
+        frame,
+        rect,
+        theme,
+        &[("← →", "choose"), ("Enter", "go on"), ("Esc", "back")],
+    );
 }
 
 /// The web page's links, ranked, while it runs.

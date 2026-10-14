@@ -335,6 +335,7 @@ async fn run(
             }
         }
         let enter_at = enter.unwrap_or_else(Instant::now);
+        let preview_at = app.preview_due();
         let burst_at = burst
             .as_ref()
             .map_or_else(Instant::now, |burst| burst.until);
@@ -384,6 +385,12 @@ async fn run(
                 if reading != app.reading || app.activity.working || workers || app.hint.is_some() {
                     app.reading = reading;
                     dirty = true;
+                }
+            }
+            _ = tokio::time::sleep_until(preview_at.unwrap_or_else(Instant::now).into()), if preview_at.is_some() => {
+                // The theme picker's selection has rested: its preview.
+                if app.preview(Instant::now()) {
+                    draw_now = true;
                 }
             }
             _ = tokio::time::sleep_until(enter_at.into()), if enter.is_some() => {

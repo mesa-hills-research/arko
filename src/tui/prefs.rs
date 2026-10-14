@@ -16,6 +16,13 @@ pub struct Prefs {
     /// Whether the mouse scrolls the transcript (off: the terminal selects).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mouse: Option<bool>,
+    /// Whether the theme picker previews the theme it is on (on unless
+    /// turned off).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub theme_previews: Option<bool>,
+    /// The notice about flashing was shown (once is enough).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub flash_notice: bool,
 }
 
 impl Prefs {
@@ -53,6 +60,8 @@ mod tests {
             view: Some("quiet".into()),
             theme: Some("Gruvbox Dark".into()),
             mouse: Some(false),
+            theme_previews: Some(false),
+            flash_notice: true,
         };
         prefs.save(Some(&path));
         assert_eq!(Prefs::load(Some(&path)), prefs);
