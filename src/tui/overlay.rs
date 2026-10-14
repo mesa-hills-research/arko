@@ -518,7 +518,17 @@ fn page(frame: &mut Frame, app: &App, area: Rect, link: usize, since: Instant) {
             }
         }
     }
-    let content = lines.iter().map(|line| line.width()).max().unwrap_or(20) as u16;
+    // As wide as the code and the link: the warning wraps.
+    let content = lines
+        .iter()
+        .filter(|line| {
+            line.spans
+                .first()
+                .is_none_or(|span| span.style != theme.warning())
+        })
+        .map(|line| line.width())
+        .max()
+        .unwrap_or(20) as u16;
     let width = (content + 4).clamp(44.min(area.width), area.width.max(1));
     // A long line wraps.
     let inner_width = width.saturating_sub(4) as usize;

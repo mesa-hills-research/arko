@@ -541,13 +541,19 @@ impl Roles {
             .unwrap_or(Rgb(0, 0, 0));
         let color = |key: &str| raw(key).and_then(|value| Rgb::parse(value, Some(background)));
         let text = color("foreground").unwrap_or(Rgb(255, 255, 255));
-        // `color`, moved toward the text until it reads on the background.
+        // `color`, darker on a light background (lighter on a dark one)
+        // until it reads there: its hue stays, so red still says red.
         let readable = |color: Rgb, on: Rgb| {
+            let toward = if on.luminance() > 0.18 {
+                Rgb(0, 0, 0)
+            } else {
+                Rgb(255, 255, 255)
+            };
             let mut shade = color;
             let mut step = 0.0;
             while shade.contrast(on) < READABLE && step < 1.0 {
-                step += 0.1;
-                shade = color.mix(text, step);
+                step += 0.05;
+                shade = color.mix(toward, step);
             }
             shade
         };
@@ -605,10 +611,17 @@ impl Roles {
         Self {
             background,
             text,
-            dim: readable(
-                first(&["muted.foreground"]).unwrap_or(background.mix(text, 0.6)),
-                background,
-            ),
+            dim: {
+                // (Dim text has no hue to keep: toward the text.)
+                let muted = first(&["muted.foreground"]).unwrap_or(background.mix(text, 0.6));
+                let mut shade = muted;
+                let mut step = 0.0;
+                while shade.contrast(background) < READABLE && step < 1.0 {
+                    step += 0.1;
+                    shade = muted.mix(text, step);
+                }
+                shade
+            },
             accent,
             fill,
             on_fill,
@@ -679,6 +692,18 @@ mod tests {
             on(roles.on_fill, roles.fill, "text on the accent");
             on(roles.text, roles.selection, "text on a selection");
         }
+    }
+
+    /// A colour too faint for text keeps its hue as it is made readable:
+    /// Adventure Time's red (3.0:1 on its background), lightened, is still
+    /// red.
+    #[test]
+    fn faint_colours_keep_their_hue() {
+        let catalog = Catalog::load(None);
+        let roles = Roles::of(catalog.find("Adventure Time").unwrap());
+        let Rgb(r, g, b) = roles.error;
+        assert!(r > g && r > b, "{:?}", roles.error);
+        assert!(roles.error.contrast(roles.background) >= READABLE);
     }
 
     /// macOS Classic Dark takes its link blue as the accent, and its
