@@ -82,8 +82,8 @@ struct Args {
     prompt: Option<String>,
 
     /// The model: an ID or alias (opus, fable, sonnet, sol, astra, luna,
-    /// gemini, flash); openrouter:<slug> for a model on OpenRouter
-    /// (openrouter:anthropic/claude-opus-5.5); or cc:<model> for a Claude
+    /// gemini, flash), openrouter:<slug> for a model on OpenRouter
+    /// (openrouter:anthropic/claude-opus-5.5), or cc:<model> for a Claude
     /// model in your installed Claude Code, on your Claude plan (cc:opus,
     /// cc:fable). Default: the model of the last session you started
     /// (with its workers' model, when that differed) while its credential
@@ -101,10 +101,10 @@ struct Args {
     #[arg(short, long, value_enum, default_value_t = Effort::Xhigh)]
     effort: Effort,
 
-    /// Fast mode: Anthropic's on Claude Opus 5.5 (priced at 2x; in Claude
-    /// Code, Claude Code's fast mode), or OpenAI's Fast mode (priced at 2x
-    /// with an API key; uses more of a ChatGPT plan). Gemini and OpenRouter
-    /// have none.
+    /// Fast mode: Anthropic's on Claude Opus 5.5, priced at 2x (Claude
+    /// Code's own fast mode for cc: models), or OpenAI's, priced at 2x with
+    /// an API key and using more of the plan with a ChatGPT login. Gemini
+    /// and OpenRouter have none.
     #[arg(long)]
     fast: bool,
 
@@ -134,7 +134,7 @@ struct Args {
     #[arg(long = "no-cache-1h")]
     no_cache_1h: bool,
 
-    /// How many workers may run at once (default: no limit); 0 turns them
+    /// How many workers may run at once. Default: no limit. 0 turns them
     /// off.
     #[arg(long)]
     workers: Option<u32>,
@@ -142,8 +142,8 @@ struct Args {
     /// Input size, in tokens, at which an agent writes a handover report and
     /// continues in a fresh conversation. Default: 500000 on Claude models,
     /// 250000 for OpenAI models on the ChatGPT login (whose backend accepts
-    /// 272000), 200000 on others (at most 80% of what the model accepts;
-    /// 100000 when OpenRouter's catalog can't say). When resuming, it sets
+    /// 272000), and 200000 on others, at most 80% of what the model accepts
+    /// (100000 when OpenRouter's catalog can't say). When resuming, it sets
     /// the main agent's size as /handover-at does (up to the size the
     /// session started with).
     #[arg(long)]
@@ -151,8 +151,8 @@ struct Args {
 
     /// Let commands and the file tools delete, move and overwrite paths
     /// outside the working directory too (protected paths, such as the
-    /// home directory itself, stay refused). It turns outside access on in
-    /// a resumed session too; /outside turns it on and off as you go.
+    /// home directory itself, stay refused). It also turns outside access
+    /// on in a resumed session, and /outside turns it on and off as you go.
     #[arg(long)]
     allow_outside_workspace: bool,
 
