@@ -114,8 +114,9 @@ fn put(frame: &mut Frame, area: Rect, lines: &[Line<'static>], scroll: usize) {
     }
 }
 
-/// Draws the overlay open, over `area` (the transcript's).
-pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
+/// Draws the overlay open, over `area` (the transcript's), or over the
+/// whole `screen` for the web page's code, which needs the height.
+pub fn draw(frame: &mut Frame, app: &App, area: Rect, screen: Rect) {
     let Some(overlay) = &app.overlay else {
         return;
     };
@@ -125,7 +126,7 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             Some(picker) => theme_picker(frame, app, area, picker),
             None => settings(frame, app, area, *row),
         },
-        Overlay::Remote { link, since } => page(frame, app, area, *link, *since),
+        Overlay::Remote { link, since } => page(frame, app, screen, *link, *since),
     }
 }
 
@@ -437,6 +438,10 @@ fn page(frame: &mut Frame, app: &App, area: Rect, link: usize, since: Instant) {
         let key = remote::session_key(&app.info.session_dir.join(remote::KEY_FILE)).ok()?;
         Some(remote::links(addr, &key))
     });
+    let warning = Line::from(Span::styled(
+        "The link holds the session's key. No TLS: on a network you don't trust, use an SSH tunnel or Tailscale.",
+        theme.warning(),
+    ));
     match links {
         None => {
             let text = if since.elapsed().as_secs() < 5 {
@@ -455,30 +460,33 @@ fn page(frame: &mut Frame, app: &App, area: Rect, link: usize, since: Instant) {
             let qr = (glyphs::symbols() != glyphs::Symbols::Ascii)
                 .then(|| remote::qr_lines(&shown.url))
                 .flatten();
-            let room = area.height.saturating_sub(8) as usize;
+            // The code, the link and what it is, in its borders.
+            let room = area.height.saturating_sub(4) as usize;
+            let mut code_shown = false;
             match qr {
-                Some(code) if code.len() <= room => {
+                Some(code)
+                    if code.len() <= room && code[0].chars().count() + 4 <= area.width as usize =>
+                {
                     // Dark modules on light, whatever the theme: as
                     // scanners read it.
-                    let style = Style::new()
-                        .fg(Color::Rgb(255, 255, 255))
-                        .bg(Color::Rgb(0, 0, 0));
                     let style = if theme.is_terminal() || app.depth != Depth::Rgb {
                         Style::new().fg(Color::White).bg(Color::Black)
                     } else {
-                        style
+                        Style::new()
+                            .fg(Color::Rgb(255, 255, 255))
+                            .bg(Color::Rgb(0, 0, 0))
                     };
                     for row in code {
                         lines.push(Line::from(Span::styled(row, style)));
                     }
+                    code_shown = true;
                 }
                 Some(_) => lines.push(Line::from(Span::styled(
-                    "(A taller window shows the QR code.)",
+                    "(A larger window shows the QR code.)",
                     theme.dim(),
                 ))),
                 None => {}
             }
-            lines.push(Line::default());
             lines.push(Line::from(Span::styled(shown.url.clone(), theme.text())));
             let mut about = vec![Span::styled(
                 match (&shown.interface, shown.loopback) {
@@ -495,15 +503,15 @@ fn page(frame: &mut Frame, app: &App, area: Rect, link: usize, since: Instant) {
                 ));
             }
             lines.push(Line::from(about));
-            lines.push(Line::from(Span::styled(
-                "The link holds the session's key. No TLS: on a network you don't trust, use an SSH tunnel or Tailscale.",
-                theme.warning(),
-            )));
+            // The warning, when there is room (the transcript has it too).
+            if !code_shown || lines.len() + 2 + 4 <= area.height as usize {
+                lines.push(warning);
+            }
         }
     }
     let content = lines.iter().map(|line| line.width()).max().unwrap_or(20) as u16;
-    let width = (content + 4).clamp(44, area.width.saturating_sub(2).max(44));
-    // The long warning wraps.
+    let width = (content + 4).clamp(44.min(area.width), area.width.max(1));
+    // A long line wraps.
     let inner_width = width.saturating_sub(4) as usize;
     let lines: Vec<Line<'static>> = lines
         .into_iter()
@@ -518,14 +526,14 @@ fn page(frame: &mut Frame, app: &App, area: Rect, link: usize, since: Instant) {
             }
         })
         .collect();
-    let height = (lines.len() as u16 + 4).min(area.height);
+    let height = (lines.len() as u16 + 2).min(area.height);
     let rect = centred(area, width, height);
     let inner = frame_box(frame, rect, theme, "Web page");
     let body = Rect::new(
         inner.x + 1,
-        inner.y + 1,
+        inner.y,
         inner.width.saturating_sub(2),
-        inner.height.saturating_sub(2),
+        inner.height,
     );
     put(frame, body, &lines, 0);
     footer(

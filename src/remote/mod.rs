@@ -14,6 +14,7 @@
 //! trades it for a session cookie. There is no TLS.
 
 mod feed;
+mod history;
 mod qr;
 mod render;
 mod server;
@@ -33,6 +34,7 @@ pub use feed::{
     Activity, CallStatus, Delivery, Feed, Item, Kind, Level, MAIN_AGENT, Question, Snapshot,
     Source, Update, WorkerChange, WorkerState, WorkerSummary,
 };
+pub use history::items as history;
 pub use server::{Info, Server};
 
 /// The port served on when none is given; another free one when it is

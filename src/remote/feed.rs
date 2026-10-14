@@ -742,6 +742,25 @@ impl Feed {
         self.push(&mut state, item);
     }
 
+    /// Items from before fin started (a resumed session's conversation,
+    /// from [`history`](super::history)), numbered from 1: they join the
+    /// history as they are, numbered after the feed's own (a result keeps
+    /// its call).
+    pub fn restore(&self, items: Vec<Item>) {
+        let mut state = self.lock();
+        let base = state.next_id;
+        let at = now_ms();
+        for mut item in items {
+            item.id += base;
+            item.call = item.call.map(|call| call + base);
+            item.at = at;
+            state.next_id = state.next_id.max(item.id);
+            let (lane, budget) = state.lane(&item.agent);
+            lane.push(item.clone(), budget);
+            self.send(Update::Item(item));
+        }
+    }
+
     /// What fin says about the session.
     pub fn notice(&self, level: Level, text: &str) {
         let text = text.trim();

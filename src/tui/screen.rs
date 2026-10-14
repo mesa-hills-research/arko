@@ -82,7 +82,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let filter = app.filter();
     app.transcript
         .draw(frame.buffer_mut(), transcript, &filter, &theme);
-    overlay::draw(frame, app, transcript);
+    overlay::draw(frame, app, transcript, area);
 }
 
 /// The input box: the text between two rules the width of the screen (no
@@ -475,7 +475,6 @@ fn draw_menu(frame: &mut Frame, app: &App, above: Rect) -> u16 {
     };
     frame.buffer_mut().set_style(rect, surface);
     let name_width = items.iter().map(|c| c.name.len()).max().unwrap_or(8);
-    let args_width = items.iter().map(|c| c.args.len()).max().unwrap_or(0);
     for (row, command) in items.iter().enumerate().skip(first).take(rows) {
         let y = rect.y + (row - first) as u16;
         let chosen = row == selected;
@@ -486,10 +485,12 @@ fn draw_menu(frame: &mut Frame, app: &App, above: Rect) -> u16 {
                 Style::new().add_modifier(Modifier::BOLD),
             ),
             Span::raw("  "),
-            Span::styled(format!("{:<args_width$}", command.args), theme.dim()),
-            Span::raw("  "),
             Span::raw(command.about.to_string()),
         ];
+        // What it takes, on the row chosen.
+        if chosen && !command.args.is_empty() {
+            spans.push(Span::raw(format!("  {}", command.args)));
+        }
         if chosen {
             let line_rect = Rect::new(rect.x, y, rect.width, 1);
             frame.buffer_mut().set_style(line_rect, theme.chosen());
@@ -608,8 +609,12 @@ mod tests {
         for c in "/wa".chars() {
             app.key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
         }
-        let rows = screen(&mut app, 70, 8);
-        assert!(rows[3].contains("/watch  WORKER|main"), "{rows:?}");
+        let rows = screen(&mut app, 100, 8);
+        assert!(
+            rows[3].starts_with("   /watch  follow one worker"),
+            "{rows:?}"
+        );
+        assert!(rows[3].ends_with("WORKER|main"), "{rows:?}");
         assert_eq!(rows[6], " › /wa");
     }
 

@@ -357,7 +357,8 @@ async fn run(
             _ = frames.tick(), if dirty => draw_now = true,
             _ = clock.tick() => {
                 let reading = setup.meter.read();
-                if reading != app.reading || app.activity.working || app.hint.is_some() {
+                let workers = app.transcript.workers().iter().any(|w| w.state.is_active());
+                if reading != app.reading || app.activity.working || workers || app.hint.is_some() {
                     app.reading = reading;
                     dirty = true;
                 }

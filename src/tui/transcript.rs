@@ -319,7 +319,9 @@ impl Transcript {
 
     /// The blocks of `filter`'s view of the items, at `width`.
     fn blocks(&mut self, filter: &Filter, theme: &Theme, width: usize) -> Vec<Block> {
-        let style = theme_key(theme) ^ self.selected.unwrap_or(0).rotate_left(17);
+        // A worker's own view doesn't name it on every line.
+        let own = matches!(filter, Filter::Worker(_));
+        let style = theme_key(theme) ^ self.selected.unwrap_or(0).rotate_left(17) ^ u64::from(own);
         let mut blocks: Vec<Block> = Vec::new();
         if let Filter::Worker(id) = filter
             && let Some(worker) = self.worker(id)
@@ -392,7 +394,7 @@ impl Transcript {
                         entry.cache = Some(Cached {
                             width,
                             style,
-                            lines: entry_lines(&entry.item, theme, width, selected),
+                            lines: entry_lines(&entry.item, theme, width, selected, own),
                         });
                     }
                     entry.cache.as_ref().map_or(0, |c| c.lines.len())
@@ -669,7 +671,11 @@ impl Filter {
                         | Kind::Output
                         | Kind::Turn => Show::Item,
                         Kind::Notice if item.level != Some(Level::Info) => Show::Item,
-                        Kind::Call | Kind::Result | Kind::Text | Kind::Notice => Show::Count,
+                        // Tool activity is one line a turn that counts the
+                        // calls; the agent's text between them and fin's
+                        // info aren't what was said.
+                        Kind::Call => Show::Count,
+                        Kind::Result | Kind::Text | Kind::Notice => Show::Hidden,
                         Kind::WorkerLine => worker_line(),
                     },
                 }
@@ -710,7 +716,13 @@ fn theme_key(theme: &Theme) -> u64 {
 const MARGIN: usize = 2;
 
 /// An item's lines at `width` (margins included).
-fn entry_lines(item: &Item, theme: &Theme, width: usize, selected: bool) -> Vec<Line<'static>> {
+fn entry_lines(
+    item: &Item,
+    theme: &Theme,
+    width: usize,
+    selected: bool,
+    own: bool,
+) -> Vec<Line<'static>> {
     let inner = width.saturating_sub(MARGIN).max(1);
     let blank = || Span::raw(" ".repeat(MARGIN));
     let mark = |symbol: &str, style: Style| {
@@ -719,7 +731,7 @@ fn entry_lines(item: &Item, theme: &Theme, width: usize, selected: bool) -> Vec<
         Span::styled(format!("{symbol}{}", " ".repeat(pad)), style)
     };
     let worker_prefix = |item: &Item| -> Vec<Span<'static>> {
-        if item.is_main() {
+        if item.is_main() || own {
             Vec::new()
         } else {
             vec![Span::styled(

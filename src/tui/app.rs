@@ -94,6 +94,8 @@ pub struct App {
     effects: Vec<Effect>,
     /// The input box's width when last drawn, for ↑ and ↓.
     pub input_width: usize,
+    /// The question answered from here (by its ID).
+    answered: Option<u64>,
     /// The agent list has the focus, on this row (0 is the main agent).
     pub list_focus: Option<usize>,
     /// When the view started: the agent list shows the workers since.
@@ -147,6 +149,7 @@ impl App {
             mouse,
             effects: Vec::new(),
             input_width: 80,
+            answered: None,
             list_focus: None,
             started_ms: chrono::Utc::now().timestamp_millis(),
         }
@@ -228,6 +231,15 @@ impl App {
         }
         if asked {
             self.put_off = None;
+        }
+        // Answered elsewhere (the web page) while an answer was typed here:
+        // the text stays, as a message now.
+        if let Some(question) = &self.activity.question
+            && activity.question.is_none()
+            && self.answered != Some(question.id)
+            && !self.editor.is_empty()
+        {
+            self.say("The question was answered elsewhere; your text is a message now");
         }
         self.activity = activity;
         !self.focused && (asked || finished)
@@ -592,6 +604,7 @@ impl App {
         let text = self.editor.take();
         self.menu = Menu::default();
         self.put_off = None;
+        self.answered = self.activity.question.as_ref().map(|q| q.id);
         self.transcript.follow();
         self.send(text.trim_end());
     }

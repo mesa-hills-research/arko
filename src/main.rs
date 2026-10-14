@@ -1316,13 +1316,26 @@ impl Harness {
             out.echo(&out.dim(
                 "Type a message (end a line with \\ to continue it). While the agent works, type to add to its task; Ctrl-C stops the turn. /help for commands.",
             ));
-        } else if let Conversation::Answered(result) = &self.conversation {
+            return;
+        }
+        // The conversation so far, for the clients (the web page, the
+        // full-screen view): they start with what was said.
+        if let Some(run) = self
+            .workflow()
+            .result()
+            .agent_results
+            .into_iter()
+            .rfind(|run| run.agent_name == MAIN)
+        {
+            self.feed
+                .restore(remote::history(&run.task.conversation.messages));
+        }
+        if let Conversation::Answered(result) = &self.conversation {
             out.echo(&out.dim("Resumed. The last reply:"));
             out.echo(&result.summary);
-            self.feed.notice(Level::Info, "Resumed. The last reply:");
-            self.feed.reply(&result.summary);
+            self.feed.notice(Level::Info, "Resumed.");
         } else {
-            out.line(&out.dim("Resumed."));
+            self.say(Level::Info, "Resumed.");
         }
     }
 
