@@ -3,8 +3,6 @@
 //! where the terminal honours it), and, on this machine, the system
 //! clipboard as well, as not every terminal honours OSC 52.
 
-use std::io::Write;
-
 /// Copies `text` to the system clipboard, on its own thread (a clipboard
 /// program may take a moment); skipped over SSH, where this machine's
 /// clipboard isn't the user's.
@@ -22,11 +20,12 @@ pub fn system(text: String) {
 
 #[cfg(windows)]
 fn copy(text: &str) -> bool {
+    use windows_sys::Win32::Foundation::GlobalFree;
     use windows_sys::Win32::System::DataExchange::{
         CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData,
     };
     use windows_sys::Win32::System::Memory::{
-        GMEM_MOVEABLE, GlobalAlloc, GlobalFree, GlobalLock, GlobalUnlock,
+        GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock,
     };
     use windows_sys::Win32::System::Ole::CF_UNICODETEXT;
     // Windows' text has CRLF line breaks.
@@ -64,6 +63,7 @@ fn copy(text: &str) -> bool {
 
 #[cfg(not(windows))]
 fn copy(text: &str) -> bool {
+    use std::io::Write;
     let programs: &[(&str, &[&str])] = if cfg!(target_os = "macos") {
         &[("pbcopy", &[])]
     } else if std::env::var_os("WAYLAND_DISPLAY").is_some() {

@@ -658,7 +658,11 @@ impl Feed {
                 ..
             } => {
                 let why = reason.as_deref().unwrap_or_default().trim();
-                let message = if why.is_empty() {
+                // A stop cancels the calls that run ("The task was
+                // cancelled while this call was running").
+                let message = if why.contains("cancelled") {
+                    "stopped".to_string()
+                } else if why.is_empty() {
                     "refused".to_string()
                 } else {
                     format!("refused: {why}")
@@ -1240,6 +1244,21 @@ mod tests {
             None,
         );
         feed.event(&event("main", shell(running, "sleep 100")), None);
+        let stopped = Uuid::new_v4();
+        feed.event(&event("main", shell(stopped, "make test")), None);
+        feed.event(
+            &event(
+                "main",
+                AgentEvent::ToolRejected {
+                    tool_call_id: stopped,
+                    tool_name: SHELL_TOOL_NAME.into(),
+                    reason: Some(
+                        "The task was cancelled while this call was running, so the call was stopped before it finished.".into(),
+                    ),
+                },
+            ),
+            None,
+        );
         feed.turn_ended("1 s");
         let outcomes: Vec<(Option<CallStatus>, Option<String>)> = items(&feed)
             .into_iter()
@@ -1255,6 +1274,7 @@ mod tests {
                     Some("refused: outside the workspace".into())
                 ),
                 (Some(CallStatus::Failed), Some("interrupted".into())),
+                (Some(CallStatus::Failed), Some("stopped".into())),
             ]
         );
         // An error that isn't a call's is a notice.

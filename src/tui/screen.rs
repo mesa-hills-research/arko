@@ -309,6 +309,11 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
         ));
     }
     let reading = &app.reading;
+    // The risky setting, only while it is on, first.
+    if app.outside() {
+        left.push(sep());
+        left.push(Span::styled("outside access".to_string(), theme.warning()));
+    }
     if let Some(tokens) = reading.context_tokens {
         let handover = app.handover_at();
         let near = handover > 0 && tokens * 10 >= handover * 9;
@@ -327,8 +332,13 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
     // and what the session would cost at API list prices, where a plan
     // paid for some of it.
     if let Some(plan) = &reading.plan_usage {
+        // ("Claude plan 5 h 21%, 7 d 4%": the windows, as the page says
+        // them.)
+        let windows = plan
+            .split_once(" plan ")
+            .map_or(plan.as_str(), |(_, windows)| windows);
         left.push(sep());
-        left.push(Span::styled(plan.clone(), theme.dim()));
+        left.push(Span::styled(windows.to_string(), theme.dim()));
     }
     if reading.cost >= 0.005 {
         left.push(sep());
@@ -357,13 +367,6 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
     if app.view != View::Full && app.watching.is_none() {
         left.push(sep());
         left.push(Span::styled(app.view.name().to_string(), theme.dim()));
-    }
-    if app.outside() {
-        left.push(sep());
-        left.push(Span::styled(
-            "outside access on".to_string(),
-            theme.warning(),
-        ));
     }
 
     // The key that matters now, or a word for a moment.

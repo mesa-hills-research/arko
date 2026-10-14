@@ -877,6 +877,12 @@ impl App {
                 let Some(key) = self.transcript.drawn.key_at(event.column, event.row) else {
                     return;
                 };
+                // A turn's counted calls open in the Full view.
+                if self.transcript.is_counter(key) {
+                    self.set_view(View::Full);
+                    self.transcript.show(key);
+                    return;
+                }
                 // A worker's line opens its own transcript.
                 if let Some(item) = self.transcript.item(key)
                     && let Some(worker) = item.worker.clone()

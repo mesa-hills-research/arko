@@ -31,6 +31,8 @@ mod mock_model;
 mod outside;
 mod providers;
 mod remote;
+#[cfg(test)]
+mod remote_demo;
 mod session;
 mod shell;
 mod skills;
@@ -3199,7 +3201,7 @@ mod tests {
     /// A harness in `temp` on the model server's client, with workers;
     /// with a terminal when `interactive`. Returns it, its inputs, and
     /// what sends the user's input.
-    fn harness(
+    pub(crate) fn harness(
         temp: &Path,
         client: LLMClient,
         interactive: bool,

@@ -94,7 +94,11 @@ enum Shown {
     /// A worker view's heading: the worker's task.
     Heading(String),
     /// A turn's tool activity, counted (the Messages view).
-    Counter { calls: usize, failed: usize },
+    Counter {
+        calls: usize,
+        failed: usize,
+        running: usize,
+    },
 }
 
 /// A block of lines in the drawn transcript.
@@ -133,6 +137,8 @@ pub struct Drawn {
     rows: Vec<Option<u64>>,
     /// The "new" marker's area, while it shows.
     pub marker: Option<Rect>,
+    /// The keys of the counted turns' lines.
+    counters: Vec<u64>,
 }
 
 impl Drawn {
@@ -293,6 +299,22 @@ impl Transcript {
         self.pending_scroll += lines;
     }
 
+    /// Shows the item `id` at the top (a counted turn's first call, when
+    /// the Full view opens on it).
+    pub fn show(&mut self, id: u64) {
+        self.anchor = Some(Anchor {
+            key: id,
+            offset: 0,
+            height: 0,
+        });
+        self.pending_scroll = 0;
+    }
+
+    /// Whether the block `key` (as drawn last) is a turn's counted calls.
+    pub fn is_counter(&self, key: u64) -> bool {
+        self.drawn.counters.contains(&key)
+    }
+
     /// Scrolls to the top at the next draw.
     pub fn top(&mut self) {
         self.pending_scroll = i64::MIN / 2;
@@ -343,25 +365,28 @@ impl Transcript {
                 Show::Hidden => continue,
                 Show::Count => {
                     let turn = item.turn;
-                    let failed = item.status == Some(CallStatus::Failed);
-                    let calls = usize::from(item.kind == Kind::Call);
+                    let failed = usize::from(item.status == Some(CallStatus::Failed));
+                    let running = usize::from(item.status == Some(CallStatus::Running));
                     match counters.get(&turn) {
                         Some(&at) => {
                             if let Shown::Counter {
-                                calls: count,
+                                calls,
                                 failed: failures,
+                                running: runs,
                             } = &mut blocks[at].shown
                             {
-                                *count += calls;
-                                *failures += usize::from(failed);
+                                *calls += 1;
+                                *failures += failed;
+                                *runs += running;
                             }
                             continue;
                         }
                         None => {
                             counters.insert(turn, blocks.len());
                             Shown::Counter {
-                                calls,
-                                failed: usize::from(failed),
+                                calls: 1,
+                                failed,
+                                running,
                             }
                         }
                     }
@@ -563,6 +588,11 @@ impl Transcript {
             area,
             rows,
             marker: None,
+            counters: blocks
+                .iter()
+                .filter(|block| matches!(block.shown, Shown::Counter { .. }))
+                .map(|block| block.key)
+                .collect(),
         };
         if self.anchor.is_some() && area.height > 0 {
             let text = if new > 0 {
@@ -597,7 +627,11 @@ impl Transcript {
                 .worker(id)
                 .map(|worker| heading_lines(worker, theme, width))
                 .unwrap_or_default(),
-            Shown::Counter { calls, failed } => {
+            Shown::Counter {
+                calls,
+                failed,
+                running,
+            } => {
                 let mut spans = vec![
                     Span::raw("  "),
                     Span::styled(
@@ -611,6 +645,9 @@ impl Transcript {
                 ];
                 if *failed > 0 {
                     spans.push(Span::styled(format!(" · {failed} failed"), theme.error()));
+                }
+                if *running > 0 {
+                    spans.push(Span::styled(" · running".to_string(), theme.dim()));
                 }
                 vec![Line::from(spans)]
             }
@@ -656,7 +693,7 @@ impl Filter {
                     // A worker's calls and what went wrong show in Full;
                     // its text and report are its own view's.
                     return match (view, item.kind) {
-                        (View::Full, Kind::Call | Kind::Result) => Show::Item,
+                        (View::Full, Kind::Call) => Show::Item,
                         (View::Full, Kind::Notice) if item.level != Some(Level::Info) => Show::Item,
                         _ => Show::Hidden,
                     };
@@ -665,6 +702,7 @@ impl Filter {
                     View::Full | View::Quiet => Show::Item,
                     View::Messages => match item.kind {
                         Kind::User
+                        | Kind::Text
                         | Kind::Message
                         | Kind::Question
                         | Kind::Reply
@@ -672,10 +710,9 @@ impl Filter {
                         | Kind::Turn => Show::Item,
                         Kind::Notice if item.level != Some(Level::Info) => Show::Item,
                         // Tool activity is one line a turn that counts the
-                        // calls; the agent's text between them and fin's
-                        // info aren't what was said.
+                        // calls (as the web page shows it).
                         Kind::Call => Show::Count,
-                        Kind::Result | Kind::Text | Kind::Notice => Show::Hidden,
+                        Kind::Result | Kind::Notice => Show::Hidden,
                         Kind::WorkerLine => worker_line(),
                     },
                 }
@@ -1201,7 +1238,7 @@ mod tests {
 
         let full = rows(&mut t, &Filter::Main(View::Full), 60, 8);
         assert!(full.iter().any(|r| r.contains("r1 cargo test")), "{full:?}");
-        assert!(!full.iter().any(|r| r.contains("Thinking")));
+        assert!(!full.iter().any(|r| r.contains("Thinking about it")));
         let quiet = rows(&mut t, &Filter::Main(View::Quiet), 60, 8);
         assert!(quiet.iter().any(|r| r.contains("read a.rs")));
         assert!(!quiet.iter().any(|r| r.contains("r1 cargo test")));
@@ -1241,7 +1278,8 @@ mod tests {
             !messages.iter().any(|r| r.contains("0 tool calls")),
             "{messages:?}"
         );
-        assert!(!messages.iter().any(|r| r.contains("Thinking.")));
+        // The agent's text stays, as on the web page.
+        assert!(messages.iter().any(|r| r.contains("Thinking.")));
         assert_eq!(t.item(1).unwrap().agent, MAIN_AGENT);
     }
 }
