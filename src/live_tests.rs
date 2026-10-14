@@ -662,6 +662,11 @@ async fn a_handover_asked_for_while_the_agent_works_happens_at_its_next_step() {
         "{fresh}"
     );
     assert!(says(&harness.feed, "notice", "handed over"));
+    assert!(says(
+        &harness.feed,
+        "notice",
+        "the agent is writing a handover report (you asked, at 0k tokens)"
+    ));
 }
 
 /// `/handover` while no turn runs: nothing to hand over before the first
@@ -724,6 +729,11 @@ async fn a_handover_asked_for_while_idle_happens_when_the_next_turn_starts() {
     assert!(matches!(end, TurnEnd::Answered));
     assert_eq!(summary(&harness), "Second done.");
     assert_eq!(handovers(&harness), 1);
+    assert!(says(
+        &harness.feed,
+        "notice",
+        "the agent is writing a handover report (you asked, at 0k tokens)"
+    ));
     // The report was asked for with the message, before the agent acted on
     // it; the fresh conversation starts from the conversation's first
     // message and the report, which has the new message.
@@ -883,7 +893,7 @@ async fn a_chatgpt_session_hands_over_at_250k() {
     assert!(says(
         &harness.feed,
         "notice",
-        "the conversation reached 251k tokens"
+        "the agent is writing a handover report (at 251k tokens)"
     ));
 }
 

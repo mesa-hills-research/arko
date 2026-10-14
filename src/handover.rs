@@ -64,6 +64,34 @@ impl Runs {
     }
 }
 
+/// The main agent's runs the user asked for a handover (`/handover`, or
+/// `/handover-at` under the agent's size) that hasn't happened yet: the
+/// terminal and the feed say whose the handover is when it starts. By run
+/// ID, so tests running at once don't meet.
+static USER_ASKED: Mutex<Vec<Uuid>> = Mutex::new(Vec::new());
+
+fn user_asked(run: Uuid, asked: bool) {
+    let mut runs = crate::lock(&USER_ASKED);
+    runs.retain(|other| *other != run);
+    if asked {
+        runs.push(run);
+    }
+}
+
+/// What the terminal and the feed say when run `run`'s handover starts,
+/// at `input_tokens`.
+pub fn requested_text(run: Uuid, input_tokens: usize) -> String {
+    let asked = if crate::lock(&USER_ASKED).contains(&run) {
+        "you asked, "
+    } else {
+        ""
+    };
+    format!(
+        "the agent is writing a handover report ({asked}at {}k tokens)",
+        input_tokens / 1000
+    )
+}
+
 /// What became of a request for a handover.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Asked {
@@ -178,7 +206,10 @@ impl Handover {
             return Asked::Already;
         }
         match watch.run {
-            Some(run) if self.runs.send(run, UserCommand::RequestHandover) => watch.asked = true,
+            Some(run) if self.runs.send(run, UserCommand::RequestHandover) => {
+                watch.asked = true;
+                user_asked(run, true);
+            }
             // The turn's run isn't bound yet: at its first event.
             _ => watch.pending = true,
         }
@@ -189,14 +220,21 @@ impl Handover {
     /// next turn starts: in run `run`, its conversation's.
     pub fn ask_next(&self, run: Uuid) -> Asked {
         *crate::lock(&self.runs.handover_on_bind) = Some(run);
+        user_asked(run, true);
         Asked::Next
     }
 
     /// Forgets the main agent's conversation, and a handover asked for its
     /// next turn: the next message starts a new one (`/new`).
     pub fn forget(&self) {
-        *crate::lock(&self.watch) = Watch::default();
-        *crate::lock(&self.runs.handover_on_bind) = None;
+        let mut watch = crate::lock(&self.watch);
+        if let Some(run) = watch.run {
+            user_asked(run, false);
+        }
+        *watch = Watch::default();
+        if let Some(run) = crate::lock(&self.runs.handover_on_bind).take() {
+            user_asked(run, false);
+        }
     }
 
     /// Watches the main agent's events in `workflow` (in place of the
@@ -245,6 +283,7 @@ impl Handover {
             }
             AgentEvent::HandoverRequested { .. } => watch.asked = true,
             AgentEvent::ConversationHandedOver { .. } => {
+                user_asked(event.agent_run_id, false);
                 // The old conversation's size is no longer the agent's.
                 watch.input = None;
                 watch.asked = false;
@@ -287,6 +326,10 @@ impl Handover {
             return;
         }
         if self.runs.send(run, UserCommand::RequestHandover) {
+            // A pending handover is one the user asked for.
+            if watch.pending {
+                user_asked(run, true);
+            }
             watch.pending = false;
             watch.asked = true;
         }
