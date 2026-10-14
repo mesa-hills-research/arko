@@ -76,8 +76,8 @@ pub enum Effect {
     Mouse(bool),
     /// Draw the whole screen again.
     Clear,
-    /// The session checks `value` as `key`, saves it and uses it (the
-    /// result comes to [`App::keys_done`]).
+    /// The session saves `value` as `key` and uses it (the result comes to
+    /// [`App::keys_done`]).
     AddKey { key: &'static Key, value: Secret },
     /// The session removes `key`, which fin saved.
     RemoveKey(&'static Key),
@@ -269,8 +269,7 @@ impl App {
             return;
         }
         self.say(match outcome {
-            // (Only an addition ends while the menu is closed.)
-            crate::keys::Outcome::Done { .. } => format!("{} API key saved", key.provider),
+            crate::keys::Outcome::Done { said, .. } => said,
             crate::keys::Outcome::Failed(why) => why,
         });
     }
@@ -1694,7 +1693,7 @@ pub(super) mod tests {
         app.keys_done(
             &credentials::OPENAI,
             KeyOutcome::Done {
-                said: "OpenAI accepted the key, and fin saved it.".into(),
+                said: "fin saved the OpenAI API key.".into(),
                 warnings: Vec::new(),
             },
         );
@@ -1705,11 +1704,11 @@ pub(super) mod tests {
         // Closed, the status line says what became of it.
         app.keys_done(
             &credentials::OPENAI,
-            KeyOutcome::Failed("OpenAI refused sk-…wxyz (401), so it isn't saved.".into()),
+            KeyOutcome::Failed("Could not save /home/me/.env: Permission denied".into()),
         );
         assert_eq!(
             app.hint(),
-            Some("OpenAI refused sk-…wxyz (401), so it isn't saved.")
+            Some("Could not save /home/me/.env: Permission denied")
         );
         // The box's history has the command, not the key.
         app.editor.history_back();

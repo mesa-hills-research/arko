@@ -328,8 +328,6 @@ async fn run(
     let mut title = String::new();
     let mut enter: Option<Instant> = None;
     let mut burst: Option<Burst> = None;
-    // What the session did with the keys the menu sent.
-    let (keys_done, mut keys_results) = mpsc::unbounded_channel();
     app.set_reading(setup.meter.read());
     loop {
         if draw_now {
@@ -385,12 +383,6 @@ async fn run(
                 // Drawn at the next frame: streaming text doesn't redraw at
                 // every chunk.
                 dirty = true;
-            }
-            Some((key, outcome)) = keys_results.recv() => {
-                app.keys_done(key, outcome);
-                // The models it makes reachable, for `/model`'s picker.
-                app.set_reading(setup.meter.read());
-                draw_now = true;
             }
             _ = frames.tick(), if dirty => draw_now = true,
             _ = clock.tick() => {
@@ -463,13 +455,10 @@ async fn run(
                     let _ = terminal.clear();
                 }
                 Effect::AddKey { key, value } => {
-                    // Checked with the provider while the view goes on.
-                    let keys = setup.keys.clone();
-                    let done = keys_done.clone();
-                    tokio::spawn(async move {
-                        let outcome = keys.add(key, value).await;
-                        let _ = done.send((key, outcome));
-                    });
+                    let outcome = setup.keys.add(key, value);
+                    app.keys_done(key, outcome);
+                    // The models it makes reachable, for `/model`'s picker.
+                    app.set_reading(setup.meter.read());
                 }
                 Effect::RemoveKey(key) => {
                     let outcome = setup.keys.remove(key);

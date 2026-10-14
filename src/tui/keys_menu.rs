@@ -1,9 +1,9 @@
 //! The API keys menu (`/keys`, and API keys in the settings): each
 //! provider's key, masked, with where it comes from, or what it is for when
 //! none is set. Enter adds or replaces the key chosen: it is pasted into a
-//! field that shows only its start and last 4 characters, then checked with
-//! the provider and saved by the session (`keys`). Delete removes a key fin
-//! saved. A key never reaches the input box, its history or the clipboard:
+//! field that shows only its start and last 4 characters (enough to tell it
+//! is the key meant), then saved and used by the session (`keys`). Delete
+//! removes a key fin saved. A key never reaches the input box, its history or the clipboard:
 //! the menu keeps it as a [`Secret`] until it goes to the session.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -30,9 +30,6 @@ pub enum Step {
         value: Secret,
         error: Option<String>,
     },
-    /// The chosen key is checked with its provider and saved: shown as
-    /// `masked`.
-    Checking { masked: String },
     /// Removing the chosen key, once Enter confirms it.
     Removing,
 }
@@ -63,7 +60,7 @@ pub enum Action {
     Stay,
     /// Close the menu (back to the settings when it came from there).
     Close,
-    /// The session checks `value` as `key`, and saves it.
+    /// The session saves `value` as `key`, and uses it.
     Add {
         key: &'static Key,
         value: Secret,
@@ -181,17 +178,13 @@ impl KeysMenu {
                         *error = Some(problem);
                         return Action::Stay;
                     }
-                    let value = Secret::new(typed);
-                    self.step = Step::Checking {
-                        masked: credentials::masked(value.reveal(), key.prefix),
+                    return Action::Add {
+                        key,
+                        value: Secret::new(typed),
                     };
-                    return Action::Add { key, value };
                 }
                 _ => {}
             },
-            // The check goes on: its result shows when it comes.
-            Step::Checking { .. } if close => self.step = Step::List,
-            Step::Checking { .. } => {}
             Step::Removing => match key.code {
                 _ if close => self.step = Step::List,
                 KeyCode::Enter => {
@@ -225,7 +218,7 @@ impl KeysMenu {
         let on_it = self.state().key == key;
         match outcome {
             keys::Outcome::Done { said, warnings } => {
-                if on_it && matches!(self.step, Step::Checking { .. }) {
+                if on_it && matches!(self.step, Step::Entering { .. }) {
                     self.step = Step::List;
                 }
                 self.said = Some(Said {
@@ -234,8 +227,8 @@ impl KeysMenu {
                     failed: false,
                 });
             }
-            keys::Outcome::Failed(why) if on_it && matches!(self.step, Step::Checking { .. }) => {
-                // Refused: the field again, for another key.
+            keys::Outcome::Failed(why) if on_it && matches!(self.step, Step::Entering { .. }) => {
+                // Not saved: the field again, empty, with why.
                 self.step = Step::Entering {
                     value: Secret::default(),
                     error: Some(why),
@@ -254,7 +247,7 @@ impl KeysMenu {
     /// The box's title.
     fn title(&self) -> String {
         match self.step {
-            Step::Entering { .. } | Step::Checking { .. } => {
+            Step::Entering { .. } => {
                 let what = self.state().key.what;
                 let what = what.split_once(' ').map_or(what, |(_, rest)| rest);
                 what.to_string()
@@ -394,15 +387,10 @@ pub fn draw(frame: &mut Frame, theme: &Theme, area: Rect, menu: &KeysMenu) {
         }
         Step::Entering { value, error } => {
             let key = state.key;
-            let check = if key.name == credentials::VOYAGE_KEY {
-                "fin checks it with Voyage by embedding one word".to_string()
-            } else {
-                format!("fin checks it with {}", key.provider)
-            };
             wrapped(
                 &mut lines,
                 &format!(
-                    "Paste {} (from {}). {check}, then saves it in its .env (readable only by you) and uses it at once.",
+                    "Paste {} (from {}). fin saves it in its .env (readable only by you) and uses it at once.",
                     key.what, key.from
                 ),
                 theme.text(),
@@ -431,20 +419,6 @@ pub fn draw(frame: &mut Frame, theme: &Theme, area: Rect, menu: &KeysMenu) {
                 wrapped(&mut lines, error, theme.error(), 0);
             }
             vec![("Enter", "save"), ("Esc", "back")]
-        }
-        Step::Checking { masked } => {
-            lines.push(Line::from(vec![
-                Span::styled(format!("{} ", glyphs::render("›")), theme.accent()),
-                Span::styled(glyphs::render(masked).into_owned(), theme.text()),
-            ]));
-            lines.push(Line::default());
-            wrapped(
-                &mut lines,
-                &format!("Checking it with {}…", state.key.provider),
-                theme.dim(),
-                0,
-            );
-            vec![("Esc", "back")]
         }
     };
     let height = (lines.len() as u16 + 4).min(area.height);
@@ -583,16 +557,22 @@ pub(super) mod tests {
     }
 
     /// A key is pasted into a field that shows its start and last 4
-    /// characters; Enter sends it to be checked, and a refusal brings the
-    /// field back, empty, with why.
+    /// characters at once. Enter sends it to the session to save, and a key
+    /// that isn't saved brings the field back, empty, with why.
     #[test]
     fn a_pasted_key_shows_masked_and_goes_to_the_session() {
         let mut menu = KeysMenu::open(states(), "add openai", None);
         assert!(matches!(menu.step, Step::Entering { .. }));
         let key = "sk-proj-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789wxyz";
         menu.paste(&format!("  {key}\n"));
-        let text = screen(&menu, &Theme::terminal()).join("\n");
+        let rows = screen(&menu, &Theme::terminal());
+        println!("{}", rows.join("\n"));
+        let text = rows.join("\n");
         assert!(text.contains("OpenAI API key"), "{text}");
+        assert!(
+            text.contains("saves it in its .env (readable only by you)"),
+            "{text}"
+        );
         assert!(text.contains("› sk-…wxyz"), "{text}");
         assert!(
             text.contains(&format!("{} characters", key.len())),
@@ -605,18 +585,17 @@ pub(super) mod tests {
         };
         assert_eq!(added.name, credentials::OPENAI_KEY);
         assert_eq!(value.reveal(), key);
-        assert!(matches!(&menu.step, Step::Checking { masked } if masked == "sk-…wxyz"));
-        let refused = "OpenAI refused sk-…wxyz (401), so it isn't saved. Paste another key.";
+        let failed = "Could not save /home/me/.local/share/fin/.env: Permission denied";
         menu.done(
             &credentials::OPENAI,
-            keys::Outcome::Failed(refused.into()),
+            keys::Outcome::Failed(failed.into()),
             states(),
         );
         assert_eq!(
             menu.step,
             Step::Entering {
                 value: Secret::default(),
-                error: Some(refused.into())
+                error: Some(failed.into())
             }
         );
         // Another provider's key is caught before it is sent.
@@ -634,18 +613,14 @@ pub(super) mod tests {
         menu.done(
             &credentials::OPENAI,
             keys::Outcome::Done {
-                said: "OpenAI accepted the key, and fin saved it. OpenAI models can be used now."
-                    .into(),
+                said: "fin saved the OpenAI API key. OpenAI models can be used now.".into(),
                 warnings: vec!["Note: OPENAI_API_KEY in your environment comes first in later runs. This run uses what you entered.".into()],
             },
             states(),
         );
         assert_eq!(menu.step, Step::List);
         let text = screen(&menu, &Theme::terminal()).join("\n");
-        assert!(
-            text.contains("OpenAI accepted the key, and fin saved it."),
-            "{text}"
-        );
+        assert!(text.contains("fin saved the OpenAI API key."), "{text}");
         assert!(
             text.contains("Note: OPENAI_API_KEY in your environment"),
             "{text}"

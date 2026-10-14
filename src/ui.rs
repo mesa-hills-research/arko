@@ -253,7 +253,6 @@ pub fn spawn_input(
 ) -> Option<Box<dyn ExternalPrinter + Send>> {
     if std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
         let (printer_sender, printer_receiver) = std::sync::mpsc::channel();
-        let runtime = tokio::runtime::Handle::try_current().ok();
         std::thread::spawn(move || {
             let config = rustyline::Config::builder()
                 .auto_add_history(true)
@@ -283,10 +282,10 @@ pub fn spawn_input(
             while !CLOSING.load(Ordering::SeqCst) {
                 let input = match editor.readline(prompt.as_str()) {
                     Ok(line) => {
-                        if let (Some(keys), Some(runtime)) = (&keys, &runtime)
+                        if let Some(keys) = &keys
                             && let Some(key) = crate::keys::added_at_prompt(&line)
                         {
-                            crate::keys::add_at_prompt(keys, key, runtime);
+                            crate::keys::add_at_prompt(keys, key);
                             continue;
                         }
                         Input::Line(joined(&line))

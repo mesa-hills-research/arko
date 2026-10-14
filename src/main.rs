@@ -463,14 +463,6 @@ async fn run(args: Args) -> Result<ExitCode, String> {
         indexes.clone(),
         Some(feed.clone()),
     );
-    // Debug builds on a local test model server check keys there too.
-    #[cfg(debug_assertions)]
-    if let Some(url) = std::env::var("FIN_TEST_MODEL_URL")
-        .ok()
-        .filter(|url| !url.is_empty())
-    {
-        keys.use_local(&url);
-    }
     let mcp_tools = mcp.tool_names();
     let mcp_started = mcp.started();
     let known_indexes = indexes

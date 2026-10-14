@@ -591,7 +591,7 @@ mod tests {
         println!("{}", rows.join("\n"));
         assert!(
             rows.iter()
-                .any(|row| row.contains("with Voyage by embedding one word")),
+                .any(|row| row.contains("Paste a Voyage API key")),
             "{rows:#?}"
         );
         let row = app
