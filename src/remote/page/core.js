@@ -271,7 +271,9 @@
     if (!status) return parts;
     const handover = status.settings && status.settings.handover_at;
     if (status.context_tokens != null) {
-      parts.push('context ' + tokens(status.context_tokens) + (handover ? '/' + tokens(handover) : ''));
+      // As the terminal's status line says it: the context against the
+      // size the agent hands over at.
+      parts.push(tokens(status.context_tokens) + (handover ? '/' + tokens(handover) : ''));
     }
     // A plan's usage ("Claude plan 5 h 21%, 7 d 4%"), what was billed,
     // and what the usage on a plan would cost at API prices ("≈ $3.20").

@@ -259,7 +259,7 @@
       return box;
     }
     const item = row.item;
-    const box = element('div', 'row ' + item.kind + (item.level ? ' ' + item.level : ''));
+    const box = element('div', 'row ' + item.kind + (item.level ? ' level-' + item.level : ''));
     box.dataset.id = item.id;
     box.title = new Date(item.at).toLocaleTimeString();
     switch (item.kind) {
@@ -595,6 +595,11 @@
     $('state').className = 'state ' + state.key;
     $('state-label').textContent = state.label;
     $('figures').textContent = C.figures(status).join(' · ');
+    const settings = status && status.settings;
+    $('figures').title =
+      status && status.context_tokens != null
+        ? 'Context: ' + C.tokens(status.context_tokens) + ' tokens' + (settings && settings.handover_at ? ', handing over at ' + C.tokens(settings.handover_at) : '')
+        : '';
     $('outside').hidden = !(status && status.settings && status.settings.outside);
     const working = status && status.working && connection === 'live';
     stop.hidden = !working;

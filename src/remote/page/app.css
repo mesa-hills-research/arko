@@ -366,7 +366,7 @@ kbd {
   .bottom:focus-within .keys { display: flex; }
 }
 
-.error { color: var(--error); font-size: 13.5px; margin-bottom: 6px; }
+#error { color: var(--error); font-size: 13.5px; margin-bottom: 6px; }
 
 .ask {
   border-left: 3px solid var(--warn-mark);
@@ -433,8 +433,8 @@ details.call pre, .row.result pre {
 }
 .row.result { margin: 0 0 6px; }
 /* A failed command's output: marked, not shouted. */
-.row.result.warn pre { border-left-color: var(--warn-mark); }
-.row.result.error pre { color: var(--error); border-left-color: var(--error); }
+.row.result.level-warn pre { border-left-color: var(--warn-mark); }
+.row.result.level-error pre { color: var(--error); border-left-color: var(--error); }
 
 .row.count button {
   border: 0;
@@ -448,8 +448,8 @@ details.call pre, .row.result pre {
 .row.count .failed { color: var(--error); }
 
 .row.notice { font-size: 13.5px; color: var(--muted); }
-.row.notice.warn { color: var(--warn); }
-.row.notice.error { color: var(--error); }
+.row.notice.level-warn { color: var(--warn); }
+.row.notice.level-error { color: var(--error); }
 
 .row.output pre {
   margin: 0;
@@ -571,6 +571,9 @@ dialog.sheet::backdrop { background: rgba(0, 0, 0, 0.32); }
   border-bottom: 1px solid var(--line);
 }
 .sheet-head h2 { margin: 0; font-size: 16px; }
+/* A sheet opens with its title focused (not its first button), so Esc and
+   Tab work at once and nothing looks pressed. */
+.sheet-head h2:focus { outline: none; }
 .close { font-weight: 600; }
 .sheet-body {
   overflow-y: auto;
@@ -666,9 +669,9 @@ details.more > summary { color: var(--accent-text); cursor: pointer; padding: 6p
   padding: 5px 7px;
 }
 
-.info { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; margin: 0; font-size: 14px; }
-.info dt { color: var(--muted); }
-.info dd { margin: 0; overflow-wrap: anywhere; }
+.session-info { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; margin: 0; font-size: 14px; }
+.session-info dt { color: var(--muted); }
+.session-info dd { margin: 0; overflow-wrap: anywhere; }
 .workers-text { font: 12px/1.45 var(--mono); white-space: pre-wrap; color: var(--muted); margin: 4px 0 0; max-height: 40vh; overflow: auto; }
 
 /* ----- the lock ----- */
