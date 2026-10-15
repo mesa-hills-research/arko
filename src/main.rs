@@ -74,7 +74,7 @@ use crate::ui::{Control, Input, Output, Stats};
     name = "fin",
     version,
     about = "A general-purpose agent for the terminal: a shell, background jobs, file tools and workers that run in parallel.",
-    after_help = "Credentials: ANTHROPIC_API_KEY for Claude models. For OpenAI models, a ChatGPT login or OPENAI_API_KEY, one per session (--openai-auth). The ChatGPT login is a Codex auth.json (--codex-auth, else FIN_CODEX_AUTH, else Codex's own from `codex login`), or OPENAI_OAUTH_ACCESS_TOKEN with OPENAI_OAUTH_ACCOUNT_ID. GEMINI_API_KEY (or GOOGLE_API_KEY) for Gemini models, and OPENROUTER_API_KEY for openrouter: models. cc: models run in your installed Claude Code (`claude`, signed in with `claude auth login`) on your Claude plan, never on ANTHROPIC_API_KEY. When the model's credential is missing, fin asks for it on a setup screen and saves it in fin's .env. --setup opens that screen. While fin runs, /keys (also in /settings) adds, replaces and removes API keys, and a key added is used at once.\n\nSettings: the API keys above, FIN_CODEX_AUTH, FIN_OPENAI_AUTH (chatgpt or api-key), FIN_CACHE_1H (1 turns on --cache-1h), FIN_SHELL (cmd or powershell, on Windows), FIN_SYMBOLS, FIN_THEME, FIN_REMOTE_HOST and VOYAGE_API_KEY can be in the environment or in a .env file. fin reads the nearest .env in the current directory or a parent, then the one in fin's folder (FIN_HOME, else fin in your data directory, such as ~/.local/share/fin).\n\nThe screen: in a terminal, fin shows the session full screen (--repl keeps the line prompt). Enter sends, and Ctrl+J (or Shift+Enter where the terminal reports it) starts a new line. While the agent works, what you send adds to its task. Ctrl+O switches the view between full, quiet (each worker as one line) and messages. Ctrl+T, or ↓ from the input, reaches the agent list, where Enter shows a worker's own work and Esc goes back. Ctrl+C stops the turn, and the workers go on. Drag over the transcript to select text, and it is copied when you let go. A double click copies a word, and a triple click a line. /help lists the keys, and /settings holds the view, the theme and its previews, the mouse, outside access, the handover size, the web page and the API keys.\n\nThemes: FIN_THEME picks a theme by name, such as \"macOS Classic Light\" or \"Windows Dark\". The default is macOS Classic Dark, and `terminal` keeps the terminal's own colours. Your own themes go in the themes folder in fin's folder, in GPUI Kit's theme format. The theme list in /settings shows a theme when you rest on it, and Previews off there shows none until you choose one.\n\nOutside access: the agents change files only inside the working directory. /outside on, or --allow-outside-workspace (also when resuming), lets commands and the file tools change paths outside it too, and /outside off stops that. The agents are told when it changes, and workers follow it. Protected paths, such as the home directory itself, stay refused.\n\nModels: --model (-m) and --effort set the main agent's model, and --worker-model and --worker-effort the workers'. Before the conversation starts, /model MODEL [EFFORT] changes the main agent's model. After that the main agent keeps its model for the session, and /model worker MODEL [EFFORT] sets the model of workers started from now on. /model worker main makes them follow the main agent again. A worker keeps the model it started on, also when it is resumed or continued. /model and /model worker without a model open a picker of the models you can use.\n\nConversations: /new starts a new conversation in the session, and /resume goes back to an earlier one. The screen opens a list to choose from. At the line prompt and on the web page, /resume lists them and /resume N goes back to number N. A resumed session (-c, --resume) goes on with the conversation it was in.\n\nHandovers: when the main agent's input reaches the handover size (500k tokens on Claude models, 250k on the ChatGPT login, 200k on others), it writes a report and goes on from it in a fresh conversation. /handover-at SIZE lowers the size for the session, and /handover hands over now.\n\nCost: /cost shows what the session billed. For work on a Claude or ChatGPT plan, it also shows the cost at API prices and the plan's usage.\n\nMCP servers: fin starts those set up in --mcp-config files, in the project's .mcp.json (it asks first, and remembers the answer until the file's servers change) and in mcp.json in fin's folder. They use Claude Code's format ({\"mcpServers\": {\"name\": {\"command\": ..., \"args\": [...], \"env\": {...}}}}) and talk over standard input and output. Skills: folders with a SKILL.md, in the project's .agents/skills, .claude/skills or .skills, in skills in fin's folder, or in ~/.agents/skills or ~/.claude/skills.\n\nSearch indexes: `fin index create [PATH]` indexes a codebase or its docs, in any directory (the agents can create indexes too). fin keeps the working directory's indexes current while it runs, and other indexes once the agent searches them. The agents' searches return the top results' whole functions and sections. `fin index --help` lists the commands. Without VOYAGE_API_KEY, search is by keywords only.\n\nWorkers: the agent starts them to work in parallel while it goes on, each in the working directory or in a git worktree of its own (made in the session's folder, on a branch fin/<session>/<worker>). Their reports reach it as they finish. /workers lists them, /watch shows one's own work, and /stop-workers stops them.\n\nRemote: --remote (or /remote during a session) serves a web page for following the session and taking part in it from a browser, such as a phone's. It has the same views as the screen, and its settings change outside access and the handover size and show links for other devices. fin prints the links best first: the local network's, then Tailscale's, then other addresses, with VPN tunnels last. FIN_REMOTE_HOST (an interface or an address) puts its link first. The QR code is for the first link, and /remote qr [INTERFACE] draws one again. The link holds the session's key (kept in the session's folder), which the page trades for a cookie. fin listens on 127.0.0.1:8765 by default, and --remote 0.0.0.0 (or 0.0.0.0:PORT) lets in the devices on your network, or on your tailnet with Tailscale. The page is served without TLS. On a network you don't trust, reach it through an SSH tunnel (ssh -L 8765:127.0.0.1:8765 HOST, then open the link on your side) or Tailscale. /remote off stops it and ends its sessions, and /remote new-key makes a new key.\n\nSymbols: the classic Windows console (cmd.exe or PowerShell outside Windows Terminal) shows characters its fonts lack as question marks, so there fin prints stand-ins those fonts have. FIN_SYMBOLS sets the symbols: full, basic (those stand-ins) or ascii.\n\nCommands: /new, /resume, /model, /keys, /cost, /workers, /watch, /stop-workers, /view, /copy, /settings, /mcp, /skills, /session, /remote, /outside, /handover, /handover-at, /help, /exit."
+    after_help = "Credentials: ANTHROPIC_API_KEY for Claude models. For OpenAI models, a ChatGPT login or OPENAI_API_KEY, one per session (--openai-auth). The ChatGPT login is a Codex auth.json (--codex-auth, else FIN_CODEX_AUTH, else Codex's own from `codex login`), or OPENAI_OAUTH_ACCESS_TOKEN with OPENAI_OAUTH_ACCOUNT_ID. GEMINI_API_KEY (or GOOGLE_API_KEY) for Gemini models, and OPENROUTER_API_KEY for openrouter: models. cc: models run in your installed Claude Code (`claude`, signed in with `claude auth login`) on your Claude plan, never on ANTHROPIC_API_KEY. When the model's credential is missing, fin asks for it on a setup screen and saves it in fin's .env. --setup opens that screen. While fin runs, /keys (also in /settings) adds, replaces and removes API keys, and a key added is used at once.\n\nSettings: the API keys above, FIN_CODEX_AUTH, FIN_OPENAI_AUTH (chatgpt or api-key), FIN_CACHE_1H (1 turns on --cache-1h), FIN_SHELL (cmd or powershell, on Windows), FIN_SYMBOLS, FIN_THEME, FIN_REMOTE_HOST and VOYAGE_API_KEY can be in the environment or in a .env file. fin reads the nearest .env in the current directory or a parent, then the one in fin's folder (FIN_HOME, else fin in your data directory, such as ~/.local/share/fin).\n\nThe screen: in a terminal, fin shows the session full screen (--repl keeps the line prompt). Enter sends, and Ctrl+J (or Shift+Enter where the terminal reports it) starts a new line. While the agent works, what you send adds to its task. Ctrl+O switches the view between full, quiet (each worker as one line) and messages. Ctrl+T, or ↓ from the input, reaches the agent list, where Enter shows a worker's own work and Esc goes back. Ctrl+C stops the turn, and the workers go on. Drag over the transcript to select text, and it is copied when you let go. A double click copies a word, and a triple click a line. /help lists the keys, and /settings holds the view, the theme and its previews, the mouse, outside access, the handover size, the web page and the API keys.\n\nThemes: FIN_THEME picks a theme by name, such as \"macOS Classic Light\" or \"Windows Dark\". The default is macOS Classic Dark, and `terminal` keeps the terminal's own colours. Your own themes go in the themes folder in fin's folder, in GPUI Kit's theme format. The theme list in /settings shows a theme when you rest on it, and Previews off there shows none until you choose one.\n\nOutside access: the agents change files only inside the working directory. /outside on, or --allow-outside-workspace (also when resuming), lets commands and the file tools change paths outside it too, and /outside off stops that. The agents are told when it changes, and workers follow it. Protected paths, such as the home directory itself, stay refused.\n\nModels: --model (-m) and --effort set the main agent's model, and --worker-model and --worker-effort the workers'. Before the conversation starts, /model MODEL [EFFORT] changes the main agent's model. After that the main agent keeps its model for the session, and /model worker MODEL [EFFORT] sets the model of workers started from now on. /model worker main makes them follow the main agent again. A worker keeps the model it started on, also when it is resumed or continued. /model and /model worker without a model open a picker of the models you can use.\n\nConversations: /new starts a new conversation in the session, and /resume goes back to an earlier one. The screen opens a list to choose from. At the line prompt and on the web page, /resume lists them and /resume N goes back to number N. A resumed session (-c, --resume) goes on with the conversation it was in.\n\nHandovers: when the main agent's input reaches the handover size (500k tokens on Claude models, 250k on the ChatGPT login, 200k on others), it writes a report and goes on from it in a fresh conversation. On cc: models, Claude Code compacts the conversation at that size instead, and the agent goes on in the same conversation from Claude Code's summary. Workers do the same. /handover-at SIZE lowers the size for the session, and /handover hands over (or compacts) now.\n\nCost: /cost shows what the session billed. For work on a Claude or ChatGPT plan, it also shows the cost at API prices and the plan's usage.\n\nMCP servers: fin starts those set up in --mcp-config files, in the project's .mcp.json (it asks first, and remembers the answer until the file's servers change) and in mcp.json in fin's folder. They use Claude Code's format ({\"mcpServers\": {\"name\": {\"command\": ..., \"args\": [...], \"env\": {...}}}}) and talk over standard input and output. Skills: folders with a SKILL.md, in the project's .agents/skills, .claude/skills or .skills, in skills in fin's folder, or in ~/.agents/skills or ~/.claude/skills.\n\nSearch indexes: `fin index create [PATH]` indexes a codebase or its docs, in any directory (the agents can create indexes too). fin keeps the working directory's indexes current while it runs, and other indexes once the agent searches them. The agents' searches return the top results' whole functions and sections. `fin index --help` lists the commands. Without VOYAGE_API_KEY, search is by keywords only.\n\nWorkers: the agent starts them to work in parallel while it goes on, each in the working directory or in a git worktree of its own (made in the session's folder, on a branch fin/<session>/<worker>). Their reports reach it as they finish. /workers lists them, /watch shows one's own work, and /stop-workers stops them.\n\nRemote: --remote (or /remote during a session) serves a web page for following the session and taking part in it from a browser, such as a phone's. It has the same views as the screen, and its settings change outside access and the handover size and show links for other devices. fin prints the links best first: the local network's, then Tailscale's, then other addresses, with VPN tunnels last. FIN_REMOTE_HOST (an interface or an address) puts its link first. The QR code is for the first link, and /remote qr [INTERFACE] draws one again. The link holds the session's key (kept in the session's folder), which the page trades for a cookie. fin listens on 127.0.0.1:8765 by default, and --remote 0.0.0.0 (or 0.0.0.0:PORT) lets in the devices on your network, or on your tailnet with Tailscale. The page is served without TLS. On a network you don't trust, reach it through an SSH tunnel (ssh -L 8765:127.0.0.1:8765 HOST, then open the link on your side) or Tailscale. /remote off stops it and ends its sessions, and /remote new-key makes a new key.\n\nSymbols: the classic Windows console (cmd.exe or PowerShell outside Windows Terminal) shows characters its fonts lack as question marks, so there fin prints stand-ins those fonts have. FIN_SYMBOLS sets the symbols: full, basic (those stand-ins) or ascii.\n\nCommands: /new, /resume, /model, /keys, /cost, /workers, /watch, /stop-workers, /view, /copy, /settings, /mcp, /skills, /session, /remote, /outside, /handover, /handover-at, /help, /exit."
 )]
 struct Args {
     /// Send this message, print the reply and exit. Progress goes to
@@ -143,7 +143,9 @@ struct Args {
     workers: Option<u32>,
 
     /// Input size, in tokens, at which an agent writes a handover report and
-    /// continues in a fresh conversation. Default: 500000 on Claude models,
+    /// continues in a fresh conversation. On cc: models, Claude Code
+    /// compacts the conversation at that size instead, and the agent goes on
+    /// in the same conversation. Default: 500000 on Claude models,
     /// 250000 for OpenAI models on the ChatGPT login (whose backend accepts
     /// 272000), and 200000 on others, at most 80% of what the model accepts
     /// (100000 when OpenRouter's catalog can't say). When resuming, it sets
@@ -1353,13 +1355,7 @@ impl Harness {
             configs.push(config(WORKER, &self.worker_config));
         }
         self.outside.attach(&workflow, &configs);
-        self.handover.watch(
-            &workflow,
-            configs[0]
-                .handover
-                .as_ref()
-                .and_then(|handover| handover.at_input_tokens),
-        );
+        self.handover.watch(&workflow, &configs[0]);
         let (control, controls) = mpsc::unbounded_channel();
         let task = tokio::spawn(ui::print_events(
             workflow.subscribe_events(),
@@ -1541,9 +1537,15 @@ impl Harness {
     /// The workers, as the banner and `/session` say it.
     /// When the agents hand over, as `/session` says it.
     fn handover_summary(&self) -> String {
-        let main = format!("{}k tokens", self.handover.at() / 1000);
+        let what = |compacts: bool| if compacts { "compaction" } else { "handover" };
+        let main = format!(
+            "{} at {}k tokens",
+            what(self.handover.compacts()),
+            self.handover.at() / 1000
+        );
         let worker = format!(
-            "{}k tokens",
+            "{} at {}k tokens",
+            what(agents::compacts(&self.worker_config)),
             self.settings
                 .worker
                 .handover_at
@@ -1551,9 +1553,9 @@ impl Harness {
                 / 1000
         );
         if self.settings.max_workers == 0 || main == worker {
-            format!("handover at {main} of input")
+            format!("{main} of input")
         } else {
-            format!("handover at {main} of input (main), {worker} (workers)")
+            format!("{main} of input (main), {worker} (workers)")
         }
     }
 
@@ -1995,7 +1997,8 @@ impl Harness {
     }
 
     /// `/handover`: the main agent hands over at its next step, or when
-    /// its next turn starts.
+    /// its next turn starts. In Claude Code, Claude Code compacts its
+    /// conversation then instead.
     fn handover_command(&mut self, argument: &str, source: Source) {
         if !argument.is_empty() {
             self.mirrored(|harness| {
@@ -2005,35 +2008,54 @@ impl Harness {
             });
             return;
         }
+        let compacts = self.handover.compacts();
         let Some(asked) = self.ask_handover() else {
-            self.mirrored(|harness| {
-                harness.output.line(
-                    "There is no conversation to hand over: your next message starts a new one.",
-                )
-            });
+            let text = if compacts {
+                "There is no conversation to compact: your next message starts a new one."
+            } else {
+                "There is no conversation to hand over: your next message starts a new one."
+            };
+            self.mirrored(|harness| harness.output.line(text));
             return;
         };
         if source == Source::Web && asked != handover::Asked::Already {
-            self.say(Level::Info, "A handover was asked for from the web page.");
+            let text = if compacts {
+                "A compaction was asked for from the web page."
+            } else {
+                "A handover was asked for from the web page."
+            };
+            self.say(Level::Info, text);
         }
-        self.mirrored(|harness| harness.output.line(handover_text(asked)));
+        self.mirrored(|harness| harness.output.line(handover_text(asked, compacts)));
     }
 
     /// `/handover-at`: the size the main agent hands over at, and with a
     /// size, sets it.
     fn handover_at_command(&mut self, argument: &str, source: Source) {
         if argument.is_empty() {
-            let mut text = format!(
-                "The main agent hands over at {} tokens of input",
-                handover::shown(self.handover.at())
-            );
+            let compacts = self.handover.compacts();
+            let mut text = if compacts {
+                format!(
+                    "Claude Code compacts the main agent's conversation at {} tokens of input",
+                    handover::shown(self.handover.at())
+                )
+            } else {
+                format!(
+                    "The main agent hands over at {} tokens of input",
+                    handover::shown(self.handover.at())
+                )
+            };
             if let Some(input) = self.handover.input() {
                 text.push_str(&format!(
                     " (its latest request: {})",
                     handover::shown(input)
                 ));
             }
-            text.push_str(". /handover-at 200k sets another size, and /handover hands over now.");
+            text.push_str(if compacts {
+                ". /handover-at 200k sets another size, and /handover compacts now."
+            } else {
+                ". /handover-at 200k sets another size, and /handover hands over now."
+            });
             self.mirrored(|harness| harness.output.line(&text));
             return;
         }
@@ -2104,17 +2126,22 @@ impl Harness {
     /// What the user is told when `tokens` was asked for and `set` set;
     /// asks for the handover when the main agent's context is over it.
     fn handover_set_lines(&self, tokens: usize, set: usize) -> Vec<String> {
-        let mut lines = vec![if set < tokens {
-            format!(
-                "This session's main agent hands over at {} at the latest: its conversation keeps the size it was started with. It now hands over at {}.",
-                handover::shown(self.handover.configured()),
-                handover::shown(set)
-            )
-        } else {
-            format!(
-                "The main agent now hands over at {} tokens of input.",
-                handover::shown(set)
-            )
+        let compacts = self.handover.compacts();
+        let configured = handover::shown(self.handover.configured());
+        let shown = handover::shown(set);
+        let mut lines = vec![match (set < tokens, compacts) {
+            (true, false) => format!(
+                "This session's main agent hands over at {configured} at the latest: its conversation keeps the size it was started with. It now hands over at {shown}."
+            ),
+            (true, true) => format!(
+                "This session's main agent compacts at {configured} at the latest: its conversation keeps the size it was started with. It now compacts at {shown}."
+            ),
+            (false, false) => {
+                format!("The main agent now hands over at {shown} tokens of input.")
+            }
+            (false, true) => format!(
+                "Claude Code now compacts the main agent's conversation at {shown} tokens of input."
+            ),
         }];
         if let Some(input) = self.handover.input().filter(|input| *input >= set)
             && let Some(asked) = self.ask_handover()
@@ -2122,7 +2149,7 @@ impl Harness {
             lines.push(format!(
                 "Its context ({}) is over that already. {}",
                 handover::shown(input),
-                handover_text(asked)
+                handover_text(asked, compacts)
             ));
         }
         lines
@@ -2968,16 +2995,24 @@ fn place(link: &remote::Link) -> String {
 /// an argument: `/outside`, `/model`, `/handover`, `/handover-at`, `/keys`.
 const LIVE_COMMANDS: [&str; 5] = ["/outside", "/model", "/handover", "/handover-at", "/keys"];
 
-/// What the user is told of a handover asked for.
-fn handover_text(asked: handover::Asked) -> &'static str {
-    match asked {
-        handover::Asked::Now => {
+/// What the user is told of a handover asked for, or of a compaction when
+/// the main agent `compacts` in Claude Code.
+fn handover_text(asked: handover::Asked, compacts: bool) -> &'static str {
+    match (asked, compacts) {
+        (handover::Asked::Now, false) => {
             "The main agent hands over at its next step: it writes a report of its work, then goes on from the report in a fresh conversation."
         }
-        handover::Asked::Next => {
+        (handover::Asked::Next, false) => {
             "The main agent hands over when your next message starts its turn: it writes a report of its work first, then goes on from the report in a fresh conversation."
         }
-        handover::Asked::Already => "A handover is under way already.",
+        (handover::Asked::Already, false) => "A handover is under way already.",
+        (handover::Asked::Now, true) => {
+            "Claude Code compacts the main agent's conversation at its next step, and the agent goes on from Claude Code's summary."
+        }
+        (handover::Asked::Next, true) => {
+            "Claude Code compacts the main agent's conversation when your next message starts its turn, and the agent goes on from Claude Code's summary with your message."
+        }
+        (handover::Asked::Already, true) => "A compaction is under way already.",
     }
 }
 

@@ -388,7 +388,7 @@ fn settings(frame: &mut Frame, app: &App, area: Rect, selected: usize) {
                     Span::styled(format!(" {}k ", app.handover_at() / 1000), theme.chosen()),
                     Span::styled(format!(" {}", glyphs::render("→")), theme.dim()),
                 ],
-                "The input size the main agent hands over at: it writes a report of its work and goes on from it, fresh. /handover hands over now."
+                "The input size the main agent hands over at: it writes a report of its work and goes on from it, fresh. On cc: models, Claude Code compacts the conversation at that size instead. /handover does it now."
                     .to_string(),
             ),
             SettingsRow::Page => (

@@ -121,12 +121,12 @@ pub const COMMANDS: &[Command] = &[
     },
     Command::session(
         "/handover",
-        "the main agent hands over now: it writes a report and goes on from it in a fresh conversation",
+        "the main agent hands over now: it writes a report and goes on from it in a fresh conversation. On cc: models, Claude Code compacts the conversation instead",
     ),
     Command {
         name: "/handover-at",
         args: "SIZE",
-        about: "the input size the main agent hands over at (/handover-at 200k)",
+        about: "the input size the main agent hands over at, or Claude Code compacts at on cc: models (/handover-at 200k)",
         aliases: &[],
         runs: Runs::Session,
     },

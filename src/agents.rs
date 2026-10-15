@@ -204,6 +204,27 @@ pub fn default_handover(model: &Model, openai_auth: Option<OpenAiAuth>) -> usize
     }
 }
 
+/// What an agent on `model` does at `tokens` of input: in Claude Code,
+/// Claude Code compacts the conversation (its own `/compact`) and the
+/// agent goes on in the same conversation. On the other providers it hands
+/// over: it writes a report and goes on from it in a fresh conversation.
+fn handover(model: &ModelSettings, tokens: usize) -> HandoverConfig {
+    HandoverConfig {
+        compact_in_claude_code: model.in_claude_code(),
+        ..HandoverConfig::at_input_tokens(tokens)
+    }
+}
+
+/// Whether an agent with `config` compacts in Claude Code instead of
+/// handing over. A session saved before fin compacted keeps handing over.
+pub fn compacts(config: &AgentConfig) -> bool {
+    config.runs_in_claude_code()
+        && config
+            .handover
+            .as_ref()
+            .is_some_and(|handover| handover.compact_in_claude_code)
+}
+
 /// arko's built-in file tools, which both agents have.
 pub const FILE_TOOL_NAMES: [&str; 4] = [
     READ_FILE_TOOL_NAME,
@@ -301,7 +322,8 @@ pub fn main_config(settings: &AgentSettings) -> Result<AgentConfig, String> {
         "Your reply to the user's latest message, in full: what you did, what you found, and anything you need from them. They read it as your message (Markdown, shown as plain text)."
             .into(),
     )
-    .handover(HandoverConfig::at_input_tokens(
+    .handover(handover(
+        settings.main,
         settings.main.handover_at.unwrap_or(settings.handover_at),
     ));
     if let Some(skills) = skills::config(settings.skill_folders) {
@@ -341,7 +363,8 @@ pub fn worker_config(settings: &AgentSettings) -> Result<AgentConfig, String> {
         "Your report to the lead agent: what you did and found, with evidence (paths, line numbers, commands and results), the files you changed, and anything unfinished or unconfirmed."
             .into(),
     )
-    .handover(HandoverConfig::at_input_tokens(
+    .handover(handover(
+        settings.worker,
         settings.worker.handover_at.unwrap_or(settings.handover_at),
     ));
     if let Some(skills) = skills::config(settings.skill_folders) {
@@ -599,6 +622,24 @@ mod tests {
                 .claude_code
                 .is_some()
         );
+    }
+
+    /// Agents in Claude Code compact at the handover size, and agents on
+    /// the other providers hand over there.
+    #[test]
+    fn claude_code_agents_compact_and_others_hand_over() {
+        let cc = model("cc:opus", false);
+        let api = model("opus", false);
+        let mixed = settings(&cc, &api);
+        let main = main_config(&mixed).unwrap();
+        assert!(compacts(&main));
+        assert_eq!(main.handover.unwrap().at_input_tokens, Some(200_000));
+        let worker = worker_config(&mixed).unwrap();
+        assert!(!compacts(&worker));
+        assert!(!worker.handover.unwrap().compact_in_claude_code);
+        let mixed = settings(&api, &cc);
+        assert!(!compacts(&main_config(&mixed).unwrap()));
+        assert!(compacts(&worker_config(&mixed).unwrap()));
     }
 
     /// Each worker provider's cache gets its own paragraph: the `cache`
