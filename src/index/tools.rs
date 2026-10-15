@@ -822,7 +822,7 @@ impl Tool for SearchTool {
                 ),
                 param(
                     "mode",
-                    "Pick it from what you're looking for. `semantic`: you're describing behaviour, what code does or where something happens, in your own words (\"where is the session saved to disk\"). `lexical`: the callers or uses of a name you know (\"callers of Session::save\"), or anything in the docs and Markdown files of a code index. `hybrid`: where a name is defined (`FIN_HOME`), an exact string such as an error message, a name together with words about it (\"Session::save error handling\"), or when unsure. An index without embeddings always searches by words.",
+                    "Pick it from what you're looking for. `semantic`: you're describing behaviour, what code does or where something happens, in your own words (\"where is the session saved to disk\"). `lexical`: the callers or uses of a name you know (\"callers of Session::save\"), or anything in the docs and Markdown files of a code index. `hybrid`: where a name is defined (`FIN_HOME`), an exact string such as an error message, or a name together with words about it (\"Session::save error handling\"). An index without embeddings always searches by words.",
                     ToolParameterType::String,
                     true,
                 ),
