@@ -1642,7 +1642,6 @@ impl Indexes {
         };
         let info = status.dense.clone();
         let vectors = info.as_ref().map_or(0, |info| info.embedded);
-        let explicit = query.mode.is_some();
         let mut mode = match query.mode.unwrap_or(ModeArg::Hybrid) {
             ModeArg::Lexical => Mode::Lexical,
             ModeArg::Hybrid => Mode::Hybrid,
@@ -1650,7 +1649,7 @@ impl Indexes {
         };
         if mode != Mode::Lexical {
             let reason = match &info {
-                None if explicit || manifest.embed => Some(format!(
+                None if manifest.embed => Some(format!(
                     "{name} has no embeddings (index_manage action=embed adds them)"
                 )),
                 None => None,

@@ -1054,13 +1054,13 @@ fn tool_parameters_are_parsed_leniently() {
 
     let cwd = Path::new("/w/proj");
     let search = tools::parse_search(
-        &params(json!({"query": " retry logic ", "limit": "500"})),
+        &params(json!({"query": " retry logic ", "limit": "500", "mode": "hybrid"})),
         cwd,
     )
     .unwrap();
     assert_eq!(search.query, "retry logic");
     assert_eq!(search.limit, 50);
-    assert_eq!(search.mode, None);
+    assert_eq!(search.mode, Some(ModeArg::Hybrid));
     assert_eq!(search.cwd, cwd);
     let search = tools::parse_search(
         &params(
@@ -1075,10 +1075,14 @@ fn tool_parameters_are_parsed_leniently() {
     assert_eq!(search.index.as_deref(), Some("finn"));
     assert_eq!(search.path_prefix.as_deref(), Some("src/"));
     assert_eq!(search.language.as_deref(), Some("rust"));
-    let search = tools::parse_search(&params(json!({"query": "q"})), cwd).unwrap();
+    let search =
+        tools::parse_search(&params(json!({"query": "q", "mode": "lexical"})), cwd).unwrap();
     assert_eq!(search.limit, 10);
+    assert_eq!(search.mode, Some(ModeArg::Lexical));
+    // The agent picks the mode every time.
+    assert!(tools::parse_search(&params(json!({"query": "q"})), cwd).is_err());
     assert!(tools::parse_search(&params(json!({"query": "q", "mode": "fuzzy"})), cwd).is_err());
-    assert!(tools::parse_search(&params(json!({"query": "  "})), cwd).is_err());
+    assert!(tools::parse_search(&params(json!({"query": "  ", "mode": "hybrid"})), cwd).is_err());
 
     let create = tools::parse_create(&params(json!({})), cwd).unwrap();
     assert_eq!(create.path, PathBuf::from("."));
@@ -1187,7 +1191,7 @@ fn tools_create_search_and_remove() {
             .block_on(tool(name).execute(&context, params(value)))
     };
 
-    let error = run("index_search", json!({"query": "retry"})).unwrap_err();
+    let error = run("index_search", json!({"query": "retry", "mode": "hybrid"})).unwrap_err();
     assert!(error.to_string().contains("index_create"), "{error}");
     let text = run("index_status", json!({})).unwrap();
     assert!(text.contains("no indexes"), "{text}");
@@ -1201,7 +1205,7 @@ fn tools_create_search_and_remove() {
     assert!(text.contains("Estimate:"), "{text}");
     let text = run(
         "index_search",
-        json!({"query": "exponential backoff", "limit": "2"}),
+        json!({"query": "exponential backoff", "limit": "2", "mode": "hybrid"}),
     )
     .unwrap();
     // The top result comes whole, with line numbers.

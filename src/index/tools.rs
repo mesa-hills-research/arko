@@ -253,20 +253,16 @@ pub(crate) fn parse_search(
     cwd: &Path,
 ) -> Result<SearchArgs, ToolError> {
     let query = required_str(params, "query")?;
-    let mode = match str_param(params, "mode") {
-        None => None,
-        Some(text) if text.eq_ignore_ascii_case("auto") => None,
-        Some(text) => Some(ModeArg::parse(&text).ok_or_else(|| {
-            invalid("mode", format!("{text:?}: use hybrid, semantic or lexical"))
-        })?),
-    };
+    let mode = required_str(params, "mode")?;
+    let mode = ModeArg::parse(&mode)
+        .ok_or_else(|| invalid("mode", format!("{mode:?}: use semantic, lexical or hybrid")))?;
     let limit = count_param(params, "limit")?
         .map(|limit| (limit as usize).clamp(1, engine::MAX_LIMIT))
         .unwrap_or(engine::DEFAULT_LIMIT);
     Ok(SearchArgs {
         query,
         index: str_param(params, "index"),
-        mode,
+        mode: Some(mode),
         limit,
         path_prefix: str_param(params, "path_prefix"),
         language: str_param(params, "language"),
@@ -826,9 +822,9 @@ impl Tool for SearchTool {
                 ),
                 param(
                     "mode",
-                    "Pick it from what you're looking for. `semantic`: you're describing behaviour, what code does or where something happens, in your own words (\"where is the session saved to disk\"). `lexical`: the callers or uses of a name you know (\"callers of Session::save\"), or anything in the docs and Markdown files of a code index. `hybrid`: where a name is defined (`FIN_HOME`), an exact string such as an error message, a name together with words about it (\"Session::save error handling\"), or when unsure. Default: hybrid when the index has embeddings, else lexical.",
+                    "Pick it from what you're looking for. `semantic`: you're describing behaviour, what code does or where something happens, in your own words (\"where is the session saved to disk\"). `lexical`: the callers or uses of a name you know (\"callers of Session::save\"), or anything in the docs and Markdown files of a code index. `hybrid`: where a name is defined (`FIN_HOME`), an exact string such as an error message, a name together with words about it (\"Session::save error handling\"), or when unsure. An index without embeddings always searches by words.",
                     ToolParameterType::String,
-                    false,
+                    true,
                 ),
                 param(
                     "limit",
