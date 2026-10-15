@@ -335,4 +335,16 @@ async fn a_resumed_session_lists_its_conversations_and_goes_on_in_its_own() {
     assert_eq!(harness.conversations.current, Some(1));
     assert_eq!(summary(&harness), "Pears noted.");
     assert!(harness.session.dir.join("conversations.json").is_file());
+
+    // Closed after /new, it starts a new conversation, and says how to go
+    // back.
+    harness.new_conversation();
+    harness.open(true).unwrap();
+    assert_eq!(harness.conversations.current, None);
+    assert!(matches!(harness.conversation, Conversation::New));
+    harness.banner_end(false);
+    assert!(says(
+        &harness.feed,
+        "Resumed. The next message starts a new conversation. /resume goes back to the last one."
+    ));
 }
