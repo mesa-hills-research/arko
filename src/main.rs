@@ -3379,6 +3379,12 @@ mod tests {
         include!("edit_file_tests.rs");
     }
 
+    /// What the model is sent, measured (an ignored test), in its own file.
+    mod request_sizes {
+        use super::*;
+        include!("request_size_tests.rs");
+    }
+
     #[test]
     fn only_the_known_commands_are_commands() {
         assert_eq!(command("/cost"), Some("/cost"));
