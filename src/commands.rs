@@ -86,7 +86,7 @@ pub const COMMANDS: &[Command] = &[
     Command::screen(
         "/settings",
         "",
-        "the view, theme, mouse, outside access, handover size, text replies, extra rules, web page and API keys",
+        "the view, theme, mouse, outside access, handover size, text replies, extra rules, project instructions, web page and API keys",
     ),
     Command {
         name: "/model",
@@ -130,6 +130,13 @@ pub const COMMANDS: &[Command] = &[
         name: "/extra-rules",
         args: "small|all|off",
         about: "the extra rules for small models in the agents' instructions: agents on small models get them (small), every agent does (all), or none does (off). It changes before the conversation starts (/extra-rules off)",
+        aliases: &[],
+        runs: Runs::Session,
+    },
+    Command {
+        name: "/project-instructions",
+        args: "one|both|off | workers on|off",
+        about: "which of the project's AGENTS.md and CLAUDE.md the agents get: AGENTS.md, else CLAUDE.md (one), both, or neither (off), and whether workers get them (workers on|off). The main agent gets them once per conversation, in its first message, and each worker once, in its first message. A change reaches the conversations and workers that start after it (/project-instructions both)",
         aliases: &[],
         runs: Runs::Session,
     },

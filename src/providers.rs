@@ -1538,6 +1538,8 @@ mod tests {
             own_worker_model: false,
             text_replies: false,
             extra_rules: Default::default(),
+            project_instructions: Default::default(),
+            worker_project_instructions: false,
         }
     }
 

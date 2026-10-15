@@ -18,6 +18,7 @@ use super::wrap::{self, width as text_width};
 use crate::agents::ExtraRules;
 use crate::commands;
 use crate::glyphs;
+use crate::project;
 use crate::remote;
 
 /// What is open over the transcript.
@@ -57,6 +58,8 @@ pub enum SettingsRow {
     Replies,
     Rules,
     Page,
+    ProjectFiles,
+    ProjectWorkers,
     Keys,
 }
 
@@ -445,6 +448,45 @@ fn settings(frame: &mut Frame, app: &App, area: Rect, selected: usize) {
                 choices(theme, &["on", "off"], usize::from(!page_on)),
                 "Follow and drive this session from a browser (/remote shows its code)."
                     .to_string(),
+            ),
+            SettingsRow::ProjectFiles => (
+                "Project instructions",
+                "Files",
+                choices(
+                    theme,
+                    &["one", "both", "off"],
+                    project::Files::ALL
+                        .iter()
+                        .position(|files| *files == app.project_instructions())
+                        .unwrap_or(0),
+                ),
+                match app.project_instructions() {
+                    project::Files::One => {
+                        "The agents get AGENTS.md, or CLAUDE.md when there is no AGENTS.md. The main agent gets it once per conversation, in its first message. A change reaches the conversations and workers that start after it."
+                    }
+                    project::Files::Both => {
+                        "The agents get AGENTS.md and CLAUDE.md, each under its own name. The main agent gets them once per conversation, in its first message. A change reaches the conversations and workers that start after it."
+                    }
+                    project::Files::Off => {
+                        "The agents get neither AGENTS.md nor CLAUDE.md. A change reaches the conversations and workers that start after it."
+                    }
+                }
+                .to_string(),
+            ),
+            SettingsRow::ProjectWorkers => (
+                "Project instructions",
+                "Workers",
+                choices(
+                    theme,
+                    &["on", "off"],
+                    usize::from(!app.worker_project_instructions()),
+                ),
+                if app.worker_project_instructions() {
+                    "Each worker gets the same files once, in its first message. A change reaches the workers started after it."
+                } else {
+                    "Workers don't get the files. Only the main agent does."
+                }
+                .to_string(),
             ),
             SettingsRow::Keys => {
                 let states = (app.key_states)();

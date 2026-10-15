@@ -168,6 +168,8 @@ fn the_mode_is_saved_with_the_session_and_old_sessions_load_with_it_off() {
         own_worker_model: false,
         text_replies: true,
         extra_rules: Default::default(),
+        project_instructions: Default::default(),
+        worker_project_instructions: false,
     };
     session.save_settings(&settings).unwrap();
     assert!(session.load_settings().unwrap().text_replies);

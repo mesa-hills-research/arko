@@ -13,6 +13,14 @@
     all: { name: 'Every agent', about: 'Every agent gets the extra rules for small models.' },
     off: { name: 'Off', about: 'No agent gets them.' },
   };
+
+  /** Which of the project's instruction files the agents get, as
+   * `/project-instructions` takes it. */
+  const PROJECT = {
+    one: { name: 'AGENTS.md, else CLAUDE.md', about: 'CLAUDE.md only when there is no AGENTS.md.' },
+    both: { name: 'Both', about: 'AGENTS.md and CLAUDE.md, each under its own name.' },
+    off: { name: 'Off', about: 'The agents get neither file.' },
+  };
   const KEY = 'fin.remote.key';
   const $ = (id) => document.getElementById(id);
   const fine = window.matchMedia('(pointer: fine)');
@@ -881,6 +889,29 @@
       rules.append(option);
     }
     $('rules-about').textContent = started ? 'The session keeps this.' : 'It changes before the conversation starts.';
+    // The project's instructions change at any time.
+    const picking = pending && pending.project !== undefined;
+    const files = picking ? pending.project : (settings.project_instructions || 'one');
+    const project = $('project-options');
+    project.replaceChildren();
+    for (const [key, about] of Object.entries(PROJECT)) {
+      const option = element('button', 'option');
+      option.type = 'button';
+      option.setAttribute('role', 'radio');
+      option.setAttribute('aria-checked', String(key === files));
+      option.append(element('span', 'check', key === files ? '✓' : ''), element('span', 'name', about.name), element('span', 'about', about.about));
+      option.addEventListener('click', () => chooseProject(key));
+      project.append(option);
+    }
+    $('project-workers').hidden = !(status && status.models && status.models.has_workers);
+    const toWorkers = $('project-workers-switch');
+    const giving = pending && pending.workers !== undefined;
+    const workers = giving ? pending.workers : Boolean(settings.worker_project_instructions);
+    toWorkers.setAttribute('aria-checked', String(workers));
+    toWorkers.setAttribute('aria-busy', String(Boolean(giving)));
+    $('project-workers-about').textContent = workers
+      ? 'Each worker gets them once, in its first message.'
+      : 'Only the main agent gets them.';
     if (pending && pending.done && pending.done(settings)) settle(pending, true);
     const rows = [
       ['Model', info.model],
@@ -936,11 +967,12 @@
   }
 
   /** Sends `command` from the sheet; `done(settings)` says when the
-   * status shows it took. */
-  async function command(text, noteId, done, outside, replies, rules) {
+   * status shows it took, and `shows` what the sheet shows meanwhile
+   * (`{ outside: true }`). */
+  async function command(text, noteId, done, shows) {
     if (pending) return false;
     note(noteId, '');
-    const change = { command: text, note: noteId, done, outside, replies, rules, lines: [] };
+    const change = { command: text, note: noteId, done, ...shows, lines: [] };
     pending = change;
     renderSettings();
     if (!(await post('/api/message', { text }))) {
@@ -959,7 +991,7 @@
     const on = Boolean(status && status.settings && status.settings.outside);
     if (on) {
       // Turning it off is the safe way: no question asked.
-      command('/outside off', 'outside-note', (settings) => !settings.outside, false);
+      command('/outside off', 'outside-note', (settings) => !settings.outside, { outside: false });
     } else {
       $('outside-confirm').hidden = false;
       $('outside-allow').focus();
@@ -968,21 +1000,34 @@
   $('outside-cancel').addEventListener('click', () => ($('outside-confirm').hidden = true));
   $('outside-allow').addEventListener('click', () => {
     $('outside-confirm').hidden = true;
-    command('/outside on', 'outside-note', (settings) => settings.outside, true);
+    command('/outside on', 'outside-note', (settings) => settings.outside, { outside: true });
   });
 
   $('replies-switch').addEventListener('click', () => {
     if (pending) return;
     const on = !(status && status.settings && status.settings.text_replies);
-    command('/text-replies ' + (on ? 'on' : 'off'), 'replies-note', (settings) => Boolean(settings.text_replies) === on, undefined, on);
+    command('/text-replies ' + (on ? 'on' : 'off'), 'replies-note', (settings) => Boolean(settings.text_replies) === on, { replies: on });
   });
 
   function chooseRules(key) {
     if (pending) return;
     const now = (status && status.settings && status.settings.extra_rules) || 'off';
     if (key === now) return;
-    command('/extra-rules ' + key, 'rules-note', (settings) => settings.extra_rules === key, undefined, undefined, key);
+    command('/extra-rules ' + key, 'rules-note', (settings) => settings.extra_rules === key, { rules: key });
   }
+
+  function chooseProject(key) {
+    if (pending) return;
+    const now = (status && status.settings && status.settings.project_instructions) || 'one';
+    if (key === now) return;
+    command('/project-instructions ' + key, 'project-note', (settings) => settings.project_instructions === key, { project: key });
+  }
+
+  $('project-workers-switch').addEventListener('click', () => {
+    if (pending) return;
+    const on = !(status && status.settings && status.settings.worker_project_instructions);
+    command('/project-instructions workers ' + (on ? 'on' : 'off'), 'project-note', (settings) => Boolean(settings.worker_project_instructions) === on, { workers: on });
+  });
 
   $('handover-form').addEventListener('submit', (event) => {
     event.preventDefault();

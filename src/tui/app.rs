@@ -23,6 +23,7 @@ use crate::commands::{self, Runs};
 use crate::credentials::{Key, KeyState};
 use crate::keys::Secret;
 use crate::model_command::Target;
+use crate::project;
 use crate::remote::{Activity, Reading, Snapshot, Update};
 use crate::ui::Input;
 
@@ -940,6 +941,12 @@ impl App {
             rows.push(SettingsRow::Rules);
         }
         rows.push(SettingsRow::Page);
+        if commands::find("/project-instructions one").is_some() {
+            rows.push(SettingsRow::ProjectFiles);
+            if self.reading.models.has_workers {
+                rows.push(SettingsRow::ProjectWorkers);
+            }
+        }
         rows.push(SettingsRow::Keys);
         rows
     }
@@ -1101,6 +1108,24 @@ impl App {
                     let next = (index.unwrap_or(0) as i32 + step).rem_euclid(all.len() as i32);
                     self.send(&format!("/extra-rules {}", all[next as usize].name()));
                 }
+                SettingsRow::ProjectFiles => {
+                    let all = project::Files::ALL;
+                    let index = all
+                        .iter()
+                        .position(|files| *files == self.project_instructions());
+                    let next = (index.unwrap_or(0) as i32 + step).rem_euclid(all.len() as i32);
+                    self.send(&format!(
+                        "/project-instructions {}",
+                        all[next as usize].name()
+                    ));
+                }
+                SettingsRow::ProjectWorkers => {
+                    self.send(if self.worker_project_instructions() {
+                        "/project-instructions workers off"
+                    } else {
+                        "/project-instructions workers on"
+                    });
+                }
                 SettingsRow::Page => {
                     if super::page().is_some() {
                         self.send("/remote off");
@@ -1169,6 +1194,16 @@ impl App {
     /// Which agents get the extra rules for small models.
     pub fn extra_rules(&self) -> ExtraRules {
         self.reading.settings.extra_rules
+    }
+
+    /// Which of the project's instruction files the agents get.
+    pub fn project_instructions(&self) -> project::Files {
+        self.reading.settings.project_instructions
+    }
+
+    /// Whether workers started from now on get the project's instructions.
+    pub fn worker_project_instructions(&self) -> bool {
+        self.reading.settings.worker_project_instructions
     }
 
     /// Whether the main agent's conversation has started: its text replies
@@ -1784,6 +1819,53 @@ pub(super) mod tests {
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         press(&mut app, KeyCode::Left, KeyModifiers::NONE);
         assert_eq!(sent(&mut app), ["/extra-rules all", "/extra-rules off"]);
+    }
+
+    /// The project's instructions are a group of their own, after the
+    /// session's settings: which files, stepping through one, both and off,
+    /// and (in a session with workers) whether workers get them.
+    #[test]
+    fn the_project_instructions_rows_send_the_command() {
+        let mut app = app();
+        let rows = app.settings_rows();
+        let files = rows
+            .iter()
+            .position(|row| *row == SettingsRow::ProjectFiles)
+            .unwrap();
+        let page = rows
+            .iter()
+            .position(|row| *row == SettingsRow::Page)
+            .unwrap();
+        assert_eq!(files, page + 1, "after the session's settings");
+        assert!(!rows.contains(&SettingsRow::ProjectWorkers), "no workers");
+        app.overlay = Some(Overlay::Settings {
+            row: files,
+            picker: None,
+        });
+        assert_eq!(app.project_instructions(), project::Files::One);
+        press(&mut app, KeyCode::Right, KeyModifiers::NONE);
+        press(&mut app, KeyCode::Left, KeyModifiers::NONE);
+        assert_eq!(
+            sent(&mut app),
+            ["/project-instructions both", "/project-instructions off"]
+        );
+
+        let mut reading = app.reading.clone();
+        reading.models.has_workers = true;
+        reading.settings.worker_project_instructions = true;
+        app.set_reading(reading);
+        let rows = app.settings_rows();
+        let workers = rows
+            .iter()
+            .position(|row| *row == SettingsRow::ProjectWorkers)
+            .unwrap();
+        assert_eq!(workers, files + 1);
+        app.overlay = Some(Overlay::Settings {
+            row: workers,
+            picker: None,
+        });
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(sent(&mut app), ["/project-instructions workers off"]);
     }
 
     /// The keys menu opens from the settings and goes back there, and from

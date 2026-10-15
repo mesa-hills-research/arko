@@ -108,6 +108,17 @@
     </section>
 
     <section class="group">
+      <h3>Project instructions</h3>
+      <div id="project-options" class="options" role="radiogroup" aria-label="Project instructions"></div>
+      <div id="project-workers" class="setting">
+        <div class="setting-text"><span class="setting-name">Workers get them</span><span id="project-workers-about" class="setting-about"></span></div>
+        <button id="project-workers-switch" class="switch" type="button" role="switch" aria-checked="false" aria-label="Workers get them"><span></span></button>
+      </div>
+      <p class="setting-about">The main agent gets them once per conversation, in its first message. A change reaches the conversations and workers that start after it.</p>
+      <p id="project-note" class="note" hidden></p>
+    </section>
+
+    <section class="group">
       <h3>Handover</h3>
       <div class="setting">
         <div class="setting-text"><span class="setting-name">Hand over at</span><span class="setting-about">The agent writes a report and goes on in a fresh conversation. On cc: models, Claude Code compacts the conversation instead.</span></div>

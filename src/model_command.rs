@@ -585,6 +585,10 @@ impl Harness {
             std::sync::atomic::Ordering::Relaxed,
         );
         *lock(&self.gauges.extra_rules) = self.settings.extra_rules;
+        *lock(&self.gauges.project) = (
+            self.settings.project_instructions,
+            self.settings.worker_project_instructions,
+        );
         *lock(&self.gauges.models) = remote::Models {
             main: self.settings.main.model.clone(),
             main_effort: self.settings.main.effort.to_string(),

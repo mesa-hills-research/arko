@@ -151,6 +151,11 @@ pub struct LiveSettings {
     /// Which agents get the extra rules for small models. It changes only
     /// before the conversation starts.
     pub extra_rules: crate::agents::ExtraRules,
+    /// Which of the project's instruction files the agents get, from the
+    /// next conversation and worker on.
+    pub project_instructions: crate::project::Files,
+    /// Workers started from now on get the project's instructions too.
+    pub worker_project_instructions: bool,
 }
 
 /// A random token of `bytes` bytes, in URL-safe base64.

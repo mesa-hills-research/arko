@@ -8,6 +8,7 @@ use chrono::{DateTime, Local, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::agents::{ExtraRules, ModelSettings};
+use crate::project;
 use crate::providers::OpenAiAuth;
 use crate::shell::WindowsShell;
 
@@ -65,6 +66,14 @@ pub struct Settings {
     /// saved before they existed, as their saved agents were built.
     #[serde(default, skip_serializing_if = "ExtraRules::is_off")]
     pub extra_rules: ExtraRules,
+    /// Which of the project's instruction files (AGENTS.md, CLAUDE.md) the
+    /// agents get. One in sessions saved before the choice, as they gave.
+    #[serde(default, skip_serializing_if = "project::Files::is_one")]
+    pub project_instructions: project::Files,
+    /// Workers get the project's instructions too, in their first message.
+    /// False in sessions saved before workers got them.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub worker_project_instructions: bool,
 }
 
 impl Settings {
@@ -259,6 +268,8 @@ mod tests {
             own_worker_model: false,
             text_replies: false,
             extra_rules: Default::default(),
+            project_instructions: Default::default(),
+            worker_project_instructions: false,
         }
     }
 

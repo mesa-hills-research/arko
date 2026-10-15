@@ -191,6 +191,9 @@ fn apply_cache(
 pub struct Crew {
     setup: Setup,
     models: Arc<Mutex<WorkerModels>>,
+    /// The project's instructions new workers get in their first message,
+    /// if any (see `project`).
+    project: Arc<Mutex<Option<String>>>,
     workflow: Mutex<Weak<Workflow>>,
     lead: Mutex<Option<Uuid>>,
     wake: mpsc::UnboundedSender<()>,
@@ -203,6 +206,7 @@ impl Crew {
         (
             Arc::new(Self {
                 models: Arc::new(Mutex::new(WorkerModels::load(&setup.session_dir))),
+                project: Arc::default(),
                 setup,
                 workflow: Mutex::new(Weak::new()),
                 lead: Mutex::new(None),
@@ -217,6 +221,7 @@ impl Crew {
         let default_1h = self.setup.cache_1h;
         let models = self.models.clone();
         let refuse = self.setup.refuse.clone();
+        let project = self.project.clone();
         let mut config = SubagentsConfig::default()
             .offer_blocking_tool(false)
             .questions_to_lead(true)
@@ -252,6 +257,8 @@ impl Crew {
                 models.runs.insert(request.run_id, WorkerModel::of(config));
                 models.save()
             }))
+            // Asked as each worker starts: a run keeps its first message.
+            .start_context(Arc::new(move |_: &StartRequest| project.lock().unwrap().clone()))
             .start_parameter(ToolParameterDefinition {
                 name: CACHE_PARAM.into(),
                 description: "1h or 5m: how long the worker's prompt cache lasts after its last step. Only Claude workers on an API key or OpenRouter take it: ChatGPT keeps its own 30-minute cache, and Claude Code an hour.".into(),
@@ -271,6 +278,18 @@ impl Crew {
     /// The model new workers start on from now on.
     pub fn set_new_workers(&self, new: NewWorkers) {
         self.models.lock().unwrap().new = Some(new);
+    }
+
+    /// The project's instructions new workers get in their first message
+    /// from now on, if any.
+    pub fn set_project(&self, text: Option<String>) {
+        *self.project.lock().unwrap() = text;
+    }
+
+    /// The project's instructions new workers get, if any.
+    #[cfg(test)]
+    pub fn project(&self) -> Option<String> {
+        self.project.lock().unwrap().clone()
     }
 
     /// What new workers start on, if it was set.

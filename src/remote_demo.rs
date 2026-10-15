@@ -239,6 +239,7 @@ async fn remote_page_demo() {
         keys: harness.keys.clone(),
         text_replies: Default::default(),
         extra_rules: Default::default(),
+        project: Default::default(),
     });
     harness.open(false).unwrap();
     let _ = feed_cell.set(harness.feed.clone());
