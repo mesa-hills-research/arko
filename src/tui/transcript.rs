@@ -95,6 +95,9 @@ pub struct Banner {
     pub project: Option<String>,
     /// MCP servers, skills, indexes.
     pub tools: Vec<String>,
+    /// Why the session runs its model, when fin chose it (the last
+    /// session's). It goes once `/model` picks another.
+    pub model_note: Option<String>,
     /// Short notes, a warning's with its level.
     pub notes: Vec<(String, Option<Level>)>,
 }
@@ -1419,15 +1422,16 @@ fn banner_lines(banner: &Banner, theme: &Theme, width: usize) -> Vec<Wrapped> {
             ));
         }
     }
-    if !banner.notes.is_empty() {
+    if banner.model_note.is_some() || !banner.notes.is_empty() {
         lines.push(edge(&tee_left, &tee_right, None));
-        for (note, level) in &banner.notes {
+        let model_note = banner.model_note.iter().map(|note| (note.clone(), None));
+        for (note, level) in model_note.chain(banner.notes.iter().cloned()) {
             let style = match level {
                 Some(Level::Warn) => theme.warning(),
                 Some(Level::Error) => theme.error(),
                 _ => theme.dim(),
             };
-            let spans = [Span::styled(note.clone(), style)];
+            let spans = [Span::styled(note, style)];
             for line in wrap::wrap_lines(&spans, inner, 0) {
                 lines.push(boxed(Span::raw(""), line.spans, line.join));
             }
@@ -1837,6 +1841,7 @@ mod tests {
             session: "20261014-101010-abcd".into(),
             project: Some("AGENTS.md".into()),
             tools: vec!["1 skill".into()],
+            model_note: None,
             notes: vec![("Outside access is on.".into(), Some(Level::Warn))],
         });
         let filter = full();

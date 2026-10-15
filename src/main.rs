@@ -672,7 +672,7 @@ async fn run(args: Args) -> Result<ExitCode, String> {
                             .handover_at
                             .unwrap_or(harness.settings.handover_at),
                         // (With what fin said before the screen opened.)
-                        banner: harness.header(std::mem::take(&mut *lock(&STARTUP_NOTES))),
+                        banner: harness.header(lock(&MODEL_NOTE).take()),
                         keys: harness.keys.clone(),
                     },
                     &output,
@@ -735,7 +735,7 @@ async fn run(args: Args) -> Result<ExitCode, String> {
 
 /// What fin said before the session started (the default model's note):
 /// the full-screen view opens over it, so its banner says it again.
-static STARTUP_NOTES: Mutex<Vec<String>> = Mutex::new(Vec::new());
+static MODEL_NOTE: Mutex<Option<String>> = Mutex::new(None);
 
 /// The working directory the flags name, made absolute.
 fn workspace(args: &Args) -> Result<PathBuf, String> {
@@ -762,7 +762,7 @@ fn new_settings(args: &Args) -> Result<Settings, String> {
         (Some(model), _) => name(model)?,
         (None, Some(default)) => {
             eprintln!("fin: {}", default.note);
-            lock(&STARTUP_NOTES).push(default.note.clone());
+            *lock(&MODEL_NOTE) = Some(default.note.clone());
             name(&default.main)?
         }
         (None, None) => unreachable!("a default without --model"),
@@ -1393,11 +1393,10 @@ impl Harness {
     /// What the full-screen view's banner shows: the session's top-level
     /// facts, and its notes (`notes` first: what fin said before the
     /// session started).
-    fn header(&self, notes: Vec<String>) -> tui::Banner {
+    fn header(&self, model_note: Option<String>) -> tui::Banner {
         let mut tools = Vec::new();
         tools.extend(self.mcp.summary());
-        let mut notes: Vec<(String, Option<Level>)> =
-            notes.into_iter().map(|note| (note, None)).collect();
+        let mut notes: Vec<(String, Option<Level>)> = Vec::new();
         match skills::list(&self.skill_folders, &self.settings.workspace) {
             Ok(skills) => {
                 let count = skills.on_demand_skills.len() + skills.auto_loaded_skills.len();
@@ -1439,6 +1438,7 @@ impl Harness {
             session: self.session.id.clone(),
             project: self.project.as_ref().map(|(name, _)| name.clone()),
             tools,
+            model_note,
             notes,
         }
     }

@@ -214,6 +214,10 @@ impl App {
         if let Some(banner) = &mut self.transcript.banner
             && !reading.models.banner_model.is_empty()
         {
+            if banner.model != reading.models.banner_model {
+                // (Why fin chose the model it had.)
+                banner.model_note = None;
+            }
             banner.model = reading.models.banner_model.clone();
             banner.workers = reading.models.banner_workers.clone();
         }
@@ -1901,7 +1905,8 @@ pub(super) mod tests {
         );
     }
 
-    /// The banner's Model row follows the session's.
+    /// The banner's Model row follows the session's, and the note on why
+    /// fin chose the model goes once another is chosen.
     #[test]
     fn the_banner_follows_the_models() {
         let mut app = app();
@@ -1912,6 +1917,9 @@ pub(super) mod tests {
             session: "s".into(),
             project: None,
             tools: Vec::new(),
+            model_note: Some(
+                "This session runs gpt-6-luna, as your last one did (-m picks another).".into(),
+            ),
             notes: Vec::new(),
         });
         let mut reading = Reading::default();
@@ -1920,11 +1928,15 @@ pub(super) mod tests {
             app.transcript.banner.as_ref().unwrap().model,
             "gpt-6-luna (high effort)"
         );
+        reading.models.banner_model = "gpt-6-luna (high effort)".into();
+        app.set_reading(reading.clone());
+        assert!(app.transcript.banner.as_ref().unwrap().model_note.is_some());
         reading.models.banner_model = "gpt-6.1-sol (high effort)".into();
         reading.models.banner_workers = "parallel workers on gpt-6-astra (high effort)".into();
         app.set_reading(reading);
         let banner = app.transcript.banner.as_ref().unwrap();
         assert_eq!(banner.model, "gpt-6.1-sol (high effort)");
+        assert_eq!(banner.model_note, None);
         assert_eq!(
             banner.workers,
             "parallel workers on gpt-6-astra (high effort)"
