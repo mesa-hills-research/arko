@@ -19,6 +19,7 @@
 mod agents;
 mod claude_code;
 mod commands;
+mod conversations;
 mod credentials;
 mod crew;
 mod glyphs;
@@ -73,7 +74,7 @@ use crate::ui::{Control, Input, Output, Stats};
     name = "fin",
     version,
     about = "A general-purpose agent for the terminal: a shell, background jobs, file tools and workers that run in parallel.",
-    after_help = "Credentials: ANTHROPIC_API_KEY for Claude models. For OpenAI models, a ChatGPT login or OPENAI_API_KEY, one per session (--openai-auth). The ChatGPT login is a Codex auth.json (--codex-auth, else FIN_CODEX_AUTH, else Codex's own from `codex login`), or OPENAI_OAUTH_ACCESS_TOKEN with OPENAI_OAUTH_ACCOUNT_ID. GEMINI_API_KEY (or GOOGLE_API_KEY) for Gemini models, and OPENROUTER_API_KEY for openrouter: models. cc: models run in your installed Claude Code (`claude`, signed in with `claude auth login`) on your Claude plan, never on ANTHROPIC_API_KEY. When the model's credential is missing, fin asks for it on a setup screen and saves it in fin's .env. --setup opens that screen. While fin runs, /keys (also in /settings) adds, replaces and removes API keys, and a key added is used at once.\n\nSettings: the API keys above, FIN_CODEX_AUTH, FIN_OPENAI_AUTH (chatgpt or api-key), FIN_CACHE_1H (1 turns on --cache-1h), FIN_SHELL (cmd or powershell, on Windows), FIN_SYMBOLS, FIN_THEME, FIN_REMOTE_HOST and VOYAGE_API_KEY can be in the environment or in a .env file. fin reads the nearest .env in the current directory or a parent, then the one in fin's folder (FIN_HOME, else fin in your data directory, such as ~/.local/share/fin).\n\nThe screen: in a terminal, fin shows the session full screen (--repl keeps the line prompt). Enter sends, and Ctrl+J (or Shift+Enter where the terminal reports it) starts a new line. While the agent works, what you send adds to its task. Ctrl+O switches the view between full, quiet (each worker as one line) and messages. Ctrl+T, or ↓ from the input, reaches the agent list, where Enter shows a worker's own work and Esc goes back. Ctrl+C stops the turn, and the workers go on. Drag over the transcript to select text, and it is copied when you let go. A double click copies a word, and a triple click a line. /help lists the keys, and /settings holds the view, the theme and its previews, the mouse, outside access, the handover size, the web page and the API keys.\n\nThemes: FIN_THEME picks a theme by name, such as \"macOS Classic Light\" or \"Windows Dark\". The default is macOS Classic Dark, and `terminal` keeps the terminal's own colours. Your own themes go in the themes folder in fin's folder, in GPUI Kit's theme format. The theme list in /settings shows a theme when you rest on it, and Previews off there shows none until you choose one.\n\nOutside access: the agents change files only inside the working directory. /outside on, or --allow-outside-workspace (also when resuming), lets commands and the file tools change paths outside it too, and /outside off stops that. The agents are told when it changes, and workers follow it. Protected paths, such as the home directory itself, stay refused.\n\nModels: --model (-m) and --effort set the main agent's model, and --worker-model and --worker-effort the workers'. Before the conversation starts, /model MODEL [EFFORT] changes the main agent's model. After that the main agent keeps its model for the session, and /model worker MODEL [EFFORT] sets the model of workers started from now on. /model worker main makes them follow the main agent again. A worker keeps the model it started on, also when it is resumed or continued. /model and /model worker without a model open a picker of the models you can use.\n\nHandovers: when the main agent's input reaches the handover size (500k tokens on Claude models, 250k on the ChatGPT login, 200k on others), it writes a report and goes on from it in a fresh conversation. /handover-at SIZE lowers the size for the session, and /handover hands over now.\n\nCost: /cost shows what the session billed. For work on a Claude or ChatGPT plan, it also shows the cost at API prices and the plan's usage.\n\nMCP servers: fin starts those set up in --mcp-config files, in the project's .mcp.json (it asks first, and remembers the answer until the file's servers change) and in mcp.json in fin's folder. They use Claude Code's format ({\"mcpServers\": {\"name\": {\"command\": ..., \"args\": [...], \"env\": {...}}}}) and talk over standard input and output. Skills: folders with a SKILL.md, in the project's .agents/skills, .claude/skills or .skills, in skills in fin's folder, or in ~/.agents/skills or ~/.claude/skills.\n\nSearch indexes: `fin index create [PATH]` indexes a codebase or its docs, in any directory (the agents can create indexes too). fin keeps the working directory's indexes current while it runs, and other indexes once the agent searches them. The agents' searches return the top results' whole functions and sections. `fin index --help` lists the commands. Without VOYAGE_API_KEY, search is by keywords only.\n\nWorkers: the agent starts them to work in parallel while it goes on, each in the working directory or in a git worktree of its own (made in the session's folder, on a branch fin/<session>/<worker>). Their reports reach it as they finish. /workers lists them, /watch shows one's own work, and /stop-workers stops them.\n\nRemote: --remote (or /remote during a session) serves a web page for following the session and taking part in it from a browser, such as a phone's. It has the same views as the screen, and its settings change outside access and the handover size and show links for other devices. fin prints the links best first: the local network's, then Tailscale's, then other addresses, with VPN tunnels last. FIN_REMOTE_HOST (an interface or an address) puts its link first. The QR code is for the first link, and /remote qr [INTERFACE] draws one again. The link holds the session's key (kept in the session's folder), which the page trades for a cookie. fin listens on 127.0.0.1:8765 by default, and --remote 0.0.0.0 (or 0.0.0.0:PORT) lets in the devices on your network, or on your tailnet with Tailscale. The page is served without TLS. On a network you don't trust, reach it through an SSH tunnel (ssh -L 8765:127.0.0.1:8765 HOST, then open the link on your side) or Tailscale. /remote off stops it and ends its sessions, and /remote new-key makes a new key.\n\nSymbols: the classic Windows console (cmd.exe or PowerShell outside Windows Terminal) shows characters its fonts lack as question marks, so there fin prints stand-ins those fonts have. FIN_SYMBOLS sets the symbols: full, basic (those stand-ins) or ascii.\n\nCommands: /new, /model, /keys, /cost, /workers, /watch, /stop-workers, /view, /copy, /settings, /mcp, /skills, /session, /remote, /outside, /handover, /handover-at, /help, /exit."
+    after_help = "Credentials: ANTHROPIC_API_KEY for Claude models. For OpenAI models, a ChatGPT login or OPENAI_API_KEY, one per session (--openai-auth). The ChatGPT login is a Codex auth.json (--codex-auth, else FIN_CODEX_AUTH, else Codex's own from `codex login`), or OPENAI_OAUTH_ACCESS_TOKEN with OPENAI_OAUTH_ACCOUNT_ID. GEMINI_API_KEY (or GOOGLE_API_KEY) for Gemini models, and OPENROUTER_API_KEY for openrouter: models. cc: models run in your installed Claude Code (`claude`, signed in with `claude auth login`) on your Claude plan, never on ANTHROPIC_API_KEY. When the model's credential is missing, fin asks for it on a setup screen and saves it in fin's .env. --setup opens that screen. While fin runs, /keys (also in /settings) adds, replaces and removes API keys, and a key added is used at once.\n\nSettings: the API keys above, FIN_CODEX_AUTH, FIN_OPENAI_AUTH (chatgpt or api-key), FIN_CACHE_1H (1 turns on --cache-1h), FIN_SHELL (cmd or powershell, on Windows), FIN_SYMBOLS, FIN_THEME, FIN_REMOTE_HOST and VOYAGE_API_KEY can be in the environment or in a .env file. fin reads the nearest .env in the current directory or a parent, then the one in fin's folder (FIN_HOME, else fin in your data directory, such as ~/.local/share/fin).\n\nThe screen: in a terminal, fin shows the session full screen (--repl keeps the line prompt). Enter sends, and Ctrl+J (or Shift+Enter where the terminal reports it) starts a new line. While the agent works, what you send adds to its task. Ctrl+O switches the view between full, quiet (each worker as one line) and messages. Ctrl+T, or ↓ from the input, reaches the agent list, where Enter shows a worker's own work and Esc goes back. Ctrl+C stops the turn, and the workers go on. Drag over the transcript to select text, and it is copied when you let go. A double click copies a word, and a triple click a line. /help lists the keys, and /settings holds the view, the theme and its previews, the mouse, outside access, the handover size, the web page and the API keys.\n\nThemes: FIN_THEME picks a theme by name, such as \"macOS Classic Light\" or \"Windows Dark\". The default is macOS Classic Dark, and `terminal` keeps the terminal's own colours. Your own themes go in the themes folder in fin's folder, in GPUI Kit's theme format. The theme list in /settings shows a theme when you rest on it, and Previews off there shows none until you choose one.\n\nOutside access: the agents change files only inside the working directory. /outside on, or --allow-outside-workspace (also when resuming), lets commands and the file tools change paths outside it too, and /outside off stops that. The agents are told when it changes, and workers follow it. Protected paths, such as the home directory itself, stay refused.\n\nModels: --model (-m) and --effort set the main agent's model, and --worker-model and --worker-effort the workers'. Before the conversation starts, /model MODEL [EFFORT] changes the main agent's model. After that the main agent keeps its model for the session, and /model worker MODEL [EFFORT] sets the model of workers started from now on. /model worker main makes them follow the main agent again. A worker keeps the model it started on, also when it is resumed or continued. /model and /model worker without a model open a picker of the models you can use.\n\nConversations: /new starts a new conversation in the session, and /resume goes back to an earlier one. The screen opens a list to choose from. At the line prompt and on the web page, /resume lists them and /resume N goes back to number N. A resumed session (-c, --resume) goes on with the conversation it was in.\n\nHandovers: when the main agent's input reaches the handover size (500k tokens on Claude models, 250k on the ChatGPT login, 200k on others), it writes a report and goes on from it in a fresh conversation. /handover-at SIZE lowers the size for the session, and /handover hands over now.\n\nCost: /cost shows what the session billed. For work on a Claude or ChatGPT plan, it also shows the cost at API prices and the plan's usage.\n\nMCP servers: fin starts those set up in --mcp-config files, in the project's .mcp.json (it asks first, and remembers the answer until the file's servers change) and in mcp.json in fin's folder. They use Claude Code's format ({\"mcpServers\": {\"name\": {\"command\": ..., \"args\": [...], \"env\": {...}}}}) and talk over standard input and output. Skills: folders with a SKILL.md, in the project's .agents/skills, .claude/skills or .skills, in skills in fin's folder, or in ~/.agents/skills or ~/.claude/skills.\n\nSearch indexes: `fin index create [PATH]` indexes a codebase or its docs, in any directory (the agents can create indexes too). fin keeps the working directory's indexes current while it runs, and other indexes once the agent searches them. The agents' searches return the top results' whole functions and sections. `fin index --help` lists the commands. Without VOYAGE_API_KEY, search is by keywords only.\n\nWorkers: the agent starts them to work in parallel while it goes on, each in the working directory or in a git worktree of its own (made in the session's folder, on a branch fin/<session>/<worker>). Their reports reach it as they finish. /workers lists them, /watch shows one's own work, and /stop-workers stops them.\n\nRemote: --remote (or /remote during a session) serves a web page for following the session and taking part in it from a browser, such as a phone's. It has the same views as the screen, and its settings change outside access and the handover size and show links for other devices. fin prints the links best first: the local network's, then Tailscale's, then other addresses, with VPN tunnels last. FIN_REMOTE_HOST (an interface or an address) puts its link first. The QR code is for the first link, and /remote qr [INTERFACE] draws one again. The link holds the session's key (kept in the session's folder), which the page trades for a cookie. fin listens on 127.0.0.1:8765 by default, and --remote 0.0.0.0 (or 0.0.0.0:PORT) lets in the devices on your network, or on your tailnet with Tailscale. The page is served without TLS. On a network you don't trust, reach it through an SSH tunnel (ssh -L 8765:127.0.0.1:8765 HOST, then open the link on your side) or Tailscale. /remote off stops it and ends its sessions, and /remote new-key makes a new key.\n\nSymbols: the classic Windows console (cmd.exe or PowerShell outside Windows Terminal) shows characters its fonts lack as question marks, so there fin prints stand-ins those fonts have. FIN_SYMBOLS sets the symbols: full, basic (those stand-ins) or ascii.\n\nCommands: /new, /resume, /model, /keys, /cost, /workers, /watch, /stop-workers, /view, /copy, /settings, /mcp, /skills, /session, /remote, /outside, /handover, /handover-at, /help, /exit."
 )]
 struct Args {
     /// Send this message, print the reply and exit. Progress goes to
@@ -523,6 +524,7 @@ async fn run(args: Args) -> Result<ExitCode, String> {
     ));
     let gauges = Arc::new(Gauges {
         models: Mutex::default(),
+        conversations: Mutex::default(),
         workflow: Mutex::new(None),
         crew: Mutex::new(None),
         stats: stats.clone(),
@@ -593,6 +595,7 @@ async fn run(args: Args) -> Result<ExitCode, String> {
         workflow: None,
         printer: None,
         conversation: Conversation::New,
+        conversations: Default::default(),
         project: None,
         unread: Vec::new(),
         queue_lines: !interactive,
@@ -1185,6 +1188,9 @@ struct Harness {
     workflow: Option<Arc<Workflow>>,
     printer: Option<(mpsc::UnboundedSender<Control>, tokio::task::JoinHandle<()>)>,
     conversation: Conversation,
+    /// The session's conversations, and which one the next message goes
+    /// to (`/new`, `/resume`).
+    conversations: conversations::Conversations,
     /// The project's instructions file, by name, and its text.
     project: Option<(String, String)>,
     /// What the user typed during a turn that the agent didn't read before
@@ -1369,24 +1375,18 @@ impl Harness {
         if let Some((_, old)) = self.printer.replace((control, task)) {
             old.abort();
         }
-        self.conversation = if resume {
-            conversation_of(&workflow)
-        } else {
-            Conversation::New
-        };
+        // The conversation the session was in goes on.
+        self.open_conversations(&workflow, resume);
+        let lead = self.conversations.current_run();
+        self.conversation = conversation_of(&workflow, lead);
         if let Some(crew) = &self.crew {
-            let lead = workflow
-                .result()
-                .agent_results
-                .iter()
-                .rfind(|run| run.agent_name == MAIN)
-                .map(|run| run.agent_run_id);
             crew.attach(&workflow, lead);
             if resume {
                 workflow.resume_subagents();
             }
         }
         self.workflow = Some(workflow);
+        self.publish_conversations();
         Ok(())
     }
 
@@ -1517,11 +1517,9 @@ impl Harness {
         // The conversation so far, for the clients (the web page, the
         // full-screen view): they start with what was said.
         if let Some(run) = self
-            .workflow()
-            .result()
-            .agent_results
-            .into_iter()
-            .rfind(|run| run.agent_name == MAIN)
+            .conversations
+            .current_run()
+            .and_then(|run| self.workflow().agent_result(run))
         {
             self.feed
                 .restore(remote::history(&run.task.conversation.messages));
@@ -1530,6 +1528,11 @@ impl Harness {
             out.echo(&out.dim("Resumed. The last reply:"));
             out.echo(&result.summary);
             self.feed.notice(Level::Info, "Resumed.");
+        } else if self.conversations.current.is_none() && self.conversations.has_earlier() {
+            self.say(
+                Level::Info,
+                "Resumed. The next message starts a new conversation. /resume goes back to the last one.",
+            );
         } else {
             self.say(Level::Info, "Resumed.");
         }
@@ -1652,17 +1655,14 @@ impl Harness {
                     continue;
                 }
                 self.feed.user(command, source, Delivery::Command);
+                if let Some(argument) = conversations::resume_argument(command) {
+                    self.resume_command(argument).await;
+                    continue;
+                }
                 let quit = self.mirrored(|harness| match command {
                     "/exit" | "/quit" => harness.may_exit(),
                     "/new" => {
-                        harness.conversation = Conversation::New;
-                        harness.unread.clear();
-                        harness.handover.forget();
-                        harness.output.line(
-                            &harness
-                                .output
-                                .dim("The next message starts a new conversation."),
-                        );
+                        harness.new_conversation();
                         false
                     }
                     other => {
@@ -2303,6 +2303,9 @@ impl Harness {
                 out.line(&out.dim(&self.handover_summary()));
             }
             "/new" => out.line(&out.dim("Wait for the turn to end (or press Ctrl-C) first.")),
+            other if conversations::resume_argument(other).is_some() => {
+                out.line(&out.dim("Wait for the turn to end (or press Ctrl-C) first."))
+            }
             other
                 if commands::find(other)
                     .is_some_and(|command| command.runs == commands::Runs::Screen) =>
@@ -2613,12 +2616,14 @@ impl Harness {
                 self.feed.reply(&result.summary);
                 self.keep_unread(&notes, &workflow);
                 self.conversation = Conversation::Answered(result);
+                self.track_conversations();
                 TurnEnd::Answered
             }
             Err(WorkflowError::AgentStopped { .. } | WorkflowError::Cancelled) if stopping => {
                 self.say(Level::Warn, "Stopped.");
                 self.keep_unread(&notes, &workflow);
-                self.conversation = conversation_of(&workflow);
+                self.track_conversations();
+                self.conversation = conversation_of(&workflow, self.conversations.current_run());
                 TurnEnd::Stopped
             }
             Err(error) => {
@@ -2826,11 +2831,12 @@ impl Harness {
 
     /// Keep the same workflow after a failed turn so its workers keep running.
     fn recover_after_error(&mut self, workflow: &Workflow) {
-        self.conversation = conversation_of(workflow);
+        self.track_conversations();
+        self.conversation = conversation_of(workflow, self.conversations.current_run());
         if matches!(self.conversation, Conversation::New) {
             self.say(
                 Level::Info,
-                "This conversation can't go on, so your next message starts a new one (/new). The session keeps the old one.",
+                "This conversation can't go on, so your next message starts it over, without what was said before.",
             );
         }
     }
@@ -2880,15 +2886,11 @@ impl Harness {
     }
 }
 
-/// Where the main agent's conversation stands in a workflow built from a
-/// checkpoint: stopped (or interrupted), answered, or neither.
-fn conversation_of(workflow: &Workflow) -> Conversation {
-    let latest = workflow
-        .result()
-        .agent_results
-        .into_iter()
-        .rfind(|result| result.agent_name == MAIN);
-    let Some(latest) = latest else {
+/// Where the conversation whose latest run is `run` stands: stopped (or
+/// interrupted), answered, or neither (no run yet, or one that can't go
+/// on: the next message starts one).
+fn conversation_of(workflow: &Workflow, run: Option<uuid::Uuid>) -> Conversation {
+    let Some(latest) = run.and_then(|run| workflow.agent_result(run)) else {
         return Conversation::New;
     };
     if let Some(run) = workflow
@@ -3067,6 +3069,8 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 struct Gauges {
     /// The agents' models, as the harness last published them.
     models: Mutex<remote::Models>,
+    /// The conversations, as the harness last published them.
+    conversations: Mutex<Vec<remote::ConversationEntry>>,
     workflow: Mutex<Option<Arc<Workflow>>>,
     crew: Mutex<Option<Arc<Crew>>>,
     stats: Arc<Mutex<Stats>>,
@@ -3108,6 +3112,7 @@ impl remote::Meter for Gauges {
                 }
                 models
             },
+            conversations: lock(&self.conversations).clone(),
         }
     }
 }
@@ -3193,6 +3198,12 @@ mod tests {
     mod api_keys {
         use super::*;
         include!("keys_tests.rs");
+    }
+
+    /// `/resume`'s end-to-end tests, in their own file.
+    mod resume {
+        use super::*;
+        include!("resume_tests.rs");
     }
 
     #[test]
@@ -3449,6 +3460,7 @@ mod tests {
         ));
         let gauges = Arc::new(Gauges {
             models: Mutex::default(),
+            conversations: Mutex::default(),
             workflow: Mutex::new(None),
             crew: Mutex::new(None),
             stats: stats.clone(),
@@ -3476,6 +3488,7 @@ mod tests {
             workflow: None,
             printer: None,
             conversation: Conversation::New,
+            conversations: Default::default(),
             project: None,
             unread: Vec::new(),
             queue_lines: !interactive,

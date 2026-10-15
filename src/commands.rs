@@ -57,8 +57,15 @@ impl Command {
 pub const COMMANDS: &[Command] = &[
     Command::session(
         "/new",
-        "start a new conversation (this session keeps the old one)",
+        "start a new conversation (/resume goes back to the old one)",
     ),
+    Command {
+        name: "/resume",
+        args: "[NUMBER]",
+        about: "go back to an earlier conversation of this session: /resume lists them, and /resume 2 goes back to the second",
+        aliases: &[],
+        runs: Runs::Session,
+    },
     Command::session("/cost", "what this session has cost"),
     Command::session("/workers", "the workers: what each is doing, or reported"),
     Command::session(
@@ -177,6 +184,8 @@ mod tests {
         assert_eq!(find(" /quit ").map(|c| c.name), Some("/exit"));
         assert_eq!(find("/remote off").map(|c| c.name), Some("/remote"));
         assert_eq!(find("/view quiet").map(|c| c.runs), Some(Runs::Screen));
+        assert_eq!(find("/resume").map(|c| c.name), Some("/resume"));
+        assert_eq!(find("/resume 2").map(|c| c.name), Some("/resume"));
         // Commands without arguments take none, and other slashes are text.
         assert!(find("/cost please").is_none());
         assert!(find("/usr/bin is missing").is_none());

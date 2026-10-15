@@ -224,17 +224,21 @@ impl Handover {
         Asked::Next
     }
 
-    /// Forgets the main agent's conversation, and a handover asked for its
-    /// next turn: the next message starts a new one (`/new`).
-    pub fn forget(&self) {
+    /// The main agent's conversation is now run `run`'s, whose latest
+    /// request was `input` tokens (`/resume`), or a new one the next
+    /// message starts (`None`, `/new`). A handover asked for the next turn
+    /// of the conversation left stays asked of its run, for when it goes on.
+    pub fn switch(&self, run: Option<Uuid>, input: Option<usize>) {
+        let due = *crate::lock(&self.runs.handover_on_bind);
         let mut watch = crate::lock(&self.watch);
-        if let Some(run) = watch.run {
-            user_asked(run, false);
+        if let Some(old) = watch.run.filter(|old| Some(*old) != due) {
+            user_asked(old, false);
         }
-        *watch = Watch::default();
-        if let Some(run) = crate::lock(&self.runs.handover_on_bind).take() {
-            user_asked(run, false);
-        }
+        *watch = Watch {
+            run,
+            input,
+            ..Watch::default()
+        };
     }
 
     /// Watches the main agent's events in `workflow` (in place of the

@@ -843,4 +843,78 @@ mod tests {
         assert!(rows.contains("← Back to the models"), "{rows}");
         assert!(rows.contains(" Enter  apply   Esc  back"), "{rows}");
     }
+
+    /// `/resume` opens the picker of the conversations over an 80-column
+    /// screen, on the one used last before the current one. Enter sends
+    /// the session `/resume` with its number. While a turn runs, the
+    /// session answers instead.
+    #[test]
+    fn the_resume_picker_fits_an_80_column_screen() {
+        use crate::remote::ConversationEntry;
+        use crate::tui::app::Effect;
+        use crate::ui::Input;
+        let mut app = app();
+        let ago = |minutes: i64| Some(chrono::Utc::now() - chrono::Duration::minutes(minutes));
+        app.reading.conversations = vec![
+            ConversationEntry {
+                number: 3,
+                title: "Make the login page remember the user between visits, with a cookie that lasts a month".into(),
+                last_used: ago(0),
+                current: true,
+            },
+            ConversationEntry {
+                number: 2,
+                title: "Add a README with a usage section".into(),
+                last_used: ago(125),
+                current: false,
+            },
+            ConversationEntry {
+                number: 1,
+                title: "Fix the build on Windows".into(),
+                last_used: ago(190),
+                current: false,
+            },
+        ];
+        let type_line = |app: &mut App, text: &str| {
+            for c in text.chars() {
+                app.key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+            }
+            app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        };
+        type_line(&mut app, "/resume");
+        let rows = screen(&mut app, 80, 24);
+        println!("{}", rows.join("\n"));
+        let text = rows.join("\n");
+        assert!(text.contains("┌ Conversations "), "{text}");
+        assert!(
+            text.contains(
+                "│   Make the login page remember the user between…  just now         current │"
+            ),
+            "{text}"
+        );
+        assert!(
+            text.contains(
+                "│ ▸ Add a README with a usage section               2 hours ago              │"
+            ),
+            "{text}"
+        );
+        assert!(text.contains(" Enter  switch   Esc  close"), "{text}");
+        assert!(app.take_effects().is_empty());
+        app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(app.overlay.is_none());
+        assert_eq!(
+            app.take_effects(),
+            [Effect::Input(Input::Line("/resume 2".into()))]
+        );
+        app.set_activity(Activity {
+            working: true,
+            question: None,
+        });
+        type_line(&mut app, "/resume");
+        assert!(app.overlay.is_none());
+        assert_eq!(
+            app.take_effects(),
+            [Effect::Input(Input::Line("/resume".into()))]
+        );
+    }
 }

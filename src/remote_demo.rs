@@ -230,6 +230,7 @@ async fn remote_page_demo() {
     ));
     harness.gauges = Arc::new(crate::Gauges {
         models: std::sync::Mutex::default(),
+        conversations: std::sync::Mutex::default(),
         workflow: std::sync::Mutex::new(None),
         crew: std::sync::Mutex::new(None),
         stats: harness.stats.clone(),
