@@ -162,10 +162,10 @@ impl ModelPicker {
                 format!("Main agent's effort on {model}")
             }
             (Target::Workers, Step::Efforts { model, .. }) => {
-                format!("New workers' effort on {model}")
+                format!("Workers' effort on {model}")
             }
             (Target::Main, _) => "Main agent's model".to_string(),
-            (Target::Workers, _) => "Model of workers started from now on".to_string(),
+            (Target::Workers, _) => "Workers' model".to_string(),
         }
     }
 
@@ -338,7 +338,10 @@ fn about(effort: Effort) -> &'static str {
 
 /// Draws the picker over `area`.
 pub fn draw(frame: &mut Frame, theme: &Theme, area: Rect, picker: &ModelPicker) {
-    let width = 95.min(area.width.saturating_sub(2));
+    // As wide as the banner when it is about as wide, so their right edges
+    // meet instead of showing side by side.
+    let banner = area.width.saturating_sub(4);
+    let width = if banner < 95 + 6 { banner } else { 95 };
     let inner_width = width.saturating_sub(4) as usize;
     let marker = |chosen: bool| {
         if chosen {
@@ -374,6 +377,13 @@ pub fn draw(frame: &mut Frame, theme: &Theme, area: Rect, picker: &ModelPicker) 
                 .max()
                 .unwrap_or(0)
                 + 2;
+            if picker.target == Target::Workers {
+                lines.push(Line::from(Span::styled(
+                    "For workers started from now on. Running workers keep their model.",
+                    theme.dim(),
+                )));
+                lines.push(Line::default());
+            }
             for (n, row) in picker.rows.iter().enumerate() {
                 let chosen = n == picker.selected;
                 if chosen {
@@ -421,7 +431,7 @@ pub fn draw(frame: &mut Frame, theme: &Theme, area: Rect, picker: &ModelPicker) 
                     Row::FollowMain { model } => {
                         let mut spans = vec![
                             marker(chosen),
-                            Span::styled(format!("The main agent's model, {model}  "), style),
+                            Span::styled(format!("Same as the main agent: {model}  "), style),
                         ];
                         if picker.follows {
                             spans.push(Span::styled("now", theme.accent()));

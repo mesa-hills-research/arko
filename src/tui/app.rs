@@ -1865,7 +1865,7 @@ pub(super) mod tests {
         );
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         let workers = picker(&app);
-        assert_eq!(workers.title(), "Model of workers started from now on");
+        assert_eq!(workers.title(), "Workers' model");
         assert!(matches!(
             workers.rows[workers.selected],
             model_picker::Row::FollowMain { .. }
