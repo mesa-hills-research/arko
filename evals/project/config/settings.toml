@@ -1,0 +1,25 @@
+# tally's settings. Amounts are written as on a statement ("450.00").
+
+currency = "USD"
+week_starts_on = "sunday"
+ledger = "ledger.json"
+date_format = "%Y-%m-%d"
+
+# What each category may spend in a month.
+[budgets]
+groceries = "450.00"
+dining = "200.00"
+transport = "120.00"
+utilities = "180.00"
+fun = "100.00"
+
+# A payee containing the pattern (any case) gets the category.
+[rules]
+"FRESH MARKET" = "groceries"
+"CORNER GROCER" = "groceries"
+"CAFE" = "dining"
+"PIZZA" = "dining"
+"METRO TRANSIT" = "transport"
+"CITY POWER" = "utilities"
+"CINEMA" = "fun"
+"CAFE ROYAL CINEMA" = "fun"
