@@ -107,6 +107,8 @@ pub struct App {
     pub reading: Reading,
     /// When the turn running began.
     pub working_since: Option<Instant>,
+    /// How long the last turn ran, for the status line once it ends.
+    pub last_turn: Option<Duration>,
     /// A stop was asked for the turn running.
     pub stopping: bool,
     /// The question put off with Esc (by its ID).
@@ -181,6 +183,7 @@ impl App {
             view,
             watching: None,
             working_since: activity.working.then(Instant::now),
+            last_turn: None,
             activity,
             reading: Reading::default(),
             stopping: false,
@@ -343,6 +346,9 @@ impl App {
         let finished = self.activity.working && !activity.working;
         if activity.working && !self.activity.working {
             self.working_since = Some(Instant::now());
+        }
+        if finished {
+            self.last_turn = self.working_since.map(|since| since.elapsed());
         }
         if !activity.working {
             self.working_since = None;

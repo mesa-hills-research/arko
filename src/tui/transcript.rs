@@ -1081,6 +1081,12 @@ impl Filter {
                         _ => Show::Hidden,
                     };
                 }
+                if item.kind == Kind::Turn {
+                    // The status line shows how long the last turn ran, and
+                    // the context and cost as they change. A line after each
+                    // turn would repeat it.
+                    return Show::Hidden;
+                }
                 match view {
                     View::Full | View::Quiet => Show::Item,
                     View::Messages => match item.kind {
@@ -1089,13 +1095,12 @@ impl Filter {
                         | Kind::Message
                         | Kind::Question
                         | Kind::Reply
-                        | Kind::Output
-                        | Kind::Turn => Show::Item,
+                        | Kind::Output => Show::Item,
                         Kind::Notice if item.level != Some(Level::Info) => Show::Item,
                         // Tool activity is one line a turn that counts the
                         // calls (as the web page shows it).
                         Kind::Call => Show::Count,
-                        Kind::Result | Kind::Notice => Show::Hidden,
+                        Kind::Result | Kind::Notice | Kind::Turn => Show::Hidden,
                         Kind::WorkerLine => worker_line(),
                     },
                 }
@@ -1657,7 +1662,8 @@ mod tests {
     }
 
     /// A call's outcome is on its line; a command's output is a block
-    /// under it; the user's message has the bar; a turn ends with a rule.
+    /// under it; the user's message has the bar; the end of a turn draws
+    /// nothing (the status line says how long it ran).
     #[test]
     fn items_draw_as_the_design_says() {
         let mut t = Transcript::new();
@@ -1686,7 +1692,7 @@ mod tests {
                 "",
                 "  All 12 pass.",
                 "",
-                "  ── 3 s · $0.010 ──────────────────────",
+                "",
             ]
         );
     }

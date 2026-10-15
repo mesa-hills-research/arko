@@ -278,8 +278,8 @@ fn text_width_of(spans: Option<&Vec<Span>>) -> usize {
     })
 }
 
-/// The status line: is it working, how close is a handover, what does it
-/// cost; what is unusual (outside access, a worker watched, a view other
+/// The status line: is it working (or how long the last turn ran), how
+/// close is a handover, what does it cost; what is unusual (outside access, a worker watched, a view other
 /// than the full one); and the key that matters now.
 fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
     let theme = &app.theme;
@@ -308,6 +308,14 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
             format!("{} idle", glyphs::render("○")),
             theme.dim(),
         ));
+        // In place of a line after each turn in the transcript.
+        if let Some(turn) = app.last_turn {
+            left.push(sep());
+            left.push(Span::styled(
+                format!("last turn {}", clock(turn.as_secs())),
+                theme.dim(),
+            ));
+        }
     }
     let reading = &app.reading;
     // The risky setting, only while it is on, first.
@@ -645,6 +653,17 @@ mod tests {
         );
         assert!(rows[2].ends_with("Ctrl+C  stop"), "{}", rows[2]);
         assert_eq!(rows[4], " › Add to the task");
+        // Once the turn ends, the line says how long it ran.
+        app.set_activity(Activity {
+            working: false,
+            question: None,
+        });
+        let rows = screen(&mut app, 80, 6);
+        assert!(
+            rows[2].starts_with(" ○ idle · last turn 0s · 142k/250k · $3.20 · quiet"),
+            "{}",
+            rows[2]
+        );
     }
 
     #[test]
