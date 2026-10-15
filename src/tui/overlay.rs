@@ -15,6 +15,7 @@ use super::app::App;
 use super::theme::{Depth, Theme};
 use super::transcript::View;
 use super::wrap::{self, width as text_width};
+use crate::agents::ExtraRules;
 use crate::commands;
 use crate::glyphs;
 use crate::remote;
@@ -54,6 +55,7 @@ pub enum SettingsRow {
     Outside,
     Handover,
     Replies,
+    Rules,
     Page,
     Keys,
 }
@@ -406,6 +408,34 @@ fn settings(frame: &mut Frame, app: &App, area: Rect, selected: usize) {
                         format!("{mode} It keeps this for the session.")
                     } else {
                         format!("{mode} It changes before the conversation starts.")
+                    }
+                },
+            ),
+            SettingsRow::Rules => (
+                "Session",
+                "Extra rules",
+                choices(
+                    theme,
+                    &["small", "all", "off"],
+                    ExtraRules::ALL
+                        .iter()
+                        .position(|rules| *rules == app.extra_rules())
+                        .unwrap_or(0),
+                ),
+                {
+                    let who = match app.extra_rules() {
+                        ExtraRules::Small => {
+                            "Agents on small models (Haiku, luna) get a few extra rules in their instructions."
+                        }
+                        ExtraRules::All => {
+                            "Every agent gets the extra rules for small models in its instructions."
+                        }
+                        ExtraRules::Off => "No agent gets the extra rules for small models.",
+                    };
+                    if app.conversation_started() {
+                        format!("{who} The session keeps this.")
+                    } else {
+                        format!("{who} It changes before the conversation starts.")
                     }
                 },
             ),

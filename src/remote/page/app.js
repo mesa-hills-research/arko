@@ -6,6 +6,13 @@
 
 (() => {
   const C = window.FinCore;
+
+  /** Who gets the extra rules for small models, as `/extra-rules` takes it. */
+  const RULES = {
+    small: { name: 'Small models', about: 'Agents on small models (Haiku, luna) get a few extra rules in their instructions.' },
+    all: { name: 'Every agent', about: 'Every agent gets the extra rules for small models.' },
+    off: { name: 'Off', about: 'No agent gets them.' },
+  };
   const KEY = 'fin.remote.key';
   const $ = (id) => document.getElementById(id);
   const fine = window.matchMedia('(pointer: fine)');
@@ -858,6 +865,22 @@
       ? 'The agent ends its turn with a plain reply.'
       : 'The agent ends its turn by calling complete_task.')
       + (started ? ' It keeps this for the session.' : ' It changes before the conversation starts.');
+    // The extra rules change only before the conversation starts.
+    const choosing = pending && pending.rules !== undefined;
+    const chosen = choosing ? pending.rules : (settings.extra_rules || 'off');
+    const rules = $('rules-options');
+    rules.replaceChildren();
+    for (const [key, about] of Object.entries(RULES)) {
+      const option = element('button', 'option');
+      option.type = 'button';
+      option.setAttribute('role', 'radio');
+      option.setAttribute('aria-checked', String(key === chosen));
+      option.disabled = started && !choosing;
+      option.append(element('span', 'check', key === chosen ? '✓' : ''), element('span', 'name', about.name), element('span', 'about', about.about));
+      option.addEventListener('click', () => chooseRules(key));
+      rules.append(option);
+    }
+    $('rules-about').textContent = started ? 'The session keeps this.' : 'It changes before the conversation starts.';
     if (pending && pending.done && pending.done(settings)) settle(pending, true);
     const rows = [
       ['Model', info.model],
@@ -914,10 +937,10 @@
 
   /** Sends `command` from the sheet; `done(settings)` says when the
    * status shows it took. */
-  async function command(text, noteId, done, outside, replies) {
+  async function command(text, noteId, done, outside, replies, rules) {
     if (pending) return false;
     note(noteId, '');
-    const change = { command: text, note: noteId, done, outside, replies, lines: [] };
+    const change = { command: text, note: noteId, done, outside, replies, rules, lines: [] };
     pending = change;
     renderSettings();
     if (!(await post('/api/message', { text }))) {
@@ -953,6 +976,13 @@
     const on = !(status && status.settings && status.settings.text_replies);
     command('/text-replies ' + (on ? 'on' : 'off'), 'replies-note', (settings) => Boolean(settings.text_replies) === on, undefined, on);
   });
+
+  function chooseRules(key) {
+    if (pending) return;
+    const now = (status && status.settings && status.settings.extra_rules) || 'off';
+    if (key === now) return;
+    command('/extra-rules ' + key, 'rules-note', (settings) => settings.extra_rules === key, undefined, undefined, key);
+  }
 
   $('handover-form').addEventListener('submit', (event) => {
     event.preventDefault();

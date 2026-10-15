@@ -75,6 +75,67 @@ impl std::fmt::Display for Effort {
     }
 }
 
+/// Which agents get the extra rules for small models in their
+/// instructions ([`extra_rules`]). Each agent goes by its own model: a
+/// worker on a small model under a lead on a large one gets them, and the
+/// lead doesn't.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ExtraRules {
+    /// Agents on small models ([`providers::is_small`]): new sessions'
+    /// default.
+    Small,
+    /// Every agent, whatever its model.
+    All,
+    /// No agent. Sessions saved before the rules existed have them off, as
+    /// their saved agents were built.
+    #[default]
+    Off,
+}
+
+impl ExtraRules {
+    pub const ALL: [ExtraRules; 3] = [ExtraRules::Small, ExtraRules::All, ExtraRules::Off];
+
+    /// The name `/extra-rules` takes and shows.
+    pub fn name(self) -> &'static str {
+        match self {
+            ExtraRules::Small => "small",
+            ExtraRules::All => "all",
+            ExtraRules::Off => "off",
+        }
+    }
+
+    pub fn parse(text: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|rules| rules.name().eq_ignore_ascii_case(text.trim()))
+    }
+
+    /// Who gets the rules, as fin tells the user.
+    pub fn describe(self) -> &'static str {
+        match self {
+            ExtraRules::Small => "only agents on small models (Haiku, luna) get them",
+            ExtraRules::All => "every agent gets them",
+            ExtraRules::Off => "no agent gets them",
+        }
+    }
+
+    /// Whether an agent on `model` gets them.
+    pub fn for_model(self, model: &ModelSettings) -> bool {
+        match self {
+            ExtraRules::Small => {
+                resolve_model(&model.model).is_ok_and(|model| providers::is_small(&model))
+            }
+            ExtraRules::All => true,
+            ExtraRules::Off => false,
+        }
+    }
+
+    pub fn is_off(&self) -> bool {
+        *self == ExtraRules::Off
+    }
+}
+
 /// Models are named and resolved by [`crate::providers`].
 pub use crate::providers::resolve_model;
 
@@ -172,6 +233,9 @@ pub struct AgentSettings<'a> {
     /// The main agent ends its turns with a reply in plain text (see
     /// `Settings::text_replies`).
     pub text_replies: bool,
+    /// Which agents get the extra rules for small models, each by its own
+    /// model.
+    pub extra_rules: ExtraRules,
 }
 
 /// How many indexes the instructions name; `index_status` lists the rest.
@@ -334,6 +398,11 @@ pub fn main_config(settings: &AgentSettings) -> Result<AgentConfig, String> {
     if settings.max_workers > 0 {
         instructions.push_str(&worker_instructions(settings));
     }
+    if settings.extra_rules.for_model(settings.main)
+        && let Some(rules) = extra_rules(settings)
+    {
+        instructions.push_str(&rules);
+    }
     let mut tool_config = tool_config(tools);
     tool_config.text_reply_ends_task = settings.text_replies;
     let mut builder = AgentConfig::builder(
@@ -374,6 +443,11 @@ pub fn worker_config(settings: &AgentSettings) -> Result<AgentConfig, String> {
          The lead's messages reach you as workflow context updates from your lead: take them into account. A message that arrives as you finish comes back to you, and you report again. After your report, the lead may send you follow-up work, which continues this conversation.\n",
     );
     instructions.push_str(&tool_instructions(settings));
+    if settings.extra_rules.for_model(settings.worker)
+        && let Some(rules) = extra_rules(settings)
+    {
+        instructions.push_str(&rules);
+    }
     let mut builder = AgentConfig::builder(
         WORKER.into(),
         "worker".into(),
@@ -539,6 +613,35 @@ fn worker_instructions(settings: &AgentSettings) -> String {
     text
 }
 
+/// The extra rules for agents on small models (see [`ExtraRules`]), when
+/// any applies: short commands for what the large models do without being
+/// told. Each comes from a mistake the small models made in fin's evals
+/// (`evals/`) that the large ones didn't.
+fn extra_rules(settings: &AgentSettings) -> Option<String> {
+    let mut rules: Vec<&str> = Vec::new();
+    if !settings.index_tools.is_empty() {
+        // luna searched anyway, and the search failed.
+        if settings.indexes.iter().all(|known| known.place.is_none()) {
+            rules.push(
+                "No index covers the working directory, so `index_search` can't search it. Search it with `rg`, or create its index with `index_create` first.",
+            );
+        }
+        // luna limited a Python project's search to `rust`, which found
+        // nothing.
+        rules.push(
+            "Leave out `index_search`'s `language`. A wrong one finds nothing: a Python project has no `rust` code.",
+        );
+    }
+    if rules.is_empty() {
+        return None;
+    }
+    let mut text = String::from("\n# Extra rules\n");
+    for rule in rules {
+        text.push_str(&format!("- {rule}\n"));
+    }
+    Some(text)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -559,6 +662,7 @@ mod tests {
             indexes: &[],
             providers: Box::leak(Box::new(providers::Setup::new(None))),
             text_replies: false,
+            extra_rules: ExtraRules::Off,
         }
     }
 
@@ -993,6 +1097,131 @@ mod tests {
         assert!(summary.contains("file paths and line numbers"));
         assert!(!worker.instructions.contains("complete_task"));
         assert!(!worker.instructions.contains("message_agent"));
+    }
+
+    /// The extra rules go to agents on small models, each agent by its own
+    /// model: a worker on Haiku under a lead on Opus gets them, and the
+    /// lead doesn't. `All` gives them to every agent and `Off` to none.
+    #[test]
+    fn each_agent_gets_the_extra_rules_by_its_own_model() {
+        let opus = model("cc:opus", false);
+        let haiku = model("cc:claude-haiku-5-5", false);
+        let luna = model("luna", false);
+        let has = |config: AgentConfig| config.instructions.contains("# Extra rules");
+        let with = |main, worker, extra_rules| AgentSettings {
+            extra_rules,
+            index_tools: crate::index::TOOL_NAMES,
+            ..settings(main, worker)
+        };
+        let mixed = with(&opus, &haiku, ExtraRules::Small);
+        assert!(!has(main_config(&mixed).unwrap()));
+        assert!(has(worker_config(&mixed).unwrap()));
+        let mixed = with(&luna, &opus, ExtraRules::Small);
+        assert!(has(main_config(&mixed).unwrap()));
+        assert!(!has(worker_config(&mixed).unwrap()));
+        let all = with(&opus, &opus, ExtraRules::All);
+        assert!(has(main_config(&all).unwrap()));
+        assert!(has(worker_config(&all).unwrap()));
+        let off = with(&luna, &haiku, ExtraRules::Off);
+        assert!(!has(main_config(&off).unwrap()));
+        assert!(!has(worker_config(&off).unwrap()));
+    }
+
+    /// Each rule is given where it applies: the one about a working
+    /// directory no index covers only then, and none without the index
+    /// tools, which leaves no section at all.
+    #[test]
+    fn the_extra_rules_say_only_what_applies() {
+        let luna = model("luna", false);
+        let without = AgentSettings {
+            extra_rules: ExtraRules::Small,
+            ..settings(&luna, &luna)
+        };
+        assert!(
+            !main_config(&without)
+                .unwrap()
+                .instructions
+                .contains("# Extra rules")
+        );
+        let uncovered = AgentSettings {
+            index_tools: crate::index::TOOL_NAMES,
+            ..without
+        };
+        let text = main_config(&uncovered).unwrap().instructions;
+        assert!(text.contains(
+            "# Extra rules\n- No index covers the working directory, so `index_search` can't search it."
+        ));
+        assert!(text.contains("\n- Leave out `index_search`'s `language`."));
+        let indexes = [index::Known {
+            name: "work".into(),
+            kind: "code",
+            root: "/work".into(),
+            place: Some("the working directory"),
+        }];
+        let covered = AgentSettings {
+            indexes: &indexes,
+            ..uncovered
+        };
+        let text = worker_config(&covered).unwrap().instructions;
+        assert!(!text.contains("No index covers the working directory, so"));
+        assert!(text.contains("# Extra rules\n- Leave out `index_search`'s `language`."));
+    }
+
+    /// Haiku and luna are small on every route; the others aren't.
+    #[test]
+    fn small_models_are_haiku_and_luna_on_any_route() {
+        for name in [
+            "claude-haiku-5-5",
+            "cc:claude-haiku-5-5",
+            "openrouter:anthropic/claude-haiku-5.5",
+            "luna",
+            "gpt-6-luna",
+            "openrouter:openai/gpt-6-luna:floor",
+        ] {
+            assert!(providers::is_small(&resolve_model(name).unwrap()), "{name}");
+        }
+        for name in [
+            "opus",
+            "cc:opus",
+            "fable",
+            "sonnet",
+            "sol",
+            "astra",
+            "gemini",
+            "openrouter:anthropic/claude-opus-5.5",
+        ] {
+            assert!(
+                !providers::is_small(&resolve_model(name).unwrap()),
+                "{name}"
+            );
+        }
+    }
+
+    /// With the default, the large models' configurations (and so what
+    /// they are sent) are the same as without the rules.
+    #[test]
+    fn the_default_leaves_large_models_as_they_were() {
+        for name in [
+            "opus", "cc:opus", "cc:fable", "sonnet", "sol", "astra", "gemini",
+        ] {
+            let big = model(name, false);
+            let configs = |extra_rules| {
+                let with = AgentSettings {
+                    extra_rules,
+                    index_tools: crate::index::TOOL_NAMES,
+                    ..settings(&big, &big)
+                };
+                (
+                    serde_json::to_value(main_config(&with).unwrap()).unwrap(),
+                    serde_json::to_value(worker_config(&with).unwrap()).unwrap(),
+                )
+            };
+            assert_eq!(
+                configs(ExtraRules::Small),
+                configs(ExtraRules::Off),
+                "{name}"
+            );
+        }
     }
 
     /// A resumed session builds the same configuration, which the

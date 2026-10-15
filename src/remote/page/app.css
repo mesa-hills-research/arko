@@ -602,6 +602,8 @@ dialog.sheet::backdrop { background: rgba(0, 0, 0, 0.32); }
   padding: 7px 8px 7px 4px;
 }
 .option:hover { background: var(--secondary); }
+.option:disabled { opacity: 0.55; }
+.option:disabled:hover { background: none; }
 .option .check { grid-row: span 2; color: var(--accent-text); font-weight: 700; text-align: center; }
 .option .name { font-weight: 500; }
 .option .about { color: var(--muted); font-size: 13px; }

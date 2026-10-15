@@ -200,6 +200,18 @@ pub fn takes_cache_ttl(model: &Model) -> bool {
     }
 }
 
+/// The families of small models: fast, cheap models that do better with
+/// plain, explicit rules than the large ones need (`agents::extra_rules`).
+const SMALL_FAMILIES: [&str; 2] = ["haiku", "luna"];
+
+/// Whether `model` is a small model: its ID names a small family, whatever
+/// the route (`claude-haiku-5-5`, `cc:claude-haiku-5-5`,
+/// `openrouter:anthropic/claude-haiku-5.5`, `gpt-6-luna`).
+pub fn is_small(model: &Model) -> bool {
+    let id = model.id.to_ascii_lowercase();
+    SMALL_FAMILIES.iter().any(|family| id.contains(family))
+}
+
 /// The generation settings of an agent on `model`: its reasoning at
 /// `effort`, and fast mode and the 1-hour cache where the provider has them.
 pub fn generation(
@@ -1525,6 +1537,7 @@ mod tests {
             openai_auth: None,
             own_worker_model: false,
             text_replies: false,
+            extra_rules: Default::default(),
         }
     }
 

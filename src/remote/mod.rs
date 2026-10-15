@@ -148,6 +148,9 @@ pub struct LiveSettings {
     /// `complete_task`). It changes only before the conversation starts
     /// (`Models::started`).
     pub text_replies: bool,
+    /// Which agents get the extra rules for small models. It changes only
+    /// before the conversation starts.
+    pub extra_rules: crate::agents::ExtraRules,
 }
 
 /// A random token of `bytes` bytes, in URL-safe base64.

@@ -86,7 +86,7 @@ pub const COMMANDS: &[Command] = &[
     Command::screen(
         "/settings",
         "",
-        "the view, theme, mouse, outside access, handover size, text replies, web page and API keys",
+        "the view, theme, mouse, outside access, handover size, text replies, extra rules, web page and API keys",
     ),
     Command {
         name: "/model",
@@ -123,6 +123,13 @@ pub const COMMANDS: &[Command] = &[
         name: "/text-replies",
         args: "on|off",
         about: "how the main agent ends its turns: with a plain reply (on) or by calling complete_task (off). It changes before the conversation starts (/text-replies off)",
+        aliases: &[],
+        runs: Runs::Session,
+    },
+    Command {
+        name: "/extra-rules",
+        args: "small|all|off",
+        about: "the extra rules for small models in the agents' instructions: agents on small models get them (small), every agent does (all), or none does (off). It changes before the conversation starts (/extra-rules off)",
         aliases: &[],
         runs: Runs::Session,
     },

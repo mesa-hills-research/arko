@@ -13,7 +13,7 @@
 use arko_ai::{Model, Provider};
 use arko_workflows::notes::{Note, NoteSource};
 
-use crate::agents::{self, AgentSettings, Effort, MAIN, ModelSettings};
+use crate::agents::{self, AgentSettings, Effort, ExtraRules, MAIN, ModelSettings};
 use crate::crew::{NewWorkers, WorkerModel};
 use crate::providers::{self, OpenAiAuth};
 use crate::remote::{self, Level, Source};
@@ -223,6 +223,99 @@ impl Harness {
         Ok(format!("Text replies are {state}: {mode}."))
     }
 
+    /// `/extra-rules`, typed at the prompt, sent from the page or chosen in
+    /// the settings: says which agents get the extra rules for small models,
+    /// and with `small`, `all` or `off` changes that before the conversation
+    /// starts (the agents are built again). Once it has started, the
+    /// session keeps it, as it keeps the main agent's model.
+    pub(crate) fn extra_rules_command(&mut self, argument: &str, source: Source) {
+        let result = match argument {
+            "" => Ok(self.extra_rules_line()),
+            other => match ExtraRules::parse(other) {
+                Some(rules) => self.set_extra_rules(rules),
+                None => Err("/extra-rules takes small, all or off (/extra-rules off).".to_string()),
+            },
+        };
+        match result {
+            Ok(text) => {
+                if source == Source::Web && !argument.is_empty() {
+                    self.say(Level::Info, &format!("From the web page: {text}"));
+                } else {
+                    self.mirrored(|harness| harness.output.line(&text));
+                }
+            }
+            Err(error) => {
+                self.mirrored(|harness| harness.output.line(&harness.output.error(&error)))
+            }
+        }
+    }
+
+    /// Who gets the extra rules, as `/extra-rules` says it.
+    fn extra_rules_line(&self) -> String {
+        let rules = self.settings.extra_rules;
+        let text = format!(
+            "Extra rules for small models: {} ({}). {}",
+            rules.describe(),
+            rules.name(),
+            self.extra_rules_here()
+        );
+        if self.conversation_started() {
+            format!("{text} The session keeps this.")
+        } else {
+            format!(
+                "{text} /extra-rules small, all or off changes that before the conversation starts."
+            )
+        }
+    }
+
+    /// Which of this session's agents get the extra rules: the main agent
+    /// by its model, and the workers by the model new ones start on.
+    fn extra_rules_here(&self) -> String {
+        let rules = self.settings.extra_rules;
+        let main = rules.for_model(&self.settings.main);
+        if self.settings.max_workers == 0 || self.crew.is_none() {
+            return if main {
+                "The main agent gets them.".to_string()
+            } else {
+                "The main agent doesn't get them.".to_string()
+            };
+        }
+        let workers = rules.for_model(&self.settings.worker);
+        match (main, workers) {
+            (true, true) => "The main agent and the workers get them.",
+            (true, false) => "The main agent gets them, and the workers don't.",
+            (false, true) => "The workers get them, and the main agent doesn't.",
+            (false, false) => "Neither the main agent nor the workers get them.",
+        }
+        .to_string()
+    }
+
+    /// Who gets the extra rules, before the conversation starts: the agents
+    /// are built again with them.
+    fn set_extra_rules(&mut self, rules: ExtraRules) -> Result<String, String> {
+        if self.settings.extra_rules == rules {
+            return Ok(format!(
+                "Extra rules for small models: {} already. {}",
+                rules.describe(),
+                self.extra_rules_here()
+            ));
+        }
+        if self.conversation_started() {
+            return Ok(format!(
+                "The session keeps its extra rules: {}. A new session takes --extra-rules or --no-extra-rules.",
+                self.settings.extra_rules.describe()
+            ));
+        }
+        let mut settings = self.settings.clone();
+        settings.extra_rules = rules;
+        self.rebuild_agents(settings)?;
+        Ok(format!(
+            "Extra rules for small models: {}. {}",
+            rules.describe(),
+            self.extra_rules_here()
+        ))
+    }
+
     /// Whether the main agent's conversation has started: it can't change
     /// model then. (A checkpoint, a turn that ran or runs.)
     pub(crate) fn conversation_started(&self) -> bool {
@@ -425,6 +518,7 @@ impl Harness {
             },
             indexes: &known,
             text_replies: settings.text_replies,
+            extra_rules: settings.extra_rules,
         };
         Ok((
             agents::main_config(&agent_settings)?,
@@ -490,6 +584,7 @@ impl Harness {
             self.settings.text_replies,
             std::sync::atomic::Ordering::Relaxed,
         );
+        *lock(&self.gauges.extra_rules) = self.settings.extra_rules;
         *lock(&self.gauges.models) = remote::Models {
             main: self.settings.main.model.clone(),
             main_effort: self.settings.main.effort.to_string(),

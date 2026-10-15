@@ -435,6 +435,7 @@ mod tests {
             index_tools: &[],
             indexes: &[],
             text_replies: false,
+            extra_rules: Default::default(),
         };
         let mut config = crate::agents::main_config(&settings).unwrap();
         assert!(files_follow(&config));

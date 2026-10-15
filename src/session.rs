@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use chrono::{DateTime, Local, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::agents::ModelSettings;
+use crate::agents::{ExtraRules, ModelSettings};
 use crate::providers::OpenAiAuth;
 use crate::shell::WindowsShell;
 
@@ -61,6 +61,10 @@ pub struct Settings {
     /// `complete_task`, as their saved configuration says.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub text_replies: bool,
+    /// Which agents get the extra rules for small models. Off in sessions
+    /// saved before they existed, as their saved agents were built.
+    #[serde(default, skip_serializing_if = "ExtraRules::is_off")]
+    pub extra_rules: ExtraRules,
 }
 
 impl Settings {
@@ -254,6 +258,7 @@ mod tests {
             openai_auth: None,
             own_worker_model: false,
             text_replies: false,
+            extra_rules: Default::default(),
         }
     }
 

@@ -18,6 +18,7 @@ use super::prefs::Prefs;
 use super::resume_picker::{self, ResumePicker};
 use super::theme::{self, Catalog, Depth, Theme};
 use super::transcript::{Filter, Transcript, View};
+use crate::agents::ExtraRules;
 use crate::commands::{self, Runs};
 use crate::credentials::{Key, KeyState};
 use crate::keys::Secret;
@@ -935,6 +936,9 @@ impl App {
         if commands::find("/text-replies on").is_some() {
             rows.push(SettingsRow::Replies);
         }
+        if commands::find("/extra-rules small").is_some() {
+            rows.push(SettingsRow::Rules);
+        }
         rows.push(SettingsRow::Page);
         rows.push(SettingsRow::Keys);
         rows
@@ -1091,6 +1095,12 @@ impl App {
                         "/text-replies off"
                     });
                 }
+                SettingsRow::Rules => {
+                    let all = ExtraRules::ALL;
+                    let index = all.iter().position(|rules| *rules == self.extra_rules());
+                    let next = (index.unwrap_or(0) as i32 + step).rem_euclid(all.len() as i32);
+                    self.send(&format!("/extra-rules {}", all[next as usize].name()));
+                }
                 SettingsRow::Page => {
                     if super::page().is_some() {
                         self.send("/remote off");
@@ -1154,6 +1164,11 @@ impl App {
     /// Whether the main agent ends its turns with a reply in plain text.
     pub fn text_replies(&self) -> bool {
         self.reading.settings.text_replies
+    }
+
+    /// Which agents get the extra rules for small models.
+    pub fn extra_rules(&self) -> ExtraRules {
+        self.reading.settings.extra_rules
     }
 
     /// Whether the main agent's conversation has started: its text replies
@@ -1740,6 +1755,35 @@ pub(super) mod tests {
         assert!(!app.conversation_started());
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         assert_eq!(sent(&mut app), ["/text-replies off"]);
+    }
+
+    /// The extra rules are a session setting: the row steps through small,
+    /// all and off with `/extra-rules`, beside text replies.
+    #[test]
+    fn the_extra_rules_row_sends_the_command() {
+        let mut app = app();
+        let rows = app.settings_rows();
+        let row = rows
+            .iter()
+            .position(|row| *row == SettingsRow::Rules)
+            .unwrap();
+        let replies = rows
+            .iter()
+            .position(|row| *row == SettingsRow::Replies)
+            .unwrap();
+        assert_eq!(row, replies + 1, "beside the other session settings");
+        app.overlay = Some(Overlay::Settings { row, picker: None });
+        // Off, as a session saved before the rules has them, steps round to
+        // small.
+        assert_eq!(app.extra_rules(), ExtraRules::Off);
+        press(&mut app, KeyCode::Right, KeyModifiers::NONE);
+        assert_eq!(sent(&mut app), ["/extra-rules small"]);
+        let mut reading = app.reading.clone();
+        reading.settings.extra_rules = ExtraRules::Small;
+        app.set_reading(reading);
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        press(&mut app, KeyCode::Left, KeyModifiers::NONE);
+        assert_eq!(sent(&mut app), ["/extra-rules all", "/extra-rules off"]);
     }
 
     /// The keys menu opens from the settings and goes back there, and from
