@@ -206,7 +206,6 @@ fn agent_settings_of(harness: &Harness) -> AgentSettings<'_> {
         max_workers: harness.settings.max_workers,
         handover_at: harness.settings.handover_at,
         show_thinking: false,
-        shell_name: "bash",
         providers: Box::leak(Box::new(providers::Setup::new(
             harness.settings.openai_auth,
         ))),

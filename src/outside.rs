@@ -428,7 +428,6 @@ mod tests {
             max_workers: 0,
             handover_at: 200_000,
             show_thinking: false,
-            shell_name: "bash",
             providers: Box::leak(Box::new(crate::providers::Setup::new(None))),
             mcp_tools: &[],
             mcp_servers: &[],

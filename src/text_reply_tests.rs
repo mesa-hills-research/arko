@@ -77,7 +77,6 @@ fn agent_settings_of(harness: &Harness) -> AgentSettings<'_> {
         max_workers: harness.settings.max_workers,
         handover_at: harness.settings.handover_at,
         show_thinking: false,
-        shell_name: "bash",
         providers: Box::leak(Box::new(providers::Setup::new(
             harness.settings.openai_auth,
         ))),
@@ -564,7 +563,6 @@ fn a_text_reply_session_is_not_told_it_lacks_message_user() {
         max_workers: NO_LIMIT,
         handover_at: 200_000,
         show_thinking: false,
-        shell_name: "bash",
         mcp_tools: &[],
         mcp_servers: &[],
         skill_folders: &[],

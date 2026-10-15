@@ -158,8 +158,6 @@ pub struct AgentSettings<'a> {
     pub max_workers: u32,
     pub handover_at: usize,
     pub show_thinking: bool,
-    /// What the agents are told the shell is.
-    pub shell_name: &'a str,
     /// The tools of the MCP servers running, offered to both agents.
     pub mcp_tools: &'a [String],
     /// The MCP servers running, by name.
@@ -371,10 +369,9 @@ pub fn main_config(settings: &AgentSettings) -> Result<AgentConfig, String> {
 pub fn worker_config(settings: &AgentSettings) -> Result<AgentConfig, String> {
     let mut instructions = String::from(
         "# Your task\n\
-         A lead agent gave you one task, in your first message, and works on other things while you work on it. It can't see your work. Make reasonable choices yourself and say which in your report; if something blocks you, report what and why.\n\n\
-         When the task is done, or you can't go further, call `complete_task`. Its summary is your report to the lead, and the only thing it sees of your work: what you did and found, with the evidence (file paths and line numbers, the commands you ran and what they showed), every file you changed (and the commits you made), and anything unfinished. Mark what you couldn't confirm, and say where you looked.\n\n\
+         Make reasonable choices yourself, and say which in your report. If something blocks you, report what and why.\n\n\
          # The lead\n\
-         The lead can send you messages while you work: they reach you as workflow context updates from your lead. Take them into account; a message that arrives as you finish comes back to you, and you report again. `message_agent` addressed to `lead` sends the lead a message without ending your task: use it for what it needs before your report (a finding that changes its plan, a question only it can answer), not for progress updates. `wait_for_agents` waits for its answer; wait only when you can't reasonably go on without one. After your report the lead may send you follow-up work: you continue with your conversation as it was.\n",
+         The lead's messages reach you as workflow context updates from your lead: take them into account. A message that arrives as you finish comes back to you, and you report again. After your report, the lead may send you follow-up work, which continues this conversation.\n",
     );
     instructions.push_str(&tool_instructions(settings));
     let mut builder = AgentConfig::builder(
@@ -393,7 +390,7 @@ pub fn worker_config(settings: &AgentSettings) -> Result<AgentConfig, String> {
     }))
     .environment_details_config(environment())
     .complete_task_summary_prompt_override(
-        "Your report to the lead agent: what you did and found, with evidence (paths, line numbers, commands and results), the files you changed, and anything unfinished or unconfirmed."
+        "Your report to the lead, the only thing it sees of your work: what you did and found, with the evidence (file paths and line numbers, the commands you ran and what they showed), every file you changed and the commits you made, and anything unfinished. Mark what you couldn't confirm, and say where you looked."
             .into(),
     )
     .handover(handover(
@@ -415,14 +412,14 @@ fn main_instructions(settings: &AgentSettings) -> String {
          The user talks with you in a terminal. Each of their messages starts a turn: work on it with your tools for as long as it takes. When you're done, reply without calling a tool. That reply ends your turn, and the user reads it as your message, so write your answer there in full. Text you write beside tool calls is shown to the user as you work: keep it to short progress notes.\n\n\
          When a step doesn't need the user, keep going. End the turn to ask only when you can't continue without them, or before something destructive or hard to undo that they didn't ask for: deleting data they may want, force-pushing, publishing, or changing things outside the working directory.\n\n\
          The user can type while you work. What they type reaches you as a note from the operator: take it into account in the work you're doing. When a note asks you something or needs an answer before you finish (a question, \"progress?\"), answer it in text beside your next tool call and carry on with your work. Only a response without a tool call ends your turn, so don't answer a note that way unless you're done.\n\n\
-         When you need the user to decide something before you can go on (a choice between approaches with real trade-offs, missing information only they have), ask with `ask_user`: it waits for their answer and you continue. Ask only what you can't reasonably decide yourself; if they can't be asked (fin runs without a terminal), it says so, and you decide.\n"
+         When you need the user to decide something before you can go on (a choice between approaches with real trade-offs, missing information only they have), ask with `ask_user`. If they can't be asked (fin runs without a terminal), it says so, and you decide.\n"
             .to_string();
     }
     "# How this conversation works\n\
-     The user talks with you in a terminal. Each of their messages starts a turn: work on it with your tools for as long as it takes, then end the turn by calling `complete_task`. Its summary is your reply: the user reads it as your message, so write your answer there in full. Text you write outside tool calls is shown to the user as you work; keep it to short progress notes, and don't repeat your reply in it.\n\n\
+     The user talks with you in a terminal. Each of their messages starts a turn: work on it with your tools for as long as it takes, then end the turn by calling `complete_task`, whose summary is your reply. Text you write outside tool calls is shown to the user as you work; keep it to short progress notes, and don't repeat your reply in it.\n\n\
      When a step doesn't need the user, keep going. End the turn to ask only when you can't continue without them, or before something destructive or hard to undo that they didn't ask for: deleting data they may want, force-pushing, publishing, or changing things outside the working directory.\n\n\
-     The user can type while you work. What they type reaches you as a note from the operator: take it into account in the work you're doing. When a note asks you something or needs an answer before you finish (a question, \"progress?\"), answer it with `message_user` and carry on with your work. Every response of yours must call a tool: a reply in plain text, without one, is an error.\n\n\
-     When you need the user to decide something before you can go on (a choice between approaches with real trade-offs, missing information only they have), ask with `ask_user`: it waits for their answer and you continue. Ask only what you can't reasonably decide yourself; if they can't be asked (fin runs without a terminal), it says so, and you decide.\n"
+     The user can type while you work. What they type reaches you as a note from the operator: take it into account in the work you're doing. When a note asks you something or needs an answer before you finish (a question, \"progress?\"), answer it with `message_user` and carry on with your work. Use `message_user` too for anything they must know before you finish. Every response of yours must call a tool: a reply in plain text, without one, is an error.\n\n\
+     When you need the user to decide something before you can go on (a choice between approaches with real trade-offs, missing information only they have), ask with `ask_user`. If they can't be asked (fin runs without a terminal), it says so, and you decide.\n"
         .to_string()
 }
 
@@ -434,21 +431,18 @@ fn tool_instructions(settings: &AgentSettings) -> String {
     };
     let mut text = format!(
         "\n# Tools\n\
-         `shell` runs a command in {shell} in the working directory and returns its exit code and output once it finishes. Use it for what you would do in a terminal: {uses}. Each call starts in the working directory, so a `cd` doesn't carry over to the next call; to run a command somewhere else, give the call that directory as `cwd` instead of a `cd`.\n\n\
-         The file tools work with paths relative to the working directory. `read_file` reads a file with line numbers (give `start_line` and `end_line` to read part of a large one), and `list_files` lists a directory's files. Create files with `write_file` (the whole content). Change them with `edit_file`, which replaces one exact piece of text and changes nothing if that text isn't there exactly once. Prefer them to heredocs and scripts in the shell, which fail on long text. Use the shell for mechanical changes across many files, such as a rename with `sed`.\n\n\
-         The terminal tools run programs in the background: servers, watchers, long builds you want to keep an eye on, and programs that ask questions. `terminal_start` returns a job ID at once, `terminal_status` reads a job's output, `terminal_input` answers a prompt, and `terminal_control` waits for a job, lists jobs or cancels one. Use them only when `shell` doesn't fit, and cancel the jobs you started once you no longer need them.\n\n\
-         A command guard refuses commands that would delete, move or overwrite the filesystem root, the home directory, system directories or devices, and paths outside the working directory unless the user has turned on outside access; the file tools' writes follow the same rule. The user can turn outside access on and off at any time, and a note tells you when they do. A refusal is the guard working, not an obstacle: don't rephrase, split or encode the command to get past it. Do the work another way, or say what was refused and why you needed it.\n",
-        shell = settings.shell_name,
+         Use `shell` for what you would do in a terminal: {uses}. Use the terminal tools only when `shell` doesn't fit: for servers, watchers, long builds you want to keep an eye on, and programs that ask questions. Cancel the jobs you start once you no longer need them.\n\n\
+         Change files with `edit_file` and `write_file` rather than with heredocs and scripts in the shell, which fail on long text. Use the shell for mechanical changes across many files, such as a rename with `sed`.\n\n\
+         A command guard refuses commands that would delete, move or overwrite the filesystem root, the home directory, system directories or devices, and paths outside the working directory unless the user has turned on outside access. The file tools' writes follow the same rule. The user can turn outside access on and off at any time, and a note tells you when they do. A refusal is the guard working, not an obstacle: don't rephrase, split or encode the command to get past it. Do the work another way, or say what was refused and why you needed it.\n",
     );
     if !settings.index_tools.is_empty() {
         text.push_str(
             "\n# Search indexes\n\
-             `index_search` searches a codebase or its docs by meaning as well as by words. It returns the top results whole (the entire function, type or doc section, with line numbers as `read_file` shows them), so you don't need to read them again, and the rest as locations with their first lines. Use it first whenever you look for code or docs to read: to find where something is done or how it works (\"where are retries handled?\", \"how is the session saved?\"), and also when you know the name, since a query that names a function or type (\"Session::save\", \"parse_config\") returns its definition whole, where `rg` gives one line and needs another call to read the rest. One search often replaces several rounds of `rg`, `sed` and `read_file`; `detail: brief` lists more results in less space. Keep `rg` for listing every occurrence of a name (all the callers, say), for regexes, and for exact strings in logs, configuration and files no index covers.\n\n\
-             Begin every task in an indexed codebase with it, before anything else. Whether you're asked a question about the code, a bug to find or a change to make, your first step is one or a few `index_search` queries that describe the behaviour or concept involved, before you list directories, run `rg` or open files. This is where the index saves the most: it finds the relevant code even when the words differ from the code's (a user's \"handoff\" for code that says \"handover\", which `rg` misses), and its results show where that code lives and how it works, so you don't read whole files to find your way. Go to `rg` and `read_file` once the searches have shown you where to look.\n\n",
+             When the code you work on has an index (see the list below), begin every task with `index_search`, before anything else. Whether you're asked a question about the code, a bug to find or a change to make, your first step is one or a few searches that describe the behaviour or concept involved, before you list directories, run `rg` or open files. This is where the index saves the most: it finds the relevant code even when the words differ from the code's (a user's \"handoff\" for code that says \"handover\", which `rg` misses), and its results show where that code lives and how it works, so you don't read whole files to find your way. Go to `rg` and `read_file` once the searches have shown you where to look.\n\n",
         );
         text.push_str(&known_indexes(settings.indexes));
         text.push_str(
-            "\n\nIndexes work for any directory, not just the working directory. To search another project, name its index in `index` (its name, or any directory or file inside it) or give a `path_prefix` inside it, instead of running `rg` there. When a non-trivial project you work in has no index, create one with `index_create` (`path: ../other-repo` for another project): it is kept current as files change. `index_status` lists the indexes as they are now, and `index_manage` rebuilds, re-embeds or removes one.\n",
+            "\n\nTo search another project, use its index instead of running `rg` there. When a non-trivial project you work in has no index, create one with `index_create`.\n",
         );
     }
     if !settings.mcp_servers.is_empty() {
@@ -516,15 +510,15 @@ fn worker_instructions(settings: &AgentSettings) -> String {
     };
     let mut text = format!(
         "\n# Workers\n\
-         `start_agent` with `agent: worker` starts a worker: a subagent with the same tools (shell, terminal, files, search) that carries out one task while you go on with your own work. It returns at once with the worker's ID (r1, r2, ...), so start several in one response to run them in parallel. {limit} A worker doesn't see this conversation: give it everything it needs in `task`, namely the goal, the context and constraints, what done looks like, and what to report.\n\n\
+         `start_agent` with `agent: worker` starts a worker: a subagent with the same tools (shell, terminal, files, search) that carries out one task while you go on with your own work. {limit}\n\n\
          With `isolated: true` a worker works in its own git worktree: a separate checkout of the current commit, on a branch of its own, where it commits its changes. Use one for each worker that changes files, so workers don't edit the same files as each other or you; then review its branch and merge it into the working directory (`git merge` or `git cherry-pick`). A worktree has the committed files only: commit what a worker needs first. Without a worktree, a worker works in the working directory itself, which suits investigations, reviews and small changes to files no one else touches.\n\n\
-         Workers report on their own. A worker's report, when it finishes, and its messages to you reach you as notes from run `r1` (and so on) while you work, and start a new turn for you if you have ended yours. So don't wait idly: do other work, and end your turn when you have something to tell the user, saying which workers are still running. When you can't go on without their results, `wait_for_agents` waits until one finishes or sends a message (or the user types something) and returns what arrived. `message_agent` addressed to its handle in `to` sends a worker a message: a running worker reads it at its next step, and a worker that has finished or was stopped continues its task with it, keeping its context, so give follow-up work to the worker that already knows the code. `list_agents` shows the workers and what they're doing; `stop_agent` stops the handle in `run`, and `remove_workspace: true` removes its worktree once you have merged its work.\n\n\
+         Workers report on their own: a worker's report, and its messages to you, reach you as notes from its run (`r1` and so on) while you work, and start a new turn for you if you have ended yours. So don't wait idly: do other work, and end your turn when you have something to tell the user, saying which workers are still running. Use `wait_for_agents` only when you can't go on without their results. Give follow-up work to the worker that already knows the code, with `message_agent`. Once you have merged an isolated worker's branch, remove its worktree with `stop_agent` and `remove_workspace: true`.\n\n\
          Use workers for independent parts of a large task (exploring separate areas of a codebase, an audit split by area, changes in separate worktrees), or to keep a long investigation out of your own context. Do small things yourself. Check what a worker reports before you rely on it.\n"
     );
     let openai = settings.worker.provider() == Ok(Provider::OpenAI);
     if settings.worker.takes_cache_ttl() {
         text.push_str(&format!(
-            "\nA worker keeps a prompt cache of its conversation, and `start_agent`'s `cache` sets how long it lasts after the worker's last step: `1h` for a worker you expect to send messages or follow-up work after it reports, so continuing it reuses its cache, and `5m` for a quick one-off such as a research task (a 1h cache costs more to write: twice the input price instead of 1.25 times). The default is `{}`. Continuing a worker after its cache has expired rereads its whole conversation at full price: if it finished more than an hour ago, start a fresh worker instead, unless its context is worth that.\n",
+            "\nA worker keeps a prompt cache of its conversation. Set `start_agent`'s `cache` to `1h` for a worker you expect to send messages or follow-up work after it reports, so continuing it reuses its cache, and to `5m` for a quick one-off such as a research task (a 1h cache costs more to write: twice the input price instead of 1.25 times). The default is `{}`. Continuing a worker after its cache has expired rereads its whole conversation at full price: if it finished more than an hour ago, start a fresh worker instead, unless its context is worth that.\n",
             if settings.worker.cache_1h { "1h" } else { "5m" }
         ));
     } else if openai && settings.providers.openai_auth != Some(OpenAiAuth::ApiKey) {
@@ -552,7 +546,6 @@ mod tests {
             max_workers: 4,
             handover_at: 200_000,
             show_thinking: false,
-            shell_name: "bash",
             mcp_tools: &[],
             mcp_servers: &[],
             skill_folders: &[],
@@ -852,7 +845,11 @@ mod tests {
                     .instructions
                     .contains("from these folders: `/work/.claude/skills`")
             );
-            assert!(config.instructions.contains("`index_search` searches"));
+            assert!(
+                config
+                    .instructions
+                    .contains("begin every task with `index_search`")
+            );
         }
     }
 
@@ -877,11 +874,9 @@ mod tests {
                 .contains("to find code or docs to read, start with `index_search`")
         );
         // And to explore with it at the start of every task.
-        assert!(
-            config
-                .instructions
-                .contains("Begin every task in an indexed codebase with it, before anything else.")
-        );
+        assert!(config.instructions.contains(
+            "When the code you work on has an index (see the list below), begin every task with `index_search`, before anything else."
+        ));
         assert!(
             config
                 .instructions
@@ -904,7 +899,7 @@ mod tests {
         };
         for config in [main_config(&with).unwrap(), worker_config(&with).unwrap()] {
             assert!(config.instructions.contains(
-                "The indexes when this session started:\n- `finn`: code, `/work/finn` (the working directory)\n- `arko`: code, `/work/arko`\n\nIndexes work for any directory"
+                "The indexes when this session started:\n- `finn`: code, `/work/finn` (the working directory)\n- `arko`: code, `/work/arko`\n\nTo search another project, use its index"
             ));
         }
 
@@ -925,6 +920,58 @@ mod tests {
                 .instructions
                 .contains("- and 3 more (`index_status` lists them)")
         );
+    }
+
+    /// What a tool's description says (how it behaves and how to call it)
+    /// isn't said again in the instructions, which say when to use which
+    /// tool. A worker's report is described once, by `complete_task`'s
+    /// summary.
+    #[test]
+    fn the_instructions_leave_what_the_tools_say_to_the_tools() {
+        let opus = model("opus", false);
+        let with = AgentSettings {
+            index_tools: crate::index::TOOL_NAMES,
+            ..settings(&opus, &opus)
+        };
+        for text_replies in [true, false] {
+            let main = main_config(&AgentSettings {
+                text_replies,
+                ..with
+            })
+            .unwrap();
+            let worker = worker_config(&with).unwrap();
+            for config in [&main, &worker] {
+                for told_by_a_tool in [
+                    "`cwd`",
+                    "job ID",
+                    "`start_line`",
+                    "changes nothing",
+                    "waits for their answer",
+                    "returns its definition whole",
+                    "`detail: brief`",
+                    "kept current",
+                    "reads it at its next step",
+                    "start several in one response",
+                    "doesn't see this conversation",
+                ] {
+                    assert!(
+                        !config.instructions.contains(told_by_a_tool),
+                        "{told_by_a_tool}: {}",
+                        config.instructions
+                    );
+                }
+            }
+            assert!(
+                main.instructions
+                    .contains("Use `wait_for_agents` only when")
+            );
+        }
+        let worker = worker_config(&with).unwrap();
+        let summary = worker.complete_task_summary_prompt_override.unwrap();
+        assert!(summary.contains("the only thing it sees of your work"));
+        assert!(summary.contains("file paths and line numbers"));
+        assert!(!worker.instructions.contains("complete_task"));
+        assert!(!worker.instructions.contains("message_agent"));
     }
 
     /// A resumed session builds the same configuration, which the

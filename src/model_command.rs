@@ -18,7 +18,6 @@ use crate::crew::{NewWorkers, WorkerModel};
 use crate::providers::{self, OpenAiAuth};
 use crate::remote::{self, Level, Source};
 use crate::session::Settings;
-use crate::shell::{Shell, WindowsShell};
 use crate::{Conversation, Harness, index, lock};
 
 /// Whose model `/model` changes.
@@ -402,7 +401,6 @@ impl Harness {
         settings: &Settings,
         setup: &providers::Setup,
     ) -> Result<(arko_agents::AgentConfig, arko_agents::AgentConfig), String> {
-        let shell = Shell::detect(settings.windows_shell.unwrap_or(WindowsShell::Powershell));
         let mcp_tools = self.mcp.tool_names();
         let mcp_servers = self.mcp.started();
         let known = self
@@ -417,7 +415,6 @@ impl Harness {
             max_workers: settings.max_workers,
             handover_at: settings.handover_at,
             show_thinking: settings.show_thinking,
-            shell_name: shell.name,
             mcp_tools: &mcp_tools,
             mcp_servers: &mcp_servers,
             skill_folders: &self.skill_folders,
