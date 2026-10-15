@@ -190,6 +190,74 @@ async fn a_line_the_agent_did_not_read_reaches_it_once() {
     assert_eq!(next.matches("Use the metric system.").count(), 1, "{next}");
 }
 
+/// After `/new`, the first message names the workers still running from
+/// the conversation before, whose reports now come to the new one.
+#[tokio::test]
+async fn the_next_conversation_hears_of_the_workers_still_running() {
+    let temp = tempfile::tempdir().unwrap();
+    let bodies: Bodies = Arc::default();
+    let hold = Arc::new(Notify::new());
+    let server = ModelServer::start({
+        let bodies = bodies.clone();
+        let hold = hold.clone();
+        Arc::new(move |_, body: String| {
+            bodies.lock().unwrap().push(body.clone());
+            let hold = hold.clone();
+            Box::pin(async move {
+                if body.contains("Hello again.") {
+                    complete("m3", "Hello.")
+                } else if body.contains("Count the files.") && !body.contains("Start a worker.") {
+                    // The worker, running until the test lets it finish.
+                    hold.notified().await;
+                    complete("w1", "3 files.")
+                } else if body.contains("Started r1") {
+                    complete("m2", "r1 is counting.")
+                } else {
+                    tool_call(
+                        "m1",
+                        crew::START_AGENT,
+                        serde_json::json!({"agent": WORKER, "task": "Count the files."}),
+                    )
+                }
+            })
+        })
+    })
+    .await;
+    let (mut harness, mut inputs, sender) = harness(temp.path(), server.client(), true);
+    let feed = harness.feed.clone();
+    let typing = tokio::spawn(async move {
+        let say = |line: &str| sender.send(Input::Line(line.into())).unwrap();
+        say("Start a worker.");
+        until(|| has(&feed, "reply", "r1 is counting.", "")).await;
+        say("/new");
+        until(|| {
+            texts(&feed, "output")
+                .iter()
+                .any(|text| text.starts_with("The next message starts a new conversation."))
+        })
+        .await;
+        say("Hello again.");
+        until(|| has(&feed, "reply", "Hello.", "")).await;
+        // Its report starts a turn in the new conversation.
+        hold.notify_one();
+        until(|| count(&feed, "reply", "Hello.") == 2).await;
+        sender.send(Input::Eof).unwrap();
+        sender
+    });
+    tokio::time::timeout(Duration::from_secs(60), harness.repl(&mut inputs))
+        .await
+        .unwrap();
+    let _sender = typing.await.unwrap();
+    let next = request_with(&bodies, "Hello again.");
+    assert!(
+        next.contains(
+            "Worker r1 is still running from earlier in this session. Its reports and messages come to you in this conversation."
+        ),
+        "{next}"
+    );
+    harness.crew.as_ref().unwrap().shutdown().await;
+}
+
 /// Whether the feed has a notice starting with `start`.
 fn says(feed: &remote::Feed, start: &str) -> bool {
     texts(feed, "notice")

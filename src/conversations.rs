@@ -369,6 +369,7 @@ impl Harness {
     /// `/new`: the next message starts a new conversation.
     pub(crate) fn new_conversation(&mut self) {
         self.leave_conversation();
+        self.switched = true;
         self.conversations.current = None;
         self.conversation = Conversation::New;
         self.handover.switch(None, None);
@@ -446,6 +447,7 @@ impl Harness {
     /// the clients, and its last reply at the line prompt.
     async fn switch_to(&mut self, index: usize) {
         self.leave_conversation();
+        self.switched = true;
         let record = &mut self.conversations.list[index];
         let run = record.runs.last().copied();
         let unread = std::mem::take(&mut record.unread);

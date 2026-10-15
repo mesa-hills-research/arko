@@ -600,6 +600,7 @@ async fn run(args: Args) -> Result<ExitCode, String> {
         conversations: Default::default(),
         project: None,
         unread: Vec::new(),
+        switched: false,
         queue_lines: !interactive,
         exiting: false,
         crew,
@@ -1198,6 +1199,9 @@ struct Harness {
     /// What the user typed during a turn that the agent didn't read before
     /// the turn ended: it goes with the next message.
     unread: Vec<String>,
+    /// The conversation changed (`/new`, `/resume`): the next message names
+    /// the workers still running, whose reports now come to it.
+    switched: bool,
     /// Without a terminal, lines read during a turn wait for their own
     /// turns instead of reaching the agent as notes.
     queue_lines: bool,
@@ -2804,6 +2808,28 @@ impl Harness {
                     .join("\n")
             ));
         }
+        if std::mem::take(&mut self.switched) {
+            let running = self
+                .crew
+                .as_ref()
+                .map(|crew| crew.running())
+                .unwrap_or_default();
+            let named = match running.as_slice() {
+                [] => None,
+                [one] => Some(format!(
+                    "Worker {one} is still running from earlier in this session. Its reports and messages"
+                )),
+                [rest @ .., last] => Some(format!(
+                    "Workers {} and {last} are still running from earlier in this session. Their reports and messages",
+                    rest.join(", ")
+                )),
+            };
+            if let Some(named) = named {
+                parts.push(format!(
+                    "# Workers already running\n\n{named} come to you in this conversation."
+                ));
+            }
+        }
         if let Some(notice) = &self.unoffered {
             parts.push(format!("# Session capabilities\n\n{notice}"));
         }
@@ -3536,6 +3562,7 @@ mod tests {
             conversations: Default::default(),
             project: None,
             unread: Vec::new(),
+            switched: false,
             queue_lines: !interactive,
             exiting: false,
             crew: Some(crew),
