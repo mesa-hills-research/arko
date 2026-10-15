@@ -394,7 +394,7 @@ pub fn main_config(settings: &AgentSettings) -> Result<AgentConfig, String> {
         tools.extend(crew::LEAD_TOOL_NAMES.iter().map(|name| name.to_string()));
     }
     let mut instructions = main_instructions(settings);
-    instructions.push_str(&tool_instructions(settings));
+    instructions.push_str(&tool_instructions(settings, false));
     if settings.max_workers > 0 {
         instructions.push_str(&worker_instructions(settings));
     }
@@ -442,7 +442,7 @@ pub fn worker_config(settings: &AgentSettings) -> Result<AgentConfig, String> {
          # The lead\n\
          The lead's messages reach you as workflow context updates from your lead: take them into account. A message that arrives as you finish comes back to you, and you report again. After your report, the lead may send you follow-up work, which continues this conversation.\n",
     );
-    instructions.push_str(&tool_instructions(settings));
+    instructions.push_str(&tool_instructions(settings, true));
     if settings.extra_rules.for_model(settings.worker)
         && let Some(rules) = extra_rules(settings)
     {
@@ -497,7 +497,9 @@ fn main_instructions(settings: &AgentSettings) -> String {
         .to_string()
 }
 
-fn tool_instructions(settings: &AgentSettings) -> String {
+/// The Tools section and the sections of the tools the session has, for
+/// the main agent or (`worker`) a worker.
+fn tool_instructions(settings: &AgentSettings, worker: bool) -> String {
     let uses = if settings.index_tools.is_empty() {
         "searching (prefer `rg`), building, testing, git, and running programs"
     } else {
@@ -516,6 +518,21 @@ fn tool_instructions(settings: &AgentSettings) -> String {
              When the code you work on has an index (see the list below), begin every task with `index_search`, before anything else. Whether you're asked a question about the code, a bug to find or a change to make, your first step is one or a few searches that describe the behaviour or concept involved, before you list directories, run `rg` or open files. This is where the index saves the most: it finds the relevant code even when the words differ from the code's (a user's \"handoff\" for code that says \"handover\", which `rg` misses), and its results show where that code lives and how it works, so you don't read whole files to find your way. Go to `rg` and `read_file` once the searches have shown you where to look.\n\n",
         );
         text.push_str(&known_indexes(settings.indexes));
+        // A worker's worktree is a checkout elsewhere: the index of the
+        // lead's working directory doesn't cover it, and workers on every
+        // model searched there without naming it.
+        if worker
+            && let Some(project) = settings
+                .indexes
+                .iter()
+                .take(INDEXES_NAMED)
+                .find(|known| known.place.is_some())
+        {
+            text.push_str(&format!(
+                "\n\nIf you work in a worktree of your own, no index covers it. To search the project, name its index (`index: {}`): the results show the lead's copies of the files, which are at the same paths in your worktree.",
+                project.name
+            ));
+        }
         text.push_str(
             "\n\nTo search another project, use its index instead of running `rg` there. When a non-trivial project you work in has no index, create one with `index_create`.\n",
         );
@@ -1007,11 +1024,24 @@ mod tests {
             indexes: &indexes,
             ..none
         };
-        for config in [main_config(&with).unwrap(), worker_config(&with).unwrap()] {
-            assert!(config.instructions.contains(
-                "The indexes when this session started:\n- `finn`: code, `/work/finn` (the working directory)\n- `arko`: code, `/work/arko`\n\nTo search another project, use its index"
-            ));
-        }
+        let list = "The indexes when this session started:\n- `finn`: code, `/work/finn` (the working directory)\n- `arko`: code, `/work/arko`\n\n";
+        assert!(
+            main_config(&with)
+                .unwrap()
+                .instructions
+                .contains(&format!("{list}To search another project, use its index"))
+        );
+        // A worker is told how to search from a worktree of its own, which
+        // no index covers: by the index of the lead's working directory.
+        assert!(worker_config(&with).unwrap().instructions.contains(&format!(
+            "{list}If you work in a worktree of your own, no index covers it. To search the project, name its index (`index: finn`): the results show the lead's copies of the files, which are at the same paths in your worktree.\n\nTo search another project"
+        )));
+        assert!(
+            !main_config(&with)
+                .unwrap()
+                .instructions
+                .contains("worktree of your own, no index")
+        );
 
         let many: Vec<index::Known> = (0..INDEXES_NAMED + 3)
             .map(|n| known(&format!("i{n:02}"), &format!("/work/i{n:02}"), None))
@@ -1028,6 +1058,18 @@ mod tests {
         assert!(config.instructions.contains(
             "- and 3 more (`index_status` lists them)\nNone of them covers the working directory.\n\nTo search another project"
         ));
+        // With no index of the lead's working directory, there's none to
+        // name from a worktree.
+        let worker = worker_config(&AgentSettings {
+            indexes: &many,
+            ..none
+        })
+        .unwrap();
+        assert!(
+            !worker
+                .instructions
+                .contains("worktree of your own, no index")
+        );
         // Said only when no index is the working directory, holds it or
         // lies in it.
         for place in ["holds the working directory", "in the working directory"] {
