@@ -276,7 +276,7 @@ impl Tool for ShellTool {
         ToolDefinition {
             name: SHELL_TOOL_NAME.into(),
             description: format!(
-                "Run a command in {} in the working directory (or in `cwd`), wait for it to finish, and return its exit code and output (standard output and error together). Each call starts a new shell in the working directory, or in `cwd` when the call gives one: a `cd` doesn't carry over to the next call. {} A command still running after timeout_seconds is stopped; run servers, watchers and interactive programs with terminal_start instead. Output over {MAX_OUTPUT_CHARS} characters keeps its start and end, and the result names a log file with all of it. Commands that would delete, move or overwrite the filesystem root, the home directory, system directories or devices are refused, and so are those on paths outside the working directory unless the user has turned on outside access.",
+                "Runs a command in {} and returns its exit code and output (standard output and error together) once it finishes. Each call starts a new shell in the working directory, so a `cd` doesn't carry over to the next call: to run a command somewhere else, give the call that directory as `cwd`. {} A command still running after timeout_seconds is stopped. Output over {MAX_OUTPUT_CHARS} characters keeps its start and end, and the result names a log file with all of it.",
                 self.shell.name,
                 if self.shell.kind == ShellKind::Posix {
                     "Standard input is closed: a program that asks for input fails instead of waiting."
@@ -291,13 +291,16 @@ impl Tool for ShellTool {
                     "The directory to run this command in, absolute or relative to the working directory (default: the working directory). It applies to this call only.",
                     false,
                 ),
-                parameter(
-                    "timeout_seconds",
-                    &format!(
-                        "How long the command may run, in seconds (default {DEFAULT_TIMEOUT_SECONDS}, at most {MAX_TIMEOUT_SECONDS})."
-                    ),
-                    false,
-                ),
+                ToolParameterDefinition {
+                    param_type: ToolParameterType::Integer,
+                    ..parameter(
+                        "timeout_seconds",
+                        &format!(
+                            "How long the command may run, in seconds (default {DEFAULT_TIMEOUT_SECONDS}, at most {MAX_TIMEOUT_SECONDS})."
+                        ),
+                        false,
+                    )
+                },
             ],
             output_based_example: None,
             parallel_safe: false,

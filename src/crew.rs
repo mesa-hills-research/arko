@@ -254,7 +254,7 @@ impl Crew {
             }))
             .start_parameter(ToolParameterDefinition {
                 name: CACHE_PARAM.into(),
-                description: "Claude workers on an API key or OpenRouter: 1h for later follow-up, 5m for a short task. Others ignore it: ChatGPT keeps its own 30-minute cache, Claude Code an hour.".into(),
+                description: "1h or 5m: how long the worker's prompt cache lasts after its last step. Only Claude workers on an API key or OpenRouter take it: ChatGPT keeps its own 30-minute cache, and Claude Code an hour.".into(),
                 param_type: ToolParameterType::String, required: false, is_path: false, flag: None, default_value: None,
             });
         config = if self.setup.max_running == NO_LIMIT {

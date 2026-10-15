@@ -24,7 +24,7 @@ impl Tool for MessageUser {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: MESSAGE_USER.to_string(),
-            description: "Shows the user a message now, without ending your turn: the answer to something they typed while you work (a question, a request for progress), or something they must know before you finish. Then carry on with your work. Your final reply still goes in complete_task.".to_string(),
+            description: "Shows the user a message now, without ending your turn.".to_string(),
             output_based_example: None,
             parameters: vec![ToolParameterDefinition {
                 name: MESSAGE_PARAM.to_string(),
