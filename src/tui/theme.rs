@@ -362,6 +362,9 @@ pub struct Theme {
     pub border: Color,
     /// A selected message's background.
     pub selection: Color,
+    /// The user's messages' background: a quiet band, a little apart from
+    /// the background, so they stand out from the agent's work.
+    pub user: Color,
     pub warning: Color,
     pub error: Color,
     pub success: Color,
@@ -388,6 +391,7 @@ impl Theme {
             raised: Color::Reset,
             border: Color::Reset,
             selection: Color::Reset,
+            user: Color::Reset,
             warning: Color::Yellow,
             error: Color::Red,
             success: Color::Green,
@@ -416,6 +420,7 @@ impl Theme {
             raised: paint(roles.raised),
             border: paint(roles.border),
             selection: paint(roles.selection),
+            user: paint(roles.user),
             warning: paint(roles.warning),
             error: paint(roles.error),
             success: paint(roles.success),
@@ -527,6 +532,7 @@ struct Roles {
     raised: Rgb,
     border: Rgb,
     selection: Rgb,
+    user: Rgb,
     warning: Rgb,
     error: Rgb,
     success: Rgb,
@@ -610,6 +616,11 @@ impl Roles {
         .chain([surface])
         .find(|selection| apart(*selection) && text.contrast(*selection) >= READABLE)
         .unwrap_or(surface);
+        // The theme's muted surface: every theme sets it a little apart from
+        // its background, and never far enough to glare.
+        let user = first(&["muted.background"])
+            .filter(|user| apart(*user))
+            .unwrap_or_else(|| background.mix(text, 0.06));
         Self {
             background,
             text,
@@ -631,6 +642,7 @@ impl Roles {
             raised,
             border,
             selection,
+            user,
             warning: readable(first(&["base.yellow"]).unwrap_or(text), background),
             error: readable(first(&["base.red"]).unwrap_or(text), background),
             success: readable(first(&["base.green"]).unwrap_or(text), background),

@@ -645,6 +645,8 @@ impl Transcript {
             if y >= height {
                 break;
             }
+            // The user's messages sit on a band the width of the screen.
+            let band = self.is_user(block).then(|| Style::new().bg(theme.user));
             for (line, wrapped) in self
                 .block_rows(block, theme, width)
                 .iter()
@@ -655,6 +657,9 @@ impl Transcript {
                     break;
                 }
                 let row = area.y + y as u16;
+                if let Some(band) = band.filter(|_| !(block.gap && line == 0)) {
+                    buffer.set_style(Rect::new(area.x, row, area.width, 1), band);
+                }
                 buffer.set_line(area.x, row, &Line::from(wrapped.spans.clone()), area.width);
                 if let Some((from, to)) =
                     range.and_then(|range| selected_columns(range, (index, line), wrapped))
@@ -710,6 +715,11 @@ impl Transcript {
     }
 
     /// A block's lines, with the blank line before it when it has one.
+    /// Whether `block` is one of the user's messages.
+    fn is_user(&self, block: &Block) -> bool {
+        matches!(block.shown, Shown::Entry(index) if self.entries[index].item.kind == Kind::User)
+    }
+
     fn block_rows(&self, block: &Block, theme: &Theme, width: usize) -> Vec<Wrapped> {
         let mut rows = Vec::with_capacity(block.lines + 1);
         if block.gap {
@@ -1679,6 +1689,44 @@ mod tests {
                 "  ── 3 s · $0.010 ──────────────────────",
             ]
         );
+    }
+
+    /// The user's messages sit on a band the width of the screen. The
+    /// agent's lines and the blank lines between don't.
+    #[test]
+    fn the_users_messages_sit_on_a_band() {
+        use crate::tui::theme::{Catalog, DEFAULT, Depth};
+        let theme = Catalog::load(None).theme(DEFAULT, Depth::Rgb);
+        assert_ne!(theme.user, theme.background);
+        let mut t = Transcript::new();
+        t.apply(Update::Item(item(1, Kind::Reply, "Hello.")));
+        t.apply(Update::Item(item(
+            2,
+            Kind::User,
+            "Run the tests, then fix what fails",
+        )));
+        t.apply(Update::Item(item(3, Kind::Reply, "All pass.")));
+        let (width, height) = (24, 7);
+        let area = Rect::new(0, 0, width, height);
+        let mut buffer = Buffer::empty(area);
+        t.draw(&mut buffer, area, &full(), &theme);
+        let text = |y| {
+            (0..width)
+                .map(|x| buffer[(x, y)].symbol().to_string())
+                .collect::<String>()
+        };
+        let on = |y, color| (0..width).all(|x| buffer[(x, y)].bg == color);
+        let mut user_rows = 0;
+        for y in 0..height {
+            if text(y).contains('▎') {
+                assert!(on(y, theme.user), "row {y}: {:?}", text(y));
+                user_rows += 1;
+            } else {
+                assert!(on(y, theme.background), "row {y}: {:?}", text(y));
+            }
+        }
+        // The message wraps, and every line of it is on the band.
+        assert_eq!(user_rows, 2);
     }
 
     /// Scrolled up, the screen stays put as items come, and the marker
