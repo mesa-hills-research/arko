@@ -826,7 +826,7 @@ impl Tool for SearchTool {
                 ),
                 param(
                     "mode",
-                    "hybrid (default when the index has embeddings), semantic, or lexical (keywords only, free).",
+                    "How to match. `semantic`: by meaning, best for questions in your own words about what code does or where something happens (\"where is the session saved to disk\"). `lexical`: by exact words, free, best for names and strings you know (`Session::save`, `FIN_HOME`, an error message). `hybrid`: both, for a name together with words about it (\"Session::save error handling\"), or when unsure. Default: hybrid when the index has embeddings, else lexical.",
                     ToolParameterType::String,
                     false,
                 ),
