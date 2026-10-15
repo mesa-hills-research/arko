@@ -5,7 +5,7 @@
 //! `/resume N` line a user would type, so the line prompt, the page and
 //! the picker switch one way.
 
-use chrono::Local;
+use chrono::{DateTime, Local};
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -29,6 +29,8 @@ pub struct ResumePicker {
     /// Newest first, as the session lists them.
     pub entries: Vec<ConversationEntry>,
     pub selected: usize,
+    /// When it opened. Each row says how long before this it was used.
+    pub now: DateTime<Local>,
 }
 
 /// What a key did.
@@ -53,7 +55,11 @@ impl ResumePicker {
             // The latest use, and between equals the newer conversation.
             .max_by(|(a, x), (b, y)| x.last_used.cmp(&y.last_used).then(b.cmp(a)))
             .map_or(0, |(n, _)| n);
-        Self { entries, selected }
+        Self {
+            entries,
+            selected,
+            now: Local::now(),
+        }
     }
 
     pub fn key(&mut self, key: KeyEvent, close: bool) -> Outcome {
@@ -81,7 +87,7 @@ impl ResumePicker {
 pub fn draw(frame: &mut Frame, theme: &Theme, area: Rect, picker: &ResumePicker) {
     let width = 88.min(area.width.saturating_sub(2));
     let inner_width = width.saturating_sub(4) as usize;
-    let now = Local::now();
+    let now = picker.now;
     let tag = if picker.entries.iter().any(|entry| entry.current) {
         CURRENT.len()
     } else {
@@ -140,18 +146,29 @@ pub fn draw(frame: &mut Frame, theme: &Theme, area: Rect, picker: &ResumePicker)
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use chrono::Utc;
     use crossterm::event::KeyModifiers;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
+    /// Noon today: the tests open the picker then, so "2 hours ago" is
+    /// the same day at any hour they run.
+    pub(crate) fn noon() -> DateTime<Local> {
+        Local::now()
+            .date_naive()
+            .and_hms_opt(12, 0, 0)
+            .unwrap()
+            .and_local_timezone(Local)
+            .unwrap()
+    }
+
     fn entry(number: usize, title: &str, hours: i64, current: bool) -> ConversationEntry {
         ConversationEntry {
             number,
             title: title.into(),
-            last_used: Some(Utc::now() - chrono::Duration::hours(hours)),
+            last_used: Some(noon().with_timezone(&Utc) - chrono::Duration::hours(hours)),
             current,
         }
     }
@@ -218,7 +235,10 @@ mod tests {
     /// title is cut, and the keys show along the bottom.
     #[test]
     fn the_rows_line_up_on_an_80_column_screen() {
-        let picker = ResumePicker::open(entries());
+        let picker = ResumePicker {
+            now: noon(),
+            ..ResumePicker::open(entries())
+        };
         let rows = screen(&picker, 80);
         let row = |text: &str| {
             rows.iter()

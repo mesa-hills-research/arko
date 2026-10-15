@@ -873,7 +873,8 @@ mod tests {
         use crate::tui::app::Effect;
         use crate::ui::Input;
         let mut app = app();
-        let ago = |minutes: i64| Some(chrono::Utc::now() - chrono::Duration::minutes(minutes));
+        use crate::tui::resume_picker::tests::noon;
+        let ago = |minutes: i64| Some(noon().to_utc() - chrono::Duration::minutes(minutes));
         app.reading.conversations = vec![
             ConversationEntry {
                 number: 3,
@@ -901,6 +902,9 @@ mod tests {
             app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         };
         type_line(&mut app, "/resume");
+        if let Some(crate::tui::overlay::Overlay::Resume(picker)) = &mut app.overlay {
+            picker.now = noon();
+        }
         let rows = screen(&mut app, 80, 24);
         println!("{}", rows.join("\n"));
         let text = rows.join("\n");
