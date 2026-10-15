@@ -154,6 +154,42 @@ async fn resume_goes_back_to_the_conversation_new_left() {
     assert_eq!(summary(&harness), "Green.");
 }
 
+/// A line typed during a turn that ends before the agent reads it goes
+/// with the next message of the same conversation, once: not also as a
+/// note when the run continues.
+#[tokio::test]
+async fn a_line_the_agent_did_not_read_reaches_it_once() {
+    let temp = tempfile::tempdir().unwrap();
+    let bodies: Bodies = Arc::default();
+    let hold = Arc::new(Notify::new());
+    let server = ModelServer::start(fruit_model(bodies.clone(), hold.clone())).await;
+    let (mut harness, mut inputs, sender) = harness(temp.path(), server.client(), true);
+    let feed = harness.feed.clone();
+    let typing = tokio::spawn({
+        let bodies = bodies.clone();
+        async move {
+            let say = |line: &str| sender.send(Input::Line(line.into())).unwrap();
+            say("Pears are green.");
+            until(|| bodies.lock().unwrap().iter().any(|body| body.contains("Pears are green.")))
+                .await;
+            say("Use the metric system.");
+            until(|| has(&feed, "user", "Use the metric system.", "note")).await;
+            hold.notify_one();
+            until(|| has(&feed, "reply", "Pears noted.", "")).await;
+            say("And the colour?");
+            until(|| has(&feed, "reply", "Green.", "")).await;
+            sender.send(Input::Eof).unwrap();
+            sender
+        }
+    });
+    tokio::time::timeout(Duration::from_secs(60), harness.repl(&mut inputs))
+        .await
+        .unwrap();
+    let _sender = typing.await.unwrap();
+    let next = request_with(&bodies, "And the colour?");
+    assert_eq!(next.matches("Use the metric system.").count(), 1, "{next}");
+}
+
 /// Whether the feed has a notice starting with `start`.
 fn says(feed: &remote::Feed, start: &str) -> bool {
     texts(feed, "notice")

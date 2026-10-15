@@ -2758,6 +2758,16 @@ impl Harness {
         }
         if !self.unread.is_empty() {
             let unread = std::mem::take(&mut self.unread);
+            // They were posted as one-time notes too: the run this message
+            // continues would get them a second time.
+            let continued = match &self.conversation {
+                Conversation::New => None,
+                Conversation::Answered(result) => Some(result.agent_run_id),
+                Conversation::Stopped(run) => Some(run.result.agent_run_id),
+            };
+            if let Some(run) = continued {
+                self.workflow().skip_one_time_notes(run);
+            }
             parts.push(format!(
                 "# What I typed during your last turn, which you didn't get to read\n\n{}",
                 unread
