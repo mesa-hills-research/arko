@@ -473,7 +473,9 @@ fn tool_instructions(settings: &AgentSettings) -> String {
 }
 
 /// The indexes the session started with, for the Search indexes section:
-/// the working directory's first, at most [`INDEXES_NAMED`] of them.
+/// the working directory's first, at most [`INDEXES_NAMED`] of them. When
+/// none is the working directory, holds it or lies in it, that is said
+/// outright: smaller models search anyway when only a label is missing.
 fn known_indexes(indexes: &[index::Known]) -> String {
     if indexes.is_empty() {
         return "There were no indexes when this session started.".to_string();
@@ -495,6 +497,9 @@ fn known_indexes(indexes: &[index::Known]) -> String {
             "\n- and {} more (`index_status` lists them)",
             indexes.len() - INDEXES_NAMED
         ));
+    }
+    if indexes.iter().all(|known| known.place.is_none()) {
+        text.push_str("\nNone of them covers the working directory.");
     }
     text
 }
@@ -915,11 +920,26 @@ mod tests {
         assert!(config.instructions.contains(&last), "{last}");
         let first_left_out = format!("`i{INDEXES_NAMED:02}`");
         assert!(!config.instructions.contains(&first_left_out));
-        assert!(
-            config
-                .instructions
-                .contains("- and 3 more (`index_status` lists them)")
-        );
+        assert!(config.instructions.contains(
+            "- and 3 more (`index_status` lists them)\nNone of them covers the working directory.\n\nTo search another project"
+        ));
+        // Said only when no index is the working directory, holds it or
+        // lies in it.
+        for place in ["holds the working directory", "in the working directory"] {
+            let indexes = [
+                known("arko", "/work/arko", None),
+                known("x", "/x", Some(place)),
+            ];
+            let config = main_config(&AgentSettings {
+                indexes: &indexes,
+                ..none
+            })
+            .unwrap();
+            assert!(
+                !config.instructions.contains("None of them covers"),
+                "{place}"
+            );
+        }
     }
 
     /// What a tool's description says (how it behaves and how to call it)
