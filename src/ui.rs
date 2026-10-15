@@ -8,8 +8,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use arko_agents::builtins::{
-    APPLY_DIFF_TOOL_NAME, ASK_USER_TOOL_NAME, LIST_FILES_TOOL_NAME, READ_FILE_TOOL_NAME,
-    WRITE_FILE_TOOL_NAME,
+    APPLY_DIFF_TOOL_NAME, ASK_USER_TOOL_NAME, EDIT_FILE_TOOL_NAME, LIST_FILES_TOOL_NAME,
+    READ_FILE_TOOL_NAME, WRITE_FILE_TOOL_NAME,
 };
 use arko_agents::handover::{HANDOVER_REPORT_PARAM_NAME, HANDOVER_REPORT_TOOL_NAME};
 use arko_agents::terminal::TerminalTool;
@@ -727,8 +727,8 @@ impl EventPrinter {
                     ""
                 }
             ),
-            READ_FILE_TOOL_NAME | WRITE_FILE_TOOL_NAME | APPLY_DIFF_TOOL_NAME
-            | LIST_FILES_TOOL_NAME => {
+            READ_FILE_TOOL_NAME | WRITE_FILE_TOOL_NAME | EDIT_FILE_TOOL_NAME
+            | APPLY_DIFF_TOOL_NAME | LIST_FILES_TOOL_NAME => {
                 let (verb, detail) = file_call(tool, parameters);
                 format!("{bullet} {} {detail}", self.output.bold(verb))
             }
@@ -825,7 +825,7 @@ pub fn brief(tool: &str, parameters: &HashMap<String, serde_json::Value>) -> Str
     };
     match tool {
         SHELL_TOOL_NAME => command_line(text("command")),
-        READ_FILE_TOOL_NAME | WRITE_FILE_TOOL_NAME | APPLY_DIFF_TOOL_NAME
+        READ_FILE_TOOL_NAME | WRITE_FILE_TOOL_NAME | EDIT_FILE_TOOL_NAME | APPLY_DIFF_TOOL_NAME
         | LIST_FILES_TOOL_NAME => {
             let (verb, detail) = file_call(tool, parameters);
             format!("{verb} {detail}")
@@ -854,7 +854,8 @@ fn flag(parameters: &HashMap<String, serde_json::Value>, name: &str) -> bool {
 }
 
 /// A file tool's call: its verb (`read`, `write`, `edit`, `list`) and what
-/// it reads or changes (`src/main.rs:10-40`, `src/new.rs (12 lines)`).
+/// it reads or changes (`src/main.rs:10-40`, `src/new.rs (12 lines)`,
+/// `src/lib.rs (all)` for an edit of every occurrence).
 fn file_call(
     tool: &str,
     parameters: &HashMap<String, serde_json::Value>,
@@ -885,6 +886,15 @@ fn file_call(
                 format!("{path} ({lines} line{})", if lines == 1 { "" } else { "s" }),
             )
         }
+        EDIT_FILE_TOOL_NAME => (
+            "edit",
+            if flag(parameters, "replace_all") {
+                format!("{path} (all)")
+            } else {
+                path
+            },
+        ),
+        // In sessions saved before edit_file.
         APPLY_DIFF_TOOL_NAME => {
             let blocks = parameters
                 .get("diff")
@@ -1049,6 +1059,21 @@ mod tests {
             ),
             "write a.rs (2 lines)"
         );
+        let edit = |all: Option<serde_json::Value>| {
+            let mut pairs = vec![
+                ("path", "a.rs".into()),
+                ("old_string", "a".into()),
+                ("new_string", "b".into()),
+            ];
+            if let Some(all) = all {
+                pairs.push(("replace_all", all));
+            }
+            brief(EDIT_FILE_TOOL_NAME, &params(&pairs))
+        };
+        assert_eq!(edit(None), "edit a.rs");
+        assert_eq!(edit(Some(false.into())), "edit a.rs");
+        assert_eq!(edit(Some(true.into())), "edit a.rs (all)");
+        assert_eq!(edit(Some("true".into())), "edit a.rs (all)");
         let block = "<<<<<<< SEARCH\n:start_line:1\n-------\na\n=======\nb\n>>>>>>> REPLACE\n";
         assert_eq!(
             brief(
@@ -1122,6 +1147,19 @@ mod tests {
             )
             .unwrap(),
             "● write b.rs (1 line)"
+        );
+        assert_eq!(
+            line(
+                EDIT_FILE_TOOL_NAME,
+                &[
+                    ("path", "b.rs".into()),
+                    ("old_string", "x".into()),
+                    ("new_string", "y".into()),
+                    ("replace_all", true.into())
+                ]
+            )
+            .unwrap(),
+            "● edit b.rs (all)"
         );
         // The question is shown as it is asked.
         assert_eq!(

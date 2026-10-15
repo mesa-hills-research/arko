@@ -18,7 +18,8 @@ use std::sync::{Arc, Mutex, Weak};
 
 use arko_agents::agent_config::PathSafetyPolicy;
 use arko_agents::builtins::{
-    APPLY_DIFF_TOOL_NAME, ApplyDiffTool, WRITE_FILE_TOOL_NAME, WriteFileTool,
+    APPLY_DIFF_TOOL_NAME, ApplyDiffTool, EDIT_FILE_TOOL_NAME, EditFileTool, WRITE_FILE_TOOL_NAME,
+    WriteFileTool,
 };
 use arko_agents::terminal::TerminalManager;
 use arko_agents::{AgentConfig, Tool};
@@ -129,8 +130,10 @@ impl Outside {
                 _ => HookResult::Continue,
             };
         }
+        // (`apply_diff` for sessions saved before `edit_file`.)
         let definition = match tool {
             WRITE_FILE_TOOL_NAME => WriteFileTool.definition(),
+            EDIT_FILE_TOOL_NAME => EditFileTool.definition(),
             APPLY_DIFF_TOOL_NAME => ApplyDiffTool.definition(),
             _ => return HookResult::Continue,
         };
@@ -210,10 +213,24 @@ pub const FILES_FIXED: &str = " In this session it reaches commands only: its ag
 
 /// Whether an agent configuration lets the file tools' writes follow the
 /// switch: it doesn't refuse writes outside the working directory itself.
+/// `write_file` is judged in any configuration, and the editing tool it
+/// offers (`edit_file`, or `apply_diff` in sessions saved before it).
 pub fn files_follow(config: &AgentConfig) -> bool {
-    [WRITE_FILE_TOOL_NAME, APPLY_DIFF_TOOL_NAME]
-        .iter()
-        .all(|tool| config.get_path_safety_policy(tool) != PathSafetyPolicy::AutoReject)
+    let offered = |tool: &str| {
+        config
+            .tool_config
+            .available_tool_names
+            .iter()
+            .any(|name| name == tool)
+    };
+    [
+        WRITE_FILE_TOOL_NAME,
+        EDIT_FILE_TOOL_NAME,
+        APPLY_DIFF_TOOL_NAME,
+    ]
+    .into_iter()
+    .filter(|tool| *tool == WRITE_FILE_TOOL_NAME || offered(tool))
+    .all(|tool| config.get_path_safety_policy(tool) != PathSafetyPolicy::AutoReject)
 }
 
 /// Reads `/outside`'s argument: `Some(on)`, or `None` for none.
@@ -280,6 +297,22 @@ mod tests {
         assert!(reason.contains("outside the working directory"), "{reason}");
         assert!(
             check(
+                EDIT_FILE_TOOL_NAME,
+                serde_json::json!({"path": "../x.txt", "old_string": "a", "new_string": "b"})
+            )
+            .unwrap()
+            .contains("outside the working directory")
+        );
+        assert!(
+            check(
+                EDIT_FILE_TOOL_NAME,
+                serde_json::json!({"path": "src/x.txt", "old_string": "a", "new_string": "b"})
+            )
+            .is_none()
+        );
+        // Sessions saved before edit_file have apply_diff.
+        assert!(
+            check(
                 APPLY_DIFF_TOOL_NAME,
                 serde_json::json!({"path": "../x.txt", "diff": ""})
             )
@@ -323,6 +356,13 @@ mod tests {
             check(
                 WRITE_FILE_TOOL_NAME,
                 serde_json::json!({"path": elsewhere, "content": "x"})
+            )
+            .is_none()
+        );
+        assert!(
+            check(
+                EDIT_FILE_TOOL_NAME,
+                serde_json::json!({"path": elsewhere, "old_string": "a", "new_string": "b"})
             )
             .is_none()
         );
@@ -399,14 +439,38 @@ mod tests {
         };
         let mut config = crate::agents::main_config(&settings).unwrap();
         assert!(files_follow(&config));
-        for tool in [WRITE_FILE_TOOL_NAME, APPLY_DIFF_TOOL_NAME] {
+        let refusing = |config: &AgentConfig, tool: &str| {
+            let mut config = config.clone();
             config
                 .tool_config
                 .tool_specific_configs
                 .get_mut(tool)
                 .unwrap()
                 .out_of_workspace_path_policy = Some(PathSafetyPolicy::AutoReject);
+            config
+        };
+        assert!(!files_follow(&refusing(&config, EDIT_FILE_TOOL_NAME)));
+        // A session saved before edit_file offers apply_diff, with the
+        // same overrides. One saved before the switch refuses both writes.
+        let tools = &mut config.tool_config;
+        for name in &mut tools.available_tool_names {
+            if name == EDIT_FILE_TOOL_NAME {
+                *name = APPLY_DIFF_TOOL_NAME.into();
+            }
         }
+        let edit = tools
+            .tool_specific_configs
+            .remove(EDIT_FILE_TOOL_NAME)
+            .unwrap();
+        tools
+            .tool_specific_configs
+            .insert(APPLY_DIFF_TOOL_NAME.into(), edit);
+        assert!(files_follow(&config));
+        assert!(!files_follow(&refusing(&config, APPLY_DIFF_TOOL_NAME)));
+        let config = refusing(
+            &refusing(&config, APPLY_DIFF_TOOL_NAME),
+            WRITE_FILE_TOOL_NAME,
+        );
         assert!(!files_follow(&config));
         let outside = Outside::new(true, Vec::new(), "/work".into());
         let workflow = Arc::new(

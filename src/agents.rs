@@ -4,7 +4,7 @@
 
 use arko_agents::agent_config::PathSafetyPolicy;
 use arko_agents::builtins::{
-    APPLY_DIFF_TOOL_NAME, ASK_USER_TOOL_NAME, LIST_FILES_TOOL_NAME, READ_FILE_TOOL_NAME,
+    ASK_USER_TOOL_NAME, EDIT_FILE_TOOL_NAME, LIST_FILES_TOOL_NAME, READ_FILE_TOOL_NAME,
     WRITE_FILE_TOOL_NAME,
 };
 use arko_agents::terminal::TerminalTool;
@@ -239,12 +239,14 @@ pub fn compacts(config: &AgentConfig) -> bool {
             .is_some_and(|handover| handover.compact_in_claude_code)
 }
 
-/// arko's built-in file tools, which both agents have.
+/// arko's built-in file tools, which both agents have. (Sessions saved
+/// before `edit_file` have `apply_diff` instead, which stays registered for
+/// them.)
 pub const FILE_TOOL_NAMES: [&str; 4] = [
     READ_FILE_TOOL_NAME,
     LIST_FILES_TOOL_NAME,
     WRITE_FILE_TOOL_NAME,
-    APPLY_DIFF_TOOL_NAME,
+    EDIT_FILE_TOOL_NAME,
 ];
 
 /// The tools both agents have: the shell and the terminal tools.
@@ -277,15 +279,10 @@ fn tool_config(tools: Vec<String>) -> AgentToolConfig {
         out_of_workspace_path_policy: Some(PathSafetyPolicy::AutoApprove),
         ..PerToolConfigOverride::default()
     };
-    let overrides = [
-        READ_FILE_TOOL_NAME,
-        LIST_FILES_TOOL_NAME,
-        WRITE_FILE_TOOL_NAME,
-        APPLY_DIFF_TOOL_NAME,
-    ]
-    .into_iter()
-    .map(|name| (name.to_string(), anywhere.clone()))
-    .collect();
+    let overrides = FILE_TOOL_NAMES
+        .into_iter()
+        .map(|name| (name.to_string(), anywhere.clone()))
+        .collect();
     AgentToolConfig {
         available_tool_names: tools,
         default_auto_approve_tool_use: true,
@@ -438,7 +435,7 @@ fn tool_instructions(settings: &AgentSettings) -> String {
     let mut text = format!(
         "\n# Tools\n\
          `shell` runs a command in {shell} in the working directory and returns its exit code and output once it finishes. Use it for what you would do in a terminal: {uses}. Each call starts in the working directory, so a `cd` doesn't carry over to the next call; to run a command somewhere else, give the call that directory as `cwd` instead of a `cd`.\n\n\
-         The file tools work with paths relative to the working directory. `read_file` reads a file with line numbers (give `start_line` and `end_line` to read part of a large one), and `list_files` lists a directory's files. Create files with `write_file` (the whole content), and change them with `apply_diff` (SEARCH/REPLACE blocks; it changes nothing if a SEARCH block doesn't match exactly, so read the lines first). Prefer them to heredocs and scripts in the shell, which fail on long text.\n\n\
+         The file tools work with paths relative to the working directory. `read_file` reads a file with line numbers (give `start_line` and `end_line` to read part of a large one), and `list_files` lists a directory's files. Create files with `write_file` (the whole content). Change them with `edit_file`, which replaces one exact piece of text and changes nothing if that text isn't there exactly once. Prefer them to heredocs and scripts in the shell, which fail on long text. Use the shell for mechanical changes across many files, such as a rename with `sed`.\n\n\
          The terminal tools run programs in the background: servers, watchers, long builds you want to keep an eye on, and programs that ask questions. `terminal_start` returns a job ID at once, `terminal_status` reads a job's output, `terminal_input` answers a prompt, and `terminal_control` waits for a job, lists jobs or cancels one. Use them only when `shell` doesn't fit, and cancel the jobs you started once you no longer need them.\n\n\
          A command guard refuses commands that would delete, move or overwrite the filesystem root, the home directory, system directories or devices, and paths outside the working directory unless the user has turned on outside access; the file tools' writes follow the same rule. The user can turn outside access on and off at any time, and a note tells you when they do. A refusal is the guard working, not an obstacle: don't rephrase, split or encode the command to get past it. Do the work another way, or say what was refused and why you needed it.\n",
         shell = settings.shell_name,
@@ -545,6 +542,7 @@ fn worker_instructions(settings: &AgentSettings) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use arko_agents::builtins::APPLY_DIFF_TOOL_NAME;
     use arko_ai::{AnthropicCacheTtl, OpenAIServiceTier};
 
     fn settings<'a>(main: &'a ModelSettings, worker: &'a ModelSettings) -> AgentSettings<'a> {
@@ -797,7 +795,15 @@ mod tests {
                 assert_eq!(policy(&config, tool), PathSafetyPolicy::AutoApprove);
             }
             assert!(crate::outside::files_follow(&config));
-            assert!(config.instructions.contains("`apply_diff`"));
+            assert!(config.instructions.contains("`edit_file`"));
+            assert!(!config.instructions.contains("apply_diff"));
+            assert!(
+                !config
+                    .tool_config
+                    .available_tool_names
+                    .iter()
+                    .any(|name| name == APPLY_DIFF_TOOL_NAME)
+            );
             assert!(config.instructions.contains(
                 "paths outside the working directory unless the user has turned on outside access"
             ));

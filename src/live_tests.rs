@@ -335,11 +335,12 @@ async fn an_old_session_resumed_with_the_flag_gets_the_shell_part_and_says_so() 
     .await;
     let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
     let _managers = equip(&mut harness, false);
-    // The configuration fin saved sessions with before.
+    // The file tools refuse writes outside the working directory, as in
+    // the configuration fin saved sessions with before.
     for config in [&mut harness.main_config, &mut harness.worker_config] {
         for tool in [
             arko_agents::builtins::WRITE_FILE_TOOL_NAME,
-            arko_agents::builtins::APPLY_DIFF_TOOL_NAME,
+            arko_agents::builtins::EDIT_FILE_TOOL_NAME,
         ] {
             config
                 .tool_config

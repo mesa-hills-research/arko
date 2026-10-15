@@ -49,7 +49,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use arko_agents::Tool;
-use arko_agents::builtins::ASK_USER_TOOL_NAME;
+use arko_agents::builtins::{APPLY_DIFF_TOOL_NAME, ASK_USER_TOOL_NAME, EDIT_FILE_TOOL_NAME};
 use arko_agents::terminal::{TerminalConfig, TerminalManager, TerminalTool};
 use arko_ai::LLMClient;
 use arko_workflows::notes::Note;
@@ -1090,10 +1090,17 @@ fn unoffered(saved: &SavedSetup, fresh: &[(&str, &arko_agents::AgentConfig)]) ->
         let offered = &saved.tool_config.available_tool_names;
         for name in &fresh.tool_config.available_tool_names {
             // An agent that ends its turns with a reply in text answers in
-            // text beside its calls instead.
+            // text beside its calls instead, and one saved before edit_file
+            // edits files with apply_diff.
             let answers_in_text =
                 name == message::MESSAGE_USER && saved.tool_config.ends_task_with_text();
-            if !offered.contains(name) && !missing.contains(&name.as_str()) && !answers_in_text {
+            let edits_with_apply_diff = name == EDIT_FILE_TOOL_NAME
+                && offered.iter().any(|name| name == APPLY_DIFF_TOOL_NAME);
+            if !offered.contains(name)
+                && !missing.contains(&name.as_str())
+                && !answers_in_text
+                && !edits_with_apply_diff
+            {
                 missing.push(name);
             }
         }
@@ -3365,6 +3372,12 @@ mod tests {
     mod text_replies {
         use super::*;
         include!("text_reply_tests.rs");
+    }
+
+    /// File editing's end-to-end tests, in their own file.
+    mod edit_file {
+        use super::*;
+        include!("edit_file_tests.rs");
     }
 
     #[test]

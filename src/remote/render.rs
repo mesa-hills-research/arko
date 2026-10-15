@@ -6,8 +6,8 @@
 use std::collections::HashMap;
 
 use arko_agents::builtins::{
-    APPLY_DIFF_TOOL_NAME, ASK_USER_TOOL_NAME, LIST_FILES_TOOL_NAME, READ_FILE_TOOL_NAME,
-    WRITE_FILE_TOOL_NAME,
+    APPLY_DIFF_TOOL_NAME, ASK_USER_TOOL_NAME, EDIT_FILE_TOOL_NAME, LIST_FILES_TOOL_NAME,
+    READ_FILE_TOOL_NAME, WRITE_FILE_TOOL_NAME,
 };
 use arko_agents::handover::{HANDOVER_REPORT_PARAM_NAME, HANDOVER_REPORT_TOOL_NAME};
 use arko_workflows::services::RUN_WORKFLOW_AGENT_TOOL_NAME;
@@ -214,6 +214,21 @@ pub fn outcome(tool: &str, output: &str) -> Outcome {
         READ_FILE_TOOL_NAME => Outcome::ok(plural(lines(), "line", "lines")),
         LIST_FILES_TOOL_NAME => Outcome::ok(plural(lines(), "entry", "entries")),
         WRITE_FILE_TOOL_NAME | HANDOVER_REPORT_TOOL_NAME => Outcome::ok(""),
+        // "Edited a.rs at lines 3-5: ..." or "Replaced 4 occurrences in
+        // a.rs, at lines ...".
+        EDIT_FILE_TOOL_NAME => match output.strip_prefix("Replaced ").and_then(|rest| {
+            rest.split_whitespace()
+                .next()
+                .and_then(|count| count.parse::<usize>().ok())
+        }) {
+            Some(count) => Outcome::ok(plural(count, "replacement", "replacements")),
+            None if output.starts_with("Edited ") => Outcome::ok("1 edit"),
+            None => Outcome::ok(cut(
+                output.lines().next().unwrap_or_default(),
+                OUTCOME_CHARS,
+            )),
+        },
+        // In sessions saved before edit_file.
         APPLY_DIFF_TOOL_NAME => {
             // "Successfully applied all 2 diff block(s) ..." or "Applied 1
             // of 2 diff block(s) ...".
@@ -432,6 +447,39 @@ mod tests {
             ),
             (CallStatus::Failed, "1 of 2 edits".into())
         );
+        assert_eq!(
+            told(
+                EDIT_FILE_TOOL_NAME,
+                "Edited a.rs at lines 2-3:\n1 | a\n2 | b\n3 | c"
+            ),
+            (CallStatus::Ok, "1 edit".into())
+        );
+        assert_eq!(
+            told(
+                EDIT_FILE_TOOL_NAME,
+                "Replaced 4 occurrences in a.rs, at lines 1, 2 and 4."
+            ),
+            (CallStatus::Ok, "4 replacements".into())
+        );
+        assert_eq!(
+            told(
+                EDIT_FILE_TOOL_NAME,
+                "Replaced 1 occurrence in a.rs, at line 5."
+            ),
+            (CallStatus::Ok, "1 replacement".into())
+        );
+        // How a call shows, in the feed and the full screen.
+        let item = call(
+            EDIT_FILE_TOOL_NAME,
+            &params(&[
+                ("path", "a.rs".into()),
+                ("old_string", "x".into()),
+                ("new_string", "y".into()),
+                ("replace_all", true.into()),
+            ]),
+        )
+        .unwrap();
+        assert_eq!(item.text, "edit a.rs (all)");
         let cargo = "exit code 0, 9.1 s\nrunning 12 tests\ntest result: ok. 10 passed; 0 failed; 1 ignored\ntest result: ok. 2 passed; 0 failed";
         assert_eq!(
             told(SHELL_TOOL_NAME, cargo),
