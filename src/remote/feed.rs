@@ -663,6 +663,9 @@ impl Feed {
                 // cancelled while this call was running").
                 let message = if why.contains("cancelled") {
                     "stopped".to_string()
+                } else if why == arko_agents::claude_code::HELD_FOR_COMPACTION {
+                    // The agent makes the call again after the compaction.
+                    "held for the compaction".to_string()
                 } else if why.is_empty() {
                     "refused".to_string()
                 } else {
@@ -713,6 +716,13 @@ impl Feed {
                 let text =
                     "handed over: the agent continues in a fresh conversation from its report";
                 self.push(&mut state, notice(text.into(), Level::Info));
+            }
+            AgentEvent::ConversationCompacted {
+                input_tokens,
+                compacted_tokens,
+            } if main => {
+                let text = crate::handover::compacted_text(*input_tokens, *compacted_tokens);
+                self.push(&mut state, notice(text, Level::Info));
             }
             AgentEvent::RefusalReceived(refusal) => {
                 let text = match &refusal.category {

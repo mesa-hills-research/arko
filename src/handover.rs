@@ -6,21 +6,25 @@
 //! watches the main agent's input (the size each request reports) and asks
 //! it for a handover with `UserCommand::RequestHandover` when the user's
 //! size is the smaller. The agent then writes its report at its next step
-//! and goes on from it in a fresh conversation. fin reaches a run's command
-//! channel through the tools the run is bound to (`Tool::bind_runtime`):
-//! the shell tool keeps them in [`Runs`].
+//! and goes on from it in a fresh conversation. An agent in Claude Code
+//! compacts instead (see `agents::compacts`): Claude Code's `/compact`
+//! summarises the conversation, and the agent goes on from the summary in
+//! the same conversation. fin reaches a run's command channel through the
+//! tools the run is bound to (`Tool::bind_runtime`): the shell tool keeps
+//! them in [`Runs`].
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use arko_agents::UserCommand;
 use arko_agents::runtime::event::AgentEvent;
+use arko_agents::task::TaskState;
 use arko_workflows::prelude::*;
 use tokio::sync::{broadcast, mpsc};
 use uuid::Uuid;
 
-use crate::agents::MAIN;
+use crate::agents::{self, MAIN};
 use crate::remote::{self, Level};
 use crate::ui::Output;
 
@@ -92,6 +96,22 @@ pub fn requested_text(run: Uuid, input_tokens: usize) -> String {
     )
 }
 
+/// What the terminal and the feed say when Claude Code compacted the
+/// conversation, from `input_tokens` to `compacted_tokens`.
+pub fn compacted_text(input_tokens: usize, compacted_tokens: Option<usize>) -> String {
+    match compacted_tokens {
+        Some(after) => format!(
+            "Claude Code compacted the conversation: {} → {} tokens",
+            shown(input_tokens),
+            shown(after)
+        ),
+        None => format!(
+            "Claude Code compacted the conversation at {} tokens",
+            shown(input_tokens)
+        ),
+    }
+}
+
 /// What became of a request for a handover.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Asked {
@@ -111,6 +131,8 @@ pub struct Handover {
     /// The size the main agent's configuration hands over at by itself:
     /// `at` can't be larger.
     configured: AtomicUsize,
+    /// The main agent compacts in Claude Code instead of handing over.
+    compacts: AtomicBool,
     watch: Mutex<Watch>,
     /// The task watching the workflow's events.
     watching: Mutex<Option<tokio::task::JoinHandle<()>>>,
@@ -153,6 +175,7 @@ impl Handover {
             runs,
             at: AtomicUsize::new(at),
             configured: AtomicUsize::new(usize::MAX),
+            compacts: AtomicBool::new(false),
             watch: Mutex::default(),
             watching: Mutex::default(),
             output,
@@ -174,6 +197,12 @@ impl Handover {
     /// The size its configuration hands over at by itself.
     pub fn configured(&self) -> usize {
         self.configured.load(Ordering::SeqCst)
+    }
+
+    /// Whether the main agent compacts in Claude Code at the size, instead
+    /// of handing over.
+    pub fn compacts(&self) -> bool {
+        self.compacts.load(Ordering::SeqCst)
     }
 
     /// The main agent's configuration, as the workflow runs it (the saved
@@ -238,10 +267,15 @@ impl Handover {
     }
 
     /// Watches the main agent's events in `workflow` (in place of the
-    /// workflow watched before), whose main agent hands over at
-    /// `configured` by itself.
-    pub fn watch(self: &Arc<Self>, workflow: &Workflow, configured: Option<usize>) {
-        self.configure(configured);
+    /// workflow watched before), whose main agent has configuration `main`.
+    pub fn watch(self: &Arc<Self>, workflow: &Workflow, main: &arko_agents::AgentConfig) {
+        self.configure(
+            main.handover
+                .as_ref()
+                .and_then(|handover| handover.at_input_tokens),
+        );
+        self.compacts
+            .store(agents::compacts(main), Ordering::SeqCst);
         let mut events = workflow.subscribe_events();
         let handover = Arc::downgrade(self);
         let task = tokio::spawn(async move {
@@ -282,7 +316,8 @@ impl Handover {
                 }
             }
             AgentEvent::HandoverRequested { .. } => watch.asked = true,
-            AgentEvent::ConversationHandedOver { .. } => {
+            AgentEvent::ConversationHandedOver { .. }
+            | AgentEvent::ConversationCompacted { .. } => {
                 user_asked(event.agent_run_id, false);
                 // The old conversation's size is no longer the agent's.
                 watch.input = None;
@@ -290,6 +325,12 @@ impl Handover {
                 watch.fresh = true;
                 watch.fresh_input = None;
                 watch.warned = false;
+            }
+            // A turn that ends drops the handover or compaction it hadn't
+            // made: fin asks again in the next turn when it is still due.
+            AgentEvent::TaskStateChanged(TaskState::Completed { .. }) => {
+                user_asked(event.agent_run_id, false);
+                watch.asked = false;
             }
             _ => {}
         }
@@ -315,11 +356,19 @@ impl Handover {
             && let Some(first) = watch.fresh_input.filter(|first| *first >= at)
         {
             if !std::mem::replace(&mut watch.warned, true) {
-                let text = format!(
-                    "The main agent's fresh conversation started at {}k tokens, over the handover size ({}k), so fin asks for no other handover in it. /handover-at sets a larger size.",
-                    first / 1000,
-                    at / 1000
-                );
+                let text = if self.compacts() {
+                    format!(
+                        "The main agent's compacted conversation started at {}k tokens, over the handover size ({}k), so fin asks for no other compaction in it. /handover-at sets a larger size.",
+                        first / 1000,
+                        at / 1000
+                    )
+                } else {
+                    format!(
+                        "The main agent's fresh conversation started at {}k tokens, over the handover size ({}k), so fin asks for no other handover in it. /handover-at sets a larger size.",
+                        first / 1000,
+                        at / 1000
+                    )
+                };
                 self.output.line(&self.output.warn(&text));
                 self.feed.notice(Level::Warn, &text);
             }
@@ -447,6 +496,62 @@ mod tests {
         handover.event(&event(run, usage(260_000)));
         assert_eq!(asked(&mut commands), 0);
         drop(sender);
+    }
+
+    /// A compaction resets the watch as a handover does, and a turn that
+    /// ends drops a request it didn't act on: fin asks again later.
+    #[tokio::test]
+    async fn the_watch_starts_over_after_a_compaction_or_a_turn() {
+        let runs = Arc::new(Runs::default());
+        let handover = Handover::new(
+            runs.clone(),
+            100_000,
+            Arc::new(Output::new(None, true)),
+            remote::Feed::new(MAIN),
+        );
+        handover.configure(Some(250_000));
+        let run = Uuid::new_v4();
+        let (sender, mut commands) = mpsc::channel(8);
+        runs.bind(run, sender.downgrade());
+        let mut asked = || {
+            std::iter::from_fn(|| commands.try_recv().ok())
+                .filter(|command| matches!(command, UserCommand::RequestHandover))
+                .count()
+        };
+        handover.event(&event(run, usage(110_000)));
+        assert_eq!(asked(), 1);
+        handover.event(&event(
+            run,
+            AgentEvent::TaskStateChanged(TaskState::Completed {
+                summary: "Done.".into(),
+            }),
+        ));
+        handover.event(&event(run, usage(120_000)));
+        assert_eq!(asked(), 1, "asked again in the next turn");
+        handover.event(&event(
+            run,
+            AgentEvent::ConversationCompacted {
+                input_tokens: 120_000,
+                compacted_tokens: Some(20_000),
+            },
+        ));
+        assert_eq!(handover.input(), None);
+        handover.event(&event(run, usage(25_000)));
+        handover.event(&event(run, usage(105_000)));
+        assert_eq!(asked(), 1, "the compacted conversation reached the size");
+        drop(sender);
+    }
+
+    #[test]
+    fn a_compaction_is_told_with_its_sizes() {
+        assert_eq!(
+            compacted_text(642_400, Some(38_100)),
+            "Claude Code compacted the conversation: 642k → 38k tokens"
+        );
+        assert_eq!(
+            compacted_text(642_400, None),
+            "Claude Code compacted the conversation at 642k tokens"
+        );
     }
 
     /// A handover asked for while the agent doesn't work goes to its run

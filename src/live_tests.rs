@@ -1248,3 +1248,168 @@ async fn outside_access_reaches_agents_in_claude_code() {
     harness.crew.as_ref().unwrap().shutdown().await;
     managers.shutdown().await;
 }
+
+/// The main agent on `cc:opus`, through arko's scripted stand-in for the
+/// `claude` CLI with `script`.
+fn in_claude_code(
+    temp: &Path,
+    script: serde_json::Value,
+) -> (Harness, Inputs, mpsc::UnboundedSender<Input>, Managers, PathBuf) {
+    let fake = temp.join("fake");
+    std::fs::create_dir_all(&fake).unwrap();
+    std::fs::write(fake.join("script.json"), script.to_string()).unwrap();
+    let (mut harness, inputs, sender) = harness(temp, LLMClient::new(), true);
+    let cc = ModelSettings {
+        model: "cc:claude-opus-5-5".into(),
+        effort: Effort::High,
+        fast: false,
+        cache_1h: false,
+        handover_at: None,
+    };
+    let managers = on_models(&mut harness, &cc, &cc, &fake_claude_code(&fake));
+    (harness, inputs, sender, managers, fake)
+}
+
+/// The user messages the stand-in CLI received.
+fn sent_to_claude_code(fake: &Path) -> Vec<String> {
+    let (log, _) = fake_log(fake);
+    log.iter()
+        .filter(|entry| entry["event"] == "user")
+        .map(|entry| entry["text"].as_str().unwrap_or_default().to_string())
+        .collect()
+}
+
+/// The feed's calls, with their outcomes.
+fn call_outcomes(feed: &remote::Feed) -> Vec<(String, String)> {
+    feed.subscribe()
+        .0
+        .items
+        .iter()
+        .filter_map(|item| {
+            let item = serde_json::to_value(item).unwrap();
+            (item["kind"] == "call").then(|| {
+                (
+                    item["text"].as_str().unwrap_or_default().to_string(),
+                    item["outcome"].as_str().unwrap_or_default().to_string(),
+                )
+            })
+        })
+        .collect()
+}
+
+/// A main agent in Claude Code compacts at the handover size instead of
+/// handing over: the call it makes there is held, Claude Code's `/compact`
+/// runs in the same conversation, and the agent makes the call again from
+/// the summary. The transcript says it in one line.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_main_agent_in_claude_code_compacts_at_the_handover_size() {
+    let temp = tempfile::tempdir().unwrap();
+    let script = serde_json::json!([
+        [
+            {"tool": "mcp__arko__shell", "input": {"command": "echo one"}, "input_tokens": 1000},
+            {"tool": "mcp__arko__shell", "input": {"command": "echo two"}, "input_tokens": 642_000},
+            {"text": "Not reached: the turn was interrupted."},
+        ],
+        {"compact": {"pre_tokens": 642_000, "post_tokens": 38_000}},
+        [
+            {"tool": "mcp__arko__shell", "input": {"command": "echo two"}, "input_tokens": 40_000},
+            {"tool": "mcp__arko__complete_task", "input": {"summary": "Done after the compaction."}},
+        ],
+    ]);
+    let (mut harness, mut inputs, _sender, managers, fake) = in_claude_code(temp.path(), script);
+    assert!(harness.handover.compacts());
+    let end = tokio::time::timeout(
+        Duration::from_secs(60),
+        harness.turn(Prompt::User("Work on it.".into()), &mut inputs),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(end, TurnEnd::Answered));
+    assert_eq!(summary(&harness), "Done after the compaction.");
+    assert_eq!(handovers(&harness), 0);
+    harness.flush_printer().await;
+    assert!(says(
+        &harness.feed,
+        "notice",
+        "Claude Code compacted the conversation: 642k → 38k tokens"
+    ));
+    assert!(!says(&harness.feed, "notice", "handed over"));
+    let calls = call_outcomes(&harness.feed);
+    assert!(
+        calls
+            .iter()
+            .any(|(text, outcome)| text.contains("echo two") && outcome == "held for the compaction"),
+        "{calls:#?}"
+    );
+    let sent = sent_to_claude_code(&fake);
+    assert_eq!(sent.len(), 3, "{sent:#?}");
+    assert_eq!(sent[1], "/compact");
+    assert!(sent[2].contains("echo two"), "{}", sent[2]);
+    // One Claude Code conversation throughout.
+    let (log, _) = fake_log(&fake);
+    assert_eq!(log.iter().filter(|entry| entry["event"] == "argv").count(), 1);
+    harness.crew.as_ref().unwrap().shutdown().await;
+    managers.shutdown().await;
+}
+
+/// `/handover` on a main agent in Claude Code compacts: while no turn
+/// runs, Claude Code compacts the conversation when the next message
+/// starts its turn, before the agent reads the message.
+#[cfg(unix)]
+#[tokio::test]
+async fn handover_compacts_a_main_agent_in_claude_code() {
+    let temp = tempfile::tempdir().unwrap();
+    let script = serde_json::json!([
+        [{"tool": "mcp__arko__complete_task", "input": {"summary": "First done."}, "input_tokens": 1500}],
+        {"compact": {"pre_tokens": 1500, "post_tokens": 400}},
+        [{"tool": "mcp__arko__complete_task", "input": {"summary": "Second done."}}],
+    ]);
+    let (mut harness, mut inputs, _sender, managers, fake) = in_claude_code(temp.path(), script);
+    assert!(harness.live_command("/handover", Source::Terminal));
+    assert!(says(
+        &harness.feed,
+        "output",
+        "There is no conversation to compact"
+    ));
+    let end = tokio::time::timeout(
+        Duration::from_secs(60),
+        harness.turn(Prompt::User("First.".into()), &mut inputs),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(end, TurnEnd::Answered));
+    harness.live_command("/handover-at", Source::Terminal);
+    assert!(says(
+        &harness.feed,
+        "output",
+        "Claude Code compacts the main agent's conversation at 200k tokens of input"
+    ));
+    harness.live_command("/handover", Source::Terminal);
+    assert!(says(
+        &harness.feed,
+        "output",
+        "Claude Code compacts the main agent's conversation when your next message starts its turn"
+    ));
+    let end = tokio::time::timeout(
+        Duration::from_secs(60),
+        harness.turn(Prompt::User("Second.".into()), &mut inputs),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(end, TurnEnd::Answered));
+    assert_eq!(summary(&harness), "Second done.");
+    assert_eq!(handovers(&harness), 0);
+    harness.flush_printer().await;
+    assert!(says(
+        &harness.feed,
+        "notice",
+        "Claude Code compacted the conversation: 1k → 0k tokens"
+    ));
+    let sent = sent_to_claude_code(&fake);
+    assert_eq!(sent.len(), 3, "{sent:#?}");
+    assert_eq!(sent[1], "/compact");
+    assert!(sent[2].contains("Second."), "{}", sent[2]);
+    harness.crew.as_ref().unwrap().shutdown().await;
+    managers.shutdown().await;
+}

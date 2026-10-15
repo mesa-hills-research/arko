@@ -598,7 +598,7 @@
     const settings = status && status.settings;
     $('figures').title =
       status && status.context_tokens != null
-        ? 'Context: ' + C.tokens(status.context_tokens) + ' tokens' + (settings && settings.handover_at ? ', handing over at ' + C.tokens(settings.handover_at) : '')
+        ? 'Context: ' + C.tokens(status.context_tokens) + ' tokens' + (settings && settings.handover_at ? ', handover size ' + C.tokens(settings.handover_at) : '')
         : '';
     $('outside').hidden = !(status && status.settings && status.settings.outside);
     const working = status && status.working && connection === 'live';

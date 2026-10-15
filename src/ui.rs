@@ -579,6 +579,16 @@ impl EventPrinter {
                     "  ⟳ handed over: the agent continues in a fresh conversation from its report",
                 ));
             }
+            AgentEvent::ConversationCompacted {
+                input_tokens,
+                compacted_tokens,
+            } if main => {
+                self.flush();
+                self.output.echo(&self.output.dim(&format!(
+                    "  ⟳ {}",
+                    crate::handover::compacted_text(input_tokens, compacted_tokens)
+                )));
+            }
             AgentEvent::RefusalReceived(refusal) => {
                 self.output.echo(
                     &self
