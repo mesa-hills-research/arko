@@ -144,6 +144,10 @@ pub struct LiveSettings {
     /// The main agent hands over at this many input tokens; 0 when it is
     /// not known.
     pub handover_at: usize,
+    /// The main agent ends its turns with a reply in plain text (else with
+    /// `complete_task`). It changes only before the conversation starts
+    /// (`Models::started`).
+    pub text_replies: bool,
 }
 
 /// A random token of `bytes` bytes, in URL-safe base64.

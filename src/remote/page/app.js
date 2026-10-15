@@ -847,6 +847,17 @@
       ? 'The agents may work anywhere on this computer.'
       : 'The agents stay in ' + (info.workspace || 'the workspace') + '.';
     $('handover-value').textContent = settings.handover_at ? C.tokens(settings.handover_at) + ' tokens' : 'Not set';
+    // Text replies change only before the conversation starts.
+    const replies = $('replies-switch');
+    const replying = pending && pending.replies !== undefined;
+    const started = Boolean(status && status.models && status.models.started);
+    replies.setAttribute('aria-checked', String(replying ? pending.replies : Boolean(settings.text_replies)));
+    replies.setAttribute('aria-busy', String(Boolean(replying)));
+    replies.disabled = started && !replying;
+    $('replies-about').textContent = (settings.text_replies
+      ? 'The agent ends its turn with a plain reply.'
+      : 'The agent ends its turn by calling complete_task.')
+      + (started ? ' It keeps this for the session.' : ' It changes before the conversation starts.');
     if (pending && pending.done && pending.done(settings)) settle(pending, true);
     const rows = [
       ['Model', info.model],
@@ -903,10 +914,10 @@
 
   /** Sends `command` from the sheet; `done(settings)` says when the
    * status shows it took. */
-  async function command(text, noteId, done, outside) {
+  async function command(text, noteId, done, outside, replies) {
     if (pending) return false;
     note(noteId, '');
-    const change = { command: text, note: noteId, done, outside, lines: [] };
+    const change = { command: text, note: noteId, done, outside, replies, lines: [] };
     pending = change;
     renderSettings();
     if (!(await post('/api/message', { text }))) {
@@ -935,6 +946,12 @@
   $('outside-allow').addEventListener('click', () => {
     $('outside-confirm').hidden = true;
     command('/outside on', 'outside-note', (settings) => settings.outside, true);
+  });
+
+  $('replies-switch').addEventListener('click', () => {
+    if (pending) return;
+    const on = !(status && status.settings && status.settings.text_replies);
+    command('/text-replies ' + (on ? 'on' : 'off'), 'replies-note', (settings) => Boolean(settings.text_replies) === on, undefined, on);
   });
 
   $('handover-form').addEventListener('submit', (event) => {

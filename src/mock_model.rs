@@ -163,6 +163,49 @@ pub fn overflow() -> String {
     )
 }
 
+/// A model turn of `text` alone, without a tool call: the main agent's
+/// reply when it ends its turns with a reply in plain text. The text
+/// streams first, as a model's does.
+pub fn reply(id: &str, text: &str) -> String {
+    turn_with_text(id, text, None)
+}
+
+/// A model turn with `text` beside a call to the tool `name`: the agent's
+/// progress as it works.
+pub fn say_and_call(id: &str, text: &str, name: &str, arguments: Value) -> String {
+    turn_with_text(id, text, Some((name, arguments)))
+}
+
+fn turn_with_text(id: &str, text: &str, call: Option<(&str, Value)>) -> String {
+    let message = serde_json::json!({
+        "type": "message", "id": format!("msg_{id}"), "status": "completed", "role": "assistant",
+        "content": [{"type": "output_text", "text": text, "annotations": []}],
+    });
+    let mut events = vec![
+        serde_json::json!({"type": "response.output_text.delta", "item_id": format!("msg_{id}"),
+            "output_index": 0, "delta": text}),
+        serde_json::json!({"type": "response.output_item.done", "output_index": 0, "item": message}),
+    ];
+    if let Some((name, arguments)) = call {
+        let item = serde_json::json!({
+            "type": "function_call", "id": format!("fc_{id}"), "call_id": format!("call_{id}"),
+            "name": name, "arguments": arguments.to_string(), "status": "completed",
+        });
+        events.push(
+            serde_json::json!({"type": "response.output_item.done", "output_index": 1, "item": item}),
+        );
+    }
+    events.push(serde_json::json!({"type": "response.completed", "response": {
+        "id": format!("resp_{id}"), "object": "response", "created_at": 0, "status": "completed",
+        "model": "gpt-6-luna", "output": [], "usage": {"input_tokens": 10, "output_tokens": 5},
+        "metadata": {},
+    }}));
+    events
+        .iter()
+        .map(|event| format!("data: {event}\n\n"))
+        .collect()
+}
+
 pub fn complete(id: &str, report: &str) -> String {
     tool_call(
         id,

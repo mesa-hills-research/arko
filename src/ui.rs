@@ -13,7 +13,7 @@ use arko_agents::builtins::{
 };
 use arko_agents::handover::{HANDOVER_REPORT_PARAM_NAME, HANDOVER_REPORT_TOOL_NAME};
 use arko_agents::terminal::TerminalTool;
-use arko_agents::{AgentEvent, LOAD_SKILL_TOOL_NAME};
+use arko_agents::{AgentEvent, LOAD_SKILL_TOOL_NAME, TaskState};
 use arko_workflows::WorkflowEvent;
 use arko_workflows::services::RUN_WORKFLOW_AGENT_TOOL_NAME;
 use rustyline::completion::Completer;
@@ -339,17 +339,22 @@ pub enum Control {
 }
 
 /// Prints a workflow's events until its channel closes. Native worker runs
-/// use their r1, r2, ... handles in the terminal and remote feed.
+/// use their r1, r2, ... handles in the terminal and remote feed. With
+/// `text_replies` (the main agent ends its turns with a reply in plain
+/// text), its text is held until it proves to be progress or its reply.
+#[allow(clippy::too_many_arguments)]
 pub async fn print_events(
     mut events: broadcast::Receiver<WorkflowEvent>,
     mut control: mpsc::UnboundedReceiver<Control>,
     output: Arc<Output>,
     stats: Arc<Mutex<Stats>>,
     show_thinking: bool,
+    text_replies: bool,
     workflow: Option<std::sync::Weak<arko_workflows::Workflow>>,
     feed: Option<remote::Feed>,
 ) {
     let mut printer = EventPrinter::new(output, stats, show_thinking, None);
+    printer.hold_text = text_replies;
     loop {
         tokio::select! {
             biased;
@@ -396,8 +401,14 @@ struct EventPrinter {
     output: Arc<Output>,
     stats: Arc<Mutex<Stats>>,
     show_thinking: bool,
-    /// The main agent's text since its last complete line.
+    /// The main agent's text since its last complete line, or with
+    /// `hold_text` since its last call.
     text: String,
+    /// The main agent ends its turns with a reply in plain text, which the
+    /// harness prints as the reply: its text is held, and printed as
+    /// progress once a call follows it (or the turn ends otherwise), or
+    /// dropped when the turn ends with it as the reply.
+    hold_text: bool,
     thinking: String,
     /// Labels of the workers' runs, by run ID.
     workers: HashMap<Uuid, String>,
@@ -419,6 +430,7 @@ impl EventPrinter {
             stats,
             show_thinking,
             text: String::new(),
+            hold_text: false,
             thinking: String::new(),
             workers: HashMap::new(),
             label,
@@ -437,9 +449,10 @@ impl EventPrinter {
             .clone()
     }
 
-    /// Prints the complete lines of the buffered text.
+    /// Prints the complete lines of the buffered text (the main agent's
+    /// text only when it isn't held).
     fn print_lines(&mut self) {
-        while let Some(end) = self.text.find('\n') {
+        while let Some(end) = self.text.find('\n').filter(|_| !self.hold_text) {
             let line: String = self.text.drain(..=end).collect();
             self.output.echo(line.trim_end_matches(['\n', '\r']));
         }
@@ -560,7 +573,12 @@ impl EventPrinter {
                 )));
             }
             AgentEvent::OutputTokenLimitReached { output_tokens, .. } if main => {
-                self.flush();
+                // Held text may be the reply, which the turn's end shows.
+                if self.hold_text {
+                    self.flush_thinking();
+                } else {
+                    self.flush();
+                }
                 self.output.echo(&self.output.warn(&format!(
                     "  ! the reply reached the model's output limit ({output_tokens} tokens)"
                 )));
@@ -595,6 +613,12 @@ impl EventPrinter {
                         .output
                         .warn(&format!("  ! the model refused ({:?})", refusal.category)),
                 );
+            }
+            // The reply, held: the harness prints it as the reply.
+            AgentEvent::TaskStateChanged(TaskState::Completed { summary })
+                if main && self.hold_text && self.text.trim() == summary.trim() =>
+            {
+                self.text.clear();
             }
             AgentEvent::ModelCallUsageReported(usage) if main => {
                 self.stats.lock().unwrap().context_tokens = Some(usage.input_tokens);
@@ -1221,5 +1245,65 @@ mod tests {
             handovers: 1,
         }));
         assert!(printer.text.is_empty(), "{:?}", printer.text);
+    }
+
+    /// The lines an output printed.
+    #[derive(Clone, Default)]
+    struct Printed(Arc<Mutex<Vec<String>>>);
+
+    impl ExternalPrinter for Printed {
+        fn print(&mut self, text: String) -> rustyline::Result<()> {
+            self.0
+                .lock()
+                .unwrap()
+                .extend(text.lines().map(str::to_string));
+            Ok(())
+        }
+    }
+
+    /// With text replies, the main agent's text is held: printed as
+    /// progress once a call follows it, and left to the harness, which
+    /// prints the reply, when the turn ends with it.
+    #[tokio::test]
+    async fn text_replies_hold_the_text_until_a_call_or_the_reply() {
+        let printed = Printed::default();
+        let output = Arc::new(Output::new(Some(Box::new(printed.clone())), false));
+        let mut printer = EventPrinter::new(output, Arc::default(), false, None);
+        printer.hold_text = true;
+        let event = |event: AgentEvent| WorkflowEvent {
+            timestamp: chrono::Utc::now(),
+            workflow_run_id: Uuid::nil(),
+            agent_name: MAIN.into(),
+            agent_run_id: Uuid::nil(),
+            event,
+        };
+        printer.event(event(AgentEvent::AssistantResponseChunk(
+            "Looking at\nthe files.".into(),
+        )));
+        assert!(printed.0.lock().unwrap().is_empty(), "held");
+        printer.event(event(AgentEvent::ToolCallFormatted {
+            tool_call_id: Uuid::new_v4(),
+            tool_name: "list_files".into(),
+            parameters: [("path".to_string(), serde_json::json!("."))].into(),
+        }));
+        let lines = printed.0.lock().unwrap().clone();
+        assert_eq!(&lines[..2], ["Looking at", "the files."]);
+
+        printer.event(event(AgentEvent::AssistantResponseChunk(
+            "There are\n3 files.\n".into(),
+        )));
+        printer.event(event(AgentEvent::OutputTokenLimitReached {
+            model: "m".into(),
+            output_tokens: 10,
+        }));
+        printer.event(event(AgentEvent::TaskStateChanged(TaskState::Completed {
+            summary: "There are\n3 files.".into(),
+        })));
+        printer.flush();
+        let lines = printed.0.lock().unwrap().clone();
+        assert!(
+            !lines.iter().any(|line| line.contains("3 files.")),
+            "the reply is the harness's to print: {lines:?}"
+        );
     }
 }

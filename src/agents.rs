@@ -171,6 +171,9 @@ pub struct AgentSettings<'a> {
     /// The indexes when the session started, named in the instructions
     /// when there are index tools.
     pub indexes: &'a [index::Known],
+    /// The main agent ends its turns with a reply in plain text (see
+    /// `Settings::text_replies`).
+    pub text_replies: bool,
 }
 
 /// How many indexes the instructions name; `index_status` lists the rest.
@@ -306,10 +309,28 @@ fn environment() -> EnvironmentDetailsConfig {
     }
 }
 
+/// How the main agent ends its turns, as fin tells the user: with
+/// `text_replies`, a plain reply, else a `complete_task` call.
+pub fn replies_text(text_replies: bool) -> &'static str {
+    if text_replies {
+        "the agent ends its turn with a plain reply"
+    } else {
+        "the agent ends its turn by calling complete_task"
+    }
+}
+
+/// The main agent's configuration. With `text_replies` it ends its turns
+/// with a reply in plain text (`text_reply_ends_task`), and answers what
+/// the user types meanwhile in text beside its calls: it has neither
+/// `complete_task` nor `message_user`. Without, it ends them with
+/// `complete_task`, whose summary is its reply, and answers with
+/// `message_user`.
 pub fn main_config(settings: &AgentSettings) -> Result<AgentConfig, String> {
     let mut tools = shared_tool_names(settings);
     tools.push(ASK_USER_TOOL_NAME.into());
-    tools.push(crate::message::MESSAGE_USER.into());
+    if !settings.text_replies {
+        tools.push(crate::message::MESSAGE_USER.into());
+    }
     if settings.max_workers > 0 {
         tools.extend(crew::LEAD_TOOL_NAMES.iter().map(|name| name.to_string()));
     }
@@ -318,6 +339,8 @@ pub fn main_config(settings: &AgentSettings) -> Result<AgentConfig, String> {
     if settings.max_workers > 0 {
         instructions.push_str(&worker_instructions(settings));
     }
+    let mut tool_config = tool_config(tools);
+    tool_config.text_reply_ends_task = settings.text_replies;
     let mut builder = AgentConfig::builder(
         MAIN.into(),
         "fin".into(),
@@ -327,16 +350,18 @@ pub fn main_config(settings: &AgentSettings) -> Result<AgentConfig, String> {
         "You are fin, a general-purpose agent working in a terminal on the user's computer. You help with software engineering and anything else the user asks: you investigate, run commands, create and change files, and report back.".into(),
     )
     .instructions(instructions)
-    .tool_config(tool_config(tools))
+    .tool_config(tool_config)
     .environment_details_config(environment())
-    .complete_task_summary_prompt_override(
-        "Your reply to the user's latest message, in full: what you did, what you found, and anything you need from them. They read it as your message (Markdown, shown as plain text)."
-            .into(),
-    )
     .handover(handover(
         settings.main,
         settings.main.handover_at.unwrap_or(settings.handover_at),
     ));
+    if !settings.text_replies {
+        builder = builder.complete_task_summary_prompt_override(
+            "Your reply to the user's latest message, in full: what you did, what you found, and anything you need from them. They read it as your message (Markdown, shown as plain text)."
+                .into(),
+        );
+    }
     if let Some(skills) = skills::config(settings.skill_folders) {
         builder = builder.skills_config(skills);
     }
@@ -387,7 +412,15 @@ pub fn worker_config(settings: &AgentSettings) -> Result<AgentConfig, String> {
     builder.build().map_err(|error| error.to_string())
 }
 
-fn main_instructions(_settings: &AgentSettings) -> String {
+fn main_instructions(settings: &AgentSettings) -> String {
+    if settings.text_replies {
+        return "# How this conversation works\n\
+         The user talks with you in a terminal. Each of their messages starts a turn: work on it with your tools for as long as it takes. When you're done, reply without calling a tool. That reply ends your turn, and the user reads it as your message, so write your answer there in full. Text you write beside tool calls is shown to the user as you work: keep it to short progress notes.\n\n\
+         When a step doesn't need the user, keep going. End the turn to ask only when you can't continue without them, or before something destructive or hard to undo that they didn't ask for: deleting data they may want, force-pushing, publishing, or changing things outside the working directory.\n\n\
+         The user can type while you work. What they type reaches you as a note from the operator: take it into account in the work you're doing. When a note asks you something or needs an answer before you finish (a question, \"progress?\"), answer it in text beside your next tool call and carry on with your work. Only a response without a tool call ends your turn, so don't answer a note that way unless you're done.\n\n\
+         When you need the user to decide something before you can go on (a choice between approaches with real trade-offs, missing information only they have), ask with `ask_user`: it waits for their answer and you continue. Ask only what you can't reasonably decide yourself; if they can't be asked (fin runs without a terminal), it says so, and you decide.\n"
+            .to_string();
+    }
     "# How this conversation works\n\
      The user talks with you in a terminal. Each of their messages starts a turn: work on it with your tools for as long as it takes, then end the turn by calling `complete_task`. Its summary is your reply: the user reads it as your message, so write your answer there in full. Text you write outside tool calls is shown to the user as you work; keep it to short progress notes, and don't repeat your reply in it.\n\n\
      When a step doesn't need the user, keep going. End the turn to ask only when you can't continue without them, or before something destructive or hard to undo that they didn't ask for: deleting data they may want, force-pushing, publishing, or changing things outside the working directory.\n\n\
@@ -528,6 +561,7 @@ mod tests {
             index_tools: &[],
             indexes: &[],
             providers: Box::leak(Box::new(providers::Setup::new(None))),
+            text_replies: false,
         }
     }
 
@@ -924,6 +958,60 @@ mod tests {
         assert_eq!(handover(&main_config(&settings).unwrap()), Some(500_000));
         // A session saved before it was set per model uses its own size.
         assert_eq!(handover(&worker_config(&settings).unwrap()), Some(200_000));
+    }
+
+    /// With text replies, the lead ends its turns with a reply in text: it
+    /// has neither `complete_task` nor `message_user`, nor the summary's
+    /// description, and its instructions say how its turn ends and how it
+    /// answers mid-turn. The workers keep `complete_task`.
+    #[test]
+    fn with_text_replies_the_lead_ends_its_turns_with_a_reply() {
+        let opus = model("opus", false);
+        let replying = AgentSettings {
+            text_replies: true,
+            ..settings(&opus, &opus)
+        };
+        let config = main_config(&replying).unwrap();
+        assert!(config.tool_config.text_reply_ends_task);
+        assert!(config.tool_config.ends_task_with_text());
+        let offered = config.tool_config.offered_tool_names();
+        for absent in [
+            arko_agents::builtins::COMPLETE_TASK_TOOL_NAME,
+            crate::message::MESSAGE_USER,
+        ] {
+            assert!(!offered.contains(absent), "{absent}");
+        }
+        assert!(offered.contains(ASK_USER_TOOL_NAME));
+        assert!(config.complete_task_summary_prompt_override.is_none());
+        let instructions = &config.instructions;
+        assert!(instructions.contains("When you're done, reply without calling a tool."));
+        assert!(instructions.contains("answer it in text beside your next tool call"));
+        assert!(instructions.contains("Only a response without a tool call ends your turn"));
+        for gone in [
+            "message_user",
+            "complete_task",
+            "Every response of yours must call a tool",
+        ] {
+            assert!(!instructions.contains(gone), "{gone}");
+        }
+        let worker = worker_config(&replying).unwrap();
+        assert!(!worker.tool_config.ends_task_with_text());
+        assert!(
+            worker
+                .tool_config
+                .offered_tool_names()
+                .contains(arko_agents::builtins::COMPLETE_TASK_TOOL_NAME)
+        );
+        assert!(worker.complete_task_summary_prompt_override.is_some());
+        // Without them, the lead is as it was.
+        let calling = main_config(&settings(&opus, &opus)).unwrap();
+        assert!(!calling.tool_config.ends_task_with_text());
+        assert!(calling.complete_task_summary_prompt_override.is_some());
+        assert!(
+            calling
+                .instructions
+                .contains("Every response of yours must call a tool")
+        );
     }
 
     #[test]

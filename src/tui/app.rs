@@ -932,6 +932,9 @@ impl App {
         if commands::find("/handover-at 200k").is_some() {
             rows.push(SettingsRow::Handover);
         }
+        if commands::find("/text-replies on").is_some() {
+            rows.push(SettingsRow::Replies);
+        }
         rows.push(SettingsRow::Page);
         rows.push(SettingsRow::Keys);
         rows
@@ -1080,6 +1083,14 @@ impl App {
                         self.send(&format!("/handover-at {}k", size / 1000));
                     }
                 }
+                SettingsRow::Replies => {
+                    let on = !self.text_replies();
+                    self.send(if on {
+                        "/text-replies on"
+                    } else {
+                        "/text-replies off"
+                    });
+                }
                 SettingsRow::Page => {
                     if super::page().is_some() {
                         self.send("/remote off");
@@ -1138,6 +1149,17 @@ impl App {
     /// Whether the agents may work outside the workspace now.
     pub fn outside(&self) -> bool {
         self.reading.settings.outside
+    }
+
+    /// Whether the main agent ends its turns with a reply in plain text.
+    pub fn text_replies(&self) -> bool {
+        self.reading.settings.text_replies
+    }
+
+    /// Whether the main agent's conversation has started: its text replies
+    /// setting (like its model) stays as it is then.
+    pub fn conversation_started(&self) -> bool {
+        self.reading.models.started
     }
 
     /// The handover size now.
@@ -1690,6 +1712,34 @@ pub(super) mod tests {
         press(&mut app, KeyCode::Right, KeyModifiers::NONE);
         press(&mut app, KeyCode::Left, KeyModifiers::NONE);
         assert_eq!(sent(&mut app), ["/handover-at 300k", "/handover-at 200k"]);
+    }
+
+    /// Text replies are a session setting: the row turns them on or off with
+    /// `/text-replies`, and says what they do and whether they can change.
+    #[test]
+    fn the_text_replies_row_sends_the_command() {
+        let mut app = app();
+        let row = app
+            .settings_rows()
+            .iter()
+            .position(|row| *row == SettingsRow::Replies)
+            .unwrap();
+        let handover = app
+            .settings_rows()
+            .iter()
+            .position(|row| *row == SettingsRow::Handover)
+            .unwrap();
+        assert_eq!(row, handover + 1, "beside the other session settings");
+        app.overlay = Some(Overlay::Settings { row, picker: None });
+        press(&mut app, KeyCode::Right, KeyModifiers::NONE);
+        assert_eq!(sent(&mut app), ["/text-replies on"]);
+        let mut reading = app.reading.clone();
+        reading.settings.text_replies = true;
+        app.set_reading(reading);
+        assert!(app.text_replies());
+        assert!(!app.conversation_started());
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(sent(&mut app), ["/text-replies off"]);
     }
 
     /// The keys menu opens from the settings and goes back there, and from

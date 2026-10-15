@@ -395,6 +395,7 @@ mod tests {
             skill_folders: &[],
             index_tools: &[],
             indexes: &[],
+            text_replies: false,
         };
         let mut config = crate::agents::main_config(&settings).unwrap();
         assert!(files_follow(&config));

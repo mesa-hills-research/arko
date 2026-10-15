@@ -636,6 +636,8 @@ dialog.sheet::backdrop { background: rgba(0, 0, 0, 0.32); }
 .switch[aria-checked="true"] { background: var(--warn-mark); }
 .switch[aria-checked="true"] span { transform: translateX(18px); }
 .switch[aria-busy="true"] { opacity: 0.6; }
+#replies-switch[aria-checked="true"] { background: var(--accent); }
+.switch:disabled { opacity: 0.5; }
 
 .confirm { background: var(--bg); border-radius: 10px; padding: 10px 12px; margin: 6px 0; }
 .confirm p { margin: 0 0 10px; font-size: 14px; }

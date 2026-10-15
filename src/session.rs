@@ -54,6 +54,13 @@ pub struct Settings {
     /// agent when their models matched.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub own_worker_model: bool,
+    /// The main agent ends its turns with a reply in plain text, instead of
+    /// a `complete_task` call, and answers what the user types meanwhile
+    /// in text beside its tool calls instead of with `message_user`. False
+    /// in sessions saved before it existed, whose main agent calls
+    /// `complete_task`, as their saved configuration says.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub text_replies: bool,
 }
 
 impl Settings {
@@ -246,6 +253,7 @@ mod tests {
             windows_shell: None,
             openai_auth: None,
             own_worker_model: false,
+            text_replies: false,
         }
     }
 

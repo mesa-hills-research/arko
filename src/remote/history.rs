@@ -15,8 +15,11 @@ use super::render;
 const MESSAGES: usize = 600;
 
 /// The items of `messages` (a conversation of the main agent), numbered
-/// from 1 (a result's `call` names its call by that number).
-pub fn items(messages: &[Message]) -> Vec<Item> {
+/// from 1 (a result's `call` names its call by that number). With
+/// `text_replies` (the agent ends its turns with a reply in plain text), a
+/// response of text alone is a reply, unless the user's answer to a
+/// question follows it (Claude Code ends its turn after `ask_user`).
+pub fn items(messages: &[Message], text_replies: bool) -> Vec<Item> {
     let messages = &messages[messages.len().saturating_sub(MESSAGES)..];
     let mut items: Vec<Item> = Vec::new();
     // The calls waiting for their results: their items, by call ID.
@@ -26,7 +29,7 @@ pub fn items(messages: &[Message]) -> Vec<Item> {
         items.push(item);
         items.len() - 1
     };
-    for message in messages {
+    for (index, message) in messages.iter().enumerate() {
         match message.role {
             Role::System => {}
             Role::User => {
@@ -66,7 +69,20 @@ pub fn items(messages: &[Message]) -> Vec<Item> {
                 }
             }
             Role::Assistant => {
-                for content in &message.content {
+                let reply = text_replies
+                    && message.tool_calls.is_empty()
+                    && !messages.get(index + 1).is_some_and(is_answer);
+                if reply {
+                    let text: String = message
+                        .content
+                        .iter()
+                        .filter_map(Content::as_text)
+                        .collect();
+                    if !text.trim().is_empty() {
+                        push(&mut items, Item::new(Kind::Reply, text.trim()));
+                    }
+                }
+                for content in message.content.iter().filter(|_| !reply) {
                     if let Content::Text(text) = content
                         && !text.trim().is_empty()
                     {
@@ -112,6 +128,18 @@ pub fn items(messages: &[Message]) -> Vec<Item> {
         }
     }
     items
+}
+
+/// Whether `message` is the user's answer to the agent's questions.
+fn is_answer(message: &Message) -> bool {
+    message.role == Role::User
+        && message.content.iter().any(|content| {
+            content.as_text().is_some_and(|text| {
+                let text = text.trim_start();
+                text.starts_with("You asked the following questions:")
+                    || text.starts_with("Response to the agent's questions:")
+            })
+        })
 }
 
 /// What the user wrote, from a message of theirs: fin's composed message
@@ -194,7 +222,7 @@ mod tests {
             ),
             done,
         ];
-        let items = items(&messages);
+        let items = items(&messages, false);
         let shown: Vec<(Kind, &str)> = items.iter().map(|i| (i.kind, i.text.as_str())).collect();
         assert_eq!(
             shown,
@@ -209,5 +237,51 @@ mod tests {
         );
         assert_eq!(items[2].outcome.as_deref(), Some("12 passed"));
         assert_eq!(items[3].call, Some(items[2].id));
+    }
+
+    /// With text replies, a response of text alone is the agent's reply,
+    /// unless the answer to its question follows it. Without, it is text.
+    #[test]
+    fn text_replies_read_as_replies() {
+        let mut look = Message::new_assistant("Looking.");
+        look.tool_calls = vec![call(
+            "call_1",
+            crate::shell::SHELL_TOOL_NAME,
+            serde_json::json!({"command": "ls"}),
+        )];
+        let result = Message::new_user_with_contents(vec![Content::ToolResult(ToolResult::new(
+            Some("call_1".into()),
+            crate::shell::SHELL_TOOL_NAME,
+            "exit code 0, 0.1 s",
+        ))]);
+        let messages = vec![
+            Message::new_user("How many files?"),
+            look,
+            result,
+            Message::new_assistant("Asked which folder."),
+            Message::new_user(
+                "You asked the following questions:\nWhich folder?\n\nThe user responded:\nsrc",
+            ),
+            Message::new_assistant("There are 3 files."),
+            Message::new_user("Thanks."),
+            Message::new_assistant("You're welcome."),
+        ];
+        let shown = |text_replies| {
+            items(&messages, text_replies)
+                .into_iter()
+                .filter(|item| matches!(item.kind, Kind::Text | Kind::Reply))
+                .map(|item| (item.kind, item.text))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            shown(true),
+            [
+                (Kind::Text, "Looking.".to_string()),
+                (Kind::Text, "Asked which folder.".to_string()),
+                (Kind::Reply, "There are 3 files.".to_string()),
+                (Kind::Reply, "You're welcome.".to_string()),
+            ]
+        );
+        assert!(shown(false).iter().all(|(kind, _)| *kind == Kind::Text));
     }
 }

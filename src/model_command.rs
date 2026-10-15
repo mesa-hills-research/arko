@@ -163,6 +163,67 @@ impl Harness {
         }
     }
 
+    /// `/text-replies`, typed at the prompt, sent from the page or chosen
+    /// in the settings: says how the main agent ends its turns, and with
+    /// `on` or `off` changes it before the conversation starts (the agents
+    /// are built again). Once it has started, the main agent keeps it for
+    /// the session, as it keeps its model.
+    pub(crate) fn text_replies_command(&mut self, argument: &str, source: Source) {
+        let result = match argument {
+            "" => Ok(self.text_replies_line()),
+            "on" => self.set_text_replies(true),
+            "off" => self.set_text_replies(false),
+            _ => Err("/text-replies takes on or off (/text-replies off).".to_string()),
+        };
+        match result {
+            Ok(text) => {
+                if source == Source::Web && !argument.is_empty() {
+                    self.say(Level::Info, &format!("From the web page: {text}"));
+                } else {
+                    self.mirrored(|harness| harness.output.line(&text));
+                }
+            }
+            Err(error) => {
+                self.mirrored(|harness| harness.output.line(&harness.output.error(&error)))
+            }
+        }
+    }
+
+    /// How the main agent ends its turns, as `/text-replies` says it.
+    fn text_replies_line(&self) -> String {
+        let on = self.settings.text_replies;
+        let (state, other) = if on { ("on", "off") } else { ("off", "on") };
+        let mode = agents::replies_text(on);
+        if self.conversation_started() {
+            format!("Text replies are {state}: {mode}. It keeps this for the session.")
+        } else {
+            format!(
+                "Text replies are {state}: {mode}. /text-replies {other} changes that before the conversation starts."
+            )
+        }
+    }
+
+    /// Text replies on or off, before the conversation starts: the agents
+    /// are built again with them.
+    fn set_text_replies(&mut self, on: bool) -> Result<String, String> {
+        let state = if on { "on" } else { "off" };
+        let mode = agents::replies_text(on);
+        if self.settings.text_replies == on {
+            return Ok(format!("Text replies are {state} already: {mode}."));
+        }
+        if self.conversation_started() {
+            let kept = if on { "off" } else { "on" };
+            return Ok(format!(
+                "The main agent keeps text replies {kept} for this session: {}. A new session takes --text-replies or --no-text-replies.",
+                agents::replies_text(!on)
+            ));
+        }
+        let mut settings = self.settings.clone();
+        settings.text_replies = on;
+        self.rebuild_agents(settings)?;
+        Ok(format!("Text replies are {state}: {mode}."))
+    }
+
     /// Whether the main agent's conversation has started: it can't change
     /// model then. (A checkpoint, a turn that ran or runs.)
     pub(crate) fn conversation_started(&self) -> bool {
@@ -366,6 +427,7 @@ impl Harness {
                 &[]
             },
             indexes: &known,
+            text_replies: settings.text_replies,
         };
         Ok((
             agents::main_config(&agent_settings)?,
@@ -427,6 +489,10 @@ impl Harness {
     /// Tells the clients (the full-screen view, the page) the agents'
     /// models, and whether the main agent's can still change.
     pub(crate) fn publish_models(&self) {
+        self.gauges.text_replies.store(
+            self.settings.text_replies,
+            std::sync::atomic::Ordering::Relaxed,
+        );
         *lock(&self.gauges.models) = remote::Models {
             main: self.settings.main.model.clone(),
             main_effort: self.settings.main.effort.to_string(),

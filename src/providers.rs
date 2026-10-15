@@ -1524,6 +1524,7 @@ mod tests {
             windows_shell: None,
             openai_auth: None,
             own_worker_model: false,
+            text_replies: false,
         }
     }
 

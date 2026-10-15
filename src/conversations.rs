@@ -491,8 +491,10 @@ impl Harness {
             &format!("Back to conversation {}{when}.", index + 1),
         );
         if let Some(latest) = latest {
-            self.feed
-                .restore(remote::history(&latest.task.conversation.messages));
+            self.feed.restore(remote::history(
+                &latest.task.conversation.messages,
+                latest.task.agent_config.tool_config.ends_task_with_text(),
+            ));
         }
         let next = match &self.conversation {
             Conversation::Answered(result) => {

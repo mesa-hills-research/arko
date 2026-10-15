@@ -796,9 +796,38 @@ impl Feed {
         }
     }
 
-    /// The main agent's reply.
+    /// The main agent's reply. A reply in plain text has streamed as the
+    /// agent's text already: that item becomes the reply (an
+    /// [`Update::Change`]), so it shows once.
     pub fn reply(&self, text: &str) {
-        self.add(Item::new(Kind::Reply, text.trim()));
+        let text = text.trim();
+        let mut state = self.lock();
+        if let Some(id) = Self::streamed_reply(&mut state, text)
+            && let Some(item) = state.main.find(id)
+        {
+            let before = item.size();
+            item.kind = Kind::Reply;
+            item.text = text.to_string();
+            let item = item.clone();
+            state.main.bytes = (state.main.bytes + item.size()).saturating_sub(before);
+            state.open_text.remove(MAIN_AGENT);
+            self.send(Update::Change(item));
+            return;
+        }
+        self.push(&mut state, Item::new(Kind::Reply, text));
+    }
+
+    /// The main agent's text item of its last response when it is `reply`:
+    /// the latest of its items but for notices (an output limit reached,
+    /// say) and the workers' places.
+    fn streamed_reply(state: &mut State, reply: &str) -> Option<u64> {
+        let last = state
+            .main
+            .items
+            .iter()
+            .rev()
+            .find(|item| !matches!(item.kind, Kind::Notice | Kind::WorkerLine))?;
+        (last.kind == Kind::Text && last.is_main() && last.text.trim() == reply).then_some(last.id)
     }
 
     /// A turn of the main agent begins: the items from here on are its.
@@ -1315,6 +1344,68 @@ mod tests {
 
     /// `turn` is null before the first turn, and grows with each; the
     /// user's message that starts a turn counts in it.
+    /// A reply the agent's text already streamed becomes that item, as a
+    /// change, so it shows once: past a notice (an output limit reached)
+    /// too. Another reply is an item of its own.
+    #[test]
+    fn a_reply_in_text_takes_over_its_streamed_text() {
+        let feed = Feed::new("main");
+        let (_, mut receiver) = feed.subscribe();
+        feed.event(&event("main", chunk("The answer ")), None);
+        feed.event(&event("main", chunk("is 391.\n")), None);
+        feed.event(
+            &event(
+                "main",
+                AgentEvent::OutputTokenLimitReached {
+                    model: "m".into(),
+                    output_tokens: 10,
+                },
+            ),
+            None,
+        );
+        updates(&mut receiver);
+        feed.reply("The answer is 391.");
+        let shown: Vec<(Kind, String)> = items(&feed)
+            .into_iter()
+            .map(|item| (item.kind, item.text))
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                (Kind::Reply, "The answer is 391.".to_string()),
+                (
+                    Kind::Notice,
+                    "the reply reached the model's output limit (10 tokens)".to_string()
+                ),
+            ]
+        );
+        let updates = updates(&mut receiver);
+        assert!(
+            matches!(updates.as_slice(), [Update::Change(item)] if item.kind == Kind::Reply),
+            "{updates:?}"
+        );
+        // The next text starts an item of its own.
+        feed.event(&event("main", chunk("More.")), None);
+        assert_eq!(items(&feed).last().unwrap().kind, Kind::Text);
+
+        // A reply that isn't the streamed text (a complete_task summary).
+        feed.event(&event("main", shell(Uuid::new_v4(), "ls")), None);
+        feed.reply("Listed the files.");
+        let last: Vec<(Kind, String)> = items(&feed)
+            .into_iter()
+            .rev()
+            .take(2)
+            .map(|item| (item.kind, item.text))
+            .collect();
+        assert_eq!(last[0], (Kind::Reply, "Listed the files.".to_string()));
+        assert_eq!(last[1].0, Kind::Call);
+        assert!(
+            items(&feed)
+                .iter()
+                .any(|item| item.text == "More." && item.kind == Kind::Text)
+        );
+    }
+
     #[test]
     fn items_carry_their_turn() {
         let feed = Feed::new("main");

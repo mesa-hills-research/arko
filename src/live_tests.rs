@@ -563,6 +563,7 @@ fn agent_settings_of(harness: &Harness) -> AgentSettings<'_> {
         skill_folders: &[],
         index_tools: &[],
         indexes: &[],
+        text_replies: harness.settings.text_replies,
     }
 }
 

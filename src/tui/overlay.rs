@@ -53,6 +53,7 @@ pub enum SettingsRow {
     Mouse,
     Outside,
     Handover,
+    Replies,
     Page,
     Keys,
 }
@@ -390,6 +391,23 @@ fn settings(frame: &mut Frame, app: &App, area: Rect, selected: usize) {
                 ],
                 "The input size the main agent hands over at: it writes a report of its work and goes on from it, fresh. On cc: models, Claude Code compacts the conversation at that size instead. /handover does it now."
                     .to_string(),
+            ),
+            SettingsRow::Replies => (
+                "Session",
+                "Text replies",
+                choices(theme, &["on", "off"], usize::from(!app.text_replies())),
+                {
+                    let mode = if app.text_replies() {
+                        "The agent ends its turn with a plain reply."
+                    } else {
+                        "The agent ends its turn by calling complete_task."
+                    };
+                    if app.conversation_started() {
+                        format!("{mode} It keeps this for the session.")
+                    } else {
+                        format!("{mode} It changes before the conversation starts.")
+                    }
+                },
             ),
             SettingsRow::Page => (
                 "Session",
