@@ -99,13 +99,24 @@ pub struct ModelSettings {
 
 impl ModelSettings {
     pub fn describe(&self) -> String {
-        format!(
-            "{} ({} effort{}{})",
-            self.model,
-            self.effort,
-            if self.fast { ", fast" } else { "" },
-            if self.cache_1h { ", 1h cache" } else { "" }
-        )
+        // A model that doesn't reason takes no effort.
+        let reasons = resolve_model(&self.model)
+            .map_or(true, |model| !crate::providers::efforts(&model).is_empty());
+        let mut details = Vec::new();
+        if reasons {
+            details.push(format!("{} effort", self.effort));
+        }
+        if self.fast {
+            details.push("fast".to_string());
+        }
+        if self.cache_1h {
+            details.push("1h cache".to_string());
+        }
+        if details.is_empty() {
+            self.model.clone()
+        } else {
+            format!("{} ({})", self.model, details.join(", "))
+        }
     }
 
     pub fn provider(&self) -> Result<Provider, String> {

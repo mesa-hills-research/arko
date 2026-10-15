@@ -358,7 +358,9 @@ pub struct DefaultModels {
     pub main: String,
     /// The workers' model, when it differs from the main one.
     pub worker: Option<String>,
-    pub note: String,
+    /// Why the session doesn't run the last session's models as they were:
+    /// a credential one needs is gone.
+    pub reason: Option<String>,
 }
 
 /// The models of a new session without `--model`: those of the last
@@ -384,54 +386,49 @@ fn choose_default(
     by_credentials: Option<(&'static str, &'static str)>,
 ) -> Option<DefaultModels> {
     let Some(last) = last else {
-        let (main, why) = by_credentials?;
+        let (main, _) = by_credentials?;
         return Some(DefaultModels {
-            note: format!("This session runs {main}: {why} (-m picks another)."),
             main: main.to_string(),
             worker: None,
+            reason: None,
         });
     };
     match missing(&last.main) {
         None => {
             let worker = last.worker.filter(|worker| worker != &last.main);
-            let (worker, worker_note) = match worker {
+            let (worker, reason) = match worker {
                 Some(worker) => match missing(&worker) {
-                    None => (Some(worker.clone()), format!(", with workers on {worker}")),
+                    None => (Some(worker), None),
                     Some(needs) => (
                         None,
-                        format!(
-                            ". Its workers ran on {worker}, which needs {needs}, so they run on {} too",
+                        Some(format!(
+                            "Your last session's workers ran {worker}, which needs {needs}, so they run {} now.",
                             last.main
-                        ),
+                        )),
                     ),
                 },
-                None => (None, String::new()),
+                None => (None, None),
             };
             Some(DefaultModels {
-                note: format!(
-                    "This session runs {}, as your last one did{worker_note} (-m picks another).",
-                    last.main
-                ),
                 main: last.main,
                 worker,
+                reason,
             })
         }
         Some(needs) => match by_credentials {
-            Some((main, why)) => Some(DefaultModels {
-                note: format!(
-                    "Your last session ran {}, which needs {needs}. This one runs {main}: {why} (-m picks another).",
+            Some((main, _)) => Some(DefaultModels {
+                reason: Some(format!(
+                    "Your last session ran {}, which needs {needs}.",
                     last.main
-                ),
+                )),
                 main: main.to_string(),
                 worker: None,
             }),
+            // The setup screen asks for exactly what it needs.
             None => Some(DefaultModels {
-                note: format!(
-                    "This session runs {}, as your last one did. It needs {needs}.",
-                    last.main
-                ),
                 main: last.main,
                 worker: None,
+                reason: None,
             }),
         },
     }
@@ -1792,7 +1789,7 @@ mod tests {
     }
 
     /// The last session's models come first while their credentials are
-    /// there; else the credentials decide, and the note says why.
+    /// there; else the credentials decide, and the reason says why.
     #[test]
     fn the_last_session_s_models_are_the_default_while_they_can_run() {
         let have_all = |_: &str| None;
@@ -1800,10 +1797,7 @@ mod tests {
         // No last session: the credentials decide.
         let default = choose_default(None, have_all, by_key).unwrap();
         assert_eq!(default.main, "claude-opus-5-5");
-        assert_eq!(
-            default.note,
-            "This session runs claude-opus-5-5: ANTHROPIC_API_KEY is set (-m picks another)."
-        );
+        assert_eq!(default.reason, None);
         assert_eq!(choose_default(None, have_all, None), None);
 
         // The last models, workers included.
@@ -1815,10 +1809,7 @@ mod tests {
         .unwrap();
         assert_eq!(default.main, "cc:claude-opus-5-5");
         assert_eq!(default.worker.as_deref(), Some("gemini-3.8-flash"));
-        assert_eq!(
-            default.note,
-            "This session runs cc:claude-opus-5-5, as your last one did, with workers on gemini-3.8-flash (-m picks another)."
-        );
+        assert_eq!(default.reason, None);
 
         // The workers' credential is gone: they run on the main model.
         let no_gemini = |name: &str| {
@@ -1832,12 +1823,11 @@ mod tests {
         )
         .unwrap();
         assert_eq!(default.worker, None);
-        assert!(
-            default
-                .note
-                .contains("which needs GEMINI_API_KEY, so they run on cc:claude-opus-5-5 too"),
-            "{}",
-            default.note
+        assert_eq!(
+            default.reason.as_deref(),
+            Some(
+                "Your last session's workers ran gemini-3.8-flash, which needs GEMINI_API_KEY, so they run cc:claude-opus-5-5 now."
+            )
         );
 
         // The main model's credential is gone: the credentials decide, and
@@ -1845,18 +1835,14 @@ mod tests {
         let default = choose_default(last("gemini-3.8-flash", None), no_gemini, by_key).unwrap();
         assert_eq!(default.main, "claude-opus-5-5");
         assert_eq!(
-            default.note,
-            "Your last session ran gemini-3.8-flash, which needs GEMINI_API_KEY. This one runs claude-opus-5-5: ANTHROPIC_API_KEY is set (-m picks another)."
+            default.reason.as_deref(),
+            Some("Your last session ran gemini-3.8-flash, which needs GEMINI_API_KEY.")
         );
         // ...and without any other credential it stays, so the setup screen
         // asks for exactly what it needs.
         let default = choose_default(last("gemini-3.8-flash", None), no_gemini, None).unwrap();
         assert_eq!(default.main, "gemini-3.8-flash");
-        assert!(
-            default.note.ends_with("It needs GEMINI_API_KEY."),
-            "{}",
-            default.note
-        );
+        assert_eq!(default.reason, None);
     }
 
     /// Claude Code, signed in, comes before an Anthropic API key; one not

@@ -733,8 +733,9 @@ async fn run(args: Args) -> Result<ExitCode, String> {
     Ok(code)
 }
 
-/// What fin said before the session started (the default model's note):
-/// the full-screen view opens over it, so its banner says it again.
+/// Why the session doesn't run the last session's models, as fin said
+/// before the session started: the full-screen view opens over it, so its
+/// banner says it again.
 static MODEL_NOTE: Mutex<Option<String>> = Mutex::new(None);
 
 /// The working directory the flags name, made absolute.
@@ -760,11 +761,7 @@ fn new_settings(args: &Args) -> Result<Settings, String> {
     };
     let main_model = match (&args.model, &default) {
         (Some(model), _) => name(model)?,
-        (None, Some(default)) => {
-            eprintln!("fin: {}", default.note);
-            *lock(&MODEL_NOTE) = Some(default.note.clone());
-            name(&default.main)?
-        }
+        (None, Some(default)) => name(&default.main)?,
         (None, None) => unreachable!("a default without --model"),
     };
     // The 1-hour cache is Anthropic's, by API key or on OpenRouter; other
@@ -860,6 +857,16 @@ fn new_settings(args: &Args) -> Result<Settings, String> {
         own_worker_model,
     };
     providers::check_openai_choices(&settings)?;
+    // The model fin chose: the last session's, else one the credentials
+    // allow.
+    if let Some(default) = &default {
+        let mut line = format!("This session runs {}.", settings.describe(&settings.main));
+        if let Some(reason) = &default.reason {
+            line = format!("{line} {reason}");
+        }
+        eprintln!("fin: {line}");
+        *lock(&MODEL_NOTE) = default.reason.clone();
+    }
     Ok(settings)
 }
 
