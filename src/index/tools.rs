@@ -850,7 +850,7 @@ impl Tool for SearchTool {
                 ),
                 param(
                     "language",
-                    "Only chunks of this language: rust, python, typescript, markdown, ...",
+                    "Only chunks in this language, such as python or rust. Leave it out unless the project mixes languages and you want one of them.",
                     ToolParameterType::String,
                     false,
                 ),

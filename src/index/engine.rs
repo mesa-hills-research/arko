@@ -1602,6 +1602,23 @@ impl Indexes {
             }
         }
         output.hits.truncate(limit);
+        // A language that matched nothing was often a wrong guess (`rust` in
+        // a Python project): the search goes on without it, and says so.
+        if output.hits.is_empty()
+            && let Some(language) = language
+        {
+            let mut wider = self.search_blocking(&SearchArgs {
+                language: None,
+                ..args.clone()
+            })?;
+            if !wider.hits.is_empty() {
+                wider.query_tokens += output.query_tokens;
+                wider.notes.push(format!(
+                    "nothing matched in {language}, so these results are from every language"
+                ));
+                return Ok(wider);
+            }
+        }
         Ok(output)
     }
 

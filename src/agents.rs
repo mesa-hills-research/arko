@@ -643,11 +643,6 @@ fn extra_rules(settings: &AgentSettings) -> Option<String> {
                 "No index covers the working directory, so `index_search` can't search it. Search it with `rg`, or create its index with `index_create` first.",
             );
         }
-        // luna limited a Python project's search to `rust`, which found
-        // nothing.
-        rules.push(
-            "Leave out `index_search`'s `language`. A wrong one finds nothing: a Python project has no `rust` code.",
-        );
     }
     if rules.is_empty() {
         return None;
@@ -1193,7 +1188,6 @@ mod tests {
         assert!(text.contains(
             "# Extra rules\n- No index covers the working directory, so `index_search` can't search it."
         ));
-        assert!(text.contains("\n- Leave out `index_search`'s `language`."));
         let indexes = [index::Known {
             name: "work".into(),
             kind: "code",
@@ -1204,9 +1198,9 @@ mod tests {
             indexes: &indexes,
             ..uncovered
         };
+        // Then no rule applies, and there is no section.
         let text = worker_config(&covered).unwrap().instructions;
-        assert!(!text.contains("No index covers the working directory, so"));
-        assert!(text.contains("# Extra rules\n- Leave out `index_search`'s `language`."));
+        assert!(!text.contains("# Extra rules"), "{text}");
     }
 
     /// Haiku and luna are small on every route; the others aren't.

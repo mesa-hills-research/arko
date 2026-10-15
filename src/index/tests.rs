@@ -687,6 +687,23 @@ fn dense_and_hybrid_search_with_the_test_embedder() {
         output.hits.iter().all(|hit| hit.display == "README.md"),
         "{output:?}"
     );
+    // A language that matches nothing gives the results from every
+    // language, and says so.
+    let mut args = search_args(&root, "retry backoff delay", Some(ModeArg::Lexical));
+    args.language = Some("python".into());
+    let output = indexes.search_blocking(&args).unwrap();
+    assert_eq!(hit_files(&output)[0], "src/net.rs", "{output:?}");
+    assert_eq!(
+        output.notes,
+        ["nothing matched in python, so these results are from every language"]
+    );
+    let mut args = search_args(&root, "zzqqxx", Some(ModeArg::Lexical));
+    args.language = Some("python".into());
+    let output = indexes.search_blocking(&args).unwrap();
+    assert!(
+        output.hits.is_empty() && output.notes.is_empty(),
+        "{output:?}"
+    );
     let mut args = search_args(&root, "retry", None);
     args.path_prefix = Some(
         fixture
