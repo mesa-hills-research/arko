@@ -19,6 +19,7 @@ mod markdown;
 mod model_picker;
 mod overlay;
 mod prefs;
+mod resume_picker;
 mod screen;
 pub(crate) mod theme;
 mod transcript;

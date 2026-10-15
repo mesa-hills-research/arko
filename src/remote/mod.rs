@@ -88,6 +88,24 @@ pub struct Reading {
     pub settings: LiveSettings,
     /// The agents' models, as `/model` changes them.
     pub models: Models,
+    /// The session's conversations with the main agent, newest first, for
+    /// the full-screen view's `/resume` picker. (The page lists them with
+    /// `/resume`.)
+    #[serde(skip)]
+    pub conversations: Vec<ConversationEntry>,
+}
+
+/// One of the session's conversations with the main agent.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConversationEntry {
+    /// Its number, as `/resume` takes it: 1 for the session's first.
+    pub number: usize,
+    /// The first line of the user's first message.
+    pub title: String,
+    /// When its last turn ended.
+    pub last_used: Option<chrono::DateTime<chrono::Utc>>,
+    /// The next message goes to it.
+    pub current: bool,
 }
 
 /// The agents' models, as `/model` changes them.

@@ -15,6 +15,7 @@ use super::keys_menu::{self, KeysMenu};
 use super::model_picker::{self, ModelPicker, Outcome};
 use super::overlay::{Overlay, Picker, SettingsRow};
 use super::prefs::Prefs;
+use super::resume_picker::{self, ResumePicker};
 use super::theme::{self, Catalog, Depth, Theme};
 use super::transcript::{Filter, Transcript, View};
 use crate::commands::{self, Runs};
@@ -252,6 +253,18 @@ impl App {
         self.overlay = Some(Overlay::Model(ModelPicker::open(target, &models, |name| {
             needs(&reachable, name)
         })));
+    }
+
+    /// `/resume`'s picker, from the session's conversations. While a turn
+    /// runs, or when there is no other conversation to go back to, the
+    /// session answers `/resume` instead (it says why not).
+    pub fn open_resume(&mut self) {
+        let entries = self.reading.conversations.clone();
+        if self.activity.working || entries.iter().all(|entry| entry.current) {
+            self.send("/resume");
+            return;
+        }
+        self.overlay = Some(Overlay::Resume(ResumePicker::open(entries)));
     }
 
     /// The API keys menu; `words` are what followed `/keys`, and `back_to`
@@ -707,6 +720,11 @@ impl App {
                     self.overlay = Some(Overlay::Help { scroll: 0 });
                     true
                 }
+                // Without a number, the picker. With one, the session.
+                ("/resume", _) if rest.is_empty() => {
+                    self.open_resume();
+                    true
+                }
                 // A key is entered in the menu, never typed as a word.
                 ("/keys", _) => {
                     self.open_keys(rest, None);
@@ -840,6 +858,18 @@ impl App {
                 Outcome::Apply { line, said } => {
                     self.send(&line);
                     self.say(said);
+                    None
+                }
+            },
+            Overlay::Resume(mut picker) => match picker.key(key, close) {
+                resume_picker::Outcome::Stay => Some(Overlay::Resume(picker)),
+                resume_picker::Outcome::Close => None,
+                resume_picker::Outcome::Current => {
+                    self.say("You are in this conversation");
+                    None
+                }
+                resume_picker::Outcome::Resume(number) => {
+                    self.send(&format!("/resume {number}"));
                     None
                 }
             },

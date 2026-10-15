@@ -1,7 +1,7 @@
 //! What opens over the transcript for a moment: the help, the settings
-//! (with the theme picker), the API keys, the web page's QR code, and the
-//! worker switcher. Rare actions don't get permanent room; each closes with
-//! Esc.
+//! (with the theme picker), the API keys, the web page's QR code, the
+//! worker switcher, and the conversations to go back to. Rare actions
+//! don't get permanent room; each closes with Esc.
 
 use std::time::Instant;
 
@@ -40,6 +40,8 @@ pub enum Overlay {
     },
     /// The API keys (`/keys`).
     Keys(super::keys_menu::KeysMenu),
+    /// The conversations to go back to (`/resume`).
+    Resume(super::resume_picker::ResumePicker),
 }
 
 /// A setting.
@@ -161,6 +163,7 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect, screen: Rect) {
             choice,
         } => super::model_picker::draw_notice(frame, &app.theme, area, text, *choice, *workers),
         Overlay::Keys(menu) => super::keys_menu::draw(frame, &app.theme, area, menu),
+        Overlay::Resume(picker) => super::resume_picker::draw(frame, &app.theme, area, picker),
     }
 }
 

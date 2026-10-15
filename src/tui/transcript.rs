@@ -1438,7 +1438,7 @@ fn banner_lines(banner: &Banner, theme: &Theme, width: usize) -> Vec<Wrapped> {
 }
 
 /// `text` in `width` columns, cut at its end with an ellipsis.
-fn cut_end(text: &str, width: usize) -> String {
+pub(super) fn cut_end(text: &str, width: usize) -> String {
     if text_width(text) <= width {
         return text.to_string();
     }
