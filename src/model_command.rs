@@ -20,6 +20,9 @@ use crate::remote::{self, Level, Source};
 use crate::session::Settings;
 use crate::{Conversation, Harness, index, lock};
 
+/// What `/cc-compact` says in a session with no agent in Claude Code.
+const CC_NOT_IN_CLAUDE_CODE: &str = "The agents hand over at the handover size: they aren't in Claude Code, so /cc-compact changes nothing in this session.";
+
 /// Whose model `/model` changes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Target {
@@ -221,6 +224,91 @@ impl Harness {
         settings.text_replies = on;
         self.rebuild_agents(settings)?;
         Ok(format!("Text replies are {state}: {mode}."))
+    }
+
+    /// `/cc-compact`, typed at the prompt, sent from the page or chosen in
+    /// the settings: says what the agents on `cc:` models do at the handover
+    /// size, and with `on` (compact) or `off` (hand over) changes that
+    /// before the conversation starts (the agents are built again). Once it
+    /// has started, the session keeps it: it is part of the agents' saved
+    /// configurations.
+    pub(crate) fn cc_compact_command(&mut self, argument: &str, source: Source) {
+        let result = match argument {
+            "" => Ok(self.cc_compact_line()),
+            "on" => self.set_cc_compact(true),
+            "off" => self.set_cc_compact(false),
+            _ => Err("/cc-compact takes on or off (/cc-compact off).".to_string()),
+        };
+        match result {
+            Ok(text) => {
+                if source == Source::Web && !argument.is_empty() {
+                    self.say(Level::Info, &format!("From the web page: {text}"));
+                } else {
+                    self.mirrored(|harness| harness.output.line(&text));
+                }
+            }
+            Err(error) => {
+                self.mirrored(|harness| harness.output.line(&harness.output.error(&error)))
+            }
+        }
+    }
+
+    /// Whether an agent of the session runs in Claude Code: the main agent,
+    /// or the workers it starts.
+    fn in_claude_code(&self) -> bool {
+        self.settings.main.in_claude_code() || self.settings.worker.in_claude_code()
+    }
+
+    /// What the agents on `cc:` models do at the handover size, as
+    /// `/cc-compact` says it.
+    fn cc_compact_line(&self) -> String {
+        if !self.in_claude_code() {
+            return CC_NOT_IN_CLAUDE_CODE.to_string();
+        }
+        let on = !self.settings.cc_handover;
+        let (what, other) = if on {
+            ("compact", "off")
+        } else {
+            ("hand over", "on")
+        };
+        let text = agents::cc_text(on);
+        if self.conversation_started() {
+            format!(
+                "Agents in Claude Code {what} at the handover size: {text}. The session keeps this."
+            )
+        } else {
+            format!(
+                "Agents in Claude Code {what} at the handover size: {text}. /cc-compact {other} changes that before the conversation starts."
+            )
+        }
+    }
+
+    /// Compacting on or off in Claude Code, before the conversation starts:
+    /// the agents are built again with it.
+    fn set_cc_compact(&mut self, on: bool) -> Result<String, String> {
+        if !self.in_claude_code() {
+            return Ok(CC_NOT_IN_CLAUDE_CODE.to_string());
+        }
+        let what = if on { "compact" } else { "hand over" };
+        if self.settings.cc_handover != on {
+            return Ok(format!(
+                "Agents in Claude Code {what} at the handover size already: {}.",
+                agents::cc_text(on)
+            ));
+        }
+        if self.conversation_started() {
+            return Ok(format!(
+                "This session keeps what its agents in Claude Code do at the handover size: {}. A new session takes --cc-compact or --no-cc-compact.",
+                agents::cc_text(!on)
+            ));
+        }
+        let mut settings = self.settings.clone();
+        settings.cc_handover = !on;
+        self.rebuild_agents(settings)?;
+        Ok(format!(
+            "Agents in Claude Code now {what} at the handover size: {}.",
+            agents::cc_text(on)
+        ))
     }
 
     /// `/extra-rules`, typed at the prompt, sent from the page or chosen in
@@ -518,6 +606,7 @@ impl Harness {
             },
             indexes: &known,
             text_replies: settings.text_replies,
+            cc_compact: !settings.cc_handover,
             extra_rules: settings.extra_rules,
         };
         Ok((
@@ -574,6 +663,10 @@ impl Harness {
     pub(crate) fn publish_models(&self) {
         self.gauges.text_replies.store(
             self.settings.text_replies,
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        self.gauges.cc_compact.store(
+            !self.settings.cc_handover,
             std::sync::atomic::Ordering::Relaxed,
         );
         *lock(&self.gauges.extra_rules) = self.settings.extra_rules;

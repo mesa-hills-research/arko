@@ -233,6 +233,10 @@ pub struct AgentSettings<'a> {
     /// The main agent ends its turns with a reply in plain text (see
     /// `Settings::text_replies`).
     pub text_replies: bool,
+    /// The agents on `cc:` models have Claude Code compact their
+    /// conversation at the handover size, else they hand over (see
+    /// `Settings::cc_handover`).
+    pub cc_compact: bool,
     /// Which agents get the extra rules for small models, each by its own
     /// model.
     pub extra_rules: ExtraRules,
@@ -294,13 +298,14 @@ fn on_chatgpt(model: &Model, openai_auth: Option<OpenAiAuth>) -> bool {
     model.provider == Provider::OpenAI && openai_auth == Some(OpenAiAuth::ChatGpt)
 }
 
-/// What an agent on `model` does at `tokens` of input: in Claude Code,
-/// Claude Code compacts the conversation (its own `/compact`) and the
-/// agent goes on in the same conversation. On the other providers it hands
-/// over: it writes a report and goes on from it in a fresh conversation.
-fn handover(model: &ModelSettings, tokens: usize) -> HandoverConfig {
+/// What an agent on `model` does at `tokens` of input: in Claude Code with
+/// `cc_compact`, Claude Code compacts the conversation (its own `/compact`)
+/// and the agent goes on in the same conversation. Otherwise, and on the
+/// other providers, it hands over: it writes a report and goes on from it
+/// in a fresh conversation.
+fn handover(model: &ModelSettings, tokens: usize, cc_compact: bool) -> HandoverConfig {
     HandoverConfig {
-        compact_in_claude_code: model.in_claude_code(),
+        compact_in_claude_code: model.in_claude_code() && cc_compact,
         ..HandoverConfig::at_input_tokens(tokens)
     }
 }
@@ -392,6 +397,16 @@ pub fn replies_text(text_replies: bool) -> &'static str {
     }
 }
 
+/// What agents on `cc:` models do at the handover size: with `cc_compact`,
+/// Claude Code compacts their conversation, else they hand over.
+pub fn cc_text(cc_compact: bool) -> &'static str {
+    if cc_compact {
+        "Claude Code compacts the conversation, and the agent goes on in it"
+    } else {
+        "the agent writes a report and goes on from it in a fresh conversation"
+    }
+}
+
 /// The main agent's configuration. With `text_replies` it ends its turns
 /// with a reply in plain text (`text_reply_ends_task`), and answers what
 /// the user types meanwhile in text beside its calls: it has neither
@@ -433,6 +448,7 @@ pub fn main_config(settings: &AgentSettings) -> Result<AgentConfig, String> {
     .handover(handover(
         settings.main,
         settings.main.handover_at.unwrap_or(settings.handover_at),
+        settings.cc_compact,
     ));
     if !settings.text_replies {
         builder = builder.complete_task_summary_prompt_override(
@@ -484,6 +500,7 @@ pub fn worker_config(settings: &AgentSettings) -> Result<AgentConfig, String> {
     .handover(handover(
         settings.worker,
         settings.worker.handover_at.unwrap_or(settings.handover_at),
+        settings.cc_compact,
     ));
     if let Some(skills) = skills::config(settings.skill_folders) {
         builder = builder.skills_config(skills);
@@ -688,6 +705,7 @@ mod tests {
             indexes: &[],
             providers: Box::leak(Box::new(providers::Setup::new(None))),
             text_replies: false,
+            cc_compact: true,
             extra_rules: ExtraRules::Off,
         }
     }
@@ -796,13 +814,15 @@ mod tests {
         );
     }
 
-    /// Agents in Claude Code compact at the handover size, and agents on
-    /// the other providers hand over there.
+    /// Agents in Claude Code compact at the handover size by default, and
+    /// agents on the other providers hand over there. With `cc_compact`
+    /// off, the agents in Claude Code hand over too, at the same size.
     #[test]
     fn claude_code_agents_compact_and_others_hand_over() {
         let cc = model("cc:opus", false);
         let api = model("opus", false);
         let mixed = settings(&cc, &api);
+        assert!(mixed.cc_compact, "the default");
         let main = main_config(&mixed).unwrap();
         assert!(compacts(&main));
         assert_eq!(main.handover.unwrap().at_input_tokens, Some(200_000));
@@ -812,6 +832,16 @@ mod tests {
         let mixed = settings(&api, &cc);
         assert!(!compacts(&main_config(&mixed).unwrap()));
         assert!(compacts(&worker_config(&mixed).unwrap()));
+
+        let off = AgentSettings {
+            cc_compact: false,
+            ..settings(&cc, &cc)
+        };
+        for config in [main_config(&off).unwrap(), worker_config(&off).unwrap()] {
+            assert!(!compacts(&config));
+            assert_eq!(config.handover.unwrap().at_input_tokens, Some(200_000));
+            assert!(config.claude_code.is_some(), "still in Claude Code");
+        }
     }
 
     /// Each worker provider's cache gets its own paragraph: the `cache`
@@ -1112,6 +1142,7 @@ mod tests {
         for text_replies in [true, false] {
             let main = main_config(&AgentSettings {
                 text_replies,
+                cc_compact: true,
                 ..with
             })
             .unwrap();
@@ -1333,6 +1364,7 @@ mod tests {
         let opus = model("opus", false);
         let replying = AgentSettings {
             text_replies: true,
+            cc_compact: true,
             ..settings(&opus, &opus)
         };
         let config = main_config(&replying).unwrap();

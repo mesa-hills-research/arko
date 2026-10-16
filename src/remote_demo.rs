@@ -238,6 +238,7 @@ async fn remote_page_demo() {
         handover: harness.handover.clone(),
         keys: harness.keys.clone(),
         text_replies: Default::default(),
+        cc_compact: Default::default(),
         extra_rules: Default::default(),
         project: Default::default(),
     });

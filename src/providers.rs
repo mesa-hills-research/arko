@@ -1537,6 +1537,7 @@ mod tests {
             openai_auth: None,
             own_worker_model: false,
             text_replies: false,
+            cc_handover: false,
             extra_rules: Default::default(),
             project_instructions: Default::default(),
             worker_project_instructions: false,

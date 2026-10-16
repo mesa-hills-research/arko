@@ -62,6 +62,12 @@ pub struct Settings {
     /// `complete_task`, as their saved configuration says.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub text_replies: bool,
+    /// The agents on `cc:` models hand over at the handover size, as on the
+    /// other providers, instead of having Claude Code compact their
+    /// conversation. False (they compact) in sessions saved before it
+    /// existed, as their saved agents were built.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub cc_handover: bool,
     /// Which agents get the extra rules for small models. Off in sessions
     /// saved before they existed, as their saved agents were built.
     #[serde(default, skip_serializing_if = "ExtraRules::is_off")]
@@ -319,6 +325,7 @@ mod tests {
             openai_auth: None,
             own_worker_model: false,
             text_replies: false,
+            cc_handover: false,
             extra_rules: Default::default(),
             project_instructions: Default::default(),
             worker_project_instructions: false,

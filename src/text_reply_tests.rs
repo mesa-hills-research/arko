@@ -86,6 +86,7 @@ fn agent_settings_of(harness: &Harness) -> AgentSettings<'_> {
         index_tools: &[],
         indexes: &[],
         text_replies: harness.settings.text_replies,
+        cc_compact: true,
         extra_rules: harness.settings.extra_rules,
     }
 }
@@ -167,6 +168,7 @@ fn the_mode_is_saved_with_the_session_and_old_sessions_load_with_it_off() {
         openai_auth: None,
         own_worker_model: false,
         text_replies: true,
+        cc_handover: false,
         extra_rules: Default::default(),
         project_instructions: Default::default(),
         worker_project_instructions: false,
@@ -523,6 +525,7 @@ async fn a_session_saved_before_text_replies_resumes_with_complete_task() {
     // resumed: its saved configuration stands.
     let settings = AgentSettings {
         text_replies: true,
+        cc_compact: true,
         ..agent_settings_of(&harness)
     };
     harness.main_config = agents::main_config(&settings).unwrap();
@@ -573,6 +576,7 @@ fn a_text_reply_session_is_not_told_it_lacks_message_user() {
         index_tools: &[],
         indexes: &[],
         text_replies,
+        cc_compact: true,
         extra_rules: Default::default(),
     };
     let replying = agents::main_config(&settings(true)).unwrap();

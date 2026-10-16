@@ -148,6 +148,9 @@ pub struct LiveSettings {
     /// `complete_task`). It changes only before the conversation starts
     /// (`Models::started`).
     pub text_replies: bool,
+    /// The agents on `cc:` models compact at the handover size (else they
+    /// hand over). It changes only before the conversation starts.
+    pub cc_compact: bool,
     /// Which agents get the extra rules for small models. It changes only
     /// before the conversation starts.
     pub extra_rules: crate::agents::ExtraRules,

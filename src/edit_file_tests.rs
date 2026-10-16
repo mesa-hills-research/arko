@@ -215,6 +215,7 @@ fn agent_settings_of(harness: &Harness) -> AgentSettings<'_> {
         index_tools: &[],
         indexes: &[],
         text_replies: harness.settings.text_replies,
+        cc_compact: true,
         extra_rules: harness.settings.extra_rules,
     }
 }

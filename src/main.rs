@@ -77,7 +77,7 @@ use crate::ui::{Control, Input, Output, Stats};
     name = "arko",
     version,
     about = "A general-purpose agent for the terminal: a shell, background jobs, file tools and workers that run in parallel.",
-    after_help = "Credentials: ANTHROPIC_API_KEY for Claude models. For OpenAI models, a ChatGPT login or OPENAI_API_KEY, one per session (--openai-auth). The ChatGPT login is a Codex auth.json (--codex-auth, else ARKO_CODEX_AUTH, else Codex's own from `codex login`), or OPENAI_OAUTH_ACCESS_TOKEN with OPENAI_OAUTH_ACCOUNT_ID. GEMINI_API_KEY (or GOOGLE_API_KEY) for Gemini models, and OPENROUTER_API_KEY for openrouter: models. cc: models run in your installed Claude Code (`claude`, signed in with `claude auth login`) on your Claude plan, never on ANTHROPIC_API_KEY. When the model's credential is missing, Arko asks for it on a setup screen and saves it in Arko's .env. --setup opens that screen. While Arko runs, /keys (also in /settings) adds, replaces and removes API keys, and a key added is used at once.\n\nSettings: the API keys above, ARKO_CODEX_AUTH, ARKO_OPENAI_AUTH (chatgpt or api-key), ARKO_CACHE_1H (1 turns on --cache-1h), ARKO_SHELL (cmd or powershell, on Windows), ARKO_SYMBOLS, ARKO_THEME, ARKO_REMOTE_HOST and VOYAGE_API_KEY can be in the environment or in a .env file. Arko reads the nearest .env in the current directory or a parent, then the one in Arko's folder (ARKO_HOME, else arko in your data directory, such as ~/.local/share/arko).\n\nThe screen: in a terminal, Arko shows the session full screen (--repl keeps the line prompt). Enter sends, and Ctrl+J (or Shift+Enter where the terminal reports it) starts a new line. While the agent works, what you send adds to its task. Ctrl+O switches the view between full, quiet (each worker as one line) and messages. Ctrl+T, or ↓ from the input, reaches the agent list, where Enter shows a worker's own work and Esc goes back. Ctrl+C stops the turn, and the workers go on. Drag over the transcript to select text, and it is copied when you let go. A double click copies a word, and a triple click a line. /help lists the keys, and /settings holds the view, the theme and its previews, the mouse, outside access, the handover size, text replies, the extra rules, the project instructions, the web page and the API keys.\n\nThemes: ARKO_THEME picks a theme by name, such as \"macOS Classic Light\" or \"Windows Dark\". The default is macOS Classic Dark, and `terminal` keeps the terminal's own colours. Your own themes go in the themes folder in Arko's folder, in GPUI Kit's theme format. The theme list in /settings shows a theme when you rest on it, and Previews off there shows none until you choose one.\n\nOutside access: the agents change files only inside the working directory. /outside on, or --allow-outside-workspace (also when resuming), lets commands and the file tools change paths outside it too, and /outside off stops that. The agents are told when it changes, and workers follow it. Protected paths, such as the home directory itself, stay refused.\n\nModels: --model (-m) and --effort set the main agent's model, and --worker-model and --worker-effort the workers'. Before the conversation starts, /model MODEL [EFFORT] changes the main agent's model. After that the main agent keeps its model for the session, and /model worker MODEL [EFFORT] sets the model of workers started from now on. /model worker main makes them follow the main agent again. A worker keeps the model it started on, also when it is resumed or continued. /model and /model worker without a model open a picker of the models you can use.\n\nReplies: in a session you take part in, the main agent ends each turn with a plain reply. With -p it ends each turn by calling complete_task instead, so a reply that wasn't meant to be its last doesn't end the run. --text-replies and --no-text-replies choose for a new session, and /text-replies (also in /settings) changes it before the conversation starts. A resumed session keeps its own.\n\nExtra rules: agents on small models (Haiku, luna) get a few extra rules in their instructions. Each agent goes by its own model, so a worker on Haiku gets them under a main agent on Opus, which doesn't. --extra-rules gives them to every agent and --no-extra-rules to none, for a new session, and /extra-rules (also in /settings) changes it before the conversation starts. A resumed session keeps its own.\n\nProject instructions: the agents get AGENTS.md from the working directory, or CLAUDE.md when there is no AGENTS.md. The main agent gets it once per conversation, in the first message. Each worker gets the same text once, in its first message, also when it works in a worktree of its own. Both get it again after a handover. --project-instructions both gives both files, each under its own name, and --project-instructions off neither. --no-worker-project-instructions keeps them from the workers. The flags work for a new session or a resumed one, and /project-instructions (also in /settings) changes them as you go. A change reaches the conversations and the workers that start after it.\n\nConversations: /new starts a new conversation in the session, and /resume goes back to an earlier one. The screen opens a list to choose from. At the line prompt and on the web page, /resume lists them and /resume N goes back to number N. A resumed session (-c, --resume) goes on with the conversation it was in.\n\nHandovers: when the main agent's input reaches the handover size (500k tokens on Claude models, 250k on the ChatGPT login, 200k on others), it writes a report and goes on from it in a fresh conversation. On cc: models, Claude Code compacts the conversation at that size instead, and the agent goes on in the same conversation from Claude Code's summary. Workers do the same. /handover-at SIZE changes the main agent's size for the session, larger or smaller, up to 95% of what its model accepts. The running conversation goes by the new size from its next step. /handover hands over (or compacts) now.\n\nCost: /cost shows what the session billed. For work on a Claude or ChatGPT plan, it also shows the cost at API prices and the plan's usage.\n\nMCP servers: Arko starts those set up in --mcp-config files, in the project's .mcp.json (it asks first, and remembers the answer until the file's servers change) and in mcp.json in Arko's folder. They use Claude Code's format ({\"mcpServers\": {\"name\": {\"command\": ..., \"args\": [...], \"env\": {...}}}}) and talk over standard input and output. Skills: folders with a SKILL.md, in the project's .agents/skills, .claude/skills or .skills, in skills in Arko's folder, or in ~/.agents/skills or ~/.claude/skills.\n\nSearch indexes: `arko index create [PATH]` indexes a codebase or its docs, in any directory (the agents can create indexes too). Arko keeps the working directory's indexes current while it runs, and other indexes once the agent searches them. The agents' searches return the top results' whole functions and sections. `arko index --help` lists the commands. Without VOYAGE_API_KEY, search is by keywords only.\n\nWorkers: the agent starts them to work in parallel while it goes on, each in the working directory or in a git worktree of its own (made in the session's folder, on a branch arko/<session>/<worker>). Their reports reach it as they finish. /workers lists them, /watch shows one's own work, and /stop-workers stops them.\n\nRemote: --remote (or /remote during a session) serves a web page for following the session and taking part in it from a browser, such as a phone's. It has the same views as the screen, and its settings change outside access, text replies, the extra rules, the project instructions and the handover size and show links for other devices. Arko prints the links best first: the local network's, then Tailscale's, then other addresses, with VPN tunnels last. ARKO_REMOTE_HOST (an interface or an address) puts its link first. The QR code is for the first link, and /remote qr [INTERFACE] draws one again. The link holds the session's key (kept in the session's folder), which the page trades for a cookie. Arko listens on 127.0.0.1:8765 by default, and --remote 0.0.0.0 (or 0.0.0.0:PORT) lets in the devices on your network, or on your tailnet with Tailscale. The page is served without TLS. On a network you don't trust, reach it through an SSH tunnel (ssh -L 8765:127.0.0.1:8765 HOST, then open the link on your side) or Tailscale. /remote off stops it and ends its sessions, and /remote new-key makes a new key.\n\nSymbols: the classic Windows console (cmd.exe or PowerShell outside Windows Terminal) shows characters its fonts lack as question marks, so there Arko prints stand-ins those fonts have. ARKO_SYMBOLS sets the symbols: full, basic (those stand-ins) or ascii.\n\nCommands: /new, /resume, /model, /keys, /cost, /workers, /watch, /stop-workers, /view, /copy, /settings, /mcp, /skills, /session, /remote, /outside, /text-replies, /extra-rules, /project-instructions, /handover, /handover-at, /help, /exit."
+    after_help = "Credentials: ANTHROPIC_API_KEY for Claude models. For OpenAI models, a ChatGPT login or OPENAI_API_KEY, one per session (--openai-auth). The ChatGPT login is a Codex auth.json (--codex-auth, else ARKO_CODEX_AUTH, else Codex's own from `codex login`), or OPENAI_OAUTH_ACCESS_TOKEN with OPENAI_OAUTH_ACCOUNT_ID. GEMINI_API_KEY (or GOOGLE_API_KEY) for Gemini models, and OPENROUTER_API_KEY for openrouter: models. cc: models run in your installed Claude Code (`claude`, signed in with `claude auth login`) on your Claude plan, never on ANTHROPIC_API_KEY. When the model's credential is missing, Arko asks for it on a setup screen and saves it in Arko's .env. --setup opens that screen. While Arko runs, /keys (also in /settings) adds, replaces and removes API keys, and a key added is used at once.\n\nSettings: the API keys above, ARKO_CODEX_AUTH, ARKO_OPENAI_AUTH (chatgpt or api-key), ARKO_CACHE_1H (1 turns on --cache-1h), ARKO_SHELL (cmd or powershell, on Windows), ARKO_SYMBOLS, ARKO_THEME, ARKO_REMOTE_HOST and VOYAGE_API_KEY can be in the environment or in a .env file. Arko reads the nearest .env in the current directory or a parent, then the one in Arko's folder (ARKO_HOME, else arko in your data directory, such as ~/.local/share/arko).\n\nThe screen: in a terminal, Arko shows the session full screen (--repl keeps the line prompt). Enter sends, and Ctrl+J (or Shift+Enter where the terminal reports it) starts a new line. While the agent works, what you send adds to its task. Ctrl+O switches the view between full, quiet (each worker as one line) and messages. Ctrl+T, or ↓ from the input, reaches the agent list, where Enter shows a worker's own work and Esc goes back. Ctrl+C stops the turn, and the workers go on. Drag over the transcript to select text, and it is copied when you let go. A double click copies a word, and a triple click a line. /help lists the keys, and /settings holds the view, the theme and its previews, the mouse, outside access, the handover size, text replies, the extra rules, Claude Code compaction (in a session on cc: models), the project instructions, the web page and the API keys.\n\nThemes: ARKO_THEME picks a theme by name, such as \"macOS Classic Light\" or \"Windows Dark\". The default is macOS Classic Dark, and `terminal` keeps the terminal's own colours. Your own themes go in the themes folder in Arko's folder, in GPUI Kit's theme format. The theme list in /settings shows a theme when you rest on it, and Previews off there shows none until you choose one.\n\nOutside access: the agents change files only inside the working directory. /outside on, or --allow-outside-workspace (also when resuming), lets commands and the file tools change paths outside it too, and /outside off stops that. The agents are told when it changes, and workers follow it. Protected paths, such as the home directory itself, stay refused.\n\nModels: --model (-m) and --effort set the main agent's model, and --worker-model and --worker-effort the workers'. Before the conversation starts, /model MODEL [EFFORT] changes the main agent's model. After that the main agent keeps its model for the session, and /model worker MODEL [EFFORT] sets the model of workers started from now on. /model worker main makes them follow the main agent again. A worker keeps the model it started on, also when it is resumed or continued. /model and /model worker without a model open a picker of the models you can use.\n\nReplies: in a session you take part in, the main agent ends each turn with a plain reply. With -p it ends each turn by calling complete_task instead, so a reply that wasn't meant to be its last doesn't end the run. --text-replies and --no-text-replies choose for a new session, and /text-replies (also in /settings) changes it before the conversation starts. A resumed session keeps its own.\n\nExtra rules: agents on small models (Haiku, luna) get a few extra rules in their instructions. Each agent goes by its own model, so a worker on Haiku gets them under a main agent on Opus, which doesn't. --extra-rules gives them to every agent and --no-extra-rules to none, for a new session, and /extra-rules (also in /settings) changes it before the conversation starts. A resumed session keeps its own.\n\nProject instructions: the agents get AGENTS.md from the working directory, or CLAUDE.md when there is no AGENTS.md. The main agent gets it once per conversation, in the first message. Each worker gets the same text once, in its first message, also when it works in a worktree of its own. Both get it again after a handover. --project-instructions both gives both files, each under its own name, and --project-instructions off neither. --no-worker-project-instructions keeps them from the workers. The flags work for a new session or a resumed one, and /project-instructions (also in /settings) changes them as you go. A change reaches the conversations and the workers that start after it.\n\nConversations: /new starts a new conversation in the session, and /resume goes back to an earlier one. The screen opens a list to choose from. At the line prompt and on the web page, /resume lists them and /resume N goes back to number N. A resumed session (-c, --resume) goes on with the conversation it was in.\n\nHandovers: when the main agent's input reaches the handover size (500k tokens on Claude models, 250k on the ChatGPT login, 200k on others), it writes a report and goes on from it in a fresh conversation. On cc: models, Claude Code compacts the conversation at that size instead, and the agent goes on in the same conversation from Claude Code's summary. Workers do the same. --no-cc-compact has the agents on cc: models hand over as on the other providers, and --cc-compact has them compact, for a new session. /cc-compact (also in /settings) changes it before the conversation starts, and a resumed session keeps its own. /handover-at SIZE changes the main agent's size for the session, larger or smaller, up to 95% of what its model accepts. The running conversation goes by the new size from its next step. /handover hands over (or compacts) now.\n\nCost: /cost shows what the session billed. For work on a Claude or ChatGPT plan, it also shows the cost at API prices and the plan's usage.\n\nMCP servers: Arko starts those set up in --mcp-config files, in the project's .mcp.json (it asks first, and remembers the answer until the file's servers change) and in mcp.json in Arko's folder. They use Claude Code's format ({\"mcpServers\": {\"name\": {\"command\": ..., \"args\": [...], \"env\": {...}}}}) and talk over standard input and output. Skills: folders with a SKILL.md, in the project's .agents/skills, .claude/skills or .skills, in skills in Arko's folder, or in ~/.agents/skills or ~/.claude/skills.\n\nSearch indexes: `arko index create [PATH]` indexes a codebase or its docs, in any directory (the agents can create indexes too). Arko keeps the working directory's indexes current while it runs, and other indexes once the agent searches them. The agents' searches return the top results' whole functions and sections. `arko index --help` lists the commands. Without VOYAGE_API_KEY, search is by keywords only.\n\nWorkers: the agent starts them to work in parallel while it goes on, each in the working directory or in a git worktree of its own (made in the session's folder, on a branch arko/<session>/<worker>). Their reports reach it as they finish. /workers lists them, /watch shows one's own work, and /stop-workers stops them.\n\nRemote: --remote (or /remote during a session) serves a web page for following the session and taking part in it from a browser, such as a phone's. It has the same views as the screen, and its settings change outside access, text replies, the extra rules, Claude Code compaction, the project instructions and the handover size and show links for other devices. Arko prints the links best first: the local network's, then Tailscale's, then other addresses, with VPN tunnels last. ARKO_REMOTE_HOST (an interface or an address) puts its link first. The QR code is for the first link, and /remote qr [INTERFACE] draws one again. The link holds the session's key (kept in the session's folder), which the page trades for a cookie. Arko listens on 127.0.0.1:8765 by default, and --remote 0.0.0.0 (or 0.0.0.0:PORT) lets in the devices on your network, or on your tailnet with Tailscale. The page is served without TLS. On a network you don't trust, reach it through an SSH tunnel (ssh -L 8765:127.0.0.1:8765 HOST, then open the link on your side) or Tailscale. /remote off stops it and ends its sessions, and /remote new-key makes a new key.\n\nSymbols: the classic Windows console (cmd.exe or PowerShell outside Windows Terminal) shows characters its fonts lack as question marks, so there Arko prints stand-ins those fonts have. ARKO_SYMBOLS sets the symbols: full, basic (those stand-ins) or ascii.\n\nCommands: /new, /resume, /model, /keys, /cost, /workers, /watch, /stop-workers, /view, /copy, /settings, /mcp, /skills, /session, /remote, /outside, /text-replies, /cc-compact, /extra-rules, /project-instructions, /handover, /handover-at, /help, /exit."
 )]
 struct Args {
     /// Send this message, print the reply and exit. Progress goes to
@@ -152,6 +152,18 @@ struct Args {
     #[arg(long = "no-text-replies")]
     no_text_replies: bool,
 
+    /// Agents on cc: models have Claude Code compact their conversation at
+    /// the handover size (its /compact), and go on in the same
+    /// conversation. This is the default.
+    #[arg(long = "cc-compact", conflicts_with = "no_cc_compact")]
+    cc_compact: bool,
+
+    /// Agents on cc: models hand over at the handover size, as on the other
+    /// providers: they write a report and go on from it in a fresh
+    /// conversation.
+    #[arg(long = "no-cc-compact")]
+    no_cc_compact: bool,
+
     /// Every agent gets the extra rules for small models in its
     /// instructions, whatever its model. By default only agents on small
     /// models (Haiku, luna) get them.
@@ -192,7 +204,8 @@ struct Args {
     /// Input size, in tokens, at which an agent writes a handover report and
     /// continues in a fresh conversation. On cc: models, Claude Code
     /// compacts the conversation at that size instead, and the agent goes on
-    /// in the same conversation. Default: 500000 on Claude models,
+    /// in the same conversation (--no-cc-compact has them hand over too).
+    /// Default: 500000 on Claude models,
     /// 250000 for OpenAI models on the ChatGPT login (whose backend accepts
     /// 272000), and 200000 on others, at most 80% of what the model accepts
     /// (100000 when OpenRouter's catalog can't say). When resuming, it sets
@@ -380,6 +393,12 @@ async fn run(args: Args) -> Result<ExitCode, String> {
                     agents::replies_text(settings.text_replies)
                 );
             }
+            if args.cc_compact || args.no_cc_compact {
+                eprintln!(
+                    "arko: a resumed session keeps what its agents in Claude Code do at the handover size: {}",
+                    agents::cc_text(!settings.cc_handover)
+                );
+            }
             if args.extra_rules || args.no_extra_rules {
                 eprintln!(
                     "arko: a resumed session keeps its extra rules for small models: {}",
@@ -450,6 +469,7 @@ async fn run(args: Args) -> Result<ExitCode, String> {
         index_tools: &[],
         indexes: &[],
         text_replies: settings.text_replies,
+        cc_compact: !settings.cc_handover,
         extra_rules: settings.extra_rules,
     };
     // Settings the agents can't be built with leave no session behind.
@@ -601,6 +621,7 @@ async fn run(args: Args) -> Result<ExitCode, String> {
         handover: handover.clone(),
         keys: keys.clone(),
         text_replies: Default::default(),
+        cc_compact: Default::default(),
         extra_rules: Default::default(),
         project: Default::default(),
     });
@@ -971,6 +992,7 @@ fn new_settings(args: &Args) -> Result<Settings, String> {
     };
     let mut settings = Settings {
         text_replies,
+        cc_handover: args.no_cc_compact,
         extra_rules: extra_rules_for(args),
         project_instructions: Default::default(),
         worker_project_instructions: true,
@@ -2137,6 +2159,7 @@ impl Harness {
             "/keys" => self.keys_command(argument, source),
             "/handover" => self.handover_command(argument, source),
             "/text-replies" => self.text_replies_command(argument, source),
+            "/cc-compact" => self.cc_compact_command(argument, source),
             "/extra-rules" => self.extra_rules_command(argument, source),
             "/project-instructions" => self.project_command(argument, source),
             _ => self.handover_at_command(argument, source),
@@ -3175,13 +3198,14 @@ fn place(link: &remote::Link) -> String {
 
 /// The commands that change a setting while the session runs, which take
 /// an argument: `/outside`, `/model`, `/handover`, `/handover-at`, `/keys`.
-const LIVE_COMMANDS: [&str; 8] = [
+const LIVE_COMMANDS: [&str; 9] = [
     "/outside",
     "/model",
     "/handover",
     "/handover-at",
     "/keys",
     "/text-replies",
+    "/cc-compact",
     "/extra-rules",
     "/project-instructions",
 ];
@@ -3318,6 +3342,9 @@ struct Gauges {
     /// The main agent ends its turns with a reply in plain text, as the
     /// harness last published it.
     text_replies: std::sync::atomic::AtomicBool,
+    /// The agents on `cc:` models compact instead of handing over, as the
+    /// harness last published it.
+    cc_compact: std::sync::atomic::AtomicBool,
     /// Which agents get the extra rules for small models, as the harness
     /// last published it.
     extra_rules: Mutex<ExtraRules>,
@@ -3347,6 +3374,7 @@ impl remote::Meter for Gauges {
                 outside: self.outside.is_on(),
                 handover_at: self.handover.at(),
                 text_replies: self.text_replies.load(std::sync::atomic::Ordering::Relaxed),
+                cc_compact: self.cc_compact.load(std::sync::atomic::Ordering::Relaxed),
                 extra_rules: *lock(&self.extra_rules),
                 project_instructions,
                 worker_project_instructions,
@@ -3468,6 +3496,13 @@ mod tests {
         include!("extra_rules_tests.rs");
     }
 
+    /// What agents in Claude Code do at the handover size, end to end, in
+    /// its own file.
+    mod cc_compact {
+        use super::*;
+        include!("cc_compact_tests.rs");
+    }
+
     /// The project instructions' end-to-end tests, in their own file.
     mod project_instructions {
         use super::*;
@@ -3526,6 +3561,7 @@ mod tests {
             index_tools: &[],
             indexes: &[],
             text_replies: false,
+            cc_compact: true,
             extra_rules: Default::default(),
         };
         let main = agents::main_config(&settings).unwrap();
@@ -3767,6 +3803,7 @@ mod tests {
             index_tools: &[],
             indexes: &[],
             text_replies: false,
+            cc_compact: true,
             extra_rules: Default::default(),
         };
         let saved = SavedSetup {
@@ -3836,6 +3873,7 @@ mod tests {
             openai_auth: None,
             own_worker_model: false,
             text_replies: false,
+            cc_handover: false,
             extra_rules: Default::default(),
             project_instructions: Default::default(),
             worker_project_instructions: false,
@@ -3853,6 +3891,7 @@ mod tests {
             index_tools: &[],
             indexes: &[],
             text_replies: false,
+            cc_compact: true,
             extra_rules: Default::default(),
         };
         let main_config = agents::main_config(&agent_settings).unwrap();
@@ -3908,6 +3947,7 @@ mod tests {
             handover: handover.clone(),
             keys: keys.clone(),
             text_replies: Default::default(),
+            cc_compact: Default::default(),
             extra_rules: Default::default(),
             project: Default::default(),
         });
@@ -4898,6 +4938,7 @@ mod tests {
             index_tools: &[],
             indexes: &[],
             text_replies: false,
+            cc_compact: true,
             extra_rules: Default::default(),
         };
         harness.main_config = agents::main_config(&agent_settings).unwrap();

@@ -873,6 +873,20 @@
       ? 'The agent ends its turn with a plain reply.'
       : 'The agent ends its turn by calling complete_task.')
       + (started ? ' It keeps this for the session.' : ' It changes before the conversation starts.');
+    // What agents on cc: models do at the handover size changes only before the conversation starts.
+    const models = (status && status.models) || {};
+    const compacting = pending && pending.compact !== undefined;
+    const compacts = compacting ? pending.compact : settings.cc_compact !== false;
+    const compact = $('cc-compact-switch');
+    $('cc-compact').hidden = ![models.main, models.workers].some((model) => String(model || '').startsWith('cc:'));
+    compact.setAttribute('aria-checked', String(compacts));
+    compact.setAttribute('aria-busy', String(Boolean(compacting)));
+    compact.disabled = started && !compacting;
+    $('cc-compact-about').textContent = (compacts
+      ? 'At the handover size, Claude Code compacts the conversation of the agents on cc: models.'
+      : 'At the handover size, the agents on cc: models write a report and go on in a fresh conversation.')
+      + (started ? ' The session keeps this.' : ' It changes before the conversation starts.');
+    for (const node of document.querySelectorAll('.cc-compacts')) node.hidden = !compacts;
     // The extra rules change only before the conversation starts.
     const choosing = pending && pending.rules !== undefined;
     const chosen = choosing ? pending.rules : (settings.extra_rules || 'off');
@@ -1007,6 +1021,12 @@
     if (pending) return;
     const on = !(status && status.settings && status.settings.text_replies);
     command('/text-replies ' + (on ? 'on' : 'off'), 'replies-note', (settings) => Boolean(settings.text_replies) === on, { replies: on });
+  });
+
+  $('cc-compact-switch').addEventListener('click', () => {
+    if (pending) return;
+    const on = !(status && status.settings && status.settings.cc_compact);
+    command('/cc-compact ' + (on ? 'on' : 'off'), 'handover-note', (settings) => Boolean(settings.cc_compact) === on, { compact: on });
   });
 
   function chooseRules(key) {

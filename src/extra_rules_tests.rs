@@ -87,6 +87,7 @@ fn the_choice_is_saved_with_the_session_and_old_sessions_load_with_it_off() {
         openai_auth: None,
         own_worker_model: false,
         text_replies: false,
+        cc_handover: false,
         extra_rules: ExtraRules::Small,
         project_instructions: Default::default(),
         worker_project_instructions: false,
