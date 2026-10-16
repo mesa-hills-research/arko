@@ -352,3 +352,62 @@ async fn before_the_start_model_worker_sets_the_workers_own_model() {
     assert_eq!(harness.settings.worker.effort, Effort::Low);
     harness.crew.as_ref().unwrap().shutdown().await;
 }
+
+/// The status a page that connects now gets with its history.
+async fn page_status(http: &reqwest::Client, base: &str, cookie: &str) -> serde_json::Value {
+    let mut stream = http
+        .get(format!("{base}/api/events"))
+        .header("cookie", cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(stream.status(), 200);
+    let mut buffer = String::new();
+    loop {
+        if let Some(start) = buffer.find("event: reset\n")
+            && let Some(end) = buffer[start..].find("\n\n")
+        {
+            let block = &buffer[start..start + end];
+            let data: String = block
+                .lines()
+                .filter_map(|line| line.strip_prefix("data:"))
+                .map(str::trim_start)
+                .collect();
+            let data: serde_json::Value = serde_json::from_str(&data).unwrap();
+            return data["status"].clone();
+        }
+        let chunk = tokio::time::timeout(Duration::from_secs(10), stream.chunk())
+            .await
+            .expect("the history in time")
+            .unwrap()
+            .expect("the stream goes on");
+        buffer.push_str(&String::from_utf8_lossy(&chunk));
+    }
+}
+
+/// The page served before the first message (`arko --remote`) names the
+/// model `/model` then sets, before the conversation starts, and after
+/// it: its Model row reads the status's `info.model`.
+#[tokio::test]
+async fn the_page_names_the_model_set_after_it_started() {
+    let server =
+        ModelServer::start(Arc::new(|_, _| Box::pin(async { complete("m", "Done.") }))).await;
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
+    // As `run` does before it serves the page.
+    harness.publish_models();
+    let (http, base, cookie) = web(&mut harness).await;
+    let model = |status: &serde_json::Value| status["info"]["model"].as_str().unwrap().to_string();
+    assert!(model(&page_status(&http, &base, &cookie).await).starts_with("gpt-6-luna"));
+    assert!(harness.live_command("/model sol high", Source::Terminal));
+    let status = page_status(&http, &base, &cookie).await;
+    assert!(model(&status).starts_with("gpt-6.1-sol (high effort)"), "{status}");
+    assert_eq!(status["info"]["model"], status["models"]["banner_model"]);
+    assert!(matches!(
+        harness.turn(Prompt::User("Hello.".into()), &mut inputs).await,
+        TurnEnd::Answered
+    ));
+    let status = page_status(&http, &base, &cookie).await;
+    assert!(model(&status).starts_with("gpt-6.1-sol"), "{status}");
+    harness.crew.as_ref().unwrap().shutdown().await;
+}

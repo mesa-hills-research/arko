@@ -380,12 +380,20 @@ impl App {
             activity: &'a Activity,
             #[serde(flatten)]
             reading: Reading,
-            info: &'a Info,
+            info: Info,
+        }
+        let reading = self.meter.read();
+        // The main agent's model as the session runs it now: `/model`
+        // changes it before the conversation starts, also after the page's
+        // server started.
+        let mut info = self.info.clone();
+        if !reading.models.banner_model.is_empty() {
+            info.model = reading.models.banner_model.clone();
         }
         serde_json::to_string(&Status {
             activity,
-            reading: self.meter.read(),
-            info: &self.info,
+            reading,
+            info,
         })
         .unwrap_or_default()
     }
@@ -831,15 +839,28 @@ mod tests {
         http: reqwest::Client,
     }
 
+    /// A meter whose reading a test changes.
+    struct Moving(Mutex<Reading>);
+
+    impl Meter for Moving {
+        fn read(&self) -> Reading {
+            lock(&self.0).clone()
+        }
+    }
+
     fn serve_on(feed: &Feed, addr: &str) -> Served {
+        serve_with(feed, addr, Info::default(), Arc::new(Still))
+    }
+
+    fn serve_with(feed: &Feed, addr: &str, info: Info, meter: Arc<dyn Meter>) -> Served {
         let (actions, received) = mpsc::unbounded_channel();
         let server = Server::start(
             addr.parse().unwrap(),
             KEY.into(),
-            Info::default(),
+            info,
             feed.clone(),
             actions,
-            Arc::new(Still),
+            meter,
         )
         .unwrap();
         Served {
@@ -1175,6 +1196,70 @@ mod tests {
         assert_eq!(events[2].1["worker"], "r1");
         assert_eq!(events[3].1["title"], "Count the files.");
         assert_eq!(events[3].1["state"], "running");
+    }
+
+    /// The page's Model row names the model the session runs now, not the
+    /// one it ran as the server started: `/model` before the conversation
+    /// starts changes it then. A page open gets it with the next status,
+    /// and a page that connects later gets it at once.
+    #[tokio::test]
+    async fn the_status_names_the_model_the_session_runs_now() {
+        let feed = Feed::new("main");
+        let models = |model: &str| super::super::Models {
+            banner_model: model.into(),
+            ..Default::default()
+        };
+        let meter = Arc::new(Moving(Mutex::new(Reading {
+            models: models("gpt-6-luna (high effort)"),
+            ..Reading::default()
+        })));
+        let info = Info {
+            model: "gpt-6-luna (high effort)".into(),
+            ..Info::default()
+        };
+        let served = serve_with(&feed, "127.0.0.1:0", info, meter.clone());
+        let cookie = served.login().await;
+        let mut stream = served.get("/api/events", Some(&cookie)).await;
+        let mut buffer = String::new();
+        let events = read_until(&mut stream, &mut buffer, |name, _| name == "reset").await;
+        let (_, reset) = events.last().unwrap();
+        assert_eq!(reset["status"]["info"]["model"], "gpt-6-luna (high effort)");
+
+        lock(&meter.0).models = models("gpt-6.1-sol (high effort)");
+        read_until(&mut stream, &mut buffer, |name, data| {
+            name == "status" && data["info"]["model"] == "gpt-6.1-sol (high effort)"
+        })
+        .await;
+        let mut later = served.get("/api/events", Some(&cookie)).await;
+        let mut buffer = String::new();
+        let events = read_until(&mut later, &mut buffer, |name, _| name == "reset").await;
+        let (_, reset) = events.last().unwrap();
+        assert_eq!(
+            reset["status"]["info"]["model"],
+            "gpt-6.1-sol (high effort)"
+        );
+        assert_eq!(
+            reset["status"]["models"]["banner_model"],
+            "gpt-6.1-sol (high effort)"
+        );
+
+        // Before the session tells its models, the server's own copy.
+        lock(&meter.0).models = models("");
+        let fresh = serve_with(
+            &feed,
+            "127.0.0.1:0",
+            Info {
+                model: "claude-opus-5-5".into(),
+                ..Info::default()
+            },
+            meter.clone(),
+        );
+        let cookie = fresh.login().await;
+        let mut stream = fresh.get("/api/events", Some(&cookie)).await;
+        let mut buffer = String::new();
+        let events = read_until(&mut stream, &mut buffer, |name, _| name == "reset").await;
+        let (_, reset) = events.last().unwrap();
+        assert_eq!(reset["status"]["info"]["model"], "claude-opus-5-5");
     }
 
     /// Messages, answers and stops come out as actions; an answer to a
