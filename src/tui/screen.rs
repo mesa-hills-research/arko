@@ -618,6 +618,66 @@ mod tests {
         );
     }
 
+    /// The quit popup over an 80-column screen: the background jobs, each
+    /// cut to fit with how long it has run, the workers that stop too, and
+    /// the choices. The settings' row that turns it off.
+    #[test]
+    fn the_quit_popup_lists_the_jobs_and_the_workers() {
+        use crate::tui::app::tests::job;
+        use crate::tui::overlay::{Overlay, SettingsRow};
+        use std::time::Duration;
+        let mut app = app();
+        let long = format!("cargo build --release {}", "x".repeat(80));
+        app.reading.jobs = vec![
+            job("sleep 300", Duration::from_secs(150)),
+            job(&format!("{long}\necho done"), Duration::from_secs(5)),
+        ];
+        app.reading.workers_running = vec!["r1".into()];
+        app.key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL));
+        let rows = screen(&mut app, 80, 24);
+        println!("{}", rows.join("\n"));
+        let row = |text: &str| {
+            rows.iter()
+                .find(|row| row.contains(text))
+                .unwrap_or_else(|| panic!("no {text:?} in {rows:#?}"))
+        };
+        row("Quit Arko");
+        row("2 background jobs are running. They stop when Arko");
+        assert!(row("sleep 300").ends_with("2m │"), "{rows:#?}");
+        let cut = row("cargo build --release xx");
+        assert!(cut.ends_with("5s │") && !cut.contains(&long), "{rows:#?}");
+        row("1 worker is running too. It stops as well, and resuming");
+        row("Quit now?");
+        assert!(row(" Yes ").contains("[ ] Don't ask again"), "{rows:#?}");
+        app.key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        app.key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        let rows = screen(&mut app, 80, 24);
+        assert!(
+            rows.iter().any(|row| row.contains("[x] Don't ask again")),
+            "{rows:#?}"
+        );
+
+        let row = app
+            .settings_rows()
+            .iter()
+            .position(|row| *row == SettingsRow::ConfirmQuit)
+            .unwrap();
+        app.overlay = Some(Overlay::Settings { row, picker: None });
+        let rows = screen(&mut app, 80, 30);
+        println!("{}", rows.join("\n"));
+        assert!(
+            rows.iter()
+                .any(|row| row.contains("▸ Ask first      on   off")),
+            "{rows:#?}"
+        );
+        assert!(
+            rows.iter()
+                .any(|row| row.contains("With background jobs running, quitting asks first")),
+            "{rows:#?}"
+        );
+    }
+
     #[test]
     fn the_empty_screen_has_the_status_line_and_a_message_box() {
         let mut app = app();

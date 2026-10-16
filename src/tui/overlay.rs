@@ -44,6 +44,10 @@ pub enum Overlay {
     Keys(super::keys_menu::KeysMenu),
     /// The conversations to go back to (`/resume`).
     Resume(super::resume_picker::ResumePicker),
+    /// Quitting while background jobs run, which stop when Arko exits:
+    /// `choice` is what is on (0: Yes, 1: No, 2: the box), and `dont_ask`
+    /// whether the box is ticked.
+    Quit { choice: usize, dont_ask: bool },
 }
 
 /// A setting.
@@ -53,6 +57,7 @@ pub enum SettingsRow {
     Theme,
     Previews,
     Mouse,
+    ConfirmQuit,
     Outside,
     Handover,
     Background,
@@ -176,7 +181,90 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect, screen: Rect) {
         } => super::model_picker::draw_notice(frame, &app.theme, area, text, *choice, *workers),
         Overlay::Keys(menu) => super::keys_menu::draw(frame, &app.theme, area, menu),
         Overlay::Resume(picker) => super::resume_picker::draw(frame, &app.theme, area, picker),
+        Overlay::Quit { choice, dont_ask } => quit(frame, app, area, *choice, *dont_ask),
     }
+}
+
+/// The background jobs listed in the quit popup: more are counted.
+const QUIT_JOBS: usize = 5;
+
+/// The popup that asks before Arko quits with background jobs running: what
+/// stops (the jobs as the session reads them now, and the workers, which a
+/// resumed session continues), Yes, No and the box.
+fn quit(frame: &mut Frame, app: &App, area: Rect, choice: usize, dont_ask: bool) {
+    let theme = &app.theme;
+    let width = 60.min(area.width.saturating_sub(4)).max(20);
+    let inner = width.saturating_sub(4) as usize;
+    let text = |text: String| {
+        wrap::wrap(&[Span::styled(text, theme.text())], inner, 0)
+            .into_iter()
+            .map(Line::from)
+    };
+    let jobs = &app.reading.jobs;
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    lines.extend(text(match jobs.len() {
+        0 => "The background jobs have finished.".to_string(),
+        1 => "1 background job is running. It stops when Arko exits.".to_string(),
+        count => format!("{count} background jobs are running. They stop when Arko exits."),
+    }));
+    if !jobs.is_empty() {
+        lines.push(Line::default());
+    }
+    for job in jobs.iter().take(QUIT_JOBS) {
+        let ran = super::transcript::duration(job.started.elapsed().as_millis() as i64);
+        let room = inner.saturating_sub(text_width(&ran) + 4);
+        let command = job.command.trim().lines().next().unwrap_or_default();
+        let command = super::transcript::cut_end(command, room);
+        let pad = room.saturating_sub(text_width(&command));
+        lines.push(Line::from(vec![
+            Span::styled(format!("  {command}"), theme.text()),
+            Span::raw(" ".repeat(pad + 2)),
+            Span::styled(ran, theme.dim()),
+        ]));
+    }
+    if jobs.len() > QUIT_JOBS {
+        lines.push(Line::from(Span::styled(
+            format!("  and {} more", jobs.len() - QUIT_JOBS),
+            theme.dim(),
+        )));
+    }
+    lines.push(Line::default());
+    let workers = app.reading.workers_running.len();
+    if workers > 0 {
+        lines.extend(text(if workers == 1 {
+            "1 worker is running too. It stops as well, and resuming the session lets the agent continue it.".to_string()
+        } else {
+            format!("{workers} workers are running too. They stop as well, and resuming the session lets the agent continue them.")
+        }));
+        lines.push(Line::default());
+    }
+    lines.extend(text("Quit now?".to_string()));
+    lines.push(Line::default());
+    let style = |n: usize, other: Style| if n == choice { theme.chosen() } else { other };
+    let tick = if dont_ask { "[x]" } else { "[ ]" };
+    lines.push(Line::from(vec![
+        Span::styled(" Yes ", style(0, theme.key())),
+        Span::raw("  "),
+        Span::styled(" No ", style(1, theme.key())),
+        Span::raw("    "),
+        Span::styled(format!(" {tick} Don't ask again "), style(2, theme.text())),
+    ]));
+    let height = (lines.len() as u16 + 4).min(area.height);
+    let rect = centred(area, width, height);
+    let inner_rect = frame_box(frame, rect, theme, "Quit Arko");
+    let body = Rect::new(
+        inner_rect.x + 1,
+        inner_rect.y + 1,
+        inner_rect.width.saturating_sub(2),
+        inner_rect.height.saturating_sub(2),
+    );
+    put(frame, body, &lines, 0);
+    footer(
+        frame,
+        rect,
+        theme,
+        &[("← →", "move"), ("Enter", "choose"), ("Esc", "stay")],
+    );
 }
 
 /// The keys, with why each is what it is in a word, and the commands.
@@ -392,6 +480,17 @@ fn settings(frame: &mut Frame, app: &App, area: Rect, selected: usize) {
                 } else {
                     "The terminal's own selection applies, and PgUp and PgDn scroll.".to_string()
                 },
+            ),
+            SettingsRow::ConfirmQuit => (
+                "Quitting",
+                "Ask first",
+                choices(theme, &["on", "off"], usize::from(!app.confirms_quit())),
+                if app.confirms_quit() {
+                    "With background jobs running, quitting asks first, since they stop when Arko exits."
+                } else {
+                    "Quitting doesn't ask about background jobs, which stop when Arko exits."
+                }
+                .to_string(),
             ),
             SettingsRow::Outside => (
                 "Session",
