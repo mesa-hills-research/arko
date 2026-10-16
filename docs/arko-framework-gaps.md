@@ -114,11 +114,11 @@ Single-run stops leave other agents running. `stop_subagent` also stops queued r
 
 **Today.** `UserCommand::RequestHandover` asks a running agent for a handover at its next turn boundary (`arko_agents/src/runtime/command.rs`). A workflow host reaches a run's command channel only through `AgentHandle::into_parts` (`arko_workflows/src/workflow/mod.rs`), which returns the raw event and command channels, so the workflow's hooks and budget tracking no longer apply. `run_agent`, `continue_agent` and `restart` keep the channel to themselves.
 
-**Effect.** A host can't change when a running agent hands over. The size in `AgentConfig::handover` is saved with the run, so a resumed conversation keeps the size it started with.
+**Effect.** A host can't ask a running agent to hand over now. (The size is solved: `WorkflowBuilder::agent_handover_threshold` gives an agent's runs a `HandoverThreshold` the host changes while they run, in place of the size saved in `AgentConfig::handover`. Arko's `/handover-at` sets the main agent's.)
 
-**Arko's workaround.** Arko's shell tool keeps each run's command channel when the runtime binds it (`Tool::bind_runtime`, which gives every offered tool the run's channel as the run starts). Arko watches the main agent's reported input and sends `RequestHandover` on that channel at the size the user sets (`/handover-at`), or at once (`/handover`). This works only for runs offered one of Arko's tools, and the size can only go below the one saved in the configuration.
+**Arko's workaround.** Arko's shell tool keeps each run's command channel when the runtime binds it (`Tool::bind_runtime`, which gives every offered tool the run's channel as the run starts). For `/handover`, Arko sends `RequestHandover` on that channel. This works only for runs offered one of Arko's tools.
 
-**Request.** `Workflow::request_handover(run_id)`, which sends the command to a running run or keeps it for the run's next start, and a way to change a saved run's handover size when it resumes.
+**Request.** `Workflow::request_handover(run_id)`, which sends the command to a running run or keeps it for the run's next start.
 
 ## Resolved: messages to the user (15)
 

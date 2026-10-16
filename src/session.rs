@@ -26,8 +26,8 @@ pub struct Settings {
     pub handover_at: usize,
     /// The input size, in tokens, at which the main agent hands over, as
     /// `/handover-at` (or `--handover-at` when resuming) last set it; `None`:
-    /// as its model settings say. Arko asks for the handover at this size
-    /// (see `handover`).
+    /// as its model settings say. The main agent's runs hand over at it in
+    /// place of the size their saved configuration holds (see `handover`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub main_handover_at: Option<usize>,
     /// Outside access, as the session last had it (`/outside`).

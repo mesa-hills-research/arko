@@ -752,26 +752,35 @@ async fn a_handover_asked_for_while_idle_happens_when_the_next_turn_starts() {
     );
 }
 
-/// `/handover-at`: a size it can't read, one too small, one over what
-/// the configuration hands over at (it stops there), and one under the
-/// agent's context (it hands over when the next turn starts). The session
-/// and the page's status keep the size.
+/// `/handover-at`: a size it can't read, one too small, one over the
+/// configured 200k (the conversation goes past 200k without a handover,
+/// also after the session is resumed), one over what the model leaves
+/// room for (it stops there), and one under the agent's context (it hands
+/// over when the next turn starts). The session and the page's status keep
+/// the size.
 #[cfg(unix)]
 #[tokio::test]
 async fn handover_sizes_are_checked_kept_and_acted_on() {
     let temp = tempfile::tempdir().unwrap();
-    let server = ModelServer::start(Arc::new(move |_, body: String| {
-        Box::pin(async move {
-            if !body.contains("Second.") {
-                crate::mock_model::with_input(complete("a1", "First done."), 150_000)
-            } else {
-                handing_over(
-                    &body,
-                    tool_call("m1", SHELL_TOOL, serde_json::json!({"command": "echo hi"})),
-                    complete("a2", "Second done."),
-                )
-            }
-        })
+    let bodies: Bodies = Arc::default();
+    let server = ModelServer::start(Arc::new({
+        let bodies = bodies.clone();
+        move |_, body: String| {
+            bodies.lock().unwrap().push(body.clone());
+            Box::pin(async move {
+                let before = if body.contains("call_m1") {
+                    crate::mock_model::with_input(complete("a2", "Second done."), 260_000)
+                } else if body.contains("Second.") {
+                    crate::mock_model::with_input(
+                        tool_call("m1", SHELL_TOOL, serde_json::json!({"command": "echo hi"})),
+                        250_000,
+                    )
+                } else {
+                    crate::mock_model::with_input(complete("a1", "First done."), 150_000)
+                };
+                handing_over(&body, before, complete("a3", "Third done."))
+            })
+        }
     }))
     .await;
     let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
@@ -789,18 +798,47 @@ async fn handover_sizes_are_checked_kept_and_acted_on() {
     assert!(output(&mut harness, "/handover-at lots").contains("isn't a number of tokens"));
     assert!(output(&mut harness, "/handover-at 5k").contains("too small"));
     assert_eq!(harness.handover.at(), 200_000);
-    let capped = output(&mut harness, "/handover-at 300k");
-    assert!(
-        capped.starts_with("This session's main agent hands over at 200k at the latest"),
-        "{capped}"
+    assert_eq!(
+        output(&mut harness, "/handover-at 300k"),
+        "The main agent now hands over at 300k tokens of input."
     );
-    assert_eq!(harness.handover.at(), 200_000);
+    assert_eq!(harness.handover.threshold().get(), Some(300_000));
+    // Arko closes, and the session is resumed: its runs go by the size.
+    harness.open(true).unwrap();
+    let end = tokio::time::timeout(
+        Duration::from_secs(30),
+        harness.turn(Prompt::User("Second.".into()), &mut inputs),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(end, TurnEnd::Answered));
+    assert_eq!(summary(&harness), "Second done.");
+    assert_eq!(handovers(&harness), 0);
+    assert!(
+        !bodies
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|body| body.contains("Your conversation is getting long")),
+        "no handover at 250k"
+    );
+    harness.flush_printer().await;
+    until(|| harness.handover.input() == Some(260_000)).await;
+    let most = agents::max_handover(&resolve_model("luna").unwrap(), None).unwrap();
+    assert_eq!(
+        output(&mut harness, "/handover-at 2000k"),
+        format!(
+            "The main agent now hands over at {}k tokens of input, the largest size Arko allows for its model.",
+            most / 1000
+        )
+    );
+    assert_eq!(harness.handover.at(), most);
     let lowered = output(&mut harness, "/handover-at 100,000");
     assert!(
         lowered.starts_with("The main agent now hands over at 100k tokens of input."),
         "{lowered}"
     );
-    assert!(lowered.contains("Its context (150k) is over that already. The main agent hands over when your next message starts its turn"), "{lowered}");
+    assert!(lowered.contains("Its context (260k) is over that already. The main agent hands over when your next message starts its turn"), "{lowered}");
     assert_eq!(harness.handover.at(), 100_000);
     assert_eq!(
         harness.session.load_settings().unwrap().main_handover_at,
@@ -813,15 +851,16 @@ async fn handover_sizes_are_checked_kept_and_acted_on() {
         100_000
     );
     assert!(output(&mut harness, "/handover-at").starts_with(
-        "The main agent hands over at 100k tokens of input (its latest request: 150k)."
+        "The main agent hands over at 100k tokens of input (its latest request: 260k)."
     ));
     let end = tokio::time::timeout(
         Duration::from_secs(30),
-        harness.turn(Prompt::User("Second.".into()), &mut inputs),
+        harness.turn(Prompt::User("Third.".into()), &mut inputs),
     )
     .await
     .unwrap();
     assert!(matches!(end, TurnEnd::Answered));
+    assert_eq!(summary(&harness), "Third done.");
     assert_eq!(handovers(&harness), 1);
 }
 
@@ -879,8 +918,7 @@ async fn a_chatgpt_session_hands_over_at_250k() {
     assert_eq!(harness.settings.main.handover_at, Some(250_000));
     harness.main_config = agents::main_config(&agent_settings_of(&harness)).unwrap();
     let _managers = equip(&mut harness, false);
-    harness.handover.set_at(250_000);
-    assert_eq!(harness.handover.configured(), 250_000);
+    assert_eq!(harness.handover.at(), 250_000);
     let end = tokio::time::timeout(
         Duration::from_secs(30),
         harness.turn(Prompt::User("Work long.".into()), &mut inputs),
@@ -977,8 +1015,7 @@ async fn over_the_limit(bytes: usize) -> (bool, usize, Vec<String>, usize, Strin
     let _managers = equip(&mut harness, false);
     harness.tools.push(Arc::new(Big(bytes)));
     harness.open(false).unwrap();
-    harness.handover.set_at(250_000);
-    assert_eq!(harness.handover.configured(), 250_000);
+    assert_eq!(harness.handover.at(), 250_000);
     let end = tokio::time::timeout(
         Duration::from_secs(30),
         harness.turn(Prompt::User("Read the large result.".into()), &mut inputs),
