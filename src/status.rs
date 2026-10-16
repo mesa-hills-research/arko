@@ -72,6 +72,14 @@ const GATHER: Duration = Duration::from_millis(500);
 const WHILE_WORKING: Duration = Duration::from_secs(1);
 
 impl Gauges {
+    /// The session closed: what it ran goes (its workflow holds the
+    /// terminal, whose folder lock the session releases), while a front end
+    /// may still hold the status.
+    pub(crate) fn release(&self) {
+        *lock(&self.workflow) = None;
+        *lock(&self.crew) = None;
+    }
+
     /// Something the status shows changed (a setting, the models, the
     /// conversations, the web page): the next status goes out soon.
     pub(crate) fn touch(&self) {

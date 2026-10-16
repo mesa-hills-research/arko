@@ -131,10 +131,24 @@ pub enum Request {
     /// Gives the session this name (empty: back to its conversation's),
     /// also during a turn.
     Rename { title: String, reply: Reply<()> },
-    /// A chat's instructions from the user (`None`: none), before its first
-    /// message (a new chat takes them in `Options::chat_instructions`).
+    /// A chat's instructions from the user (`None`: none), for its next
+    /// conversations: from its first message, or else from its next new
+    /// conversation (the one it is in keeps its own). A new chat takes them
+    /// in `Options::chat_instructions`.
     ChatInstructions {
         text: Option<String>,
+        reply: Reply<()>,
+    },
+    /// Makes the session a chat or an agent's, from its next message: the
+    /// conversation goes on in the new mode. `workspace` is the folder an
+    /// agent works in (`None`: the one it worked in before, which a chat
+    /// that never was an agent's doesn't have). Refused while workers run,
+    /// while their news hasn't reached the agent, and (to Chat) while
+    /// background jobs run: the session closes, and [`Engine::run`] ends
+    /// with [`RunEnd::Reopen`], for the front end to open it again.
+    SwitchMode {
+        to: crate::session::Mode,
+        workspace: Option<PathBuf>,
         reply: Reply<()>,
     },
 }
@@ -168,6 +182,10 @@ pub enum RunEnd {
     Failed,
     /// The user quit.
     Quit,
+    /// The session switched between Chat and Agent ([`Request::SwitchMode`])
+    /// and closed: open it again ([`SessionChoice::Resume`]) to go on in its
+    /// new mode.
+    Reopen,
 }
 
 /// A session running on threads of its own: see [`spawn`].
@@ -425,10 +443,13 @@ impl Engine {
             agents::main_config(&agent_settings)?;
             agents::worker_config(&agent_settings)?;
         }
-        // A chat has no tools: no MCP servers, skills, indexes or workers.
+        // A chat has no tools: no MCP servers, skills, indexes or workers. One
+        // that was an agent's has them still (its agent is offered none), for
+        // its agent's conversations, which resume with their tools.
         let chat = settings.mode == crate::session::Mode::Chat;
+        let bare = chat && !settings.switched_mode;
         // A project's MCP servers are started once the user approves them.
-        let (mcp_servers, mcp_notes) = if chat {
+        let (mcp_servers, mcp_notes) = if bare {
             (Vec::new(), Vec::new())
         } else {
             let mcp_plan = mcp::plan(&root, &settings.workspace, &options.mcp_config)?;
@@ -518,12 +539,12 @@ impl Engine {
                 )));
             }
         }
-        let skill_folders = if chat {
+        let skill_folders = if bare {
             Vec::new()
         } else {
             skills::folders(&settings.workspace, &root)
         };
-        let indexes = if chat {
+        let indexes = if bare {
             Ok(None)
         } else {
             index::Indexes::open(
@@ -575,7 +596,7 @@ impl Engine {
         let worker_config = agents::worker_config(&agent_settings)?;
         // Where the runs' command channels are kept, to ask for handovers.
         let runs = Arc::new(handover::Runs::default());
-        let mut tools = if chat {
+        let mut tools = if bare {
             Vec::new()
         } else {
             managers.tools(&shell, runs.clone())
@@ -687,6 +708,7 @@ impl Engine {
             switched: false,
             queue_lines: !interactive,
             exiting: false,
+            reopen: false,
             crew,
             asker,
             one_shot,
@@ -703,7 +725,10 @@ impl Engine {
             handover,
             background: managers.background.clone(),
         };
-        harness.project = project::Found::read(&harness.settings.workspace);
+        // A chat has no project.
+        if !chat {
+            harness.project = project::Found::read(&harness.settings.workspace);
+        }
         // Before the workflow opens: it may restart a worker that hadn't started.
         harness.give_workers_project();
         harness.open(!new)?;
@@ -800,7 +825,11 @@ impl Engine {
         if !harness.exiting {
             harness.repl(&mut self.inputs).await;
         }
-        RunEnd::Quit
+        if harness.reopen {
+            RunEnd::Reopen
+        } else {
+            RunEnd::Quit
+        }
     }
 
     /// Sends `prompt` as the user's message, and waits for the answer and
@@ -856,6 +885,7 @@ impl Engine {
             indexes.shutdown().await;
         }
         self.managers.shutdown().await;
+        harness.gauges.release();
     }
 }
 
@@ -1241,8 +1271,9 @@ mod tests {
     }
 
     /// A chat's agent is offered no tools and told the user's
-    /// instructions, set before its first message (not after). A chat works
-    /// in its own folder, lists without one, and has no workers.
+    /// instructions: those set before its first message, and later ones
+    /// from its next new conversation, also once it opens again. A chat
+    /// works in its own folder, lists without one, and has no workers.
     #[tokio::test]
     async fn a_chat_has_no_tools_and_takes_the_users_instructions() {
         let temp = tempfile::tempdir().unwrap();
@@ -1335,16 +1366,201 @@ mod tests {
             settings.chat_instructions.as_deref(),
             Some("Answer like a pirate.")
         );
-        // After it, they stay.
-        assert!(instructions("Be brief.").await.unwrap().is_err());
         assert!(!first.contains("Answer briefly."));
-
+        // After it, the conversation keeps its own; the next takes them.
+        assert_eq!(instructions("Be brief.").await.unwrap(), Ok(()));
+        ask(&seam, "Again.", 2).await;
+        let second = bodies.lock().unwrap()[1].clone();
+        assert!(second.contains("Answer like a pirate.") && second.contains("Hello."));
+        assert!(!second.contains("Be brief."));
+        ask(&seam, "/new", 2).await;
+        ask(&seam, "Hi.", 3).await;
+        let third = bodies.lock().unwrap()[2].clone();
+        assert!(third.contains("Be brief.") && !third.contains("Hello."));
+        assert!(!third.contains("Answer like a pirate."));
         seam.input.send(Input::Quit(Some(Vec::new()))).unwrap();
         assert_eq!(
             tokio::time::timeout(wait, running.ended)
                 .await
                 .unwrap()
                 .unwrap(),
+            RunEnd::Quit
+        );
+
+        // Opened again, it goes on with the conversation it was in.
+        let running = spawn(
+            Options {
+                root: Some(root.clone()),
+                session: SessionChoice::Resume(seam.session.id.clone()),
+                client: Some(GivenClient(Arc::new(server.client()))),
+                ..Options::default()
+            },
+            Arc::new(NoPrompter),
+        );
+        let seam = tokio::time::timeout(wait, running.opened)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        // (Its feed has the conversation's earlier reply.)
+        ask(&seam, "And again.", 2).await;
+        let fourth = bodies.lock().unwrap()[3].clone();
+        assert!(fourth.contains("Hi.") && fourth.contains("Be brief."));
+        assert!(!fourth.contains("Hello."));
+        seam.input.send(Input::Quit(Some(Vec::new()))).unwrap();
+        assert_eq!(
+            tokio::time::timeout(wait, running.ended)
+                .await
+                .unwrap()
+                .unwrap(),
+            RunEnd::Quit
+        );
+    }
+
+    /// A session switches between Agent and Chat between turns: it opens
+    /// again, and its conversation goes on with the new mode's tools and
+    /// instructions (the same conversation, under the same cache key). A
+    /// switch waits for the turn.
+    #[tokio::test]
+    async fn a_session_switches_between_chat_and_agent() {
+        let temp = tempfile::tempdir().unwrap();
+        let bodies: Arc<Mutex<Vec<String>>> = Arc::default();
+        let server = ModelServer::start(Arc::new({
+            let bodies = bodies.clone();
+            move |_, body: String| {
+                bodies.lock().unwrap().push(body.clone());
+                Box::pin(async move {
+                    if body.contains("Slowly.") {
+                        tokio::time::sleep(Duration::from_millis(1500)).await;
+                    }
+                    reply("a", "Ahoy.")
+                })
+            }
+        }))
+        .await;
+        let root = temp.path().join("arko");
+        let project = temp.path().join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        let wait = Duration::from_secs(30);
+        let open = |session: SessionChoice| {
+            let running = spawn(
+                Options {
+                    root: Some(root.clone()),
+                    session,
+                    workspace: Some(project.clone()),
+                    model: Some("luna".into()),
+                    openai_auth: Some(OpenAiAuth::ApiKey),
+                    cache_1h: Some(false),
+                    text_replies: Some(true),
+                    client: Some(GivenClient(Arc::new(server.client()))),
+                    ..Options::default()
+                },
+                Arc::new(NoPrompter),
+            );
+            async move {
+                let seam = tokio::time::timeout(wait, running.opened)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .unwrap();
+                (seam, running.ended)
+            }
+        };
+        // Sends `text`, and waits for the turn of the `count`th request.
+        let ask = |seam: &Seam, text: &str, count: usize| {
+            seam.input
+                .send(Input::Message(crate::ui::Message {
+                    text: text.into(),
+                    images: Vec::new(),
+                }))
+                .unwrap();
+            let feed = seam.feed.clone();
+            let bodies = bodies.clone();
+            async move {
+                tokio::time::timeout(wait, async {
+                    while bodies.lock().unwrap().len() < count || feed.activity().working {
+                        tokio::time::sleep(Duration::from_millis(20)).await;
+                    }
+                })
+                .await
+                .unwrap();
+                bodies.lock().unwrap()[count - 1].clone()
+            }
+        };
+        let switch = |seam: &Seam, to: crate::session::Mode| {
+            let (reply_to, answer) = tokio::sync::oneshot::channel();
+            seam.requests
+                .send(Request::SwitchMode {
+                    to,
+                    workspace: None,
+                    reply: reply_to,
+                })
+                .unwrap();
+            async move { answer.await.unwrap() }
+        };
+        let json = |body: &str| serde_json::from_str::<serde_json::Value>(body).unwrap();
+
+        let (seam, ended) = open(SessionChoice::New).await;
+        let id = seam.session.id.clone();
+        let first = ask(&seam, "First.", 1).await;
+        assert!(json(&first).get("tools").is_some(), "{first}");
+        // A switch waits for the turn.
+        seam.input
+            .send(Input::Message(crate::ui::Message {
+                text: "Slowly.".into(),
+                images: Vec::new(),
+            }))
+            .unwrap();
+        tokio::time::timeout(wait, async {
+            while bodies.lock().unwrap().len() < 2 {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            switch(&seam, crate::session::Mode::Chat).await,
+            Err("Wait for the turn to end.".to_string())
+        );
+        tokio::time::timeout(wait, async {
+            while seam.feed.activity().working {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(switch(&seam, crate::session::Mode::Chat).await, Ok(()));
+        assert_eq!(
+            tokio::time::timeout(wait, ended).await.unwrap().unwrap(),
+            RunEnd::Reopen
+        );
+        let settings = Session::open(&root, &id).unwrap().load_settings().unwrap();
+        assert_eq!(settings.mode, crate::session::Mode::Chat);
+        assert!(settings.switched_mode);
+
+        // In Chat, the conversation goes on without tools.
+        let (seam, ended) = open(SessionChoice::Resume(id.clone())).await;
+        let chat = ask(&seam, "Second.", 3).await;
+        assert!(json(&chat).get("tools").is_none(), "{chat}");
+        assert!(chat.contains("First.") && chat.contains("in a chat with the user"));
+        assert_eq!(
+            json(&chat).get("prompt_cache_key"),
+            json(&first).get("prompt_cache_key")
+        );
+        // Back to Agent, in the folder it worked in.
+        assert_eq!(switch(&seam, crate::session::Mode::Agent).await, Ok(()));
+        assert_eq!(
+            tokio::time::timeout(wait, ended).await.unwrap().unwrap(),
+            RunEnd::Reopen
+        );
+        let (seam, ended) = open(SessionChoice::Resume(id.clone())).await;
+        let agent = ask(&seam, "Third.", 4).await;
+        assert!(json(&agent).get("tools").is_some(), "{agent}");
+        assert!(agent.contains("First.") && agent.contains("Second."));
+        assert!(!agent.contains("in a chat with the user"));
+        seam.input.send(Input::Quit(Some(Vec::new()))).unwrap();
+        assert_eq!(
+            tokio::time::timeout(wait, ended).await.unwrap().unwrap(),
             RunEnd::Quit
         );
     }

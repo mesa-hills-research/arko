@@ -19,7 +19,7 @@ use crate::agents::{MAIN, NO_LIMIT, WORKER};
 use crate::crew::Crew;
 use crate::inputs::{Asker, Event, Inputs, unread_notes, waits_with};
 use crate::remote::{Action, Delivery, Level, Source};
-use crate::session::{Session, Settings};
+use crate::session::{Mode, Session, Settings};
 use crate::shell::{Shell, ShellTool};
 use crate::status::Gauges;
 use crate::ui::{Control, Input, Output, Stats};
@@ -304,6 +304,9 @@ pub(crate) struct Harness {
     pub(crate) queue_lines: bool,
     /// The user quit while a turn ran before the prompt opened.
     pub(crate) exiting: bool,
+    /// The session switched between Chat and Agent: it closes, for the
+    /// front end to open it again in its new mode.
+    pub(crate) reopen: bool,
     /// Native workers. None when disabled or when resuming a legacy session.
     pub(crate) crew: Option<Arc<Crew>>,
     /// Puts the main agent's questions to the user.
@@ -375,24 +378,41 @@ impl Harness {
                 .unwrap_or(fresh)
                 .clone()
         };
+        // A chat, and a session that switched between Chat and Agent, give
+        // the main agent's configuration now to its new conversations, while
+        // each saved one resumes with its own (until its next message, which
+        // goes on in the session's mode: `reconfigure`).
+        let keep = self.keeps_run_configs();
         if let Some(saved) = &saved {
-            self.unoffered = unoffered(
-                saved,
-                &[(MAIN, &self.main_config), (WORKER, &self.worker_config)],
-            );
+            // (A conversation of the other mode takes the session's on its
+            // next message: nothing to say of it.)
+            let main_resumes = !keep
+                || saved.configs.get(MAIN).is_some_and(|config| {
+                    config.tool_config.chat == (self.settings.mode == Mode::Chat)
+                });
+            let mut fresh = vec![(WORKER, &self.worker_config)];
+            if main_resumes && self.settings.mode == Mode::Agent {
+                fresh.insert(0, (MAIN, &self.main_config));
+            }
+            self.unoffered = unoffered(saved, &fresh);
         }
         let name = saved.as_ref().map_or(WORKFLOW_NAME, |saved| &saved.name);
-        let main_config = config(MAIN, &self.main_config);
+        let main_config = if keep {
+            self.main_config.clone()
+        } else {
+            config(MAIN, &self.main_config)
+        };
         // A main agent that ends its turns with a reply in text answers in
         // text beside its calls: it has no `message_user`. One that calls
         // `complete_task` (as every session saved before text replies
-        // does) keeps it.
-        let answers_with_tool = !main_config.tool_config.ends_task_with_text();
+        // does) keeps it, and so may a saved conversation that keeps its
+        // configuration.
+        let answers_with_tool = keep || !main_config.tool_config.ends_task_with_text();
         let mut builder = Workflow::builder()
             .name(name)
             .workspace(&self.settings.workspace)
             .llm_client(self.client.clone())
-            .agent(MAIN, main_config)
+            .agent(MAIN, main_config.clone())
             // The size the user set, which isn't saved with the workflow.
             .agent_handover_threshold(MAIN, self.handover.threshold())
             .persistence(
@@ -402,6 +422,9 @@ impl Harness {
             )
             .disable_messaging()
             .cancel_grace_period(Duration::from_secs(10));
+        if keep {
+            builder = builder.keep_saved_configs([MAIN]);
+        }
         for tool in &self.tools {
             builder = builder.agent_tool(MAIN, tool.clone());
         }
@@ -480,7 +503,7 @@ impl Harness {
             }
         }
         let workflow = Arc::new(builder.build().map_err(|error| error.to_string())?);
-        let mut configs = vec![config(MAIN, &self.main_config)];
+        let mut configs = vec![main_config];
         if self.settings.max_workers > 0 {
             configs.push(config(WORKER, &self.worker_config));
         }
@@ -806,6 +829,10 @@ impl Harness {
                 }
                 Event::Request(request) => {
                     self.request(request);
+                    // It switched between Chat and Agent: it opens again.
+                    if self.reopen {
+                        break;
+                    }
                     continue;
                 }
                 Event::Input(None | Some(Input::Eof)) => {
@@ -1238,36 +1265,216 @@ impl Harness {
 
     /// Does what the front end asks, and answers it.
     pub(crate) fn request(&mut self, request: crate::engine::Request) {
+        use crate::engine::Request;
+        // While a turn runs, the agent's configuration stays as it is.
+        const WAIT: &str = "Wait for the turn to end.";
+        let working = self.feed.activity().working;
         match request {
-            crate::engine::Request::Rename { title, reply } => {
+            Request::Rename { title, reply } => {
                 let renamed = self.session.rename(&title);
                 if renamed.is_ok() {
                     self.publish_title();
                 }
                 let _ = reply.send(renamed);
             }
-            crate::engine::Request::ChatInstructions { text, reply } => {
+            Request::ChatInstructions { reply, .. } | Request::SwitchMode { reply, .. }
+                if working =>
+            {
+                let _ = reply.send(Err(WAIT.into()));
+            }
+            Request::ChatInstructions { text, reply } => {
                 let _ = reply.send(self.set_chat_instructions(text));
+            }
+            Request::SwitchMode {
+                to,
+                workspace,
+                reply,
+            } => {
+                let _ = reply.send(self.switch_mode(to, workspace));
             }
         }
     }
 
-    /// The chat's instructions from the user, before its first message.
-    /// (A chat that has conversations keeps the instructions it was saved
-    /// with: its earlier conversations would no longer resume with others.)
+    /// How the conversation goes on: in the session's mode, when it was in
+    /// the other (the session switched between Chat and Agent), with the
+    /// agent's configuration now, in the session's folder.
+    fn continue_options(&self, conversation: &Conversation) -> ContinueOptions {
+        let options = ContinueOptions::new();
+        let result = match conversation {
+            Conversation::New => return options,
+            Conversation::Answered(result) => result,
+            // A run recovered takes no message, and one reopened keeps its
+            // configuration: the message after it changes it.
+            Conversation::Stopped(run) if run.restart != Restart::Continue => return options,
+            Conversation::Stopped(run) => &run.result,
+        };
+        let chat = result.task.agent_config.tool_config.chat;
+        if !self.keeps_run_configs() || chat == (self.settings.mode == Mode::Chat) {
+            return options;
+        }
+        let options = options.reconfigure(self.main_config.clone());
+        if self.settings.mode == Mode::Agent
+            && result.task.current_working_directory != self.settings.workspace
+        {
+            options.workspace(&self.settings.workspace)
+        } else {
+            options
+        }
+    }
+
+    /// Whether the main agent's saved conversations each resume with their
+    /// own configuration, and new ones take the session's now: a chat's
+    /// (whose instructions change between conversations), and a session's
+    /// that switched between Chat and Agent.
+    pub(crate) fn keeps_run_configs(&self) -> bool {
+        self.settings.mode == Mode::Chat || self.settings.switched_mode
+    }
+
+    /// The chat's instructions from the user: from its first message, or
+    /// else from its next new conversation (the one it is in keeps its
+    /// own).
     fn set_chat_instructions(&mut self, text: Option<String>) -> Result<(), String> {
-        if self.settings.mode != crate::session::Mode::Chat {
+        if self.settings.mode != Mode::Chat {
             return Err("This session isn't a chat.".into());
         }
-        if !self.conversations.list.is_empty() || !matches!(self.conversation, Conversation::New) {
-            return Err(
-                "This chat has its instructions: they change before a chat's first message. A new chat takes the new ones."
-                    .into(),
-            );
+        let text = text.filter(|text| !text.trim().is_empty());
+        if text == self.settings.chat_instructions {
+            return Ok(());
         }
         let mut settings = self.settings.clone();
-        settings.chat_instructions = text.filter(|text| !text.trim().is_empty());
-        self.rebuild_agents(settings)
+        settings.chat_instructions = text;
+        if !self.conversation_started() {
+            return self.rebuild_agents(settings);
+        }
+        let setup = self.providers.clone();
+        let (main_config, worker_config) = self.agent_configs(&settings, &setup)?;
+        self.settings = settings;
+        self.main_config = main_config;
+        self.worker_config = worker_config;
+        self.save_session();
+        self.reopen_workflow()?;
+        self.publish_details();
+        self.say(
+            Level::Info,
+            "The chat's instructions changed: its next new conversation takes them (/new).",
+        );
+        Ok(())
+    }
+
+    /// The workflow again, from its latest checkpoint, with the agents'
+    /// configurations now (between turns): the conversations go on where
+    /// they are.
+    fn reopen_workflow(&mut self) -> Result<(), String> {
+        // As it is now: `/new` may have left the conversation it was in.
+        let new = matches!(self.conversation, Conversation::New);
+        self.save_conversations();
+        self.open(self.session.latest_checkpoint().is_some())?;
+        if new {
+            self.conversations.current = None;
+            self.conversation = Conversation::New;
+        }
+        self.start_new_workers();
+        self.publish_conversations();
+        Ok(())
+    }
+
+    /// Makes the session a chat or an agent's (`to`), working in
+    /// `workspace`: refused, saying why, while workers run or their news
+    /// waits, and (to Chat) while jobs run. The session then closes, to be
+    /// opened again in its new mode; its next message reconfigures the
+    /// conversation (see `turn`).
+    fn switch_mode(&mut self, to: Mode, workspace: Option<PathBuf>) -> Result<(), String> {
+        if to == self.settings.mode {
+            return Ok(());
+        }
+        if let Some(crew) = &self.crew {
+            let running = crew.running();
+            match running.as_slice() {
+                [] => {}
+                [one] => {
+                    return Err(format!("{one} is running: wait for it or stop it first."));
+                }
+                many => {
+                    return Err(format!(
+                        "{} workers are running: wait for them or stop them first.",
+                        many.len()
+                    ));
+                }
+            }
+            if crew.has_mail() {
+                return Err(
+                    "The workers' news hasn't reached the agent yet: send a message first.".into(),
+                );
+            }
+        }
+        let jobs = self.background.jobs();
+        if to == Mode::Chat && !jobs.is_empty() {
+            return Err(format!(
+                "{} running in the background: wait for {} or stop {} first.",
+                if jobs.len() == 1 {
+                    "A job is".to_string()
+                } else {
+                    format!("{} jobs are", jobs.len())
+                },
+                if jobs.len() == 1 { "it" } else { "them" },
+                if jobs.len() == 1 { "it" } else { "them" },
+            ));
+        }
+        let mut settings = self.settings.clone();
+        if to == Mode::Agent {
+            // A chat that never was an agent's works in its session's folder.
+            let folder = match workspace {
+                Some(folder) => folder,
+                None if settings.workspace != self.session.dir => settings.workspace.clone(),
+                None => return Err("An agent needs a folder to work in.".into()),
+            };
+            let folder = std::path::absolute(&folder).map_err(|error| error.to_string())?;
+            let folder = arko_agents::utils::normalize_path(&folder);
+            if !folder.is_dir() {
+                return Err(format!("{} is not a folder.", folder.display()));
+            }
+            // Claude Code finds a conversation only from the folder it
+            // started in.
+            let moves = folder != settings.workspace;
+            let claude_code = providers::resolve_model(&settings.main.model)
+                .is_ok_and(|model| model.provider == arko_ai::Provider::ClaudeCode);
+            if moves && self.conversation_started() && claude_code {
+                return Err(format!(
+                    "Claude Code keeps a conversation in the folder it started in ({}): start a new session in {} instead.",
+                    settings.workspace.display(),
+                    folder.display()
+                ));
+            }
+            settings.workspace = folder;
+            if settings.max_workers == 0 {
+                settings.max_workers = crate::agents::NO_LIMIT;
+                settings.worker_project_instructions = true;
+                settings.project_instructions = Default::default();
+            }
+        }
+        settings.mode = to;
+        settings.switched_mode = true;
+        // The agents can be built in the new mode.
+        let setup = self.providers.clone();
+        self.agent_configs(&settings, &setup)?;
+        self.session
+            .save_settings(&settings)
+            .map_err(|error| format!("could not save the session: {error}"))?;
+        self.settings = settings;
+        self.say(
+            Level::Info,
+            &match to {
+                Mode::Chat => {
+                    "Switched to Chat: from the next message, the agent has no tools.".to_string()
+                }
+                Mode::Agent => format!(
+                    "Switched to Agent in {}: from the next message, the agent has its tools.",
+                    self.settings.workspace.display()
+                ),
+            },
+        );
+        self.reopen = true;
+        Ok(())
     }
 
     /// The session's name, as the status gives it: the one the user gave
@@ -1285,8 +1492,8 @@ impl Harness {
             })
             .or_else(|| self.settings.title.clone())
             .unwrap_or_else(|| match self.settings.mode {
-                crate::session::Mode::Agent => "New session".to_string(),
-                crate::session::Mode::Chat => "New chat".to_string(),
+                Mode::Agent => "New session".to_string(),
+                Mode::Chat => "New chat".to_string(),
             });
         *lock(&self.gauges.title) = title;
         self.gauges.touch();
@@ -2158,15 +2365,20 @@ impl Harness {
         let spent_before = self.spent();
         let started = Instant::now();
         let conversation = std::mem::replace(&mut self.conversation, Conversation::New);
+        let options = self.continue_options(&conversation);
         let call = {
             let workflow = workflow.clone();
             tokio::spawn(async move {
                 match conversation {
                     Conversation::New => workflow.run_agent(MAIN, &message).await,
                     Conversation::Answered(previous) => {
-                        workflow.continue_agent(&previous, &message).await
+                        workflow
+                            .continue_agent_with(&previous, &message, options)
+                            .await
                     }
-                    Conversation::Stopped(run) => workflow.restart(&run, &message).await,
+                    Conversation::Stopped(run) => {
+                        workflow.restart_with(&run, &message, options).await
+                    }
                 }
             })
         };
@@ -3606,6 +3818,7 @@ pub(crate) mod tests {
             switched: false,
             queue_lines: !interactive,
             exiting: false,
+            reopen: false,
             crew: Some(crew),
             asker: Arc::new(Asker {
                 questions: interactive.then_some(questions_sender),

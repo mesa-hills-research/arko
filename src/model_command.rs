@@ -641,7 +641,7 @@ impl Harness {
         }
     }
 
-    fn save_session(&self) {
+    pub(crate) fn save_session(&self) {
         if let Err(error) = self.session.save_settings(&self.settings) {
             self.say(
                 Level::Error,

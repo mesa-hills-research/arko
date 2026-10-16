@@ -434,7 +434,7 @@ pub(crate) async fn run(args: Args) -> Result<ExitCode, String> {
     let code = if let Some(prompt) = args.prompt.clone() {
         engine.front_end(FrontEnd::default());
         match engine.run_prompt(prompt).await {
-            RunEnd::Answered | RunEnd::Quit => ExitCode::SUCCESS,
+            RunEnd::Answered | RunEnd::Quit | RunEnd::Reopen => ExitCode::SUCCESS,
             RunEnd::Stopped => ExitCode::from(130),
             RunEnd::Failed => ExitCode::FAILURE,
         }

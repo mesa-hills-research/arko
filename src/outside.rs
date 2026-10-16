@@ -36,8 +36,10 @@ const WORKSPACE_PARAM: &str = "workspace";
 /// The switch, and what follows it.
 pub struct Outside {
     on: AtomicBool,
-    /// The terminal managers whose command guard follows the switch.
-    managers: Vec<Arc<TerminalManager>>,
+    /// The terminal managers whose command guard follows the switch. (The
+    /// session owns them: once it closes, their folders' locks go, also
+    /// while a front end still holds its status.)
+    managers: Vec<Weak<TerminalManager>>,
     /// The session's working directory (the main agent's).
     workspace: PathBuf,
     /// The workflow, for the workers' working directories.
@@ -55,7 +57,7 @@ impl Outside {
         }
         Self {
             on: AtomicBool::new(on),
-            managers,
+            managers: managers.iter().map(Arc::downgrade).collect(),
             workspace,
             workflow: Mutex::new(Weak::new()),
             files_follow: AtomicBool::new(true),
@@ -70,7 +72,7 @@ impl Outside {
     /// Returns whether that changed it.
     pub fn set(&self, on: bool) -> bool {
         let was = self.on.swap(on, Ordering::SeqCst);
-        for manager in &self.managers {
+        for manager in self.managers.iter().filter_map(Weak::upgrade) {
             manager.set_allow_outside_workspace(on);
         }
         was != on
@@ -202,6 +204,7 @@ impl Outside {
     fn guards(&self) -> Vec<bool> {
         self.managers
             .iter()
+            .filter_map(Weak::upgrade)
             .map(|manager| manager.allows_outside_workspace())
             .collect()
     }
@@ -404,7 +407,9 @@ mod tests {
             ))
             .unwrap()
         };
-        let outside = Outside::new(true, vec![open("a"), open("b")], temp.path().into());
+        // (The session holds them.)
+        let managers = vec![open("a"), open("b")];
+        let outside = Outside::new(true, managers.clone(), temp.path().into());
         assert_eq!(outside.guards(), [true, true]);
         outside.set(false);
         assert_eq!(outside.guards(), [false, false]);

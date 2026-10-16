@@ -341,7 +341,7 @@ impl Harness {
         self.publish_conversations();
     }
 
-    fn save_conversations(&self) {
+    pub(crate) fn save_conversations(&self) {
         if let Err(error) = self.conversations.save(&self.session.dir) {
             self.say(
                 Level::Error,
