@@ -474,6 +474,7 @@ impl Engine {
             extra_rules: Default::default(),
             project: Default::default(),
             background: managers.background.clone(),
+            page: Mutex::default(),
         });
         // The main agent's questions are put to the user at the prompt; with
         // no terminal, it is told there is no one to ask.

@@ -26,9 +26,8 @@ mod transcript;
 mod wrap;
 
 use std::io::{IsTerminal, Stdout, Write};
-use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crossterm::event::{
@@ -94,18 +93,6 @@ pub fn available() -> bool {
     std::io::stdin().is_terminal()
         && std::io::stdout().is_terminal()
         && std::env::var("TERM").map_or(true, |term| term != "dumb")
-}
-
-/// The web page's address while it runs, for the QR overlay.
-static PAGE: Mutex<Option<SocketAddr>> = Mutex::new(None);
-
-/// The web page started on `addr` (`None`: it stopped).
-pub fn page_at(addr: Option<SocketAddr>) {
-    *PAGE.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = addr;
-}
-
-fn page() -> Option<SocketAddr> {
-    *PAGE.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 /// Takes the screen, and shows the session there from now on: `output`'s

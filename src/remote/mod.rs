@@ -120,6 +120,18 @@ pub struct Reading {
     /// `/resume`.)
     #[serde(skip)]
     pub conversations: Vec<ConversationEntry>,
+    /// The web page, while it is served.
+    #[serde(skip)]
+    pub page: Option<Page>,
+}
+
+/// The web page while it is served: where, and its links as they were when
+/// it started (best first), with what to tell the user about them.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Page {
+    pub addr: SocketAddr,
+    pub links: Vec<Link>,
+    pub note: Option<String>,
 }
 
 /// One of the session's conversations with the main agent.

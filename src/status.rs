@@ -40,6 +40,8 @@ pub(crate) struct Gauges {
     pub(crate) project: Mutex<(project::Files, bool)>,
     /// When the shell's commands move to the background, and those running.
     pub(crate) background: Arc<shell::Background>,
+    /// The web page, while it is served.
+    pub(crate) page: Mutex<Option<remote::Page>>,
 }
 
 impl Gauges {
@@ -137,6 +139,7 @@ impl remote::Meter for Gauges {
                 models
             },
             conversations: lock(&self.conversations).clone(),
+            page: lock(&self.page).clone(),
         }
     }
 }

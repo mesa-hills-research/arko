@@ -426,7 +426,7 @@ fn settings(frame: &mut Frame, app: &App, area: Rect, selected: usize) {
     let theme = &app.theme;
     let rows = app.settings_rows();
     let selected = selected.min(rows.len() - 1);
-    let page_on = super::page().is_some();
+    let page_on = app.reading.page.is_some();
     let label_width = 14;
     let mut lines: Vec<Line<'static>> = Vec::new();
     // The last line of the chosen row's description: kept in view.
@@ -839,7 +839,7 @@ fn flash_notice(frame: &mut Frame, app: &App, over: Rect, choice: usize) {
 
 /// The web page's links, ranked, while it runs.
 pub fn page_links(app: &App) -> Option<Vec<remote::Link>> {
-    let addr = super::page()?;
+    let addr = app.reading.page.as_ref()?.addr;
     let key = remote::session_key(&app.info.session_dir.join(remote::KEY_FILE)).ok()?;
     Some(remote::links(addr, &key).0)
 }

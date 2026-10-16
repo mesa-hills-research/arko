@@ -22,8 +22,6 @@ use crate::remote::{Action, Delivery, Level, Source};
 use crate::session::{Session, Settings};
 use crate::shell::{Shell, ShellTool};
 use crate::status::Gauges;
-#[cfg(feature = "tui")]
-use crate::tui;
 use crate::ui::{Control, Input, Output, Stats};
 use crate::{
     agents, commands, conversations, crew, glyphs, handover, index, keys, mcp, message, outside,
@@ -1013,8 +1011,12 @@ impl Harness {
             Ok(server) => {
                 self.announce_remote(server.addr(), &key);
                 self.remote_bind = Some((bind, server.addr().port()));
-                #[cfg(feature = "tui")]
-                tui::page_at(Some(server.addr()));
+                let (links, note) = remote::links(server.addr(), &key);
+                *lock(&self.gauges.page) = Some(remote::Page {
+                    addr: server.addr(),
+                    links,
+                    note,
+                });
                 self.remote = Some(server);
             }
             Err(error) => self.output.line(
@@ -1028,8 +1030,7 @@ impl Harness {
     /// Stops the web page: its streams end, and its sessions with them.
     pub(crate) async fn stop_remote(&mut self) {
         if let Some(server) = self.remote.take() {
-            #[cfg(feature = "tui")]
-            tui::page_at(None);
+            lock(&self.gauges.page).take();
             server.stop().await;
         }
     }
@@ -3349,6 +3350,7 @@ pub(crate) mod tests {
             extra_rules: Default::default(),
             project: Default::default(),
             background: background.clone(),
+            page: Mutex::default(),
         });
         let mut harness = Harness {
             settings,
@@ -4216,6 +4218,33 @@ pub(crate) mod tests {
         );
         assert!(parse(&["arko", "-p", "hi", "--remote"]).is_err());
         assert!(command("/remote off").is_some() && command("/remotely").is_none());
+    }
+
+    /// The session's status says where its web page is served, with its
+    /// links, while it is: the full-screen view's QR code and an app read it
+    /// there.
+    #[tokio::test]
+    async fn the_status_has_the_web_page_while_it_is_served() {
+        let temp = tempfile::tempdir().unwrap();
+        let (mut harness, _inputs, _sender) = harness(temp.path(), LLMClient::new(), true);
+        assert_eq!(remote::Meter::read(harness.gauges.as_ref()).page, None);
+        harness
+            .start_remote(remote::Bind {
+                ip: std::net::Ipv4Addr::LOCALHOST.into(),
+                port: Some(0),
+            })
+            .await;
+        let addr = harness.remote.as_ref().expect("the page is on").addr();
+        let page = remote::Meter::read(harness.gauges.as_ref()).page.unwrap();
+        assert_eq!(page.addr, addr);
+        assert!(
+            page.links[0]
+                .url
+                .starts_with(&format!("http://{addr}/#key=")),
+            "{page:?}"
+        );
+        harness.stop_remote().await;
+        assert_eq!(remote::Meter::read(harness.gauges.as_ref()).page, None);
     }
 
     /// Serves `harness`'s web page on a free port; returns an HTTP client,

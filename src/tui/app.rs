@@ -1524,7 +1524,7 @@ impl App {
                     });
                 }
                 SettingsRow::Page => {
-                    if super::page().is_some() {
+                    if self.reading.page.is_some() {
                         self.send("/remote off");
                     } else {
                         self.send("/remote");
