@@ -1,4 +1,4 @@
-// Tests of the page's logic (core.js), outside the page: `node --test src/remote/page-tests`.
+// Tests of the page's logic (core.js), outside the page: `node --test src/remote/page-tests/core.test.js`.
 'use strict';
 
 const test = require('node:test');

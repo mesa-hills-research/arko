@@ -130,4 +130,4 @@ arko_agents supplies `message_user` and a `MessageToUser` event. A message can r
 
 ## fin's own dependency setup
 
-fin builds against the local arko checkout through path dependencies. Native subagents replace fin's per-worker workflows, mailbox and `workers.json` runtime.
+fin builds against a local arko_framework checkout through path dependencies, so the two repositories sit side by side.
