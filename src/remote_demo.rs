@@ -243,6 +243,8 @@ async fn remote_page_demo() {
         project: Default::default(),
         background: managers.background.clone(),
         page: std::sync::Mutex::default(),
+        changed: Default::default(),
+        published: Default::default(),
     });
     harness.open(false).unwrap();
     let _ = feed_cell.set(harness.feed.clone());

@@ -1017,6 +1017,7 @@ impl Harness {
                     links,
                     note,
                 });
+                self.gauges.touch();
                 self.remote = Some(server);
             }
             Err(error) => self.output.line(
@@ -1031,6 +1032,7 @@ impl Harness {
     pub(crate) async fn stop_remote(&mut self) {
         if let Some(server) = self.remote.take() {
             lock(&self.gauges.page).take();
+            self.gauges.touch();
             server.stop().await;
         }
     }
@@ -1157,6 +1159,8 @@ impl Harness {
             "/background-after" => self.background_after_command(argument, source),
             _ => self.handover_at_command(argument, source),
         }
+        // (A setting it changed shows in the status.)
+        self.gauges.touch();
         true
     }
 
@@ -3351,6 +3355,8 @@ pub(crate) mod tests {
             project: Default::default(),
             background: background.clone(),
             page: Mutex::default(),
+            changed: Default::default(),
+            published: Default::default(),
         });
         let mut harness = Harness {
             settings,

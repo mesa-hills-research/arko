@@ -101,6 +101,8 @@ pub struct Seam {
     /// The session's figures (cost, context, settings, workers), read on
     /// demand.
     pub meter: Arc<dyn remote::Meter>,
+    /// The same figures, sent as they change.
+    pub status: tokio::sync::watch::Receiver<Arc<remote::Reading>>,
     /// The user's input.
     pub input: mpsc::UnboundedSender<Input>,
     /// The API keys, which the front end can add and remove.
@@ -221,6 +223,8 @@ pub fn spawn(options: Options, prompter: Arc<dyn Prompter>) -> Running {
 pub struct Engine {
     /// Held while the session is open; released after shutdown.
     _lock: SessionLock,
+    /// Sends the status as it changes.
+    publisher: tokio::task::JoinHandle<()>,
     harness: Harness,
     inputs: Inputs,
     managers: Managers,
@@ -555,6 +559,8 @@ impl Engine {
             project: Default::default(),
             background: managers.background.clone(),
             page: Mutex::default(),
+            changed: Default::default(),
+            published: Default::default(),
         });
         // The main agent's questions are put to the user at the prompt; with
         // no terminal, it is told there is no one to ask.
@@ -663,6 +669,7 @@ impl Engine {
             },
             feed: harness.feed.clone(),
             meter: harness.gauges.clone(),
+            status: harness.gauges.watch(),
             input: input_sender,
             keys: harness.keys.clone(),
             quit_asks,
@@ -675,8 +682,10 @@ impl Engine {
                 .unwrap_or(harness.settings.handover_at),
             show_thinking: harness.settings.show_thinking,
         };
+        let publisher = harness.gauges.publish(&harness.feed);
         let engine = Engine {
             _lock: lock,
+            publisher,
             harness,
             inputs,
             managers,
@@ -750,6 +759,7 @@ impl Engine {
     /// index watchers and the terminal's jobs. The session is saved as it
     /// goes.
     pub async fn shutdown(self) {
+        self.publisher.abort();
         let mut harness = self.harness;
         let output = harness.output.clone();
         if harness.remote.is_some() {
@@ -783,7 +793,7 @@ mod tests {
 
     use super::*;
     use crate::agents::{Effort, ModelSettings, resolve_model};
-    use crate::mock_model::{ModelServer, complete, reply};
+    use crate::mock_model::{ModelServer, complete, reply, with_input};
     use crate::options::GivenClient;
     use crate::prompter::NoPrompter;
     use crate::providers::OpenAiAuth;
@@ -981,6 +991,56 @@ mod tests {
                 assert!(text.contains(&format!("] [{id}] ")), "{id}: {text}");
             }
         }
+    }
+
+    /// The status goes out when it changes (a request reports its usage),
+    /// once per change: not again while the session is idle.
+    #[tokio::test]
+    async fn the_status_changes_when_a_request_reports_usage() {
+        let temp = tempfile::tempdir().unwrap();
+        let server = ModelServer::start(Arc::new(|_, _| {
+            Box::pin(async { with_input(complete("a1", "Done."), 12_345) })
+        }))
+        .await;
+        let root = temp.path().join("arko");
+        let workspace = temp.path().join("work");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let luna = ModelSettings {
+            model: resolve_model("luna").unwrap().id,
+            effort: Effort::High,
+            fast: false,
+            cache_1h: false,
+            handover_at: None,
+        };
+        let session = Session::create(&root).unwrap();
+        session
+            .save_settings(&Settings::for_test(&workspace, &luna))
+            .unwrap();
+        let options = Options {
+            root: Some(root),
+            session: SessionChoice::Resume(session.id.clone()),
+            one_shot: true,
+            interactive: false,
+            client: Some(GivenClient(Arc::new(server.client()))),
+            ..Options::default()
+        };
+        let (mut engine, mut seam) = Engine::open(options, Arc::new(NoPrompter)).await.unwrap();
+        assert_eq!(seam.status.borrow().context_tokens, None);
+        engine.front_end(FrontEnd::default());
+        assert_eq!(engine.run_prompt("Do it.".into()).await, RunEnd::Answered);
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while seam.status.borrow_and_update().context_tokens != Some(12_345) {
+                seam.status.changed().await.unwrap();
+            }
+        })
+        .await
+        .expect("the status with the request's input");
+        // Settled, it isn't sent again while nothing changes.
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        seam.status.mark_unchanged();
+        tokio::time::sleep(Duration::from_millis(2500)).await;
+        assert!(!seam.status.has_changed().unwrap(), "nothing changed");
+        engine.shutdown().await;
     }
 
     /// A session open in another Arko isn't opened: the front end is told

@@ -1,7 +1,11 @@
 //! The session's figures for the status (`remote::Meter`), which the full
-//! screen and the web page read.
+//! screen and the web page read, and which an app gets as they change
+//! ([`Gauges::publish`]).
 
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use tokio::sync::{Notify, broadcast, watch};
 
 use arko_workflows::prelude::*;
 
@@ -42,9 +46,89 @@ pub(crate) struct Gauges {
     pub(crate) background: Arc<shell::Background>,
     /// The web page, while it is served.
     pub(crate) page: Mutex<Option<remote::Page>>,
+    /// Rings when something the status shows changed ([`touch`](Self::touch)).
+    pub(crate) changed: Notify,
+    /// The status as last published.
+    pub(crate) published: Published,
 }
 
+/// The status as [`Gauges::publish`] last sent it.
+pub(crate) struct Published(watch::Sender<Arc<remote::Reading>>);
+
+impl Default for Published {
+    fn default() -> Self {
+        Self(watch::channel(Arc::default()).0)
+    }
+}
+
+/// How long the publisher gathers changes before it reads the status, so a
+/// burst of them (a streamed reply) makes one status, at most twice a
+/// second.
+const GATHER: Duration = Duration::from_millis(500);
+/// How often the status is read while the session works (a turn, workers,
+/// jobs): its time and costs move without a change being told.
+const WHILE_WORKING: Duration = Duration::from_secs(1);
+
 impl Gauges {
+    /// Something the status shows changed (a setting, the models, the
+    /// conversations, the web page): the next status goes out soon.
+    pub(crate) fn touch(&self) {
+        self.changed.notify_one();
+    }
+
+    /// The status, as it changes.
+    pub(crate) fn watch(&self) -> watch::Receiver<Arc<remote::Reading>> {
+        self.published.0.subscribe()
+    }
+
+    /// Sends the status to [`watch`](Self::watch)ers whenever it changes:
+    /// when something [touches](Self::touch) it or `feed` changes, and every
+    /// second while the session works. A status like the last isn't sent
+    /// again. Runs until it is aborted.
+    pub(crate) fn publish(self: &Arc<Self>, feed: &remote::Feed) -> tokio::task::JoinHandle<()> {
+        let gauges = Arc::downgrade(self);
+        let feed = feed.clone();
+        let (_, mut updates) = feed.subscribe();
+        tokio::spawn(async move {
+            let mut working = false;
+            loop {
+                let Some(this) = gauges.upgrade() else {
+                    break;
+                };
+                let wait = if working {
+                    WHILE_WORKING
+                } else {
+                    Duration::from_secs(3600)
+                };
+                tokio::select! {
+                    () = this.changed.notified() => {}
+                    update = updates.recv() => {
+                        if let Err(broadcast::error::RecvError::Closed) = update {
+                            break;
+                        }
+                    }
+                    () = tokio::time::sleep(wait) => {}
+                }
+                drop(this);
+                tokio::time::sleep(GATHER).await;
+                let Some(this) = gauges.upgrade() else {
+                    break;
+                };
+                let reading = remote::Meter::read(this.as_ref());
+                working = feed.activity().working
+                    || !reading.workers_running.is_empty()
+                    || !reading.jobs.is_empty();
+                this.published.0.send_if_modified(|current| {
+                    if **current == reading {
+                        return false;
+                    }
+                    *current = Arc::new(reading);
+                    true
+                });
+            }
+        })
+    }
+
     /// The agents running a shell command, as the clients name them:
     /// [`remote::MAIN_AGENT`], or a worker's ID.
     pub(crate) fn commands_running(&self) -> Vec<String> {

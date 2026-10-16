@@ -353,6 +353,7 @@ impl Harness {
     /// Tells the clients (the full-screen view's `/resume` picker) the
     /// conversations.
     pub(crate) fn publish_conversations(&self) {
+        self.gauges.touch();
         let workflow = self.workflow().clone();
         *lock(&self.gauges.conversations) =
             self.conversations.entries(|run| last_used(&workflow, run));
