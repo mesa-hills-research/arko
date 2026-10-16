@@ -114,6 +114,60 @@ async fn a_long_command_moves_to_the_background_and_its_end_wakes_the_idle_agent
     managers.shutdown().await;
 }
 
+/// A job that finishes while the agent makes its last request still starts
+/// a turn once the agent is idle: its update came too late for that request,
+/// and the agent reads it once, in the turn the job starts.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_job_that_ends_during_the_last_request_still_wakes_the_agent() {
+    let bodies: Bodies = Arc::default();
+    let server = ModelServer::start(Arc::new({
+        let bodies = bodies.clone();
+        move |_, body: String| {
+            bodies.lock().unwrap().push(body.clone());
+            Box::pin(async move {
+                if body.contains("A background job of yours finished") {
+                    complete("m3", "The build finished.")
+                } else if body.contains("call_m1") {
+                    // The job ends while this reply is on its way.
+                    tokio::time::sleep(Duration::from_secs(3)).await;
+                    complete("m2", "The build goes on in the background.")
+                } else {
+                    tool_call(
+                        "m1",
+                        SHELL_TOOL,
+                        serde_json::json!({"command": "sleep 2; echo built"}),
+                    )
+                }
+            })
+        }
+    }))
+    .await;
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
+    let managers = equip(&mut harness, &mut inputs, 1);
+    let turn = harness.turn(Prompt::User("Build it.".into()), &mut inputs);
+    let end = tokio::time::timeout(Duration::from_secs(20), turn).await;
+    assert!(matches!(end, Ok(TurnEnd::Answered)));
+    assert_eq!(summary(&harness), "The build goes on in the background.");
+    let finished = match tokio::time::timeout(Duration::from_secs(1), inputs.next_event(true))
+        .await
+        .expect("the job that ended during the turn wakes the agent")
+    {
+        Event::Finished(finished) => finished,
+        _ => panic!("expected a finished job"),
+    };
+    assert!(matches!(
+        harness.deliver_finished(finished, &mut inputs).await,
+        News::Done
+    ));
+    assert_eq!(summary(&harness), "The build finished.");
+    let woken = body_with(&bodies, "A background job of yours finished");
+    assert_eq!(woken.matches("Terminal update").count(), 1, "{woken}");
+    assert!(woken.contains("built"), "{woken}");
+    managers.shutdown().await;
+}
+
 /// Ctrl+B moves the command running at once, also with the setting off,
 /// and what the user types next reaches the agent as a note.
 #[cfg(unix)]

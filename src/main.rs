@@ -728,6 +728,7 @@ async fn run(args: Args) -> Result<ExitCode, String> {
         remote: remote_input,
         // With -p, Arko exits when the agent finishes, jobs or not.
         finished: (!one_shot).then(|| managers.jobs.subscribe_finished()),
+        late: None,
     };
 
     let code = if let Some(prompt) = args.prompt.clone() {
@@ -2911,8 +2912,9 @@ impl Harness {
             }
         };
         self.flush_printer().await;
-        // The jobs that finished meanwhile told the agent as it worked.
-        input.drain_finished();
+        // The jobs that finished meanwhile told the agent as it worked,
+        // unless an update came during its last request (below).
+        let finished = input.drain_finished();
         let outcome = outcome.unwrap_or_else(|error| {
             Err(WorkflowError::Channel(format!(
                 "the turn's task failed: {error}"
@@ -2933,6 +2935,11 @@ impl Harness {
                 }
                 self.feed.reply(&result.summary);
                 self.keep_unread(&notes, &workflow);
+                // Its task keeps that update for the next turn, which the
+                // job starts as if it finished now.
+                input.late = finished
+                    .into_iter()
+                    .find(|job| waits_with(&result.task, job));
                 self.conversation = Conversation::Answered(result);
                 self.track_conversations();
                 TurnEnd::Answered
@@ -3448,6 +3455,9 @@ struct Inputs {
     /// The terminal's jobs that finish in the background; `None` with -p,
     /// where they wake no one.
     finished: Option<tokio::sync::broadcast::Receiver<arko_agents::terminal::JobFinished>>,
+    /// A job that finished during the agent's last turn, too late for it
+    /// to read the update (see `waits_with`).
+    late: Option<arko_agents::terminal::JobFinished>,
 }
 
 /// What [`Inputs::next_event`] returns.
@@ -3471,6 +3481,9 @@ impl Inputs {
         if let Some(input) = self.pending.take() {
             return Event::Input(Some(input));
         }
+        if woken && let Some(job) = self.late.take() {
+            return Event::Finished(job);
+        }
         tokio::select! {
             input = self.receiver.recv() => Event::Input(input),
             Some(question) = self.questions.recv() => Event::Question(question),
@@ -3487,16 +3500,20 @@ impl Inputs {
         }
     }
 
-    /// Forgets the jobs that finished so far: their updates reached the
-    /// agent, or go with the turn starting.
-    fn drain_finished(&mut self) {
+    /// Forgets the jobs that finished so far, and returns them: their
+    /// updates reached the agent, or go with the turn starting.
+    fn drain_finished(&mut self) -> Vec<arko_agents::terminal::JobFinished> {
+        let mut jobs: Vec<_> = self.late.take().into_iter().collect();
         if let Some(finished) = &mut self.finished {
-            while !matches!(
-                finished.try_recv(),
-                Err(tokio::sync::broadcast::error::TryRecvError::Empty
-                    | tokio::sync::broadcast::error::TryRecvError::Closed)
-            ) {}
+            loop {
+                match finished.try_recv() {
+                    Ok(job) => jobs.push(job),
+                    Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => continue,
+                    Err(_) => break,
+                }
+            }
         }
+        jobs
     }
 
     /// A pasted block arrives as several lines in quick succession (where
@@ -3535,6 +3552,18 @@ async fn job_finished(
         *finished = None;
     }
     std::future::pending().await
+}
+
+/// Whether the terminal update of `job` came while the agent made its last
+/// request, too late for it to read: its task keeps it for the next turn.
+/// shortcut: misses an update the turn's runtime ended before it was sent
+/// (it goes with the next message), upgrade with a TerminalManager query
+/// if that shows up.
+fn waits_with(task: &arko_agents::Task, job: &arko_agents::terminal::JobFinished) -> bool {
+    let id = job.job_id.to_string();
+    task.pending_context_injections
+        .iter()
+        .any(|content| content.starts_with("Terminal update:") && content.contains(&id))
 }
 
 /// The crew's next wake-up; never, without a crew.
@@ -4281,6 +4310,7 @@ mod tests {
             woken: Some(woken),
             remote: remote_input,
             finished: None,
+            late: None,
         };
         (harness, inputs, input_sender)
     }
