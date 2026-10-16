@@ -80,7 +80,8 @@ const WHOLES_KEPT: usize = 8 * 1024 * 1024;
 struct Entry {
     item: Item,
     cache: Option<Cached>,
-    /// A command's block shows its whole output (a click opened it).
+    /// A command's block shows its whole output, or an agent's thinking
+    /// shows whole (a click opened it).
     open: bool,
 }
 
@@ -255,6 +256,9 @@ pub struct Transcript {
     /// A fold was opened or closed: the next draw keeps its block's last
     /// line (the one clicked) on this row of the area.
     pin: Option<(u64, usize)>,
+    /// The agents' thinking shows whole from the start (`--show-thinking`),
+    /// instead of folded to its first line.
+    open_thinking: bool,
 }
 
 impl Default for Transcript {
@@ -276,6 +280,29 @@ impl Transcript {
             drawn: Drawn::default(),
             pending_scroll: 0,
             pin: None,
+            open_thinking: false,
+        }
+    }
+
+    /// Shows the agents' thinking whole (`open`) or folded, from now on and
+    /// in the items already there.
+    pub fn set_open_thinking(&mut self, open: bool) {
+        self.open_thinking = open;
+        for entry in &mut self.entries {
+            if entry.item.kind == Kind::Thinking {
+                entry.open = open;
+                entry.cache = None;
+            }
+        }
+    }
+
+    /// An entry for `item`: an agent's thinking opens as `open_thinking`
+    /// says.
+    fn entry(&self, item: Item) -> Entry {
+        let open = self.open_thinking && item.kind == Kind::Thinking;
+        Entry {
+            open,
+            ..Entry::new(item)
         }
     }
 
@@ -283,7 +310,11 @@ impl Transcript {
     /// fell behind): the reading position and selection stay on their
     /// items.
     pub fn reset(&mut self, snapshot: Snapshot) {
-        self.entries = snapshot.items.into_iter().map(Entry::new).collect();
+        self.entries = snapshot
+            .items
+            .into_iter()
+            .map(|item| self.entry(item))
+            .collect();
         self.workers = snapshot.workers;
         self.trim();
     }
@@ -292,7 +323,8 @@ impl Transcript {
     pub fn apply(&mut self, update: Update) {
         match update {
             Update::Item(item) => {
-                self.entries.push_back(Entry::new(item));
+                let entry = self.entry(item);
+                self.entries.push_back(entry);
                 self.trim();
             }
             // (Text added at an item's end leaves what is highlighted
@@ -891,11 +923,14 @@ impl Transcript {
         self.hold = false;
     }
 
-    /// The command's block whose fold line is on the screen's `x`, `y`:
-    /// its last line, which opens or closes its whole output.
+    /// The block whose fold line is on the screen's `x`, `y`: its last
+    /// line, which opens or closes a command's whole output or an agent's
+    /// thinking.
     pub fn fold_at(&mut self, x: u16, y: u16, filter: &Filter, theme: &Theme) -> Option<u64> {
         let row = self.drawn.row_at(x, y)?;
-        self.item(row.key)?.whole.as_ref()?;
+        if !folds(self.item(row.key)?) {
+            return None;
+        }
         let rows = self.rows_of(row.key, filter, theme)?;
         (row.line + 1 == rows.len()).then_some(row.key)
     }
@@ -904,7 +939,9 @@ impl Transcript {
     /// the screen's row `y` at the next draw. Returns that line.
     pub fn toggle(&mut self, key: u64, y: u16, filter: &Filter, theme: &Theme) -> Option<usize> {
         let entry = self.find_mut(key)?;
-        entry.item.whole.as_ref()?;
+        if !folds(&entry.item) {
+            return None;
+        }
         entry.open = !entry.open;
         entry.cache = None;
         self.pin = Some((key, y.saturating_sub(self.drawn.area.y) as usize));
@@ -1109,6 +1146,12 @@ fn columns(line: &Wrapped, from: usize, to: usize) -> String {
         .to_string()
 }
 
+/// Whether `item`'s block folds: a command's whole output, kept, or an
+/// agent's thinking.
+fn folds(item: &Item) -> bool {
+    item.whole.is_some() || item.kind == Kind::Thinking
+}
+
 /// What a view shows.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Filter {
@@ -1173,7 +1216,9 @@ impl Filter {
                         // Tool activity is one line a turn that counts the
                         // calls (as the web page shows it).
                         Kind::Call => Show::Count,
-                        Kind::Result | Kind::Notice | Kind::Turn => Show::Hidden,
+                        // (The agent's thinking is part of its work, not of
+                        // what it says.)
+                        Kind::Result | Kind::Notice | Kind::Turn | Kind::Thinking => Show::Hidden,
                         Kind::WorkerLine => worker_line(),
                     },
                 }
@@ -1195,7 +1240,7 @@ enum Group {
 fn group(item: &Item) -> Group {
     match item.kind {
         Kind::Call | Kind::Result | Kind::WorkerLine => Group::Activity,
-        Kind::Notice => Group::Activity,
+        Kind::Notice | Kind::Thinking => Group::Activity,
         _ => Group::Prose,
     }
 }
@@ -1216,6 +1261,13 @@ const MARGIN: usize = 2;
 /// The last line of a command's block that shows its whole output: a click
 /// on it shows the first lines again.
 const FOLD_CLOSE: &str = "↑ show the first lines only";
+
+/// The label of an agent's thinking.
+const THINKING: &str = "Thinking";
+
+/// The last line of an agent's thinking shown whole: a click on it folds
+/// it to its first line again.
+const THINKING_CLOSE: &str = "↑ show the first line only";
 
 /// An item's lines at `width` (margins included), with what a copy of each
 /// needs. `own`: in its worker's own view, a worker's lines don't name it.
@@ -1398,6 +1450,46 @@ fn entry_lines(
             let mut spans = vec![Span::styled(text, theme.dim())];
             spans.push(Span::styled(rule.repeat(fill), theme.dim()));
             wrap::prefixed(wrap::wrap_lines(&spans, inner, 0), blank(), blank())
+        }
+        Kind::Thinking => {
+            let style = theme.dim().add_modifier(Modifier::ITALIC);
+            let mut spans = worker_prefix(item);
+            spans.push(Span::styled(
+                THINKING.to_string(),
+                theme.dim().add_modifier(Modifier::BOLD),
+            ));
+            // (The label isn't the agent's text: a copy leaves it out.)
+            let label = spans_width(&spans);
+            let text = wrap::clean(&item.text);
+            let mut lines = text.lines().map(str::trim).filter(|line| !line.is_empty());
+            if !open {
+                // One line: the label and the first line, which a click
+                // opens.
+                let first = lines.next().unwrap_or_default().replace("**", "");
+                let more = lines.next().is_some();
+                let room = inner.saturating_sub(label + 3);
+                let cut = text_width(&first) > room;
+                let mut shown = cut_end(&first, room);
+                if more && !cut && text_width(&shown) + 2 <= room {
+                    shown.push_str(" …");
+                }
+                let separator = if shown.is_empty() { "" } else { " · " };
+                spans.push(Span::styled(separator.to_string(), theme.dim()));
+                spans.push(Span::styled(glyphs::render(&shown).into_owned(), style));
+                let mut line = Wrapped::line(spans);
+                line.skip = label + text_width(separator);
+                return wrap::prefixed(vec![line], blank(), blank());
+            }
+            let mut heading = Wrapped::line(spans);
+            heading.bare = true;
+            let mut out = vec![heading];
+            out.extend(markdown::render(&item.text, style, theme, inner));
+            out.extend(
+                plain(THINKING_CLOSE, theme.dim(), inner)
+                    .into_iter()
+                    .map(|line| Wrapped { bare: true, ..line }),
+            );
+            wrap::prefixed(out, blank(), blank())
         }
         // Drawn from the worker's summary.
         Kind::WorkerLine => Vec::new(),
@@ -1888,6 +1980,65 @@ mod tests {
                 "",
                 "",
             ]
+        );
+    }
+
+    /// An agent's thinking is one quiet line, its label and its first
+    /// line, in Full and Quiet and in its worker's own view, and none in
+    /// Messages. Its line opens it whole, ending with the line that folds it
+    /// again. With `--show-thinking` it starts whole.
+    #[test]
+    fn thinking_is_one_line_that_opens_whole() {
+        let theme = Theme::terminal();
+        let mut t = Transcript::new();
+        t.apply(Update::Item(item(
+            1,
+            Kind::Thinking,
+            "**Planning**\nRead the tests first.",
+        )));
+        t.apply(Update::Item(item(2, Kind::Text, "Running them.")));
+        t.apply(Update::Item(
+            item(3, Kind::Thinking, "Where is the parser?").agent("r1"),
+        ));
+        let folded = ["  Thinking · Planning …", "", "  Running them."];
+        assert_eq!(rows(&mut t, &full(), 40, 3), folded);
+        assert_eq!(rows(&mut t, &Filter::Main(View::Quiet), 40, 3), folded);
+        assert_eq!(
+            rows(&mut t, &Filter::Main(View::Messages), 40, 1),
+            ["  Running them."]
+        );
+        assert_eq!(
+            rows(&mut t, &Filter::Worker("r1".into()), 40, 1),
+            ["  Thinking · Where is the parser?"]
+        );
+        // Its line opens it, and the last line folds it again.
+        rows(&mut t, &full(), 40, 8);
+        assert_eq!(t.fold_at(4, 0, &full(), &theme), Some(1));
+        t.toggle(1, 0, &full(), &theme);
+        t.follow();
+        let open = rows(&mut t, &full(), 40, 7);
+        assert_eq!(
+            open[..5],
+            [
+                "  Thinking",
+                "  Planning",
+                "  Read the tests first.",
+                "  ↑ show the first line only",
+                "",
+            ]
+        );
+        assert_eq!(t.fold_at(4, 3, &full(), &theme), Some(1));
+        assert_eq!(t.fold_at(4, 1, &full(), &theme), None, "not its text");
+        t.toggle(1, 3, &full(), &theme);
+        t.follow();
+        assert_eq!(rows(&mut t, &full(), 40, 3), folded);
+
+        let mut shown = Transcript::new();
+        shown.set_open_thinking(true);
+        shown.apply(Update::Item(item(1, Kind::Thinking, "All of it.")));
+        assert_eq!(
+            rows(&mut shown, &full(), 40, 3),
+            ["  Thinking", "  All of it.", "  ↑ show the first line only"]
         );
     }
 

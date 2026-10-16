@@ -291,6 +291,23 @@
       case 'text':
         box.append(md(item.text));
         break;
+      case 'thinking': {
+        // The agent's work, not what it says: folded to its first line,
+        // and kept open across the text that streams in.
+        const details = element('details', 'thinking');
+        details.open = openThinking.has(item.id);
+        details.addEventListener('toggle', () => {
+          if (details.open) openThinking.add(item.id);
+          else openThinking.delete(item.id);
+        });
+        const summary = document.createElement('summary');
+        summary.append(element('span', 'mark', '▸'), element('span', 'what', 'Thinking'));
+        const first = C.firstLine(item.text);
+        if (first) summary.append(element('span', 'first', first));
+        details.append(summary, md(item.text, 'thinking-text'));
+        box.append(details);
+        break;
+      }
       case 'message': {
         // A worker's message says whose it is.
         const from = item.from && (item.from === C.MAIN ? 'the lead' : item.from);
@@ -359,6 +376,8 @@
   const nodes = new Map();
   /** Keys whose element must be built again (a change, more text). */
   const stale = new Set();
+  /** The thinking items the reader opened. */
+  const openThinking = new Set();
   let relayout = true;
   let frame = 0;
   /** The view follows new output while the reader is at the bottom. */

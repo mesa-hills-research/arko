@@ -182,6 +182,13 @@
     return rows;
   }
 
+  /** The first line of an agent's thinking, for its folded row: the first
+   * one with text, without markdown's bold marks (a summary's title). */
+  function firstLine(text) {
+    const line = String(text || '').split('\n').map((l) => l.trim()).find((l) => l) || '';
+    return line.replace(/\*\*/g, '');
+  }
+
   /** What the Messages view keeps of the main transcript. */
   function shownInMessages(item) {
     switch (item.kind) {
@@ -540,6 +547,7 @@
     workerWords,
     stateOf,
     figures,
+    firstLine,
     markdown,
     inline,
   };

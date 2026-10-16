@@ -197,10 +197,10 @@ impl ModelSettings {
         resolve_model(&self.model).is_ok_and(|model| providers::takes_cache_ttl(&model))
     }
 
-    fn llm_config(&self, show_thinking: bool) -> Result<AgentLLMConfig, String> {
+    fn llm_config(&self, thinking_text: bool) -> Result<AgentLLMConfig, String> {
         let model = resolve_model(&self.model)?;
         let generation_config =
-            providers::generation(&model, self.effort, self.fast, self.cache_1h, show_thinking)?;
+            providers::generation(&model, self.effort, self.fast, self.cache_1h, thinking_text)?;
         Ok(AgentLLMConfig {
             model,
             generation_config,
@@ -219,7 +219,9 @@ pub struct AgentSettings<'a> {
     /// [`NO_LIMIT`] sets no limit.
     pub max_workers: u32,
     pub handover_at: usize,
-    pub show_thinking: bool,
+    /// The models are asked for the text of their thinking, which the
+    /// views show (not with `--hide-thinking`).
+    pub thinking_text: bool,
     /// The tools of the MCP servers running, offered to both agents.
     pub mcp_tools: &'a [String],
     /// The MCP servers running, by name.
@@ -254,7 +256,7 @@ impl<'a> AgentSettings<'a> {
             providers,
             max_workers: settings.max_workers,
             handover_at: settings.handover_at,
-            show_thinking: settings.show_thinking,
+            thinking_text: !settings.hide_thinking,
             mcp_tools: &[],
             mcp_servers: &[],
             skill_folders: &[],
@@ -276,7 +278,7 @@ impl<'a> AgentSettings<'a> {
             providers: Box::leak(Box::new(providers::Setup::new(None))),
             max_workers: 4,
             handover_at: 200_000,
-            show_thinking: false,
+            thinking_text: true,
             mcp_tools: &[],
             mcp_servers: &[],
             skill_folders: &[],
@@ -484,7 +486,7 @@ pub fn main_config(settings: &AgentSettings) -> Result<AgentConfig, String> {
     let mut builder = AgentConfig::builder(
         MAIN.into(),
         "Arko".into(),
-        settings.main.llm_config(settings.show_thinking)?,
+        settings.main.llm_config(settings.thinking_text)?,
     )
     .role_description(
         "You are Arko, a general-purpose agent working in a terminal on the user's computer. You help with software engineering and anything else the user asks: you investigate, run commands, create and change files, and report back.".into(),
@@ -528,7 +530,7 @@ pub fn worker_config(settings: &AgentSettings) -> Result<AgentConfig, String> {
     let mut builder = AgentConfig::builder(
         WORKER.into(),
         "worker".into(),
-        settings.worker.llm_config(settings.show_thinking)?,
+        settings.worker.llm_config(settings.thinking_text)?,
     )
     .role_description(
         "A subagent that carries out one task the lead agent hands it (an investigation, a change, a review), with a shell, a terminal and file tools, and reports back.".into(),

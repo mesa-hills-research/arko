@@ -39,9 +39,15 @@ pub struct Settings {
     pub workers_handover_at: Option<usize>,
     /// Outside access, as the session last had it (`/outside`).
     pub allow_outside_workspace: bool,
-    /// Show the models' reasoning as they work (OpenAI models then also
-    /// ask for reasoning summaries).
+    /// Show the agents' thinking whole as they work: the line prompt
+    /// prints it, and the full-screen view opens it (else it shows folded,
+    /// and the line prompt leaves it out).
     pub show_thinking: bool,
+    /// The agents neither ask their models for the text of their thinking
+    /// nor show it. False in sessions saved before it existed: their saved
+    /// agents keep asking for what they asked for, and new workers ask.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub hide_thinking: bool,
     pub created: DateTime<Utc>,
     /// The start of the first message, to tell sessions apart.
     #[serde(default)]
@@ -114,6 +120,7 @@ impl Settings {
             workers_handover_at: None,
             allow_outside_workspace: false,
             show_thinking: false,
+            hide_thinking: false,
             created: Utc::now(),
             title: None,
             windows_shell: None,

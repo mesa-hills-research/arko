@@ -187,3 +187,25 @@ test('markdown that is still streaming reads sensibly', () => {
   const runs = core.inline('a **half-open and a_b_c');
   assert.equal(runs.map((run) => run.text).join(''), 'a **half-open and a_b_c');
 });
+
+test("an agent's thinking shows (folded) in Full and Quiet and in its own view, not in Messages", () => {
+  next = 0;
+  const items = [
+    item('user'),
+    item('thinking', { text: '**Planning**\nI should read the tests first.' }),
+    item('text'),
+    item('call', { status: 'ok' }),
+    item('thinking', { agent: 'r1' }),
+    item('call', { agent: 'r1', status: 'ok' }),
+    item('reply'),
+  ];
+  const kinds = (rows) => rows.map((row) => (row.count ? 'count' : row.item.kind + (row.item.agent === 'main' ? '' : ':' + row.item.agent)));
+  assert.deepEqual(kinds(core.layout(items, 'full')), ['user', 'thinking', 'text', 'call', 'call:r1', 'reply']);
+  assert.deepEqual(kinds(core.layout(items, 'quiet')), ['user', 'thinking', 'text', 'call', 'reply']);
+  assert.deepEqual(kinds(core.layout(items, 'messages')), ['user', 'text', 'count', 'reply']);
+  assert.deepEqual(kinds(core.layout(items, 'full', 'r1')), ['thinking:r1', 'call:r1']);
+  // The folded row's line: the first one with text, without bold marks.
+  assert.equal(core.firstLine(items[1].text), 'Planning');
+  assert.equal(core.firstLine('\n\n  Checking the parser.  \nMore.'), 'Checking the parser.');
+  assert.equal(core.firstLine(''), '');
+});

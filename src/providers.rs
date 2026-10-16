@@ -214,12 +214,16 @@ pub fn is_small(model: &Model) -> bool {
 
 /// The generation settings of an agent on `model`: its reasoning at
 /// `effort`, and fast mode and the 1-hour cache where the provider has them.
+/// With `thinking_text`, the model is asked for the text of its thinking
+/// where it needs asking, for the views to show: Claude by API key for its
+/// summarized thinking (Claude Code passes it on by itself), OpenAI and
+/// OpenRouter for reasoning summaries, Gemini for its thoughts.
 pub fn generation(
     model: &Model,
     effort: Effort,
     fast: bool,
     cache_1h: bool,
-    show_thinking: bool,
+    thinking_text: bool,
 ) -> Result<GenerationConfig, String> {
     let mut generation = GenerationConfig::default().with_prompt_caching(true);
     let reasons = model.model_type == ModelType::Reasoning;
@@ -238,11 +242,15 @@ pub fn generation(
             if fast {
                 generation = generation.with_anthropic_fast_mode(true);
             }
+            // The newer models leave their thinking's text out unless asked.
+            if thinking_text && model.provider == Provider::Anthropic {
+                generation = generation.with_anthropic_summarized_thinking(true);
+            }
         }
         Provider::OpenAI => {
             if reasons {
                 generation = generation
-                    .with_reasoning(ReasoningConfig::openai(effort.into(), show_thinking));
+                    .with_reasoning(ReasoningConfig::openai(effort.into(), thinking_text));
             }
             if fast {
                 generation = generation.with_openai_service_tier(OpenAIServiceTier::Fast);
@@ -258,7 +266,7 @@ pub fn generation(
             if reasons {
                 generation = generation.with_reasoning(ReasoningConfig::gemini(
                     gemini_level(model, effort),
-                    show_thinking,
+                    thinking_text,
                 ));
             }
         }
@@ -273,7 +281,7 @@ pub fn generation(
             // OpenRouter maps the effort to the model's own levels, and
             // ignores it for models that don't reason.
             let mut reasoning = OpenRouterReasoning::effort(reasoning_effort(effort));
-            if show_thinking {
+            if thinking_text {
                 reasoning = reasoning.with_summary(ReasoningSummary::Auto);
             }
             generation = generation.with_reasoning(ReasoningConfig::openrouter(reasoning));
@@ -1401,6 +1409,46 @@ mod tests {
         assert!(error.contains("Did you mean cc:opus?"), "{error}");
         assert!(resolve_model("openrouter:").is_err());
         assert!(resolve_model("no-such-model-at-all").is_err());
+    }
+
+    /// The text of the models' thinking is asked for where a provider
+    /// needs asking, for the views to show, unless the session hides it:
+    /// Claude by API key for its summarized thinking (Claude Code passes it
+    /// on by itself), OpenAI and OpenRouter for reasoning summaries, Gemini
+    /// for its thoughts.
+    #[test]
+    fn the_thinking_text_is_asked_for_unless_hidden() {
+        let config = |name: &str, thinking: bool| {
+            generation(
+                &resolve_model(name).unwrap(),
+                Effort::High,
+                false,
+                false,
+                thinking,
+            )
+            .unwrap()
+        };
+        assert_eq!(
+            config("opus", true).anthropic_summarized_thinking,
+            Some(true)
+        );
+        assert_eq!(config("opus", false).anthropic_summarized_thinking, None);
+        assert_eq!(config("cc:opus", true).anthropic_summarized_thinking, None);
+        for thinking in [true, false] {
+            assert!(matches!(
+                config("sol", thinking).reasoning,
+                Some(ReasoningConfig::OpenAI { include_summaries, .. }) if include_summaries == thinking
+            ));
+            assert!(matches!(
+                config("gemini", thinking).reasoning,
+                Some(ReasoningConfig::Gemini { include_summaries, .. }) if include_summaries == thinking
+            ));
+            let summary = match config("openrouter:anthropic/claude-opus-5.5", thinking).reasoning {
+                Some(ReasoningConfig::OpenRouter(reasoning)) => reasoning.summary,
+                _ => panic!("OpenRouter's reasoning"),
+            };
+            assert_eq!(summary.is_some(), thinking);
+        }
     }
 
     #[test]
