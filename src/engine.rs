@@ -166,6 +166,11 @@ impl Engine {
         let (session, settings, new) = match resumed {
             Some(session) => {
                 let mut settings = session.load_settings()?;
+                // Its settings and keys, as its own folder has them.
+                credentials::use_env(credentials::Env::for_folder(
+                    Some(&settings.workspace),
+                    true,
+                ));
                 if options.model.is_some()
                     || options.worker_model.is_some()
                     || options.fast
@@ -228,6 +233,10 @@ impl Engine {
                 (Some(session), settings, false)
             }
             None => {
+                credentials::use_env(credentials::Env::for_folder(
+                    Some(&workspace(&options)?),
+                    true,
+                ));
                 if options.model.is_none() && default_model(&options).is_none() {
                     prompter.need_credentials(&Need::Any).await?;
                 }
@@ -365,6 +374,8 @@ impl Engine {
             indexes.clone(),
             Some(feed.clone()),
         );
+        // A key added in another session open on Arko's folder is used here too.
+        keys.share(root.clone());
         let mcp_tools = mcp.tool_names();
         let mcp_started = mcp.started();
         let known_indexes = indexes

@@ -75,6 +75,11 @@ pub enum Outcome {
 /// The session's API keys: what the model client and the search indexes use,
 /// and which providers the session reaches.
 pub struct Keys {
+    /// These keys, as the changes they announce say ([`share`](Self::share)).
+    id: u64,
+    /// Arko's folder, whose other sessions hear of the keys added and
+    /// removed here, and tell theirs.
+    shared: std::sync::OnceLock<std::path::PathBuf>,
     client: Arc<LLMClient>,
     indexes: Option<Arc<index::Indexes>>,
     feed: Option<remote::Feed>,
@@ -101,7 +106,10 @@ impl Keys {
         indexes: Option<Arc<index::Indexes>>,
         feed: Option<remote::Feed>,
     ) -> Arc<Self> {
+        static IDS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         Arc::new(Self {
+            id: IDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            shared: std::sync::OnceLock::new(),
             client,
             indexes,
             feed,
@@ -111,6 +119,60 @@ impl Keys {
                 withdrawn: Vec::new(),
             }),
         })
+    }
+
+    /// Shares the keys added and removed with the other sessions open on
+    /// Arko's folder `root` in this process, both ways: a key added in one
+    /// is used by all of them at once, as if added in each.
+    pub fn share(self: &Arc<Self>, root: std::path::PathBuf) {
+        if self.shared.set(root.clone()).is_err() {
+            return;
+        }
+        let mut changes = credentials::changes();
+        let keys = Arc::downgrade(self);
+        tokio::spawn(async move {
+            loop {
+                let change = match changes.recv().await {
+                    Ok(change) => change,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                };
+                let Some(keys) = keys.upgrade() else {
+                    break;
+                };
+                if change.origin == keys.id || change.root != root {
+                    continue;
+                }
+                // Removed: what this session reads next, if anything.
+                let value = change
+                    .value
+                    .clone()
+                    .or_else(|| credentials::key_value(change.key));
+                let now = keys.apply(change.key, value.as_deref());
+                let done = if change.value.is_some() {
+                    "added"
+                } else {
+                    "removed"
+                };
+                keys.notice(&format!(
+                    "{} {done} in another session. {now}",
+                    capitalized(without_article(change.key.what))
+                ));
+            }
+        });
+    }
+
+    /// Tells the other sessions on Arko's folder of a key added or removed
+    /// here (see [`share`](Self::share)).
+    fn announce(&self, key: &'static Key, value: Option<&str>) {
+        if let Some(root) = self.shared.get() {
+            credentials::announce(credentials::KeyChange {
+                root: root.clone(),
+                key,
+                value: value.map(str::to_string),
+                origin: self.id,
+            });
+        }
     }
 
     /// Builds the providers' clients for the server at `url` (tests).
@@ -184,6 +246,7 @@ impl Keys {
         };
         log::info!("keys: {} saved and used", key.name);
         let now = self.apply(key, Some(value));
+        self.announce(key, Some(value));
         let said = format!("Arko saved the {}. {now}", without_article(key.what));
         let mut warnings: Vec<String> = credentials::prefix_note(value, key).into_iter().collect();
         warnings.extend(saved.note);
@@ -205,6 +268,7 @@ impl Keys {
         log::info!("keys: {} removed", key.name);
         let value = credentials::key_value(key);
         let now = self.apply(key, value.as_deref());
+        self.announce(key, None);
         let what = without_article(key.what);
         let said = match (&after.source, value.is_some()) {
             (Some(source), true) => format!(
@@ -451,6 +515,57 @@ impl crate::Harness {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A key added in one session is used at once by the others open on the
+    /// same Arko folder (not by those on another), and they say so; the one
+    /// that added it has it already.
+    #[tokio::test]
+    async fn a_key_added_reaches_every_open_session() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("arko");
+        let session = |feed: &remote::Feed| {
+            Keys::new(Arc::new(LLMClient::new()), None, None, Some(feed.clone()))
+        };
+        let (feed_a, feed_b, feed_c) = (
+            remote::Feed::new("main"),
+            remote::Feed::new("main"),
+            remote::Feed::new("main"),
+        );
+        let (a, b, elsewhere) = (session(&feed_a), session(&feed_b), session(&feed_c));
+        a.share(root.clone());
+        b.share(root.clone());
+        elsewhere.share(temp.path().join("other"));
+        // As `add` does once the key is saved and used.
+        a.announce(&credentials::OPENROUTER, Some("sk-or-test"));
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while !b.reaches(&Provider::OpenRouter) {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let notices = |feed: &remote::Feed| {
+            feed.subscribe()
+                .0
+                .items
+                .into_iter()
+                .map(|item| item.text)
+                .collect::<Vec<_>>()
+        };
+        assert!(
+            notices(&feed_b)
+                .iter()
+                .any(|text| text.starts_with("OpenRouter API key added in another session.")),
+            "{:?}",
+            notices(&feed_b)
+        );
+        assert!(!a.reaches(&Provider::OpenRouter), "its own change");
+        assert!(
+            !elsewhere.reaches(&Provider::OpenRouter),
+            "another Arko folder"
+        );
+        assert!(notices(&feed_c).is_empty());
+    }
 
     #[test]
     fn a_secret_is_never_shown() {

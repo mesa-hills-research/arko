@@ -19,7 +19,7 @@ use std::collections::HashMap;
 #[cfg(feature = "tui")]
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 
 #[cfg(feature = "tui")]
 use arko_ai::CodexAuthFile;
@@ -101,27 +101,170 @@ pub enum Source {
 
 /// A setting, if it is set: entered on the setup screen or in the keys
 /// menu, else from the environment, else (the settings Arko reads there) from
-/// a `.env` file.
+/// a `.env` file, as the session's [`Env`] finds them.
 pub fn var(name: &str) -> Option<String> {
     lookup(name).map(|(value, _)| value)
 }
 
 fn lookup(name: &str) -> Option<(String, Source)> {
-    if let Some(value) = entered(name) {
-        return Some((value, Source::Entered));
+    current().lookup(name)
+}
+
+/// Where a session's settings and keys are looked up, in this order: what
+/// was entered in this process (the setup screen, the keys menu, an app's
+/// accounts), the process's environment, the nearest `.env` in the
+/// session's folder or a parent, the `.env` beside Arko's program, and the
+/// one in Arko's folder. The files are read once, as the `Env` is made.
+#[derive(Debug, Clone, Default)]
+pub struct Env {
+    /// The settings in the files, each with the first file that sets it.
+    files: Arc<HashMap<&'static str, (String, PathBuf)>>,
+}
+
+impl Env {
+    /// The `.env` files for `folder` (a session's workspace, else the
+    /// current directory's), with the one beside Arko's program when
+    /// `beside_binary`, and Arko's own.
+    pub fn for_folder(folder: Option<&Path>, beside_binary: bool) -> Env {
+        let beside = beside_binary
+            .then(|| std::env::current_exe().ok())
+            .flatten()
+            .and_then(|program| program.parent().map(|folder| folder.join(".env")));
+        Env::read(&dotenv_paths(folder, beside, arko_dotenv().ok()))
     }
-    // A Gemini key entered in this run comes before the older name too,
-    // which arko reads first.
-    if name == GOOGLE_KEY && entered(GEMINI_KEY).is_some() {
-        return None;
+
+    /// The settings in the files at `paths`, in order: the first that sets
+    /// one is read.
+    fn read(paths: &[PathBuf]) -> Env {
+        let mut values = HashMap::new();
+        for path in paths {
+            for (key, value) in read_dotenv(path) {
+                values.entry(key).or_insert((value, path.clone()));
+            }
+        }
+        Env {
+            files: Arc::new(values),
+        }
     }
-    if let Some(value) = std::env::var(name)
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-    {
-        return Some((value, Source::Environment));
+
+    /// A setting, if it is set: see [`var`].
+    pub fn var(&self, name: &str) -> Option<String> {
+        self.lookup(name).map(|(value, _)| value)
     }
-    dotenv_entry(name).map(|(value, path)| (value, Source::DotEnv(path)))
+
+    /// A setting and where it comes from.
+    pub fn lookup(&self, name: &str) -> Option<(String, Source)> {
+        if let Some(value) = entered(name) {
+            return Some((value, Source::Entered));
+        }
+        // A Gemini key entered in this run comes before the older name too,
+        // which arko reads first.
+        if name == GOOGLE_KEY && entered(GEMINI_KEY).is_some() {
+            return None;
+        }
+        if let Some(value) = std::env::var(name)
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+        {
+            return Some((value, Source::Environment));
+        }
+        self.file_entry(name)
+            .map(|(value, path)| (value, Source::DotEnv(path)))
+    }
+
+    /// The `.env` setting `name` with the file it came from, unless it was
+    /// removed from Arko's own `.env` in this run.
+    fn file_entry(&self, name: &str) -> Option<(String, PathBuf)> {
+        let (value, path) = self.files.get(name)?;
+        let forgotten = FORGOTTEN.lock().unwrap().contains(&name);
+        if forgotten && arko_dotenv().is_ok_and(|arko| arko == *path) {
+            return None;
+        }
+        Some((value.clone(), path.clone()))
+    }
+}
+
+/// The `.env` files a session in `folder` reads, in order: the nearest in
+/// `folder` or a parent, `beside` (the program's), then `arko` (Arko's
+/// folder's), each once.
+fn dotenv_paths(
+    folder: Option<&Path>,
+    beside: Option<PathBuf>,
+    arko: Option<PathBuf>,
+) -> Vec<PathBuf> {
+    let nearest = folder.and_then(|folder| {
+        folder
+            .ancestors()
+            .map(|folder| folder.join(".env"))
+            .find(|path| path.is_file())
+    });
+    let mut paths: Vec<PathBuf> = Vec::new();
+    for path in nearest.into_iter().chain(beside).chain(arko) {
+        if !paths.contains(&path) {
+            paths.push(path);
+        }
+    }
+    paths
+}
+
+/// The `Env` the process reads, until a session sets its own: the current
+/// directory's.
+static CURRENT: Mutex<Option<Env>> = Mutex::new(None);
+
+/// The `Env` settings and keys are read from now: the session's.
+pub fn current() -> Env {
+    CURRENT
+        .lock()
+        .unwrap()
+        .get_or_insert_with(|| Env::for_folder(std::env::current_dir().ok().as_deref(), true))
+        .clone()
+}
+
+/// Reads settings and keys from `env` from now on: the session's, once it is
+/// known.
+pub fn use_env(env: Env) {
+    *CURRENT.lock().unwrap() = Some(env);
+}
+
+/// An API key added or removed in this process, which the other sessions
+/// open on the same Arko folder use too ([`changes`]).
+#[derive(Clone)]
+pub struct KeyChange {
+    /// Arko's folder, whose sessions it is for.
+    pub root: PathBuf,
+    pub key: &'static Key,
+    /// The key added; `None`: removed, and each session goes by the next
+    /// one it reads, if any.
+    pub value: Option<String>,
+    /// Who changed it (one session's keys), which has it already.
+    pub origin: u64,
+}
+
+impl std::fmt::Debug for KeyChange {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("KeyChange")
+            .field("root", &self.root)
+            .field("key", &self.key.name)
+            .field("added", &self.value.is_some())
+            .field("origin", &self.origin)
+            .finish()
+    }
+}
+
+fn change_sender() -> &'static tokio::sync::broadcast::Sender<KeyChange> {
+    static SENDER: std::sync::OnceLock<tokio::sync::broadcast::Sender<KeyChange>> =
+        std::sync::OnceLock::new();
+    SENDER.get_or_init(|| tokio::sync::broadcast::channel(64).0)
+}
+
+/// The keys added and removed in this process from now on.
+pub fn changes() -> tokio::sync::broadcast::Receiver<KeyChange> {
+    change_sender().subscribe()
+}
+
+/// Tells the open sessions that a key was added or removed.
+pub fn announce(change: KeyChange) {
+    let _ = change_sender().send(change);
 }
 
 fn entered(name: &str) -> Option<String> {
@@ -136,39 +279,6 @@ fn enter(name: &'static str, value: String) {
     let mut entered = ENTERED.lock().unwrap();
     entered.retain(|(key, _)| *key != name);
     entered.push((name, value));
-}
-
-/// The settings in `.env` files, with the file each came from: the nearest
-/// `.env` in the current directory or a parent first, then the one in Arko's
-/// folder. Read once.
-fn dotenv() -> &'static HashMap<&'static str, (String, PathBuf)> {
-    static VALUES: OnceLock<HashMap<&'static str, (String, PathBuf)>> = OnceLock::new();
-    VALUES.get_or_init(|| {
-        let nearest = std::env::current_dir().ok().and_then(|directory| {
-            directory
-                .ancestors()
-                .map(|directory| directory.join(".env"))
-                .find(|path| path.is_file())
-        });
-        let mut values = HashMap::new();
-        for path in nearest.into_iter().chain(arko_dotenv().ok()) {
-            for (key, value) in read_dotenv(&path) {
-                values.entry(key).or_insert((value, path.clone()));
-            }
-        }
-        values
-    })
-}
-
-/// The `.env` setting `name` with the file it came from, unless it was
-/// removed from Arko's own `.env` in this run.
-fn dotenv_entry(name: &str) -> Option<(String, PathBuf)> {
-    let (value, path) = dotenv().get(name)?;
-    let forgotten = FORGOTTEN.lock().unwrap().contains(&name);
-    if forgotten && arko_dotenv().is_ok_and(|arko| arko == *path) {
-        return None;
-    }
-    Some((value.clone(), path.clone()))
 }
 
 /// Arko's own `.env`, in its folder: where the setup screen and the keys
@@ -983,7 +1093,7 @@ fn saved_text(dotenv: &Path, name: &str) -> Saved {
 }
 
 fn dotenv_get(name: &str) -> Option<PathBuf> {
-    dotenv_entry(name).map(|(_, path)| path)
+    current().file_entry(name).map(|(_, path)| path)
 }
 
 /// Sets `name` to `value` in the `.env` file at `path`, keeping its other
@@ -1173,6 +1283,71 @@ impl Helper for Prompt {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A session reads the nearest `.env` in its folder or a parent first,
+    /// then the one beside Arko's program, then Arko's own, each once: a
+    /// setting comes from the first that sets it. Another folder reads its
+    /// own.
+    #[test]
+    fn a_sessions_env_reads_its_folder_then_beside_the_program_then_arkos() {
+        let temp = tempfile::tempdir().unwrap();
+        let project = temp.path().join("project");
+        let nested = project.join("src").join("deep");
+        let other = temp.path().join("other");
+        let empty = temp.path().join("empty");
+        for folder in [
+            &nested,
+            &other,
+            &empty,
+            &temp.path().join("bin"),
+            &temp.path().join("arko"),
+        ] {
+            std::fs::create_dir_all(folder).unwrap();
+        }
+        let beside = temp.path().join("bin").join(".env");
+        let arko = temp.path().join("arko").join(".env");
+        std::fs::write(
+            project.join(".env"),
+            "ARKO_SHELL=powershell\nARKO_CACHE_1H=1\n",
+        )
+        .unwrap();
+        std::fs::write(&beside, "ARKO_SHELL=cmd\nARKO_REMOTE_HOST=beside\n").unwrap();
+        std::fs::write(&arko, "ARKO_REMOTE_HOST=arko\nARKO_OPENAI_AUTH=api-key\n").unwrap();
+        std::fs::write(other.join(".env"), "ARKO_SHELL=cmd\n").unwrap();
+
+        let paths = dotenv_paths(Some(&nested), Some(beside.clone()), Some(arko.clone()));
+        assert_eq!(paths, [project.join(".env"), beside.clone(), arko.clone()]);
+        let env = Env::read(&paths);
+        let entry = |env: &Env, name: &str| env.file_entry(name);
+        assert_eq!(
+            entry(&env, SHELL),
+            Some(("powershell".into(), project.join(".env")))
+        );
+        assert_eq!(
+            entry(&env, CACHE_1H),
+            Some(("1".into(), project.join(".env")))
+        );
+        assert_eq!(
+            entry(&env, crate::remote::HOST_VARIABLE),
+            Some(("beside".into(), beside.clone()))
+        );
+        assert_eq!(
+            entry(&env, OPENAI_AUTH),
+            Some(("api-key".into(), arko.clone()))
+        );
+
+        let other = Env::read(&dotenv_paths(Some(&other), None, Some(arko.clone())));
+        assert_eq!(
+            entry(&other, SHELL).map(|(value, _)| value).as_deref(),
+            Some("cmd")
+        );
+        assert_eq!(entry(&other, CACHE_1H), None);
+        // No `.env` in the folder, and a file named twice is read once.
+        assert_eq!(
+            dotenv_paths(Some(&empty), Some(arko.clone()), Some(arko.clone())),
+            [arko]
+        );
+    }
 
     #[test]
     fn a_dotenv_file_gives_only_the_known_settings() {

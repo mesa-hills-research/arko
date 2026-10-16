@@ -63,7 +63,7 @@ use std::sync::Mutex;
 
 #[cfg(feature = "tui")]
 pub use crate::cli::cli_main;
-pub use crate::credentials::Need;
+pub use crate::credentials::{Env, Need};
 pub use crate::engine::{Engine, FrontEnd, OpenError, RunEnd, Seam, SessionInfo};
 pub(crate) use crate::harness::{Conversation, Harness, conversation_of};
 #[cfg(test)]
