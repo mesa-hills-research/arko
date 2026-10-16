@@ -96,6 +96,54 @@ pub struct Menu {
     pub choice: Option<String>,
 }
 
+/// The agent list shows this many workers at most; a row under them says
+/// how many more there are.
+pub const LIST_WORKERS: usize = 5;
+
+/// A row of the agent list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ListRow {
+    /// The agent at this index of [`App::list`].
+    Agent(usize),
+    /// "… N more": the workers the list has no room for.
+    More(usize),
+}
+
+/// The rows of a list of `count` agents (the main agent, then the workers)
+/// in `height` rows at most: the main agent, the workers around the one
+/// `focus` is on, at most [`LIST_WORKERS`] of them, and a row counting the
+/// others.
+pub fn list_rows(count: usize, focus: Option<usize>, height: usize) -> Vec<ListRow> {
+    if count == 0 || height == 0 {
+        return Vec::new();
+    }
+    let workers = count - 1;
+    if workers <= LIST_WORKERS && count <= height {
+        return (0..count).map(ListRow::Agent).collect();
+    }
+    let focus = focus.map(|row| row.min(count - 1));
+    let shown = LIST_WORKERS.min(height.saturating_sub(2));
+    if shown == 0 {
+        // No room for a worker beside the main agent and the count: the
+        // agent the focus is on.
+        let agent = focus.unwrap_or(0);
+        let mut rows = vec![ListRow::Agent(agent)];
+        if height > 1 {
+            rows.push(ListRow::More(workers - usize::from(agent > 0)));
+        }
+        return rows;
+    }
+    // The workers shown follow the focus down the list.
+    let first = match focus {
+        Some(row) if row > shown => row - shown,
+        _ => 0,
+    };
+    std::iter::once(ListRow::Agent(0))
+        .chain((first + 1..=first + shown).map(ListRow::Agent))
+        .chain(std::iter::once(ListRow::More(workers - shown)))
+        .collect()
+}
+
 /// The view's state.
 pub struct App {
     pub transcript: Transcript,
@@ -134,19 +182,17 @@ pub struct App {
     pub input_width: usize,
     /// The question answered from here (by its ID).
     answered: Option<u64>,
-    /// The agent list has the focus, on this row (0 is the main agent).
+    /// The agent list has the focus, on this agent of [`App::list`] (0 is
+    /// the main agent).
     pub list_focus: Option<usize>,
-    /// When the view started: the agent list shows the workers since.
-    started_ms: i64,
     /// The left button, while it is down over the transcript.
     press: Option<Press>,
     /// The last click: when, where, and how many in a row.
     last_click: Option<(Instant, u16, u16, u8)>,
     /// The block whose fold the last click opened or closed.
     folded: Option<u64>,
-    /// Where the agent list was drawn, and the row of its first line: for
-    /// the mouse.
-    pub list_drawn: (ratatui::layout::Rect, usize),
+    /// Where the agent list was drawn, and its rows: for the mouse.
+    pub list_drawn: (ratatui::layout::Rect, Vec<ListRow>),
     /// What a model needs that the session doesn't have, for `/model`'s
     /// picker (from the providers the session reaches, and Claude Code's
     /// login).
@@ -223,7 +269,6 @@ impl App {
             input_width: 80,
             answered: None,
             list_focus: None,
-            started_ms: chrono::Utc::now().timestamp_millis(),
             list_drawn: Default::default(),
             press: None,
             last_click: None,
@@ -885,17 +930,16 @@ impl App {
     }
 
     /// The agent list below the input: the main agent, then the workers
-    /// of this run (running, or ended since the view started). Empty when
-    /// there are none, so it takes no room.
+    /// running or waiting to run, and the one shown when it has ended.
+    /// Empty when there are none, so it takes no room. (The workers that
+    /// ended are in `/workers`, and `/watch` still shows them.)
     pub fn list(&self) -> Vec<Option<&crate::remote::WorkerSummary>> {
         let workers: Vec<Option<&crate::remote::WorkerSummary>> = self
             .transcript
             .workers()
             .iter()
             .filter(|worker| {
-                worker.state.is_active()
-                    || worker.ended_at.is_some_and(|at| at >= self.started_ms)
-                    || worker.started_at.is_some_and(|at| at >= self.started_ms)
+                worker.state.is_active() || self.watching.as_deref() == Some(worker.id.as_str())
             })
             .map(Some)
             .collect();
@@ -903,6 +947,11 @@ impl App {
             return Vec::new();
         }
         std::iter::once(None).chain(workers).collect()
+    }
+
+    /// The agent list's rows in `height` rows at most.
+    pub fn list_rows(&self, height: usize) -> Vec<ListRow> {
+        list_rows(self.list().len(), self.list_focus, height)
     }
 
     /// Ctrl+T: the focus goes to the agent list, on the agent shown.
@@ -1746,12 +1795,32 @@ impl App {
         if self.overlay.is_some() {
             return;
         }
-        let (list, first) = self.list_drawn;
+        let (list, rows) = &self.list_drawn;
         if list.contains(at) {
-            let row = first + (at.y - list.y) as usize;
-            if let Some(agent) = self.list().get(row) {
-                let id = agent.map(|w| w.id.clone());
-                self.watch(id);
+            let row = rows.get((at.y - list.y) as usize).copied();
+            // (The last agent shown, for the count of the others.)
+            let last = rows
+                .iter()
+                .filter_map(|row| match row {
+                    ListRow::Agent(index) => Some(*index),
+                    ListRow::More(_) => None,
+                })
+                .max()
+                .unwrap_or(0);
+            match row {
+                Some(ListRow::Agent(row)) => {
+                    if let Some(agent) = self.list().get(row) {
+                        let id = agent.map(|w| w.id.clone());
+                        self.watch(id);
+                    }
+                }
+                // The count of the workers not shown: the list moves on to
+                // the next of them (after the last, back to the first).
+                Some(ListRow::More(_)) => {
+                    let count = self.list().len();
+                    self.list_focus = Some(if last + 1 < count { last + 1 } else { 1 });
+                }
+                None => {}
             }
             return;
         }
@@ -2137,20 +2206,176 @@ pub(super) mod tests {
         assert_eq!(app.watching, None);
         // A click on a row of the list (pressed and let go) shows that
         // agent, and copies nothing.
-        app.list_drawn = (ratatui::layout::Rect::new(0, 20, 80, 2), 0);
+        app.list_drawn = (
+            ratatui::layout::Rect::new(0, 20, 80, 2),
+            vec![ListRow::Agent(0), ListRow::Agent(1)],
+        );
+        click(&mut app, 5, 21);
+        assert_eq!(app.watching.as_deref(), Some("r1"));
+        assert!(app.take_effects().is_empty());
+    }
+
+    /// A click (pressed and let go) at column `x`, row `y`.
+    fn click(app: &mut App, x: u16, y: u16) {
         for kind in [
             MouseEventKind::Down(MouseButton::Left),
             MouseEventKind::Up(MouseButton::Left),
         ] {
             app.mouse(MouseEvent {
                 kind,
-                column: 5,
-                row: 21,
+                column: x,
+                row: y,
                 modifiers: KeyModifiers::NONE,
             });
         }
-        assert_eq!(app.watching.as_deref(), Some("r1"));
-        assert!(app.take_effects().is_empty());
+    }
+
+    /// A worker `id` in `state`, started a minute ago.
+    pub fn worker(id: &str, state: crate::remote::WorkerState) -> crate::remote::WorkerSummary {
+        let now = chrono::Utc::now().timestamp_millis();
+        crate::remote::WorkerSummary {
+            id: id.into(),
+            title: format!("Task of {id}"),
+            state,
+            tool_calls: 3,
+            started_at: Some(now - 60_000),
+            ended_at: (!state.is_active()).then_some(now),
+            last: None,
+            report: None,
+        }
+    }
+
+    /// The list's rows: the main agent and up to five workers, then a
+    /// count of the others; the workers shown follow the focus, and a
+    /// short screen shows fewer.
+    #[test]
+    fn the_list_shows_five_workers_and_counts_the_others() {
+        use ListRow::{Agent, More};
+        assert!(list_rows(0, None, 7).is_empty());
+        assert_eq!(
+            list_rows(4, None, 7),
+            [Agent(0), Agent(1), Agent(2), Agent(3)]
+        );
+        assert_eq!(list_rows(6, None, 7), (0..6).map(Agent).collect::<Vec<_>>());
+        // Seven workers: five, and "… 2 more".
+        assert_eq!(
+            list_rows(8, None, 7),
+            [
+                Agent(0),
+                Agent(1),
+                Agent(2),
+                Agent(3),
+                Agent(4),
+                Agent(5),
+                More(2)
+            ]
+        );
+        assert_eq!(list_rows(8, Some(5), 7), list_rows(8, None, 7));
+        assert_eq!(
+            list_rows(8, Some(6), 7),
+            [
+                Agent(0),
+                Agent(2),
+                Agent(3),
+                Agent(4),
+                Agent(5),
+                Agent(6),
+                More(2)
+            ]
+        );
+        assert_eq!(
+            list_rows(8, Some(7), 7),
+            [
+                Agent(0),
+                Agent(3),
+                Agent(4),
+                Agent(5),
+                Agent(6),
+                Agent(7),
+                More(2)
+            ]
+        );
+        // On a short screen: fewer workers, and the count of the rest.
+        assert_eq!(
+            list_rows(8, None, 4),
+            [Agent(0), Agent(1), Agent(2), More(5)]
+        );
+        assert_eq!(list_rows(4, Some(3), 3), [Agent(0), Agent(3), More(2)]);
+        assert_eq!(list_rows(3, None, 2), [Agent(0), More(2)]);
+        assert_eq!(list_rows(3, Some(2), 1), [Agent(2)]);
+    }
+
+    /// The list has the workers running or waiting, not those that ended
+    /// (unless one is shown); past five, ↓ and a click on the count reach
+    /// the others.
+    #[test]
+    fn the_list_drops_ended_workers_and_reaches_the_others() {
+        use crate::remote::WorkerState::{Failed, Finished, Queued, Running, Stopped};
+        let mut app = app();
+        let states = [
+            Running, Finished, Running, Failed, Queued, Running, Stopped, Running, Running, Running,
+        ];
+        for (n, state) in states.into_iter().enumerate() {
+            app.update(
+                Update::Worker(worker(&format!("r{}", n + 1), state)),
+                Activity::default,
+            );
+        }
+        let ids = |app: &App| -> Vec<String> {
+            app.list()
+                .iter()
+                .map(|row| row.map_or("main".to_string(), |w| w.id.clone()))
+                .collect()
+        };
+        assert_eq!(
+            ids(&app),
+            ["main", "r1", "r3", "r5", "r6", "r8", "r9", "r10"]
+        );
+        use ListRow::{Agent, More};
+        assert_eq!(
+            app.list_rows(7),
+            [
+                Agent(0),
+                Agent(1),
+                Agent(2),
+                Agent(3),
+                Agent(4),
+                Agent(5),
+                More(2)
+            ]
+        );
+        // A worker that ended stays while it is shown.
+        app.watch(Some("r2".into()));
+        assert_eq!(ids(&app)[..3], ["main", "r1", "r2"]);
+        app.watch(None);
+        assert!(!ids(&app).contains(&"r2".to_string()));
+        // ↓ past the fifth worker brings the next into the list.
+        press(&mut app, KeyCode::Char('t'), KeyModifiers::CONTROL);
+        for _ in 0..6 {
+            press(&mut app, KeyCode::Down, KeyModifiers::NONE);
+        }
+        assert_eq!(app.list_focus, Some(6));
+        assert_eq!(
+            app.list_rows(7),
+            [
+                Agent(0),
+                Agent(2),
+                Agent(3),
+                Agent(4),
+                Agent(5),
+                Agent(6),
+                More(2)
+            ]
+        );
+        // A click on the count moves the list on to the next worker.
+        app.list_focus = None;
+        app.list_drawn = (ratatui::layout::Rect::new(0, 30, 80, 7), app.list_rows(7));
+        click(&mut app, 5, 36);
+        assert_eq!(app.list_focus, Some(6));
+        assert_eq!(app.watching, None);
+        // A worker that ends leaves the list.
+        app.update(Update::Worker(worker("r1", Finished)), Activity::default);
+        assert_eq!(ids(&app), ["main", "r3", "r5", "r6", "r8", "r9", "r10"]);
     }
 
     #[test]

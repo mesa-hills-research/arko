@@ -10,7 +10,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear};
 
-use super::app::App;
+use super::app::{App, ListRow};
 use super::markdown;
 use super::overlay::{self, hints};
 use super::transcript::{self, View};
@@ -22,8 +22,9 @@ const INPUT_LINES: usize = 8;
 /// The command menu shows this many commands at most.
 const MENU_LINES: usize = 8;
 
-/// The agent list shows this many rows at most, scrolling within.
-const LIST_LINES: usize = 6;
+/// The agent list shows this many rows at most: the main agent, five
+/// workers and the count of the others.
+const LIST_LINES: usize = 7;
 
 /// Draws the whole screen.
 pub fn draw(frame: &mut Frame, app: &mut App) {
@@ -36,11 +37,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
     // From the bottom: the agent list (while there are workers), the
     // input box between two rules, the status line.
-    let list_rows = app
-        .list()
-        .len()
-        .min(LIST_LINES)
-        .min(area.height as usize / 4) as u16;
+    let rows = app.list_rows(LIST_LINES.min(area.height as usize / 4));
+    let list_rows = rows.len() as u16;
     let text_width = (area.width as usize).saturating_sub(4).max(4);
     app.input_width = text_width;
     let mut input = app.editor.lines(text_width, theme.text(), theme.key());
@@ -62,7 +60,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     );
     draw_input(frame, app, input_area, &input, (cursor_row, cursor_column));
     if list_rows > 0 {
-        draw_list(frame, app, list);
+        draw_list(frame, app, list, rows);
     } else {
         app.list_drawn = Default::default();
     }
@@ -177,15 +175,14 @@ fn draw_input(
     }
 }
 
-/// The agent list, below the input: `● main` and a row for each worker,
-/// the one shown marked; ↓ from the box moves into it, Enter shows a
-/// worker's own transcript.
-fn draw_list(frame: &mut Frame, app: &mut App, area: Rect) {
-    let rows = area.height as usize;
+/// The agent list, below the input: `● main` and a row for each worker
+/// running, the one shown marked, up to five workers and then a count of
+/// the others; ↓ from the box moves into it, Enter shows a worker's own
+/// transcript.
+fn draw_list(frame: &mut Frame, app: &mut App, area: Rect, rows: Vec<ListRow>) {
     let count = app.list().len();
     let focus = app.list_focus.map(|row| row.min(count - 1));
-    let first = focus.map_or(0, |row| row.saturating_sub(rows - 1));
-    app.list_drawn = (area, first);
+    app.list_drawn = (area, rows.clone());
     let theme = &app.theme;
     let list = app.list();
     let id_width = list
@@ -193,8 +190,22 @@ fn draw_list(frame: &mut Frame, app: &mut App, area: Rect) {
         .map(|row| row.map_or(4, |w| w.id.len()))
         .max()
         .unwrap_or(4);
-    for (index, row) in list.iter().enumerate().skip(first).take(rows) {
-        let y = area.y + (index - first) as u16;
+    for (line, row) in rows.iter().enumerate() {
+        let y = area.y + line as u16;
+        let index = match *row {
+            ListRow::Agent(index) => index,
+            ListRow::More(more) => {
+                let text = format!("   {} {more} more", glyphs::render("…"));
+                frame.buffer_mut().set_line(
+                    area.x,
+                    y,
+                    &Line::from(Span::styled(text, theme.dim())),
+                    area.width,
+                );
+                continue;
+            }
+        };
+        let row = list[index];
         let shown = row.map(|w| w.id.as_str()) == app.watching.as_deref();
         let bullet = if shown {
             glyphs::render("●").into_owned()
@@ -616,6 +627,36 @@ mod tests {
                 .any(|row| row.contains("search indexes. Enter opens them.")),
             "{rows:#?}"
         );
+    }
+
+    /// The agent list under the input: the main agent, five of the workers
+    /// running and how many more; a worker that ended isn't in it.
+    #[test]
+    fn the_agent_list_shows_five_workers_running_and_counts_the_rest() {
+        use crate::remote::WorkerState::{Finished, Running};
+        use crate::tui::app::tests::worker;
+        let mut app = app();
+        let states = [
+            Running, Finished, Running, Running, Running, Running, Running, Running,
+        ];
+        for (n, state) in states.into_iter().enumerate() {
+            let summary = worker(&format!("r{}", n + 1), state);
+            app.update(Update::Worker(summary), Activity::default);
+        }
+        let rows = screen(&mut app, 80, 40);
+        println!("{}", rows.join("\n"));
+        let list = &rows[rows.len() - 7..];
+        let names: Vec<&str> = list
+            .iter()
+            .map(|row| row.split_whitespace().nth(1).unwrap_or_default())
+            .collect();
+        assert_eq!(
+            names,
+            ["main", "r1", "r3", "r4", "r5", "r6", "2"],
+            "{list:#?}"
+        );
+        assert_eq!(list[6], "   … 2 more");
+        assert!(!rows.iter().any(|row| row.contains("r2")), "{rows:#?}");
     }
 
     /// The quit popup over an 80-column screen: the background jobs, each
