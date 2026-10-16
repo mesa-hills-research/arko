@@ -75,6 +75,8 @@ pub struct Setup {
     pub banner: Banner,
     /// The API keys, which the keys menu adds and removes.
     pub keys: Arc<crate::keys::Keys>,
+    /// The jobs in the background to ask about: quitting would stop them.
+    pub quit_asks: mpsc::UnboundedReceiver<Vec<arko_agents::terminal::BackgroundJob>>,
 }
 
 /// The view while it runs.
@@ -314,7 +316,7 @@ fn types(event: &Event) -> bool {
 async fn run(
     mut terminal: Terminal<CrosstermBackend<Stdout>>,
     mut app: App,
-    setup: Setup,
+    mut setup: Setup,
     mut updates: broadcast::Receiver<remote::Update>,
     mut stop: oneshot::Receiver<()>,
 ) -> Option<String> {
@@ -349,6 +351,10 @@ async fn run(
         let mut bell = false;
         tokio::select! {
             _ = &mut stop => break,
+            Some(jobs) = setup.quit_asks.recv() => {
+                app.ask_quit(jobs);
+                draw_now = true;
+            }
             event = events.next(), if events_open => {
                 let Some(Ok(event)) = event else {
                     // The terminal is gone: as Ctrl-D at the prompt.
@@ -394,6 +400,9 @@ async fn run(
                 if reading != app.reading || app.activity.working || workers || app.hint.is_some() || quitting {
                     app.set_reading(reading);
                     dirty = true;
+                    // Yes stops the jobs the popup shows: drawn before the
+                    // next key.
+                    draw_now |= quitting;
                 }
             }
             _ = tokio::time::sleep_until(preview_at.unwrap_or_else(Instant::now).into()), if preview_at.is_some() => {

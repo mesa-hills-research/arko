@@ -42,8 +42,13 @@ pub enum Input {
     Line(String),
     /// Ctrl-C.
     Interrupt,
-    /// Ctrl-D, or the end of standard input.
+    /// The end of standard input, or of the terminal: Arko quits.
     Eof,
+    /// The full-screen view quits (Ctrl+D, Ctrl+C twice, /exit). With
+    /// `Some`, it asks about background jobs: those listed are the ones the
+    /// user agreed to stop (in the quit popup). `None`: the user turned
+    /// asking off.
+    Quit(Option<Vec<uuid::Uuid>>),
     /// Ctrl+B in the full-screen view: the shell command this agent runs
     /// (the main agent, or a worker by its ID) moves to the background.
     Background(String),
@@ -294,6 +299,8 @@ pub fn spawn_input(
                         Input::Line(joined(&line))
                     }
                     Err(ReadlineError::Interrupted) => Input::Interrupt,
+                    // Ctrl+D is /exit, which warns of what quitting stops.
+                    Err(ReadlineError::Eof) => Input::Line("/exit".into()),
                     Err(_) => Input::Eof,
                 };
                 let eof = matches!(input, Input::Eof);

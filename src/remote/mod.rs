@@ -91,7 +91,7 @@ pub struct Reading {
     #[serde(skip)]
     pub commands: Vec<String>,
     /// The jobs running in the background, which stop when Arko exits: the
-    /// full-screen view asks before it quits. (The page can't quit Arko.)
+    /// full-screen view's quit popup shows them. (The page can't quit Arko.)
     #[serde(skip)]
     pub jobs: Vec<arko_agents::terminal::BackgroundJob>,
     /// The agents' models, as `/model` changes them.

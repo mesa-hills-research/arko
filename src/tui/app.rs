@@ -689,10 +689,10 @@ impl App {
             KeyCode::Char('y') if ctrl => self.editor.yank(),
             KeyCode::Char('h') if ctrl => self.editor.backspace(),
             KeyCode::Char('d') if ctrl => {
-                // As at the line prompt: an empty box quits (through /exit,
-                // which warns about running workers).
+                // As at the line prompt: an empty box quits, as /exit does
+                // (which warns of what quitting stops).
                 if self.editor.is_empty() {
-                    self.quit("/exit");
+                    self.quit();
                 } else {
                     self.editor.delete();
                 }
@@ -839,25 +839,30 @@ impl App {
             .is_some_and(|at| now.duration_since(at) < AGAIN)
         {
             self.last_interrupt = None;
-            self.quit("/exit");
+            self.quit();
         } else {
             self.last_interrupt = Some(now);
             self.say("Ctrl+C again quits");
         }
     }
 
-    /// Quits with `line` (`/exit`, `/quit`). Background jobs stop when Arko
-    /// exits and never come back, so with any running the popup asks first,
-    /// unless the user turned that off.
-    fn quit(&mut self, line: &str) {
-        if self.reading.jobs.is_empty() || !self.confirms_quit() {
-            self.send(line);
-        } else {
-            self.overlay = Some(Overlay::Quit {
-                choice: 0,
-                dont_ask: false,
-            });
-        }
+    /// Quits (Ctrl+D, Ctrl+C twice, `/exit`). The session decides, as it
+    /// knows the jobs running now: background jobs stop when Arko exits
+    /// and never come back, so with any running it asks first
+    /// ([`ask_quit`](Self::ask_quit)), unless the user turned that off.
+    fn quit(&mut self) {
+        let agreed = self.confirms_quit().then(Vec::new);
+        self.effects.push(Effect::Input(Input::Quit(agreed)));
+    }
+
+    /// The session asks before it quits: `jobs` run in the background, which
+    /// quitting would stop. Yes agrees to stop those the popup shows.
+    pub fn ask_quit(&mut self, jobs: Vec<arko_agents::terminal::BackgroundJob>) {
+        self.reading.jobs = jobs;
+        self.overlay = Some(Overlay::Quit {
+            choice: 0,
+            dont_ask: false,
+        });
     }
 
     /// Whether quitting with background jobs running asks first.
@@ -984,7 +989,7 @@ impl App {
                     true
                 }
                 ("/exit", _) => {
-                    self.quit(trimmed);
+                    self.quit();
                     true
                 }
                 // Without a number, the picker. With one, the session.
@@ -1186,9 +1191,10 @@ impl App {
                     choice,
                 }),
             },
-            // Esc is No. Yes saves a ticked box, and quits at once: the
-            // popup said what stops, the workers too. No leaves the choice
-            // unsaved, so the next quit asks again.
+            // Esc is No. Yes saves a ticked box and quits, stopping the jobs
+            // shown (drawn before any key is read) and the workers: should
+            // another have started, the session asks again. No leaves the
+            // choice unsaved, so the next quit asks again.
             Overlay::Quit { choice, dont_ask } => match key.code {
                 _ if close => None,
                 KeyCode::Left | KeyCode::Up | KeyCode::BackTab => Some(Overlay::Quit {
@@ -1205,7 +1211,8 @@ impl App {
                             self.prefs.confirm_quit = Some(false);
                             self.prefs.save(self.info.prefs.as_deref());
                         }
-                        self.effects.push(Effect::Input(Input::Eof));
+                        let shown = self.reading.jobs.iter().map(|job| job.job_id).collect();
+                        self.effects.push(Effect::Input(Input::Quit(Some(shown))));
                         None
                     }
                     1 => None,
@@ -1874,10 +1881,11 @@ pub(super) mod tests {
         assert!(sent(&mut app).is_empty());
         assert_eq!(app.hint(), Some("Ctrl+C again quits"));
         press(&mut app, KeyCode::Char('c'), KeyModifiers::CONTROL);
-        assert_eq!(sent(&mut app), ["/exit"]);
+        let quit = [Effect::Input(Input::Quit(Some(Vec::new())))];
+        assert_eq!(app.take_effects(), quit);
         // Ctrl+D on an empty box quits the same way.
         press(&mut app, KeyCode::Char('d'), KeyModifiers::CONTROL);
-        assert_eq!(sent(&mut app), ["/exit"]);
+        assert_eq!(app.take_effects(), quit);
     }
 
     /// A job in the background, started `ago`.
@@ -1890,10 +1898,11 @@ pub(super) mod tests {
         }
     }
 
-    /// With background jobs running, quitting opens the popup. Esc and No
-    /// stay, and the box ticked with No isn't kept. Yes quits at once, and
-    /// with the box ticked it is kept, so quitting doesn't ask again until
-    /// the settings' row turns the question back on.
+    /// Quitting asks the session, which knows the jobs running now: with
+    /// any in the background, it opens the popup. Esc and No stay, and the
+    /// box ticked with No isn't kept. Yes quits, agreeing to stop the jobs
+    /// shown, and with the box ticked it is kept, so quitting doesn't ask
+    /// again until the settings' row turns the question back on.
     #[test]
     fn quitting_with_background_jobs_asks_first() {
         let temp = tempfile::tempdir().unwrap();
@@ -1912,22 +1921,33 @@ pub(super) mod tests {
             Some(Overlay::Quit { choice, dont_ask }) => Some((choice, dont_ask)),
             _ => None,
         };
+        let quits = |app: &mut App| -> Vec<Option<Vec<uuid::Uuid>>> {
+            app.take_effects()
+                .into_iter()
+                .filter_map(|effect| match effect {
+                    Effect::Input(Input::Quit(agreed)) => Some(agreed),
+                    _ => None,
+                })
+                .collect()
+        };
+        let asking = || vec![Some(Vec::new())];
         let ctrl = |app: &mut App, c: char| press(app, KeyCode::Char(c), KeyModifiers::CONTROL);
         let key = |app: &mut App, code: KeyCode| press(app, code, KeyModifiers::NONE);
-        // Without jobs, Ctrl+D quits as before.
+        let jobs = vec![job("sleep 300", Duration::from_secs(90))];
         ctrl(&mut app, 'd');
-        assert_eq!(sent(&mut app), ["/exit"]);
+        assert_eq!(quits(&mut app), asking());
+        assert_eq!(app.overlay, None);
 
-        app.reading.jobs = vec![job("sleep 300", Duration::from_secs(90))];
-        ctrl(&mut app, 'd');
+        app.ask_quit(jobs.clone());
         assert_eq!(popup(&app), Some((0, false)));
-        assert!(app.take_effects().is_empty());
         key(&mut app, KeyCode::Esc);
         assert_eq!(app.overlay, None);
+        assert!(app.take_effects().is_empty());
         // `/quit` asks too, and No stays.
         type_text(&mut app, "/quit");
         key(&mut app, KeyCode::Enter);
-        assert_eq!(popup(&app), Some((0, false)));
+        assert_eq!(quits(&mut app), asking());
+        app.ask_quit(jobs.clone());
         key(&mut app, KeyCode::Right);
         assert_eq!(popup(&app), Some((1, false)));
         key(&mut app, KeyCode::Enter);
@@ -1936,7 +1956,8 @@ pub(super) mod tests {
         // Ctrl+C twice asks too. The box ticked, then No: nothing is kept.
         ctrl(&mut app, 'c');
         ctrl(&mut app, 'c');
-        assert_eq!(popup(&app), Some((0, false)));
+        assert_eq!(quits(&mut app), asking());
+        app.ask_quit(jobs.clone());
         key(&mut app, KeyCode::Tab);
         key(&mut app, KeyCode::Tab);
         key(&mut app, KeyCode::Char(' '));
@@ -1948,8 +1969,11 @@ pub(super) mod tests {
         assert!(app.confirms_quit());
         assert_eq!(Prefs::load(Some(&path)).confirm_quit, None);
 
-        // The box ticked, then Yes: Arko quits at once, and it is kept.
+        // The box ticked, then Yes: Arko quits, stopping the jobs shown,
+        // and the choice is kept.
         ctrl(&mut app, 'd');
+        assert_eq!(quits(&mut app), asking());
+        app.ask_quit(jobs.clone());
         assert_eq!(popup(&app), Some((0, false)), "the box starts clear");
         key(&mut app, KeyCode::BackTab);
         key(&mut app, KeyCode::Enter);
@@ -1957,13 +1981,12 @@ pub(super) mod tests {
         assert_eq!(popup(&app), Some((0, true)));
         key(&mut app, KeyCode::Enter);
         assert_eq!(app.overlay, None);
-        assert_eq!(app.take_effects(), [Effect::Input(Input::Eof)]);
+        assert_eq!(quits(&mut app), [Some(vec![jobs[0].job_id])]);
         assert_eq!(Prefs::load(Some(&path)).confirm_quit, Some(false));
-        // From then on quitting doesn't ask (the session still warns of
-        // running workers).
+        // From then on quitting doesn't ask about jobs (the session still
+        // warns of running workers).
         ctrl(&mut app, 'd');
-        assert_eq!(app.overlay, None);
-        assert_eq!(sent(&mut app), ["/exit"]);
+        assert_eq!(quits(&mut app), [None]);
 
         // The settings' row turns the question back on.
         let row = app
@@ -1977,7 +2000,7 @@ pub(super) mod tests {
         assert_eq!(Prefs::load(Some(&path)).confirm_quit, Some(true));
         key(&mut app, KeyCode::Esc);
         ctrl(&mut app, 'd');
-        assert_eq!(popup(&app), Some((0, false)));
+        assert_eq!(quits(&mut app), asking());
     }
 
     #[test]

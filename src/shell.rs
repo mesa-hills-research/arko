@@ -223,6 +223,14 @@ impl Background {
             .unwrap_or_default()
     }
 
+    /// Readies the jobs for Arko's exit, unless a job runs in the
+    /// background that isn't one of `known` (those the user agreed to
+    /// stop): then they come back. Readied, no job starts or moves to the
+    /// background, so the exit stops none the user didn't know of.
+    pub fn close(&self, known: &[Uuid]) -> Result<(), Vec<BackgroundJob>> {
+        self.jobs.upgrade().map_or(Ok(()), |jobs| jobs.close(known))
+    }
+
     /// After how long a command still running moves; `None`: never.
     pub fn after(&self) -> Option<Duration> {
         match self.after.load(Ordering::Relaxed) {

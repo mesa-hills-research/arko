@@ -628,12 +628,11 @@ mod tests {
         use std::time::Duration;
         let mut app = app();
         let long = format!("cargo build --release {}", "x".repeat(80));
-        app.reading.jobs = vec![
+        app.reading.workers_running = vec!["r1".into()];
+        app.ask_quit(vec![
             job("sleep 300", Duration::from_secs(150)),
             job(&format!("{long}\necho done"), Duration::from_secs(5)),
-        ];
-        app.reading.workers_running = vec!["r1".into()];
-        app.key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL));
+        ]);
         let rows = screen(&mut app, 80, 24);
         println!("{}", rows.join("\n"));
         let row = |text: &str| {

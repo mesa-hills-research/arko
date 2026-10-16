@@ -255,9 +255,10 @@ async fn ctrl_b_moves_the_running_command_and_the_user_writes_at_once() {
 }
 
 /// At the line prompt, `/exit` with a job in the background only warns, as
-/// the job stops when Arko exits, and the next `/exit` quits. The
-/// full-screen view asks in its popup instead, so there `/exit` warns of
-/// the workers only.
+/// the job stops when Arko exits, and the next `/exit` quits. A job that
+/// started after the warning is asked about too, rather than stopped. The
+/// full-screen view is told to ask in its popup instead. Quitting readies
+/// the jobs for the exit: none starts after it.
 #[cfg(unix)]
 #[tokio::test]
 async fn exit_with_a_background_job_warns_first_at_the_line_prompt() {
@@ -287,22 +288,58 @@ async fn exit_with_a_background_job_warns_first_at_the_line_prompt() {
         jobs.iter().map(|job| job.command.as_str()).collect::<Vec<_>>(),
         ["sleep 30"]
     );
-
-    assert!(!harness.mirrored(|harness| harness.may_exit()));
-    let warnings: Vec<String> = shown(&harness.feed)
-        .into_iter()
-        .filter(|(kind, text, _)| kind == "output" && text.contains("/exit again"))
-        .map(|(_, text, _)| text)
-        .collect();
+    let first = jobs[0].job_id;
+    // `/exit` at the line prompt (Ctrl+D and Ctrl+C twice are `/exit`).
+    let exit = |harness: &mut Harness| {
+        let shown = harness.jobs_shown.clone();
+        harness.mirrored(|harness| harness.may_exit(Some(shown)))
+    };
+    let warnings = |harness: &Harness| -> Vec<String> {
+        shown(&harness.feed)
+            .into_iter()
+            .filter(|(kind, text, _)| kind == "output" && text.contains("/exit again"))
+            .map(|(_, text, _)| text)
+            .collect()
+    };
+    assert!(!exit(&mut harness));
     assert_eq!(
-        warnings,
+        warnings(&harness),
         ["1 background job is running: /exit again stops it and quits."]
     );
-    assert!(harness.mirrored(|harness| harness.may_exit()));
 
+    let workspace = temp.path().to_path_buf();
+    let start = |command: &str| {
+        let context = arko_agents::TaskContext::new(uuid::Uuid::new_v4(), "t", "t", &workspace);
+        managers
+            .jobs
+            .start(&context, command, Default::default())
+            .map(|job| job.job_id)
+    };
+    let second = start("sleep 30").unwrap();
+    assert!(!exit(&mut harness), "the second job wasn't warned of");
+    assert_eq!(
+        warnings(&harness)[1],
+        "2 background jobs are running: /exit again stops them and quits."
+    );
+
+    // The full-screen view asks in its popup, with the jobs running.
+    let (popup, mut asks) = tokio::sync::mpsc::unbounded_channel();
+    harness.quit_popup = Some(popup);
     harness.exit_warned = false;
-    harness.screen = true;
-    assert!(harness.mirrored(|harness| harness.may_exit()));
+    assert!(!harness.mirrored(|harness| harness.may_exit(Some(Vec::new()))));
+    let asked = asks.try_recv().unwrap();
+    assert_eq!(
+        asked.iter().map(|job| job.job_id).collect::<Vec<_>>(),
+        [first, second]
+    );
+    assert_eq!(warnings(&harness).len(), 2, "the popup asks instead");
+    // With asking turned off, it quits; with both agreed to, too.
+    assert!(harness.mirrored(|harness| harness.may_exit(None)));
+    assert!(start("sleep 30").is_ok(), "asking off doesn't ready the jobs");
+    harness.exit_warned = false;
+    let third = harness.background.jobs()[2].job_id;
+    assert!(harness.mirrored(|harness| harness.may_exit(Some(vec![first, second, third]))));
+    assert!(start("sleep 30").is_err(), "no job starts once Arko quits");
     managers.shutdown().await;
 }
 
