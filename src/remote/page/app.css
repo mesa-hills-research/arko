@@ -470,16 +470,17 @@ details.call pre, .row.result pre {
 .row.question .label { color: var(--warn); }
 
 .row.turn {
-  display: flex;
-  align-items: center;
-  gap: 10px;
   margin: 16px 0 22px;
   color: var(--muted);
   font-size: 12px;
+  line-height: 18px;
   font-variant-numeric: tabular-nums;
+  text-align: center;
 }
-.row.turn::before, .row.turn::after { content: ""; flex: 1; border-top: 1px solid var(--line); }
-.row.turn span { max-width: 80%; text-align: center; }
+.turn-line { display: flex; gap: 10px; }
+/* The rules stay beside the first line when the text wraps. */
+.turn-line::before, .turn-line::after { content: ""; flex: 1; border-top: 1px solid var(--line); margin-top: 9px; }
+.turn-line span { max-width: 80%; }
 
 /* A worker's live line, in the main transcript and the workers' sheet. */
 .wcard {

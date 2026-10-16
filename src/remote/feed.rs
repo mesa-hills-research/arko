@@ -844,12 +844,16 @@ impl Feed {
     }
 
     /// The turn ended; `summary` is what it took (time, cost, context).
-    pub fn turn_ended(&self, summary: &str) {
+    pub fn turn_ended(&self, summary: &str, plan_usage: Option<&str>) {
         {
             let mut state = self.lock();
             state.turn_opened = false;
             self.interrupt_calls(&mut state, MAIN_AGENT);
-            self.push(&mut state, Item::new(Kind::Turn, summary));
+            // The plan's usage is the detail, so the page can keep it whole
+            // on a line of its own.
+            let mut item = Item::new(Kind::Turn, summary);
+            item.detail = plan_usage.map(str::to_string);
+            self.push(&mut state, item);
         }
         self.set_activity(|activity| {
             activity.working = false;
@@ -1307,7 +1311,7 @@ mod tests {
             ),
             None,
         );
-        feed.turn_ended("1 s");
+        feed.turn_ended("1 s", None);
         let outcomes: Vec<(Option<CallStatus>, Option<String>)> = items(&feed)
             .into_iter()
             .filter(|item| item.kind == Kind::Call)
@@ -1414,11 +1418,11 @@ mod tests {
         feed.turn_started();
         feed.event(&event("main", chunk("Fixing.")), None);
         feed.user("Also the docs.", Source::Terminal, Delivery::Note);
-        feed.turn_ended("2 s");
+        feed.turn_ended("2 s", None);
         // A turn Arko starts for the workers' news has no message.
         feed.turn_started();
         feed.reply("Done.");
-        feed.turn_ended("1 s");
+        feed.turn_ended("1 s", None);
         let turns: Vec<(Kind, Option<u64>)> = items(&feed)
             .into_iter()
             .map(|item| (item.kind, item.turn))
@@ -1457,7 +1461,7 @@ mod tests {
         assert_eq!(feed.activity().question, None);
         let again = feed.question("Sure?");
         assert_ne!(again, id);
-        feed.turn_ended("3 s");
+        feed.turn_ended("3 s", None);
         assert_eq!(feed.activity(), Activity::default());
     }
 
@@ -1522,7 +1526,7 @@ mod tests {
             .collect();
         assert_eq!(states.last(), Some(&WorkerState::Finished));
 
-        feed.turn_ended("1 m");
+        feed.turn_ended("1 m", None);
         feed.user("Check it again.", Source::Web, Delivery::Turn);
         feed.turn_started();
         feed.worker("r1", task, WorkerChange::Started);

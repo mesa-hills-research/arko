@@ -1281,7 +1281,10 @@ fn entry_lines(item: &Item, theme: &Theme, width: usize, own: bool) -> Vec<Wrapp
         }
         Kind::Turn => {
             let rule = glyphs::render("─").into_owned();
-            let text = format!("{rule}{rule} {} ", item.text);
+            let text = match &item.detail {
+                Some(plan) => format!("{rule}{rule} {} · {plan} ", item.text),
+                None => format!("{rule}{rule} {} ", item.text),
+            };
             let fill = inner.saturating_sub(text_width(&text));
             let mut spans = vec![Span::styled(text, theme.dim())];
             spans.push(Span::styled(rule.repeat(fill), theme.dim()));

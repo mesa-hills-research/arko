@@ -3097,13 +3097,13 @@ impl Harness {
                 if running == 1 { "" } else { "s" }
             ));
         }
-        if let Some(plan) = stats.plan_usage {
-            parts.push(plan);
-        }
         let parts = parts.join(" · ");
-        self.output
-            .echo(&self.output.dim(&format!("── {parts} ──")));
-        self.feed.turn_ended(&parts);
+        let line = match &stats.plan_usage {
+            Some(plan) => format!("{parts} · {plan}"),
+            None => parts.clone(),
+        };
+        self.output.echo(&self.output.dim(&format!("── {line} ──")));
+        self.feed.turn_ended(&parts, stats.plan_usage.as_deref());
     }
 }
 
