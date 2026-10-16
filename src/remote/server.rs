@@ -625,6 +625,10 @@ impl Stream {
 #[derive(Deserialize)]
 struct MessageBody {
     text: String,
+    /// The worker whose view it was sent from: what isn't a command goes
+    /// to that worker, as the full-screen view sends it.
+    #[serde(default)]
+    to: Option<String>,
 }
 
 /// The text as typed: line ends as `\n`, and not blank.
@@ -645,9 +649,20 @@ async fn message(
     }
     match serde_json::from_slice::<MessageBody>(&body)
         .ok()
-        .and_then(|body| typed(&body.text))
+        .and_then(|body| Some((typed(&body.text)?, body.to)))
     {
-        Some(text) => app.act(Action::Message(text)),
+        // Text like "/usr/bin is missing" is a message, not a command.
+        Some((text, Some(worker)))
+            if crate::commands::find(&text).is_none()
+                && !worker.is_empty()
+                && !worker.contains(char::is_whitespace) =>
+        {
+            app.act(Action::Message(format!(
+                "/message {worker} {}",
+                text.trim()
+            )))
+        }
+        Some((text, _)) => app.act(Action::Message(text)),
         None => (StatusCode::BAD_REQUEST, error_body("send {\"text\": ...}")).into_response(),
     }
 }
@@ -1185,6 +1200,20 @@ mod tests {
             .post("/api/message", Some(&cookie), r#"{"text": "  "}"#)
             .await;
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        // From a worker's view: text goes to the worker, a command doesn't.
+        for (text, sent) in [
+            ("/usr/bin is missing", "/message r1 /usr/bin is missing"),
+            ("Use tabs.", "/message r1 Use tabs."),
+            ("/outside on", "/outside on"),
+        ] {
+            let body = serde_json::json!({ "text": text, "to": "r1" }).to_string();
+            let response = served.post("/api/message", Some(&cookie), &body).await;
+            assert_eq!(response.status(), StatusCode::ACCEPTED);
+            assert_eq!(
+                served.actions.recv().await.unwrap(),
+                Action::Message(sent.into())
+            );
+        }
 
         let response = served
             .post(

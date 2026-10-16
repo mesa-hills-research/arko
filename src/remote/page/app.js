@@ -1361,11 +1361,12 @@
     sending = true;
     send.disabled = true;
     const question = asking() ? status.question.id : null;
-    // In a worker's own view it goes to that worker (commands still go to
-    // the session, and the main agent's question takes the answer).
-    const line = worker && !message.trim().startsWith('/') ? '/message ' + worker + ' ' + message.trim() : message;
+    // In a worker's own view it goes to that worker: the session tells its
+    // commands from text, and the main agent's question takes the answer.
     const sent =
-      question !== null ? await post('/api/answer', { question, text: message }) : await post('/api/message', { text: line });
+      question !== null
+        ? await post('/api/answer', { question, text: message })
+        : await post('/api/message', worker ? { text: message, to: worker } : { text: message });
     sending = false;
     if (sent) {
       text.value = '';
