@@ -3,7 +3,7 @@
 //!
 //! arko_index's `Embedder` trait is synchronous and is called from blocking
 //! threads (index builds and embedding runs on `std::thread`s, searches in
-//! `spawn_blocking`). [`VoyageEmbedder`] therefore holds a handle to fin's tokio
+//! `spawn_blocking`). [`VoyageEmbedder`] therefore holds a handle to Arko's tokio
 //! runtime and blocks on it, never a runtime of its own (creating or dropping a
 //! runtime on an async thread panics). It must not be called on an async thread.
 
@@ -31,7 +31,7 @@ pub const HASH_MODEL: &str = "hash-v1";
 /// The dimensions of [`HASH_MODEL`] vectors.
 const HASH_DIMENSIONS: usize = 64;
 
-/// What the environment variable fin reads the key from is called, for messages.
+/// What the environment variable Arko reads the key from is called, for messages.
 pub const KEY_NAME: &str = "VOYAGE_API_KEY";
 
 /// The Voyage model for an index of `kind`.
@@ -45,7 +45,7 @@ pub fn voyage_model(kind: Kind) -> &'static str {
 /// Where embeddings come from.
 #[derive(Clone)]
 pub enum Backend {
-    /// Voyage, with fin's key (none: lexical indexes and search only).
+    /// Voyage, with Arko's key (none: lexical indexes and search only).
     Voyage { key: Option<String> },
     /// arko_index's `HashEmbedder`: offline and deterministic, for tests.
     #[cfg(test)]
@@ -140,7 +140,7 @@ impl Backend {
                 )?))
             }
             other => Err(format!(
-                "the index embeds with {}, a provider fin doesn't support ({other})",
+                "the index embeds with {}, a provider Arko doesn't support ({other})",
                 descriptor.display()
             )),
         }

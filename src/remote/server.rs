@@ -83,7 +83,7 @@ impl Server {
             addr,
             key,
             // Cookies don't tell ports apart: each server has its own.
-            cookie: format!("fin_remote_{}", addr.port()),
+            cookie: format!("arko_remote_{}", addr.port()),
             sessions: Mutex::new(VecDeque::new()),
             failures: Mutex::new(HashMap::new()),
             feed,
@@ -266,7 +266,7 @@ impl IntoResponse for Refusal {
             Refusal::Unauthorized => (
                 StatusCode::UNAUTHORIZED,
                 [(header::WWW_AUTHENTICATE, "Bearer")],
-                error_body("open the link fin printed, which holds the key"),
+                error_body("open the link Arko printed, which holds the key"),
             )
                 .into_response(),
             Refusal::Wait(wait) => (
@@ -706,7 +706,7 @@ struct LinkOut {
 
 /// `GET /api/links`: the links to the page, best first, with their QR
 /// codes, for opening it on another device. They hold the key, as the
-/// links fin prints do.
+/// links Arko prints do.
 async fn links(
     State(app): State<Arc<App>>,
     ConnectInfo(peer): Peer,
@@ -749,14 +749,14 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert(
             header::COOKIE,
-            HeaderValue::from_static("a=b; fin_remote_1=tok; c=d"),
+            HeaderValue::from_static("a=b; arko_remote_1=tok; c=d"),
         );
         headers.insert(
             header::AUTHORIZATION,
             HeaderValue::from_static("Bearer  k3y "),
         );
-        assert_eq!(cookie(&headers, "fin_remote_1"), Some("tok"));
-        assert_eq!(cookie(&headers, "fin_remote_2"), None);
+        assert_eq!(cookie(&headers, "arko_remote_1"), Some("tok"));
+        assert_eq!(cookie(&headers, "arko_remote_2"), None);
         assert_eq!(bearer(&headers), Some("k3y"));
     }
 
@@ -989,7 +989,7 @@ mod tests {
         let response = served
             .post(
                 "/api/message",
-                Some("fin_remote_1=guess"),
+                Some("arko_remote_1=guess"),
                 r#"{"text": "hi"}"#,
             )
             .await;
@@ -1008,7 +1008,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::NO_CONTENT);
         let set = response.headers()[header::SET_COOKIE].to_str().unwrap();
         let port = served.server.addr().port();
-        assert!(set.starts_with(&format!("fin_remote_{port}=")), "{set}");
+        assert!(set.starts_with(&format!("arko_remote_{port}=")), "{set}");
         assert!(
             set.contains("HttpOnly") && set.contains("SameSite=Strict"),
             "{set}"

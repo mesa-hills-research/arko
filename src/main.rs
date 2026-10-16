@@ -1,4 +1,4 @@
-//! fin: a general-purpose agent for the terminal.
+//! Arko: a general-purpose agent for the terminal.
 //!
 //! The user talks with one agent (`main`), which works with a shell,
 //! background terminal jobs and file tools in the working directory, and
@@ -13,8 +13,8 @@
 //!
 //! Besides the shell, the agents get the tools of the MCP servers set up
 //! (`mcp`), the skills in the skill folders (`skills`), and semantic search
-//! over indexes of codebases and docs that fin keeps current (`index`, also
-//! run from the command line as `fin index ...`).
+//! over indexes of codebases and docs that Arko keeps current (`index`, also
+//! run from the command line as `arko index ...`).
 
 mod agents;
 mod claude_code;
@@ -74,15 +74,15 @@ use crate::ui::{Control, Input, Output, Stats};
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "fin",
+    name = "arko",
     version,
     about = "A general-purpose agent for the terminal: a shell, background jobs, file tools and workers that run in parallel.",
-    after_help = "Credentials: ANTHROPIC_API_KEY for Claude models. For OpenAI models, a ChatGPT login or OPENAI_API_KEY, one per session (--openai-auth). The ChatGPT login is a Codex auth.json (--codex-auth, else FIN_CODEX_AUTH, else Codex's own from `codex login`), or OPENAI_OAUTH_ACCESS_TOKEN with OPENAI_OAUTH_ACCOUNT_ID. GEMINI_API_KEY (or GOOGLE_API_KEY) for Gemini models, and OPENROUTER_API_KEY for openrouter: models. cc: models run in your installed Claude Code (`claude`, signed in with `claude auth login`) on your Claude plan, never on ANTHROPIC_API_KEY. When the model's credential is missing, fin asks for it on a setup screen and saves it in fin's .env. --setup opens that screen. While fin runs, /keys (also in /settings) adds, replaces and removes API keys, and a key added is used at once.\n\nSettings: the API keys above, FIN_CODEX_AUTH, FIN_OPENAI_AUTH (chatgpt or api-key), FIN_CACHE_1H (1 turns on --cache-1h), FIN_SHELL (cmd or powershell, on Windows), FIN_SYMBOLS, FIN_THEME, FIN_REMOTE_HOST and VOYAGE_API_KEY can be in the environment or in a .env file. fin reads the nearest .env in the current directory or a parent, then the one in fin's folder (FIN_HOME, else fin in your data directory, such as ~/.local/share/fin).\n\nThe screen: in a terminal, fin shows the session full screen (--repl keeps the line prompt). Enter sends, and Ctrl+J (or Shift+Enter where the terminal reports it) starts a new line. While the agent works, what you send adds to its task. Ctrl+O switches the view between full, quiet (each worker as one line) and messages. Ctrl+T, or ↓ from the input, reaches the agent list, where Enter shows a worker's own work and Esc goes back. Ctrl+C stops the turn, and the workers go on. Drag over the transcript to select text, and it is copied when you let go. A double click copies a word, and a triple click a line. /help lists the keys, and /settings holds the view, the theme and its previews, the mouse, outside access, the handover size, text replies, the extra rules, the project instructions, the web page and the API keys.\n\nThemes: FIN_THEME picks a theme by name, such as \"macOS Classic Light\" or \"Windows Dark\". The default is macOS Classic Dark, and `terminal` keeps the terminal's own colours. Your own themes go in the themes folder in fin's folder, in GPUI Kit's theme format. The theme list in /settings shows a theme when you rest on it, and Previews off there shows none until you choose one.\n\nOutside access: the agents change files only inside the working directory. /outside on, or --allow-outside-workspace (also when resuming), lets commands and the file tools change paths outside it too, and /outside off stops that. The agents are told when it changes, and workers follow it. Protected paths, such as the home directory itself, stay refused.\n\nModels: --model (-m) and --effort set the main agent's model, and --worker-model and --worker-effort the workers'. Before the conversation starts, /model MODEL [EFFORT] changes the main agent's model. After that the main agent keeps its model for the session, and /model worker MODEL [EFFORT] sets the model of workers started from now on. /model worker main makes them follow the main agent again. A worker keeps the model it started on, also when it is resumed or continued. /model and /model worker without a model open a picker of the models you can use.\n\nReplies: in a session you take part in, the main agent ends each turn with a plain reply. With -p it ends each turn by calling complete_task instead, so a reply that wasn't meant to be its last doesn't end the run. --text-replies and --no-text-replies choose for a new session, and /text-replies (also in /settings) changes it before the conversation starts. A resumed session keeps its own.\n\nExtra rules: agents on small models (Haiku, luna) get a few extra rules in their instructions. Each agent goes by its own model, so a worker on Haiku gets them under a main agent on Opus, which doesn't. --extra-rules gives them to every agent and --no-extra-rules to none, for a new session, and /extra-rules (also in /settings) changes it before the conversation starts. A resumed session keeps its own.\n\nProject instructions: the agents get AGENTS.md from the working directory, or CLAUDE.md when there is no AGENTS.md. The main agent gets it once per conversation, in the first message. Each worker gets the same text once, in its first message, also when it works in a worktree of its own. Both get it again after a handover. --project-instructions both gives both files, each under its own name, and --project-instructions off neither. --no-worker-project-instructions keeps them from the workers. The flags work for a new session or a resumed one, and /project-instructions (also in /settings) changes them as you go. A change reaches the conversations and the workers that start after it.\n\nConversations: /new starts a new conversation in the session, and /resume goes back to an earlier one. The screen opens a list to choose from. At the line prompt and on the web page, /resume lists them and /resume N goes back to number N. A resumed session (-c, --resume) goes on with the conversation it was in.\n\nHandovers: when the main agent's input reaches the handover size (500k tokens on Claude models, 250k on the ChatGPT login, 200k on others), it writes a report and goes on from it in a fresh conversation. On cc: models, Claude Code compacts the conversation at that size instead, and the agent goes on in the same conversation from Claude Code's summary. Workers do the same. /handover-at SIZE lowers the size for the session, and /handover hands over (or compacts) now.\n\nCost: /cost shows what the session billed. For work on a Claude or ChatGPT plan, it also shows the cost at API prices and the plan's usage.\n\nMCP servers: fin starts those set up in --mcp-config files, in the project's .mcp.json (it asks first, and remembers the answer until the file's servers change) and in mcp.json in fin's folder. They use Claude Code's format ({\"mcpServers\": {\"name\": {\"command\": ..., \"args\": [...], \"env\": {...}}}}) and talk over standard input and output. Skills: folders with a SKILL.md, in the project's .agents/skills, .claude/skills or .skills, in skills in fin's folder, or in ~/.agents/skills or ~/.claude/skills.\n\nSearch indexes: `fin index create [PATH]` indexes a codebase or its docs, in any directory (the agents can create indexes too). fin keeps the working directory's indexes current while it runs, and other indexes once the agent searches them. The agents' searches return the top results' whole functions and sections. `fin index --help` lists the commands. Without VOYAGE_API_KEY, search is by keywords only.\n\nWorkers: the agent starts them to work in parallel while it goes on, each in the working directory or in a git worktree of its own (made in the session's folder, on a branch fin/<session>/<worker>). Their reports reach it as they finish. /workers lists them, /watch shows one's own work, and /stop-workers stops them.\n\nRemote: --remote (or /remote during a session) serves a web page for following the session and taking part in it from a browser, such as a phone's. It has the same views as the screen, and its settings change outside access, text replies, the extra rules, the project instructions and the handover size and show links for other devices. fin prints the links best first: the local network's, then Tailscale's, then other addresses, with VPN tunnels last. FIN_REMOTE_HOST (an interface or an address) puts its link first. The QR code is for the first link, and /remote qr [INTERFACE] draws one again. The link holds the session's key (kept in the session's folder), which the page trades for a cookie. fin listens on 127.0.0.1:8765 by default, and --remote 0.0.0.0 (or 0.0.0.0:PORT) lets in the devices on your network, or on your tailnet with Tailscale. The page is served without TLS. On a network you don't trust, reach it through an SSH tunnel (ssh -L 8765:127.0.0.1:8765 HOST, then open the link on your side) or Tailscale. /remote off stops it and ends its sessions, and /remote new-key makes a new key.\n\nSymbols: the classic Windows console (cmd.exe or PowerShell outside Windows Terminal) shows characters its fonts lack as question marks, so there fin prints stand-ins those fonts have. FIN_SYMBOLS sets the symbols: full, basic (those stand-ins) or ascii.\n\nCommands: /new, /resume, /model, /keys, /cost, /workers, /watch, /stop-workers, /view, /copy, /settings, /mcp, /skills, /session, /remote, /outside, /text-replies, /extra-rules, /project-instructions, /handover, /handover-at, /help, /exit."
+    after_help = "Credentials: ANTHROPIC_API_KEY for Claude models. For OpenAI models, a ChatGPT login or OPENAI_API_KEY, one per session (--openai-auth). The ChatGPT login is a Codex auth.json (--codex-auth, else ARKO_CODEX_AUTH, else Codex's own from `codex login`), or OPENAI_OAUTH_ACCESS_TOKEN with OPENAI_OAUTH_ACCOUNT_ID. GEMINI_API_KEY (or GOOGLE_API_KEY) for Gemini models, and OPENROUTER_API_KEY for openrouter: models. cc: models run in your installed Claude Code (`claude`, signed in with `claude auth login`) on your Claude plan, never on ANTHROPIC_API_KEY. When the model's credential is missing, Arko asks for it on a setup screen and saves it in Arko's .env. --setup opens that screen. While Arko runs, /keys (also in /settings) adds, replaces and removes API keys, and a key added is used at once.\n\nSettings: the API keys above, ARKO_CODEX_AUTH, ARKO_OPENAI_AUTH (chatgpt or api-key), ARKO_CACHE_1H (1 turns on --cache-1h), ARKO_SHELL (cmd or powershell, on Windows), ARKO_SYMBOLS, ARKO_THEME, ARKO_REMOTE_HOST and VOYAGE_API_KEY can be in the environment or in a .env file. Arko reads the nearest .env in the current directory or a parent, then the one in Arko's folder (ARKO_HOME, else arko in your data directory, such as ~/.local/share/arko).\n\nThe screen: in a terminal, Arko shows the session full screen (--repl keeps the line prompt). Enter sends, and Ctrl+J (or Shift+Enter where the terminal reports it) starts a new line. While the agent works, what you send adds to its task. Ctrl+O switches the view between full, quiet (each worker as one line) and messages. Ctrl+T, or ↓ from the input, reaches the agent list, where Enter shows a worker's own work and Esc goes back. Ctrl+C stops the turn, and the workers go on. Drag over the transcript to select text, and it is copied when you let go. A double click copies a word, and a triple click a line. /help lists the keys, and /settings holds the view, the theme and its previews, the mouse, outside access, the handover size, text replies, the extra rules, the project instructions, the web page and the API keys.\n\nThemes: ARKO_THEME picks a theme by name, such as \"macOS Classic Light\" or \"Windows Dark\". The default is macOS Classic Dark, and `terminal` keeps the terminal's own colours. Your own themes go in the themes folder in Arko's folder, in GPUI Kit's theme format. The theme list in /settings shows a theme when you rest on it, and Previews off there shows none until you choose one.\n\nOutside access: the agents change files only inside the working directory. /outside on, or --allow-outside-workspace (also when resuming), lets commands and the file tools change paths outside it too, and /outside off stops that. The agents are told when it changes, and workers follow it. Protected paths, such as the home directory itself, stay refused.\n\nModels: --model (-m) and --effort set the main agent's model, and --worker-model and --worker-effort the workers'. Before the conversation starts, /model MODEL [EFFORT] changes the main agent's model. After that the main agent keeps its model for the session, and /model worker MODEL [EFFORT] sets the model of workers started from now on. /model worker main makes them follow the main agent again. A worker keeps the model it started on, also when it is resumed or continued. /model and /model worker without a model open a picker of the models you can use.\n\nReplies: in a session you take part in, the main agent ends each turn with a plain reply. With -p it ends each turn by calling complete_task instead, so a reply that wasn't meant to be its last doesn't end the run. --text-replies and --no-text-replies choose for a new session, and /text-replies (also in /settings) changes it before the conversation starts. A resumed session keeps its own.\n\nExtra rules: agents on small models (Haiku, luna) get a few extra rules in their instructions. Each agent goes by its own model, so a worker on Haiku gets them under a main agent on Opus, which doesn't. --extra-rules gives them to every agent and --no-extra-rules to none, for a new session, and /extra-rules (also in /settings) changes it before the conversation starts. A resumed session keeps its own.\n\nProject instructions: the agents get AGENTS.md from the working directory, or CLAUDE.md when there is no AGENTS.md. The main agent gets it once per conversation, in the first message. Each worker gets the same text once, in its first message, also when it works in a worktree of its own. Both get it again after a handover. --project-instructions both gives both files, each under its own name, and --project-instructions off neither. --no-worker-project-instructions keeps them from the workers. The flags work for a new session or a resumed one, and /project-instructions (also in /settings) changes them as you go. A change reaches the conversations and the workers that start after it.\n\nConversations: /new starts a new conversation in the session, and /resume goes back to an earlier one. The screen opens a list to choose from. At the line prompt and on the web page, /resume lists them and /resume N goes back to number N. A resumed session (-c, --resume) goes on with the conversation it was in.\n\nHandovers: when the main agent's input reaches the handover size (500k tokens on Claude models, 250k on the ChatGPT login, 200k on others), it writes a report and goes on from it in a fresh conversation. On cc: models, Claude Code compacts the conversation at that size instead, and the agent goes on in the same conversation from Claude Code's summary. Workers do the same. /handover-at SIZE lowers the size for the session, and /handover hands over (or compacts) now.\n\nCost: /cost shows what the session billed. For work on a Claude or ChatGPT plan, it also shows the cost at API prices and the plan's usage.\n\nMCP servers: Arko starts those set up in --mcp-config files, in the project's .mcp.json (it asks first, and remembers the answer until the file's servers change) and in mcp.json in Arko's folder. They use Claude Code's format ({\"mcpServers\": {\"name\": {\"command\": ..., \"args\": [...], \"env\": {...}}}}) and talk over standard input and output. Skills: folders with a SKILL.md, in the project's .agents/skills, .claude/skills or .skills, in skills in Arko's folder, or in ~/.agents/skills or ~/.claude/skills.\n\nSearch indexes: `arko index create [PATH]` indexes a codebase or its docs, in any directory (the agents can create indexes too). Arko keeps the working directory's indexes current while it runs, and other indexes once the agent searches them. The agents' searches return the top results' whole functions and sections. `arko index --help` lists the commands. Without VOYAGE_API_KEY, search is by keywords only.\n\nWorkers: the agent starts them to work in parallel while it goes on, each in the working directory or in a git worktree of its own (made in the session's folder, on a branch arko/<session>/<worker>). Their reports reach it as they finish. /workers lists them, /watch shows one's own work, and /stop-workers stops them.\n\nRemote: --remote (or /remote during a session) serves a web page for following the session and taking part in it from a browser, such as a phone's. It has the same views as the screen, and its settings change outside access, text replies, the extra rules, the project instructions and the handover size and show links for other devices. Arko prints the links best first: the local network's, then Tailscale's, then other addresses, with VPN tunnels last. ARKO_REMOTE_HOST (an interface or an address) puts its link first. The QR code is for the first link, and /remote qr [INTERFACE] draws one again. The link holds the session's key (kept in the session's folder), which the page trades for a cookie. Arko listens on 127.0.0.1:8765 by default, and --remote 0.0.0.0 (or 0.0.0.0:PORT) lets in the devices on your network, or on your tailnet with Tailscale. The page is served without TLS. On a network you don't trust, reach it through an SSH tunnel (ssh -L 8765:127.0.0.1:8765 HOST, then open the link on your side) or Tailscale. /remote off stops it and ends its sessions, and /remote new-key makes a new key.\n\nSymbols: the classic Windows console (cmd.exe or PowerShell outside Windows Terminal) shows characters its fonts lack as question marks, so there Arko prints stand-ins those fonts have. ARKO_SYMBOLS sets the symbols: full, basic (those stand-ins) or ascii.\n\nCommands: /new, /resume, /model, /keys, /cost, /workers, /watch, /stop-workers, /view, /copy, /settings, /mcp, /skills, /session, /remote, /outside, /text-replies, /extra-rules, /project-instructions, /handover, /handover-at, /help, /exit."
 )]
 struct Args {
     /// Send this message, print the reply and exit. Progress goes to
     /// standard error, the reply to standard output. When the agent starts
-    /// workers, fin waits for their reports, which go to the agent, and
+    /// workers, Arko waits for their reports, which go to the agent, and
     /// prints its reply to them.
     #[arg(short = 'p', long)]
     prompt: Option<String>,
@@ -97,7 +97,7 @@ struct Args {
     /// Code signed in, else opus with ANTHROPIC_API_KEY, else sol with a
     /// ChatGPT login, else openrouter:anthropic/claude-opus-5.5 with
     /// OPENROUTER_API_KEY, else sol with OPENAI_API_KEY, else gemini with
-    /// GEMINI_API_KEY. fin says which it took. Runs with -p don't change
+    /// GEMINI_API_KEY. Arko says which it took. Runs with -p don't change
     /// the next default.
     #[arg(short, long)]
     model: Option<String>,
@@ -131,12 +131,12 @@ struct Args {
     /// or on OpenRouter), instead of the 5-minute one: the cache outlasts
     /// pauses of up to an hour, and a cache write costs 2x the input price
     /// instead of 1.25x. Claude Code chooses its own (an hour on a Claude
-    /// plan). Default: FIN_CACHE_1H (1 or 0, in the environment or a .env
+    /// plan). Default: ARKO_CACHE_1H (1 or 0, in the environment or a .env
     /// file).
     #[arg(long = "cache-1h", conflicts_with = "no_cache_1h")]
     cache_1h: bool,
 
-    /// The 5-minute prompt cache, whatever FIN_CACHE_1H says.
+    /// The 5-minute prompt cache, whatever ARKO_CACHE_1H says.
     #[arg(long = "no-cache-1h")]
     no_cache_1h: bool,
 
@@ -229,40 +229,40 @@ struct Args {
     #[arg(long)]
     sessions: bool,
 
-    /// A Codex auth.json with the ChatGPT login. Default: FIN_CODEX_AUTH,
+    /// A Codex auth.json with the ChatGPT login. Default: ARKO_CODEX_AUTH,
     /// else $CODEX_HOME/auth.json, else ~/.codex/auth.json.
     #[arg(long)]
     codex_auth: Option<PathBuf>,
 
     /// How a new session reaches OpenAI models: chatgpt (the ChatGPT login,
     /// on your plan) or api-key (OPENAI_API_KEY, billed per token). The
-    /// session keeps it. Default: FIN_OPENAI_AUTH, else the ChatGPT login
+    /// session keeps it. Default: ARKO_OPENAI_AUTH, else the ChatGPT login
     /// when there is one, else the API key.
     #[arg(long, value_enum)]
     openai_auth: Option<OpenAiAuth>,
 
     /// The shell commands run in on Windows: cmd (cmd.exe) or powershell
     /// (PowerShell 7 where installed, else Windows PowerShell). Default:
-    /// FIN_SHELL, else cmd. Elsewhere commands run in bash (else sh).
+    /// ARKO_SHELL, else cmd. Elsewhere commands run in bash (else sh).
     #[arg(long, value_enum)]
     shell: Option<WindowsShell>,
 
     /// Open the setup screen first: paste an API key (Anthropic, OpenAI,
     /// Gemini, OpenRouter or Voyage), give the path to a Codex auth.json, or
-    /// check Claude Code. What you enter is saved in fin's folder.
+    /// check Claude Code. What you enter is saved in Arko's folder.
     #[arg(long)]
     setup: bool,
 
     /// Start the MCP servers in this file too (repeatable), in Claude
-    /// Code's format or arko's. A server named here is taken over one of
-    /// the same name in the project's .mcp.json or fin's mcp.json.
+    /// Code's format or arko_agents'. A server named here is taken over one of
+    /// the same name in the project's .mcp.json or Arko's mcp.json.
     #[arg(long = "mcp-config", value_name = "FILE")]
     mcp_config: Vec<PathBuf>,
 
     /// Serve a web page for following this session and taking part in it
     /// from a browser, such as a phone's. ADDR is a port, an address, or
     /// both: default 127.0.0.1:8765 (this machine only), and 0.0.0.0 lets
-    /// in the other devices on the network. fin prints the link, which holds
+    /// in the other devices on the network. Arko prints the link, which holds
     /// the session's key. No TLS: on a network you don't trust, reach it
     /// through an SSH tunnel or Tailscale.
     #[arg(
@@ -300,7 +300,7 @@ fn main() -> ExitCode {
     {
         Ok(runtime) => runtime,
         Err(error) => {
-            eprintln!("fin: {error}");
+            eprintln!("arko: {error}");
             return ExitCode::FAILURE;
         }
     };
@@ -310,7 +310,7 @@ fn main() -> ExitCode {
     let code = match code {
         Ok(code) => code,
         Err(message) => {
-            eprintln!("fin: {message}");
+            eprintln!("arko: {message}");
             ExitCode::FAILURE
         }
     };
@@ -347,7 +347,7 @@ async fn run(args: Args) -> Result<ExitCode, String> {
         let workspace = workspace(&args)?;
         Some(session::latest_in(&root, &workspace).ok_or_else(|| {
             format!(
-                "no session to continue in {}. `fin --sessions` lists them",
+                "no session to continue in {}. `arko --sessions` lists them",
                 workspace.display()
             )
         })?)
@@ -366,19 +366,19 @@ async fn run(args: Args) -> Result<ExitCode, String> {
                 || args.openai_auth.is_some()
             {
                 eprintln!(
-                    "fin: a resumed session keeps the models and shell it was started with ({})",
+                    "arko: a resumed session keeps the models and shell it was started with ({})",
                     settings.describe(&settings.main)
                 );
             }
             if args.text_replies || args.no_text_replies {
                 eprintln!(
-                    "fin: a resumed session keeps how its main agent ends its turns: {}",
+                    "arko: a resumed session keeps how its main agent ends its turns: {}",
                     agents::replies_text(settings.text_replies)
                 );
             }
             if args.extra_rules || args.no_extra_rules {
                 eprintln!(
-                    "fin: a resumed session keeps its extra rules for small models: {}",
+                    "arko: a resumed session keeps its extra rules for small models: {}",
                     settings.extra_rules.describe()
                 );
             }
@@ -408,7 +408,7 @@ async fn run(args: Args) -> Result<ExitCode, String> {
             )
             .await?;
             for note in notes {
-                eprintln!("fin: {note}");
+                eprintln!("arko: {note}");
             }
             (None, settings, true)
         }
@@ -418,7 +418,7 @@ async fn run(args: Args) -> Result<ExitCode, String> {
     let shell = Shell::detect(settings.windows_shell.unwrap_or(WindowsShell::Powershell));
     if new && args.shell.is_some() && !cfg!(windows) {
         eprintln!(
-            "fin: --shell picks the shell on Windows. Here commands run in {}",
+            "arko: --shell picks the shell on Windows. Here commands run in {}",
             shell.name
         );
     }
@@ -468,7 +468,7 @@ async fn run(args: Args) -> Result<ExitCode, String> {
         if args.prompt.is_none()
             && let Err(error) = providers::LastModels::remember(&root, &settings)
         {
-            eprintln!("fin: could not keep this session's models for the next one: {error}");
+            eprintln!("arko: could not keep this session's models for the next one: {error}");
         }
     }
     start_log(&session);
@@ -486,7 +486,7 @@ async fn run(args: Args) -> Result<ExitCode, String> {
     // said, and the session goes on without.
     let startup = Output::new(None, one_shot);
     for note in &mcp_notes {
-        startup.line(&startup.warn(&format!("fin: {note}")));
+        startup.line(&startup.warn(&format!("arko: {note}")));
     }
     let mcp = if mcp_servers.is_empty() {
         mcp::Running::default()
@@ -504,7 +504,7 @@ async fn run(args: Args) -> Result<ExitCode, String> {
     for started in &mcp.servers {
         if let Err(error) = &started.result {
             startup.line(&startup.warn(&format!(
-                "fin: the MCP server `{}` (in {}) didn't start: {error}",
+                "arko: the MCP server `{}` (in {}) didn't start: {error}",
                 started.server.name,
                 started.server.file.display()
             )));
@@ -519,7 +519,7 @@ async fn run(args: Args) -> Result<ExitCode, String> {
     ) {
         Ok(indexes) => Some(indexes),
         Err(error) => {
-            startup.line(&startup.warn(&format!("fin: search indexes are off: {error}")));
+            startup.line(&startup.warn(&format!("arko: search indexes are off: {error}")));
             None
         }
     };
@@ -696,7 +696,7 @@ async fn run(args: Args) -> Result<ExitCode, String> {
         harness.handover_at_start(tokens);
     }
     if one_shot && let Some(note) = &harness.unoffered {
-        output.line(&output.warn(&format!("fin: {note}")));
+        output.line(&output.warn(&format!("arko: {note}")));
     }
     let mut input = Inputs {
         receiver: input,
@@ -742,7 +742,7 @@ async fn run(args: Args) -> Result<ExitCode, String> {
                             .main
                             .handover_at
                             .unwrap_or(harness.settings.handover_at),
-                        // (With what fin said before the screen opened.)
+                        // (With what Arko said before the screen opened.)
                         banner: harness.header(lock(&MODEL_NOTE).take()),
                         keys: harness.keys.clone(),
                     },
@@ -769,7 +769,7 @@ async fn run(args: Args) -> Result<ExitCode, String> {
     if harness.remote.is_some() {
         harness
             .feed
-            .notice(Level::Info, "fin closed. The session is saved.");
+            .notice(Level::Info, "Arko closed. The session is saved.");
         harness.stop_remote().await;
     }
     if let Some(crew) = &harness.crew {
@@ -798,13 +798,13 @@ async fn run(args: Args) -> Result<ExitCode, String> {
     }
     term::restore();
     output.line(&output.dim(&format!(
-        "Session {} saved. Continue it with: fin --resume {}",
+        "Session {} saved. Continue it with: arko --resume {}",
         harness.session.id, harness.session.id
     )));
     Ok(code)
 }
 
-/// Why the session doesn't run the last session's models, as fin said
+/// Why the session doesn't run the last session's models, as Arko said
 /// before the session started: the full-screen view opens over it, so its
 /// banner says it again.
 static MODEL_NOTE: Mutex<Option<String>> = Mutex::new(None);
@@ -912,13 +912,13 @@ fn new_settings(args: &Args) -> Result<Settings, String> {
             providers::choose_openai_auth(args.openai_auth, args.codex_auth.as_deref())?;
         if both {
             eprintln!(
-                "fin: this session reaches OpenAI models over your ChatGPT login (your plan), which comes before OPENAI_API_KEY. --openai-auth api-key (or FIN_OPENAI_AUTH=api-key in a .env file) starts sessions on the API key instead, billed per token"
+                "arko: this session reaches OpenAI models over your ChatGPT login (your plan), which comes before OPENAI_API_KEY. --openai-auth api-key (or ARKO_OPENAI_AUTH=api-key in a .env file) starts sessions on the API key instead, billed per token"
             );
         }
         Some(auth)
     } else {
         if args.openai_auth.is_some() {
-            eprintln!("fin: --openai-auth is for OpenAI models, and this session has none");
+            eprintln!("arko: --openai-auth is for OpenAI models, and this session has none");
         }
         None
     };
@@ -958,7 +958,7 @@ fn new_settings(args: &Args) -> Result<Settings, String> {
     let session_handover = main.handover_at.unwrap_or(200_000);
     if args.cache_1h && !main.cache_1h && !worker.cache_1h {
         eprintln!(
-            "fin: --cache-1h is for Claude models by API key or on OpenRouter (Claude Code chooses its own). This session has none, so it is ignored"
+            "arko: --cache-1h is for Claude models by API key or on OpenRouter (Claude Code chooses its own). This session has none, so it is ignored"
         );
     }
     let text_replies = {
@@ -989,21 +989,21 @@ fn new_settings(args: &Args) -> Result<Settings, String> {
     };
     project_from_args(args, &mut settings);
     providers::check_openai_choices(&settings)?;
-    // The model fin chose: the last session's, else one the credentials
+    // The model Arko chose: the last session's, else one the credentials
     // allow.
     if let Some(default) = &default {
         let mut line = format!("This session runs {}.", settings.describe(&settings.main));
         if let Some(reason) = &default.reason {
             line = format!("{line} {reason}");
         }
-        eprintln!("fin: {line}");
+        eprintln!("arko: {line}");
         *lock(&MODEL_NOTE) = default.reason.clone();
     }
     Ok(settings)
 }
 
 /// The shell a new session runs commands in on Windows: --shell, else
-/// FIN_SHELL, else cmd.exe.
+/// ARKO_SHELL, else cmd.exe.
 fn windows_shell(args: &Args) -> Result<WindowsShell, String> {
     if let Some(shell) = args.shell {
         return Ok(shell);
@@ -1011,7 +1011,7 @@ fn windows_shell(args: &Args) -> Result<WindowsShell, String> {
     match credentials::var(credentials::SHELL) {
         None => Ok(WindowsShell::Cmd),
         Some(value) => <WindowsShell as clap::ValueEnum>::from_str(value.trim(), true)
-            .map_err(|_| format!("FIN_SHELL is `{value}`. Set it to cmd or powershell")),
+            .map_err(|_| format!("ARKO_SHELL is `{value}`. Set it to cmd or powershell")),
     }
 }
 
@@ -1021,7 +1021,7 @@ fn default_model(args: &Args) -> Option<providers::DefaultModels> {
     providers::default_models(args.codex_auth.as_deref(), &session::data_root().ok()?)
 }
 
-/// Logs go to the session's `fin.log`, not the terminal. `RUST_LOG` sets
+/// Logs go to the session's `arko.log`, not the terminal. `RUST_LOG` sets
 /// the level (default: info).
 fn start_log(session: &Session) {
     let Ok(file) = std::fs::OpenOptions::new()
@@ -1073,7 +1073,7 @@ impl Managers {
             config.shell_args = args.to_vec();
             TerminalManager::new(config).map_err(|error| {
                 format!(
-                    "could not open the session's terminal ({error}). Is it open in another fin?"
+                    "could not open the session's terminal ({error}). Is it open in another Arko?"
                 )
             })
         };
@@ -1107,12 +1107,12 @@ impl Managers {
 }
 
 /// The workflow's name in new sessions.
-const WORKFLOW_NAME: &str = "fin";
+const WORKFLOW_NAME: &str = "arko";
 
 /// What a session's checkpoint was saved with: the workflow's name and the
 /// agents' configurations. A resume needs both unchanged, so a session
-/// keeps them when fin changes: its agents' instructions, or its name
-/// (sessions from before the rename were saved as `arko`).
+/// keeps them when Arko changes: its agents' instructions, or its name
+/// (sessions saved before the rename to Arko have `fin`).
 struct SavedSetup {
     name: String,
     /// The configuration of each agent's latest run.
@@ -1144,7 +1144,7 @@ fn saved_setup(checkpoint: &Path, run_dir: &Path) -> Result<SavedSetup, String> 
 }
 
 /// What a resumed session's agents aren't offered, as they started without
-/// it: the tools fin has now that their saved tool lists leave out, and
+/// it: the tools Arko has now that their saved tool lists leave out, and
 /// skills. A resumed conversation keeps the configuration it was saved
 /// with.
 fn unoffered(saved: &SavedSetup, fresh: &[(&str, &arko_agents::AgentConfig)]) -> Option<String> {
@@ -1268,7 +1268,7 @@ enum Prompt {
     User(String),
     /// The workers' news, without a message from the user.
     News,
-    /// A turn fin stopped in the middle of goes on, without a message.
+    /// A turn Arko stopped in the middle of goes on, without a message.
     Recover,
 }
 
@@ -1301,7 +1301,7 @@ struct Harness {
     main_config: arko_agents::AgentConfig,
     worker_config: arko_agents::AgentConfig,
     tools: Vec<Arc<dyn Tool>>,
-    /// fin's folder.
+    /// Arko's folder.
     root: PathBuf,
     /// The MCP servers started, and what was left out and why.
     mcp: mcp::Running,
@@ -1310,7 +1310,7 @@ struct Harness {
     skill_folders: Vec<PathBuf>,
     /// The search indexes; `None` when they couldn't be opened.
     indexes: Option<Arc<index::Indexes>>,
-    /// In a resumed session: the tools (and skills) fin has that the
+    /// In a resumed session: the tools (and skills) Arko has that the
     /// session's agents aren't offered, as they started without them.
     unoffered: Option<String>,
     output: Arc<Output>,
@@ -1321,7 +1321,7 @@ struct Harness {
     /// The session's conversations, and which one the next message goes
     /// to (`/new`, `/resume`).
     conversations: conversations::Conversations,
-    /// The project's instruction files, as fin found them (see `project`).
+    /// The project's instruction files, as Arko found them (see `project`).
     project: project::Found,
     /// What the user typed during a turn that the agent didn't read before
     /// the turn ended: it goes with the next message.
@@ -1338,13 +1338,13 @@ struct Harness {
     crew: Option<Arc<Crew>>,
     /// Puts the main agent's questions to the user.
     asker: Arc<Asker>,
-    /// fin sends one message and exits (-p).
+    /// Arko sends one message and exits (-p).
     one_shot: bool,
     /// `/exit` was typed with workers running: the next one quits.
     exit_warned: bool,
     /// The user was told that the workers' news waits for their message.
     news_hint_shown: bool,
-    /// What the remote page shows: the workflows' events, and what fin
+    /// What the remote page shows: the workflows' events, and what Arko
     /// says of the turns.
     feed: remote::Feed,
     /// The remote page's server, while it runs.
@@ -1526,7 +1526,7 @@ impl Harness {
     }
 
     /// What the full-screen view's banner shows: the session's top-level
-    /// facts, and its notes (`notes` first: what fin said before the
+    /// facts, and its notes (`notes` first: what Arko said before the
     /// session started).
     fn header(&self, model_note: Option<String>) -> tui::Banner {
         let mut tools = Vec::new();
@@ -1593,7 +1593,7 @@ impl Harness {
         let out = &self.output;
         out.line(&format!(
             "{} {} · {}",
-            out.bold("fin"),
+            out.bold("Arko"),
             self.settings.describe(&self.settings.main),
             self.workers_summary()
         ));
@@ -1717,7 +1717,7 @@ impl Harness {
     }
 
     /// After a crash, the turn that was running goes on where it was saved.
-    /// Continues a turn fin stopped in the middle of. The user may quit
+    /// Continues a turn Arko stopped in the middle of. The user may quit
     /// during it (`exiting`).
     async fn restart_unfinished(&mut self, input: &mut Inputs) {
         if let Conversation::Stopped(run) = &self.conversation
@@ -1725,7 +1725,7 @@ impl Harness {
         {
             self.say(
                 Level::Info,
-                "The last turn didn't finish (fin stopped while it ran), so it continues now.",
+                "The last turn didn't finish (Arko stopped while it ran), so it continues now.",
             );
             if let TurnEnd::Exit = self.turn(Prompt::Recover, input).await {
                 self.exiting = true;
@@ -1771,7 +1771,7 @@ impl Harness {
                     self.echo_web(&text);
                     (text, Source::Web)
                 }
-                // (The page's stop never quits fin.)
+                // (The page's stop never quits Arko.)
                 Event::Remote(Action::Stop) => {
                     self.feed.notice(Level::Info, "No turn is running.");
                     continue;
@@ -1851,7 +1851,7 @@ impl Harness {
     }
 
     /// Whether the command can't be run from where it was typed: the page
-    /// can't quit fin or turn itself off.
+    /// can't quit Arko or turn itself off.
     fn refused(&self, command: &str, source: Source) -> bool {
         if source == Source::Web
             && (matches!(command, "/exit" | "/quit") || is_remote_command(command))
@@ -1910,7 +1910,7 @@ impl Harness {
                 if let Some(addr) = self.remote.as_ref().map(remote::Server::addr) {
                     match self.remote_key(false) {
                         Ok(key) => self.announce_remote(addr, &key),
-                        Err(error) => self.say(Level::Error, &format!("fin: {error}")),
+                        Err(error) => self.say(Level::Error, &format!("arko: {error}")),
                     }
                 }
             }
@@ -1933,7 +1933,7 @@ impl Harness {
             }
             "new-key" => {
                 if let Err(error) = self.remote_key(true) {
-                    self.say(Level::Error, &format!("fin: {error}"));
+                    self.say(Level::Error, &format!("arko: {error}"));
                     return;
                 }
                 match self.remote_bind.filter(|_| self.remote.is_some()) {
@@ -1979,7 +1979,7 @@ impl Harness {
                 self.output.line(
                     &self
                         .output
-                        .error(&format!("fin: the web page is off: {error}")),
+                        .error(&format!("arko: the web page is off: {error}")),
                 );
                 return;
             }
@@ -2009,7 +2009,7 @@ impl Harness {
             Err(error) => self.output.line(
                 &self
                     .output
-                    .error(&format!("fin: the web page is off: {error}")),
+                    .error(&format!("arko: the web page is off: {error}")),
             ),
         }
     }
@@ -2084,7 +2084,7 @@ impl Harness {
         let key = match self.remote_key(false) {
             Ok(key) => key,
             Err(error) => {
-                out.line(&out.error(&format!("fin: {error}")));
+                out.line(&out.error(&format!("arko: {error}")));
                 return;
             }
         };
@@ -2103,7 +2103,7 @@ impl Harness {
         };
         if glyphs::symbols() == glyphs::Symbols::Ascii {
             out.line(&format!(
-                "With FIN_SYMBOLS=ascii the terminal shows no QR code. The link{}: {}",
+                "With ARKO_SYMBOLS=ascii the terminal shows no QR code. The link{}: {}",
                 place(link),
                 link.url
             ));
@@ -2261,7 +2261,7 @@ impl Harness {
         if let Err(error) = self.session.save_settings(&self.settings) {
             self.say(
                 Level::Error,
-                &format!("fin: could not save the session's settings: {error}"),
+                &format!("arko: could not save the session's settings: {error}"),
             );
         }
         set
@@ -2360,14 +2360,14 @@ impl Harness {
         if let Err(error) = self.session.save_settings(&self.settings) {
             self.say(
                 Level::Error,
-                &format!("fin: could not save the session's settings: {error}"),
+                &format!("arko: could not save the session's settings: {error}"),
             );
         }
         self.tell_agents(&self.outside.note());
         true
     }
 
-    /// A note to the agents from fin: the running ones read it at their
+    /// A note to the agents from Arko: the running ones read it at their
     /// next step, and later runs (workers, conversations, handovers) in
     /// their first message.
     fn tell_agents(&self, text: &str) {
@@ -2377,7 +2377,7 @@ impl Harness {
         {
             self.say(
                 Level::Error,
-                &format!("fin: could not tell the agents: {error}"),
+                &format!("arko: could not tell the agents: {error}"),
             );
         }
     }
@@ -2415,7 +2415,7 @@ impl Harness {
                     let (tokens, dollars) = indexes.spent();
                     if tokens > 0 {
                         out.line(&format!(
-                            "${dollars:.3} for embeddings (Voyage) while fin ran · {}k tokens",
+                            "${dollars:.3} for embeddings (Voyage) while Arko ran · {}k tokens",
                             tokens.div_ceil(1000)
                         ));
                     }
@@ -2432,7 +2432,7 @@ impl Harness {
                     out.line("Workers are off in this session (--workers 0).");
                 }
                 None => out.line(
-                    "Old workers are archived. Start a new fin session for native workers. /new keeps this session's old tools.",
+                    "Old workers are archived. Start a new Arko session for native workers. /new keeps this session's old tools.",
                 ),
             },
             "/stop-workers" => {
@@ -2497,7 +2497,7 @@ impl Harness {
                     .is_some_and(|command| command.runs == commands::Runs::Screen) =>
             {
                 out.line(&format!(
-                    "{} works in the full-screen view (fin without --repl).",
+                    "{} works in the full-screen view (arko without --repl).",
                     other.split_whitespace().next().unwrap_or(other)
                 ));
             }
@@ -2517,7 +2517,7 @@ impl Harness {
         let out = &self.output;
         if self.mcp.servers.is_empty() {
             out.line(&format!(
-                "No MCP servers. fin starts those set up in {}, in the project's {} (once you approve them) and in --mcp-config files.",
+                "No MCP servers. Arko starts those set up in {}, in the project's {} (once you approve them) and in --mcp-config files.",
                 self.root.join(mcp::USER_FILE).display(),
                 mcp::PROJECT_FILE
             ));
@@ -2567,7 +2567,7 @@ impl Harness {
         };
         if skills.on_demand_skills.is_empty() && skills.auto_loaded_skills.is_empty() {
             out.line(&format!(
-                "No skills. fin reads them (folders with a SKILL.md) from the project's .agents/skills, .claude/skills and .skills, from {}, and from ~/.agents/skills and ~/.claude/skills.",
+                "No skills. Arko reads them (folders with a SKILL.md) from the project's .agents/skills, .claude/skills and .skills, from {}, and from ~/.agents/skills and ~/.claude/skills.",
                 self.root.join("skills").display()
             ));
             return;
@@ -2599,7 +2599,7 @@ impl Harness {
     /// One turn: the message goes to the main agent, and its reply is
     /// printed.
     async fn turn(&mut self, prompt: Prompt, input: &mut Inputs) -> TurnEnd {
-        // A turn fin stopped in the middle of (a crash) goes on where it
+        // A turn Arko stopped in the middle of (a crash) goes on where it
         // was saved, without a message: the message follows it.
         if !matches!(prompt, Prompt::Recover)
             && let Conversation::Stopped(run) = &self.conversation
@@ -2869,7 +2869,7 @@ impl Harness {
         }
     }
 
-    /// Without a terminal (with -p, or input from a pipe), fin waits for
+    /// Without a terminal (with -p, or input from a pipe), Arko waits for
     /// the workers before it ends: their news goes to the agent as it
     /// comes. Returns how the last turn ended.
     async fn finish_workers(&mut self, input: &mut Inputs) -> TurnEnd {
@@ -2884,7 +2884,7 @@ impl Harness {
             match news {
                 News::Exit => return TurnEnd::Exit,
                 News::Stopped => {
-                    crew.stop_all("the user stopped fin");
+                    crew.stop_all("the user stopped Arko");
                     return TurnEnd::Stopped;
                 }
                 // News that came as the last turn ended.
@@ -2909,12 +2909,12 @@ impl Harness {
                 Event::Remote(Action::Message(_) | Action::Answer { .. }) => {
                     self.feed.notice(
                         Level::Warn,
-                        "fin is only waiting for the workers now, so messages aren't taken.",
+                        "Arko is only waiting for the workers now, so messages aren't taken.",
                     );
                 }
                 Event::Input(Some(Input::Interrupt | Input::Eof) | None)
                 | Event::Remote(Action::Stop) => {
-                    let stopped = crew.stop_all("the user stopped fin");
+                    let stopped = crew.stop_all("the user stopped Arko");
                     self.output.line(&self.output.warn(&format!(
                         "Stopping {stopped} worker{}.",
                         if stopped == 1 { "" } else { "s" }
@@ -2993,7 +2993,7 @@ impl Harness {
                 parts.join("\n\n")
             }
             None if parts.is_empty() => {
-                "Your workers sent you news as your last turn ended: it follows. (fin started this turn for it; the user hasn't written.)".to_string()
+                "Your workers sent you news as your last turn ended: it follows. (Arko started this turn for it; the user hasn't written.)".to_string()
             }
             None => parts.join("\n\n"),
         }
@@ -3232,7 +3232,7 @@ enum Event {
     Input(Option<Input>),
     /// The main agent asks the user something.
     Question(Question),
-    /// The crew woke fin up.
+    /// The crew woke Arko up.
     Woken,
     /// The remote page sent something.
     Remote(Action),
@@ -3401,7 +3401,7 @@ struct Asker {
 }
 
 /// The answer when no one can answer.
-const CANT_ASK: &str = "No one can answer questions in this session (fin runs without a terminal, from a script or with -p). Decide yourself, go on, and say in your reply what you assumed.";
+const CANT_ASK: &str = "No one can answer questions in this session (Arko runs without a terminal, from a script or with -p). Decide yourself, go on, and say in your reply what you assumed.";
 
 #[async_trait::async_trait]
 impl UserInputHandler for Asker {
@@ -3701,7 +3701,7 @@ mod tests {
         };
         let main_config = agents::main_config(&agent_settings).unwrap();
         let worker_config = agents::worker_config(&agent_settings).unwrap();
-        let root = temp.join("fin");
+        let root = temp.join("arko");
         let session = Session::create(&root).unwrap();
         let client = Arc::new(client);
         let output = Arc::new(Output::new(None, true));
@@ -3814,7 +3814,7 @@ mod tests {
         }
     }
 
-    /// With -p, the agent starts a worker and replies; fin waits for the
+    /// With -p, the agent starts a worker and replies; Arko waits for the
     /// worker, and its report starts a turn whose reply is the answer.
     #[tokio::test]
     async fn a_one_shot_turn_waits_for_its_workers_and_hears_their_news() {
@@ -3869,7 +3869,7 @@ mod tests {
             .find(|body| body.contains("There are 3 files.") && !body.contains("You are agent run"))
             .unwrap();
         assert!(
-            news.contains("fin started this turn for it; the user hasn't written"),
+            news.contains("Arko started this turn for it; the user hasn't written"),
             "{news}"
         );
         crew.shutdown().await;
@@ -4085,7 +4085,7 @@ mod tests {
                 if body.contains("This session uses the old worker tools.")
                     && body.contains("call_old")
                 {
-                    complete("done", "A new fin session is needed for native workers.")
+                    complete("done", "A new Arko session is needed for native workers.")
                 } else if body.contains("Try the old tool") {
                     tool_call(
                         "old",
@@ -4195,7 +4195,7 @@ mod tests {
         assert_eq!(isolated.path, harness.session.dir.join("worktrees/r1"));
         assert_eq!(
             isolated.branch.as_deref(),
-            Some(format!("fin/{}/r1", harness.session.id).as_str())
+            Some(format!("arko/{}/r1", harness.session.id).as_str())
         );
         assert!(matches!(
             tokio::time::timeout(
@@ -4439,18 +4439,18 @@ mod tests {
     #[test]
     fn remote_takes_an_optional_address_and_not_with_a_prompt() {
         let parse = |args: &[&str]| Args::try_parse_from(args).map(|args| args.remote);
-        assert_eq!(parse(&["fin"]).unwrap(), None);
+        assert_eq!(parse(&["arko"]).unwrap(), None);
         assert_eq!(
-            parse(&["fin", "--remote"]).unwrap().as_deref(),
+            parse(&["arko", "--remote"]).unwrap().as_deref(),
             Some("127.0.0.1")
         );
         assert_eq!(
-            parse(&["fin", "--remote", "0.0.0.0:8765"])
+            parse(&["arko", "--remote", "0.0.0.0:8765"])
                 .unwrap()
                 .as_deref(),
             Some("0.0.0.0:8765")
         );
-        assert!(parse(&["fin", "-p", "hi", "--remote"]).is_err());
+        assert!(parse(&["arko", "-p", "hi", "--remote"]).is_err());
         assert!(command("/remote off").is_some() && command("/remotely").is_none());
     }
 
@@ -4675,7 +4675,7 @@ mod tests {
     }
 
     /// Commands sent from the page run, and their output shows on it; the
-    /// page can't quit fin.
+    /// page can't quit Arko.
     #[tokio::test]
     async fn commands_from_the_web_page_show_their_output_there() {
         let temp = tempfile::tempdir().unwrap();
@@ -4712,7 +4712,7 @@ mod tests {
     }
 
     /// Puts `harness` on the models `main` and `worker` with `setup`, with
-    /// fin's shell and terminal tools (agents in Claude Code are offered
+    /// Arko's shell and terminal tools (agents in Claude Code are offered
     /// the tools registered for them, and only those). Returns the
     /// terminal managers, to shut down after.
     fn on_models(
@@ -4802,7 +4802,7 @@ mod tests {
             .map(|index| argv[index + 1].clone())
     }
 
-    /// A turn on a model on OpenRouter: fin sends OpenRouter's own
+    /// A turn on a model on OpenRouter: Arko sends OpenRouter's own
     /// reasoning, the 1-hour cache on a Claude slug, and its tools, and the
     /// cost is what OpenRouter reports.
     #[tokio::test]
@@ -4861,7 +4861,7 @@ mod tests {
         managers.shutdown().await;
     }
 
-    /// A turn on a Gemini model: fin sends its thinking level (xhigh
+    /// A turn on a Gemini model: Arko sends its thinking level (xhigh
     /// effort thinks high) and its tools, and the cost is priced from the
     /// registry.
     #[tokio::test]
@@ -4905,7 +4905,7 @@ mod tests {
             body["generation_config"]["thinking_level"], "high",
             "{body}"
         );
-        assert!(body.to_string().contains("\"shell\""), "fin's tools");
+        assert!(body.to_string().contains("\"shell\""), "Arko's tools");
         // 1000 input tokens at $2/M and 20 output at $12/M.
         assert!(
             (harness.spent() - 0.00224).abs() < 1e-9,
@@ -4917,19 +4917,19 @@ mod tests {
     }
 
     /// A turn on a Claude Code model (`cc:opus`), through arko's scripted
-    /// stand-in for the `claude` CLI: the CLI is offered fin's own tools and
-    /// none of Claude Code's, fin's shell runs the command and its guard
+    /// stand-in for the `claude` CLI: the CLI is offered Arko's own tools and
+    /// none of Claude Code's, Arko's shell runs the command and its guard
     /// refuses one outside the working directory, and the turn's spending
     /// shows as plan usage, not dollars.
     #[tokio::test]
-    async fn a_turn_in_claude_code_runs_fin_s_tools_and_shows_plan_usage() {
+    async fn a_turn_in_claude_code_runs_arko_s_tools_and_shows_plan_usage() {
         let temp = tempfile::tempdir().unwrap();
         let fake = temp.path().join("fake");
         std::fs::create_dir_all(&fake).unwrap();
         // Outside the working directory and the temporary directories,
         // which the guard lets commands change; it doesn't exist, so a
         // command the guard let through would change nothing.
-        let outside = format!("~/fin-guard-test-{}", uuid::Uuid::new_v4().simple());
+        let outside = format!("~/arko-guard-test-{}", uuid::Uuid::new_v4().simple());
         let script = serde_json::json!([[
             {"rate_limit": {"status": "allowed", "unifiedWindows": {
                 "five_hour": {"utilization": 0.12}, "seven_day": {"utilization": 0.03}}}},
@@ -4974,8 +4974,8 @@ mod tests {
         assert_eq!(after(&argv, "--model").as_deref(), Some("claude-opus-5-5"));
         assert_eq!(after(&argv, "--effort").as_deref(), Some("high"));
         assert!(
-            after(&argv, "--system-prompt").is_some_and(|prompt| prompt.contains("You are fin")),
-            "fin's prompt replaces Claude Code's: {argv:?}"
+            after(&argv, "--system-prompt").is_some_and(|prompt| prompt.contains("You are Arko")),
+            "Arko's prompt replaces Claude Code's: {argv:?}"
         );
         let served: Vec<String> =
             log.iter().find(|entry| entry["event"] == "tools").unwrap()["tools"]
@@ -5042,7 +5042,7 @@ mod tests {
 
     /// The workers can run on another provider than the main agent: here
     /// the main agent is on the OpenAI mock and its worker in Claude Code,
-    /// with fin's tools only, and the worker's report reaches the main
+    /// with Arko's tools only, and the worker's report reaches the main
     /// agent.
     #[tokio::test]
     async fn a_worker_in_claude_code_reports_to_a_main_agent_elsewhere() {

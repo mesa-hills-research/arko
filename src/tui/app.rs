@@ -82,7 +82,7 @@ pub enum Effect {
     /// The session saves `value` as `key` and uses it (the result comes to
     /// [`App::keys_done`]).
     AddKey { key: &'static Key, value: Secret },
-    /// The session removes `key`, which fin saved.
+    /// The session removes `key`, which Arko saved.
     RemoveKey(&'static Key),
 }
 
@@ -161,7 +161,7 @@ impl App {
         depth: Depth,
     ) -> Self {
         let prefs = Prefs::load(info.prefs.as_deref());
-        // FIN_THEME, else the theme chosen last, else the default.
+        // ARKO_THEME, else the theme chosen last, else the default.
         let theme_name = crate::credentials::var(theme::SETTING)
             .or_else(|| prefs.theme.clone())
             .unwrap_or_else(|| theme::DEFAULT.to_string());
@@ -217,7 +217,7 @@ impl App {
             && !reading.models.banner_model.is_empty()
         {
             if banner.model != reading.models.banner_model {
-                // (Why fin chose the model it had.)
+                // (Why Arko chose the model it had.)
                 banner.model_note = None;
             }
             banner.model = reading.models.banner_model.clone();
@@ -1427,7 +1427,7 @@ impl App {
         } else {
             "idle"
         };
-        format!("fin · {state} · {}", self.info.workspace)
+        format!("Arko · {state} · {}", self.info.workspace)
     }
 }
 
@@ -1558,7 +1558,7 @@ pub(super) mod tests {
         assert_eq!(app.question_shown(), Some(&question));
         press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
         assert_eq!(app.question_shown(), None);
-        assert_eq!(app.title(), "fin · asks you · work");
+        assert_eq!(app.title(), "Arko · asks you · work");
         type_text(&mut app, "spaces");
         assert_eq!(app.question_shown(), Some(&question));
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
@@ -1909,7 +1909,7 @@ pub(super) mod tests {
         app.keys_done(
             &credentials::OPENAI,
             KeyOutcome::Done {
-                said: "fin saved the OpenAI API key.".into(),
+                said: "Arko saved the OpenAI API key.".into(),
                 warnings: Vec::new(),
             },
         );
@@ -2049,7 +2049,7 @@ pub(super) mod tests {
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         assert_eq!(sent(&mut app), ["/model worker main"]);
 
-        // A model typed: one fin doesn't know says what was meant, one it
+        // A model typed: one Arko doesn't know says what was meant, one it
         // can't reach what it needs.
         type_text(&mut app, "/model worker");
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
@@ -2082,7 +2082,7 @@ pub(super) mod tests {
     }
 
     /// The banner's Model row follows the session's, and the note on why
-    /// fin chose the model goes once another is chosen.
+    /// Arko chose the model goes once another is chosen.
     #[test]
     fn the_banner_follows_the_models() {
         let mut app = app();

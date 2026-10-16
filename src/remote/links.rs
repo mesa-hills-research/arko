@@ -5,7 +5,7 @@
 //! and it can be a private address like the network's own (Mullvad gives
 //! 10.64.x.x), so interface names count as well as addresses.
 //!
-//! `FIN_REMOTE_HOST` (an address or an interface name, in the environment
+//! `ARKO_REMOTE_HOST` (an address or an interface name, in the environment
 //! or a `.env`) puts its link first, whatever the ranking says.
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
@@ -13,7 +13,7 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use serde::Serialize;
 
 /// The variable that picks the link shown first, and as the QR code.
-pub const HOST_VARIABLE: &str = "FIN_REMOTE_HOST";
+pub const HOST_VARIABLE: &str = "ARKO_REMOTE_HOST";
 
 /// What kind of network a link is on, best first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
@@ -327,7 +327,7 @@ mod tests {
         );
     }
 
-    /// `FIN_REMOTE_HOST` puts the link it names first, by interface or
+    /// `ARKO_REMOTE_HOST` puts the link it names first, by interface or
     /// address; one that names none says so and changes nothing.
     #[test]
     fn the_host_named_comes_first() {
@@ -349,7 +349,7 @@ mod tests {
         let error = prefer(&mut ranked, "wlan9").unwrap_err();
         assert_eq!(
             error,
-            "FIN_REMOTE_HOST is `wlan9`, which none of the page's links has (wg0-mullvad, tailscale0, ens33): the links are in their usual order."
+            "ARKO_REMOTE_HOST is `wlan9`, which none of the page's links has (wg0-mullvad, tailscale0, ens33): the links are in their usual order."
         );
         assert_eq!(ranked, before);
     }

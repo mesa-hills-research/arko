@@ -1,4 +1,4 @@
-//! The remote: a web page fin serves (`--remote`, `/remote`) for following
+//! The remote: a web page Arko serves (`--remote`, `/remote`) for following
 //! a session and taking part in it from a browser, such as a phone's.
 //!
 //! The page shows the main agent's work as the terminal does (its text,
@@ -6,10 +6,10 @@
 //! and the session's status, and it sends messages (with the meaning a
 //! line typed at the prompt has), answers to the agent's questions and
 //! stops. The interface is small: a [`Feed`] takes the workflows' events
-//! (and what fin says of the turns), and the [`Action`]s the page sends
-//! come out of a channel, which fin reads as it reads the terminal.
+//! (and what Arko says of the turns), and the [`Action`]s the page sends
+//! come out of a channel, which Arko reads as it reads the terminal.
 //!
-//! Access needs the session's key, which fin shows only in its console: it
+//! Access needs the session's key, which Arko shows only in its console: it
 //! goes in the link's fragment, which browsers don't send, and the page
 //! trades it for a session cookie. There is no TLS.
 
@@ -168,7 +168,7 @@ pub fn random_token(bytes: usize) -> String {
 /// The key's random bytes: 192 bits.
 const KEY_BYTES: usize = 24;
 
-/// Whether `key` looks like a key fin made.
+/// Whether `key` looks like a key Arko made.
 fn is_key(key: &str) -> bool {
     key.len() >= 22
         && key
@@ -319,7 +319,7 @@ pub fn start(
 
 /// The links to a server on `addr`, with `key` in their fragments, best
 /// first (see [`links`](self::links)): on every interface's address when
-/// it listens on all of them, the one `FIN_REMOTE_HOST` names first. With
+/// it listens on all of them, the one `ARKO_REMOTE_HOST` names first. With
 /// what to tell the user when that names none of them.
 pub fn links(addr: SocketAddr, key: &str) -> (Vec<Link>, Option<String>) {
     ranked_links(
@@ -330,7 +330,7 @@ pub fn links(addr: SocketAddr, key: &str) -> (Vec<Link>, Option<String>) {
     )
 }
 
-/// [`links`] on `interfaces`, with `host` as `FIN_REMOTE_HOST`. It counts
+/// [`links`] on `interfaces`, with `host` as `ARKO_REMOTE_HOST`. It counts
 /// only where the server listens on every interface.
 pub fn ranked_links(
     addr: SocketAddr,
@@ -448,7 +448,7 @@ mod tests {
             }]
         );
         let all = links("0.0.0.0:9000".parse().unwrap(), "abc").0;
-        // FIN_REMOTE_HOST counts only where the server listens on every
+        // ARKO_REMOTE_HOST counts only where the server listens on every
         // interface, and one that names nothing changes nothing.
         let interfaces = vec![
             Interface {
@@ -466,7 +466,7 @@ mod tests {
         let (ranked, note) = ranked_links(any, "k", interfaces.clone(), Some("wlan0".into()));
         assert!(
             note.unwrap()
-                .starts_with("FIN_REMOTE_HOST is `wlan0`, which none")
+                .starts_with("ARKO_REMOTE_HOST is `wlan0`, which none")
         );
         assert_eq!(ranked[0].interface.as_deref(), Some("ens33"));
         let (ranked, note) =

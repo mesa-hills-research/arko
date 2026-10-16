@@ -1,4 +1,4 @@
-// End-to-end tests of `/keys`: a key added while fin runs reaches the
+// End-to-end tests of `/keys`: a key added while Arko runs reaches the
 // session at once (its models can be chosen, and new workers run on them),
 // and a key removed stops new work starting on it. Each follows a path a
 // user takes, with the mock model, and checks the requests it gets.
@@ -58,7 +58,7 @@ fn lead(body: &serde_json::Value) -> String {
 /// one. Removed, they can't be chosen again, and a new worker isn't started
 /// on them, while the main agent goes on.
 #[tokio::test]
-async fn a_key_added_while_fin_runs_reaches_new_workers_at_once() {
+async fn a_key_added_while_arko_runs_reaches_new_workers_at_once() {
     let bodies = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
     let seen = bodies.clone();
     let server = ModelServer::start(Arc::new(move |_, text: String| {
@@ -140,7 +140,7 @@ async fn a_key_added_while_fin_runs_reaches_new_workers_at_once() {
     // starts on them. The main agent goes on.
     assert_eq!(
         harness.keys.apply(&credentials::OPENROUTER, None),
-        "Agents already using it keep it until fin quits."
+        "Agents already using it keep it until Arko quits."
     );
     assert_eq!(reachable(&harness), ["openai"]);
     assert!(harness.live_command(&format!("/model worker {openrouter}"), Source::Terminal));
@@ -155,7 +155,7 @@ async fn a_key_added_while_fin_runs_reaches_new_workers_at_once() {
     ));
     let refused = bodies.lock().unwrap().iter().any(|body| {
         body.to_string()
-            .contains("New workers can't start on openrouter:anthropic/claude-opus-5.5: the user removed its API key (OPENROUTER_API_KEY) while fin runs.")
+            .contains("New workers can't start on openrouter:anthropic/claude-opus-5.5: the user removed its API key (OPENROUTER_API_KEY) while Arko runs.")
     });
     assert!(refused, "the main agent heard why");
     assert_eq!(on_openrouter(&bodies), before);
@@ -180,6 +180,6 @@ async fn keys_are_listed_and_added_only_at_the_terminal() {
     assert!(harness.live_command("/keys add openai", Source::Terminal));
     assert!(said(&harness.feed).contains("/keys add reads the key with the input hidden"));
     assert!(harness.live_command("/keys add nothing", Source::Terminal));
-    assert!(said(&harness.feed).contains("fin takes no API key for `nothing`."));
+    assert!(said(&harness.feed).contains("Arko takes no API key for `nothing`."));
     harness.crew.as_ref().unwrap().shutdown().await;
 }

@@ -1,4 +1,4 @@
-//! `fin index ...`: the indexes from the command line.
+//! `arko index ...`: the indexes from the command line.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -14,7 +14,7 @@ use super::engine::{
 };
 use super::tools::{self, format_create, format_search_detail, format_status};
 
-/// `fin index` subcommands.
+/// `arko index` subcommands.
 #[derive(Debug, Clone, clap::Subcommand)]
 pub enum IndexCommand {
     /// Create (or update) the index of a directory: build it, estimate and run its embedding
@@ -33,7 +33,7 @@ pub enum IndexCommand {
         /// Leave out files matching these gitignore-style patterns (comma-separated, repeatable)
         #[arg(long, value_delimiter = ',')]
         exclude: Vec<String>,
-        /// Don't keep the index current while fin runs
+        /// Don't keep the index current while Arko runs
         #[arg(long)]
         no_monitor: bool,
         /// Lexical only: no embeddings
@@ -42,7 +42,7 @@ pub enum IndexCommand {
         /// Token cap of each embedding run, such as 200k, 5M or 5000000 (default 5M)
         #[arg(long, value_parser = count_arg)]
         max_embed_tokens: Option<u64>,
-        /// Build and estimate only: embed later (fin's monitoring or `fin index embed`)
+        /// Build and estimate only: embed later (Arko's monitoring or `arko index embed`)
         #[arg(long)]
         no_wait: bool,
     },
@@ -128,8 +128,8 @@ fn count_arg(text: &str) -> Result<u64, String> {
         .ok_or_else(|| format!("{text:?} is not a token count (200k, 5M, 5000000)"))
 }
 
-/// Runs a `fin index` command: `data_root` is fin's data folder, `voyage_key`
-/// the key fin found (none: lexical only). Call it in fin's tokio runtime.
+/// Runs an `arko index` command: `data_root` is Arko's data folder, `voyage_key`
+/// the key Arko found (none: lexical only). Call it in Arko's tokio runtime.
 pub async fn run_command(
     cmd: IndexCommand,
     data_root: &Path,
@@ -164,14 +164,14 @@ pub(crate) async fn run_command_with(
 /// The text the tools share, with the tools' hints turned into commands.
 fn cli_text(text: &str) -> String {
     let text = [
-        ("index_manage action=embed", "`fin index embed`"),
-        ("index_manage action=rebuild", "`fin index update --force`"),
-        ("index_status", "`fin index status`"),
+        ("index_manage action=embed", "`arko index embed`"),
+        ("index_manage action=rebuild", "`arko index update --force`"),
+        ("index_status", "`arko index status`"),
         (
-            "index_create (or `fin index create PATH`)",
-            "`fin index create PATH`",
+            "index_create (or `arko index create PATH`)",
+            "`arko index create PATH`",
         ),
-        ("index_create", "`fin index create PATH`"),
+        ("index_create", "`arko index create PATH`"),
     ]
     .iter()
     .fold(text.to_string(), |text, (tool, command)| {
@@ -249,7 +249,7 @@ async fn run(indexes: &Arc<Indexes>, cmd: IndexCommand, cwd: &Path) -> Result<Ex
                 println!("Embeddings ({}): {}.", manifest.model, summary.line());
             } else if manifest.embed && indexes.has_key() {
                 println!(
-                    "Embedding later: fin embeds while it monitors the index, or run `fin index embed`."
+                    "Embedding later: Arko embeds while it monitors the index, or run `arko index embed`."
                 );
             }
             Ok(ExitCode::SUCCESS)
@@ -257,7 +257,7 @@ async fn run(indexes: &Arc<Indexes>, cmd: IndexCommand, cwd: &Path) -> Result<Ex
         IndexCommand::List => {
             let all = indexes.all();
             if all.is_empty() {
-                println!("No indexes yet: `fin index create PATH` makes one.");
+                println!("No indexes yet: `arko index create PATH` makes one.");
             }
             let reports = {
                 let worker = Arc::clone(indexes);
@@ -387,7 +387,7 @@ async fn run(indexes: &Arc<Indexes>, cmd: IndexCommand, cwd: &Path) -> Result<Ex
             let found = one(indexes, index.as_deref(), cwd)?;
             if !estimate && !indexes.has_key() {
                 return Err(format!(
-                    "embedding needs {}, which fin reads from its .env (see fin --setup)",
+                    "embedding needs {}, which Arko reads from its .env (see arko --setup)",
                     embed::KEY_NAME
                 ));
             }

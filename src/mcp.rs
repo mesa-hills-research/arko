@@ -1,20 +1,20 @@
 //! MCP servers: programs that give the agents more tools over the Model
-//! Context Protocol. fin starts the servers set up in the files
+//! Context Protocol. Arko starts the servers set up in the files
 //! `--mcp-config` names, in the project's `.mcp.json` (once the user
-//! approves them) and in `mcp.json` in fin's folder, and offers their tools
-//! to the main agent and the workers as `mcp__<server>__<tool>`. Each fin
+//! approves them) and in `mcp.json` in Arko's folder, and offers their tools
+//! to the main agent and the workers as `mcp__<server>__<tool>`. Each Arko
 //! process starts its own servers, and stops them when it exits.
 //!
 //! A file is in Claude Code's format, servers by name:
 //! `{"mcpServers": {"github": {"command": "npx", "args": ["-y", "..."], "env": {"TOKEN": "${GITHUB_TOKEN}"}}}}`,
 //! or in arko's, a list of servers that have a `name`. `${VAR}` and
 //! `${VAR:-default}` in a command, its arguments and its environment are
-//! taken from fin's environment. Servers talk over standard input and
+//! taken from Arko's environment. Servers talk over standard input and
 //! output: HTTP servers (`url`, or a `type` other than `stdio`) and servers
 //! marked `"disabled": true` are skipped.
 //!
-//! A project's `.mcp.json` would run programs as soon as fin starts in its
-//! folder, so fin asks before starting them, and remembers the answer (in
+//! A project's `.mcp.json` would run programs as soon as Arko starts in its
+//! folder, so Arko asks before starting them, and remembers the answer (in
 //! `mcp-approvals.json` in its folder) until the file's servers change.
 
 use std::collections::{BTreeMap, HashSet};
@@ -33,11 +33,11 @@ use serde_json::Value;
 
 use crate::ui::Output;
 
-/// The servers set up for every project, in fin's folder.
+/// The servers set up for every project, in Arko's folder.
 pub const USER_FILE: &str = "mcp.json";
 /// A project's servers, in the working directory (as Claude Code reads it).
 pub const PROJECT_FILE: &str = ".mcp.json";
-/// The answers about projects' servers, in fin's folder.
+/// The answers about projects' servers, in Arko's folder.
 const APPROVALS_FILE: &str = "mcp-approvals.json";
 /// How long a server gets to start and list its tools.
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(60);
@@ -139,7 +139,7 @@ fn server(
     if entry.get("disabled").and_then(Value::as_bool) == Some(true) {
         return Ok(None);
     }
-    let stdio_only = "fin starts servers over standard input and output only";
+    let stdio_only = "Arko starts servers over standard input and output only";
     if let Some(kind) = entry.get("type").and_then(Value::as_str)
         && kind != "stdio"
     {
@@ -233,7 +233,7 @@ fn environment(name: &str) -> Option<String> {
 
 /// The servers to start: those in `files` (from `--mcp-config`), in the
 /// project's `.mcp.json` when the user approves them (asked when `ask`),
-/// and in fin's own `mcp.json`. A name set up twice is taken from the first
+/// and in Arko's own `mcp.json`. A name set up twice is taken from the first
 /// of these. The notes say what is left out and why.
 pub fn servers(
     root: &Path,
@@ -250,7 +250,7 @@ pub fn servers(
         for server in parsed.servers {
             match servers.iter().find(|taken| taken.name == server.name) {
                 Some(taken) => notes.push(format!(
-                    "MCP server `{}` in {} is also in {}, and fin starts the one in {}",
+                    "MCP server `{}` in {} is also in {}, and Arko starts the one in {}",
                     server.name,
                     server.file.display(),
                     taken.file.display(),
@@ -276,7 +276,7 @@ pub fn servers(
                 Some(true) => add(parsed, &mut notes),
                 Some(false) => {}
                 None => notes.push(format!(
-                    "the MCP servers in {} aren't started: fin asks before starting a project's servers, and needs a terminal to ask",
+                    "the MCP servers in {} aren't started: Arko asks before starting a project's servers, and needs a terminal to ask",
                     project.display()
                 )),
             },
@@ -353,7 +353,7 @@ fn ask_to_start(workspace: &Path, parsed: &Parsed) -> Result<bool, String> {
     let out = Output::new(None, false);
     out.line("");
     out.line(&format!(
-        "{} sets up MCP servers. fin would start these programs on your computer, and give the agents their tools:",
+        "{} sets up MCP servers. Arko would start these programs on your computer, and give the agents their tools:",
         workspace.join(PROJECT_FILE).display()
     ));
     let width = parsed
@@ -373,7 +373,7 @@ fn ask_to_start(workspace: &Path, parsed: &Parsed) -> Result<bool, String> {
         out.line(&out.dim(&format!("  (skipped: {why})")));
     }
     out.line(&out.dim(
-        "fin keeps your answer until the file's servers change. `--mcp-config .mcp.json` starts them whatever the answer.",
+        "Arko keeps your answer until the file's servers change. `--mcp-config .mcp.json` starts them whatever the answer.",
     ));
     let mut editor = rustyline::DefaultEditor::new().map_err(|error| error.to_string())?;
     loop {
@@ -477,14 +477,14 @@ impl Tool for ServerTool {
     }
 }
 
-/// A server fin tried to start.
+/// A server Arko tried to start.
 pub struct Started {
     pub server: Server,
     /// Its tools' names, or why it didn't start.
     pub result: Result<Vec<String>, String>,
 }
 
-/// The servers running for this fin process.
+/// The servers running for this Arko process.
 #[derive(Default)]
 pub struct Running {
     pub servers: Vec<Started>,
@@ -720,7 +720,7 @@ mod tests {
     #[test]
     fn servers_come_from_the_flag_the_project_and_fins_folder() {
         let temp = tempfile::tempdir().unwrap();
-        let root = temp.path().join("fin");
+        let root = temp.path().join("arko");
         let workspace = temp.path().join("project");
         std::fs::create_dir_all(&root).unwrap();
         std::fs::create_dir_all(&workspace).unwrap();
@@ -820,7 +820,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let script = temp.path().join("stub.py");
         std::fs::write(&script, STUB_SERVER).unwrap();
-        let python = std::env::var("FIN_TEST_PYTHON")
+        let python = std::env::var("ARKO_TEST_PYTHON")
             .unwrap_or_else(|_| if cfg!(windows) { "python" } else { "python3" }.into());
         let stub = Server {
             name: "stub server".into(),
@@ -832,7 +832,7 @@ mod tests {
         };
         let missing = Server {
             name: "missing".into(),
-            command: "fin-no-such-mcp-server".into(),
+            command: "arko-no-such-mcp-server".into(),
             ..stub.clone()
         };
         let mut running = Running::start(vec![stub, missing]).await;
@@ -846,7 +846,7 @@ mod tests {
                 .result
                 .as_ref()
                 .unwrap_err()
-                .contains("fin-no-such-mcp-server")
+                .contains("arko-no-such-mcp-server")
         );
         assert_eq!(
             running.summary().unwrap(),

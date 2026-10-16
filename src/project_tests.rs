@@ -15,7 +15,7 @@ const MAIN_CLAUDE: &str = "# Project instructions (CLAUDE.md in the working dire
 const WORKER_CLAUDE: &str = "# Project instructions (CLAUDE.md in your lead's working directory)";
 
 fn args(words: &[&str]) -> Args {
-    Args::parse_from(std::iter::once("fin").chain(words.iter().copied()))
+    Args::parse_from(std::iter::once("arko").chain(words.iter().copied()))
 }
 
 /// The user messages of a request, in order.
@@ -58,7 +58,7 @@ fn texts(feed: &remote::Feed, kind: &str) -> Vec<String> {
 }
 
 /// `harness`'s working directory with these instruction files, read as
-/// fin reads them when it starts.
+/// Arko reads them when it starts.
 fn with_files(harness: &mut Harness, agents: Option<&str>, claude: Option<&str>) {
     let workspace = harness.settings.workspace.clone();
     for (name, text) in [("AGENTS.md", agents), ("CLAUDE.md", claude)] {
@@ -104,14 +104,14 @@ fn the_flags_choose_for_new_and_resumed_sessions() {
     assert!(!off.worker_project_instructions);
     assert!(
         Args::try_parse_from([
-            "fin",
+            "arko",
             "--worker-project-instructions",
             "--no-worker-project-instructions"
         ])
         .is_err(),
         "one or the other"
     );
-    assert!(Args::try_parse_from(["fin", "--project-instructions", "agents"]).is_err());
+    assert!(Args::try_parse_from(["arko", "--project-instructions", "agents"]).is_err());
 
     // A resumed session (saved before the setting: one file, not to
     // workers) keeps its own without the flags, and takes them with them.
@@ -195,7 +195,7 @@ fn the_choices_are_saved_with_the_session_and_old_sessions_load_as_they_were() {
 /// The main agent gets the files in the first message of each
 /// conversation, once: a later message of the conversation doesn't repeat
 /// them. A change applies from the next conversation on, with the files
-/// as fin read them at its start.
+/// as Arko read them at its start.
 #[tokio::test]
 async fn the_main_agent_gets_them_once_per_conversation() {
     let bodies: Arc<Mutex<Vec<String>>> = Arc::default();
@@ -235,7 +235,7 @@ async fn the_main_agent_gets_them_once_per_conversation() {
     say(&mut harness, &mut inputs, "Still here?").await;
     assert!(!last(&bodies).contains("Use spaces."));
     harness.new_conversation();
-    // fin read the files as it started: a later edit isn't sent.
+    // Arko read the files as it started: a later edit isn't sent.
     std::fs::write(harness.settings.workspace.join("AGENTS.md"), "Changed.").unwrap();
     say(&mut harness, &mut inputs, "Fresh.").await;
     assert_eq!(
@@ -328,7 +328,7 @@ async fn the_command_says_and_changes_the_choices() {
 }
 
 /// Each worker gets the files in its first message, before its task, with
-/// the text the main agent gets: from the lead's working directory, as fin
+/// the text the main agent gets: from the lead's working directory, as Arko
 /// read it when it started, not the worker's own (an untracked or edited
 /// AGENTS.md would be missing or older in a worktree of its own). A worker
 /// started after workers are turned off doesn't get them, and one started

@@ -10,7 +10,7 @@ use arko_index::FileRules;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-/// The indexes' folder in fin's data folder.
+/// The indexes' folder in Arko's data folder.
 pub const INDEXES_DIR: &str = "indexes";
 /// The manifest in an index's folder.
 pub const MANIFEST_FILE: &str = "index.json";
@@ -72,7 +72,7 @@ impl Kind {
 #[serde(default)]
 pub struct Rules {
     /// Honour `.gitignore`, `.ignore` and `.git/info/exclude` (always on for
-    /// indexes fin creates).
+    /// indexes Arko creates).
     pub respect_ignore: bool,
     /// Gitignore-syntax patterns: when any, only matching files are indexed.
     pub include: Vec<String>,
@@ -158,7 +158,7 @@ pub struct Manifest {
     /// Whether the index has (or should get) embeddings for semantic search.
     pub embed: bool,
     pub rules: Rules,
-    /// Keep the index current while fin runs.
+    /// Keep the index current while Arko runs.
     pub monitor: bool,
     /// The cap on the tokens of one embedding run.
     pub max_embed_tokens: u64,
@@ -355,7 +355,7 @@ pub fn absolute(path: &Path, cwd: &Path) -> PathBuf {
 
 /// The directory to index: `path` (relative to `cwd`) canonicalized. Refused:
 /// a missing path or a file, the file system root (or a drive root), the home
-/// directory and the directories that contain it, and fin's own index folders.
+/// directory and the directories that contain it, and Arko's own index folders.
 pub fn validate_root(
     path: &Path,
     cwd: &Path,
@@ -397,7 +397,7 @@ pub fn validate_root(
     let indexes = indexes.canonicalize().unwrap_or(indexes);
     if root.starts_with(&indexes) {
         return Err(format!(
-            "refusing to index {}: it is inside fin's index folder",
+            "refusing to index {}: it is inside Arko's index folder",
             root.display()
         ));
     }

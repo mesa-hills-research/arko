@@ -11,10 +11,10 @@ use crate::mock_model::{ModelServer, complete};
 const RULES: &str = "# Extra rules";
 
 fn args(words: &[&str]) -> Args {
-    Args::parse_from(std::iter::once("fin").chain(words.iter().copied()))
+    Args::parse_from(std::iter::once("arko").chain(words.iter().copied()))
 }
 
-/// The search index tools in `harness`'s session, as fin has them where
+/// The search index tools in `harness`'s session, as Arko has them where
 /// the index store opens: the rules are about them.
 fn with_index_tools(harness: &mut Harness, temp: &Path) {
     let indexes =
@@ -53,7 +53,7 @@ fn small_models_get_them_by_default_and_the_flags_override_it() {
         ExtraRules::Off
     );
     assert!(
-        Args::try_parse_from(["fin", "--extra-rules", "--no-extra-rules"]).is_err(),
+        Args::try_parse_from(["arko", "--extra-rules", "--no-extra-rules"]).is_err(),
         "one or the other"
     );
 }
@@ -111,7 +111,7 @@ fn the_choice_is_saved_with_the_session_and_old_sessions_load_with_it_off() {
 /// agents that is. Before the conversation starts it changes the choice:
 /// the agents are built again, and the session and the settings (the full
 /// screen's, the web page's) have it. Once the conversation has started,
-/// the session keeps it, and fin says so.
+/// the session keeps it, and Arko says so.
 #[tokio::test]
 async fn extra_rules_change_before_the_conversation_starts_only() {
     let bodies: Arc<Mutex<Vec<String>>> = Arc::default();
@@ -198,7 +198,7 @@ async fn a_resumed_session_keeps_its_extra_rules() {
         .turn(Prompt::User("Apples are red.".into()), &mut inputs)
         .await;
 
-    // fin closes, and the session is resumed with its saved settings.
+    // Arko closes, and the session is resumed with its saved settings.
     harness.settings = harness.session.load_settings().unwrap();
     assert_eq!(harness.settings.extra_rules, ExtraRules::Small);
     let setup = providers::Setup::new(harness.settings.openai_auth);

@@ -1,8 +1,8 @@
-/* fin's remote page. The palette is GPUI kit's macOS Classic (Light and
+/* Arko's remote page. The palette is GPUI kit's macOS Classic (Light and
    Dark), so the page and the terminal read as one product: one blue
    accent, and colour only for meaning (warning, error, success). */
 
-/* JetBrains Mono, served by fin (SIL Open Font License 1.1; see NOTICE):
+/* JetBrains Mono, served by Arko (SIL Open Font License 1.1; see NOTICE):
    code and tool lines look the same on every phone and computer. */
 @font-face {
   font-family: "JetBrains Mono";

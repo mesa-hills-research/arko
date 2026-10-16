@@ -1,4 +1,4 @@
-//! The full-screen view: fin's front end when standard input and output
+//! The full-screen view: Arko's front end when standard input and output
 //! are a terminal (`--repl` keeps the line prompt). It is a client of the
 //! session as the web page is: it shows the [`Feed`](remote::Feed) and the
 //! [`Meter`](remote::Meter)'s figures, and what the user types reaches the
@@ -66,7 +66,7 @@ pub struct Setup {
     pub meter: Arc<dyn remote::Meter>,
     /// Where the user's input goes: the session reads it as the terminal's.
     pub input: mpsc::UnboundedSender<Input>,
-    /// fin's folder: the history, the view's choices, the user's themes.
+    /// Arko's folder: the history, the view's choices, the user's themes.
     pub root: PathBuf,
     pub session_dir: PathBuf,
     pub workspace: PathBuf,
@@ -118,7 +118,7 @@ pub fn start(setup: Setup, output: &Arc<Output>) -> Option<Screen> {
         Err(error) => {
             close();
             eprintln!(
-                "fin: the full-screen view couldn't start ({error}), so fin uses the line prompt"
+                "arko: the full-screen view couldn't start ({error}), so Arko uses the line prompt"
             );
             if let Some(printer) =
                 ui::spawn_input(history, setup.input.clone(), Some(setup.keys.clone()))

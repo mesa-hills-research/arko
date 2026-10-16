@@ -28,7 +28,7 @@ pub const MAX_TIMEOUT_SECONDS: u64 = 3_600;
 const MAX_OUTPUT_CHARS: usize = 30_000;
 const HEAD_CHARS: usize = 10_000;
 
-/// The shells fin can run commands in on Windows.
+/// The shells Arko can run commands in on Windows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
 #[serde(rename_all = "lowercase")]
 pub enum WindowsShell {
@@ -38,7 +38,7 @@ pub enum WindowsShell {
     Powershell,
 }
 
-/// A shell's syntax, for what fin adds around a command.
+/// A shell's syntax, for what Arko adds around a command.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ShellKind {
     Posix,
@@ -185,7 +185,7 @@ impl ShellTool {
     }
 
     /// Keeps the command channel of each run the tool is bound to in
-    /// `runs`: every agent has the shell, so fin reaches every run there
+    /// `runs`: every agent has the shell, so Arko reaches every run there
     /// (to ask for a handover).
     pub fn keeping_runs(mut self, runs: Arc<crate::handover::Runs>) -> Self {
         self.runs = Some(runs);
@@ -642,7 +642,7 @@ mod tests {
     #[test]
     fn the_wrapper_passes_the_guard() {
         let guard = CommandGuard::default();
-        let directory = std::env::temp_dir().join("fin-guard");
+        let directory = std::env::temp_dir().join("arko-guard");
         let posix = |command: &str| format!("exec </dev/null\n{command}");
         assert!(
             guard
@@ -670,7 +670,7 @@ mod tests {
         };
         let inside = directory.join("sub dir").join("it's");
         // Not in the temporary directory, which the guard allows.
-        let outside = Path::new("/opt/fin-guard-elsewhere");
+        let outside = Path::new("/opt/arko-guard-elsewhere");
         let check = |command: &str, cwd: &Path| {
             guard.check(
                 &shell.wrap(command, Some(cwd)),
@@ -690,10 +690,10 @@ mod tests {
     #[test]
     fn the_cmd_wrapper_passes_the_guard() {
         let guard = CommandGuard::default();
-        let directory = std::env::temp_dir().join("fin-guard");
+        let directory = std::env::temp_dir().join("arko-guard");
         let shell = Shell::cmd("cmd.exe".into());
         let inside = directory.join("sub dir").join("it's");
-        let outside = Path::new("/opt/fin-guard-elsewhere");
+        let outside = Path::new("/opt/arko-guard-elsewhere");
         let check = |command: &str, cwd: Option<&Path>| {
             guard.check(&shell.wrap(command, cwd), ShellDialect::Cmd, &directory)
         };

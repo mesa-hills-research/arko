@@ -1,7 +1,7 @@
 //! The full-screen view's colours: named roles (text, dim, accent, warning,
 //! ...) filled from a theme. The themes are GPUI Kit's, bundled from
 //! `themes/` (see NOTICE), and the user's own in the same format in the
-//! `themes` folder of fin's folder; `terminal` keeps the terminal's own
+//! `themes` folder of Arko's folder; `terminal` keeps the terminal's own
 //! colours instead.
 //!
 //! A theme paints the whole screen, its background too, so the view looks
@@ -19,12 +19,12 @@ use ratatui::symbols::border;
 
 use crate::glyphs::{self, Symbols};
 
-/// The theme fin starts with when none is chosen.
+/// The theme Arko starts with when none is chosen.
 pub const DEFAULT: &str = "macOS Classic Dark";
 /// The theme of the terminal's own colours and background.
 pub const TERMINAL: &str = "terminal";
 /// The setting that chooses the theme: a variant's name, or `terminal`.
-pub const SETTING: &str = "FIN_THEME";
+pub const SETTING: &str = "ARKO_THEME";
 
 include!("themes.rs");
 
@@ -160,10 +160,10 @@ pub enum Corners {
 impl Corners {
     /// Square, for every theme for now: whether rounded corners suit the
     /// terminal is still open. (A theme's `radius` could choose later.)
-    /// Debug builds take FIN_CORNERS=rounded, to compare the two.
+    /// Debug builds take ARKO_CORNERS=rounded, to compare the two.
     fn chosen() -> Self {
         #[cfg(debug_assertions)]
-        if std::env::var("FIN_CORNERS").is_ok_and(|value| value == "rounded") {
+        if std::env::var("ARKO_CORNERS").is_ok_and(|value| value == "rounded") {
             return Corners::Rounded;
         }
         Corners::Square

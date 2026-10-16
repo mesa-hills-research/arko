@@ -591,7 +591,7 @@ mod tests {
         println!("{}", rows.join("\n"));
         assert!(
             rows.iter()
-                .any(|row| row.contains("│ ▸ Anthropic      sk-ant-…a1b2    saved by fin")),
+                .any(|row| row.contains("│ ▸ Anthropic      sk-ant-…a1b2    saved by Arko")),
             "{rows:#?}"
         );
         app.open_keys("add voyage", None);

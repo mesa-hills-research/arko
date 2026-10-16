@@ -1,10 +1,10 @@
-//! The symbols fin prints, as the terminal can show them. The classic
+//! The symbols Arko prints, as the terminal can show them. The classic
 //! Windows console (cmd.exe or PowerShell in conhost) draws only its fonts'
 //! characters and shows the others as question marks, so there the symbols
 //! are replaced with stand-ins from the set those fonts share (WGL4).
-//! FIN_SYMBOLS chooses: `full`, `basic` (those stand-ins) or `ascii`.
+//! ARKO_SYMBOLS chooses: `full`, `basic` (those stand-ins) or `ascii`.
 //!
-//! fin's code writes the full symbols, and [`render`] replaces them where
+//! Arko's code writes the full symbols, and [`render`] replaces them where
 //! text is printed ([`Output`](crate::ui::Output) and the prompt), so a
 //! symbol used in a new line needs only an entry in [`SYMBOLS_TABLE`].
 
@@ -14,7 +14,7 @@ use std::sync::OnceLock;
 use crate::credentials;
 
 /// The setting that chooses the symbols: `full`, `basic` or `ascii`.
-pub const SYMBOLS: &str = "FIN_SYMBOLS";
+pub const SYMBOLS: &str = "ARKO_SYMBOLS";
 
 /// Which symbols the terminal shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,7 +28,7 @@ pub enum Symbols {
     Ascii,
 }
 
-/// The symbols fin prints, with their `basic` and `ascii` stand-ins.
+/// The symbols Arko prints, with their `basic` and `ascii` stand-ins.
 pub const SYMBOLS_TABLE: &[(char, &str, &str)] = &[
     ('●', "●", "*"),
     ('⎿', "└", "->"),
@@ -73,7 +73,7 @@ pub const SYMBOLS_TABLE: &[(char, &str, &str)] = &[
     ('▄', "▄", "_"),
 ];
 
-/// The symbols this terminal shows: FIN_SYMBOLS (in the environment or a
+/// The symbols this terminal shows: ARKO_SYMBOLS (in the environment or a
 /// `.env` file), else `basic` in the classic Windows console and `full`
 /// elsewhere.
 pub fn symbols() -> Symbols {
@@ -107,8 +107,8 @@ fn render_as(symbols: Symbols, text: &str) -> Cow<'_, str> {
     Cow::Owned(rendered)
 }
 
-/// The symbols for FIN_SYMBOLS's `setting`, in the classic Windows console
-/// or not. A setting fin doesn't know is ignored, with a warning.
+/// The symbols for ARKO_SYMBOLS's `setting`, in the classic Windows console
+/// or not. A setting Arko doesn't know is ignored, with a warning.
 fn choose(setting: Option<&str>, classic: bool) -> Symbols {
     match setting
         .map(|value| value.trim().to_ascii_lowercase())
@@ -119,7 +119,7 @@ fn choose(setting: Option<&str>, classic: bool) -> Symbols {
         Some("ascii") => Symbols::Ascii,
         other => {
             if let Some(other) = other.filter(|value| !value.is_empty()) {
-                eprintln!("fin: {SYMBOLS} is `full`, `basic` or `ascii`, not `{other}`");
+                eprintln!("arko: {SYMBOLS} is `full`, `basic` or `ascii`, not `{other}`");
             }
             if classic {
                 Symbols::Basic
@@ -130,7 +130,7 @@ fn choose(setting: Option<&str>, classic: bool) -> Symbols {
     }
 }
 
-/// Whether fin runs in the classic Windows console: no terminal says what
+/// Whether Arko runs in the classic Windows console: no terminal says what
 /// it is (Windows Terminal, VS Code, WezTerm, ConEmu, Alacritty).
 pub fn classic_console() -> bool {
     [
@@ -193,7 +193,7 @@ mod tests {
         }
     }
 
-    /// Every symbol in the lines fin prints has stand-ins.
+    /// Every symbol in the lines Arko prints has stand-ins.
     #[test]
     fn the_symbols_in_the_terminal_lines_have_stand_ins() {
         for (file, source) in [

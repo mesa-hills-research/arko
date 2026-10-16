@@ -1,7 +1,7 @@
 //! `/model`'s picker: the model of the main agent (before the conversation
 //! starts) or of new workers, in two steps. The first lists the models by
 //! the way they are reached, the ways that can be used first; a way that
-//! can't is one dim row saying what it needs, so the list shows what fin
+//! can't is one dim row saying what it needs, so the list shows what Arko
 //! can reach without a menu that changes shape from one machine to the
 //! next. The second lists the efforts that model takes. Enter applies:
 //! the picker sends the session the `/model` line a user would type, so
@@ -331,7 +331,7 @@ fn about(effort: Effort) -> &'static str {
         Effort::Low => "fastest, thinks least",
         Effort::Medium => "quicker, thinks less",
         Effort::High => "thinks more",
-        Effort::Xhigh => "thinks hard, fin's default",
+        Effort::Xhigh => "thinks hard, Arko's default",
         Effort::Max => "thinks most, slowest",
     }
 }

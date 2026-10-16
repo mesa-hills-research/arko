@@ -50,7 +50,7 @@ pub const LEGACY_TOOL_NAMES: &[&str] = &[
     "message_lead",
     "wait_for_lead",
 ];
-pub const LEGACY_NOTICE: &str = "This session uses the old worker tools. Its old workers and worktrees remain archived, but cannot be continued here. The old worker tools are unavailable. Continue the task yourself, or ask the user to start a new fin session for native workers. /new resets this conversation but keeps its old tools.";
+pub const LEGACY_NOTICE: &str = "This session uses the old worker tools. Its old workers and worktrees remain archived, but cannot be continued here. The old worker tools are unavailable. Continue the task yourself, or ask the user to start a new Arko session for native workers. /new resets this conversation but keeps its old tools.";
 
 pub struct Setup {
     pub session_id: String,
@@ -62,7 +62,7 @@ pub struct Setup {
     pub cache_lifetime: PromptCacheLifetime,
     pub feed: Option<remote::Feed>,
     /// Why new workers can't start on a model, when they can't: its
-    /// provider's key was removed while fin runs.
+    /// provider's key was removed while Arko runs.
     pub refuse: Option<Refuse>,
 }
 
@@ -111,7 +111,7 @@ pub struct NewWorkers {
 }
 
 /// The workers' models: what new workers start on, and what each run
-/// started on. A run keeps its own when it resumes (fin restarted) or is
+/// started on. A run keeps its own when it resumes (Arko restarted) or is
 /// continued (`message_agent`, a follow-up), whatever new workers start
 /// on by then.
 ///
@@ -155,7 +155,7 @@ impl WorkerModels {
     fn save(&self) -> Result<(), String> {
         let failed = |error: std::io::Error| {
             format!(
-                "fin could not record the worker's model in {}: {error}",
+                "Arko could not record the worker's model in {}: {error}",
                 self.path.display()
             )
         };
@@ -226,7 +226,7 @@ impl Crew {
             .offer_blocking_tool(false)
             .questions_to_lead(true)
             .workspace_provider(Arc::new(GitWorktreeProvider::new(self.setup.session_dir.join("worktrees"))
-                .branch_prefix(format!("fin/{}/", self.setup.session_id))))
+                .branch_prefix(format!("arko/{}/", self.setup.session_id))))
             .hook(Arc::new(move |request: &StartRequest, config: &mut AgentConfig| {
                 let mut models = models.lock().unwrap();
                 // A run seen before: what it started with, always.
@@ -304,7 +304,7 @@ impl Crew {
     }
 
     /// Records the model of each worker run that has no record yet (runs
-    /// of fin before records existed), as it started: so that it keeps it
+    /// of Arko before records existed), as it started: so that it keeps it
     /// once new workers start on another. Called as that changes. Returns
     /// how many workers the session has started.
     pub fn keep_started_models(&self) -> Result<usize, String> {
@@ -342,7 +342,7 @@ impl Crew {
         Ok(started.len())
     }
 
-    /// The model worker run `run` started on, when fin recorded it.
+    /// The model worker run `run` started on, when Arko recorded it.
     pub fn run_model(&self, run: Uuid) -> Option<WorkerModel> {
         self.models.lock().unwrap().runs.get(&run).cloned()
     }
@@ -585,7 +585,7 @@ impl Crew {
     pub async fn shutdown(&self) {
         if let Some(workflow) = self.workflow() {
             // Stopping the workflow marks its unfinished subagents for resume.
-            workflow.stop(StopRequest::operator("fin closed"));
+            workflow.stop(StopRequest::operator("Arko closed"));
             let _ = tokio::time::timeout(Duration::from_secs(12), async {
                 while !workflow.active_subagents().is_empty() {
                     tokio::time::sleep(Duration::from_millis(20)).await;

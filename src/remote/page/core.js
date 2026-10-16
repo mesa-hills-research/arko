@@ -1,4 +1,4 @@
-// fin's remote page, the part without a page: how the transcript is laid
+// Arko's remote page, the part without a page: how the transcript is laid
 // out for each view, markdown read into a tree (which app.js builds with
 // DOM calls, never as markup), and the figures' wording. It runs in the
 // browser (as window.FinCore) and under node for its tests.
@@ -19,7 +19,7 @@
     messages: { name: 'Messages', about: 'Just the messages, with a count of each turn’s tool calls.' },
   };
 
-  /** How many items the page keeps, as fin does: the main transcript's
+  /** How many items the page keeps, as Arko does: the main transcript's
    * and the workers', each on its own. */
   const BUDGET = { main: 3000, workers: 3000 };
 

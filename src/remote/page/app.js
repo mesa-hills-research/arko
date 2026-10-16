@@ -1,4 +1,4 @@
-// fin's remote page: follows the session's stream (Server-Sent Events) and
+// Arko's remote page: follows the session's stream (Server-Sent Events) and
 // sends messages, answers, stops and settings commands (POST). Text from
 // the session is only ever set as text or built into elements, never
 // parsed as markup. core.js holds the logic that has no page.
@@ -21,7 +21,7 @@
     both: { name: 'Both', about: 'AGENTS.md and CLAUDE.md, each under its own name.' },
     off: { name: 'Off', about: 'The agents get neither file.' },
   };
-  const KEY = 'fin.remote.key';
+  const KEY = 'arko.remote.key';
   const $ = (id) => document.getElementById(id);
   const fine = window.matchMedia('(pointer: fine)');
 
@@ -70,7 +70,7 @@
   let status = null;
   /** 'connecting', 'live' or 'offline'. */
   let connection = 'connecting';
-  let view = C.VIEWS[load('fin.view')] ? load('fin.view') : 'full';
+  let view = C.VIEWS[load('arko.view')] ? load('arko.view') : 'full';
   /** The worker whose transcript is shown, or null for the main one. */
   let worker = null;
   /** Server time minus this device's, in ms, as the live items tell it. */
@@ -563,7 +563,7 @@
   }
 
   function onItem(item) {
-    // This device's clock against fin's: the smallest gap a new item
+    // This device's clock against Arko's: the smallest gap a new item
     // shows (the rest is the network's delay).
     const sample = Date.now() - item.at;
     skew = skew === null ? sample : Math.min(skew, sample);
@@ -620,7 +620,7 @@
     stop.hidden = !working;
     tick();
     placeholder();
-    document.title = 'fin' + (state.key === 'asking' ? ' · asks you' : state.key === 'working' ? ' · working' : '');
+    document.title = 'Arko' + (state.key === 'asking' ? ' · asks you' : state.key === 'working' ? ' · working' : '');
   }
 
   /** The clocks: how long the turn has gone on, and the workers' times. */
@@ -694,7 +694,7 @@
         keep = { id: at, offset: log.clientHeight / 3 };
       }
       view = next;
-      save('fin.view', view);
+      save('arko.view', view);
       relayout = true;
       draw();
     }
@@ -844,9 +844,9 @@
 
   /**
    * A command sent from the sheet (`/outside on`, `/handover-at 200k`,
-   * `/handover`), waiting for fin: `{ command, note, done(settings),
+   * `/handover`), waiting for Arko: `{ command, note, done(settings),
    * lines }`. The status shows a setting once it changed; the lines are
-   * what fin answered in the transcript (an error for a bad value), shown
+   * what Arko answered in the transcript (an error for a bad value), shown
    * under the setting so the reader needn't leave the sheet.
    */
   let pending = null;
@@ -935,18 +935,18 @@
     node.classList.toggle('error', Boolean(error));
   }
 
-  /** The command is through: it worked (`ok`), or fin said why not. */
+  /** The command is through: it worked (`ok`), or Arko said why not. */
   function settle(change, ok) {
     clearTimeout(change.timer);
     clearTimeout(change.wait);
     if (pending === change) pending = null;
     const said = change.lines.join('\n');
     if (ok) note(change.note, said);
-    else note(change.note, said || 'fin didn’t change it: see the transcript for why.', true);
+    else note(change.note, said || 'Arko didn’t change it: see the transcript for why.', true);
     renderSettings();
   }
 
-  /** What fin says after the sheet's command: its answer, for the sheet. */
+  /** What Arko says after the sheet's command: its answer, for the sheet. */
   function heard(item) {
     const change = pending;
     if (!change) return;
@@ -957,7 +957,7 @@
     if (!change.answered || !['output', 'notice'].includes(item.kind)) return;
     change.lines.push(item.text);
     if (!change.done) {
-      // A command that changes no setting (a handover) is through once fin answers.
+      // A command that changes no setting (a handover) is through once Arko answers.
       settle(change, item.level !== 'error');
       return;
     }
@@ -1037,7 +1037,7 @@
       return;
     }
     const before = status && status.settings ? status.settings.handover_at : 0;
-    // fin reads the size ("200k", "200000") and says what's wrong with it.
+    // Arko reads the size ("200k", "200000") and says what's wrong with it.
     command('/handover-at ' + size, 'handover-note', (settings) => settings.handover_at !== before).then((sent) => {
       if (sent) $('handover-input').value = '';
     });
@@ -1049,7 +1049,7 @@
     command('/handover', 'handover-note', null);
   });
 
-  /** The links to the page, with their codes, when fin offers them (the
+  /** The links to the page, with their codes, when Arko offers them (the
    * section stays hidden when it doesn't). */
   async function loadLinks() {
     let links;
@@ -1100,7 +1100,7 @@
     return [qr, words];
   }
 
-  /** fin's QR code, as an element: only shapes, never scripts or
+  /** Arko's QR code, as an element: only shapes, never scripts or
    * handlers, whatever the text says. */
   function safeSvg(source) {
     if (typeof source !== 'string') return null;
@@ -1152,7 +1152,7 @@
     $('lock-why').textContent =
       why === 'wait'
         ? 'Too many wrong keys: wait a minute, then try again.'
-        : 'Open the link fin printed in its console: it holds the key. (A new session, or /remote new-key, makes a new one.)';
+        : 'Open the link Arko printed in its console: it holds the key. (A new session, or /remote new-key, makes a new one.)';
     $('lock').hidden = false;
     $('app').hidden = true;
   }
@@ -1215,7 +1215,7 @@
     // comes back within a second or two.
     setConnection(failures > 1 ? 'offline' : 'connecting');
     $('offline-text').textContent =
-      failures > 3 ? 'fin isn’t reachable: it may have quit. The page reconnects when it’s back.' : 'Not connected. Reconnecting…';
+      failures > 3 ? 'Arko isn’t reachable: it may have quit. The page reconnects when it’s back.' : 'Not connected. Reconnecting…';
     retryTimer = setTimeout(start, retry);
     retry = Math.min(retry * 2, 15000);
   }
@@ -1272,7 +1272,7 @@
           body: JSON.stringify(body || {}),
         });
       } catch {
-        showError('Not sent: fin is out of reach. Your text is kept.');
+        showError('Not sent: Arko is out of reach. Your text is kept.');
         return false;
       }
       if (response.status === 401 && attempt === 0) {
@@ -1284,8 +1284,8 @@
       if (!response.ok) {
         const why = await response.json().catch(() => ({}));
         if (why.error) showError('Not sent: ' + why.error + '.');
-        // A proxy in front of fin (Tailscale Serve, say) answers for it.
-        else if ([502, 503, 504].includes(response.status)) showError('Not sent: fin is out of reach. Your text is kept.');
+        // A proxy in front of Arko (Tailscale Serve, say) answers for it.
+        else if ([502, 503, 504].includes(response.status)) showError('Not sent: Arko is out of reach. Your text is kept.');
         else showError('Not sent (' + response.status + ').');
         return false;
       }
@@ -1299,7 +1299,7 @@
     text.style.height = 'auto';
     text.style.height = text.scrollHeight + 2 + 'px';
     send.disabled = sending || !text.value.trim();
-    sessionSet('fin.draft', text.value);
+    sessionSet('arko.draft', text.value);
   }
 
   let sending = false;
@@ -1346,7 +1346,7 @@
 
   // ----- start -----
 
-  text.value = sessionGet('fin.draft') || '';
+  text.value = sessionGet('arko.draft') || '';
   renderViews();
   grow();
   start();

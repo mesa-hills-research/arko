@@ -28,7 +28,7 @@ fn equip(harness: &mut Harness, on: bool) -> Managers {
 /// runs: `true ||` ends the list first.
 fn outside_command() -> String {
     format!(
-        "true || rm -rf ~/fin-outside-test-{}",
+        "true || rm -rf ~/arko-outside-test-{}",
         uuid::Uuid::new_v4().simple()
     )
 }
@@ -336,7 +336,7 @@ async fn an_old_session_resumed_with_the_flag_gets_the_shell_part_and_says_so() 
     let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
     let _managers = equip(&mut harness, false);
     // The file tools refuse writes outside the working directory, as in
-    // the configuration fin saved sessions with before.
+    // the configuration Arko saved sessions with before.
     for config in [&mut harness.main_config, &mut harness.worker_config] {
         for tool in [
             arko_agents::builtins::WRITE_FILE_TOOL_NAME,
@@ -356,7 +356,7 @@ async fn an_old_session_resumed_with_the_flag_gets_the_shell_part_and_says_so() 
         .turn(Prompt::User("Save.".into()), &mut inputs)
         .await;
     assert!(matches!(end, TurnEnd::Answered));
-    // fin builds the configurations of today, and resumes with the saved
+    // Arko builds the configurations of today, and resumes with the saved
     // ones.
     harness.main_config = agents::main_config(&agent_settings_of(&harness)).unwrap();
     harness.worker_config = agents::worker_config(&agent_settings_of(&harness)).unwrap();
@@ -396,7 +396,7 @@ async fn an_old_session_resumed_with_the_flag_gets_the_shell_part_and_says_so() 
     assert!(!target.exists());
 }
 
-/// A session made by this fin, resumed with the flag: commands and the
+/// A session made by this Arko, resumed with the flag: commands and the
 /// file tools both act outside.
 #[cfg(unix)]
 #[tokio::test]
@@ -840,7 +840,7 @@ async fn a_handover_size_set_from_the_web_page_is_announced() {
 }
 
 /// A session on the ChatGPT login hands over by itself at 250k: its
-/// configuration says so, and fin doesn't ask too.
+/// configuration says so, and Arko doesn't ask too.
 #[cfg(unix)]
 #[tokio::test]
 async fn a_chatgpt_session_hands_over_at_250k() {
@@ -1171,7 +1171,7 @@ async fn remote_qr_draws_the_code_or_says_why_not() {
     harness.stop_remote().await;
 }
 
-/// Agents in Claude Code are offered fin's tools only, so outside access
+/// Agents in Claude Code are offered Arko's tools only, so outside access
 /// reaches them as it reaches the others: the command guard and the file
 /// tools' hook decide their calls, and they read the note.
 #[cfg(unix)]

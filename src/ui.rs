@@ -232,7 +232,7 @@ fn joined(line: &str) -> String {
     line.replace("\\\r\n", "\n").replace("\\\n", "\n")
 }
 
-/// Set when fin is closing: the line editor doesn't read again, so it
+/// Set when Arko is closing: the line editor doesn't read again, so it
 /// doesn't put the terminal back in raw mode after it was restored.
 static CLOSING: AtomicBool = AtomicBool::new(false);
 
@@ -1008,9 +1008,9 @@ mod tests {
         assert_eq!(
             brief(
                 "index_manage",
-                &params(&[("action", "rebuild".into()), ("index", "finn".into())])
+                &params(&[("action", "rebuild".into()), ("index", "arko".into())])
             ),
-            "index rebuild finn"
+            "index rebuild arko"
         );
         assert_eq!(
             brief("load_skill", &params(&[("name", "review".into())])),

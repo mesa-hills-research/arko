@@ -1,5 +1,5 @@
 // End-to-end tests of text replies: the main agent ends its turns with a
-// reply in plain text, which fin shows once, as the reply. Also the default
+// reply in plain text, which Arko shows once, as the reply. Also the default
 // and flags that choose them, `/text-replies` and the settings, and sessions
 // saved before them, whose main agent goes on calling `complete_task`. Each
 // follows a path a user takes, with the mock model. (Included in `main`'s
@@ -113,7 +113,7 @@ fn tools_of(body: &str) -> Vec<String> {
 }
 
 fn args(words: &[&str]) -> Args {
-    Args::parse_from(std::iter::once("fin").chain(words.iter().copied()))
+    Args::parse_from(std::iter::once("arko").chain(words.iter().copied()))
 }
 
 /// Text replies are on by default where the user takes part (the full
@@ -134,7 +134,7 @@ fn the_default_follows_whether_the_user_takes_part_and_the_flags_override_it() {
     assert!(text_replies_for(&args(&["-p", "Hi", "--text-replies"]), true));
     assert!(text_replies_for(&args(&["--text-replies"]), false));
     assert!(
-        Args::try_parse_from(["fin", "--text-replies", "--no-text-replies"]).is_err(),
+        Args::try_parse_from(["arko", "--text-replies", "--no-text-replies"]).is_err(),
         "one or the other"
     );
 }
@@ -388,7 +388,7 @@ async fn workers_report_with_complete_task_and_the_lead_replies_in_text() {
 /// conversation starts turns text replies on or off: the agents are built
 /// again, and the session and the settings (the full screen's, the web
 /// page's) have it. Once the conversation has started, the main agent keeps
-/// it for the session, and fin says so.
+/// it for the session, and Arko says so.
 #[tokio::test]
 async fn text_replies_change_before_the_conversation_starts_only() {
     let server = ModelServer::start(Arc::new(|_, _| {
@@ -468,7 +468,7 @@ async fn a_resumed_session_keeps_its_text_replies() {
         .await;
     assert_eq!(summary(&harness), "Apples noted.");
 
-    // fin closes, and the session is resumed with its saved settings.
+    // Arko closes, and the session is resumed with its saved settings.
     harness.settings = harness.session.load_settings().unwrap();
     assert!(harness.settings.text_replies);
     harness.open(true).unwrap();
@@ -519,7 +519,7 @@ async fn a_session_saved_before_text_replies_resumes_with_complete_task() {
         .await;
     assert_eq!(summary(&harness), "Apples noted.");
 
-    // fin now builds its main agent with text replies, and the session is
+    // Arko now builds its main agent with text replies, and the session is
     // resumed: its saved configuration stands.
     let settings = AgentSettings {
         text_replies: true,

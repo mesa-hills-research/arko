@@ -1,15 +1,15 @@
-//! Handovers fin asks the main agent for: at the handover size the user
+//! Handovers Arko asks the main agent for: at the handover size the user
 //! sets while the session runs (`/handover-at`), and at once (`/handover`).
 //!
 //! An agent's configuration holds the size it hands over at by itself, and
-//! it is saved with the session: a resumed conversation keeps it. So fin
+//! it is saved with the session: a resumed conversation keeps it. So Arko
 //! watches the main agent's input (the size each request reports) and asks
 //! it for a handover with `UserCommand::RequestHandover` when the user's
 //! size is the smaller. The agent then writes its report at its next step
 //! and goes on from it in a fresh conversation. An agent in Claude Code
 //! compacts instead (see `agents::compacts`): Claude Code's `/compact`
 //! summarises the conversation, and the agent goes on from the summary in
-//! the same conversation. fin reaches a run's command channel through the
+//! the same conversation. Arko reaches a run's command channel through the
 //! tools the run is bound to (`Tool::bind_runtime`): the shell tool keeps
 //! them in [`Runs`].
 
@@ -147,7 +147,7 @@ struct Watch {
     run: Option<Uuid>,
     /// The input of its latest request, in tokens.
     input: Option<usize>,
-    /// A handover was asked for (by fin, or by the agent's configuration)
+    /// A handover was asked for (by Arko, or by the agent's configuration)
     /// and hasn't happened yet.
     asked: bool,
     /// The conversation started from a handover...
@@ -331,7 +331,7 @@ impl Handover {
                 watch.warned = false;
             }
             // A turn that ends drops the handover or compaction it hadn't
-            // made: fin asks again in the next turn when it is still due.
+            // made: Arko asks again in the next turn when it is still due.
             AgentEvent::TaskStateChanged(TaskState::Completed { .. }) => {
                 user_asked(event.agent_run_id, false);
                 watch.asked = false;
@@ -362,13 +362,13 @@ impl Handover {
             if !std::mem::replace(&mut watch.warned, true) {
                 let text = if self.compacts() {
                     format!(
-                        "The main agent's compacted conversation started at {}k tokens, over the handover size ({}k), so fin asks for no other compaction in it. /handover-at sets a larger size.",
+                        "The main agent's compacted conversation started at {}k tokens, over the handover size ({}k), so Arko asks for no other compaction in it. /handover-at sets a larger size.",
                         first / 1000,
                         at / 1000
                     )
                 } else {
                     format!(
-                        "The main agent's fresh conversation started at {}k tokens, over the handover size ({}k), so fin asks for no other handover in it. /handover-at sets a larger size.",
+                        "The main agent's fresh conversation started at {}k tokens, over the handover size ({}k), so Arko asks for no other handover in it. /handover-at sets a larger size.",
                         first / 1000,
                         at / 1000
                     )
@@ -503,7 +503,7 @@ mod tests {
     }
 
     /// A compaction resets the watch as a handover does, and a turn that
-    /// ends drops a request it didn't act on: fin asks again later.
+    /// ends drops a request it didn't act on: Arko asks again later.
     #[tokio::test]
     async fn the_watch_starts_over_after_a_compaction_or_a_turn() {
         let runs = Arc::new(Runs::default());

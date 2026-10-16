@@ -1,4 +1,4 @@
-//! A scripted session for trying the remote page by hand, with fin's own
+//! A scripted session for trying the remote page by hand, with Arko's own
 //! harness and the mock model: no model is called.
 
 use std::sync::Arc;
@@ -15,15 +15,15 @@ use crate::shell::{Shell, WindowsShell};
 use crate::ui::Input;
 
 /// Not a test: serves the web page for a scripted session, to try the
-/// page by hand. `FIN_DEMO_HOST` (127.0.0.1), `FIN_DEMO_PORT` (8799) and
-/// `FIN_DEMO_SECONDS` (900);
+/// page by hand. `ARKO_DEMO_HOST` (127.0.0.1), `ARKO_DEMO_PORT` (8799) and
+/// `ARKO_DEMO_SECONDS` (900);
 /// run with `cargo test remote_page_demo -- --ignored --nocapture` and
 /// open the link it prints. Messages: "Run the demo" (calls, two
 /// workers, a failed command, a question, a report), "demo:stream" (a
 /// long reply that streams), "demo:slow" (a 30 s command), "demo:ask" (a
 /// question), "demo:long" (3,500 calls, to reach the history's limit;
 /// "demo:long 500", 500), anything else (a short turn). Lines added to the
-/// file `FIN_DEMO_INPUT` are typed at the terminal.
+/// file `ARKO_DEMO_INPUT` are typed at the terminal.
 /// What starts a script: a message with one of these.
 const MARKERS: [&str; 5] = [
     "Run the demo",
@@ -219,7 +219,7 @@ async fn remote_page_demo() {
     let temp = tempfile::tempdir().unwrap();
     let (mut harness, mut inputs, sender) =
         crate::tests::harness(temp.path(), server.client(), true);
-    // fin's shell, and the live switches the page's settings change.
+    // Arko's shell, and the live switches the page's settings change.
     let shell = Shell::detect(WindowsShell::Powershell);
     let managers = Managers::open(&harness.session, &shell).unwrap();
     harness.tools = managers.tools(&shell, harness.handover.runs());
@@ -243,13 +243,13 @@ async fn remote_page_demo() {
     });
     harness.open(false).unwrap();
     let _ = feed_cell.set(harness.feed.clone());
-    let port = std::env::var("FIN_DEMO_PORT")
+    let port = std::env::var("ARKO_DEMO_PORT")
         .ok()
         .and_then(|port| port.parse().ok())
         .unwrap_or(8799);
     harness
         .start_remote(remote::Bind {
-            ip: std::env::var("FIN_DEMO_HOST")
+            ip: std::env::var("ARKO_DEMO_HOST")
                 .ok()
                 .and_then(|host| host.parse().ok())
                 .unwrap_or(std::net::Ipv4Addr::LOCALHOST.into()),
@@ -258,8 +258,8 @@ async fn remote_page_demo() {
         .await;
     let key = std::fs::read_to_string(harness.session.dir.join(remote::KEY_FILE)).unwrap();
     println!("DEMO http://127.0.0.1:{port}/#key={}", key.trim());
-    // Lines added to the file `FIN_DEMO_INPUT` are typed at the prompt.
-    if let Ok(path) = std::env::var("FIN_DEMO_INPUT") {
+    // Lines added to the file `ARKO_DEMO_INPUT` are typed at the prompt.
+    if let Ok(path) = std::env::var("ARKO_DEMO_INPUT") {
         let sender = sender.clone();
         tokio::spawn(async move {
             let mut typed = std::fs::read_to_string(&path)
@@ -276,7 +276,7 @@ async fn remote_page_demo() {
             }
         });
     }
-    let seconds = std::env::var("FIN_DEMO_SECONDS")
+    let seconds = std::env::var("ARKO_DEMO_SECONDS")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(900);
@@ -287,7 +287,7 @@ async fn remote_page_demo() {
     futures_util::future::join(harness.repl(&mut inputs), ending).await;
     harness
         .feed
-        .notice(Level::Info, "fin closed. The session is saved.");
+        .notice(Level::Info, "Arko closed. The session is saved.");
     harness.stop_remote().await;
     managers.shutdown().await;
 }

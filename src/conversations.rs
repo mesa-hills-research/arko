@@ -216,7 +216,7 @@ impl Conversations {
 }
 
 /// The title of a conversation whose first message was `prompt`: the first
-/// line of the user's words in it (fin's message keeps them under "# My
+/// line of the user's words in it (Arko's message keeps them under "# My
 /// message" when it adds sections of its own, see `Harness::compose`).
 pub fn title_of(prompt: &str) -> String {
     let words = prompt
@@ -313,7 +313,7 @@ pub fn resume_argument(text: &str) -> Option<&str> {
 impl Harness {
     /// The record as the session opens: a new session's is empty, and a
     /// resumed one's is read from its folder (or worked out from its runs)
-    /// and takes in the runs it lacks (a turn fin stopped in the middle of
+    /// and takes in the runs it lacks (a turn Arko stopped in the middle of
     /// started one).
     pub(crate) fn open_conversations(&mut self, workflow: &Workflow, resume: bool) {
         self.conversations = if resume {
@@ -344,7 +344,7 @@ impl Harness {
         if let Err(error) = self.conversations.save(&self.session.dir) {
             self.say(
                 Level::Error,
-                &format!("fin: could not save the session's conversations: {error}"),
+                &format!("arko: could not save the session's conversations: {error}"),
             );
         }
     }

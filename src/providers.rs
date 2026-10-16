@@ -1,4 +1,4 @@
-//! The providers fin runs its agents on, and how models are named.
+//! The providers Arko runs its agents on, and how models are named.
 //!
 //! A model ID from arko's registry (`claude-opus-5-5`, `gpt-6.1-sol`,
 //! `gemini-3.1-pro-preview`) or an alias (`opus`, `sol`, `gemini`) names a
@@ -15,7 +15,7 @@
 //! where the same model can be reached another way, and it says which
 //! account pays. A session saves the name in this form
 //! (`ModelSettings::model`), so it reads the same in `session.json`, in
-//! `fin --sessions` and on the command line.
+//! `arko --sessions` and on the command line.
 //!
 //! OpenAI models are the exception: arko's client holds one OpenAI client,
 //! so a session reaches them all one way, its [`OpenAiAuth`], saved with
@@ -58,7 +58,7 @@ pub const ALIASES: [(&str, &str); 8] = [
     ("flash", "gemini-3.8-flash"),
 ];
 
-/// The handover size of a model whose input limit fin can't tell (an
+/// The handover size of a model whose input limit Arko can't tell (an
 /// OpenRouter model when its catalog can't be read): 80% of 128k, the
 /// smallest context window common among the models OpenRouter serves.
 pub const UNKNOWN_LIMIT_HANDOVER: usize = 100_000;
@@ -107,7 +107,7 @@ fn registered(name: &str) -> Result<Model, String> {
 
 /// The error for a name that names no model, with what it may have meant.
 fn unknown(name: &str) -> String {
-    let mut text = format!("`{name}` isn't a model fin knows.");
+    let mut text = format!("`{name}` isn't a model Arko knows.");
     if name.contains('/') {
         text.push_str(&format!(
             " Models on OpenRouter take its prefix: openrouter:{name}."
@@ -172,7 +172,7 @@ pub fn model_name(model: &Model) -> String {
     }
 }
 
-/// The provider's name, as fin's messages say it.
+/// The provider's name, as Arko's messages say it.
 pub fn provider_name(model: &Model) -> &'static str {
     match model.provider {
         Provider::Anthropic => "Claude",
@@ -331,14 +331,14 @@ impl OpenAiAuth {
 }
 
 /// Whether there is a ChatGPT login: a Codex auth.json (`--codex-auth`,
-/// FIN_CODEX_AUTH or Codex's own) or the OPENAI_OAUTH_* variables.
+/// ARKO_CODEX_AUTH or Codex's own) or the OPENAI_OAUTH_* variables.
 pub fn has_chatgpt_login(codex_auth: Option<&Path>) -> bool {
     credentials::codex_auth(codex_auth).is_some()
         || credentials::var("OPENAI_OAUTH_ACCESS_TOKEN").is_some()
         || CodexAuthFile::default_path().is_some_and(|path| path.is_file())
 }
 
-/// How a new session reaches OpenAI models: `flag`, else FIN_OPENAI_AUTH,
+/// How a new session reaches OpenAI models: `flag`, else ARKO_OPENAI_AUTH,
 /// else the ChatGPT login when there is one, else an OpenAI API key when
 /// there is one, else the ChatGPT login (which the setup screen asks for).
 /// The second value says whether both were there, so the choice is worth
@@ -353,7 +353,7 @@ pub fn choose_openai_auth(
     if let Some(value) = credentials::var(credentials::OPENAI_AUTH) {
         return <OpenAiAuth as clap::ValueEnum>::from_str(value.trim(), true)
             .map(|auth| (auth, false))
-            .map_err(|_| format!("FIN_OPENAI_AUTH is `{value}`. Set it to chatgpt or api-key"));
+            .map_err(|_| format!("ARKO_OPENAI_AUTH is `{value}`. Set it to chatgpt or api-key"));
     }
     let login = has_chatgpt_login(codex_auth);
     let key = credentials::var(credentials::OPENAI_KEY).is_some();
@@ -504,7 +504,7 @@ fn first_by_credentials(have: Credentials) -> Option<(&'static str, &'static str
     }
 }
 
-/// What a provider's models need, as fin's notes say it.
+/// What a provider's models need, as Arko's notes say it.
 pub fn credential_name(provider: &Provider) -> &'static str {
     match provider {
         Provider::Anthropic => "ANTHROPIC_API_KEY",
@@ -520,11 +520,11 @@ pub fn provider_key(provider: &Provider) -> &'static str {
     provider.as_telemetry_str()
 }
 
-/// What the model `name` needs that isn't there, as fin's notes say it;
+/// What the model `name` needs that isn't there, as Arko's notes say it;
 /// `None` when its credential is there.
 pub fn missing_credential(name: &str, codex_auth: Option<&Path>) -> Option<String> {
     let Ok(model) = resolve_model(name) else {
-        return Some("a model fin knows (it no longer knows this one)".to_string());
+        return Some("a model Arko knows (it no longer knows this one)".to_string());
     };
     let missing = match model.provider {
         Provider::Anthropic => credentials::var(credentials::ANTHROPIC_KEY).is_none(),
@@ -554,7 +554,7 @@ pub fn missing_credential(name: &str, codex_auth: Option<&Path>) -> Option<Strin
 
 /// How a session reaches OpenAI models when none of its models is one,
 /// read through `var`: the ChatGPT login when there is one (unless
-/// FIN_OPENAI_AUTH says api-key and there is a key), else the API key;
+/// ARKO_OPENAI_AUTH says api-key and there is a key), else the API key;
 /// `None` without either.
 fn available_openai_auth(
     var: &impl Fn(&str) -> Option<String>,
@@ -585,7 +585,7 @@ pub fn spare_openai_auth(codex_auth: Option<&Path>) -> Option<OpenAiAuth> {
     )
 }
 
-/// The reasoning efforts `model` takes, from fin's five, lowest first:
+/// The reasoning efforts `model` takes, from Arko's five, lowest first:
 /// those the provider accepts for it (arko checks OpenAI's per model as it
 /// builds a request; these follow its rules). Empty for a model that
 /// doesn't reason.
@@ -785,7 +785,7 @@ pub fn model_menu(
     menu
 }
 
-/// The models of the last session started, kept in fin's folder for the
+/// The models of the last session started, kept in Arko's folder for the
 /// next session's default.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LastModels {
@@ -795,7 +795,7 @@ pub struct LastModels {
     pub worker: Option<String>,
 }
 
-/// The file in fin's folder that holds [`LastModels`].
+/// The file in Arko's folder that holds [`LastModels`].
 const LAST_MODELS_FILE: &str = "last-model.json";
 
 impl LastModels {
@@ -865,7 +865,7 @@ pub fn client(codex_auth: Option<&Path>, settings: &Settings) -> Result<LLMClien
     // Debug builds can talk to a local test model server (the full-screen
     // view's end-to-end checks run the real binary on one).
     #[cfg(debug_assertions)]
-    if let Some(url) = std::env::var("FIN_TEST_MODEL_URL")
+    if let Some(url) = std::env::var("ARKO_TEST_MODEL_URL")
         .ok()
         .filter(|url| !url.is_empty())
     {
@@ -981,7 +981,7 @@ fn client_with(
         match check_claude_code() {
             Ok(ready) => {
                 if let Some(warning) = ready.warning() {
-                    eprintln!("fin: {warning}");
+                    eprintln!("arko: {warning}");
                 }
             }
             Err(problem) => {
@@ -995,7 +995,7 @@ fn client_with(
     Ok(client)
 }
 
-/// How long fin waits for OpenRouter's catalog.
+/// How long Arko waits for OpenRouter's catalog.
 const CATALOG_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Checks a new session's OpenRouter models against OpenRouter's public
@@ -1049,7 +1049,7 @@ fn apply_catalog(
                 note(
                     &mut notes,
                     format!(
-                        "Could not read OpenRouter's model catalog ({error}), so fin can't check {name} or tell its context size: it hands over at {}k tokens (--handover-at sets it).",
+                        "Could not read OpenRouter's model catalog ({error}), so Arko can't check {name} or tell its context size: it hands over at {}k tokens (--handover-at sets it).",
                         handover(model)
                     ),
                 );
@@ -1060,7 +1060,7 @@ fn apply_catalog(
             note(
                 &mut notes,
                 format!(
-                    "fin can't tell the context size of the preset {name}: it hands over at {}k tokens (--handover-at sets it).",
+                    "Arko can't tell the context size of the preset {name}: it hands over at {}k tokens (--handover-at sets it).",
                     handover(model)
                 ),
             );
@@ -1076,7 +1076,7 @@ fn apply_catalog(
             .is_some_and(|info| !info.supports_parameter("tools"))
         {
             return Err(format!(
-                "{name} doesn't take tool calls on OpenRouter, and fin's agents work through tools"
+                "{name} doesn't take tool calls on OpenRouter, and Arko's agents work through tools"
             ));
         }
         if !explicit_handover {
@@ -1904,7 +1904,7 @@ mod tests {
     }
 
     #[test]
-    fn the_last_session_s_models_are_kept_in_fin_s_folder() {
+    fn the_last_session_s_models_are_kept_in_arko_s_folder() {
         let root = tempfile::tempdir().unwrap();
         assert_eq!(LastModels::load(root.path()), None);
         let mut session = settings(model("cc:opus"), model("cc:opus"));
@@ -2133,7 +2133,7 @@ mod tests {
             menu[1].models[0],
             ("cc:claude-opus-5-5".to_string(), "cc:opus")
         );
-        // Every model listed is one fin knows.
+        // Every model listed is one Arko knows.
         for group in &menu {
             for (name, _) in &group.models {
                 assert!(resolve_model(name).is_ok(), "{name}");

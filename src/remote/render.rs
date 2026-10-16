@@ -42,7 +42,7 @@ fn flag(parameters: &Parameters, name: &str) -> bool {
 }
 
 /// How a call of an agent (the main one or a worker) shows; `None` for
-/// calls not shown (a question is shown as fin asks it, a reply or a
+/// calls not shown (a question is shown as Arko asks it, a reply or a
 /// worker's report as it ends).
 pub fn call(tool: &str, parameters: &Parameters) -> Option<Item> {
     let call = |line: String| Item::new(Kind::Call, line);

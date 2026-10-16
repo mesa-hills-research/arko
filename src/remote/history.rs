@@ -142,7 +142,7 @@ fn is_answer(message: &Message) -> bool {
         })
 }
 
-/// What the user wrote, from a message of theirs: fin's composed message
+/// What the user wrote, from a message of theirs: Arko's composed message
 /// keeps it under "# My message"; context updates and the workers' news
 /// aren't the user's words.
 fn user_item(text: &str) -> Option<Item> {
@@ -168,7 +168,7 @@ fn user_item(text: &str) -> Option<Item> {
     }
     let mine = match text.split_once("# My message\n\n") {
         Some((_, mine)) => mine,
-        // Only fin's own sections: no words of the user's.
+        // Only Arko's own sections: no words of the user's.
         None if text.starts_with("# ") => return None,
         None => text,
     };
@@ -188,7 +188,7 @@ mod tests {
             .unwrap()
     }
 
-    /// The user's words (not fin's sections or context updates), the
+    /// The user's words (not Arko's sections or context updates), the
     /// agent's text, a call with its outcome and output, and the reply.
     #[test]
     fn a_conversation_reads_as_it_did() {

@@ -1,4 +1,4 @@
-//! [`Indexes`]: fin's indexes in one process. It finds them (the folders under
+//! [`Indexes`]: Arko's indexes in one process. It finds them (the folders under
 //! `<data root>/indexes/`), creates, builds, embeds and searches them, keeps the
 //! monitored ones current with watcher threads, and counts what embedding costs.
 //!
@@ -12,12 +12,12 @@
 //!   [`Timing::min_interval`] (30 s); the chunks that changed are embedded next.
 //!   A search that finds changes not yet built rebuilds first when the last build
 //!   took at most [`Timing::sync_rebuild_max`] (5 s); otherwise it notes them.
-//! - Any other index (fin's one-shot `-p` mode, an index of another tree, or one
+//! - Any other index (Arko's one-shot `-p` mode, an index of another tree, or one
 //!   not monitored) is reconciled when first searched (and again after
 //!   [`Timing::reconcile_interval`]): its watcher state is opened, which finds
 //!   what changed since it was last acknowledged, and the index is rebuilt when
-//!   anything did. An index another fin process watches is left to it (a
-//!   monitoring fin takes over once the other stops).
+//!   anything did. An index another Arko process watches is left to it (a
+//!   monitoring Arko takes over once the other stops).
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -39,12 +39,12 @@ use super::embed::{self, Backend};
 use super::monitor::{self, OpenError};
 use super::store::{self, BuildRecord, Kind, Layout, Manifest, Rules};
 
-/// Receives progress lines of background work (the CLI prints them; fin logs them).
+/// Receives progress lines of background work (the CLI prints them; Arko logs them).
 pub type Events = Arc<dyn Fn(&str) + Send + Sync>;
 
-/// Tokens a search in fin's one-shot mode may embed to bring the chunks changed
+/// Tokens a search in Arko's one-shot mode may embed to bring the chunks changed
 /// since the last build up to date (about $0.02 with voyage-code-4); the rest stay
-/// lexical until fin monitors the index or `fin index embed` runs.
+/// lexical until Arko monitors the index or `arko index embed` runs.
 pub const FRESHEN_EMBED_TOKENS: u64 = 200_000;
 /// The most results a search returns.
 pub const MAX_LIMIT: usize = 50;
@@ -105,7 +105,7 @@ pub enum WatchState {
     Watching {
         polling: bool,
     },
-    /// Another process (another fin) holds the watcher state; a watcher thread
+    /// Another process (another Arko) holds the watcher state; a watcher thread
     /// of this one tries again every [`Timing::busy_retry`].
     Elsewhere,
     /// The watcher failed; the thread retries.
@@ -115,11 +115,11 @@ pub enum WatchState {
 impl WatchState {
     pub fn describe(&self) -> String {
         match self {
-            WatchState::Off => "not watched by this fin".into(),
+            WatchState::Off => "not watched by this Arko".into(),
             WatchState::Starting => "watcher starting".into(),
             WatchState::Watching { polling: false } => "watching (inotify)".into(),
             WatchState::Watching { polling: true } => "watching (polling)".into(),
-            WatchState::Elsewhere => "watched by another fin process".into(),
+            WatchState::Elsewhere => "watched by another Arko process".into(),
             WatchState::Failed(error) => format!("watcher failed: {error}"),
         }
     }
@@ -379,13 +379,13 @@ pub enum Action {
     Remove,
 }
 
-/// fin's indexes, for one process: shared by the tools (through an `Arc`), the
+/// Arko's indexes, for one process: shared by the tools (through an `Arc`), the
 /// watcher threads and the embedding threads.
 pub struct Indexes {
     data_root: PathBuf,
     workspace: PathBuf,
     home: Option<PathBuf>,
-    /// Where embeddings come from: the Voyage key changes while fin runs
+    /// Where embeddings come from: the Voyage key changes while Arko runs
     /// ([`Indexes::set_voyage_key`]).
     backend: RwLock<Backend>,
     monitor: bool,
@@ -411,12 +411,12 @@ impl std::fmt::Debug for Indexes {
 }
 
 impl Indexes {
-    /// fin's indexes, with their data under `data_root` (fin's data folder),
-    /// `workspace` the directory fin works in, and the Voyage key (none:
-    /// lexical indexes and search only). Call it in fin's tokio runtime. With
+    /// Arko's indexes, with their data under `data_root` (Arko's data folder),
+    /// `workspace` the directory Arko works in, and the Voyage key (none:
+    /// lexical indexes and search only). Call it in Arko's tokio runtime. With
     /// `monitor`, every monitored index whose root contains the workspace or lies
-    /// in it gets a watcher thread at once (it reconciles what changed while fin
-    /// wasn't running); without (fin's one-shot `-p` mode), indexes are
+    /// in it gets a watcher thread at once (it reconciles what changed while Arko
+    /// wasn't running); without (Arko's one-shot `-p` mode), indexes are
     /// reconciled when first searched.
     pub fn open(
         data_root: &Path,
@@ -467,7 +467,7 @@ impl Indexes {
         Ok(this)
     }
 
-    /// The index's file rules, leaving out fin's index folder when it lies in
+    /// The index's file rules, leaving out Arko's index folder when it lies in
     /// the tree (its manifests change with every build, which would otherwise
     /// trigger the next).
     fn file_rules(&self, manifest: &Manifest) -> arko_index::FileRules {
@@ -544,8 +544,8 @@ impl Indexes {
         }
     }
 
-    /// One line for fin's banner: the indexes of the workspace, e.g.
-    /// `index finn (code, monitored)`. None when there are none.
+    /// One line for Arko's banner: the indexes of the workspace, e.g.
+    /// `index arko (code, monitored)`. None when there are none.
     pub fn summary(&self) -> Option<String> {
         let related = self.related(&self.workspace);
         if related.is_empty() {
@@ -556,7 +556,7 @@ impl Indexes {
             .map(|found| {
                 let monitored = match self.watch_state(&found.layout) {
                     WatchState::Starting | WatchState::Watching { .. } => ", monitored",
-                    WatchState::Elsewhere => ", monitored by another fin",
+                    WatchState::Elsewhere => ", monitored by another Arko",
                     _ => "",
                 };
                 let lexical = if found.manifest.embed {
@@ -616,7 +616,7 @@ impl Indexes {
         let mut threads = Vec::new();
         for entry in entries {
             for run in lock(&entry.runs).iter() {
-                run.stop("fin is exiting");
+                run.stop("Arko is exiting");
             }
             if let Some(watch) = lock(&entry.watcher).take() {
                 watch.stop.store(true, Ordering::SeqCst);
@@ -962,7 +962,7 @@ impl Indexes {
                     }
                     if busy {
                         return Err(format!(
-                            "{error} (another fin process is building this index)"
+                            "{error} (another Arko process is building this index)"
                         ));
                     }
                     return Err(error);
@@ -989,7 +989,7 @@ impl Indexes {
             .ok_or("the index has no embeddings (it was built lexical only)")?;
         let stop = stop.unwrap_or_default();
         if self.stopping() {
-            stop.stop("fin is exiting");
+            stop.stop("Arko is exiting");
         }
         let embedder = self
             .backend()
@@ -1114,7 +1114,7 @@ impl Indexes {
         let this = Arc::clone(self);
         let worker = Arc::clone(entry);
         match std::thread::Builder::new()
-            .name("fin-index-embed".into())
+            .name("arko-index-embed".into())
             .spawn(move || this.embed_loop(&worker))
         {
             Ok(thread) => {
@@ -1202,7 +1202,7 @@ impl Indexes {
         let worker = Arc::clone(entry);
         let flag = Arc::clone(&stop);
         match std::thread::Builder::new()
-            .name("fin-index-watch".into())
+            .name("arko-index-watch".into())
             .spawn(move || this.watch_loop(&worker, &flag))
         {
             Ok(thread) => *watcher = Some(WatchThread { stop, thread }),
@@ -1281,7 +1281,7 @@ impl Indexes {
                             self.request_embed(entry, None, false);
                         }
                     }
-                    // Another process holds the watcher state: another fin
+                    // Another process holds the watcher state: another Arko
                     // watching it (this one takes over when it exits), or one
                     // reconciling it for a moment.
                     Err(OpenError::Busy) => {
@@ -1289,7 +1289,7 @@ impl Indexes {
                         if !busy_reported {
                             busy_reported = true;
                             self.event(&format!(
-                                "{name}: another fin process is watching it, and this one takes over when it stops"
+                                "{name}: another Arko process is watching it, and this one takes over when it stops"
                             ));
                         }
                         reopen_at = Instant::now() + self.timing.busy_retry;
@@ -1489,7 +1489,7 @@ impl Indexes {
                 {
                     match self.run_embed(entry, FRESHEN_EMBED_TOKENS, false, None, None) {
                         Ok(summary) if summary.cap_reached => notes.push(format!(
-                            "{name}: {}/{} chunks have vectors, and the rest are found by keywords until an interactive fin monitors it (or `fin index embed`)",
+                            "{name}: {}/{} chunks have vectors, and the rest are found by keywords until an interactive Arko monitors it (or `arko index embed`)",
                             fmt_count(summary.embedded),
                             fmt_count(summary.docs)
                         )),
@@ -1898,7 +1898,7 @@ impl Indexes {
             },
         };
         // Embeddings are on unless asked otherwise (or turned off before): without
-        // a key the index is lexical until one is set, then fin embeds it.
+        // a key the index is lexical until one is set, then Arko embeds it.
         let embed = args
             .embed
             .unwrap_or_else(|| existing.as_ref().is_none_or(|manifest| manifest.embed));
@@ -1967,7 +1967,7 @@ impl Indexes {
                 }
                 Err(OpenError::Busy) => {
                     lock(&entry.live).watch = WatchState::Elsewhere;
-                    notes.push("another fin process is watching this index".into());
+                    notes.push("another Arko process is watching this index".into());
                     self.build_locked(&entry, &manifest, Caller::Interactive)
                 }
                 Err(OpenError::Failed(error)) => {
@@ -2009,7 +2009,7 @@ impl Indexes {
                 self.start_watch(&entry);
             } else {
                 notes.push(
-                    "it will be monitored while an interactive fin runs in its directory".into(),
+                    "it will be monitored while an interactive Arko runs in its directory".into(),
                 );
             }
         }
@@ -2103,11 +2103,11 @@ impl Indexes {
                 if self.monitor {
                     self.start_watch(&entry);
                     Ok(format!(
-                        "{name} is monitored: this fin watches it now, as will interactive fin sessions in its directory."
+                        "{name} is monitored: this Arko watches it now, as will interactive Arko sessions in its directory."
                     ))
                 } else {
                     Ok(format!(
-                        "{name} is monitored by interactive fin sessions in its directory."
+                        "{name} is monitored by interactive Arko sessions in its directory."
                     ))
                 }
             }

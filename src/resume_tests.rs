@@ -348,7 +348,7 @@ async fn a_conversation_that_handed_over_goes_on_from_its_report() {
     assert_eq!(harness.conversations.list[0].runs.len(), 1);
 }
 
-/// The record is kept with the session: resumed (`fin -c`), it lists the
+/// The record is kept with the session: resumed (`arko -c`), it lists the
 /// same conversations and goes on in the one it was in, which isn't the
 /// one with the latest run, and shows that one's history. A session saved
 /// before the record has one conversation for each run, and goes on with
@@ -396,7 +396,7 @@ async fn a_resumed_session_lists_its_conversations_and_goes_on_in_its_own() {
     );
     harness.resume_command("1").await;
 
-    // fin closes, and the session is resumed.
+    // Arko closes, and the session is resumed.
     harness.open(true).unwrap();
     assert_eq!(harness.conversations.current, Some(0));
     assert_eq!(summary(&harness), "Apples noted.");

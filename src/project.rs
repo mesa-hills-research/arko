@@ -1,5 +1,5 @@
 //! The project's instructions: `AGENTS.md` and `CLAUDE.md` in the working
-//! directory, read as fin starts. Which of them the agents get is a session
+//! directory, read as Arko starts. Which of them the agents get is a session
 //! setting ([`Files`]), and so is whether workers get them too.
 //!
 //! The main agent gets them in the first message of each conversation, and
@@ -66,7 +66,7 @@ impl Files {
             .find(|files| files.name().eq_ignore_ascii_case(text.trim()))
     }
 
-    /// The files the agents get, as fin tells the user.
+    /// The files the agents get, as Arko tells the user.
     pub fn describe(self) -> &'static str {
         match self {
             Files::One => "AGENTS.md, or CLAUDE.md when there is no AGENTS.md",
@@ -80,7 +80,7 @@ impl Files {
     }
 }
 
-/// The instruction files the working directory had as fin started: each
+/// The instruction files the working directory had as Arko started: each
 /// by name, with its text trimmed. Missing and empty files are left out.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Found(Vec<(&'static str, String)>);
@@ -321,7 +321,7 @@ impl crate::Harness {
         if let Err(error) = self.session.save_settings(&self.settings) {
             self.say(
                 Level::Error,
-                &format!("fin: could not save the session's settings: {error}"),
+                &format!("arko: could not save the session's settings: {error}"),
             );
         }
         self.give_workers_project();

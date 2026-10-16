@@ -1,5 +1,5 @@
 //! The view's choices, remembered from one run to the next in `tui.json`
-//! in fin's folder: people settle on a view and a theme.
+//! in Arko's folder: people settle on a view and a theme.
 
 use std::path::Path;
 

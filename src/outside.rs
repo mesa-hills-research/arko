@@ -253,7 +253,7 @@ mod tests {
             timestamp: chrono::Utc::now(),
             hook_point: HookPoint::PreToolExecution,
             workflow_run_id: Uuid::new_v4(),
-            workflow_name: "fin".into(),
+            workflow_name: "arko".into(),
             agent_run_id: Some(Uuid::new_v4()),
             agent_name: Some("main".into()),
             tool_name: Some(tool.into()),
@@ -475,7 +475,7 @@ mod tests {
         let outside = Outside::new(true, Vec::new(), "/work".into());
         let workflow = Arc::new(
             Workflow::builder()
-                .name("fin")
+                .name("arko")
                 .workspace(std::env::temp_dir())
                 .llm_client(Arc::new(arko_ai::LLMClient::new()))
                 .agent("main", config.clone())

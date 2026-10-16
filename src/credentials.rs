@@ -2,13 +2,13 @@
 //! Google Gemini, OpenRouter) and the ChatGPT login (a Codex auth.json),
 //! from the environment or `.env` files, and the setup screen that asks for
 //! them when the chosen model has none or its file fails. The screen also
-//! checks Claude Code, whose own login fin uses. `.env` files can also
-//! turn on the 1-hour prompt cache (FIN_CACHE_1H), choose how sessions
-//! reach OpenAI models (FIN_OPENAI_AUTH), choose the shell on Windows
-//! (FIN_SHELL) and hold the Voyage API key the search indexes embed with
+//! checks Claude Code, whose own login Arko uses. `.env` files can also
+//! turn on the 1-hour prompt cache (ARKO_CACHE_1H), choose how sessions
+//! reach OpenAI models (ARKO_OPENAI_AUTH), choose the shell on Windows
+//! (ARKO_SHELL) and hold the Voyage API key the search indexes embed with
 //! (VOYAGE_API_KEY), which the setup screen also takes.
 //!
-//! What the screen takes is saved in fin's own `.env` (in its folder,
+//! What the screen takes is saved in Arko's own `.env` (in its folder,
 //! readable only by the user) and used in this run at once, and so is what
 //! the keys menu (`/keys`, see `keys`) takes. Nothing read here is put in the
 //! environment, so the commands the agents run don't see it.
@@ -43,13 +43,13 @@ pub const GOOGLE_KEY: &str = "GOOGLE_API_KEY";
 /// The OpenRouter API key.
 pub const OPENROUTER_KEY: &str = "OPENROUTER_API_KEY";
 /// The Codex auth.json that holds the ChatGPT login.
-pub const CODEX_AUTH: &str = "FIN_CODEX_AUTH";
+pub const CODEX_AUTH: &str = "ARKO_CODEX_AUTH";
 /// How new sessions reach OpenAI models: `chatgpt` or `api-key`.
-pub const OPENAI_AUTH: &str = "FIN_OPENAI_AUTH";
+pub const OPENAI_AUTH: &str = "ARKO_OPENAI_AUTH";
 /// Anthropic's 1-hour prompt cache for new sessions: `1` or `0`.
-pub const CACHE_1H: &str = "FIN_CACHE_1H";
+pub const CACHE_1H: &str = "ARKO_CACHE_1H";
 /// The shell new sessions run commands in on Windows: `cmd` or `powershell`.
-pub const SHELL: &str = "FIN_SHELL";
+pub const SHELL: &str = "ARKO_SHELL";
 /// The Voyage API key, for the search indexes' embeddings.
 pub const VOYAGE_KEY: &str = "VOYAGE_API_KEY";
 /// The settings a `.env` file can hold; it may set others, which are left
@@ -74,8 +74,8 @@ const DOTENV_KEYS: [&str; 13] = [
 /// comes before every other source.
 static ENTERED: Mutex<Vec<(&str, String)>> = Mutex::new(Vec::new());
 
-/// The settings removed from fin's own `.env` in this run: what it held as
-/// fin started is no longer read.
+/// The settings removed from Arko's own `.env` in this run: what it held as
+/// Arko started is no longer read.
 static FORGOTTEN: Mutex<Vec<&str>> = Mutex::new(Vec::new());
 
 /// Where a setting comes from.
@@ -87,7 +87,7 @@ pub enum Source {
 }
 
 /// A setting, if it is set: entered on the setup screen or in the keys
-/// menu, else from the environment, else (the settings fin reads there) from
+/// menu, else from the environment, else (the settings Arko reads there) from
 /// a `.env` file.
 pub fn var(name: &str) -> Option<String> {
     lookup(name).map(|(value, _)| value)
@@ -126,7 +126,7 @@ fn enter(name: &'static str, value: String) {
 }
 
 /// The settings in `.env` files, with the file each came from: the nearest
-/// `.env` in the current directory or a parent first, then the one in fin's
+/// `.env` in the current directory or a parent first, then the one in Arko's
 /// folder. Read once.
 fn dotenv() -> &'static HashMap<&'static str, (String, PathBuf)> {
     static VALUES: OnceLock<HashMap<&'static str, (String, PathBuf)>> = OnceLock::new();
@@ -138,7 +138,7 @@ fn dotenv() -> &'static HashMap<&'static str, (String, PathBuf)> {
                 .find(|path| path.is_file())
         });
         let mut values = HashMap::new();
-        for path in nearest.into_iter().chain(fin_dotenv().ok()) {
+        for path in nearest.into_iter().chain(arko_dotenv().ok()) {
             for (key, value) in read_dotenv(&path) {
                 values.entry(key).or_insert((value, path.clone()));
             }
@@ -148,24 +148,24 @@ fn dotenv() -> &'static HashMap<&'static str, (String, PathBuf)> {
 }
 
 /// The `.env` setting `name` with the file it came from, unless it was
-/// removed from fin's own `.env` in this run.
+/// removed from Arko's own `.env` in this run.
 fn dotenv_entry(name: &str) -> Option<(String, PathBuf)> {
     let (value, path) = dotenv().get(name)?;
     let forgotten = FORGOTTEN.lock().unwrap().contains(&name);
-    if forgotten && fin_dotenv().is_ok_and(|fin| fin == *path) {
+    if forgotten && arko_dotenv().is_ok_and(|arko| arko == *path) {
         return None;
     }
     Some((value.clone(), path.clone()))
 }
 
-/// fin's own `.env`, in its folder: where the setup screen and the keys
+/// Arko's own `.env`, in its folder: where the setup screen and the keys
 /// menu save.
-pub fn fin_dotenv() -> Result<PathBuf, String> {
+pub fn arko_dotenv() -> Result<PathBuf, String> {
     Ok(session::data_root()?.join(".env"))
 }
 
-/// The settings fin reads in the `.env` file at `path`. A relative
-/// FIN_CODEX_AUTH is relative to the file's folder.
+/// The settings Arko reads in the `.env` file at `path`. A relative
+/// ARKO_CODEX_AUTH is relative to the file's folder.
 fn read_dotenv(path: &Path) -> Vec<(&'static str, String)> {
     let Ok(entries) = dotenvy::from_path_iter(path) else {
         return Vec::new();
@@ -224,7 +224,7 @@ pub fn switch(name: &str) -> Result<Option<bool>, String> {
 }
 
 /// The Codex auth.json to use: one entered on the setup screen, else
-/// `--codex-auth`, else FIN_CODEX_AUTH; `None` leaves it to Codex's default
+/// `--codex-auth`, else ARKO_CODEX_AUTH; `None` leaves it to Codex's default
 /// (`$CODEX_HOME/auth.json`, else `~/.codex/auth.json`).
 pub fn codex_auth(flag: Option<&Path>) -> Option<PathBuf> {
     entered(CODEX_AUTH)
@@ -259,7 +259,7 @@ pub enum Need {
 impl Need {
     /// What is missing, as an error where the setup screen can't be shown.
     pub fn message(&self) -> String {
-        let setup = "run `fin --setup` in a terminal to enter it";
+        let setup = "run `arko --setup` in a terminal to enter it";
         let key = |model: &str, name: &str| {
             format!("{model} needs {name}: set it in the environment or a .env file, or {setup}")
         };
@@ -298,7 +298,7 @@ pub fn can_ask() -> bool {
     std::io::stdin().is_terminal() && std::io::stdout().is_terminal()
 }
 
-/// An API key fin takes: on the setup screen and in the keys menu.
+/// An API key Arko takes: on the setup screen and in the keys menu.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Key {
     /// The provider, as the keys menu names it: "Anthropic".
@@ -375,10 +375,10 @@ pub fn key_named(word: &str) -> Option<&'static Key> {
 /// Where the key in use comes from, as the keys menu says it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KeySource {
-    /// fin's own `.env`, at this path: saved there on the setup screen or in
+    /// Arko's own `.env`, at this path: saved there on the setup screen or in
     /// the keys menu.
-    Fin(PathBuf),
-    /// fin's environment.
+    Arko(PathBuf),
+    /// Arko's environment.
     Environment,
     /// Another `.env` file.
     DotEnv(PathBuf),
@@ -397,9 +397,9 @@ pub struct KeyState {
 }
 
 impl KeyState {
-    /// Whether the keys menu can remove it: fin saved it.
+    /// Whether the keys menu can remove it: Arko saved it.
     pub fn removable(&self) -> bool {
-        matches!(self.source, Some(KeySource::Fin(_)))
+        matches!(self.source, Some(KeySource::Arko(_)))
     }
 }
 
@@ -410,7 +410,7 @@ pub fn key_states() -> Vec<KeyState> {
 
 /// `key`'s state now.
 pub fn key_state(key: &'static Key) -> KeyState {
-    let fin = fin_dotenv().ok();
+    let arko = arko_dotenv().ok();
     match in_use(key) {
         None => KeyState {
             key,
@@ -423,9 +423,9 @@ pub fn key_state(key: &'static Key) -> KeyState {
             masked: Some(masked(&value, key.prefix)),
             variable,
             source: Some(match source {
-                Source::Entered => KeySource::Fin(fin.unwrap_or_default()),
+                Source::Entered => KeySource::Arko(arko.unwrap_or_default()),
                 Source::Environment => KeySource::Environment,
-                Source::DotEnv(path) if fin.as_ref() == Some(&path) => KeySource::Fin(path),
+                Source::DotEnv(path) if arko.as_ref() == Some(&path) => KeySource::Arko(path),
                 Source::DotEnv(path) => KeySource::DotEnv(path),
             }),
         },
@@ -450,7 +450,7 @@ fn in_use(key: &Key) -> Option<(&'static str, String, Source)> {
     lookup(key.name).map(|(value, source)| (key.name, value, source))
 }
 
-/// `value` as fin shows a key: its provider's `prefix` (when it starts with
+/// `value` as Arko shows a key: its provider's `prefix` (when it starts with
 /// it) and its last 4 characters, `sk-ant-…a1b2`. A short key shows no end.
 pub fn masked(value: &str, prefix: &str) -> String {
     let start = if value.starts_with(prefix) {
@@ -493,26 +493,26 @@ pub struct Saved {
     pub note: Option<String>,
 }
 
-/// Saves `value` as `key` in fin's `.env` and uses it in this run, as the
+/// Saves `value` as `key` in Arko's `.env` and uses it in this run, as the
 /// setup screen does.
 pub fn save_key(key: &'static Key, value: &str) -> Result<Saved, String> {
-    let dotenv = fin_dotenv()?;
+    let dotenv = arko_dotenv()?;
     save(&dotenv, key.name, value)?;
     FORGOTTEN.lock().unwrap().retain(|name| *name != key.name);
     enter(key.name, value.to_string());
     Ok(saved_text(&dotenv, key.name))
 }
 
-/// Removes `key` from fin's `.env` and from this run, when fin saved the
+/// Removes `key` from Arko's `.env` and from this run, when Arko saved the
 /// key in use ([`KeyState::removable`]). Returns its state after: the key
 /// another source sets, if one does.
 pub fn remove_key(key: &'static Key) -> Result<KeyState, String> {
     let state = key_state(key);
-    let Some(KeySource::Fin(path)) = &state.source else {
+    let Some(KeySource::Arko(path)) = &state.source else {
         return Err(match &state.source {
             None => format!("No {} is set.", without_article(key.what)),
             Some(source) => format!(
-                "fin didn't save this key. It comes from {}, so change it there.",
+                "Arko didn't save this key. It comes from {}, so change it there.",
                 source_text(source, state.variable)
             ),
         });
@@ -531,11 +531,11 @@ pub fn remove_key(key: &'static Key) -> Result<KeyState, String> {
 }
 
 /// Where a key comes from, as a sentence names it: "ANTHROPIC_API_KEY in
-/// fin's environment".
+/// Arko's environment".
 pub fn source_text(source: &KeySource, variable: &str) -> String {
     match source {
-        KeySource::Fin(path) => format!("{variable} in fin's .env ({})", path.display()),
-        KeySource::Environment => format!("{variable} in fin's environment"),
+        KeySource::Arko(path) => format!("{variable} in Arko's .env ({})", path.display()),
+        KeySource::Environment => format!("{variable} in Arko's environment"),
         KeySource::DotEnv(path) => format!("{variable} in {}", path.display()),
     }
 }
@@ -581,13 +581,13 @@ const MENU: [(Choice, &str); 7] = [
 ];
 
 /// The setup screen: asks for what `need` names (anything with `None` or
-/// `Need::Any`), saves it in fin's `.env` and uses it in this run. An error
+/// `Need::Any`), saves it in Arko's `.env` and uses it in this run. An error
 /// when the user quits.
 pub fn setup(need: Option<&Need>) -> Result<(), String> {
     let out = Output::new(None, false);
-    let dotenv = fin_dotenv()?;
+    let dotenv = arko_dotenv()?;
     out.line("");
-    out.line(&out.bold("fin setup"));
+    out.line(&out.bold("Arko setup"));
     match need {
         None => {
             out.line(&out.dim("Credentials now:"));
@@ -639,7 +639,7 @@ pub fn setup(need: Option<&Need>) -> Result<(), String> {
         Some(Need::ChatGptLogin { model, problem }) => {
             out.line(&format!("{model} needs a ChatGPT login: {problem}"));
             out.line(&out.dim(
-                "(A new session can reach OpenAI models with an API key instead: fin --openai-auth api-key.)",
+                "(A new session can reach OpenAI models with an API key instead: arko --openai-auth api-key.)",
             ));
         }
         Some(Need::ClaudeCode { model, problem }) => out.line(&match problem {
@@ -662,7 +662,7 @@ pub fn setup(need: Option<&Need>) -> Result<(), String> {
         Some(Need::ChatGptLogin { .. }) => Choice::ChatGptLogin,
         Some(Need::ClaudeCode { problem, .. }) => {
             out.line(&out.dim(
-                "(For another provider instead, quit (q) and start fin with --setup, or with -m and another model.)",
+                "(For another provider instead, quit (q) and start Arko with --setup, or with -m and another model.)",
             ));
             return ask_claude_code(&out, &mut editor, Some(problem.clone()));
         }
@@ -715,7 +715,7 @@ fn cancelled() -> String {
     "setup cancelled".into()
 }
 
-/// Asks for `key`, saves it in fin's `.env` and uses it in this run.
+/// Asks for `key`, saves it in Arko's `.env` and uses it in this run.
 fn ask_key(out: &Output, editor: &mut Editor, dotenv: &Path, key: &Key) -> Result<(), String> {
     out.line(&out.dim(&format!(
         "Paste {} (from {}). The input is hidden, and an empty line quits.",
@@ -826,7 +826,7 @@ fn ask_claude_code(
                     }
                     out.line(&format!("In another terminal, {}.", claude_code::INSTALL));
                     out.line(&out.dim(
-                        "If the installer adds a folder to your PATH, quit (q) and start fin again from a new terminal.",
+                        "If the installer adds a folder to your PATH, quit (q) and start Arko again from a new terminal.",
                     ));
                 }
                 claude_code::Problem::SignedOut(path) => {
@@ -837,7 +837,7 @@ fn ask_claude_code(
                         ));
                     }
                     out.line(
-                        "In another terminal, sign in with `claude auth login`, with the Claude account whose plan fin should use.",
+                        "In another terminal, sign in with `claude auth login`, with the Claude account whose plan Arko should use.",
                     );
                 }
             }
@@ -866,7 +866,7 @@ fn ask_claude_code(
 
 fn claude_code_ready(out: &Output, ready: &claude_code::Ready) -> Result<(), String> {
     out.line(&format!(
-        "Claude Code ({}) is ready: {}. fin runs Claude models in it with -m cc:opus or -m cc:fable.",
+        "Claude Code ({}) is ready: {}. Arko runs Claude models in it with -m cc:opus or -m cc:fable.",
         ready.path.display(),
         ready.describe()
     ));
@@ -1152,7 +1152,7 @@ mod tests {
         assert!(read_dotenv(&path).is_empty());
         std::fs::write(
             &path,
-            "OTHER=1\nexport ANTHROPIC_API_KEY=\"sk-ant-test\" # comment\nFIN_CODEX_AUTH=auth.json\n",
+            "OTHER=1\nexport ANTHROPIC_API_KEY=\"sk-ant-test\" # comment\nARKO_CODEX_AUTH=auth.json\n",
         )
         .unwrap();
         assert_eq!(
@@ -1170,7 +1170,7 @@ mod tests {
     #[test]
     fn saving_replaces_the_setting_and_keeps_the_rest() {
         let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("fin").join(".env");
+        let path = temp.path().join("arko").join(".env");
         save(&path, ANTHROPIC_KEY, "sk-ant-one").unwrap();
         std::fs::write(
             &path,
@@ -1214,7 +1214,7 @@ mod tests {
     fn the_cache_setting_is_read_from_a_dotenv_file() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join(".env");
-        std::fs::write(&path, "FIN_CACHE_1H=1\n").unwrap();
+        std::fs::write(&path, "ARKO_CACHE_1H=1\n").unwrap();
         assert_eq!(read_dotenv(&path), vec![(CACHE_1H, "1".to_string())]);
     }
 
@@ -1226,7 +1226,7 @@ mod tests {
         let path = temp.path().join(".env");
         std::fs::write(
             &path,
-            "OPENAI_API_KEY=sk-proj-1\nGEMINI_API_KEY=AIza1\nOPENROUTER_API_KEY=sk-or-1\nFIN_OPENAI_AUTH=api-key\n",
+            "OPENAI_API_KEY=sk-proj-1\nGEMINI_API_KEY=AIza1\nOPENROUTER_API_KEY=sk-or-1\nARKO_OPENAI_AUTH=api-key\n",
         )
         .unwrap();
         assert_eq!(
@@ -1273,7 +1273,7 @@ mod tests {
         }
         .message();
         assert!(message.contains("needs GEMINI_API_KEY"), "{message}");
-        assert!(message.contains("fin --setup"), "{message}");
+        assert!(message.contains("arko --setup"), "{message}");
         let message = Need::ClaudeCode {
             model: "cc:claude-opus-5-5".into(),
             problem: claude_code::Problem::Missing,

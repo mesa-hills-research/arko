@@ -1,5 +1,5 @@
-//! The API keys while fin runs: `/keys` lists the providers' keys, and adds,
-//! replaces and removes them. A key is saved in fin's `.env` as the setup
+//! The API keys while Arko runs: `/keys` lists the providers' keys, and adds,
+//! replaces and removes them. A key is saved in Arko's `.env` as the setup
 //! screen saves, and used at once: the session's model client gets the
 //! provider for the agents' next requests, and the search indexes embed with
 //! a Voyage key. Nothing is sent to the provider until an agent or a search
@@ -8,7 +8,7 @@
 //!
 //! A replaced key is used from the next request on, by the agents already
 //! running too (the old one may be why it was replaced). A removed key is
-//! kept by the agents already using it until fin quits, and nothing new
+//! kept by the agents already using it until Arko quits, and nothing new
 //! starts on it: the session stops offering its provider, new workers can't
 //! start on it, and searches go back to keywords.
 
@@ -154,7 +154,7 @@ impl Keys {
     }
 
     /// Why a new worker can't start on `model`: its provider's key was
-    /// removed while fin runs. (Said to the main agent.)
+    /// removed while Arko runs. (Said to the main agent.)
     pub fn refusal(&self, model: &Model) -> Option<String> {
         if !self.state().withdrawn.contains(&model.provider) {
             return None;
@@ -166,12 +166,12 @@ impl Keys {
             _ => credentials::OPENROUTER_KEY,
         };
         Some(format!(
-            "New workers can't start on {}: the user removed its API key ({name}) while fin runs. Ask the user to add one with /keys, or to choose another worker model with /model worker.",
+            "New workers can't start on {}: the user removed its API key ({name}) while Arko runs. Ask the user to add one with /keys, or to choose another worker model with /model worker.",
             providers::model_name(model),
         ))
     }
 
-    /// Adds `key` (or replaces it) with `value`: saved in fin's `.env`, and
+    /// Adds `key` (or replaces it) with `value`: saved in Arko's `.env`, and
     /// used at once.
     pub fn add(&self, key: &'static Key, value: Secret) -> Outcome {
         let value = value.reveal().trim();
@@ -184,7 +184,7 @@ impl Keys {
         };
         log::info!("keys: {} saved and used", key.name);
         let now = self.apply(key, Some(value));
-        let said = format!("fin saved the {}. {now}", without_article(key.what));
+        let said = format!("Arko saved the {}. {now}", without_article(key.what));
         let mut warnings: Vec<String> = credentials::prefix_note(value, key).into_iter().collect();
         warnings.extend(saved.note);
         self.notice(&format!(
@@ -194,7 +194,7 @@ impl Keys {
         Outcome::Done { said, warnings }
     }
 
-    /// Removes `key`, when fin saved the one in use: from fin's `.env`, and
+    /// Removes `key`, when Arko saved the one in use: from Arko's `.env`, and
     /// for what starts from now on. A key another source sets takes its
     /// place.
     pub fn remove(&self, key: &'static Key) -> Outcome {
@@ -208,10 +208,10 @@ impl Keys {
         let what = without_article(key.what);
         let said = match (&after.source, value.is_some()) {
             (Some(source), true) => format!(
-                "fin removed the {what} from its .env, and now uses {}.",
+                "Arko removed the {what} from its .env, and now uses {}.",
                 credentials::source_text(source, after.variable)
             ),
-            _ => format!("fin removed the {what} from its .env. {now}"),
+            _ => format!("Arko removed the {what} from its .env. {now}"),
         };
         self.notice(&format!(
             "{} removed.",
@@ -256,7 +256,7 @@ impl Keys {
             if self.client.has_provider(&provider) && !state.withdrawn.contains(&provider) {
                 state.withdrawn.push(provider);
             }
-            return "Agents already using it keep it until fin quits.".to_string();
+            return "Agents already using it keep it until Arko quits.".to_string();
         };
         match provider {
             Provider::Anthropic => self.client.set_anthropic_client(self.local_url(
@@ -344,7 +344,7 @@ pub fn list(states: &[KeyState], values: bool) -> Vec<String> {
         };
         let about = match &state.source {
             None => state.key.purpose.to_string(),
-            Some(KeySource::Fin(_)) => "saved by fin".to_string(),
+            Some(KeySource::Arko(_)) => "saved by Arko".to_string(),
             Some(source) => format!("from {}", credentials::source_text(source, state.variable)),
         };
         lines.push(format!("  {:<15}{shown:<16}{about}", state.key.provider));
@@ -353,7 +353,7 @@ pub fn list(states: &[KeyState], values: bool) -> Vec<String> {
 }
 
 /// How `/keys` is used.
-pub const USAGE: &str = "/keys lists the API keys. /keys add PROVIDER adds or replaces one, and /keys remove PROVIDER removes one fin saved. The providers are anthropic, openai, gemini, openrouter and voyage.";
+pub const USAGE: &str = "/keys lists the API keys. /keys add PROVIDER adds or replaces one, and /keys remove PROVIDER removes one Arko saved. The providers are anthropic, openai, gemini, openrouter and voyage.";
 
 /// The key `/keys add PROVIDER` (a whole line) adds, which the line prompt
 /// reads with the input hidden.
@@ -372,7 +372,7 @@ pub fn add_at_prompt(keys: &Keys, key: &'static Key) {
     let value = match credentials::read_key(&out, key) {
         Ok(Some(value)) => value,
         Ok(None) => return out.line(&out.dim("No key was added.")),
-        Err(error) => return out.line(&out.error(&format!("fin: {error}"))),
+        Err(error) => return out.line(&out.error(&format!("arko: {error}"))),
     };
     // Its start and last 4 characters: the key pasted is the one meant.
     out.line(&out.dim(&format!(
@@ -394,13 +394,13 @@ pub fn add_at_prompt(keys: &Keys, key: &'static Key) {
 impl crate::Harness {
     /// `/keys`, typed at the line prompt or sent from the page: lists the
     /// API keys (masked at the terminal, and only whether each is set on the
-    /// page), and removes one fin saved. Adding one takes hidden input,
+    /// page), and removes one Arko saved. Adding one takes hidden input,
     /// which the full-screen view and the line prompt read themselves.
     pub(crate) fn keys_command(&mut self, argument: &str, source: Source) {
         let words: Vec<&str> = argument.split_whitespace().collect();
         let key = |word: &str| {
             credentials::key_named(word)
-                .ok_or_else(|| format!("fin takes no API key for `{word}`. {USAGE}"))
+                .ok_or_else(|| format!("Arko takes no API key for `{word}`. {USAGE}"))
         };
         let result = match words.as_slice() {
             [] => {
@@ -464,7 +464,7 @@ mod tests {
                 key: &credentials::ANTHROPIC,
                 masked: Some("sk-ant-…a1b2".into()),
                 variable: credentials::ANTHROPIC_KEY,
-                source: Some(KeySource::Fin("/home/me/.local/share/fin/.env".into())),
+                source: Some(KeySource::Arko("/home/me/.local/share/arko/.env".into())),
             },
             KeyState {
                 key: &credentials::GEMINI,
@@ -483,12 +483,12 @@ mod tests {
         assert_eq!(
             at_terminal,
             "API keys
-  Anthropic      sk-ant-…a1b2    saved by fin
-  Google Gemini  AIza…x9Yz       from GOOGLE_API_KEY in fin's environment
+  Anthropic      sk-ant-…a1b2    saved by Arko
+  Google Gemini  AIza…x9Yz       from GOOGLE_API_KEY in Arko's environment
   Voyage         not set         The search indexes embed with it, to search by meaning."
         );
         let on_the_page = list(&states, false).join("\n");
         assert!(!on_the_page.contains("a1b2") && !on_the_page.contains("x9Yz"));
-        assert!(on_the_page.contains("Anthropic      set             saved by fin"));
+        assert!(on_the_page.contains("Anthropic      set             saved by Arko"));
     }
 }

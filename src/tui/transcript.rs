@@ -95,7 +95,7 @@ pub struct Banner {
     pub project: Option<String>,
     /// MCP servers, skills, indexes.
     pub tools: Vec<String>,
-    /// Why the session runs its model, when fin chose it (the last
+    /// Why the session runs its model, when Arko chose it (the last
     /// session's). It goes once `/model` picks another.
     pub model_note: Option<String>,
     /// Short notes, a warning's with its level.
@@ -1382,7 +1382,7 @@ fn banner_lines(banner: &Banner, theme: &Theme, width: usize) -> Vec<Wrapped> {
     // columns of margin at its sides.
     let mut above = Wrapped::line(Vec::new());
     above.bare = true;
-    let mut lines = vec![above, edge(set.top_left, set.top_right, Some("fin"))];
+    let mut lines = vec![above, edge(set.top_left, set.top_right, Some("Arko"))];
     lines.push(row(
         "Model",
         &banner.model,
@@ -1847,7 +1847,7 @@ mod tests {
         let filter = full();
         let screen = rows(&mut t, &filter, 80, 14);
         assert_eq!(screen[0].trim(), "");
-        assert_eq!(screen[1], format!("  ┌ fin {}┐", "─".repeat(69)));
+        assert_eq!(screen[1], format!("  ┌ Arko {}┐", "─".repeat(68)));
         assert_eq!(
             screen[2],
             format!("  │ Model      Claude Opus 5.5 (xhigh){} │", " ".repeat(38))

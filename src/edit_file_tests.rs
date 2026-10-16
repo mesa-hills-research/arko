@@ -148,7 +148,7 @@ async fn a_session_saved_with_apply_diff_resumes_with_it() {
     .await;
     let temp = tempfile::tempdir().unwrap();
     let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
-    // The agents as fin built them before edit_file.
+    // The agents as Arko built them before edit_file.
     for config in [&mut harness.main_config, &mut harness.worker_config] {
         let tools = &mut config.tool_config;
         for name in &mut tools.available_tool_names {
@@ -169,7 +169,7 @@ async fn a_session_saved_with_apply_diff_resumes_with_it() {
         .turn(Prompt::User("Apples are red.".into()), &mut inputs)
         .await;
 
-    // fin now builds its agents with edit_file, and the session is resumed.
+    // Arko now builds its agents with edit_file, and the session is resumed.
     harness.main_config = agents::main_config(&agent_settings_of(&harness)).unwrap();
     harness.worker_config = agents::worker_config(&agent_settings_of(&harness)).unwrap();
     harness.open(true).unwrap();

@@ -32,7 +32,7 @@ pub trait Changes: Send {
 /// Why a watcher didn't open.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OpenError {
-    /// Another watcher (another fin process) holds the state.
+    /// Another watcher (another Arko process) holds the state.
     Busy,
     Failed(String),
 }

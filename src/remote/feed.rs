@@ -1,6 +1,6 @@
 //! The session as its clients show it (the web page, and the terminal's
 //! full-screen view): a bounded history of items and the updates that
-//! follow it, made from the workflows' events and from what fin says of
+//! follow it, made from the workflows' events and from what Arko says of
 //! the turns (the user's messages, the agent's questions and replies,
 //! stops and failures).
 //!
@@ -23,7 +23,7 @@ use uuid::Uuid;
 
 use super::render::{self, Outcome};
 
-/// The `agent` of the main agent's items, and of what fin says.
+/// The `agent` of the main agent's items, and of what Arko says.
 pub const MAIN_AGENT: &str = "main";
 
 /// How much of a transcript is kept.
@@ -66,7 +66,7 @@ pub enum Kind {
     /// A result that needs a block under its call: a command's output, a
     /// long error.
     Result,
-    /// What fin says: a stop, an error, a retry, a handover.
+    /// What Arko says: a stop, an error, a retry, a handover.
     Notice,
     /// A command's output.
     Output,
@@ -133,7 +133,7 @@ pub struct Item {
     /// When, in Unix milliseconds.
     pub at: i64,
     pub kind: Kind,
-    /// Whose it is: [`MAIN_AGENT`] (the main agent, or fin), or a worker's
+    /// Whose it is: [`MAIN_AGENT`] (the main agent, or Arko), or a worker's
     /// ID (`r1`).
     pub agent: String,
     /// The main agent's turn it came in: one more with each turn, `None`
@@ -241,7 +241,7 @@ pub enum WorkerState {
     Finished,
     /// It ended with an error.
     Failed,
-    /// Its lead, the user or fin's exit stopped it.
+    /// Its lead, the user or Arko's exit stopped it.
     Stopped,
 }
 
@@ -754,7 +754,7 @@ impl Feed {
         self.push(&mut state, item);
     }
 
-    /// Items from before fin started (a resumed session's conversation,
+    /// Items from before Arko started (a resumed session's conversation,
     /// from [`history`](super::history)), numbered from 1: they join the
     /// history as they are, numbered after the feed's own (a result keeps
     /// its call).
@@ -773,7 +773,7 @@ impl Feed {
         }
     }
 
-    /// What fin says about the session.
+    /// What Arko says about the session.
     pub fn notice(&self, level: Level, text: &str) {
         let text = text.trim();
         if !text.is_empty() {
@@ -970,7 +970,7 @@ impl Feed {
         self.worker_changed(&mut state, id, true);
     }
 
-    /// A worker of the session from before fin started (a resumed
+    /// A worker of the session from before Arko started (a resumed
     /// session): its summary, without a place in the transcript.
     pub fn worker_restored(
         &self,
@@ -1415,7 +1415,7 @@ mod tests {
         feed.event(&event("main", chunk("Fixing.")), None);
         feed.user("Also the docs.", Source::Terminal, Delivery::Note);
         feed.turn_ended("2 s");
-        // A turn fin starts for the workers' news has no message.
+        // A turn Arko starts for the workers' news has no message.
         feed.turn_started();
         feed.reply("Done.");
         feed.turn_ended("1 s");

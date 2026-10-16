@@ -154,6 +154,43 @@ dependencies = [
 ]
 
 [[package]]
+name = "arko"
+version = "0.1.0"
+dependencies = [
+ "arboard",
+ "arko_agents",
+ "arko_ai",
+ "arko_index",
+ "arko_workflows",
+ "async-trait",
+ "axum",
+ "base64 0.22.1",
+ "chrono",
+ "clap",
+ "crossterm",
+ "dotenvy",
+ "env_logger",
+ "futures-util",
+ "getrandom 0.3.3",
+ "if-addrs",
+ "ignore",
+ "libc",
+ "log",
+ "qrcodegen",
+ "ratatui",
+ "reqwest",
+ "rustyline",
+ "serde",
+ "serde_json",
+ "subtle",
+ "tempfile",
+ "tokio",
+ "unicode-width",
+ "uuid",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "arko_agents"
 version = "0.1.0"
 dependencies = [
@@ -1184,43 +1221,6 @@ name = "finl_unicode"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "80bb028c8b4148c9ee0cca68fcd9add6044e81d3619f48577ddf13a263d047a2"
-
-[[package]]
-name = "finn"
-version = "0.1.0"
-dependencies = [
- "arboard",
- "arko_agents",
- "arko_ai",
- "arko_index",
- "arko_workflows",
- "async-trait",
- "axum",
- "base64 0.22.1",
- "chrono",
- "clap",
- "crossterm",
- "dotenvy",
- "env_logger",
- "futures-util",
- "getrandom 0.3.3",
- "if-addrs",
- "ignore",
- "libc",
- "log",
- "qrcodegen",
- "ratatui",
- "reqwest",
- "rustyline",
- "serde",
- "serde_json",
- "subtle",
- "tempfile",
- "tokio",
- "unicode-width",
- "uuid",
- "windows-sys 0.61.2",
-]
 
 [[package]]
 name = "fixedbitset"

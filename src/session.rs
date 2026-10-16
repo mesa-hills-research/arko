@@ -26,7 +26,7 @@ pub struct Settings {
     pub handover_at: usize,
     /// The input size, in tokens, at which the main agent hands over, as
     /// `/handover-at` (or `--handover-at` when resuming) last set it; `None`:
-    /// as its model settings say. fin asks for the handover at this size
+    /// as its model settings say. Arko asks for the handover at this size
     /// (see `handover`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub main_handover_at: Option<usize>,
@@ -123,7 +123,7 @@ impl Session {
         let dir = root.join("sessions").join(id);
         if !dir.join(SETTINGS_FILE).is_file() {
             return Err(format!(
-                "no session `{id}` (looked in {}). `fin --sessions` lists them",
+                "no session `{id}` (looked in {}). `arko --sessions` lists them",
                 dir.display()
             ));
         }
@@ -149,7 +149,7 @@ impl Session {
     }
 
     pub fn log_file(&self) -> PathBuf {
-        self.dir.join("fin.log")
+        self.dir.join("arko.log")
     }
 
     /// The checkpoint to resume from: the one `latest-checkpoint` names.
@@ -188,10 +188,10 @@ pub fn latest_checkpoint_in(run: &Path) -> Option<PathBuf> {
     path.is_file().then_some(path)
 }
 
-/// The folder sessions and the input history are kept in: `FIN_HOME`, or
-/// `fin` in the user's data directory.
+/// The folder sessions and the input history are kept in: `ARKO_HOME`, or
+/// `arko` in the user's data directory.
 pub fn data_root() -> Result<PathBuf, String> {
-    if let Some(home) = std::env::var_os("FIN_HOME").filter(|value| !value.is_empty()) {
+    if let Some(home) = std::env::var_os("ARKO_HOME").filter(|value| !value.is_empty()) {
         return Ok(PathBuf::from(home));
     }
     let base = if cfg!(windows) {
@@ -206,8 +206,8 @@ pub fn data_root() -> Result<PathBuf, String> {
                 std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share"))
             })
     };
-    base.map(|base| base.join("fin"))
-        .ok_or_else(|| "could not find your data directory. Set FIN_HOME".to_string())
+    base.map(|base| base.join("arko"))
+        .ok_or_else(|| "could not find your data directory. Set ARKO_HOME".to_string())
 }
 
 /// The sessions in `root`, newest first, with their settings.

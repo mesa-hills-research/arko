@@ -111,7 +111,7 @@ impl ExtraRules {
             .find(|rules| rules.name().eq_ignore_ascii_case(text.trim()))
     }
 
-    /// Who gets the rules, as fin tells the user.
+    /// Who gets the rules, as Arko tells the user.
     pub fn describe(self) -> &'static str {
         match self {
             ExtraRules::Small => "only agents on small models (Haiku, luna) get them",
@@ -249,7 +249,7 @@ pub const NO_LIMIT: u32 = u32::MAX;
 /// writes (a few thousand tokens), and the tool results of a step past
 /// the size. The size is checked before each request with its new tool
 /// results counted, so a step goes past it only by what the estimate
-/// misses, or when fin asks after a request reported its size.
+/// misses, or when Arko asks after a request reported its size.
 pub const CHATGPT_HANDOVER_ROOM: usize = 22_000;
 
 /// The input size, in tokens, at which an agent on `model` hands over
@@ -292,7 +292,7 @@ fn handover(model: &ModelSettings, tokens: usize) -> HandoverConfig {
 }
 
 /// Whether an agent with `config` compacts in Claude Code instead of
-/// handing over. A session saved before fin compacted keeps handing over.
+/// handing over. A session saved before Arko compacted keeps handing over.
 pub fn compacts(config: &AgentConfig) -> bool {
     config.runs_in_claude_code()
         && config
@@ -368,7 +368,7 @@ fn environment() -> EnvironmentDetailsConfig {
     }
 }
 
-/// How the main agent ends its turns, as fin tells the user: with
+/// How the main agent ends its turns, as Arko tells the user: with
 /// `text_replies`, a plain reply, else a `complete_task` call.
 pub fn replies_text(text_replies: bool) -> &'static str {
     if text_replies {
@@ -407,11 +407,11 @@ pub fn main_config(settings: &AgentSettings) -> Result<AgentConfig, String> {
     tool_config.text_reply_ends_task = settings.text_replies;
     let mut builder = AgentConfig::builder(
         MAIN.into(),
-        "fin".into(),
+        "Arko".into(),
         settings.main.llm_config(settings.show_thinking)?,
     )
     .role_description(
-        "You are fin, a general-purpose agent working in a terminal on the user's computer. You help with software engineering and anything else the user asks: you investigate, run commands, create and change files, and report back.".into(),
+        "You are Arko, a general-purpose agent working in a terminal on the user's computer. You help with software engineering and anything else the user asks: you investigate, run commands, create and change files, and report back.".into(),
     )
     .instructions(instructions)
     .tool_config(tool_config)
@@ -486,14 +486,14 @@ fn main_instructions(settings: &AgentSettings) -> String {
          The user talks with you in a terminal. Each of their messages starts a turn: work on it with your tools for as long as it takes. When you're done, reply without calling a tool. That reply ends your turn, and the user reads it as your message, so write your answer there in full. Text you write beside tool calls is shown to the user as you work: keep it to short progress notes.\n\n\
          When a step doesn't need the user, keep going. End the turn to ask only when you can't continue without them, or before something destructive or hard to undo that they didn't ask for: deleting data they may want, force-pushing, publishing, or changing things outside the working directory.\n\n\
          The user can type while you work. What they type reaches you as a note from the operator: take it into account in the work you're doing. When a note asks you something or needs an answer before you finish (a question, \"progress?\"), answer it in text beside your next tool call and carry on with your work. Only a response without a tool call ends your turn, so don't answer a note that way unless you're done.\n\n\
-         When you need the user to decide something before you can go on (a choice between approaches with real trade-offs, missing information only they have), ask with `ask_user`. If they can't be asked (fin runs without a terminal), it says so, and you decide.\n"
+         When you need the user to decide something before you can go on (a choice between approaches with real trade-offs, missing information only they have), ask with `ask_user`. If they can't be asked (Arko runs without a terminal), it says so, and you decide.\n"
             .to_string();
     }
     "# How this conversation works\n\
      The user talks with you in a terminal. Each of their messages starts a turn: work on it with your tools for as long as it takes, then end the turn by calling `complete_task`, whose summary is your reply. Text you write outside tool calls is shown to the user as you work; keep it to short progress notes, and don't repeat your reply in it.\n\n\
      When a step doesn't need the user, keep going. End the turn to ask only when you can't continue without them, or before something destructive or hard to undo that they didn't ask for: deleting data they may want, force-pushing, publishing, or changing things outside the working directory.\n\n\
      The user can type while you work. What they type reaches you as a note from the operator: take it into account in the work you're doing. When a note asks you something or needs an answer before you finish (a question, \"progress?\"), answer it with `message_user` and carry on with your work. Use `message_user` too for anything they must know before you finish. Every response of yours must call a tool: a reply in plain text, without one, is an error.\n\n\
-     When you need the user to decide something before you can go on (a choice between approaches with real trade-offs, missing information only they have), ask with `ask_user`. If they can't be asked (fin runs without a terminal), it says so, and you decide.\n"
+     When you need the user to decide something before you can go on (a choice between approaches with real trade-offs, missing information only they have), ask with `ask_user`. If they can't be asked (Arko runs without a terminal), it says so, and you decide.\n"
         .to_string()
 }
 
@@ -632,7 +632,7 @@ fn worker_instructions(settings: &AgentSettings) -> String {
 
 /// The extra rules for agents on small models (see [`ExtraRules`]), when
 /// any applies: short commands for what the large models do without being
-/// told. Each comes from a mistake the small models made in fin's evals
+/// told. Each comes from a mistake the small models made in Arko's evals
 /// (`evals/`) that the large ones didn't.
 fn extra_rules(settings: &AgentSettings) -> Option<String> {
     let mut rules: Vec<&str> = Vec::new();
@@ -737,11 +737,11 @@ mod tests {
         assert!(resolve_model("no-such-model").is_err());
     }
 
-    /// Agents in Claude Code get fin's own tools, served to it, and none of
+    /// Agents in Claude Code get Arko's own tools, served to it, and none of
     /// Claude Code's: the command guard sees every command. Agents on other
     /// providers get no Claude Code settings.
     #[test]
-    fn claude_code_agents_run_fin_s_tools_only() {
+    fn claude_code_agents_run_arko_s_tools_only() {
         let opus = model("cc:opus", false);
         let fable = model("cc:fable", false);
         let with = settings(&opus, &fable);
@@ -802,7 +802,7 @@ mod tests {
 
     /// Each worker provider's cache gets its own paragraph: the `cache`
     /// choice where Anthropic's cache lifetimes apply, ChatGPT's 30
-    /// minutes, Claude Code's hour, and nothing where fin can't tell.
+    /// minutes, Claude Code's hour, and nothing where Arko can't tell.
     #[test]
     fn the_lead_hears_about_its_workers_caches_by_provider() {
         let lead = model("opus", false);
@@ -1012,14 +1012,14 @@ mod tests {
             place,
         };
         let indexes = [
-            known("finn", "/work/finn", Some("the working directory")),
-            known("arko", "/work/arko", None),
+            known("arko", "/work/arko", Some("the working directory")),
+            known("arko_framework", "/work/arko_framework", None),
         ];
         let with = AgentSettings {
             indexes: &indexes,
             ..none
         };
-        let list = "The indexes when this session started:\n- `finn`: code, `/work/finn` (the working directory)\n- `arko`: code, `/work/arko`\n\n";
+        let list = "The indexes when this session started:\n- `arko`: code, `/work/arko` (the working directory)\n- `arko_framework`: code, `/work/arko_framework`\n\n";
         assert!(
             main_config(&with)
                 .unwrap()
@@ -1029,7 +1029,7 @@ mod tests {
         // A worker is told how to search from a worktree of its own, which
         // no index covers: by the index of the lead's working directory.
         assert!(worker_config(&with).unwrap().instructions.contains(&format!(
-            "{list}If you work in a worktree of your own, no index covers it. To search the project, name its index (`index: finn`): the results show the lead's copies of the files, which are at the same paths in your worktree.\n\nTo search another project"
+            "{list}If you work in a worktree of your own, no index covers it. To search the project, name its index (`index: arko`): the results show the lead's copies of the files, which are at the same paths in your worktree.\n\nTo search another project"
         )));
         assert!(
             !main_config(&with)

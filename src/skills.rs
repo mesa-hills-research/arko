@@ -5,8 +5,8 @@
 //! task calls for it; one marked `auto_load: true` is always in their
 //! instructions.
 //!
-//! fin reads skills from the project's `.agents/skills`, `.claude/skills`
-//! and `.skills`, then from `skills` in fin's folder, `~/.agents/skills`
+//! Arko reads skills from the project's `.agents/skills`, `.claude/skills`
+//! and `.skills`, then from `skills` in Arko's folder, `~/.agents/skills`
 //! and `~/.claude/skills`: the folders of these that exist when a session
 //! starts. Skills are read again at the start of each turn, so an edited
 //! skill takes effect at once; a new one is listed from the next
@@ -107,7 +107,7 @@ mod tests {
     fn the_folders_that_exist_are_found_the_projects_first() {
         let temp = tempfile::tempdir().unwrap();
         let workspace = temp.path().join("project");
-        let root = temp.path().join("fin");
+        let root = temp.path().join("arko");
         let home = temp.path().join("home");
         assert!(folders_in(&workspace, &root, Some(&home)).is_empty());
         assert!(config(&[]).is_none());

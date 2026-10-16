@@ -1,4 +1,4 @@
-//! `/model`: the agents' models while fin runs.
+//! `/model`: the agents' models while Arko runs.
 //!
 //! `/model [MODEL] [EFFORT]` is the main agent's, and only before the
 //! conversation starts: once it has, the main agent keeps its model for the
@@ -79,7 +79,7 @@ pub fn usage(target: Target) -> &'static str {
     }
 }
 
-/// `model`'s settings as fin says them: `gpt-6.1-sol (high effort)`.
+/// `model`'s settings as Arko says them: `gpt-6.1-sol (high effort)`.
 fn shown(model: &ModelSettings) -> String {
     format!("{} ({} effort)", model.model, model.effort)
 }
@@ -345,7 +345,7 @@ impl Harness {
 
     /// An error with what `model` needs when this session can't reach it:
     /// its client has no client for its provider (whose key wasn't there as
-    /// fin started nor added with `/keys`, or was removed), or Claude Code
+    /// Arko started nor added with `/keys`, or was removed), or Claude Code
     /// isn't installed and signed in.
     fn can_reach(&self, model: &Model) -> Result<(), String> {
         match self.needs(model) {
@@ -446,7 +446,7 @@ impl Harness {
         };
         let (_, worker_config) = self.agent_configs(&settings, &setup)?;
         let crew = self.crew.clone().expect("a crew");
-        // The workers already started keep theirs, also those of fin
+        // The workers already started keep theirs, also those of Arko
         // before it recorded them.
         let started = crew.keep_started_models()?;
         crew.set_new_workers(new_workers(&settings, &worker_config));
@@ -572,7 +572,7 @@ impl Harness {
         if let Err(error) = self.session.save_settings(&self.settings) {
             self.say(
                 Level::Error,
-                &format!("fin: could not save the session's settings: {error}"),
+                &format!("arko: could not save the session's settings: {error}"),
             );
         }
     }

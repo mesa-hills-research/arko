@@ -1,10 +1,10 @@
 // What the model is sent: the main agent's first request, with text
-// replies on and off, and a worker's, with every tool fin offers (the
+// replies on and off, and a worker's, with every tool Arko offers (the
 // shell, the terminal and the search index tools too, with one index
 // named). The test is ignored: run it to measure the system prompt and
 // the tool definitions, and to see the requests whole.
 //
-//     FIN_REQUESTS=/some/dir cargo test --locked request_sizes -- --ignored --nocapture
+//     ARKO_REQUESTS=/some/dir cargo test --locked request_sizes -- --ignored --nocapture
 //
 // It writes `main-text.json`, `main-tool.json` and `worker.json` there,
 // and prints their sizes. (Included in `main`'s tests, whose helpers it
@@ -44,9 +44,9 @@ fn sizes(body: &str) -> (usize, usize, usize, Vec<String>) {
 
 #[cfg(unix)]
 #[tokio::test]
-#[ignore = "writes the requests to $FIN_REQUESTS"]
+#[ignore = "writes the requests to $ARKO_REQUESTS"]
 async fn request_sizes() {
-    let out = std::path::PathBuf::from(std::env::var("FIN_REQUESTS").expect("FIN_REQUESTS"));
+    let out = std::path::PathBuf::from(std::env::var("ARKO_REQUESTS").expect("ARKO_REQUESTS"));
     std::fs::create_dir_all(&out).unwrap();
     let mut table = Vec::new();
     for text_replies in [true, false] {

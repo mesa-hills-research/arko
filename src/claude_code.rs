@@ -1,12 +1,12 @@
 //! Claude Code: Claude models run in the user's installed `claude` CLI,
 //! under its Claude plan (`-m cc:opus`). arko_agents' Claude Code runtime
-//! drives the CLI; fin finds it, checks that it is signed in, and says how
+//! drives the CLI; Arko finds it, checks that it is signed in, and says how
 //! it runs.
 //!
-//! The agents get fin's own tools only, served to Claude Code in-process,
+//! The agents get Arko's own tools only, served to Claude Code in-process,
 //! and none of Claude Code's built-in ones (`Bash`, `Edit`, ...): every
-//! command still goes through fin's `shell` tool and its command guard, as
-//! on the other providers. fin's system prompt replaces Claude Code's,
+//! command still goes through Arko's `shell` tool and its command guard, as
+//! on the other providers. Arko's system prompt replaces Claude Code's,
 //! which explains those built-in tools.
 
 use std::collections::BTreeMap;
@@ -19,16 +19,16 @@ use arko_agents::ClaudeCodeSettings;
 /// The variable Claude Code bills instead of the user's Claude plan when it
 /// is set. Claude Code 2.1 treats an empty value as unset (`claude auth
 /// status` reports `claude.ai` with `ANTHROPIC_API_KEY=` and `api_key` with
-/// a key), so fin sets it empty: `cc:` models always run on the plan, even
-/// where the user's environment holds the API key fin's Anthropic models
+/// a key), so Arko sets it empty: `cc:` models always run on the plan, even
+/// where the user's environment holds the API key Arko's Anthropic models
 /// use.
 const API_KEY: &str = "ANTHROPIC_API_KEY";
 
 /// How long `claude auth status` may take.
 const CHECK_TIMEOUT: Duration = Duration::from_secs(15);
 
-/// How fin runs Claude Code for an agent on a `cc:` model: `claude` on the
-/// PATH, fin's tools and system prompt, and never an API key.
+/// How Arko runs Claude Code for an agent on a `cc:` model: `claude` on the
+/// PATH, Arko's tools and system prompt, and never an API key.
 pub fn settings() -> ClaudeCodeSettings {
     ClaudeCodeSettings {
         replace_system_prompt: true,
@@ -69,12 +69,12 @@ impl Ready {
     }
 
     /// A warning when it doesn't sign in with a Claude plan: then its calls
-    /// may be billed, which fin doesn't count.
+    /// may be billed, which Arko doesn't count.
     pub fn warning(&self) -> Option<String> {
         let method = self.method.as_deref()?;
         (method != "claude.ai").then(|| {
             format!(
-                "Claude Code signs in with `{method}` here, not a Claude plan: its calls may be billed per token, and fin doesn't count their cost."
+                "Claude Code signs in with `{method}` here, not a Claude plan: its calls may be billed per token, and Arko doesn't count their cost."
             )
         })
     }
@@ -108,7 +108,7 @@ static LAST_CHECK: std::sync::Mutex<Option<(Instant, Result<Ready, Problem>)>> =
     std::sync::Mutex::new(None);
 
 /// Checks that the Claude Code CLI at `path` is signed in: `claude auth
-/// status --json`, which makes no model request. An answer fin can't read
+/// status --json`, which makes no model request. An answer Arko can't read
 /// doesn't stop the session: the first turn reports a missing login too.
 pub fn check_at(path: &Path) -> Result<Ready, Problem> {
     let ready = |method: Option<String>, plan: Option<String>| Ready {
@@ -262,7 +262,7 @@ mod tests {
                 .contains("api_key")
         );
 
-        // An answer fin can't read doesn't stop the session.
+        // An answer Arko can't read doesn't stop the session.
         let path = fake(temp.path(), "not json");
         assert_eq!(check_at(&path).unwrap().method, None);
 
@@ -273,7 +273,7 @@ mod tests {
     }
 
     #[test]
-    fn sessions_run_fin_s_tools_and_prompt_and_never_the_api_key() {
+    fn sessions_run_arko_s_tools_and_prompt_and_never_the_api_key() {
         let settings = settings();
         assert!(settings.replace_system_prompt);
         assert_eq!(settings.env.get(API_KEY).map(String::as_str), Some(""));

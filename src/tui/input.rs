@@ -1,5 +1,5 @@
 //! The input box's text and its editing: readline's keys, the history
-//! (kept in fin's `history.txt`, in the line editor's format, so both
+//! (kept in Arko's `history.txt`, in the line editor's format, so both
 //! front ends share it), and long pastes folded into chips.
 
 use std::path::PathBuf;

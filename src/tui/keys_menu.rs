@@ -3,7 +3,7 @@
 //! none is set. Enter adds or replaces the key chosen: it is pasted into a
 //! field that shows only its start and last 4 characters (enough to tell it
 //! is the key meant), then saved and used by the session (`keys`). Delete
-//! removes a key fin saved. A key never reaches the input box, its history or the clipboard:
+//! removes a key Arko saved. A key never reaches the input box, its history or the clipboard:
 //! the menu keeps it as a [`Secret`] until it goes to the session.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -115,7 +115,7 @@ impl KeysMenu {
         &self.states[self.selected.min(self.states.len() - 1)]
     }
 
-    /// Asks to remove the chosen key, when fin saved it, else says where it
+    /// Asks to remove the chosen key, when Arko saved it, else says where it
     /// comes from.
     fn remove(&mut self) {
         let state = self.state().clone();
@@ -125,7 +125,7 @@ impl KeysMenu {
             Some(source) => {
                 self.said = Some(Said {
                     text: format!(
-                        "fin didn't save this key. It comes from {}, so change it there.",
+                        "Arko didn't save this key. It comes from {}, so change it there.",
                         credentials::source_text(source, state.variable)
                     ),
                     warnings: Vec::new(),
@@ -260,7 +260,7 @@ impl KeysMenu {
 /// Where a key comes from, in a word or two for its row.
 fn source_word(source: &KeySource) -> &'static str {
     match source {
-        KeySource::Fin(_) => "saved by fin",
+        KeySource::Arko(_) => "saved by Arko",
         KeySource::Environment => "environment",
         KeySource::DotEnv(_) => ".env file",
     }
@@ -271,11 +271,11 @@ fn source_word(source: &KeySource) -> &'static str {
 fn detail(state: &KeyState) -> String {
     match &state.source {
         None => state.key.purpose.to_string(),
-        Some(KeySource::Fin(path)) => {
-            format!("Saved by fin in {}.", path.display())
+        Some(KeySource::Arko(path)) => {
+            format!("Saved by Arko in {}.", path.display())
         }
         Some(KeySource::Environment) => format!(
-            "From {} in fin's environment. Change it where it is set.",
+            "From {} in Arko's environment. Change it where it is set.",
             state.variable
         ),
         Some(KeySource::DotEnv(path)) => format!(
@@ -342,7 +342,7 @@ pub fn draw(frame: &mut Frame, theme: &Theme, area: Rect, menu: &KeysMenu) {
                     if menu.step == Step::Removing {
                         wrapped(
                             &mut lines,
-                            "Remove the key fin saved? Enter removes it, and Esc keeps it.",
+                            "Remove the key Arko saved? Enter removes it, and Esc keeps it.",
                             theme.warning(),
                             LABEL + 2,
                         );
@@ -390,7 +390,7 @@ pub fn draw(frame: &mut Frame, theme: &Theme, area: Rect, menu: &KeysMenu) {
             wrapped(
                 &mut lines,
                 &format!(
-                    "Paste {} (from {}). fin saves it in its .env (readable only by you) and uses it at once.",
+                    "Paste {} (from {}). Arko saves it in its .env (readable only by you) and uses it at once.",
                     key.what, key.from
                 ),
                 theme.text(),
@@ -440,7 +440,7 @@ pub(super) mod tests {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
-    /// Keys as a machine might have them: one fin saved, one from the
+    /// Keys as a machine might have them: one Arko saved, one from the
     /// environment under Gemini's older name, one from a project's `.env`.
     pub fn states() -> Vec<KeyState> {
         credentials::KEYS
@@ -450,7 +450,7 @@ pub(super) mod tests {
                     "anthropic" => (
                         Some("sk-ant-…a1b2"),
                         key.name,
-                        Some(KeySource::Fin("/home/me/.local/share/fin/.env".into())),
+                        Some(KeySource::Arko("/home/me/.local/share/arko/.env".into())),
                     ),
                     "gemini" => (
                         Some("AIza…x9Yz"),
@@ -509,7 +509,10 @@ pub(super) mod tests {
         let text = rows.join("\n");
         println!("{text}");
         for (row, label) in [
-            ("▸ Anthropic      sk-ant-…a1b2    saved by fin", "Anthropic"),
+            (
+                "▸ Anthropic      sk-ant-…a1b2    saved by Arko",
+                "Anthropic",
+            ),
             ("  OpenAI         not set", "OpenAI"),
             ("  Google Gemini  AIza…x9Yz       environment", "Gemini"),
             ("  OpenRouter     sk-or-…77aa     .env file", "OpenRouter"),
@@ -517,7 +520,7 @@ pub(super) mod tests {
         ] {
             assert!(text.contains(row), "{label}: {text}");
         }
-        assert!(text.contains("Saved by fin in /home/me/.local/share/fin/.env."));
+        assert!(text.contains("Saved by Arko in /home/me/.local/share/arko/.env."));
         assert!(text.contains("Enter  replace"), "{text}");
         assert!(text.contains("Delete  remove"), "{text}");
         assert!(text.contains("Esc  close"), "{text}");
@@ -538,7 +541,7 @@ pub(super) mod tests {
         press(&mut menu, KeyCode::Down);
         let text = screen(&menu, &Theme::terminal()).join("\n");
         assert!(
-            text.contains("From GOOGLE_API_KEY in fin's environment."),
+            text.contains("From GOOGLE_API_KEY in Arko's environment."),
             "{text}"
         );
         assert_eq!(press(&mut menu, KeyCode::Delete), Action::Stay);
@@ -548,7 +551,7 @@ pub(super) mod tests {
                 .as_ref()
                 .unwrap()
                 .text
-                .contains("fin didn't save this key")
+                .contains("Arko didn't save this key")
         );
         press(&mut menu, KeyCode::Down);
         press(&mut menu, KeyCode::Down);
@@ -585,7 +588,7 @@ pub(super) mod tests {
         };
         assert_eq!(added.name, credentials::OPENAI_KEY);
         assert_eq!(value.reveal(), key);
-        let failed = "Could not save /home/me/.local/share/fin/.env: Permission denied";
+        let failed = "Could not save /home/me/.local/share/arko/.env: Permission denied";
         menu.done(
             &credentials::OPENAI,
             keys::Outcome::Failed(failed.into()),
@@ -613,14 +616,14 @@ pub(super) mod tests {
         menu.done(
             &credentials::OPENAI,
             keys::Outcome::Done {
-                said: "fin saved the OpenAI API key. OpenAI models can be used now.".into(),
+                said: "Arko saved the OpenAI API key. OpenAI models can be used now.".into(),
                 warnings: vec!["Note: OPENAI_API_KEY in your environment comes first in later runs. This run uses what you entered.".into()],
             },
             states(),
         );
         assert_eq!(menu.step, Step::List);
         let text = screen(&menu, &Theme::terminal()).join("\n");
-        assert!(text.contains("fin saved the OpenAI API key."), "{text}");
+        assert!(text.contains("Arko saved the OpenAI API key."), "{text}");
         assert!(
             text.contains("Note: OPENAI_API_KEY in your environment"),
             "{text}"
@@ -628,7 +631,7 @@ pub(super) mod tests {
         assert_eq!(press(&mut menu, KeyCode::Esc), Action::Close);
     }
 
-    /// Delete asks before it removes a key fin saved.
+    /// Delete asks before it removes a key Arko saved.
     #[test]
     fn removing_a_saved_key_asks_first() {
         let mut menu = KeysMenu::open(states(), "", None);
@@ -636,7 +639,7 @@ pub(super) mod tests {
         assert_eq!(menu.step, Step::Removing);
         let text = screen(&menu, &Theme::terminal()).join("\n");
         assert!(
-            text.contains("Remove the key fin saved? Enter removes it"),
+            text.contains("Remove the key Arko saved? Enter removes it"),
             "{text}"
         );
         assert!(text.contains("Esc  keep"), "{text}");

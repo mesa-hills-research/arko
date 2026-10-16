@@ -607,7 +607,7 @@ fn embedding_now(report: &IndexReport) -> String {
         ));
     }
     text.push_str(if report.embed_running_here {
-        " in this fin"
+        " in this Arko"
     } else {
         " in another process"
     });
@@ -619,7 +619,7 @@ pub fn format_status(reports: &[IndexReport], spent: Option<(u64, f64)>) -> Stri
     let mut out = String::new();
     if reports.is_empty() {
         out.push_str(
-            "There are no indexes yet: index_create (or `fin index create PATH`) makes one.\n",
+            "There are no indexes yet: index_create (or `arko index create PATH`) makes one.\n",
         );
     }
     for report in reports {
@@ -782,17 +782,17 @@ pub fn format_create(outcome: &CreateOutcome) -> String {
 
 // ----- the tools -----
 
-const SEARCH_DESCRIPTION: &str = "Searches fin's indexes of code and docs by meaning and by words (syntax-aware chunks, keyword BM25 plus Voyage embeddings). \
+const SEARCH_DESCRIPTION: &str = "Searches Arko's indexes of code and docs by meaning and by words (syntax-aware chunks, keyword BM25 plus Voyage embeddings). \
 Prefer it to rg whenever you look for code or docs to read: for concept or behaviour questions (\"where are failed requests retried\", \"how is the session saved to disk\", \"code that validates config paths\"), and for names you know (\"Session::save\"), whose definitions come back whole where rg gives one line. One search often replaces several rounds of rg, sed and read_file. \
 Use rg/grep to list every occurrence of a name, for regexes, and for exact strings in files no index covers. \
 Returns ranked `path:start-end · scope` results. The top ones come whole: the entire function, type or doc section, with line numbers as read_file shows them, so there's no need to read them again or grep around them; the rest show their first lines (read those with read_file if they look promising). detail=brief returns only locations and short snippets: more results in less space. \
 Works for any directory with an index, not just the current one: name it in `index` (an index name, or any directory or file inside it) or give a `path_prefix` inside it. Without either, searches the indexes covering the current directory; index_status lists them all.";
 
-const STATUS_DESCRIPTION: &str = "Shows fin's semantic search indexes (all, or the one named): root, kind, chunks, embedding coverage and cost, monitoring and pending changes, errors. Check it before index_create.";
+const STATUS_DESCRIPTION: &str = "Shows Arko's semantic search indexes (all, or the one named): root, kind, chunks, embedding coverage and cost, monitoring and pending changes, errors. Check it before index_create.";
 
 const CREATE_DESCRIPTION: &str = "Creates a semantic search index of a directory and builds it, for index_search: local syntax-aware chunking, .gitignore respected, embeddings by Voyage (voyage-code-4 for code, voyage-4 for docs; kind auto decides by the files). \
 Index a project or docs folder, not / or the home directory. The build is local (seconds for most projects); embedding costs about $0.12 per million tokens for code and $0.06 for docs: a free estimate is reported, each run is capped (5M tokens by default), and it runs in the background unless wait=true (searches meanwhile find chunks without vectors by keywords). \
-With monitor=true (default) fin keeps the index current as files change. Calling it again for the same directory and kind updates the settings.";
+With monitor=true (default) Arko keeps the index current as files change. Calling it again for the same directory and kind updates the settings.";
 
 const MANAGE_DESCRIPTION: &str = "Maintains an index: action=rebuild (re-chunk the files now), embed (embed chunks without vectors; max_tokens raises the run's cap; wait=true waits), estimate (free cost estimate of embedding what's left), monitor_on / monitor_off (keep it current as files change), remove (delete the index; the files are untouched).";
 
@@ -822,7 +822,7 @@ impl Tool for SearchTool {
                 ),
                 param(
                     "mode",
-                    "Pick it from what you're looking for. `semantic`: you're describing behaviour, what code does or where something happens, in your own words (\"where is the session saved to disk\"). `lexical`: the callers or uses of a name you know (\"callers of Session::save\"), or anything in the docs and Markdown files of a code index. `hybrid`: where a name is defined (`FIN_HOME`), an exact string such as an error message, or a name together with words about it (\"Session::save error handling\"). An index without embeddings always searches by words.",
+                    "Pick it from what you're looking for. `semantic`: you're describing behaviour, what code does or where something happens, in your own words (\"where is the session saved to disk\"). `lexical`: the callers or uses of a name you know (\"callers of Session::save\"), or anything in the docs and Markdown files of a code index. `hybrid`: where a name is defined (`ARKO_HOME`), an exact string such as an error message, or a name together with words about it (\"Session::save error handling\"). An index without embeddings always searches by words.",
                     ToolParameterType::String,
                     true,
                 ),

@@ -213,23 +213,23 @@ fn params(value: Value) -> HashMap<String, Value> {
 #[test]
 fn names_and_ids() {
     assert_eq!(store::slug(Path::new("/w/My Project!")), "my-project");
-    assert_eq!(store::slug(Path::new("/w/finn")), "finn");
+    assert_eq!(store::slug(Path::new("/w/arko")), "arko");
     assert_eq!(store::slug(Path::new("/")), "root");
     assert_eq!(store::slug(Path::new("/w/--")), "root");
     assert_eq!(store::slug(Path::new("/w/.hidden")), "hidden");
     let long = "x".repeat(100);
     assert_eq!(store::slug(&Path::new("/w").join(&long)).len(), 40);
 
-    let id = store::index_id(Path::new("/w/finn"), Kind::Code);
-    assert_eq!(id, store::index_id(Path::new("/w/finn"), Kind::Code));
+    let id = store::index_id(Path::new("/w/arko"), Kind::Code);
+    assert_eq!(id, store::index_id(Path::new("/w/arko"), Kind::Code));
     let (prefix, hash) = id.rsplit_once('-').unwrap();
-    assert_eq!(prefix, "finn-code");
+    assert_eq!(prefix, "arko-code");
     assert_eq!(hash.len(), 10);
     assert!(hash.chars().all(|c| c.is_ascii_hexdigit()));
-    assert_ne!(id, store::index_id(Path::new("/w/finn"), Kind::Docs));
-    assert_ne!(id, store::index_id(Path::new("/x/finn"), Kind::Code));
+    assert_ne!(id, store::index_id(Path::new("/w/arko"), Kind::Docs));
+    assert_ne!(id, store::index_id(Path::new("/x/arko"), Kind::Code));
 
-    assert_eq!(store::validate_name(" finn ").unwrap(), "finn");
+    assert_eq!(store::validate_name(" arko ").unwrap(), "arko");
     assert!(store::validate_name("").is_err());
     assert!(store::validate_name("a/b").is_err());
     assert!(store::validate_name(&"n".repeat(65)).is_err());
@@ -274,7 +274,7 @@ fn manifests_round_trip_and_bad_ones_are_skipped() {
     assert_eq!(loaded.embed_tokens, 99);
     assert_eq!(loaded.version, store::MANIFEST_VERSION);
 
-    // A newer fin's manifest: unknown fields, missing ones.
+    // A newer Arko's manifest: unknown fields, missing ones.
     write(
         &indexes_dir.join("newer/index.json"),
         r#"{"version": 9, "name": "newer", "root": "/w/newer", "future": {"x": 1}}"#,
@@ -386,7 +386,7 @@ fn roots_that_are_refused() {
     let home = base.join("home/me");
     let project = home.join("code/proj");
     std::fs::create_dir_all(&project).unwrap();
-    let data = home.join(".local/share/fin");
+    let data = home.join(".local/share/arko");
     std::fs::create_dir_all(store::indexes_dir(&data).join("x")).unwrap();
     write(&project.join("main.rs"), "fn main() {}\n");
     let check = |path: &Path| store::validate_root(path, &project, Some(&home), &data);
@@ -541,10 +541,10 @@ fn without_a_key_indexes_are_lexical() {
     fixture.shutdown(&indexes);
 }
 
-/// A Voyage key set while fin runs (the keys menu) is used from then on,
+/// A Voyage key set while Arko runs (the keys menu) is used from then on,
 /// and removing it makes the indexes lexical again.
 #[test]
-fn the_voyage_key_changes_while_fin_runs() {
+fn the_voyage_key_changes_while_arko_runs() {
     let fixture = Fixture::new();
     let root = fixture.code_project();
     let indexes = fixture.open(&root, Backend::voyage(None), false, fast(false));
@@ -878,7 +878,7 @@ fn monitoring_picks_up_edits(force_polling: bool) {
         done == docs && docs == outcome.record.chunks + 1
     });
 
-    // A second fin finds the index watched.
+    // A second Arko finds the index watched.
     let other = fixture.open(&root, Backend::Hash, true, fast(force_polling));
     wait_for("the second watcher to give up", || {
         other.watch_state(&layout) == WatchState::Elsewhere
@@ -888,17 +888,17 @@ fn monitoring_picks_up_edits(force_polling: bool) {
         .unwrap();
     assert_eq!(hit_files(&output)[0], "src/queue.rs", "{output:?}");
     let reports = other.status_blocking(Some("proj"), &root).unwrap();
-    assert!(tools::format_status(&reports, None).contains("another fin process"));
+    assert!(tools::format_status(&reports, None).contains("another Arko process"));
 
-    // When the first fin exits (shutdown joins its threads), the second takes over.
+    // When the first Arko exits (shutdown joins its threads), the second takes over.
     let started = Instant::now();
     fixture.shutdown(&indexes);
     assert!(started.elapsed() < Duration::from_secs(15));
-    wait_for("the second fin to take over", || {
+    wait_for("the second Arko to take over", || {
         other.watch_state(&layout).active()
     });
     write(&root.join("src/late.rs"), "pub fn arrived_late() {}\n");
-    wait_for("the second fin's rebuild", || {
+    wait_for("the second Arko's rebuild", || {
         let (_, dirty, delivered, covered) = other.live_state(&layout);
         delivered > 0 && covered >= delivered && !dirty
     });
@@ -930,7 +930,7 @@ fn monitoring_picks_up_edits_polling() {
 }
 
 #[test]
-fn watching_reconciles_changes_made_while_fin_was_not_running() {
+fn watching_reconciles_changes_made_while_arko_was_not_running() {
     let fixture = Fixture::new();
     let root = fixture.code_project();
     let first = fixture.open(&root, Backend::Hash, true, fast(false));
@@ -968,9 +968,9 @@ fn watching_reconciles_changes_made_while_fin_was_not_running() {
 fn an_index_folder_inside_the_tree_is_left_out() {
     let fixture = Fixture::new();
     let root = fixture.code_project();
-    // fin's data folder inside the indexed tree, not ignored: its manifests
+    // Arko's data folder inside the indexed tree, not ignored: its manifests
     // change with every build, which must not trigger the next one.
-    let data = root.join("state data/fin");
+    let data = root.join("state data/arko");
     let indexes = {
         let _guard = fixture.runtime.enter();
         Indexes::open_with(&data, &root, Backend::Hash, true, fast(false), None).unwrap()
@@ -1064,7 +1064,7 @@ fn tool_parameters_are_parsed_leniently() {
     assert_eq!(search.cwd, cwd);
     let search = tools::parse_search(
         &params(
-            json!({"query": "q", "limit": 0, "mode": "Semantic", "index": "finn",
+            json!({"query": "q", "limit": 0, "mode": "Semantic", "index": "arko",
                        "path_prefix": "src/", "language": "rust"}),
         ),
         cwd,
@@ -1072,7 +1072,7 @@ fn tool_parameters_are_parsed_leniently() {
     .unwrap();
     assert_eq!(search.limit, 1);
     assert_eq!(search.mode, Some(ModeArg::Semantic));
-    assert_eq!(search.index.as_deref(), Some("finn"));
+    assert_eq!(search.index.as_deref(), Some("arko"));
     assert_eq!(search.path_prefix.as_deref(), Some("src/"));
     assert_eq!(search.language.as_deref(), Some("rust"));
     let search =
@@ -1348,7 +1348,7 @@ struct Cli {
 }
 
 fn cli(fixture: &Fixture, cwd: &Path, args: &[&str]) -> Result<ExitCode, String> {
-    let mut argv = vec!["fin-index"];
+    let mut argv = vec!["arko-index"];
     argv.extend_from_slice(args);
     let command = Cli::try_parse_from(argv)
         .map_err(|error| error.to_string())?
@@ -1421,7 +1421,7 @@ fn cli_commands() {
     std::fs::create_dir_all(&elsewhere).unwrap();
     let error = cli(&fixture, &elsewhere, &["update"]).unwrap_err();
     assert!(
-        error.contains("`fin index create PATH`"),
+        error.contains("`arko index create PATH`"),
         "hints name commands: {error}"
     );
     assert!(cli(&fixture, &root, &["monitor", "proj", "maybe"]).is_err());
@@ -1664,12 +1664,12 @@ fn indexes_of_other_directories_are_found_by_any_path_in_them() {
     let root = fixture.code_project();
     let work = fixture.base.join("work");
     std::fs::create_dir_all(&work).unwrap();
-    // Made by a fin that didn't monitor.
+    // Made by an Arko that didn't monitor.
     let one_shot = fixture.open(&root, Backend::Hash, false, fast(false));
     let outcome = one_shot.create_blocking(&create_args(&root, None)).unwrap();
     fixture.shutdown(&one_shot);
 
-    // A fin working elsewhere: the index isn't its workspace's.
+    // An Arko working elsewhere: the index isn't its workspace's.
     let indexes = fixture.open(&work, Backend::Hash, true, fast(false));
     assert_eq!(indexes.watch_state(&outcome.layout), WatchState::Off);
     for name in ["../proj", "../proj/src", "../proj/src/net.rs", "proj"] {

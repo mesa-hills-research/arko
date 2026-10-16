@@ -75,7 +75,7 @@ async fn before_the_start_model_sets_the_main_agent_and_after_it_says_it_keeps_i
     assert!(!harness.conversation_started());
     assert!(harness.settings.workers_follow_main());
 
-    // A name and an effort fin can't take say what was meant.
+    // A name and an effort Arko can't take say what was meant.
     assert!(harness.live_command("/model opsu", Source::Terminal));
     assert!(said(&harness.feed).contains("Did you mean opus?"));
     assert!(harness.live_command("/model sol extreme", Source::Terminal));
@@ -164,7 +164,7 @@ fn lead(body: &str, step: &str) -> String {
 }
 
 /// After the start, `/model worker` changes the workers started from now
-/// on: a worker started before keeps its model when fin stops and resumes
+/// on: a worker started before keeps its model when Arko stops and resumes
 /// it, and when the main agent continues it later, while a new worker
 /// starts on the new model and the main agent keeps its own.
 #[tokio::test]
@@ -192,7 +192,7 @@ async fn a_worker_keeps_the_model_it_started_on_and_new_ones_start_on_the_new_on
         Box::pin(async move {
             match who {
                 // r1's first request waits, as if the model were slow, until
-                // fin stops.
+                // Arko stops.
                 "r1" if !hold.swap(true, std::sync::atomic::Ordering::SeqCst) => {
                     started.notify_one();
                     std::future::pending::<String>().await
@@ -238,7 +238,7 @@ async fn a_worker_keeps_the_model_it_started_on_and_new_ones_start_on_the_new_on
     assert_eq!(reading.models.workers, "gpt-6.1-sol");
     assert!(reading.models.banner_workers.contains("gpt-6.1-sol"));
 
-    // fin stops while r1 runs, and resumes the session: r1 goes on on luna.
+    // Arko stops while r1 runs, and resumes the session: r1 goes on on luna.
     harness.crew.as_ref().unwrap().shutdown().await;
     harness.open(true).unwrap();
     harness.start_new_workers();
