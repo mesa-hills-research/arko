@@ -97,20 +97,9 @@ async fn request_sizes() {
         }];
         let setup = providers::Setup::new(harness.settings.openai_auth);
         let settings = AgentSettings {
-            main: &harness.settings.main,
-            worker: &harness.settings.worker,
-            providers: &setup,
-            max_workers: harness.settings.max_workers,
-            handover_at: harness.settings.handover_at,
-            show_thinking: false,
-            mcp_tools: &[],
-            mcp_servers: &[],
-            skill_folders: &[],
             index_tools: index::TOOL_NAMES,
             indexes: &known,
-            text_replies,
-            cc_compact: true,
-            extra_rules: Default::default(),
+            ..AgentSettings::for_session(&harness.settings, &setup)
         };
         let main_config = agents::main_config(&settings).unwrap();
         let worker_config = agents::worker_config(&settings).unwrap();

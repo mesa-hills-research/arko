@@ -468,22 +468,7 @@ async fn run(args: Args) -> Result<ExitCode, String> {
         }
     };
     let provider_setup = providers::Setup::new(settings.openai_auth);
-    let agent_settings = AgentSettings {
-        main: &settings.main,
-        worker: &settings.worker,
-        providers: &provider_setup,
-        max_workers: settings.max_workers,
-        handover_at: settings.handover_at,
-        show_thinking: settings.show_thinking,
-        mcp_tools: &[],
-        mcp_servers: &[],
-        skill_folders: &[],
-        index_tools: &[],
-        indexes: &[],
-        text_replies: settings.text_replies,
-        cc_compact: !settings.cc_handover,
-        extra_rules: settings.extra_rules,
-    };
+    let agent_settings = AgentSettings::for_session(&settings, &provider_setup);
     // Settings the agents can't be built with leave no session behind.
     agents::main_config(&agent_settings)?;
     agents::worker_config(&agent_settings)?;
@@ -3934,20 +3919,8 @@ mod tests {
             handover_at: None,
         };
         let settings = AgentSettings {
-            main: &opus,
-            worker: &opus,
-            providers: &providers::Setup::new(None),
             max_workers: NO_LIMIT,
-            handover_at: 200_000,
-            show_thinking: false,
-            mcp_tools: &[],
-            mcp_servers: &[],
-            skill_folders: &[],
-            index_tools: &[],
-            indexes: &[],
-            text_replies: false,
-            cc_compact: true,
-            extra_rules: Default::default(),
+            ..AgentSettings::for_test(&opus, &opus)
         };
         let main = agents::main_config(&settings).unwrap();
         let worker = agents::worker_config(&settings).unwrap();
@@ -4175,22 +4148,7 @@ mod tests {
             cache_1h: false,
             handover_at: None,
         };
-        let plain = AgentSettings {
-            main: &opus,
-            worker: &opus,
-            providers: &providers::Setup::new(None),
-            max_workers: 4,
-            handover_at: 200_000,
-            show_thinking: false,
-            mcp_tools: &[],
-            mcp_servers: &[],
-            skill_folders: &[],
-            index_tools: &[],
-            indexes: &[],
-            text_replies: false,
-            cc_compact: true,
-            extra_rules: Default::default(),
-        };
+        let plain = AgentSettings::for_test(&opus, &opus);
         let saved = SavedSetup {
             name: WORKFLOW_NAME.into(),
             configs: [
@@ -4226,6 +4184,13 @@ mod tests {
         );
     }
 
+    /// What `harness`'s agents are built from: its settings, without MCP
+    /// servers, skills or indexes.
+    fn agent_settings_of(harness: &Harness) -> AgentSettings<'_> {
+        let setup = providers::Setup::new(harness.settings.openai_auth);
+        AgentSettings::for_session(&harness.settings, Box::leak(Box::new(setup)))
+    }
+
     /// A harness in `temp` on the model server's client, with workers;
     /// with a terminal when `interactive`. Returns it, its inputs, and
     /// what sends the user's input.
@@ -4243,43 +4208,9 @@ mod tests {
         };
         let workspace = temp.join("work");
         std::fs::create_dir_all(&workspace).unwrap();
-        let settings = Settings {
-            workspace: workspace.clone(),
-            main: luna.clone(),
-            worker: luna.clone(),
-            max_workers: NO_LIMIT,
-            handover_at: 200_000,
-            main_handover_at: None,
-            allow_outside_workspace: false,
-            show_thinking: false,
-            created: chrono::Utc::now(),
-            title: None,
-            windows_shell: None,
-            openai_auth: None,
-            own_worker_model: false,
-            text_replies: false,
-            cc_handover: false,
-            extra_rules: Default::default(),
-            project_instructions: Default::default(),
-            worker_project_instructions: false,
-            background_after: 0,
-        };
-        let agent_settings = AgentSettings {
-            main: &luna,
-            worker: &luna,
-            providers: &providers::Setup::new(None),
-            max_workers: NO_LIMIT,
-            handover_at: 200_000,
-            show_thinking: false,
-            mcp_tools: &[],
-            mcp_servers: &[],
-            skill_folders: &[],
-            index_tools: &[],
-            indexes: &[],
-            text_replies: false,
-            cc_compact: true,
-            extra_rules: Default::default(),
-        };
+        let settings = Settings::for_test(&workspace, &luna);
+        let setup = providers::Setup::new(None);
+        let agent_settings = AgentSettings::for_session(&settings, &setup);
         let main_config = agents::main_config(&agent_settings).unwrap();
         let worker_config = agents::worker_config(&agent_settings).unwrap();
         let root = temp.join("arko");
@@ -5318,20 +5249,9 @@ mod tests {
             harness.settings.workspace.clone(),
         ));
         let agent_settings = AgentSettings {
-            main,
-            worker,
             providers: setup,
             max_workers: NO_LIMIT,
-            handover_at: 200_000,
-            show_thinking: false,
-            mcp_tools: &[],
-            mcp_servers: &[],
-            skill_folders: &[],
-            index_tools: &[],
-            indexes: &[],
-            text_replies: false,
-            cc_compact: true,
-            extra_rules: Default::default(),
+            ..AgentSettings::for_test(main, worker)
         };
         harness.main_config = agents::main_config(&agent_settings).unwrap();
         harness.worker_config = agents::worker_config(&agent_settings).unwrap();

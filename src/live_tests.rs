@@ -547,28 +547,6 @@ async fn workers_started_before_and_after_a_change_follow_it() {
     harness.crew.as_ref().unwrap().shutdown().await;
 }
 
-/// The agent settings `harness`'s configurations are built from.
-fn agent_settings_of(harness: &Harness) -> AgentSettings<'_> {
-    AgentSettings {
-        main: &harness.settings.main,
-        worker: &harness.settings.worker,
-        max_workers: harness.settings.max_workers,
-        handover_at: harness.settings.handover_at,
-        show_thinking: false,
-        providers: Box::leak(Box::new(providers::Setup::new(
-            harness.settings.openai_auth,
-        ))),
-        mcp_tools: &[],
-        mcp_servers: &[],
-        skill_folders: &[],
-        index_tools: &[],
-        indexes: &[],
-        text_replies: harness.settings.text_replies,
-        cc_compact: true,
-        extra_rules: harness.settings.extra_rules,
-    }
-}
-
 /// The shell tool's name.
 const SHELL_TOOL: &str = crate::shell::SHELL_TOOL_NAME;
 

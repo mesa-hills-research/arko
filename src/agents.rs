@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 use crate::crew;
 use crate::index;
 use crate::providers::{self, OpenAiAuth};
+use crate::session::Settings;
 use crate::shell::SHELL_TOOL_NAME;
 use crate::skills;
 
@@ -240,6 +241,52 @@ pub struct AgentSettings<'a> {
     /// Which agents get the extra rules for small models, each by its own
     /// model.
     pub extra_rules: ExtraRules,
+}
+
+impl<'a> AgentSettings<'a> {
+    /// What the session's agents are built from: its `settings` on
+    /// `providers`, without MCP servers, skills or indexes. The session adds
+    /// those once they are up.
+    pub fn for_session(settings: &'a Settings, providers: &'a providers::Setup) -> Self {
+        Self {
+            main: &settings.main,
+            worker: &settings.worker,
+            providers,
+            max_workers: settings.max_workers,
+            handover_at: settings.handover_at,
+            show_thinking: settings.show_thinking,
+            mcp_tools: &[],
+            mcp_servers: &[],
+            skill_folders: &[],
+            index_tools: &[],
+            indexes: &[],
+            text_replies: settings.text_replies,
+            cc_compact: !settings.cc_handover,
+            extra_rules: settings.extra_rules,
+        }
+    }
+
+    /// Settings for tests: `main` and `worker` on Arko's own providers, up
+    /// to 4 workers, and nothing else on. Tests change what they test.
+    #[cfg(test)]
+    pub fn for_test(main: &'a ModelSettings, worker: &'a ModelSettings) -> Self {
+        Self {
+            main,
+            worker,
+            providers: Box::leak(Box::new(providers::Setup::new(None))),
+            max_workers: 4,
+            handover_at: 200_000,
+            show_thinking: false,
+            mcp_tools: &[],
+            mcp_servers: &[],
+            skill_folders: &[],
+            index_tools: &[],
+            indexes: &[],
+            text_replies: false,
+            cc_compact: true,
+            extra_rules: ExtraRules::Off,
+        }
+    }
 }
 
 /// How many indexes the instructions name; `index_status` lists the rest.
@@ -691,25 +738,6 @@ mod tests {
     use arko_agents::builtins::APPLY_DIFF_TOOL_NAME;
     use arko_ai::{AnthropicCacheTtl, OpenAIServiceTier};
 
-    fn settings<'a>(main: &'a ModelSettings, worker: &'a ModelSettings) -> AgentSettings<'a> {
-        AgentSettings {
-            main,
-            worker,
-            max_workers: 4,
-            handover_at: 200_000,
-            show_thinking: false,
-            mcp_tools: &[],
-            mcp_servers: &[],
-            skill_folders: &[],
-            index_tools: &[],
-            indexes: &[],
-            providers: Box::leak(Box::new(providers::Setup::new(None))),
-            text_replies: false,
-            cc_compact: true,
-            extra_rules: ExtraRules::Off,
-        }
-    }
-
     fn model(name: &str, fast: bool) -> ModelSettings {
         ModelSettings {
             model: providers::model_name(&resolve_model(name).unwrap()),
@@ -723,7 +751,7 @@ mod tests {
     #[test]
     fn the_one_hour_cache_is_asked_for_only_when_enabled() {
         let opus = model("opus", false);
-        let config = main_config(&settings(&opus, &opus)).unwrap();
+        let config = main_config(&AgentSettings::for_test(&opus, &opus)).unwrap();
         assert_eq!(
             config.llm_config.generation_config.anthropic_cache_ttl,
             None
@@ -733,12 +761,12 @@ mod tests {
             handover_at: None,
             ..opus
         };
-        let config = main_config(&settings(&opus, &opus)).unwrap();
+        let config = main_config(&AgentSettings::for_test(&opus, &opus)).unwrap();
         assert_eq!(
             config.llm_config.generation_config.anthropic_cache_ttl,
             Some(AnthropicCacheTtl::OneHour)
         );
-        let config = worker_config(&settings(&opus, &opus)).unwrap();
+        let config = worker_config(&AgentSettings::for_test(&opus, &opus)).unwrap();
         assert_eq!(
             config.llm_config.generation_config.anthropic_cache_ttl,
             Some(AnthropicCacheTtl::OneHour)
@@ -776,7 +804,7 @@ mod tests {
     fn claude_code_agents_run_arko_s_tools_only() {
         let opus = model("cc:opus", false);
         let fable = model("cc:fable", false);
-        let with = settings(&opus, &fable);
+        let with = AgentSettings::for_test(&opus, &fable);
         for config in [main_config(&with).unwrap(), worker_config(&with).unwrap()] {
             assert!(config.runs_in_claude_code());
             let claude_code = config.claude_code.as_ref().unwrap();
@@ -804,10 +832,10 @@ mod tests {
         assert_eq!(worker.llm_config.model.id, "claude-fable-5-1");
 
         let api = model("opus", false);
-        let config = main_config(&settings(&api, &opus)).unwrap();
+        let config = main_config(&AgentSettings::for_test(&api, &opus)).unwrap();
         assert!(config.claude_code.is_none());
         assert!(
-            worker_config(&settings(&api, &opus))
+            worker_config(&AgentSettings::for_test(&api, &opus))
                 .unwrap()
                 .claude_code
                 .is_some()
@@ -821,7 +849,7 @@ mod tests {
     fn claude_code_agents_compact_and_others_hand_over() {
         let cc = model("cc:opus", false);
         let api = model("opus", false);
-        let mixed = settings(&cc, &api);
+        let mixed = AgentSettings::for_test(&cc, &api);
         assert!(mixed.cc_compact, "the default");
         let main = main_config(&mixed).unwrap();
         assert!(compacts(&main));
@@ -829,13 +857,13 @@ mod tests {
         let worker = worker_config(&mixed).unwrap();
         assert!(!compacts(&worker));
         assert!(!worker.handover.unwrap().compact_in_claude_code);
-        let mixed = settings(&api, &cc);
+        let mixed = AgentSettings::for_test(&api, &cc);
         assert!(!compacts(&main_config(&mixed).unwrap()));
         assert!(compacts(&worker_config(&mixed).unwrap()));
 
         let off = AgentSettings {
             cc_compact: false,
-            ..settings(&cc, &cc)
+            ..AgentSettings::for_test(&cc, &cc)
         };
         for config in [main_config(&off).unwrap(), worker_config(&off).unwrap()] {
             assert!(!compacts(&config));
@@ -854,7 +882,7 @@ mod tests {
             let setup = providers::Setup::new(auth);
             let with = AgentSettings {
                 providers: &setup,
-                ..settings(&lead, worker)
+                ..AgentSettings::for_test(&lead, worker)
             };
             main_config(&with).unwrap().instructions
         };
@@ -879,11 +907,11 @@ mod tests {
     fn fast_mode_on_a_model_without_it_is_refused() {
         let opus = model("opus", true);
         let fable = model("fable", true);
-        assert!(main_config(&settings(&opus, &opus)).is_ok());
-        let error = main_config(&settings(&fable, &fable)).unwrap_err();
+        assert!(main_config(&AgentSettings::for_test(&opus, &opus)).is_ok());
+        let error = main_config(&AgentSettings::for_test(&fable, &fable)).unwrap_err();
         assert!(error.contains("has no fast mode"), "{error}");
         let sol = model("sol", true);
-        let config = main_config(&settings(&sol, &sol)).unwrap();
+        let config = main_config(&AgentSettings::for_test(&sol, &sol)).unwrap();
         assert_eq!(
             config.llm_config.generation_config.openai_service_tier,
             Some(OpenAIServiceTier::Fast)
@@ -893,7 +921,7 @@ mod tests {
     #[test]
     fn workers_are_offered_only_when_enabled() {
         let opus = model("opus", false);
-        let mut with = settings(&opus, &opus);
+        let mut with = AgentSettings::for_test(&opus, &opus);
         let offers = |config: &AgentConfig, tool: &str| {
             config
                 .tool_config
@@ -937,7 +965,7 @@ mod tests {
                 .clone()
                 .unwrap()
         };
-        let with = settings(&opus, &opus);
+        let with = AgentSettings::for_test(&opus, &opus);
         for config in [main_config(&with).unwrap(), worker_config(&with).unwrap()] {
             for tool in FILE_TOOL_NAMES {
                 assert!(
@@ -972,7 +1000,7 @@ mod tests {
     #[test]
     fn mcp_index_and_skill_tools_reach_both_agents_with_their_instructions() {
         let opus = model("opus", false);
-        let plain = settings(&opus, &opus);
+        let plain = AgentSettings::for_test(&opus, &opus);
         for config in [main_config(&plain).unwrap(), worker_config(&plain).unwrap()] {
             assert!(config.skills_config.is_none());
             for section in ["# MCP servers", "# Skills", "# Search indexes"] {
@@ -987,7 +1015,7 @@ mod tests {
             mcp_servers: &servers,
             skill_folders: &folders,
             index_tools: &["index_search", "index_create"],
-            ..settings(&opus, &opus)
+            ..AgentSettings::for_test(&opus, &opus)
         };
         for config in [main_config(&with).unwrap(), worker_config(&with).unwrap()] {
             let names = &config.tool_config.available_tool_names;
@@ -1025,12 +1053,12 @@ mod tests {
     #[test]
     fn the_index_section_names_the_indexes_and_puts_search_before_rg() {
         let opus = model("opus", false);
-        let plain = main_config(&settings(&opus, &opus)).unwrap();
+        let plain = main_config(&AgentSettings::for_test(&opus, &opus)).unwrap();
         assert!(plain.instructions.contains("searching (prefer `rg`)"));
 
         let none = AgentSettings {
             index_tools: crate::index::TOOL_NAMES,
-            ..settings(&opus, &opus)
+            ..AgentSettings::for_test(&opus, &opus)
         };
         let config = main_config(&none).unwrap();
         assert!(!config.instructions.contains("searching (prefer `rg`)"));
@@ -1137,12 +1165,11 @@ mod tests {
         let opus = model("opus", false);
         let with = AgentSettings {
             index_tools: crate::index::TOOL_NAMES,
-            ..settings(&opus, &opus)
+            ..AgentSettings::for_test(&opus, &opus)
         };
         for text_replies in [true, false] {
             let main = main_config(&AgentSettings {
                 text_replies,
-                cc_compact: true,
                 ..with
             })
             .unwrap();
@@ -1193,7 +1220,7 @@ mod tests {
         let with = |main, worker, extra_rules| AgentSettings {
             extra_rules,
             index_tools: crate::index::TOOL_NAMES,
-            ..settings(main, worker)
+            ..AgentSettings::for_test(main, worker)
         };
         let mixed = with(&opus, &haiku, ExtraRules::Small);
         assert!(!has(main_config(&mixed).unwrap()));
@@ -1217,7 +1244,7 @@ mod tests {
         let luna = model("luna", false);
         let without = AgentSettings {
             extra_rules: ExtraRules::Small,
-            ..settings(&luna, &luna)
+            ..AgentSettings::for_test(&luna, &luna)
         };
         assert!(
             !main_config(&without)
@@ -1290,7 +1317,7 @@ mod tests {
                 let with = AgentSettings {
                     extra_rules,
                     index_tools: crate::index::TOOL_NAMES,
-                    ..settings(&big, &big)
+                    ..AgentSettings::for_test(&big, &big)
                 };
                 (
                     serde_json::to_value(main_config(&with).unwrap()).unwrap(),
@@ -1310,8 +1337,12 @@ mod tests {
     #[test]
     fn the_same_settings_build_the_same_configuration() {
         let opus = model("opus", false);
-        let first = serde_json::to_value(main_config(&settings(&opus, &opus)).unwrap()).unwrap();
-        let second = serde_json::to_value(main_config(&settings(&opus, &opus)).unwrap()).unwrap();
+        let first =
+            serde_json::to_value(main_config(&AgentSettings::for_test(&opus, &opus)).unwrap())
+                .unwrap();
+        let second =
+            serde_json::to_value(main_config(&AgentSettings::for_test(&opus, &opus)).unwrap())
+                .unwrap();
         assert_eq!(first, second);
     }
 
@@ -1348,7 +1379,7 @@ mod tests {
         let mut main = model("opus", false);
         main.handover_at = Some(default_handover(&opus, None));
         let worker = model("sol", false);
-        let settings = settings(&main, &worker);
+        let settings = AgentSettings::for_test(&main, &worker);
         let handover = |config: &AgentConfig| config.handover.clone().unwrap().at_input_tokens;
         assert_eq!(handover(&main_config(&settings).unwrap()), Some(500_000));
         // A session saved before it was set per model uses its own size.
@@ -1364,8 +1395,7 @@ mod tests {
         let opus = model("opus", false);
         let replying = AgentSettings {
             text_replies: true,
-            cc_compact: true,
-            ..settings(&opus, &opus)
+            ..AgentSettings::for_test(&opus, &opus)
         };
         let config = main_config(&replying).unwrap();
         assert!(config.tool_config.text_reply_ends_task);
@@ -1400,7 +1430,7 @@ mod tests {
         );
         assert!(worker.complete_task_summary_prompt_override.is_some());
         // Without them, the lead is as it was.
-        let calling = main_config(&settings(&opus, &opus)).unwrap();
+        let calling = main_config(&AgentSettings::for_test(&opus, &opus)).unwrap();
         assert!(!calling.tool_config.ends_task_with_text());
         assert!(calling.complete_task_summary_prompt_override.is_some());
         assert!(
@@ -1414,7 +1444,7 @@ mod tests {
     fn the_lead_answers_with_message_user_and_chooses_claude_workers_caches() {
         let opus = model("opus", false);
         let sol = model("sol", false);
-        let config = main_config(&settings(&opus, &opus)).unwrap();
+        let config = main_config(&AgentSettings::for_test(&opus, &opus)).unwrap();
         let tools = &config.tool_config.available_tool_names;
         assert!(
             tools
@@ -1423,7 +1453,7 @@ mod tests {
         );
         assert!(config.instructions.contains("`message_user`"));
         assert!(config.instructions.contains("`cache`"), "Claude workers");
-        let config = main_config(&settings(&sol, &sol)).unwrap();
+        let config = main_config(&AgentSettings::for_test(&sol, &sol)).unwrap();
         assert!(!config.instructions.contains("`cache`"), "OpenAI workers");
         assert!(
             config
@@ -1431,7 +1461,7 @@ mod tests {
                 .contains("for 30 minutes after its last step"),
             "ChatGPT's cache"
         );
-        let worker = worker_config(&settings(&opus, &opus)).unwrap();
+        let worker = worker_config(&AgentSettings::for_test(&opus, &opus)).unwrap();
         assert!(
             !worker
                 .tool_config

@@ -423,20 +423,8 @@ mod tests {
             handover_at: None,
         };
         let settings = crate::agents::AgentSettings {
-            main: &model,
-            worker: &model,
             max_workers: 0,
-            handover_at: 200_000,
-            show_thinking: false,
-            providers: Box::leak(Box::new(crate::providers::Setup::new(None))),
-            mcp_tools: &[],
-            mcp_servers: &[],
-            skill_folders: &[],
-            index_tools: &[],
-            indexes: &[],
-            text_replies: false,
-            cc_compact: true,
-            extra_rules: Default::default(),
+            ..crate::agents::AgentSettings::for_test(&model, &model)
         };
         let mut config = crate::agents::main_config(&settings).unwrap();
         assert!(files_follow(&config));

@@ -590,12 +590,6 @@ impl Harness {
             .map(|indexes| indexes.known(&settings.workspace))
             .unwrap_or_default();
         let agent_settings = AgentSettings {
-            main: &settings.main,
-            worker: &settings.worker,
-            providers: setup,
-            max_workers: settings.max_workers,
-            handover_at: settings.handover_at,
-            show_thinking: settings.show_thinking,
             mcp_tools: &mcp_tools,
             mcp_servers: &mcp_servers,
             skill_folders: &self.skill_folders,
@@ -605,9 +599,7 @@ impl Harness {
                 &[]
             },
             indexes: &known,
-            text_replies: settings.text_replies,
-            cc_compact: !settings.cc_handover,
-            extra_rules: settings.extra_rules,
+            ..AgentSettings::for_session(settings, setup)
         };
         Ok((
             agents::main_config(&agent_settings)?,

@@ -69,28 +69,6 @@ fn says(feed: &remote::Feed, start: &str) -> bool {
         .any(|text| text.starts_with(start))
 }
 
-/// What the harness's agents are built from, with its settings.
-fn agent_settings_of(harness: &Harness) -> AgentSettings<'_> {
-    AgentSettings {
-        main: &harness.settings.main,
-        worker: &harness.settings.worker,
-        max_workers: harness.settings.max_workers,
-        handover_at: harness.settings.handover_at,
-        show_thinking: false,
-        providers: Box::leak(Box::new(providers::Setup::new(
-            harness.settings.openai_auth,
-        ))),
-        mcp_tools: &[],
-        mcp_servers: &[],
-        skill_folders: &[],
-        index_tools: &[],
-        indexes: &[],
-        text_replies: harness.settings.text_replies,
-        cc_compact: true,
-        extra_rules: harness.settings.extra_rules,
-    }
-}
-
 /// How many of the feed's items, of any kind, are `text`.
 fn items_with(feed: &remote::Feed, text: &str) -> usize {
     shown(feed)
@@ -154,25 +132,8 @@ fn the_mode_is_saved_with_the_session_and_old_sessions_load_with_it_off() {
         handover_at: None,
     };
     let mut settings = Settings {
-        workspace: temp.path().to_path_buf(),
-        main: model.clone(),
-        worker: model,
-        max_workers: NO_LIMIT,
-        handover_at: 200_000,
-        main_handover_at: None,
-        allow_outside_workspace: false,
-        show_thinking: false,
-        created: chrono::Utc::now(),
-        title: None,
-        windows_shell: None,
-        openai_auth: None,
-        own_worker_model: false,
         text_replies: true,
-        cc_handover: false,
-        extra_rules: Default::default(),
-        project_instructions: Default::default(),
-        worker_project_instructions: false,
-        background_after: 0,
+        ..Settings::for_test(temp.path(), &model)
     };
     session.save_settings(&settings).unwrap();
     assert!(session.load_settings().unwrap().text_replies);
@@ -526,7 +487,6 @@ async fn a_session_saved_before_text_replies_resumes_with_complete_task() {
     // resumed: its saved configuration stands.
     let settings = AgentSettings {
         text_replies: true,
-        cc_compact: true,
         ..agent_settings_of(&harness)
     };
     harness.main_config = agents::main_config(&settings).unwrap();
@@ -565,20 +525,9 @@ fn a_text_reply_session_is_not_told_it_lacks_message_user() {
         handover_at: None,
     };
     let settings = |text_replies| AgentSettings {
-        main: &model,
-        worker: &model,
-        providers: Box::leak(Box::new(providers::Setup::new(None))),
         max_workers: NO_LIMIT,
-        handover_at: 200_000,
-        show_thinking: false,
-        mcp_tools: &[],
-        mcp_servers: &[],
-        skill_folders: &[],
-        index_tools: &[],
-        indexes: &[],
         text_replies,
-        cc_compact: true,
-        extra_rules: Default::default(),
+        ..AgentSettings::for_test(&model, &model)
     };
     let replying = agents::main_config(&settings(true)).unwrap();
     let calling = agents::main_config(&settings(false)).unwrap();
