@@ -683,6 +683,10 @@ impl Feed {
                 parameters,
             } => {
                 let Some(mut item) = render::call(tool_name, parameters) else {
+                    // A call the feed doesn't draw (`ask_user`,
+                    // `complete_task`) still ends the agent's text: the
+                    // next response's text doesn't run on into it.
+                    state.open_text.remove(&agent);
                     return;
                 };
                 if !main {
@@ -1387,6 +1391,35 @@ mod tests {
         hidden.event(&event("main", chunk("Done.")), None);
         let kinds: Vec<Kind> = items(&hidden).iter().map(|item| item.kind).collect();
         assert_eq!(kinds, [Kind::Text]);
+    }
+
+    /// A call the feed doesn't draw, such as `ask_user`, still ends the
+    /// text before it: the text of the next response is an item of its own.
+    #[test]
+    fn a_call_not_drawn_still_ends_the_text_before_it() {
+        let feed = Feed::new("main");
+        feed.event(&event("main", chunk("Here are the questions:")), None);
+        feed.event(
+            &event(
+                "main",
+                AgentEvent::ToolCallFormatted {
+                    tool_call_id: Uuid::new_v4(),
+                    tool_name: arko_agents::builtins::ASK_USER_TOOL_NAME.into(),
+                    parameters: [("questions".to_string(), "Which one?".into())].into(),
+                },
+            ),
+            None,
+        );
+        feed.event(&event("main", chunk("I sent you the questions.")), None);
+        let texts: Vec<String> = items(&feed)
+            .into_iter()
+            .filter(|item| item.kind == Kind::Text)
+            .map(|item| item.text)
+            .collect();
+        assert_eq!(
+            texts,
+            ["Here are the questions:", "I sent you the questions."]
+        );
     }
 
     /// A call that fails or is refused says so on its line; one still

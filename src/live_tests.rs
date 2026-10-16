@@ -1448,6 +1448,65 @@ async fn handover_compacts_a_main_agent_in_claude_code() {
     managers.shutdown().await;
 }
 
+/// A main agent in Claude Code shows what it writes beside its calls: its
+/// thinking, folded, then each response's text, an item of its own before
+/// the call it goes with, with text replies and with `complete_task`.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_main_agent_in_claude_code_shows_its_thinking_and_text_beside_its_calls() {
+    for text_replies in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let list = serde_json::json!({"directory": "."});
+        let end = if text_replies {
+            serde_json::json!({"text": "Done: the workspace is listed."})
+        } else {
+            serde_json::json!({
+                "tool": "mcp__arko__complete_task",
+                "input": {"summary": "Done: the workspace is listed."},
+            })
+        };
+        let script = serde_json::json!([[
+            {"thinking": "The user wants the files.\nList them first."},
+            {"text": "Listing the files.", "continues": true},
+            {"tool": "mcp__arko__list_files", "input": list, "continues": true},
+            {"text": "Halfway: the files are listed."},
+            {"tool": "mcp__arko__list_files", "input": list, "continues": true},
+            end,
+        ]]);
+        let (mut harness, mut inputs, _sender, managers, _fake) =
+            in_claude_code(temp.path(), script);
+        if text_replies {
+            harness.text_replies_command("on", Source::Terminal);
+            assert!(harness.main_config.tool_config.ends_task_with_text());
+        }
+        let end = tokio::time::timeout(
+            Duration::from_secs(60),
+            harness.turn(Prompt::User("What's in the workspace?".into()), &mut inputs),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(end, TurnEnd::Answered), "{text_replies}");
+        assert_eq!(summary(&harness), "Done: the workspace is listed.");
+        let shown: Vec<(String, String)> = shown(&harness.feed)
+            .into_iter()
+            .filter(|(kind, _, _)| ["thinking", "text", "call", "reply"].contains(&kind.as_str()))
+            .map(|(kind, text, _)| (kind, text))
+            .collect();
+        let kinds: Vec<&str> = shown.iter().map(|(kind, _)| kind.as_str()).collect();
+        assert_eq!(
+            kinds,
+            ["thinking", "text", "call", "text", "call", "reply"],
+            "{text_replies}: {shown:#?}"
+        );
+        assert_eq!(shown[0].1, "The user wants the files.\nList them first.");
+        assert_eq!(shown[1].1, "Listing the files.");
+        assert_eq!(shown[3].1, "Halfway: the files are listed.");
+        assert_eq!(shown[5].1, "Done: the workspace is listed.");
+        harness.crew.as_ref().unwrap().shutdown().await;
+        managers.shutdown().await;
+    }
+}
+
 /// What the user sent worker r1 directly, as the feed has it: its items
 /// for r1 that are the user's.
 fn to_r1(feed: &remote::Feed) -> Vec<(String, Option<remote::Source>)> {
