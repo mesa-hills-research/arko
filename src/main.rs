@@ -201,16 +201,18 @@ struct Args {
     #[arg(long)]
     workers: Option<u32>,
 
-    /// Input size, in tokens, at which an agent writes a handover report and
-    /// continues in a fresh conversation. On cc: models, Claude Code
-    /// compacts the conversation at that size instead, and the agent goes on
-    /// in the same conversation (--no-cc-compact has them hand over too).
-    /// Default: 500000 on Claude models,
-    /// 250000 for OpenAI models on the ChatGPT login (whose backend accepts
-    /// 272000), and 200000 on others, at most 80% of what the model accepts
-    /// (100000 when OpenRouter's catalog can't say). When resuming, it sets
-    /// the main agent's size as /handover-at does, larger or smaller.
-    #[arg(long)]
+    /// Input size, in tokens, at which the agents (the main agent and the
+    /// workers) write a handover report and continue in a fresh
+    /// conversation. On cc: models, Claude Code compacts the conversation at
+    /// that size instead, and the agent goes on in the same conversation
+    /// (--no-cc-compact has them hand over too). It takes what /handover-at
+    /// takes: 950k, 950K, 950000, 950,000 or 950_000, at least 20k, and each
+    /// agent goes by at most 95% of what its model accepts. Default: 500k
+    /// on Claude models, 250k for OpenAI models on the ChatGPT login (whose
+    /// backend accepts 272k), and 200k on others, at most 80% of what the
+    /// model accepts (100k when OpenRouter's catalog can't say). When
+    /// resuming, it sets both sizes as /handover-at does, larger or smaller.
+    #[arg(long, value_name = "SIZE", value_parser = handover::parse_tokens)]
     handover_at: Option<usize>,
 
     /// Let commands and the file tools delete, move and overwrite paths
@@ -4117,6 +4119,47 @@ mod tests {
     mod request_sizes {
         use super::*;
         include!("request_size_tests.rs");
+    }
+
+    /// `--handover-at` takes what `/handover-at` takes (950k, 950K, 950000,
+    /// 950,000, 950_000) and refuses what it refuses, and a new session's
+    /// agents, the main one and the workers, start with it.
+    #[test]
+    fn the_handover_flag_takes_what_the_command_takes() {
+        let parse = |size: &str| Args::try_parse_from(["arko", "--handover-at", size]);
+        for size in ["950k", "950K", "950000", "950,000", "950_000"] {
+            assert_eq!(parse(size).unwrap().handover_at, Some(950_000), "{size}");
+        }
+        assert!(parse("5k").unwrap_err().to_string().contains("too small"));
+        for size in ["950 k", "0.95m", "lots"] {
+            let error = parse(size).unwrap_err().to_string();
+            assert!(
+                error.contains("isn't a number of tokens"),
+                "{size}: {error}"
+            );
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().to_str().unwrap();
+        let args =
+            Args::try_parse_from(["arko", "-m", "cc:opus", "-C", dir, "--handover-at", "300k"])
+                .unwrap();
+        let settings = new_settings(&args).unwrap();
+        assert_eq!(settings.main.handover_at, Some(300_000));
+        assert_eq!(settings.worker.handover_at, Some(300_000));
+    }
+
+    /// `--handover-at` when resuming sets both sizes, as `/handover-at`
+    /// does, and the session keeps them.
+    #[tokio::test]
+    async fn the_handover_flag_sets_both_sizes_of_a_resumed_session() {
+        let temp = tempfile::tempdir().unwrap();
+        let (mut harness, _inputs, _sender) = harness(temp.path(), LLMClient::new(), true);
+        harness.handover_at_start(150_000);
+        assert_eq!(harness.handover.at(), 150_000);
+        assert_eq!(harness.handover.workers_at(), Some(150_000));
+        let saved = harness.session.load_settings().unwrap();
+        assert_eq!(saved.main_handover_at, Some(150_000));
+        assert_eq!(saved.workers_handover_at, Some(150_000));
     }
 
     #[test]
