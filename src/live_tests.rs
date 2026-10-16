@@ -1507,6 +1507,97 @@ async fn a_main_agent_in_claude_code_shows_its_thinking_and_text_beside_its_call
     }
 }
 
+/// A worker in Claude Code that was running when Arko closed goes on when
+/// the session resumes: its Claude Code session resumes, without a message
+/// from the lead, and its report reaches the lead.
+#[cfg(unix)]
+#[tokio::test]
+async fn resuming_a_session_restarts_its_workers_in_claude_code() {
+    let temp = tempfile::tempdir().unwrap();
+    let bodies: Bodies = Arc::default();
+    let kept = bodies.clone();
+    let server = ModelServer::start(Arc::new(move |_, body: String| {
+        kept.lock().unwrap().push(body.clone());
+        Box::pin(async move {
+            if body.contains("Recovered the worker.") {
+                complete("m3", "Worker recovery finished.")
+            } else if body.contains("call_m1") {
+                complete("m2", "Worker is running.")
+            } else {
+                tool_call(
+                    "m1",
+                    crew::START_AGENT,
+                    serde_json::json!({"agent": WORKER, "task": "Resume this work."}),
+                )
+            }
+        })
+    }))
+    .await;
+    let fake = temp.path().join("fake");
+    std::fs::create_dir_all(&fake).unwrap();
+    // The worker's first turn runs a long command, until Arko closes. Its
+    // second, as it resumes, reports.
+    let script = serde_json::json!([
+        [{"tool": "mcp__arko__shell", "input": {"command": "sleep 30"}}],
+        [{"tool": "mcp__arko__complete_task", "input": {"summary": "Recovered the worker."}}],
+    ]);
+    std::fs::write(fake.join("script.json"), script.to_string()).unwrap();
+    let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
+    let main = harness.settings.main.clone();
+    let cc = ModelSettings {
+        model: "cc:claude-opus-5-5".into(),
+        effort: Effort::High,
+        fast: false,
+        cache_1h: false,
+        handover_at: None,
+    };
+    let managers = on_models(&mut harness, &main, &cc, &fake_claude_code(&fake));
+    let end = tokio::time::timeout(
+        Duration::from_secs(30),
+        harness.turn(Prompt::User("Start it.".into()), &mut inputs),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(end, TurnEnd::Answered));
+    assert_eq!(summary(&harness), "Worker is running.");
+    // Its command runs.
+    until(|| {
+        std::fs::read_to_string(fake.join("log.jsonl"))
+            .unwrap_or_default()
+            .lines()
+            .any(|line| line.contains(r#""event": "pre", "tool": "mcp__arko__shell""#))
+    })
+    .await;
+    harness.crew.as_ref().unwrap().shutdown().await;
+    harness.open(true).unwrap();
+    let end = tokio::time::timeout(Duration::from_secs(30), harness.finish_workers(&mut inputs))
+        .await
+        .unwrap();
+    assert!(matches!(end, TurnEnd::Answered));
+    assert_eq!(summary(&harness), "Worker recovery finished.");
+    let (log, _) = fake_log(&fake);
+    let argvs: Vec<Vec<String>> = log
+        .iter()
+        .filter(|entry| entry["event"] == "argv")
+        .map(|entry| serde_json::from_value(entry["argv"].clone()).unwrap())
+        .collect();
+    assert_eq!(argvs.len(), 2, "{argvs:?}");
+    assert!(
+        argvs[1].iter().any(|arg| arg.starts_with("--resume=")),
+        "its Claude Code session resumes: {:?}",
+        argvs[1]
+    );
+    // The lead isn't told that it stopped as Arko closed: it goes on.
+    let told = bodies.lock().unwrap().clone();
+    assert!(
+        told.iter()
+            .all(|body| !body.contains("stopped before it finished")),
+        "{told:#?}"
+    );
+    harness.crew.as_ref().unwrap().shutdown().await;
+    managers.shutdown().await;
+}
+
 /// What the user sent worker r1 directly, as the feed has it: its items
 /// for r1 that are the user's.
 fn to_r1(feed: &remote::Feed) -> Vec<(String, Option<remote::Source>)> {

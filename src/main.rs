@@ -4915,9 +4915,12 @@ mod tests {
         let seen = workers.clone();
         let started = Arc::new(tokio::sync::Notify::new());
         let ready = started.clone();
+        let bodies: Arc<Mutex<Vec<String>>> = Arc::default();
+        let kept = bodies.clone();
         let server = ModelServer::start(Arc::new(move |_, body: String| {
             let seen = seen.clone();
             let ready = ready.clone();
+            kept.lock().unwrap().push(body.clone());
             Box::pin(async move {
                 if body.contains("You are agent run r1") {
                     if seen.fetch_add(1, Ordering::SeqCst) == 0 {
@@ -4961,6 +4964,14 @@ mod tests {
         ));
         assert_eq!(summary(&harness), "Worker recovery finished.");
         assert_eq!(workers.load(Ordering::SeqCst), 2);
+        // The lead isn't told that r1 stopped as Arko closed: it goes on.
+        let told = bodies.lock().unwrap().clone();
+        assert!(
+            told.iter()
+                .filter(|body| !body.contains("You are agent run r1"))
+                .all(|body| !body.contains("stopped before it finished")),
+            "{told:#?}"
+        );
         harness.crew.as_ref().unwrap().shutdown().await;
     }
 
