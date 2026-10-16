@@ -494,6 +494,27 @@ impl Crew {
             })
             .unwrap_or_default()
     }
+    /// The user's message to worker `to` (`r1`), which goes as its lead's
+    /// message does: a running worker reads it at its next step, and one
+    /// that ended goes on with it. The lead gets a copy with its next news.
+    /// Returns the worker's ID, or why the message can't go.
+    pub fn message(&self, to: &str, text: &str) -> Result<String, String> {
+        let workflow = self.workflow().ok_or("there are no workers")?;
+        let id = workflow
+            .subagents()
+            .into_iter()
+            .find(|run| run.handle.eq_ignore_ascii_case(to.trim()))
+            .map(|run| run.handle)
+            .ok_or_else(|| format!("there is no worker {}", to.trim()))?;
+        workflow.message_subagent(
+            &id,
+            text,
+            "The user sent you a message directly:",
+            &format!("The user sent {id} a message directly (a copy for you):"),
+        )?;
+        Ok(id)
+    }
+
     pub fn has_mail(&self) -> bool {
         let lead = *self.lead.lock().unwrap();
         lead.zip(self.workflow()).is_some_and(|(lead, workflow)| {

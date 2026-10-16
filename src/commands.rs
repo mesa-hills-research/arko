@@ -77,6 +77,13 @@ pub const COMMANDS: &[Command] = &[
         "WORKER|main",
         "follow one worker's own work, or the main agent's again",
     ),
+    Command {
+        name: "/message",
+        args: "WORKER MESSAGE",
+        about: "send a worker a message directly, which it reads at its next step (a finished worker goes on with it). In a worker's own view, what you send goes to that worker",
+        aliases: &[],
+        runs: Runs::Session,
+    },
     Command::screen(
         "/view",
         "full|quiet|messages",

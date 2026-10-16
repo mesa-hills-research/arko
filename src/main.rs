@@ -2130,6 +2130,11 @@ impl Harness {
         let Some((name, argument)) = split_live_command(command) else {
             return false;
         };
+        // (It shows as the user's message to the worker, not as a command.)
+        if name == "/message" {
+            self.message_command(argument, source);
+            return true;
+        }
         self.feed.user(command, source, Delivery::Command);
         match name {
             "/outside" => self.outside_command(argument, source),
@@ -2142,6 +2147,40 @@ impl Harness {
             _ => self.handover_at_command(argument, source),
         }
         true
+    }
+
+    /// `/message WORKER TEXT`: the user's message goes to the worker as its
+    /// lead's would, and the lead gets a copy with its next news.
+    fn message_command(&mut self, argument: &str, source: Source) {
+        let (to, text) = argument
+            .split_once(char::is_whitespace)
+            .map_or((argument, ""), |(to, text)| (to, text.trim()));
+        if text.is_empty() {
+            self.say(
+                Level::Warn,
+                "/message takes a worker and the message, such as /message r1 Check the tests too.",
+            );
+            return;
+        }
+        let sent = match &self.crew {
+            Some(crew) => crew.message(to, text),
+            None => Err("this session has no workers".to_string()),
+        };
+        match sent {
+            Ok(id) => {
+                self.feed.to_worker(&id, text, source);
+                self.output
+                    .echo(&self.output.dim(&format!("  ✉ sent to {id}")));
+            }
+            // (The model's advice after the reason isn't the user's.)
+            Err(why) => self.say(
+                Level::Warn,
+                &format!(
+                    "The message didn't reach {to}: {}. It said: {text}",
+                    why.split("; ").next().unwrap_or_default()
+                ),
+            ),
+        }
     }
 
     /// `/handover`: the main agent hands over at its next step, or when
@@ -3175,7 +3214,8 @@ fn place(link: &remote::Link) -> String {
 
 /// The commands that change a setting while the session runs, which take
 /// an argument: `/outside`, `/model`, `/handover`, `/handover-at`, `/keys`.
-const LIVE_COMMANDS: [&str; 8] = [
+/// And `/message`, which works while the agent works too.
+const LIVE_COMMANDS: [&str; 9] = [
     "/outside",
     "/model",
     "/handover",
@@ -3184,6 +3224,7 @@ const LIVE_COMMANDS: [&str; 8] = [
     "/text-replies",
     "/extra-rules",
     "/project-instructions",
+    "/message",
 ];
 
 /// What the user is told of a handover asked for, or of a compaction when

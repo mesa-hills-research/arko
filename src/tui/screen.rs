@@ -133,18 +133,19 @@ fn draw_input(
     let width = rect.width.saturating_sub(4);
     if app.editor.is_empty() {
         let placeholder = if answering {
-            "Answer the agent's question"
-        } else if app.watching.is_some() {
-            "Message the main agent"
+            "Answer the agent's question".to_string()
+        } else if let Some(id) = &app.watching {
+            format!("Message {id}")
         } else if app.activity.working {
-            "Add to the task"
+            "Add to the task".to_string()
         } else {
-            "Message"
+            "Message".to_string()
         };
-        let mut spans = vec![Span::styled(placeholder.to_string(), theme.dim())];
+        let used = text_width(&placeholder);
+        let mut spans = vec![Span::styled(placeholder, theme.dim())];
         // How to find the rest, while there is room: on an empty box only.
         let hint = "  / for commands";
-        if !app.activity.working && text_width(placeholder) + text_width(hint) < width as usize {
+        if !app.activity.working && used + text_width(hint) < width as usize {
             spans.push(Span::styled(hint.to_string(), theme.dim()));
         }
         frame
@@ -621,6 +622,14 @@ mod tests {
         assert_eq!(rows[5], "─".repeat(60));
         assert_eq!(rows[6], " › Message  / for commands");
         assert_eq!(rows[7], "─".repeat(60));
+    }
+
+    /// In a worker's own view, the box says where a message goes.
+    #[test]
+    fn a_workers_view_says_whom_the_box_messages() {
+        let mut app = app();
+        app.watch(Some("r1".into()));
+        assert_eq!(screen(&mut app, 60, 8)[6], " › Message r1  / for commands");
     }
 
     #[test]

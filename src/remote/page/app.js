@@ -282,6 +282,8 @@
         box.append(element('div', 'bubble', item.text));
         const tags = [];
         if (DELIVERY[item.delivery]) tags.push(DELIVERY[item.delivery]);
+        // Out of its worker's own view, a message to a worker says to which.
+        if (item.agent !== C.MAIN && !worker) tags.push('to ' + item.agent);
         if (item.source === 'terminal') tags.push('typed in the terminal');
         if (tags.length) box.append(element('div', 'tag', tags.join(' · ')));
         break;
@@ -650,7 +652,7 @@
 
   function placeholder() {
     if (asking()) text.placeholder = 'Your answer';
-    else if (worker) text.placeholder = 'Message the main agent';
+    else if (worker) text.placeholder = 'Message ' + worker;
     else text.placeholder = status && status.working ? 'Add to the task' : 'Message';
     send.title = asking() ? 'Answer' : 'Send';
     text.setAttribute('aria-label', text.placeholder);
@@ -1318,8 +1320,11 @@
     sending = true;
     send.disabled = true;
     const question = asking() ? status.question.id : null;
+    // In a worker's own view it goes to that worker (commands still go to
+    // the session, and the main agent's question takes the answer).
+    const line = worker && !message.trim().startsWith('/') ? '/message ' + worker + ' ' + message.trim() : message;
     const sent =
-      question !== null ? await post('/api/answer', { question, text: message }) : await post('/api/message', { text: message });
+      question !== null ? await post('/api/answer', { question, text: message }) : await post('/api/message', { text: line });
     sending = false;
     if (sent) {
       text.value = '';

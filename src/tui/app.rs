@@ -407,6 +407,12 @@ impl App {
                 .map(|worker| worker.id.clone())
                 .chain(["main".to_string()])
                 .collect(),
+            ("/message", []) => self
+                .transcript
+                .workers()
+                .iter()
+                .map(|worker| worker.id.clone())
+                .collect(),
             ("/keys", ["add" | "remove"]) => crate::credentials::KEYS
                 .iter()
                 .map(|key| key.id.to_string())
@@ -988,7 +994,15 @@ impl App {
         self.put_off = None;
         self.answered = self.activity.question.as_ref().map(|q| q.id);
         self.transcript.follow();
-        self.send(text.trim_end());
+        // In a worker's own view it goes to that worker, unless the main
+        // agent asks: then it is the answer, as anywhere.
+        match &self.watching {
+            Some(id) if self.answered.is_none() => {
+                let line = format!("/message {id} {}", text.trim());
+                self.send(&line);
+            }
+            _ => self.send(text.trim_end()),
+        }
     }
 
     fn screen_command(&mut self, name: &str, rest: &str) {
@@ -1763,6 +1777,38 @@ pub(super) mod tests {
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         assert!(sent(&mut app).is_empty());
         assert_eq!(app.view, View::Quiet);
+    }
+
+    /// In a worker's own view, what is sent goes to that worker (as
+    /// `/message`), but for commands and the main agent's answer.
+    #[test]
+    fn a_workers_view_sends_to_that_worker() {
+        let mut app = app();
+        app.watch(Some("r1".into()));
+        type_text(&mut app, "Use tabs.");
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(sent(&mut app), ["/message r1 Use tabs."]);
+        // A command still goes to the session as it is.
+        type_text(&mut app, "/workers");
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(sent(&mut app), ["/workers"]);
+        // The main agent's question takes the answer, in any view.
+        app.set_activity(Activity {
+            working: true,
+            question: Some(Question {
+                id: 4,
+                text: "Tabs or spaces?".into(),
+            }),
+        });
+        type_text(&mut app, "tabs");
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(sent(&mut app), ["tabs"]);
+        // Back on the main agent, a message is the main agent's.
+        app.watch(None);
+        app.set_activity(Activity::default());
+        type_text(&mut app, "Thanks.");
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(sent(&mut app), ["Thanks."]);
     }
 
     #[test]

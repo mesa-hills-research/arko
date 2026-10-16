@@ -43,6 +43,21 @@ test('views keep what they say they keep', () => {
   assert.deepEqual(kinds(core.layout(items, 'full', 'r1')), ['call:r1', 'text:r1']);
 });
 
+test("what the user wrote to a worker shows in every view, and in the worker's own", () => {
+  next = 0;
+  const items = [
+    item('user'),
+    item('call', { agent: 'r1', status: 'ok' }),
+    item('user', { agent: 'r1' }),
+    item('text', { agent: 'r1' }),
+  ];
+  const kinds = (rows) => rows.map((row) => row.item.kind + (row.item.agent === 'main' ? '' : ':' + row.item.agent));
+  assert.deepEqual(kinds(core.layout(items, 'full')), ['user', 'call:r1', 'user:r1']);
+  assert.deepEqual(kinds(core.layout(items, 'quiet')), ['user', 'user:r1']);
+  assert.deepEqual(kinds(core.layout(items, 'messages')), ['user', 'user:r1']);
+  assert.deepEqual(kinds(core.layout(items, 'full', 'r1')), ['call:r1', 'user:r1', 'text:r1']);
+});
+
 test('a result shows under its call, whatever came between', () => {
   next = 0;
   const items = [

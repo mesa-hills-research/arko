@@ -808,6 +808,14 @@ impl Feed {
         self.push(&mut state, item);
     }
 
+    /// The user's message to `worker`, which went to it directly: the
+    /// worker's own transcript shows it, and the main one too.
+    pub fn to_worker(&self, worker: &str, text: &str, source: Source) {
+        let mut item = Item::new(Kind::User, text.trim()).agent(worker);
+        item.source = Some(source);
+        self.add(item);
+    }
+
     /// Items from before Arko started (a resumed session's conversation,
     /// from [`history`](super::history)), numbered from 1: they join the
     /// history as they are, numbered after the feed's own (a result keeps

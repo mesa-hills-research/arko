@@ -1452,3 +1452,173 @@ async fn handover_compacts_a_main_agent_in_claude_code() {
     harness.crew.as_ref().unwrap().shutdown().await;
     managers.shutdown().await;
 }
+
+/// What the user sent worker r1 directly, as the feed has it: its items
+/// for r1 that are the user's.
+fn to_r1(feed: &remote::Feed) -> Vec<(String, Option<remote::Source>)> {
+    feed.subscribe()
+        .0
+        .items
+        .into_iter()
+        .filter(|item| item.agent == "r1" && item.kind == remote::Kind::User)
+        .map(|item| (item.text, item.source))
+        .collect()
+}
+
+/// `/message r1 …` typed while the main agent waits for its worker: the
+/// running worker reads it at its next step, marked as from the user, and
+/// the lead's wait returns a copy with the report. The feed has it as the
+/// user's message to r1.
+#[tokio::test]
+async fn a_message_to_a_running_worker_reaches_it_at_its_next_step() {
+    let temp = tempfile::tempdir().unwrap();
+    let bodies: Bodies = Arc::default();
+    let hold = Arc::new(Notify::new());
+    let server = ModelServer::start(Arc::new({
+        let (bodies, hold) = (bodies.clone(), hold.clone());
+        move |_, body: String| {
+            bodies.lock().unwrap().push(body.clone());
+            let hold = hold.clone();
+            Box::pin(async move {
+                if body.contains("You are agent run r1") {
+                    if body.contains("call_w1") {
+                        complete("w2", "Used tabs.")
+                    } else {
+                        hold.notified().await;
+                        tool_call("w1", SHELL_TOOL, serde_json::json!({"command": "echo hi"}))
+                    }
+                } else if body.contains("Used tabs.") {
+                    complete("m3", "All done.")
+                } else if body.contains("call_m1") {
+                    let n = body.matches("call_m2").count();
+                    tool_call(&format!("m2_{n}"), crew::WAIT_FOR_AGENTS, serde_json::json!({"timeout_seconds": 20}))
+                } else {
+                    tool_call("m1", crew::START_AGENT, serde_json::json!({"agent": WORKER, "task": "Indent it."}))
+                }
+            })
+        }
+    }))
+    .await;
+    let (mut harness, mut inputs, sender) = harness(temp.path(), server.client(), true);
+    let _managers = equip(&mut harness, false);
+    let feed = harness.feed.clone();
+    let typing = tokio::spawn({
+        let bodies = bodies.clone();
+        async move {
+            until(|| {
+                bodies
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|body| body.contains("You are agent run r1"))
+            })
+            .await;
+            sender
+                .send(Input::Line("/message r1 Use tabs.".into()))
+                .unwrap();
+            until(|| !to_r1(&feed).is_empty()).await;
+            hold.notify_one();
+            sender
+        }
+    });
+    let end = tokio::time::timeout(
+        Duration::from_secs(40),
+        harness.turn(Prompt::User("Indent the code.".into()), &mut inputs),
+    )
+    .await
+    .unwrap();
+    let _sender = typing.await.unwrap();
+    assert!(matches!(end, TurnEnd::Answered));
+    assert_eq!(summary(&harness), "All done.");
+    let worker = body(&bodies, "call_w1", "");
+    assert!(
+        worker.contains("The user sent you a message directly:\\n  Use tabs."),
+        "{worker}"
+    );
+    let lead = body(&bodies, "Used tabs.", "You are agent run r1");
+    assert!(
+        lead.contains("The user sent r1 a message directly (a copy for you):"),
+        "{lead}"
+    );
+    assert_eq!(
+        to_r1(&harness.feed),
+        [("Use tabs.".to_string(), Some(remote::Source::Terminal))]
+    );
+    // The command itself isn't in the transcript.
+    assert!(!says(&harness.feed, "user", "/message"));
+    harness.crew.as_ref().unwrap().shutdown().await;
+}
+
+/// `/message r1 …` from the web page while the main agent is idle and r1
+/// finished: r1 continues with it and reports again. The lead hears of it
+/// with its next news, once, before the new report. A worker that isn't
+/// there, or no message, gets a warning that keeps the text.
+#[tokio::test]
+async fn a_message_to_a_finished_worker_continues_it_and_its_lead_hears_of_it() {
+    let temp = tempfile::tempdir().unwrap();
+    let bodies: Bodies = Arc::default();
+    let server = ModelServer::start(Arc::new({
+        let bodies = bodies.clone();
+        move |_, body: String| {
+            bodies.lock().unwrap().push(body.clone());
+            Box::pin(async move {
+                if body.contains("You are agent run r1") {
+                    if body.contains("Also the docs.") {
+                        complete("w2", "Docs done.")
+                    } else {
+                        complete("w1", "Code done.")
+                    }
+                } else if body.contains("Docs done.") {
+                    complete("m3", "Noted.")
+                } else if body.contains("call_m1") {
+                    complete("m2", "Started r1.")
+                } else {
+                    tool_call("m1", crew::START_AGENT, serde_json::json!({"agent": WORKER, "task": "Write the code."}))
+                }
+            })
+        }
+    }))
+    .await;
+    let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
+    let _managers = equip(&mut harness, false);
+    let end = tokio::time::timeout(
+        Duration::from_secs(30),
+        harness.turn(Prompt::User("Start a worker.".into()), &mut inputs),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(end, TurnEnd::Answered));
+    let crew = harness.crew.clone().unwrap();
+    let workflow = harness.workflow().clone();
+    let report = |text: &str| {
+        workflow
+            .subagents()
+            .first()
+            .is_some_and(|run| run.report.as_deref() == Some(text))
+    };
+    until(|| report("Code done.")).await;
+    harness.live_command("/message r9 Hello?", Source::Terminal);
+    assert!(says(
+        &harness.feed,
+        "notice",
+        "The message didn't reach r9: there is no worker r9. It said: Hello?"
+    ));
+    harness.live_command("/message r1", Source::Terminal);
+    assert!(says(&harness.feed, "notice", "/message takes a worker"));
+    harness.live_command("/message R1 Also the docs.", Source::Web);
+    until(|| report("Docs done.")).await;
+    assert_eq!(
+        to_r1(&harness.feed),
+        [("Also the docs.".to_string(), Some(remote::Source::Web))]
+    );
+    let news = tokio::time::timeout(Duration::from_secs(30), harness.deliver_news(&mut inputs))
+        .await
+        .unwrap();
+    assert!(matches!(news, News::Done));
+    assert_eq!(summary(&harness), "Noted.");
+    let lead = body(&bodies, "Docs done.", "You are agent run r1");
+    let copy = "The user sent r1 a message directly (a copy for you):";
+    assert_eq!(lead.matches(copy).count(), 1, "{lead}");
+    assert!(lead.find(copy) < lead.find("Docs done."), "{lead}");
+    crew.shutdown().await;
+}

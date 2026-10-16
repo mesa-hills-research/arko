@@ -450,7 +450,7 @@ pub fn worker_config(settings: &AgentSettings) -> Result<AgentConfig, String> {
         "# Your task\n\
          Make reasonable choices yourself, and say which in your report. If something blocks you, report what and why.\n\n\
          # The lead\n\
-         The lead's messages reach you as workflow context updates from your lead: take them into account. A message that arrives as you finish comes back to you, and you report again. After your report, the lead may send you follow-up work, which continues this conversation.\n",
+         The lead's messages reach you as workflow context updates from your lead: take them into account. A message that arrives as you finish comes back to you, and you report again. After your report, the lead may send you follow-up work, which continues this conversation. The user may also write to you directly: their messages reach you the same way, marked as from the user, and you treat them as the lead's.\n",
     );
     instructions.push_str(&tool_instructions(settings, true));
     if settings.extra_rules.for_model(settings.worker)
