@@ -15,6 +15,7 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use arko_agents::ClaudeCodeSettings;
+use arko_ai::providers::claude_code::NO_SELF_UPDATE;
 
 /// The variable Claude Code bills instead of the user's Claude plan when it
 /// is set. Claude Code 2.1 treats an empty value as unset (`claude auth
@@ -161,6 +162,7 @@ fn status(path: &Path) -> std::io::Result<String> {
     let mut child = command
         .args(["auth", "status", "--json"])
         .env(API_KEY, "")
+        .env(NO_SELF_UPDATE.0, NO_SELF_UPDATE.1)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -213,8 +215,9 @@ pub const INSTALL: &str = "install it (npm install -g @anthropic-ai/claude-code,
 mod tests {
     use super::*;
 
-    /// A stand-in `claude` that answers `auth status --json` with `json`
-    /// and records whether ANTHROPIC_API_KEY was set and non-empty.
+    /// A stand-in `claude` that answers `auth status --json` with `json`,
+    /// and records whether ANTHROPIC_API_KEY was set and non-empty and what
+    /// DISABLE_AUTOUPDATER was.
     #[cfg(unix)]
     fn fake(dir: &Path, json: &str) -> PathBuf {
         use std::os::unix::fs::PermissionsExt;
@@ -222,8 +225,9 @@ mod tests {
         std::fs::write(
             &path,
             format!(
-                "#!/bin/sh\nif [ -n \"$ANTHROPIC_API_KEY\" ]; then echo key > \"{}\"; fi\necho '{json}'\n",
-                dir.join("key-seen").display()
+                "#!/bin/sh\nif [ -n \"$ANTHROPIC_API_KEY\" ]; then echo key > \"{}\"; fi\necho \"$DISABLE_AUTOUPDATER\" > \"{}\"\necho '{json}'\n",
+                dir.join("key-seen").display(),
+                dir.join("updater").display()
             ),
         )
         .unwrap();
@@ -245,6 +249,11 @@ mod tests {
         assert!(
             !temp.path().join("key-seen").exists(),
             "the check runs with ANTHROPIC_API_KEY empty, as sessions do"
+        );
+        assert_eq!(
+            std::fs::read_to_string(temp.path().join("updater")).unwrap(),
+            "1\n",
+            "the check runs with Claude Code's updates off, as sessions do"
         );
 
         let path = fake(temp.path(), r#"{"loggedIn": false, "authMethod": "none"}"#);
