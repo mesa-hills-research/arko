@@ -329,7 +329,7 @@ async fn exit_with_a_background_job_warns_first_at_the_line_prompt() {
     assert!(!harness.mirrored(|harness| harness.may_exit(Some(Vec::new()))));
     let asked = asks.try_recv().unwrap();
     assert_eq!(
-        asked.iter().map(|job| job.job_id).collect::<Vec<_>>(),
+        asked.jobs.iter().map(|job| job.job_id).collect::<Vec<_>>(),
         [first, second]
     );
     assert_eq!(warnings(&harness).len(), 2, "the popup asks instead");

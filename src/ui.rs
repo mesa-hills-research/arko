@@ -62,6 +62,42 @@ pub enum Input {
     /// Ctrl+B in the full-screen view: the shell command this agent runs
     /// (the main agent, or a worker by its ID) moves to the background.
     Background(String),
+    /// A message from an app: a turn when the agent is idle, a note while it
+    /// works, a command when it is one. Unlike a line, it is whole: it isn't
+    /// joined with what comes right after it.
+    Message(Message),
+    /// The answer to the agent's question `question` (the ID the feed gave
+    /// it).
+    Answer {
+        question: u64,
+        text: String,
+    },
+}
+
+/// A message from an app, with what is attached to it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Message {
+    pub text: String,
+    /// Images to send with it (not yet: a message with images is refused).
+    pub images: Vec<Attachment>,
+}
+
+/// A file attached to a message: its bytes, its type, and its name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Attachment {
+    pub bytes: std::sync::Arc<[u8]>,
+    /// Its MIME type: `image/png`.
+    pub mime: String,
+    pub name: Option<String>,
+}
+
+/// What quitting would stop, for the front end to ask about first: the
+/// background jobs and the workers running.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QuitAsk {
+    pub jobs: Vec<arko_agents::terminal::BackgroundJob>,
+    /// The workers running, by their IDs.
+    pub workers: Vec<String>,
 }
 
 /// Prints a front end's lines where the front end shows them: the line

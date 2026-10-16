@@ -318,7 +318,12 @@ pub(crate) struct Harness {
     pub(crate) jobs_shown: Vec<uuid::Uuid>,
     /// Where the full-screen view, while it is up, is told to ask about
     /// the background jobs running (its quit popup).
-    pub(crate) quit_popup: Option<mpsc::UnboundedSender<Vec<arko_agents::terminal::BackgroundJob>>>,
+    pub(crate) quit_popup: Option<mpsc::UnboundedSender<ui::QuitAsk>>,
+    /// The front end asks before quitting with workers running too (an
+    /// app), not only with background jobs.
+    pub(crate) ask_about_workers: bool,
+    /// Where the user's lines come from: the terminal, or an app.
+    pub(crate) input_source: Source,
     /// The user was told that the workers' news waits for their message.
     pub(crate) news_hint_shown: bool,
     /// What the remote page shows: the workflows' events, and what Arko
@@ -826,7 +831,16 @@ impl Harness {
                     continue;
                 }
                 Event::Input(Some(Input::Line(line))) => {
-                    (input.coalesce(line).await, Source::Terminal)
+                    (input.coalesce(line).await, self.input_source)
+                }
+                Event::Input(Some(Input::Message(message))) => match self.message_text(message) {
+                    Some(text) => (text, self.input_source),
+                    None => continue,
+                },
+                Event::Input(Some(Input::Answer { .. })) => {
+                    self.feed
+                        .notice(Level::Warn, "That question is no longer asked.");
+                    continue;
                 }
                 Event::Remote(Action::Message(text)) => {
                     self.echo_web(&text);
@@ -1216,6 +1230,52 @@ impl Harness {
         self.gauges.touch();
         self.publish_details();
         true
+    }
+
+    /// The answer `text`, from `source`, to the question `question`: given
+    /// to the agent when it is the one it waits for (`answering`), else the
+    /// user is told the question is no longer asked.
+    pub(crate) fn answer(
+        &mut self,
+        answering: &mut Option<(u64, oneshot::Sender<String>)>,
+        question: u64,
+        text: &str,
+        source: Source,
+    ) {
+        match answering.take() {
+            Some((id, answer)) if id == question => {
+                if source == Source::Web {
+                    self.echo_web(text);
+                }
+                let given = text.trim().to_string();
+                if answer.send(given.clone()).is_ok() {
+                    self.output.echo(&self.output.dim("  ✎ answered"));
+                    self.feed.answered(id, &given, source);
+                } else {
+                    self.feed.question_closed(id);
+                    self.feed
+                        .notice(Level::Warn, "That question is no longer asked.");
+                }
+            }
+            other => {
+                *answering = other;
+                self.feed
+                    .notice(Level::Warn, "That question is no longer asked.");
+            }
+        }
+    }
+
+    /// The text of an app's message, or `None` when it can't be sent (the
+    /// user is told why).
+    pub(crate) fn message_text(&self, message: ui::Message) -> Option<String> {
+        if !message.images.is_empty() {
+            self.say(
+                Level::Error,
+                "This version of Arko can't send images yet: send the message without them.",
+            );
+            return None;
+        }
+        Some(message.text)
     }
 
     /// `/message WORKER TEXT`: the user's message goes to the worker as its
@@ -1732,8 +1792,19 @@ impl Harness {
         };
         self.exit_warned = true;
         self.jobs_shown = jobs.iter().map(|job| job.job_id).collect();
-        if let Some(popup) = self.quit_popup.as_ref().filter(|_| !jobs.is_empty()) {
-            let _ = popup.send(jobs);
+        if let Some(popup) = self
+            .quit_popup
+            .as_ref()
+            .filter(|_| !jobs.is_empty() || (self.ask_about_workers && workers > 0))
+        {
+            let _ = popup.send(ui::QuitAsk {
+                jobs,
+                workers: self
+                    .crew
+                    .as_ref()
+                    .map(|crew| crew.running())
+                    .unwrap_or_default(),
+            });
             return false;
         }
         let jobs = jobs.len();
@@ -2048,30 +2119,25 @@ impl Harness {
                             continue;
                         }
                         Event::Input(Some(Input::Line(line))) => {
-                            (input.coalesce(line).await, Source::Terminal)
+                            (input.coalesce(line).await, self.input_source)
+                        }
+                        Event::Input(Some(Input::Message(message))) => {
+                            match self.message_text(message) {
+                                Some(text) => (text, self.input_source),
+                                None => continue,
+                            }
                         }
                         Event::Remote(Action::Message(text)) => {
                             self.echo_web(&text);
                             (text, Source::Web)
                         }
                         Event::Remote(Action::Answer { question, text }) => {
-                            match answering.take() {
-                                Some((id, answer)) if id == question => {
-                                    self.echo_web(&text);
-                                    let given = text.trim().to_string();
-                                    if answer.send(given.clone()).is_ok() {
-                                        self.output.echo(&self.output.dim("  ✎ answered"));
-                                        self.feed.answered(id, &given, Source::Web);
-                                    } else {
-                                        self.feed.question_closed(id);
-                                        self.feed.notice(Level::Warn, "That question is no longer asked.");
-                                    }
-                                }
-                                other => {
-                                    answering = other;
-                                    self.feed.notice(Level::Warn, "That question is no longer asked.");
-                                }
-                            }
+                            self.answer(&mut answering, question, &text, Source::Web);
+                            continue;
+                        }
+                        Event::Input(Some(Input::Answer { question, text })) => {
+                            let source = self.input_source;
+                            self.answer(&mut answering, question, &text, source);
                             continue;
                         }
                         Event::Input(Some(Input::Interrupt)) | Event::Remote(Action::Stop) => {
@@ -2370,7 +2436,8 @@ impl Harness {
                 Event::Question(question) => drop(question),
                 Event::Input(Some(Input::Line(_))) => {}
                 Event::Input(Some(Input::Background(agent))) => self.move_to_background(&agent),
-                Event::Remote(Action::Message(_) | Action::Answer { .. }) => {
+                Event::Remote(Action::Message(_) | Action::Answer { .. })
+                | Event::Input(Some(Input::Message(_) | Input::Answer { .. })) => {
                     self.feed.notice(
                         Level::Warn,
                         "Arko is only waiting for the workers now, so messages aren't taken.",
@@ -3420,6 +3487,8 @@ pub(crate) mod tests {
             details::McpFacts::of(&mcp::Running::default(), &[], &root),
         ));
         let mut harness = Harness {
+            ask_about_workers: false,
+            input_source: Source::Terminal,
             details,
             settings,
             providers: providers::Setup::new(None),
@@ -3674,6 +3743,18 @@ pub(crate) mod tests {
         let crew = harness.crew.clone().unwrap();
         assert_eq!(crew.running(), ["r1"]);
         assert!(harness.news_coming());
+
+        // An app asks before quitting with a worker running.
+        let (popup, mut asks) = mpsc::unbounded_channel();
+        harness.quit_popup = Some(popup);
+        harness.ask_about_workers = true;
+        assert!(!harness.may_exit(Some(Vec::new())));
+        let asked = asks.try_recv().unwrap();
+        assert_eq!(
+            (asked.jobs.len(), asked.workers),
+            (0, vec!["r1".to_string()])
+        );
+        harness.quit_popup = None;
 
         release.notify_one();
         let end =

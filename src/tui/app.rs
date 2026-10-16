@@ -1949,6 +1949,7 @@ pub(super) mod tests {
         let mut app = app();
         app.set_activity(Activity {
             working: true,
+            since: None,
             question: None,
         });
         type_text(&mut app, "keep");
@@ -2132,6 +2133,7 @@ pub(super) mod tests {
         // The main agent's question takes the answer, in any view.
         app.set_activity(Activity {
             working: true,
+            since: None,
             question: Some(Question {
                 id: 4,
                 text: "Tabs or spaces?".into(),
@@ -2158,6 +2160,7 @@ pub(super) mod tests {
         app.focused = false;
         assert!(app.set_activity(Activity {
             working: true,
+            since: None,
             question: Some(question.clone()),
         }));
         assert_eq!(app.question_shown(), Some(&question));

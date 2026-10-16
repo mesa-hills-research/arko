@@ -101,6 +101,9 @@ pub struct Options {
     /// Who opens the session, as others trying to open it are told:
     /// `arko` (the command line) or `arko-studio`.
     pub app: &'static str,
+    /// Where the user's input comes from, as the feed tags it: the
+    /// terminal, or an app.
+    pub source: remote::Source,
     /// A client to use in place of the one the session's credentials make
     /// (tests: the mock model server's).
     #[cfg(any(test, feature = "testing"))]
@@ -164,6 +167,7 @@ impl Default for Options {
             interactive: true,
             title: None,
             app: "arko-studio",
+            source: remote::Source::App,
             #[cfg(any(test, feature = "testing"))]
             client: None,
         }

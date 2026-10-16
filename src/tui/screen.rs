@@ -765,6 +765,7 @@ mod tests {
         let mut app = app();
         app.set_activity(Activity {
             working: true,
+            since: None,
             question: None,
         });
         app.reading.context_tokens = Some(142_000);
@@ -781,6 +782,7 @@ mod tests {
         // Once the turn ends, the line says how long it ran.
         app.set_activity(Activity {
             working: false,
+            since: None,
             question: None,
         });
         let rows = screen(&mut app, 80, 6);
@@ -798,6 +800,7 @@ mod tests {
         let mut app = app();
         app.set_activity(Activity {
             working: true,
+            since: None,
             question: None,
         });
         app.reading.commands = vec!["main".into()];
@@ -825,6 +828,7 @@ mod tests {
         let mut app = app();
         app.set_activity(Activity {
             working: true,
+            since: None,
             question: Some(Question {
                 id: 1,
                 text: "Tabs or spaces?".into(),
@@ -1176,6 +1180,7 @@ mod tests {
         );
         app.set_activity(Activity {
             working: true,
+            since: None,
             question: None,
         });
         type_line(&mut app, "/resume");

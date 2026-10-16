@@ -321,6 +321,7 @@ impl Args {
             interactive: !one_shot && terminal,
             title: self.prompt.as_deref().map(|prompt| ui::cut(prompt, 80)),
             app: "arko",
+            source: remote::Source::Terminal,
             #[cfg(any(test, feature = "testing"))]
             client: None,
         })
@@ -460,6 +461,7 @@ pub(crate) async fn run(args: Args) -> Result<ExitCode, String> {
         engine.front_end(FrontEnd {
             boxed_banner: screen.is_some(),
             asks_to_quit: screen.is_some(),
+            asks_about_workers: false,
         });
         engine.run().await;
         if let Some(screen) = screen {

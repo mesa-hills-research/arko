@@ -107,6 +107,8 @@ pub enum Level {
 pub enum Source {
     Terminal,
     Web,
+    /// An app in this process (Arko Studio).
+    App,
 }
 
 /// What became of the user's text.
@@ -255,6 +257,8 @@ pub struct Question {
 pub struct Activity {
     pub working: bool,
     pub question: Option<Question>,
+    /// When the turn started (Unix milliseconds), while one runs.
+    pub since: Option<i64>,
 }
 
 /// Where a worker is.
@@ -1060,7 +1064,10 @@ impl Feed {
                 state.turn = Some(state.turn.map_or(1, |turn| turn + 1));
             }
         }
-        self.set_activity(|activity| activity.working = true);
+        self.set_activity(|activity| {
+            activity.working = true;
+            activity.since = Some(now_ms());
+        });
     }
 
     /// The turn ended; `summary` is what it took (time, cost, context).
@@ -1077,6 +1084,7 @@ impl Feed {
         }
         self.set_activity(|activity| {
             activity.working = false;
+            activity.since = None;
             activity.question = None;
         });
     }
@@ -1811,10 +1819,13 @@ mod tests {
         let feed = Feed::new("main");
         feed.turn_started();
         let id = feed.question("Tabs or spaces?");
+        let since = feed.activity().since;
+        assert!(since.is_some(), "the turn's start");
         assert_eq!(
             feed.activity(),
             Activity {
                 working: true,
+                since,
                 question: Some(Question {
                     id,
                     text: "Tabs or spaces?".into()

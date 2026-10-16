@@ -112,7 +112,7 @@ pub struct Seam {
     pub keys: Arc<keys::Keys>,
     /// The background jobs quitting would stop, to ask the user about
     /// (when the front end asks before quitting: [`FrontEnd::asks_to_quit`]).
-    pub quit_asks: mpsc::UnboundedReceiver<Vec<arko_agents::terminal::BackgroundJob>>,
+    pub quit_asks: mpsc::UnboundedReceiver<crate::ui::QuitAsk>,
     /// The session's facts for a banner.
     pub banner: crate::ui::Banner,
     /// The main agent's handover size as the session started.
@@ -131,6 +131,9 @@ pub struct FrontEnd {
     /// ([`Seam::quit_asks`]), which answers with `Input::Quit`; else the
     /// line prompt's warning.
     pub asks_to_quit: bool,
+    /// It asks with workers running too, not only with jobs (an app; the
+    /// full-screen view warns about them in a line).
+    pub asks_about_workers: bool,
 }
 
 /// How [`Engine::run`] or [`Engine::run_prompt`] ended.
@@ -200,6 +203,7 @@ pub fn spawn(options: Options, prompter: Arc<dyn Prompter>) -> Running {
                 engine.front_end(FrontEnd {
                     boxed_banner: true,
                     asks_to_quit: true,
+                    asks_about_workers: true,
                 });
                 let end = if opened_sender.send(Ok(seam)).is_ok() {
                     engine.run().await
@@ -234,7 +238,7 @@ pub struct Engine {
     remote_bind: Option<remote::Bind>,
     new: bool,
     boxed_banner: bool,
-    quit_popup: Option<mpsc::UnboundedSender<Vec<arko_agents::terminal::BackgroundJob>>>,
+    quit_popup: Option<mpsc::UnboundedSender<crate::ui::QuitAsk>>,
 }
 
 impl Engine {
@@ -606,6 +610,8 @@ impl Engine {
             crate::details::McpFacts::of(&mcp, &mcp_notes, &root),
         ));
         let mut harness = Harness {
+            ask_about_workers: false,
+            input_source: options.source,
             details,
             settings,
             providers: provider_setup.clone(),
@@ -719,6 +725,7 @@ impl Engine {
     /// Says how the front end shows the session; before [`run`](Self::run).
     pub fn front_end(&mut self, front: FrontEnd) {
         self.boxed_banner = front.boxed_banner;
+        self.harness.ask_about_workers = front.asks_about_workers;
         self.harness.quit_popup = if front.asks_to_quit {
             self.quit_popup.clone()
         } else {
@@ -806,10 +813,11 @@ mod tests {
 
     use super::*;
     use crate::agents::{Effort, ModelSettings, resolve_model};
-    use crate::mock_model::{ModelServer, complete, reply, with_input};
+    use crate::mock_model::{ModelServer, complete, reply, tool_call, with_input};
     use crate::options::GivenClient;
     use crate::prompter::NoPrompter;
     use crate::providers::OpenAiAuth;
+    use crate::remote::Source;
     use crate::session::Settings;
     use crate::shell::WindowsShell;
 
@@ -1054,6 +1062,130 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(2500)).await;
         assert!(!seam.status.has_changed().unwrap(), "nothing changed");
         engine.shutdown().await;
+    }
+
+    /// An app's messages are tagged as its own, the turn says when it
+    /// started, the agent's question is answered with `Input::Answer`, and a
+    /// message with images is refused for now.
+    #[tokio::test]
+    async fn an_app_sends_messages_and_answers() {
+        use arko_agents::builtins::ASK_USER_TOOL_NAME;
+        let temp = tempfile::tempdir().unwrap();
+        let server = ModelServer::start(Arc::new(|_, body: String| {
+            Box::pin(async move {
+                if body.contains("Two spaces.") {
+                    reply("m2", "Indented with two spaces.")
+                } else {
+                    tool_call(
+                        "m1",
+                        ASK_USER_TOOL_NAME,
+                        serde_json::json!({"questions": "Tabs or spaces?"}),
+                    )
+                }
+            })
+        }))
+        .await;
+        let workspace = temp.path().join("work");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let running = spawn(
+            Options {
+                root: Some(temp.path().join("arko")),
+                workspace: Some(workspace),
+                model: Some("luna".into()),
+                openai_auth: Some(OpenAiAuth::ApiKey),
+                cache_1h: Some(false),
+                text_replies: Some(true),
+                client: Some(GivenClient(Arc::new(server.client()))),
+                ..Options::default()
+            },
+            Arc::new(NoPrompter),
+        );
+        let wait = Duration::from_secs(30);
+        let seam = tokio::time::timeout(wait, running.opened)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let image = crate::ui::Attachment {
+            bytes: Arc::from(&b"\x89PNG"[..]),
+            mime: "image/png".into(),
+            name: None,
+        };
+        seam.input
+            .send(Input::Message(crate::ui::Message {
+                text: "Look at this.".into(),
+                images: vec![image],
+            }))
+            .unwrap();
+        seam.input
+            .send(Input::Message(crate::ui::Message {
+                text: "Indent the file.".into(),
+                images: Vec::new(),
+            }))
+            .unwrap();
+        let question = tokio::time::timeout(wait, async {
+            loop {
+                if let Some(question) = seam.feed.activity().question {
+                    return question;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(question.text, "Tabs or spaces?");
+        assert!(seam.feed.activity().since.is_some(), "the turn's start");
+        seam.input
+            .send(Input::Answer {
+                question: question.id,
+                text: "Two spaces.".into(),
+            })
+            .unwrap();
+        let items = || seam.feed.subscribe().0.items;
+        tokio::time::timeout(wait, async {
+            while !items()
+                .iter()
+                .any(|item| item.text == "Indented with two spaces.")
+            {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let items = items();
+        let user = items
+            .iter()
+            .find(|item| item.text == "Indent the file.")
+            .unwrap();
+        assert_eq!(user.source, Some(Source::App));
+        let answer = items
+            .iter()
+            .find(|item| item.text == "Two spaces.")
+            .unwrap();
+        assert_eq!(answer.source, Some(Source::App));
+        assert!(
+            items
+                .iter()
+                .any(|item| item.text.contains("can't send images yet")),
+            "{items:?}"
+        );
+        assert!(!items.iter().any(|item| item.text == "Look at this."));
+        tokio::time::timeout(wait, async {
+            while seam.feed.activity().working {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(seam.feed.activity().since, None);
+        seam.input.send(Input::Quit(Some(Vec::new()))).unwrap();
+        assert_eq!(
+            tokio::time::timeout(wait, running.ended)
+                .await
+                .unwrap()
+                .unwrap(),
+            RunEnd::Quit
+        );
     }
 
     /// A session open in another Arko isn't opened: the front end is told

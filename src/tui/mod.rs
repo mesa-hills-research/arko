@@ -77,7 +77,7 @@ pub struct Setup {
     /// The API keys, which the keys menu adds and removes.
     pub keys: Arc<crate::keys::Keys>,
     /// The jobs in the background to ask about: quitting would stop them.
-    pub quit_asks: mpsc::UnboundedReceiver<Vec<arko_agents::terminal::BackgroundJob>>,
+    pub quit_asks: mpsc::UnboundedReceiver<ui::QuitAsk>,
 }
 
 /// The view while it runs.
@@ -341,8 +341,8 @@ async fn run(
         let mut bell = false;
         tokio::select! {
             _ = &mut stop => break,
-            Some(jobs) = setup.quit_asks.recv() => {
-                app.ask_quit(jobs);
+            Some(ask) = setup.quit_asks.recv() => {
+                app.ask_quit(ask.jobs);
                 draw_now = true;
             }
             event = events.next(), if events_open => {
