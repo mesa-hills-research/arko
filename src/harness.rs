@@ -2661,8 +2661,11 @@ pub(crate) mod tests {
     use super::*;
     use crate::agents::{AgentSettings, Effort, ExtraRules, ModelSettings, resolve_model};
     use crate::cli::*;
+    use crate::credentials::Need;
     use crate::inputs::*;
     use crate::options::{Options, SessionChoice};
+    use crate::prompter::{McpApproval, NoPrompter, Prompter};
+    use crate::providers::Failure;
     use crate::shell::WindowsShell;
     use clap::Parser;
 
@@ -2759,7 +2762,7 @@ pub(crate) mod tests {
         let args =
             Args::try_parse_from(["arko", "-m", "cc:opus", "-C", dir, "--handover-at", "300k"])
                 .unwrap();
-        let (settings, _) = new_settings(&args.options().unwrap()).unwrap();
+        let (settings, _) = new_settings(&args.options().unwrap(), &NoPrompter).unwrap();
         assert_eq!(settings.main.handover_at, Some(300_000));
         assert_eq!(settings.worker.handover_at, Some(300_000));
         // Each agent's size is held at 95% of what its model accepts.
@@ -2777,7 +2780,7 @@ pub(crate) mod tests {
             "2000k",
         ])
         .unwrap();
-        let (settings, _) = new_settings(&args.options().unwrap()).unwrap();
+        let (settings, _) = new_settings(&args.options().unwrap(), &NoPrompter).unwrap();
         assert_eq!(settings.main.handover_at, Some(950_000));
         let luna = agents::max_handover(&resolve_model("luna").unwrap(), settings.openai_auth);
         assert_eq!(settings.worker.handover_at, luna);
@@ -2838,6 +2841,71 @@ pub(crate) mod tests {
         assert!(remote.interactive);
         assert_eq!(remote.remote.and_then(|bind| bind.port), Some(9000));
         assert!(options(&["--remote", "nowhere:x"], false).is_err());
+    }
+
+    /// A missing credential is asked for through the prompter, and the
+    /// client is made again after each answer; the prompter's refusal, or
+    /// no one to ask, keeps the session from opening and says why.
+    #[tokio::test]
+    async fn a_missing_key_asks_the_prompter_and_retries() {
+        struct Scripted {
+            asked: Mutex<Vec<Need>>,
+            answers: Mutex<Vec<Result<(), String>>>,
+        }
+        #[async_trait::async_trait]
+        impl Prompter for Scripted {
+            async fn need_credentials(&self, need: &Need) -> Result<(), String> {
+                lock(&self.asked).push(need.clone());
+                lock(&self.answers).remove(0)
+            }
+            async fn approve_project_mcp(&self, _: &McpApproval) -> Result<Option<bool>, String> {
+                Ok(None)
+            }
+            fn note(&self, _: Level, _: &str) {}
+        }
+        let scripted = |answers: Vec<Result<(), String>>| Scripted {
+            asked: Mutex::default(),
+            answers: Mutex::new(answers),
+        };
+        let need = Need::AnthropicKey {
+            model: "claude-opus-4-1".into(),
+        };
+        // Answered twice, and the key is there on the third try.
+        let prompter = scripted(vec![Ok(()), Ok(())]);
+        let mut tries = 0;
+        let client = client_asking(&prompter, || {
+            tries += 1;
+            if tries < 3 {
+                Err(Failure::Need(need.clone()))
+            } else {
+                Ok(LLMClient::new())
+            }
+        })
+        .await;
+        assert!(client.is_ok());
+        assert_eq!(tries, 3);
+        assert_eq!(*lock(&prompter.asked), [need.clone(), need.clone()]);
+        // Cancelled.
+        let prompter = scripted(vec![Err("cancelled".into())]);
+        let error = client_asking(&prompter, || Err(Failure::Need(need.clone())))
+            .await
+            .err()
+            .unwrap();
+        assert_eq!(error, "cancelled");
+        // No one to ask: what the session needs.
+        let error = client_asking(&NoPrompter, || Err(Failure::Need(need.clone())))
+            .await
+            .err()
+            .unwrap();
+        assert_eq!(error, need.message());
+        // Another failure isn't the prompter's.
+        let prompter = scripted(Vec::new());
+        let error = client_asking(&prompter, || Err(Failure::Other("broken".into())))
+            .await
+            .err()
+            .unwrap();
+        assert_eq!(error, "broken");
+        assert!(lock(&prompter.asked).is_empty());
     }
 
     /// `--handover-at` when resuming sets both sizes, as `/handover-at`

@@ -17,11 +17,13 @@ use crate::crew::Crew;
 use crate::harness::{Conversation, Harness, Managers, Prompt, TurnEnd};
 use crate::inputs::{Asker, Inputs};
 use crate::options::{Options, SessionChoice};
+use crate::prompter::Prompter;
 use crate::providers::{Failure, OpenAiAuth};
 use crate::remote::Level;
 use crate::session::{Session, Settings};
 use crate::shell::{Shell, WindowsShell};
 use crate::status::Gauges;
+use crate::terminal::TerminalPrompter;
 use crate::ui::{Input, Output, Stats};
 use crate::{
     agents, credentials, crew, handover, index, keys, mcp, outside, project, providers, remote,
@@ -399,6 +401,7 @@ pub(crate) async fn run(args: Args) -> Result<ExitCode, String> {
         return index::run_command(command.clone(), &root, credentials::var(VOYAGE_KEY)).await;
     }
     let options = args.options()?;
+    let prompter = TerminalPrompter::new(can_ask);
     let remote_bind = options.remote;
     // Why the session doesn't run the last session's models, as Arko said
     // before the session started: the full-screen view opens over it, so
@@ -429,27 +432,39 @@ pub(crate) async fn run(args: Args) -> Result<ExitCode, String> {
                 || options.shell.is_some()
                 || options.openai_auth.is_some()
             {
-                eprintln!(
-                    "arko: a resumed session keeps the models and shell it was started with ({})",
-                    settings.describe(&settings.main)
+                prompter.note(
+                    Level::Warn,
+                    &format!(
+                        "a resumed session keeps the models and shell it was started with ({})",
+                        settings.describe(&settings.main)
+                    ),
                 );
             }
             if options.text_replies.is_some() {
-                eprintln!(
-                    "arko: a resumed session keeps how its main agent ends its turns: {}",
-                    agents::replies_text(settings.text_replies)
+                prompter.note(
+                    Level::Warn,
+                    &format!(
+                        "a resumed session keeps how its main agent ends its turns: {}",
+                        agents::replies_text(settings.text_replies)
+                    ),
                 );
             }
             if options.cc_compact.is_some() {
-                eprintln!(
-                    "arko: a resumed session keeps what its agents in Claude Code do at the handover size: {}",
-                    agents::cc_text(!settings.cc_handover)
+                prompter.note(
+                    Level::Warn,
+                    &format!(
+                        "a resumed session keeps what its agents in Claude Code do at the handover size: {}",
+                        agents::cc_text(!settings.cc_handover)
+                    ),
                 );
             }
             if options.extra_rules.is_some() {
-                eprintln!(
-                    "arko: a resumed session keeps its extra rules for small models: {}",
-                    settings.extra_rules.describe()
+                prompter.note(
+                    Level::Warn,
+                    &format!(
+                        "a resumed session keeps its extra rules for small models: {}",
+                        settings.extra_rules.describe()
+                    ),
                 );
             }
             if !settings.workspace.is_dir() {
@@ -471,10 +486,10 @@ pub(crate) async fn run(args: Args) -> Result<ExitCode, String> {
             (Some(session), settings, false)
         }
         None => {
-            if options.model.is_none() && default_model(&options).is_none() && can_ask {
-                credentials::setup(Some(&Need::Any))?;
+            if options.model.is_none() && default_model(&options).is_none() {
+                prompter.need_credentials(&Need::Any).await?;
             }
-            let (mut settings, note) = new_settings(&options)?;
+            let (mut settings, note) = new_settings(&options, &prompter)?;
             model_note = note;
             let notes = providers::check_openrouter(
                 &mut settings,
@@ -483,7 +498,7 @@ pub(crate) async fn run(args: Args) -> Result<ExitCode, String> {
             )
             .await?;
             for note in notes {
-                eprintln!("arko: {note}");
+                prompter.note(Level::Info, &note);
             }
             (None, settings, true)
         }
@@ -492,29 +507,34 @@ pub(crate) async fn run(args: Args) -> Result<ExitCode, String> {
     // Sessions saved before the shell could be chosen ran PowerShell.
     let shell = Shell::detect(settings.windows_shell.unwrap_or(WindowsShell::Powershell));
     if new && options.shell.is_some() && !cfg!(windows) {
-        eprintln!(
-            "arko: --shell picks the shell on Windows. Here commands run in {}",
-            shell.name
+        prompter.note(
+            Level::Warn,
+            &format!(
+                "--shell picks the shell on Windows. Here commands run in {}",
+                shell.name
+            ),
         );
     }
 
     // Missing credentials, or an auth file that fails, are asked for.
-    let client = loop {
-        match providers::client(options.codex_auth.as_deref(), &settings) {
-            Ok(client) => break Arc::new(client),
-            Err(Failure::Need(need)) if can_ask => credentials::setup(Some(&need))?,
-            Err(Failure::Need(need)) => return Err(need.message()),
-            Err(Failure::Other(message)) => return Err(message),
-        }
-    };
+    let client = Arc::new(
+        client_asking(&prompter, || {
+            providers::client(options.codex_auth.as_deref(), &settings)
+        })
+        .await?,
+    );
     let provider_setup = providers::Setup::new(settings.openai_auth);
     let agent_settings = AgentSettings::for_session(&settings, &provider_setup);
     // Settings the agents can't be built with leave no session behind.
     agents::main_config(&agent_settings)?;
     agents::worker_config(&agent_settings)?;
     // A project's MCP servers are started once the user approves them.
-    let (mcp_servers, mcp_notes) =
-        mcp::servers(&root, &settings.workspace, &options.mcp_config, can_ask)?;
+    let mcp_plan = mcp::plan(&root, &settings.workspace, &options.mcp_config)?;
+    let mcp_answer = match &mcp_plan.approval {
+        Some(approval) => prompter.approve_project_mcp(approval).await?,
+        None => None,
+    };
+    let (mcp_servers, mcp_notes) = mcp_plan.decide(mcp_answer)?;
 
     let session = match session {
         Some(session) => session,
@@ -529,7 +549,10 @@ pub(crate) async fn run(args: Args) -> Result<ExitCode, String> {
         if !options.one_shot
             && let Err(error) = providers::LastModels::remember(&root, &settings)
         {
-            eprintln!("arko: could not keep this session's models for the next one: {error}");
+            prompter.note(
+                Level::Warn,
+                &format!("could not keep this session's models for the next one: {error}"),
+            );
         }
     }
     start_log(&session);
@@ -943,9 +966,27 @@ pub(crate) fn project_from_options(options: &Options, settings: &mut Settings) -
     ) != before
 }
 
+/// The session's client, made by `make`: credentials it lacks are asked for
+/// through `prompter`, and it is made again after each answer.
+pub(crate) async fn client_asking(
+    prompter: &dyn Prompter,
+    mut make: impl FnMut() -> Result<arko_ai::LLMClient, Failure>,
+) -> Result<arko_ai::LLMClient, String> {
+    loop {
+        match make() {
+            Ok(client) => return Ok(client),
+            Err(Failure::Need(need)) => prompter.need_credentials(&need).await?,
+            Err(Failure::Other(message)) => return Err(message),
+        }
+    }
+}
+
 /// A new session's settings, as `options` choose them, and why it doesn't run
 /// the last session's models, if Arko chose others.
-pub(crate) fn new_settings(options: &Options) -> Result<(Settings, Option<String>), String> {
+pub(crate) fn new_settings(
+    options: &Options,
+    prompter: &dyn Prompter,
+) -> Result<(Settings, Option<String>), String> {
     let workspace = workspace(options)?;
     let name = |name: &str| Ok::<_, String>(providers::model_name(&resolve_model(name)?));
     let default = match &options.model {
@@ -983,14 +1024,18 @@ pub(crate) fn new_settings(options: &Options) -> Result<(Settings, Option<String
         let (auth, both) =
             providers::choose_openai_auth(options.openai_auth, options.codex_auth.as_deref())?;
         if both {
-            eprintln!(
-                "arko: this session reaches OpenAI models over your ChatGPT login (your plan), which comes before OPENAI_API_KEY. --openai-auth api-key (or ARKO_OPENAI_AUTH=api-key in a .env file) starts sessions on the API key instead, billed per token"
+            prompter.note(
+                Level::Info,
+                "this session reaches OpenAI models over your ChatGPT login (your plan), which comes before OPENAI_API_KEY. --openai-auth api-key (or ARKO_OPENAI_AUTH=api-key in a .env file) starts sessions on the API key instead, billed per token",
             );
         }
         Some(auth)
     } else {
         if options.openai_auth.is_some() {
-            eprintln!("arko: --openai-auth is for OpenAI models, and this session has none");
+            prompter.note(
+                Level::Warn,
+                "--openai-auth is for OpenAI models, and this session has none",
+            );
         }
         None
     };
@@ -1039,10 +1084,13 @@ pub(crate) fn new_settings(options: &Options) -> Result<(Settings, Option<String
             if let Some(at) = model.handover_at.filter(|at| *at < tokens)
                 && !said.contains(&model.model)
             {
-                eprintln!(
-                    "arko: {} hands over at {}, the largest size Arko allows for its model",
-                    model.model,
-                    handover::shown(at)
+                prompter.note(
+                    Level::Info,
+                    &format!(
+                        "{} hands over at {}, the largest size Arko allows for its model",
+                        model.model,
+                        handover::shown(at)
+                    ),
                 );
                 said.push(model.model.clone());
             }
@@ -1051,8 +1099,9 @@ pub(crate) fn new_settings(options: &Options) -> Result<(Settings, Option<String
     // What sessions read before the handover was set per model.
     let session_handover = main.handover_at.unwrap_or(200_000);
     if options.cache_1h == Some(true) && !main.cache_1h && !worker.cache_1h {
-        eprintln!(
-            "arko: --cache-1h is for Claude models by API key or on OpenRouter (Claude Code chooses its own). This session has none, so it is ignored"
+        prompter.note(
+            Level::Warn,
+            "--cache-1h is for Claude models by API key or on OpenRouter (Claude Code chooses its own). This session has none, so it is ignored",
         );
     }
     let mut settings = Settings {
@@ -1088,7 +1137,7 @@ pub(crate) fn new_settings(options: &Options) -> Result<(Settings, Option<String
         if let Some(reason) = &default.reason {
             line = format!("{line} {reason}");
         }
-        eprintln!("arko: {line}");
+        prompter.note(Level::Info, &line);
         model_note = default.reason;
     }
     Ok((settings, model_note))

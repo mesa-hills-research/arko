@@ -37,7 +37,7 @@ fn new_sessions_compact_unless_the_flag_says_hand_over() {
     let new = |words: &[&str]| {
         let mut all = vec!["-m", "cc:opus", "-C", dir];
         all.extend(words);
-        new_settings(&args(&all)).unwrap().0
+        new_settings(&args(&all), &NoPrompter).unwrap().0
     };
     assert!(!new(&[]).cc_handover);
     assert!(!new(&["--cc-compact"]).cc_handover);

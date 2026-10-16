@@ -37,6 +37,7 @@ mod model_command;
 mod options;
 mod outside;
 mod project;
+mod prompter;
 mod providers;
 mod remote;
 #[cfg(test)]
@@ -46,16 +47,20 @@ mod shell;
 mod skills;
 mod status;
 mod term;
+mod terminal;
 mod tui;
 mod ui;
 
 use std::sync::Mutex;
 
 pub use crate::cli::cli_main;
+pub use crate::credentials::Need;
 pub(crate) use crate::harness::{Conversation, Harness, conversation_of};
 #[cfg(test)]
 pub(crate) use crate::harness::{Managers, tests};
 pub use crate::options::{Options, SessionChoice};
+pub use crate::prompter::{McpApproval, NoPrompter, Prompter};
+pub use crate::remote::Level;
 #[cfg(test)]
 pub(crate) use crate::status::Gauges;
 

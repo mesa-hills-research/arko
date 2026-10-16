@@ -31,8 +31,6 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::ui::Output;
-
 /// The servers set up for every project, in Arko's folder.
 pub const USER_FILE: &str = "mcp.json";
 /// A project's servers, in the working directory (as Claude Code reads it).
@@ -231,66 +229,138 @@ fn environment(name: &str) -> Option<String> {
     std::env::var(name).ok()
 }
 
+/// A project's servers that wait for the user's answer before they start:
+/// what a front end shows when it asks.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct McpApproval {
+    /// The project's `.mcp.json`.
+    pub file: PathBuf,
+    /// Each server's name, and its command line as the file writes it.
+    pub servers: Vec<(String, String)>,
+    /// The servers the file sets up that Arko skips, and why.
+    pub skipped: Vec<String>,
+}
+
+/// The servers to start, as [`plan`] finds them, before the user answers
+/// about the project's (`approval`).
+#[derive(Debug)]
+pub struct Plan {
+    /// The project's servers, when they wait for the user's answer.
+    pub approval: Option<McpApproval>,
+    steps: Vec<Step>,
+    root: PathBuf,
+    workspace: PathBuf,
+}
+
+/// What [`Plan::decide`] does, in order.
+#[derive(Debug)]
+enum Step {
+    /// Starts a file's servers.
+    Add(Parsed),
+    /// Starts the project's servers if the user agrees.
+    Ask(Parsed),
+    Note(String),
+}
+
 /// The servers to start: those in `files` (from `--mcp-config`), in the
-/// project's `.mcp.json` when the user approves them (asked when `ask`),
-/// and in Arko's own `mcp.json`. A name set up twice is taken from the first
-/// of these. The notes say what is left out and why.
-pub fn servers(
-    root: &Path,
-    workspace: &Path,
-    files: &[PathBuf],
-    ask: bool,
-) -> Result<(Vec<Server>, Vec<String>), String> {
-    let mut servers: Vec<Server> = Vec::new();
-    let mut notes = Vec::new();
-    let mut add = |parsed: Parsed, notes: &mut Vec<String>| {
-        for why in parsed.skipped {
-            notes.push(format!("MCP server {why} (skipped)"));
-        }
-        for server in parsed.servers {
-            match servers.iter().find(|taken| taken.name == server.name) {
-                Some(taken) => notes.push(format!(
-                    "MCP server `{}` in {} is also in {}, and Arko starts the one in {}",
-                    server.name,
-                    server.file.display(),
-                    taken.file.display(),
-                    taken.file.display()
-                )),
-                None => servers.push(server),
-            }
-        }
-    };
+/// project's `.mcp.json` when the user approves them, and in Arko's own
+/// `mcp.json`. A name set up twice is taken from the first of these. The
+/// user's answer about the project's servers, unless one is remembered for
+/// them, is for [`Plan::decide`].
+pub fn plan(root: &Path, workspace: &Path, files: &[PathBuf]) -> Result<Plan, String> {
+    let mut steps = Vec::new();
+    let mut approval = None;
     let mut read = HashSet::new();
     for file in files {
         let file = arko_agents::utils::normalize_path(
             &std::path::absolute(file).unwrap_or_else(|_| file.clone()),
         );
-        add(parse_file(&file, &environment)?, &mut notes);
+        steps.push(Step::Add(parse_file(&file, &environment)?));
         read.insert(file);
     }
     let project = workspace.join(PROJECT_FILE);
     if project.is_file() && !read.contains(&project) {
         match parse_file(&project, &environment) {
             Ok(parsed) if parsed.servers.is_empty() && parsed.skipped.is_empty() => {}
-            Ok(parsed) => match approved(root, workspace, &parsed, ask)? {
-                Some(true) => add(parsed, &mut notes),
+            Ok(parsed) => match remembered(root, workspace, &parsed) {
+                Some(true) => steps.push(Step::Add(parsed)),
                 Some(false) => {}
-                None => notes.push(format!(
-                    "the MCP servers in {} aren't started: Arko asks before starting a project's servers, and needs a terminal to ask",
-                    project.display()
-                )),
+                None => {
+                    approval = Some(McpApproval {
+                        file: project.clone(),
+                        servers: parsed
+                            .servers
+                            .iter()
+                            .map(|server| (server.name.clone(), server.shown.clone()))
+                            .collect(),
+                        skipped: parsed.skipped.clone(),
+                    });
+                    steps.push(Step::Ask(parsed));
+                }
             },
-            Err(error) => notes.push(format!("MCP servers not started: {error}")),
+            Err(error) => steps.push(Step::Note(format!("MCP servers not started: {error}"))),
         }
     }
     let user = root.join(USER_FILE);
     if user.is_file() && !read.contains(&user) {
         match parse_file(&user, &environment) {
-            Ok(parsed) => add(parsed, &mut notes),
-            Err(error) => notes.push(format!("MCP servers not started: {error}")),
+            Ok(parsed) => steps.push(Step::Add(parsed)),
+            Err(error) => steps.push(Step::Note(format!("MCP servers not started: {error}"))),
         }
     }
-    Ok((servers, notes))
+    Ok(Plan {
+        approval,
+        steps,
+        root: root.to_path_buf(),
+        workspace: workspace.to_path_buf(),
+    })
+}
+
+impl Plan {
+    /// The servers to start, with `answer` about the project's servers
+    /// (`None`: no one could answer, so they don't start), and the notes
+    /// that say what is left out and why. An answer is remembered until the
+    /// file's servers change.
+    pub fn decide(self, answer: Option<bool>) -> Result<(Vec<Server>, Vec<String>), String> {
+        let mut servers: Vec<Server> = Vec::new();
+        let mut notes = Vec::new();
+        let mut add = |parsed: Parsed, notes: &mut Vec<String>| {
+            for why in parsed.skipped {
+                notes.push(format!("MCP server {why} (skipped)"));
+            }
+            for server in parsed.servers {
+                match servers.iter().find(|taken| taken.name == server.name) {
+                    Some(taken) => notes.push(format!(
+                        "MCP server `{}` in {} is also in {}, and Arko starts the one in {}",
+                        server.name,
+                        server.file.display(),
+                        taken.file.display(),
+                        taken.file.display()
+                    )),
+                    None => servers.push(server),
+                }
+            }
+        };
+        for step in self.steps {
+            match step {
+                Step::Add(parsed) => add(parsed, &mut notes),
+                Step::Note(note) => notes.push(note),
+                Step::Ask(parsed) => match answer {
+                    Some(start) => {
+                        remember(&self.root, &self.workspace, &parsed, start)?;
+                        if start {
+                            add(parsed, &mut notes);
+                        }
+                    }
+                    None => notes.push(format!(
+                        "the MCP servers in {} aren't started: Arko asks before starting a project's servers, and needs a terminal to ask",
+                        self.workspace.join(PROJECT_FILE).display()
+                    )),
+                },
+            }
+        }
+        Ok((servers, notes))
+    }
 }
 
 /// The answers about projects' servers.
@@ -310,31 +380,29 @@ struct Approval {
     servers: Value,
 }
 
-/// Whether to start the project's servers: the remembered answer for these
-/// servers, else the user's (asked when `ask`), else `None`.
-fn approved(
-    root: &Path,
-    workspace: &Path,
-    parsed: &Parsed,
-    ask: bool,
-) -> Result<Option<bool>, String> {
-    let path = root.join(APPROVALS_FILE);
-    let mut approvals: Approvals = std::fs::read_to_string(&path)
+fn approvals(root: &Path) -> Approvals {
+    std::fs::read_to_string(root.join(APPROVALS_FILE))
         .ok()
         .and_then(|text| serde_json::from_str(&text).ok())
-        .unwrap_or_default();
-    let key = workspace.display().to_string();
-    if let Some(approval) = approvals.projects.get(&key)
-        && approval.servers == parsed.raw
-    {
-        return Ok(Some(approval.start));
-    }
-    if !ask {
-        return Ok(None);
-    }
-    let start = ask_to_start(workspace, parsed)?;
+        .unwrap_or_default()
+}
+
+/// The answer remembered for the project's servers, if any (for these
+/// servers: a change to them asks again).
+fn remembered(root: &Path, workspace: &Path, parsed: &Parsed) -> Option<bool> {
+    approvals(root)
+        .projects
+        .get(&workspace.display().to_string())
+        .filter(|approval| approval.servers == parsed.raw)
+        .map(|approval| approval.start)
+}
+
+/// Remembers the user's answer about the project's servers.
+fn remember(root: &Path, workspace: &Path, parsed: &Parsed, start: bool) -> Result<(), String> {
+    let path = root.join(APPROVALS_FILE);
+    let mut approvals = approvals(root);
     approvals.projects.insert(
-        key,
+        workspace.display().to_string(),
         Approval {
             start,
             servers: parsed.raw.clone(),
@@ -345,52 +413,7 @@ fn approved(
     std::fs::create_dir_all(root)
         .and_then(|()| std::fs::write(&temporary, text))
         .and_then(|()| std::fs::rename(&temporary, &path))
-        .map_err(|error| format!("could not save {}: {error}", path.display()))?;
-    Ok(Some(start))
-}
-
-fn ask_to_start(workspace: &Path, parsed: &Parsed) -> Result<bool, String> {
-    let out = Output::new(None, false);
-    out.line("");
-    out.line(&format!(
-        "{} sets up MCP servers. Arko would start these programs on your computer, and give the agents their tools:",
-        workspace.join(PROJECT_FILE).display()
-    ));
-    let width = parsed
-        .servers
-        .iter()
-        .map(|server| server.name.chars().count())
-        .max()
-        .unwrap_or(0);
-    for server in &parsed.servers {
-        out.line(&format!(
-            "  {}  {}",
-            out.bold(&format!("{:width$}", server.name)),
-            crate::ui::cut(&server.shown, 160)
-        ));
-    }
-    for why in &parsed.skipped {
-        out.line(&out.dim(&format!("  (skipped: {why})")));
-    }
-    out.line(&out.dim(
-        "Arko keeps your answer until the file's servers change. `--mcp-config .mcp.json` starts them whatever the answer.",
-    ));
-    let mut editor = rustyline::DefaultEditor::new().map_err(|error| error.to_string())?;
-    loop {
-        match editor.readline("Start them? [y/n] ") {
-            Ok(line) => match line.trim().to_ascii_lowercase().as_str() {
-                "y" | "yes" => return Ok(true),
-                "n" | "no" => return Ok(false),
-                _ => {}
-            },
-            Err(
-                rustyline::error::ReadlineError::Interrupted | rustyline::error::ReadlineError::Eof,
-            ) => {
-                return Err("cancelled".into());
-            }
-            Err(error) => return Err(error.to_string()),
-        }
-    }
+        .map_err(|error| format!("could not save {}: {error}", path.display()))
 }
 
 /// The tool name of `server`'s tool `tool`: `mcp__<server>__<tool>`, with
@@ -791,19 +814,71 @@ mod tests {
             ]
         );
         // A file --mcp-config names must be readable.
-        assert!(
-            super::servers(
-                &root,
-                &workspace,
-                &[temp.path().join("missing.json")],
-                false
-            )
-            .is_err()
+        assert!(plan(&root, &workspace, &[temp.path().join("missing.json")]).is_err());
+    }
+
+    /// The project's servers wait for the front end's answer: the plan
+    /// says what it would ask, the answer starts them or not, and is
+    /// remembered until the file's servers change. With no answer (no one
+    /// can ask), they don't start.
+    #[test]
+    fn project_mcp_servers_wait_for_the_prompters_answer() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("arko");
+        let workspace = temp.path().join("project");
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::write(
+            workspace.join(PROJECT_FILE),
+            r#"{"mcpServers": {"proj": {"command": "project-server", "args": ["--fast"]}, "web": {"url": "https://example.com"}}}"#,
+        )
+        .unwrap();
+        let names = |servers: &[Server]| {
+            servers
+                .iter()
+                .map(|server| server.name.clone())
+                .collect::<Vec<_>>()
+        };
+        let asked = plan(&root, &workspace, &[]).unwrap();
+        let approval = asked.approval.clone().unwrap();
+        assert_eq!(approval.file, workspace.join(PROJECT_FILE));
+        assert_eq!(
+            approval.servers,
+            [("proj".to_string(), "project-server --fast".to_string())]
         );
+        assert_eq!(approval.skipped.len(), 1, "{approval:?}");
+        // No one to ask: they don't start, and nothing is remembered.
+        let (servers, notes) = asked.decide(None).unwrap();
+        assert!(servers.is_empty());
+        assert!(
+            notes.iter().any(|note| note.contains("aren't started")),
+            "{notes:?}"
+        );
+        assert!(plan(&root, &workspace, &[]).unwrap().approval.is_some());
+        // Yes: they start, and the next session doesn't ask.
+        let (servers, _) = plan(&root, &workspace, &[])
+            .unwrap()
+            .decide(Some(true))
+            .unwrap();
+        assert_eq!(names(&servers), ["proj"]);
+        let remembered = plan(&root, &workspace, &[]).unwrap();
+        assert!(remembered.approval.is_none());
+        assert_eq!(names(&remembered.decide(None).unwrap().0), ["proj"]);
+        // Changed, it asks again; no is remembered too.
+        std::fs::write(
+            workspace.join(PROJECT_FILE),
+            r#"{"mcpServers": {"proj": {"command": "other-server"}}}"#,
+        )
+        .unwrap();
+        let changed = plan(&root, &workspace, &[]).unwrap();
+        assert!(changed.approval.is_some());
+        assert!(changed.decide(Some(false)).unwrap().0.is_empty());
+        let refused = plan(&root, &workspace, &[]).unwrap();
+        assert!(refused.approval.is_none());
+        assert!(refused.decide(None).unwrap().0.is_empty());
     }
 
     fn servers_of(root: &Path, workspace: &Path, files: &[PathBuf]) -> (Vec<String>, Vec<String>) {
-        let (servers, notes) = servers(root, workspace, files, false).unwrap();
+        let (servers, notes) = plan(root, workspace, files).unwrap().decide(None).unwrap();
         (
             servers
                 .into_iter()

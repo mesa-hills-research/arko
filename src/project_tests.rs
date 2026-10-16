@@ -84,7 +84,7 @@ fn the_flags_choose_for_new_and_resumed_sessions() {
     let new = |words: &[&str]| {
         let mut all = vec!["-m", "opus", "--no-cache-1h", "-C", dir];
         all.extend(words);
-        new_settings(&args(&all)).unwrap().0
+        new_settings(&args(&all), &NoPrompter).unwrap().0
     };
     let default = new(&[]);
     assert_eq!(default.project_instructions, project::Files::One);
