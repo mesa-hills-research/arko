@@ -340,25 +340,62 @@ impl Editor {
     }
 
     /// The box's rows at `width`: each row's characters (by index), wrapped
-    /// at the width and at line breaks.
+    /// at line breaks and, at the width, at a space: a word that doesn't
+    /// fit moves whole to the next row, and only a word longer than a row
+    /// breaks inside. Spaces stay on the row they end (they show nothing
+    /// past its edge), so the next row starts with the word. A chip is a
+    /// word of its own.
     fn rows(&self, width: usize) -> Vec<Vec<usize>> {
         let width = width.max(2);
         let mut rows: Vec<Vec<usize>> = vec![Vec::new()];
         let mut used = 0;
+        // The word being laid out: where it starts in the row, and the
+        // width of the row before it.
+        let mut word: Option<(usize, usize)> = None;
         for (index, c) in self.text.iter().enumerate() {
             if *c == '\n' {
                 rows.last_mut().unwrap().push(index);
                 rows.push(Vec::new());
                 used = 0;
+                word = None;
                 continue;
             }
             let w = self.width_of(*c);
+            if *c == ' ' || *c == '\t' {
+                rows.last_mut().unwrap().push(index);
+                used += w;
+                word = None;
+                continue;
+            }
+            let chip = self.chip(*c).is_some();
+            if chip {
+                word = None;
+            }
             if used + w > width && used > 0 {
-                rows.push(Vec::new());
-                used = 0;
+                match word {
+                    // The word goes to the next row, unless it began this
+                    // one (it is longer than a row).
+                    Some((at, before)) if at > 0 => {
+                        let moved = rows.last_mut().unwrap().split_off(at);
+                        rows.push(moved);
+                        used -= before;
+                        word = Some((0, 0));
+                    }
+                    _ => {
+                        rows.push(Vec::new());
+                        used = 0;
+                        word = None;
+                    }
+                }
+            }
+            if word.is_none() {
+                word = Some((rows.last().unwrap().len(), used));
             }
             rows.last_mut().unwrap().push(index);
             used += w;
+            if chip {
+                word = None;
+            }
         }
         rows
     }
@@ -652,6 +689,76 @@ mod tests {
         assert!(!e.vertical(true, 20));
         assert!(e.vertical(false, 20));
         assert_eq!(e.position(20), (1, 3));
+    }
+
+    /// The box's rows at `width`, as text.
+    fn rows(e: &Editor, width: usize) -> Vec<String> {
+        e.rows(width)
+            .iter()
+            .map(|row| row.iter().map(|&i| e.text[i]).collect())
+            .collect()
+    }
+
+    /// The box wraps at spaces: a word that crosses the edge moves whole
+    /// to the next row as it is typed, comes back as it is deleted, and
+    /// the cursor stays where it was in the text; only a word longer than
+    /// a row breaks inside.
+    #[test]
+    fn the_box_wraps_whole_words_and_the_cursor_follows() {
+        let mut e = editor();
+        typed(&mut e, "See the wrapp");
+        assert_eq!(rows(&e, 14), ["See the wrapp"]);
+        assert_eq!(e.position(14), (0, 13));
+        typed(&mut e, "ed");
+        assert_eq!(rows(&e, 14), ["See the ", "wrapped"]);
+        assert_eq!(e.position(14), (1, 7));
+        e.backspace();
+        e.backspace();
+        assert_eq!(rows(&e, 14), ["See the wrapp"]);
+        assert_eq!(e.position(14), (0, 13));
+        // Typing inside the word that moved: the cursor stays in it.
+        typed(&mut e, "ed");
+        for _ in 0..3 {
+            e.left();
+        }
+        assert_eq!(e.position(14), (1, 4));
+        e.insert('X');
+        assert_eq!(rows(&e, 14), ["See the ", "wrapXped"]);
+        assert_eq!(e.position(14), (1, 5));
+        e.backspace();
+        // Before the word, after the space the row ends with: the start of
+        // the next row.
+        e.word_left();
+        assert_eq!(e.position(14), (1, 0));
+        // ↑ and ↓ keep the column across the rows.
+        e.end();
+        assert!(e.vertical(true, 14));
+        assert_eq!(e.position(14), (0, 7));
+        assert!(e.vertical(false, 14));
+        assert_eq!(e.position(14), (1, 7));
+        // A word longer than a row breaks inside; spaces at the edge stay
+        // on their row, and the next row starts with the word.
+        let mut e = editor();
+        typed(&mut e, "a abcdefghijklmn");
+        assert_eq!(rows(&e, 6), ["a ", "abcdef", "ghijkl", "mn"]);
+        let mut e = editor();
+        typed(&mut e, "abcde  fg");
+        assert_eq!(rows(&e, 5), ["abcde  ", "fg"]);
+        e.left();
+        e.left();
+        assert_eq!(e.position(5), (1, 0));
+        // A line break starts a row; a word is wrapped within its line.
+        let mut e = editor();
+        typed(&mut e, "one\nMethodology here");
+        assert_eq!(rows(&e, 12), ["one\n", "Methodology ", "here"]);
+        // A chip is a word of its own.
+        let mut e = editor();
+        typed(&mut e, "see ");
+        e.paste(&"x\n".repeat(20));
+        typed(&mut e, "now");
+        assert_eq!(e.shown(), "see [pasted 20 lines]now");
+        assert_eq!(e.rows(20).len(), 2);
+        assert_eq!(e.position(20), (1, 20));
     }
 
     #[test]
