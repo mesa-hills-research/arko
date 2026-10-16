@@ -323,9 +323,14 @@
       case 'output':
         box.append(element('pre', null, item.text));
         break;
-      case 'turn':
-        box.append(element('span', null, item.text));
+      case 'turn': {
+        const line = element('div', 'turn-line');
+        line.append(element('span', null, item.text));
+        box.append(line);
+        // The plan's usage goes under the line whole, instead of wrapping into it.
+        if (item.detail) box.append(element('div', 'turn-plan', item.detail));
         break;
+      }
       case 'worker_line':
         box.className = 'row wline';
         box.append(workerCard(item.worker));
@@ -337,7 +342,7 @@
       default:
         box.append(item.text);
     }
-    if (item.detail && !['call', 'result'].includes(item.kind)) {
+    if (item.detail && !['call', 'result', 'turn'].includes(item.kind)) {
       const details = element('details', 'more');
       details.append(element('summary', null, 'More'), element('pre', null, item.detail));
       box.append(details);
