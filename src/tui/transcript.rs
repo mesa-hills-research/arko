@@ -283,6 +283,7 @@ impl Transcript {
     /// An entry for `item`: an agent's thinking opens as `open_thinking`
     /// says.
     fn entry(&self, item: Item) -> Entry {
+        let item = for_terminal(item);
         let open = self.open_thinking && item.kind == Kind::Thinking;
         Entry {
             open,
@@ -322,7 +323,7 @@ impl Transcript {
             Update::Change(item) => {
                 self.changed(item.id);
                 if let Some(entry) = self.find_mut(item.id) {
-                    entry.item = item;
+                    entry.item = for_terminal(item);
                     entry.cache = None;
                 }
             }
@@ -1134,6 +1135,14 @@ fn columns(line: &Wrapped, from: usize, to: usize) -> String {
         .collect::<String>()
         .trim_end()
         .to_string()
+}
+
+/// `item` without what the terminal doesn't show (a call's parameters and
+/// whole result, for apps), which would stay in memory with it.
+fn for_terminal(mut item: Item) -> Item {
+    item.parameters = None;
+    item.output = None;
+    item
 }
 
 /// Whether `item`'s block folds: a command's whole output, kept, or an

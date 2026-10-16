@@ -33,9 +33,10 @@ struct Budget {
     /// About this many bytes of text.
     bytes: usize,
     /// About this many bytes of commands' whole outputs (an item's
-    /// `whole`), the latest. They don't count in `bytes`, so long outputs
+    /// `whole`) and of calls' parameters and results (`parameters`,
+    /// `output`), the latest. They don't count in `bytes`, so long outputs
     /// don't push items out. Past it, the oldest commands' blocks keep
-    /// their first lines only.
+    /// their first lines only, and the oldest calls their lines.
     wholes: usize,
 }
 
@@ -180,6 +181,21 @@ pub struct Item {
     /// it, and its clones share it.
     #[serde(skip)]
     pub whole: Option<Arc<str>>,
+    /// The tool a `call` calls (`read_file`), for an app's view of it. The
+    /// web page doesn't get it.
+    #[serde(skip)]
+    pub tool: Option<String>,
+    /// A `call`'s parameters, as pretty JSON with its names in order, for
+    /// an app's view of it (an edit's diff, a file written). Neither the
+    /// web page nor the terminal gets them; the latest are kept.
+    #[serde(skip)]
+    pub parameters: Option<Arc<str>>,
+    /// A `call`'s whole result, once it came (a [`Update::Change`] of the
+    /// call), for an app's view of it; a command's output is its block's
+    /// `whole` instead. Neither the web page nor the terminal gets it; the
+    /// latest are kept.
+    #[serde(skip)]
+    pub output: Option<Arc<str>>,
     /// The worker a `worker_line` stands for.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub worker: Option<String>,
@@ -210,6 +226,9 @@ impl Item {
             status: None,
             outcome: None,
             whole: None,
+            tool: None,
+            parameters: None,
+            output: None,
             worker: None,
             from: None,
             call: None,
@@ -247,6 +266,24 @@ impl Item {
     /// The bytes of its whole output.
     pub fn whole_size(&self) -> usize {
         self.whole.as_ref().map_or(0, |whole| whole.len())
+    }
+
+    /// The bytes of what only some clients get: its whole output, a call's
+    /// parameters and result.
+    fn kept_size(&self) -> usize {
+        self.whole_size()
+            + [&self.parameters, &self.output]
+                .into_iter()
+                .map(|part| part.as_ref().map_or(0, |part| part.len()))
+                .sum::<usize>()
+    }
+
+    /// Drops what only some clients get (its whole output, a call's
+    /// parameters and result).
+    fn drop_kept(&mut self) {
+        self.whole = None;
+        self.parameters = None;
+        self.output = None;
     }
 }
 
@@ -490,31 +527,49 @@ struct Inner {
 struct Lane {
     items: VecDeque<Item>,
     bytes: usize,
-    /// The bytes of the items' whole outputs.
+    /// The bytes of the items' whole outputs, calls' parameters and
+    /// results ([`Item::kept_size`]).
     wholes: usize,
 }
 
 impl Lane {
     fn push(&mut self, item: Item, budget: Budget) {
         self.bytes += item.size();
-        self.wholes += item.whole_size();
+        self.wholes += item.kept_size();
         self.items.push_back(item);
         while self.items.len() > budget.items || self.bytes > budget.bytes {
             match self.items.pop_front() {
                 Some(old) => {
                     self.bytes = self.bytes.saturating_sub(old.size());
-                    self.wholes -= old.whole_size();
+                    self.wholes -= old.kept_size();
                 }
                 None => break,
             }
         }
-        // The oldest whole outputs go first.
+        self.keep_wholes(budget);
+    }
+
+    /// The call `id`'s whole result came: it is kept with the latest.
+    fn call_output(&mut self, id: u64, output: Arc<str>, budget: Budget) {
+        let Some(item) = self.find(id) else {
+            return;
+        };
+        let before = item.kept_size();
+        item.output = Some(output);
+        let after = item.kept_size();
+        self.wholes = self.wholes - before + after;
+        self.keep_wholes(budget);
+    }
+
+    /// The items' whole outputs, calls' parameters and results within
+    /// the budget: the oldest go first.
+    fn keep_wholes(&mut self, budget: Budget) {
         for item in self.items.iter_mut() {
             if self.wholes <= budget.wholes {
                 break;
             }
-            self.wholes -= item.whole_size();
-            item.whole = None;
+            self.wholes -= item.kept_size();
+            item.drop_kept();
         }
     }
 
@@ -758,7 +813,11 @@ impl Feed {
         let Some(call) = state.calls.remove(id) else {
             return;
         };
-        if let Some(item) = state.lane(&call.agent).0.find(call.item) {
+        let (lane, budget) = state.lane(&call.agent);
+        if let Some(output) = outcome.output {
+            lane.call_output(call.item, output, budget);
+        }
+        if let Some(item) = lane.find(call.item) {
             item.status = Some(outcome.status);
             item.outcome = outcome.text;
             let item = item.clone();
@@ -787,6 +846,7 @@ impl Feed {
                     status: CallStatus::Failed,
                     text: Some("interrupted".into()),
                     block: None,
+                    output: None,
                 },
             );
         }
@@ -1028,16 +1088,18 @@ impl Feed {
     /// The conversation changes here: `text` says to what ("New
     /// conversation", "Conversation 2 · ...").
     pub fn conversation(&self, text: &str) {
-        let main = self.inner.main.clone();
-        self.add(Item::new(Kind::Conversation, text).agent(main));
+        self.add(Item::new(Kind::Conversation, text));
     }
 
     /// Drops the main agent's items from `from` on (an edited message and
     /// what followed it), and tells the clients.
     pub fn truncate(&self, from: u64) {
         let mut state = self.lock();
-        state.main.items.retain(|item| item.id < from);
-        state.open_text.remove(&self.inner.main);
+        let lane = &mut state.main;
+        lane.items.retain(|item| item.id < from);
+        lane.bytes = lane.items.iter().map(Item::size).sum();
+        lane.wholes = lane.items.iter().map(Item::kept_size).sum();
+        state.open_text.remove(MAIN_AGENT);
         self.send(Update::Truncate { from });
     }
 
@@ -1493,6 +1555,7 @@ mod tests {
         ] if item.text == "0x" && worker.state == WorkerState::Finished));
     }
     use crate::shell::SHELL_TOOL_NAME;
+    use arko_agents::builtins::EDIT_FILE_TOOL_NAME;
 
     fn event(agent: &str, event: AgentEvent) -> WorkflowEvent {
         WorkflowEvent {
@@ -2164,6 +2227,100 @@ mod tests {
         assert!(wholes.iter().sum::<usize>() <= MAIN_BUDGET.wholes);
         assert_eq!(wholes[0], 0);
         assert!(wholes[7] > 0);
+    }
+
+    /// A call names its tool and keeps its parameters and whole result for
+    /// an app's view of it, out of what the web page gets; the latest
+    /// calls keep theirs.
+    #[test]
+    fn calls_keep_their_parameters_and_results_for_apps() {
+        let feed = Feed::new("main");
+        let (_, mut receiver) = feed.subscribe();
+        let edit = |id: Uuid, new: &str| {
+            let parameters = [
+                ("path", "src/a.rs"),
+                ("old_string", "one"),
+                ("new_string", new),
+            ]
+            .map(|(name, value)| (name.to_string(), value.into()));
+            feed.event(
+                &event(
+                    "main",
+                    AgentEvent::ToolCallFormatted {
+                        tool_call_id: id,
+                        tool_name: EDIT_FILE_TOOL_NAME.into(),
+                        parameters: parameters.into(),
+                    },
+                ),
+                None,
+            );
+            let output = format!("Edited src/a.rs at lines 1-1:\n1 | {new}");
+            let result = AgentEvent::ToolResult {
+                tool_call_id: id,
+                tool_name: EDIT_FILE_TOOL_NAME.into(),
+                output,
+            };
+            feed.event(&event("main", result), None);
+        };
+        edit(Uuid::new_v4(), "two");
+        let call = items(&feed).pop().unwrap();
+        assert_eq!(call.tool.as_deref(), Some(EDIT_FILE_TOOL_NAME));
+        assert_eq!(
+            call.parameters.as_deref(),
+            Some(
+                "{\n  \"new_string\": \"two\",\n  \"old_string\": \"one\",\n  \"path\": \"src/a.rs\"\n}"
+            )
+        );
+        assert_eq!(
+            call.output.as_deref(),
+            Some("Edited src/a.rs at lines 1-1:\n1 | two")
+        );
+        assert_eq!(call.outcome.as_deref(), Some("1 edit"));
+        let updates = updates(&mut receiver);
+        assert!(matches!(&updates[0], Update::Item(item)
+            if item.parameters.is_some() && item.output.is_none()));
+        assert!(matches!(&updates[1], Update::Change(item)
+            if item.output.as_deref() == call.output.as_deref()));
+        let json = serde_json::to_value(&call).unwrap();
+        for part in ["tool", "parameters", "output"] {
+            assert!(json.get(part).is_none(), "{json}");
+        }
+        // A command's output is its block's: the call has none.
+        let command = Uuid::new_v4();
+        feed.event(&event("main", shell(command, "true")), None);
+        feed.event(
+            &event("main", result(command, "exit code 0, 0.1 s\nok")),
+            None,
+        );
+        let kept = items(&feed);
+        let call = kept.iter().rfind(|item| item.kind == Kind::Call).unwrap();
+        assert_eq!(call.tool.as_deref(), Some(SHELL_TOOL_NAME));
+        assert_eq!(call.output, None);
+        // A call that failed keeps why.
+        let refused = Uuid::new_v4();
+        feed.event(&event("main", shell(refused, "rm -rf /")), None);
+        let rejection = AgentEvent::ToolRejected {
+            tool_call_id: refused,
+            tool_name: SHELL_TOOL_NAME.into(),
+            reason: Some("Not that.".into()),
+        };
+        feed.event(&event("main", rejection), None);
+        let call = items(&feed).pop().unwrap();
+        assert_eq!(call.output.as_deref(), Some("refused: Not that."));
+        // About a quarter of the budget each: the oldest calls lose theirs.
+        let long = "x".repeat(MAIN_BUDGET.wholes / 4);
+        for _ in 0..6 {
+            edit(Uuid::new_v4(), &long);
+        }
+        let kept: Vec<usize> = items(&feed)
+            .iter()
+            .filter(|item| item.tool.as_deref() == Some(EDIT_FILE_TOOL_NAME))
+            .map(Item::kept_size)
+            .collect();
+        assert_eq!(kept.len(), 7, "the calls stay");
+        assert!(kept.iter().sum::<usize>() <= MAIN_BUDGET.wholes);
+        assert_eq!(kept[0], 0);
+        assert!(kept[6] > 0);
     }
 
     /// Each transcript keeps to its budget: the workers' items don't push

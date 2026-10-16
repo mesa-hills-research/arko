@@ -307,6 +307,7 @@ dependencies = [
  "arko_agents",
  "arko_ai",
  "async-trait",
+ "base64 0.22.1",
  "chrono",
  "log",
  "parking_lot",

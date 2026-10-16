@@ -53,6 +53,7 @@ pub fn items(messages: &[Message], text_replies: bool) -> Vec<Item> {
                             let call = &mut items[index];
                             call.status = Some(outcome.status);
                             call.outcome = outcome.text;
+                            call.output = outcome.output;
                             let call_id = call.id;
                             if let Some(mut block) = outcome.block {
                                 block.call = Some(call_id);

@@ -99,7 +99,7 @@ pub(crate) use crate::harness::{Managers, tests};
 pub use crate::options::{Options, SessionChoice};
 pub use crate::prompter::{McpApproval, NoPrompter, Prompter};
 pub use crate::remote::Level;
-pub use crate::session::Holder;
+pub use crate::session::{Holder, Mode};
 #[cfg(test)]
 pub(crate) use crate::status::Gauges;
 

@@ -4,6 +4,7 @@
 //! each result told in a few words on its call's line.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use arko_agents::builtins::{
     APPLY_DIFF_TOOL_NAME, ASK_USER_TOOL_NAME, EDIT_FILE_TOOL_NAME, LIST_FILES_TOOL_NAME,
@@ -43,8 +44,21 @@ fn flag(parameters: &Parameters, name: &str) -> bool {
 
 /// How a call of an agent (the main one or a worker) shows; `None` for
 /// calls not shown (a question is shown as Arko asks it, a reply or a
-/// worker's report as it ends).
+/// worker's report as it ends). A call's item names its tool and keeps its
+/// parameters, for an app's view of it.
 pub fn call(tool: &str, parameters: &Parameters) -> Option<Item> {
+    let mut item = line(tool, parameters)?;
+    if item.kind == Kind::Call {
+        item.tool = Some(tool.to_string());
+        // (In the order of their names: a `HashMap` has none.)
+        let sorted: std::collections::BTreeMap<_, _> = parameters.iter().collect();
+        item.parameters = serde_json::to_string_pretty(&sorted).ok().map(Into::into);
+    }
+    Some(item)
+}
+
+/// A call's item, as the terminal shows it.
+fn line(tool: &str, parameters: &Parameters) -> Option<Item> {
     let call = |line: String| Item::new(Kind::Call, line);
     Some(match tool {
         "complete_task" | ASK_USER_TOOL_NAME => return None,
@@ -161,6 +175,9 @@ pub struct Outcome {
     pub text: Option<String>,
     /// A block to show under the call: a command's first lines of output.
     pub block: Option<Item>,
+    /// The call's whole result (or why it failed), for an app's view of it
+    /// (the call item's `output`); a command's is its block's `whole`.
+    pub output: Option<Arc<str>>,
 }
 
 impl Outcome {
@@ -170,6 +187,7 @@ impl Outcome {
             status: CallStatus::Ok,
             text: (!text.trim().is_empty()).then_some(text),
             block: None,
+            output: None,
         }
     }
 
@@ -200,6 +218,7 @@ impl Outcome {
             status: CallStatus::Failed,
             text: (!text.is_empty()).then_some(text),
             block,
+            output: (!message.is_empty()).then(|| message.into()),
         }
     }
 }
@@ -215,8 +234,18 @@ fn clip(text: &str, limit: usize) -> String {
 /// The longest outcome on a call's line, in characters.
 const OUTCOME_CHARS: usize = 60;
 
-/// What the result `output` of a call of `tool` says, in brief.
+/// What the result `output` of a call of `tool` says, in brief, with the
+/// whole of it for an app's view of the call.
 pub fn outcome(tool: &str, output: &str) -> Outcome {
+    let mut outcome = brief(tool, output);
+    if tool != SHELL_TOOL_NAME && outcome.output.is_none() && !output.trim().is_empty() {
+        outcome.output = Some(output.into());
+    }
+    outcome
+}
+
+/// What the result `output` of a call of `tool` says, in brief.
+fn brief(tool: &str, output: &str) -> Outcome {
     let lines = || {
         output
             .lines()
@@ -266,6 +295,7 @@ pub fn outcome(tool: &str, output: &str) -> Outcome {
                             .detail(output.lines().skip(1).collect::<Vec<_>>().join("\n"))
                             .level(Level::Warn),
                     ),
+                    output: None,
                 },
                 _ => Outcome::ok(cut(first, OUTCOME_CHARS)),
             }
@@ -363,6 +393,7 @@ fn command_outcome(output: &str) -> Outcome {
         },
         text: Some(cut(&text, OUTCOME_CHARS)).filter(|text| !text.is_empty()),
         block,
+        output: None,
     }
 }
 
