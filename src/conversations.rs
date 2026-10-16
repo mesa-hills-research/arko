@@ -381,6 +381,7 @@ impl Harness {
             self.save_conversations();
         }
         self.publish_conversations();
+        self.feed.conversation("New conversation");
         let mut text = "The next message starts a new conversation.".to_string();
         if !self.conversations.list.is_empty() {
             text.push_str(" /resume goes back to the last one.");
@@ -489,6 +490,16 @@ impl Harness {
             .map(|result| result.task.end_time.unwrap_or(result.task.start_time))
             .map(|at| format!(", last used {}", when(at, Local::now())))
             .unwrap_or_default();
+        let title = self
+            .conversations
+            .list
+            .get(index)
+            .map(|record| record.title.clone())
+            .filter(|title| !title.is_empty());
+        self.feed.conversation(&match title {
+            Some(title) => format!("Conversation {} · {title}", index + 1),
+            None => format!("Conversation {}", index + 1),
+        });
         self.say(
             Level::Info,
             &format!("Back to conversation {}{when}.", index + 1),

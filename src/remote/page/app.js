@@ -351,6 +351,13 @@
         if (item.detail) box.append(element('div', 'turn-plan', item.detail));
         break;
       }
+      case 'conversation': {
+        // Where the conversation changes (/new, /resume): a rule with its name.
+        const line = element('div', 'turn-line');
+        line.append(element('span', null, item.text));
+        box.append(line);
+        break;
+      }
       case 'worker_line':
         box.className = 'row wline';
         box.append(workerCard(item.worker));

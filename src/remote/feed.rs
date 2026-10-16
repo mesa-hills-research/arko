@@ -91,6 +91,11 @@ pub enum Kind {
     /// Where a worker started, in the main transcript: clients draw the
     /// worker's [`WorkerSummary`] there.
     WorkerLine,
+    /// Where the conversation changes (`/new`, `/resume`): what follows is
+    /// another conversation's. A client that shows one conversation at a
+    /// time shows what follows the last of these; one that keeps the whole
+    /// session draws it as a separator.
+    Conversation,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -334,6 +339,9 @@ pub enum Update {
     Worker(WorkerSummary),
     /// The activity changed.
     Activity,
+    /// The main agent's items from `from` on are gone (the conversation was
+    /// cut back to an earlier message): clients drop them too.
+    Truncate { from: u64 },
 }
 
 /// A batched client's updates: see [`Feed::subscribe_batched`].
@@ -427,6 +435,24 @@ pub fn merged(updates: Vec<Update>) -> Vec<Update> {
                     out[at] = None;
                 }
                 out.push(Some(Update::Activity));
+            }
+            Update::Truncate { from } => {
+                // What the batch had of the items cut goes with them.
+                for slot in out.iter_mut() {
+                    let cut = match slot {
+                        Some(Update::Item(item) | Update::Change(item)) => {
+                            item.id >= from && item.is_main()
+                        }
+                        Some(Update::Append { id, .. }) => *id >= from,
+                        _ => false,
+                    };
+                    if cut {
+                        *slot = None;
+                    }
+                }
+                whole.retain(|id, _| *id < from);
+                appended.retain(|id, _| *id < from);
+                out.push(Some(Update::Truncate { from }));
             }
         }
     }
@@ -999,6 +1025,22 @@ impl Feed {
         }
     }
 
+    /// The conversation changes here: `text` says to what ("New
+    /// conversation", "Conversation 2 · ...").
+    pub fn conversation(&self, text: &str) {
+        let main = self.inner.main.clone();
+        self.add(Item::new(Kind::Conversation, text).agent(main));
+    }
+
+    /// Drops the main agent's items from `from` on (an edited message and
+    /// what followed it), and tells the clients.
+    pub fn truncate(&self, from: u64) {
+        let mut state = self.lock();
+        state.main.items.retain(|item| item.id < from);
+        state.open_text.remove(&self.inner.main);
+        self.send(Update::Truncate { from });
+    }
+
     /// What Arko says about the session.
     pub fn notice(&self, level: Level, text: &str) {
         let text = text.trim();
@@ -1347,6 +1389,39 @@ impl Feed {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A cut drops the main agent's items from where it is, for the
+    /// history and the clients; a worker's stay, and a batch forgets what
+    /// it had of the items cut.
+    #[test]
+    fn a_cut_drops_the_main_agents_items_from_there() {
+        let feed = Feed::new("main");
+        let (_, mut batches) = feed.subscribe_batched();
+        let kept = feed.add(Item::new(Kind::User, "first").agent("main"));
+        let cut = feed.add(Item::new(Kind::User, "second").agent("main"));
+        let worker = feed.add(Item::new(Kind::Text, "working").agent("r1"));
+        feed.add(Item::new(Kind::Text, "the reply").agent("main"));
+        feed.conversation("New conversation");
+        feed.truncate(cut);
+        let ids: Vec<u64> = feed
+            .subscribe()
+            .0
+            .items
+            .iter()
+            .map(|item| item.id)
+            .collect();
+        assert_eq!(ids, [kept, worker]);
+        let batch = batches.try_next().unwrap();
+        let ids: Vec<Option<u64>> = batch
+            .iter()
+            .map(|update| match update {
+                Update::Item(item) => Some(item.id),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(ids, [Some(kept), Some(worker), None]);
+        assert!(matches!(batch.last(), Some(Update::Truncate { from }) if *from == cut));
+    }
 
     /// A batched client misses nothing however far behind it falls: 10,000
     /// pieces of text it didn't read come as one item with all of them,

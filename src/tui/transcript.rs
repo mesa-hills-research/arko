@@ -331,6 +331,12 @@ impl Transcript {
                 None => self.workers.push(summary),
             },
             Update::Activity => {}
+            // The main agent's items from `from` on are gone.
+            Update::Truncate { from } => {
+                self.entries
+                    .retain(|entry| entry.item.id < from || !entry.item.is_main());
+                self.selection = None;
+            }
         }
     }
 
@@ -1195,7 +1201,8 @@ impl Filter {
                         | Kind::Message
                         | Kind::Question
                         | Kind::Reply
-                        | Kind::Output => Show::Item,
+                        | Kind::Output
+                        | Kind::Conversation => Show::Item,
                         Kind::Notice if item.level != Some(Level::Info) => Show::Item,
                         // Tool activity is one line a turn that counts the
                         // calls (as the web page shows it).
@@ -1424,7 +1431,7 @@ fn entry_lines(
                 blank(),
             )
         }
-        Kind::Turn => {
+        Kind::Turn | Kind::Conversation => {
             let rule = glyphs::render("─").into_owned();
             let text = match &item.detail {
                 Some(plan) => format!("{rule}{rule} {} · {plan} ", item.text),
@@ -1965,6 +1972,32 @@ mod tests {
                 "",
             ]
         );
+    }
+
+    /// Where the conversation changes, a rule names it, in every view; the
+    /// main agent's items cut from the conversation go, a worker's stay.
+    #[test]
+    fn a_conversation_is_a_rule_and_a_cut_drops_its_items() {
+        let mut t = Transcript::new();
+        t.apply(Update::Item(item(1, Kind::User, "Count the pears")));
+        t.apply(Update::Item(item(
+            2,
+            Kind::Conversation,
+            "New conversation",
+        )));
+        t.apply(Update::Item(item(3, Kind::User, "Now the apples")));
+        t.apply(Update::Item(item(4, Kind::Text, "Five.").agent("r1")));
+        let shown = rows(&mut t, &Filter::Main(View::Messages), 30, 8);
+        let at = |text: &str| shown.iter().position(|row| row.starts_with(text));
+        let (first, rule, next) = (
+            at("▎ Count the pears"),
+            at("  ── New conversation ──"),
+            at("▎ Now the apples"),
+        );
+        assert!(first < rule && rule < next && first.is_some(), "{shown:?}");
+        t.apply(Update::Truncate { from: 2 });
+        let ids: Vec<u64> = t.entries.iter().map(|entry| entry.item.id).collect();
+        assert_eq!(ids, [1, 4], "the worker's item stays");
     }
 
     /// An agent's thinking is one quiet line, its label and its first

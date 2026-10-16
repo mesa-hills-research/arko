@@ -584,6 +584,8 @@ impl Stream {
                     .data(serde_json::to_string(&summary).unwrap_or_default()),
             ),
             Update::Activity => self.send_status(),
+            // The page starts over from the history as it is now.
+            Update::Truncate { .. } => self.reset(),
         }
     }
 

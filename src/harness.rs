@@ -3776,6 +3776,41 @@ pub(crate) mod tests {
         harness.crew.as_ref().unwrap().shutdown().await;
     }
 
+    /// `/new` and `/resume N` mark where the conversation changes in the
+    /// feed: a client showing one conversation at a time starts after the
+    /// mark, one keeping them all draws it as a separator.
+    #[tokio::test]
+    async fn new_and_resume_put_a_separator_in_the_feed() {
+        use crate::mock_model::{ModelServer, complete};
+        let server = ModelServer::start(Arc::new(move |_, _| {
+            Box::pin(async move { complete("1", "Done.") })
+        }))
+        .await;
+        let temp = tempfile::tempdir().unwrap();
+        let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
+        let turn = |text: &str| Prompt::User(text.into());
+        let end = harness.turn(turn("Count the pears."), &mut inputs).await;
+        assert!(matches!(end, TurnEnd::Answered));
+        harness.new_conversation();
+        let end = harness.turn(turn("Count the apples."), &mut inputs).await;
+        assert!(matches!(end, TurnEnd::Answered));
+        harness.resume_command("1").await;
+        let marks: Vec<String> = harness
+            .feed
+            .subscribe()
+            .0
+            .items
+            .into_iter()
+            .filter(|item| item.kind == remote::Kind::Conversation)
+            .map(|item| item.text)
+            .collect();
+        assert_eq!(
+            marks,
+            ["New conversation", "Conversation 1 · Count the pears."]
+        );
+        harness.crew.as_ref().unwrap().shutdown().await;
+    }
+
     /// A resumed conversation's size is in the status before its next
     /// request says it.
     #[tokio::test]
