@@ -68,10 +68,13 @@ pub const COMMANDS: &[Command] = &[
     },
     Command::session("/cost", "what this session has cost"),
     Command::session("/workers", "the workers: what each is doing, or reported"),
-    Command::session(
-        "/stop-workers",
-        "stop the workers running (the agent can resume them)",
-    ),
+    Command {
+        name: "/stop-workers",
+        args: "[WORKER]",
+        about: "stop the workers running, or one of them (the agent can resume them)",
+        aliases: &[],
+        runs: Runs::Session,
+    },
     Command::screen(
         "/watch",
         "WORKER|main",

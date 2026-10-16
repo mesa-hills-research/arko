@@ -1911,6 +1911,21 @@ impl Harness {
                     "Old workers are archived. Start a new Arko session for native workers. /new keeps this session's old tools.",
                 ),
             },
+            stop if stop.split_whitespace().next() == Some("/stop-workers")
+                && stop.split_whitespace().nth(1).is_some() =>
+            {
+                let worker = stop.split_whitespace().nth(1).unwrap_or_default();
+                let stopped = match &self.crew {
+                    Some(crew) => crew.stop(worker, "the user stopped the worker"),
+                    None => Err("This session has no workers.".to_string()),
+                };
+                match stopped {
+                    Ok(()) => out.line(&out.warn(&format!(
+                        "Stopping {worker}: a message from the agent resumes it."
+                    ))),
+                    Err(why) => out.line(&why),
+                }
+            }
             "/stop-workers" => {
                 let stopped = self
                     .crew
@@ -3640,6 +3655,84 @@ pub(crate) mod tests {
             "10,000 ledger entries: a status read {read:?}; a copy of the ledger and its list price {ledger:?}"
         );
         assert!((remote::Meter::read(harness.gauges.as_ref()).cost - 1.0).abs() < 1e-6);
+    }
+
+    /// `/stop-workers WORKER` stops that one; a worker not running, or none
+    /// by that name, is said.
+    #[tokio::test]
+    async fn one_worker_is_stopped_by_name() {
+        use crate::mock_model::{ModelServer, complete, tool_call};
+        #[derive(Clone, Default)]
+        struct Printed(Arc<Mutex<Vec<String>>>);
+        impl ui::Printer for Printed {
+            fn print(&mut self, text: String) -> Result<(), ()> {
+                self.0
+                    .lock()
+                    .unwrap()
+                    .extend(text.lines().map(str::to_string));
+                Ok(())
+            }
+        }
+        let hold = Arc::new(tokio::sync::Notify::new());
+        let server = ModelServer::start(Arc::new({
+            let hold = hold.clone();
+            move |_, body: String| {
+                let hold = hold.clone();
+                Box::pin(async move {
+                    if body.contains("You are agent run r1") {
+                        hold.notified().await;
+                        complete("w", "Counted.")
+                    } else if body.contains("Started r1") {
+                        complete("m2", "r1 is counting.")
+                    } else {
+                        tool_call(
+                            "m1",
+                            crew::START_AGENT,
+                            serde_json::json!({"agent": WORKER, "task": "Count the files."}),
+                        )
+                    }
+                })
+            }
+        }))
+        .await;
+        let temp = tempfile::tempdir().unwrap();
+        let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), false);
+        let end = harness
+            .turn(Prompt::User("How many files?".into()), &mut inputs)
+            .await;
+        assert!(matches!(end, TurnEnd::Answered));
+        let crew = harness.crew.clone().unwrap();
+        assert_eq!(crew.running(), ["r1"]);
+        let printed = Printed::default();
+        harness.output = Arc::new(Output::new(Some(Box::new(printed.clone())), false));
+        let said = |command: &str, harness: &Harness| {
+            harness.command(command);
+            printed
+                .0
+                .lock()
+                .unwrap()
+                .last()
+                .cloned()
+                .unwrap_or_default()
+        };
+        assert_eq!(
+            said("/stop-workers r9", &harness),
+            "There is no worker r9. /workers lists them."
+        );
+        assert_eq!(
+            said("/stop-workers r1", &harness),
+            "Stopping r1: a message from the agent resumes it."
+        );
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while !crew.running().is_empty() {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(said("/stop-workers r1", &harness), "r1 isn't running.");
+        assert_eq!(command("/stop-workers r1"), Some("/stop-workers r1"));
+        crew.shutdown().await;
     }
 
     /// The status gives what the main agent's model accepts from the start,

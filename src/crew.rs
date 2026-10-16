@@ -668,6 +668,27 @@ impl Crew {
             .collect()
     }
 
+    /// Stops the worker `id` (r1, r2, ...), when it is running; else says
+    /// why not.
+    pub fn stop(&self, id: &str, reason: &str) -> Result<(), String> {
+        let workflow = self
+            .workflow()
+            .ok_or_else(|| "No worker is running.".to_string())?;
+        if let Some(run) = workflow
+            .active_subagents()
+            .iter()
+            .find(|run| run.handle == id)
+            && workflow.stop_subagent(run.run_id, StopRequest::operator(reason))
+        {
+            return Ok(());
+        }
+        Err(if workflow.subagents().iter().any(|run| run.handle == id) {
+            format!("{id} isn't running.")
+        } else {
+            format!("There is no worker {id}. /workers lists them.")
+        })
+    }
+
     pub fn stop_all(&self, reason: &str) -> usize {
         self.workflow().map_or(0, |workflow| {
             workflow

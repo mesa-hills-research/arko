@@ -458,6 +458,8 @@ impl App {
                 .iter()
                 .map(|worker| worker.id.clone())
                 .collect(),
+            // The workers running.
+            ("/stop-workers", []) => self.reading.workers_running.clone(),
             ("/keys", ["add" | "remove"]) => crate::credentials::KEYS
                 .iter()
                 .map(|key| key.id.to_string())
