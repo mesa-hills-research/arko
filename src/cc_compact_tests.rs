@@ -7,8 +7,10 @@
 
 use crate::mock_model::{ModelServer, complete};
 
-fn args(words: &[&str]) -> Args {
+fn args(words: &[&str]) -> Options {
     Args::parse_from(std::iter::once("arko").chain(words.iter().copied()))
+        .options()
+        .unwrap()
 }
 
 /// The feed's items of `kind`, oldest first.
@@ -35,7 +37,7 @@ fn new_sessions_compact_unless_the_flag_says_hand_over() {
     let new = |words: &[&str]| {
         let mut all = vec!["-m", "cc:opus", "-C", dir];
         all.extend(words);
-        new_settings(&args(&all)).unwrap()
+        new_settings(&args(&all)).unwrap().0
     };
     assert!(!new(&[]).cc_handover);
     assert!(!new(&["--cc-compact"]).cc_handover);

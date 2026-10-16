@@ -16,7 +16,7 @@ use crate::credentials::{Need, VOYAGE_KEY};
 use crate::crew::Crew;
 use crate::harness::{Conversation, Harness, Managers, Prompt, TurnEnd};
 use crate::inputs::{Asker, Inputs};
-use crate::lock;
+use crate::options::{Options, SessionChoice};
 use crate::providers::{Failure, OpenAiAuth};
 use crate::remote::Level;
 use crate::session::{Session, Settings};
@@ -270,6 +270,70 @@ pub(crate) enum Command {
     },
 }
 
+impl Args {
+    /// The session these flags ask for.
+    pub(crate) fn options(&self) -> Result<Options, String> {
+        use std::io::IsTerminal;
+        self.options_at(std::io::stdin().is_terminal() && std::io::stdout().is_terminal())
+    }
+
+    /// The session these flags ask for, with standard input and output a
+    /// terminal or not (`terminal`).
+    pub(crate) fn options_at(&self, terminal: bool) -> Result<Options, String> {
+        let one_shot = self.prompt.is_some();
+        Ok(Options {
+            root: None,
+            session: match (&self.resume, self.continue_latest) {
+                (Some(id), _) => SessionChoice::Resume(id.clone()),
+                (None, true) => SessionChoice::ContinueLatest,
+                (None, false) => SessionChoice::New,
+            },
+            workspace: self.workspace.clone(),
+            model: self.model.clone(),
+            effort: self.effort,
+            fast: self.fast,
+            worker_model: self.worker_model.clone(),
+            worker_effort: self.worker_effort,
+            worker_fast: self.worker_fast,
+            cache_1h: flag(self.cache_1h, self.no_cache_1h),
+            text_replies: flag(self.text_replies, self.no_text_replies),
+            cc_compact: flag(self.cc_compact, self.no_cc_compact),
+            extra_rules: flag(self.extra_rules, self.no_extra_rules)
+                .map(|on| if on { ExtraRules::All } else { ExtraRules::Off }),
+            project_instructions: self.project_instructions,
+            worker_project_instructions: flag(
+                self.worker_project_instructions,
+                self.no_worker_project_instructions,
+            ),
+            workers: self.workers,
+            handover_at: self.handover_at,
+            allow_outside_workspace: self.allow_outside_workspace,
+            background_after: self.background_after,
+            show_thinking: self.show_thinking,
+            codex_auth: self.codex_auth.clone(),
+            openai_auth: self.openai_auth,
+            shell: self.shell,
+            mcp_config: self.mcp_config.clone(),
+            remote: self.remote.as_deref().map(remote::parse_bind).transpose()?,
+            one_shot,
+            // At the full screen or the line prompt, or on the web page.
+            interactive: !one_shot && (terminal || self.remote.is_some()),
+            title: self.prompt.as_deref().map(|prompt| ui::cut(prompt, 80)),
+        })
+    }
+}
+
+/// What a flag and its `--no-` form say: `None` when neither is given.
+fn flag(on: bool, off: bool) -> Option<bool> {
+    if on {
+        Some(true)
+    } else if off {
+        Some(false)
+    } else {
+        None
+    }
+}
+
 /// The `arko` command: reads the command line, runs what it asks for, and
 /// says how it ended.
 pub fn cli_main() -> ExitCode {
@@ -323,51 +387,55 @@ pub(crate) async fn run(args: Args) -> Result<ExitCode, String> {
     if let Some(Command::Index { command }) = &args.command {
         return index::run_command(command.clone(), &root, credentials::var(VOYAGE_KEY)).await;
     }
-    let remote_bind = args.remote.as_deref().map(remote::parse_bind).transpose()?;
+    let options = args.options()?;
+    let remote_bind = options.remote;
+    // Why the session doesn't run the last session's models, as Arko said
+    // before the session started: the full-screen view opens over it, so
+    // its banner says it again.
+    let mut model_note = None;
 
     // The session: resumed with the settings it was started with, or new.
-    let resumed = if let Some(id) = &args.resume {
-        Some(Session::open(&root, id)?)
-    } else if args.continue_latest {
-        let workspace = workspace(&args)?;
-        Some(session::latest_in(&root, &workspace).ok_or_else(|| {
-            format!(
-                "no session to continue in {}. `arko --sessions` lists them",
-                workspace.display()
-            )
-        })?)
-    } else {
-        None
+    let resumed = match &options.session {
+        SessionChoice::Resume(id) => Some(Session::open(&root, id)?),
+        SessionChoice::ContinueLatest => {
+            let workspace = workspace(&options)?;
+            Some(session::latest_in(&root, &workspace).ok_or_else(|| {
+                format!(
+                    "no session to continue in {}. `arko --sessions` lists them",
+                    workspace.display()
+                )
+            })?)
+        }
+        SessionChoice::New => None,
     };
     let (session, settings, new) = match resumed {
         Some(session) => {
             let mut settings = session.load_settings()?;
-            if args.model.is_some()
-                || args.worker_model.is_some()
-                || args.fast
-                || args.cache_1h
-                || args.no_cache_1h
-                || args.shell.is_some()
-                || args.openai_auth.is_some()
+            if options.model.is_some()
+                || options.worker_model.is_some()
+                || options.fast
+                || options.cache_1h.is_some()
+                || options.shell.is_some()
+                || options.openai_auth.is_some()
             {
                 eprintln!(
                     "arko: a resumed session keeps the models and shell it was started with ({})",
                     settings.describe(&settings.main)
                 );
             }
-            if args.text_replies || args.no_text_replies {
+            if options.text_replies.is_some() {
                 eprintln!(
                     "arko: a resumed session keeps how its main agent ends its turns: {}",
                     agents::replies_text(settings.text_replies)
                 );
             }
-            if args.cc_compact || args.no_cc_compact {
+            if options.cc_compact.is_some() {
                 eprintln!(
                     "arko: a resumed session keeps what its agents in Claude Code do at the handover size: {}",
                     agents::cc_text(!settings.cc_handover)
                 );
             }
-            if args.extra_rules || args.no_extra_rules {
+            if options.extra_rules.is_some() {
                 eprintln!(
                     "arko: a resumed session keeps its extra rules for small models: {}",
                     settings.extra_rules.describe()
@@ -381,10 +449,10 @@ pub(crate) async fn run(args: Args) -> Result<ExitCode, String> {
             }
             // The project's instructions can change at any time, and so can
             // when commands move to the background.
-            let background = args.background_after.is_some_and(|after| {
+            let background = options.background_after.is_some_and(|after| {
                 std::mem::replace(&mut settings.background_after, after) != after
             });
-            if project_from_args(&args, &mut settings) | background {
+            if project_from_options(&options, &mut settings) | background {
                 session
                     .save_settings(&settings)
                     .map_err(|error| format!("could not save the session: {error}"))?;
@@ -392,13 +460,14 @@ pub(crate) async fn run(args: Args) -> Result<ExitCode, String> {
             (Some(session), settings, false)
         }
         None => {
-            if args.model.is_none() && default_model(&args).is_none() && can_ask {
+            if options.model.is_none() && default_model(&options).is_none() && can_ask {
                 credentials::setup(Some(&Need::Any))?;
             }
-            let mut settings = new_settings(&args)?;
+            let (mut settings, note) = new_settings(&options)?;
+            model_note = note;
             let notes = providers::check_openrouter(
                 &mut settings,
-                args.handover_at.is_some(),
+                options.handover_at.is_some(),
                 providers::openrouter_url(),
             )
             .await?;
@@ -411,7 +480,7 @@ pub(crate) async fn run(args: Args) -> Result<ExitCode, String> {
 
     // Sessions saved before the shell could be chosen ran PowerShell.
     let shell = Shell::detect(settings.windows_shell.unwrap_or(WindowsShell::Powershell));
-    if new && args.shell.is_some() && !cfg!(windows) {
+    if new && options.shell.is_some() && !cfg!(windows) {
         eprintln!(
             "arko: --shell picks the shell on Windows. Here commands run in {}",
             shell.name
@@ -420,7 +489,7 @@ pub(crate) async fn run(args: Args) -> Result<ExitCode, String> {
 
     // Missing credentials, or an auth file that fails, are asked for.
     let client = loop {
-        match providers::client(args.codex_auth.as_deref(), &settings) {
+        match providers::client(options.codex_auth.as_deref(), &settings) {
             Ok(client) => break Arc::new(client),
             Err(Failure::Need(need)) if can_ask => credentials::setup(Some(&need))?,
             Err(Failure::Need(need)) => return Err(need.message()),
@@ -434,7 +503,7 @@ pub(crate) async fn run(args: Args) -> Result<ExitCode, String> {
     agents::worker_config(&agent_settings)?;
     // A project's MCP servers are started once the user approves them.
     let (mcp_servers, mcp_notes) =
-        mcp::servers(&root, &settings.workspace, &args.mcp_config, can_ask)?;
+        mcp::servers(&root, &settings.workspace, &options.mcp_config, can_ask)?;
 
     let session = match session {
         Some(session) => session,
@@ -446,7 +515,7 @@ pub(crate) async fn run(args: Args) -> Result<ExitCode, String> {
             .save_settings(&settings)
             .map_err(|error| format!("could not save the session: {error}"))?;
         // The next session's default; see `providers::LastModels::remember`.
-        if args.prompt.is_none()
+        if !options.one_shot
             && let Err(error) = providers::LastModels::remember(&root, &settings)
         {
             eprintln!("arko: could not keep this session's models for the next one: {error}");
@@ -461,10 +530,10 @@ pub(crate) async fn run(args: Args) -> Result<ExitCode, String> {
         managers.list(),
         settings.workspace.clone(),
     ));
-    let one_shot = args.prompt.is_some();
+    let one_shot = options.one_shot;
     managers
         .background
-        .set_after(background_after_for(&args, settings.background_after));
+        .set_after(background_after_for(&options, settings.background_after));
 
     // MCP servers, skills and search indexes: what goes wrong with them is
     // said, and the session goes on without.
@@ -678,8 +747,8 @@ pub(crate) async fn run(args: Args) -> Result<ExitCode, String> {
     harness.open(!new)?;
     harness.start_new_workers();
     harness.publish_models();
-    harness.outside_at_start(new, args.allow_outside_workspace);
-    if !new && let Some(tokens) = args.handover_at {
+    harness.outside_at_start(new, options.allow_outside_workspace);
+    if !new && let Some(tokens) = options.handover_at {
         harness.handover_at_start(tokens);
     }
     if one_shot && let Some(note) = &harness.unoffered {
@@ -734,7 +803,7 @@ pub(crate) async fn run(args: Args) -> Result<ExitCode, String> {
                             .handover_at
                             .unwrap_or(harness.settings.handover_at),
                         // (With what Arko said before the screen opened.)
-                        banner: harness.header(lock(&MODEL_NOTE).take()),
+                        banner: harness.header(model_note.take()),
                         keys: harness.keys.clone(),
                         quit_asks,
                     },
@@ -797,14 +866,9 @@ pub(crate) async fn run(args: Args) -> Result<ExitCode, String> {
     Ok(code)
 }
 
-/// Why the session doesn't run the last session's models, as Arko said
-/// before the session started: the full-screen view opens over it, so its
-/// banner says it again.
-pub(crate) static MODEL_NOTE: Mutex<Option<String>> = Mutex::new(None);
-
-/// The working directory the flags name, made absolute.
-pub(crate) fn workspace(args: &Args) -> Result<PathBuf, String> {
-    let path = match &args.workspace {
+/// The working directory the options name, made absolute.
+pub(crate) fn workspace(options: &Options) -> Result<PathBuf, String> {
+    let path = match &options.workspace {
         Some(path) => path.clone(),
         None => std::env::current_dir().map_err(|error| error.to_string())?,
     };
@@ -819,24 +883,22 @@ pub(crate) fn workspace(args: &Args) -> Result<PathBuf, String> {
 /// Whether a new session's main agent ends its turns with a reply in plain
 /// text: as `--text-replies` or `--no-text-replies` says, else when the
 /// user takes part in the session as it runs, at the full screen or the
-/// line prompt (`terminal`: standard input and output are a terminal) or
-/// on the web page. Not with -p, nor with lines piped in (each runs as a
-/// turn of its own): with no one there to say "go on", a reply that wasn't
-/// meant to end the work would end the run.
-pub(crate) fn text_replies_for(args: &Args, terminal: bool) -> bool {
-    if args.text_replies || args.no_text_replies {
-        return args.text_replies;
-    }
-    args.prompt.is_none() && (args.remote.is_some() || terminal)
+/// line prompt, on the web page or in an app. Not with -p, nor with lines
+/// piped in (each runs as a turn of its own): with no one there to say "go
+/// on", a reply that wasn't meant to end the work would end the run.
+pub(crate) fn text_replies_for(options: &Options) -> bool {
+    options
+        .text_replies
+        .unwrap_or(!options.one_shot && options.interactive)
 }
 
 /// After how many seconds this run's shell commands move to the background
 /// (0: never): as the flag says, else never with -p (Arko exits when the
 /// agent finishes, jobs or not), else as the session keeps it (`saved`).
-pub(crate) fn background_after_for(args: &Args, saved: u64) -> u64 {
-    match args.background_after {
+pub(crate) fn background_after_for(options: &Options, saved: u64) -> u64 {
+    match options.background_after {
         Some(after) => after,
-        None if args.prompt.is_some() => 0,
+        None if options.one_shot => 0,
         None => saved,
     }
 }
@@ -844,31 +906,23 @@ pub(crate) fn background_after_for(args: &Args, saved: u64) -> u64 {
 /// Which agents of a new session get the extra rules for small models: as
 /// `--extra-rules` (all) or `--no-extra-rules` (none) says, else those on
 /// small models.
-pub(crate) fn extra_rules_for(args: &Args) -> ExtraRules {
-    if args.extra_rules {
-        ExtraRules::All
-    } else if args.no_extra_rules {
-        ExtraRules::Off
-    } else {
-        ExtraRules::Small
-    }
+pub(crate) fn extra_rules_for(options: &Options) -> ExtraRules {
+    options.extra_rules.unwrap_or(ExtraRules::Small)
 }
 
-/// The project's instructions as the flags choose them, over `settings`'
+/// The project's instructions as the options choose them, over `settings`'
 /// own: a new session's defaults (one file, workers get it), or a resumed
 /// session's. Returns whether they changed.
-pub(crate) fn project_from_args(args: &Args, settings: &mut Settings) -> bool {
+pub(crate) fn project_from_options(options: &Options, settings: &mut Settings) -> bool {
     let before = (
         settings.project_instructions,
         settings.worker_project_instructions,
     );
-    if let Some(files) = args.project_instructions {
+    if let Some(files) = options.project_instructions {
         settings.project_instructions = files;
     }
-    if args.worker_project_instructions {
-        settings.worker_project_instructions = true;
-    } else if args.no_worker_project_instructions {
-        settings.worker_project_instructions = false;
+    if let Some(workers) = options.worker_project_instructions {
+        settings.worker_project_instructions = workers;
     }
     (
         settings.project_instructions,
@@ -876,30 +930,31 @@ pub(crate) fn project_from_args(args: &Args, settings: &mut Settings) -> bool {
     ) != before
 }
 
-pub(crate) fn new_settings(args: &Args) -> Result<Settings, String> {
-    let workspace = workspace(args)?;
+/// A new session's settings, as `options` choose them, and why it doesn't run
+/// the last session's models, if Arko chose others.
+pub(crate) fn new_settings(options: &Options) -> Result<(Settings, Option<String>), String> {
+    let workspace = workspace(options)?;
     let name = |name: &str| Ok::<_, String>(providers::model_name(&resolve_model(name)?));
-    let default = match &args.model {
+    let default = match &options.model {
         Some(_) => None,
-        None => Some(default_model(args).ok_or_else(|| Need::Any.message())?),
+        None => Some(default_model(options).ok_or_else(|| Need::Any.message())?),
     };
-    let main_model = match (&args.model, &default) {
+    let main_model = match (&options.model, &default) {
         (Some(model), _) => name(model)?,
         (None, Some(default)) => name(&default.main)?,
         (None, None) => unreachable!("a default without --model"),
     };
     // The 1-hour cache is Anthropic's, by API key or on OpenRouter; other
     // models ignore it.
-    let want_1h = if args.cache_1h || args.no_cache_1h {
-        args.cache_1h
-    } else {
-        credentials::switch(credentials::CACHE_1H)?.unwrap_or(false)
+    let want_1h = match options.cache_1h {
+        Some(on) => on,
+        None => credentials::switch(credentials::CACHE_1H)?.unwrap_or(false),
     };
     let cache_1h = |id: &str| {
         want_1h && resolve_model(id).is_ok_and(|model| providers::takes_cache_ttl(&model))
     };
     // The last session's workers' model goes with its main model.
-    let worker_model = match &args.worker_model {
+    let worker_model = match &options.worker_model {
         Some(model) => Some(name(model)?),
         None => default
             .as_ref()
@@ -913,7 +968,7 @@ pub(crate) fn new_settings(args: &Args) -> Result<Settings, String> {
         .any(|id| resolve_model(id).is_ok_and(|model| model.provider == arko_ai::Provider::OpenAI));
     let openai_auth = if uses_openai {
         let (auth, both) =
-            providers::choose_openai_auth(args.openai_auth, args.codex_auth.as_deref())?;
+            providers::choose_openai_auth(options.openai_auth, options.codex_auth.as_deref())?;
         if both {
             eprintln!(
                 "arko: this session reaches OpenAI models over your ChatGPT login (your plan), which comes before OPENAI_API_KEY. --openai-auth api-key (or ARKO_OPENAI_AUTH=api-key in a .env file) starts sessions on the API key instead, billed per token"
@@ -921,7 +976,7 @@ pub(crate) fn new_settings(args: &Args) -> Result<Settings, String> {
         }
         Some(auth)
     } else {
-        if args.openai_auth.is_some() {
+        if options.openai_auth.is_some() {
             eprintln!("arko: --openai-auth is for OpenAI models, and this session has none");
         }
         None
@@ -931,7 +986,7 @@ pub(crate) fn new_settings(args: &Args) -> Result<Settings, String> {
     // for, as /handover-at holds it.
     let handover_at = |id: &str| {
         let model = resolve_model(id).ok();
-        match args.handover_at {
+        match options.handover_at {
             Some(tokens) => Some(
                 model
                     .as_ref()
@@ -945,8 +1000,8 @@ pub(crate) fn new_settings(args: &Args) -> Result<Settings, String> {
         cache_1h: cache_1h(&main_model),
         handover_at: handover_at(&main_model),
         model: main_model,
-        effort: args.effort,
-        fast: args.fast,
+        effort: options.effort,
+        fast: options.fast,
     };
     // A workers' model of their own (`--worker-model`, or the last
     // session's) doesn't follow the main agent's.
@@ -956,16 +1011,16 @@ pub(crate) fn new_settings(args: &Args) -> Result<Settings, String> {
             cache_1h: cache_1h(&model),
             handover_at: handover_at(&model),
             model,
-            effort: args.worker_effort.unwrap_or(args.effort),
-            fast: args.worker_fast,
+            effort: options.worker_effort.unwrap_or(options.effort),
+            fast: options.worker_fast,
         },
         None => ModelSettings {
-            effort: args.worker_effort.unwrap_or(main.effort),
+            effort: options.worker_effort.unwrap_or(main.effort),
             ..main.clone()
         },
     };
     // A size given that a model holds lower is said.
-    if let Some(tokens) = args.handover_at {
+    if let Some(tokens) = options.handover_at {
         let mut said = Vec::new();
         for model in [&main, &worker] {
             if let Some(at) = model.handover_at.filter(|at| *at < tokens)
@@ -982,59 +1037,53 @@ pub(crate) fn new_settings(args: &Args) -> Result<Settings, String> {
     }
     // What sessions read before the handover was set per model.
     let session_handover = main.handover_at.unwrap_or(200_000);
-    if args.cache_1h && !main.cache_1h && !worker.cache_1h {
+    if options.cache_1h == Some(true) && !main.cache_1h && !worker.cache_1h {
         eprintln!(
             "arko: --cache-1h is for Claude models by API key or on OpenRouter (Claude Code chooses its own). This session has none, so it is ignored"
         );
     }
-    let text_replies = {
-        use std::io::IsTerminal;
-        text_replies_for(
-            args,
-            std::io::stdin().is_terminal() && std::io::stdout().is_terminal(),
-        )
-    };
     let mut settings = Settings {
-        text_replies,
-        cc_handover: args.no_cc_compact,
-        extra_rules: extra_rules_for(args),
+        text_replies: text_replies_for(options),
+        cc_handover: options.cc_compact == Some(false),
+        extra_rules: extra_rules_for(options),
         project_instructions: Default::default(),
         worker_project_instructions: true,
         workspace,
         main,
         worker,
-        max_workers: args.workers.unwrap_or(NO_LIMIT),
+        max_workers: options.workers.unwrap_or(NO_LIMIT),
         handover_at: session_handover,
         main_handover_at: None,
         workers_handover_at: None,
-        allow_outside_workspace: args.allow_outside_workspace,
-        show_thinking: args.show_thinking,
+        allow_outside_workspace: options.allow_outside_workspace,
+        show_thinking: options.show_thinking,
         created: chrono::Utc::now(),
-        windows_shell: Some(windows_shell(args)?),
-        title: args.prompt.as_deref().map(|prompt| ui::cut(prompt, 80)),
+        windows_shell: Some(windows_shell(options)?),
+        title: options.title.clone(),
         openai_auth,
         own_worker_model,
-        background_after: background_after_for(args, shell::DEFAULT_BACKGROUND_AFTER),
+        background_after: background_after_for(options, shell::DEFAULT_BACKGROUND_AFTER),
     };
-    project_from_args(args, &mut settings);
+    project_from_options(options, &mut settings);
     providers::check_openai_choices(&settings)?;
     // The model Arko chose: the last session's, else one the credentials
     // allow.
-    if let Some(default) = &default {
+    let mut model_note = None;
+    if let Some(default) = default {
         let mut line = format!("This session runs {}.", settings.describe(&settings.main));
         if let Some(reason) = &default.reason {
             line = format!("{line} {reason}");
         }
         eprintln!("arko: {line}");
-        *lock(&MODEL_NOTE) = default.reason.clone();
+        model_note = default.reason;
     }
-    Ok(settings)
+    Ok((settings, model_note))
 }
 
 /// The shell a new session runs commands in on Windows: --shell, else
 /// ARKO_SHELL, else cmd.exe.
-pub(crate) fn windows_shell(args: &Args) -> Result<WindowsShell, String> {
-    if let Some(shell) = args.shell {
+pub(crate) fn windows_shell(options: &Options) -> Result<WindowsShell, String> {
+    if let Some(shell) = options.shell {
         return Ok(shell);
     }
     match credentials::var(credentials::SHELL) {
@@ -1046,8 +1095,12 @@ pub(crate) fn windows_shell(args: &Args) -> Result<WindowsShell, String> {
 
 /// The models of a new session without --model; `None` without
 /// credentials.
-pub(crate) fn default_model(args: &Args) -> Option<providers::DefaultModels> {
-    providers::default_models(args.codex_auth.as_deref(), &session::data_root().ok()?)
+pub(crate) fn default_model(options: &Options) -> Option<providers::DefaultModels> {
+    let root = match &options.root {
+        Some(root) => root.clone(),
+        None => session::data_root().ok()?,
+    };
+    providers::default_models(options.codex_auth.as_deref(), &root)
 }
 
 /// Logs go to the session's `arko.log`, not the terminal. `RUST_LOG` sets

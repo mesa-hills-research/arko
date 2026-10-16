@@ -91,8 +91,10 @@ fn tools_of(body: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
-fn args(words: &[&str]) -> Args {
+fn args(words: &[&str], terminal: bool) -> Options {
     Args::parse_from(std::iter::once("arko").chain(words.iter().copied()))
+        .options_at(terminal)
+        .unwrap()
 }
 
 /// Text replies are on by default where the user takes part (the full
@@ -101,17 +103,17 @@ fn args(words: &[&str]) -> Args {
 /// can't be given together.
 #[test]
 fn the_default_follows_whether_the_user_takes_part_and_the_flags_override_it() {
-    assert!(text_replies_for(&args(&[]), true), "the full screen");
-    assert!(text_replies_for(&args(&["--repl"]), true), "the line prompt");
-    assert!(text_replies_for(&args(&["--remote"]), false), "the web page");
-    assert!(!text_replies_for(&args(&["-p", "Hi"]), true), "-p");
-    assert!(!text_replies_for(&args(&[]), false), "lines piped in");
+    assert!(text_replies_for(&args(&[], true)), "the full screen");
+    assert!(text_replies_for(&args(&["--repl"], true)), "the line prompt");
+    assert!(text_replies_for(&args(&["--remote"], false)), "the web page");
+    assert!(!text_replies_for(&args(&["-p", "Hi"], true)), "-p");
+    assert!(!text_replies_for(&args(&[], false)), "lines piped in");
 
-    assert!(!text_replies_for(&args(&["--no-text-replies"]), true));
-    assert!(!text_replies_for(&args(&["--repl", "--no-text-replies"]), true));
-    assert!(!text_replies_for(&args(&["--remote", "--no-text-replies"]), false));
-    assert!(text_replies_for(&args(&["-p", "Hi", "--text-replies"]), true));
-    assert!(text_replies_for(&args(&["--text-replies"]), false));
+    assert!(!text_replies_for(&args(&["--no-text-replies"], true)));
+    assert!(!text_replies_for(&args(&["--repl", "--no-text-replies"], true)));
+    assert!(!text_replies_for(&args(&["--remote", "--no-text-replies"], false)));
+    assert!(text_replies_for(&args(&["-p", "Hi", "--text-replies"], true)));
+    assert!(text_replies_for(&args(&["--text-replies"], false)));
     assert!(
         Args::try_parse_from(["arko", "--text-replies", "--no-text-replies"]).is_err(),
         "one or the other"

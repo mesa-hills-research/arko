@@ -10,8 +10,10 @@ use crate::mock_model::{ModelServer, complete};
 /// The heading the extra rules start with in an agent's instructions.
 const RULES: &str = "# Extra rules";
 
-fn args(words: &[&str]) -> Args {
+fn args(words: &[&str]) -> Options {
     Args::parse_from(std::iter::once("arko").chain(words.iter().copied()))
+        .options()
+        .unwrap()
 }
 
 /// The search index tools in `harness`'s session, as Arko has them where

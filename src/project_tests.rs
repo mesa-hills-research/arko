@@ -14,8 +14,10 @@ const WORKER_AGENTS: &str = "# Project instructions (AGENTS.md in your lead's wo
 const MAIN_CLAUDE: &str = "# Project instructions (CLAUDE.md in the working directory)";
 const WORKER_CLAUDE: &str = "# Project instructions (CLAUDE.md in your lead's working directory)";
 
-fn args(words: &[&str]) -> Args {
+fn args(words: &[&str]) -> Options {
     Args::parse_from(std::iter::once("arko").chain(words.iter().copied()))
+        .options()
+        .unwrap()
 }
 
 /// The user messages of a request, in order.
@@ -82,7 +84,7 @@ fn the_flags_choose_for_new_and_resumed_sessions() {
     let new = |words: &[&str]| {
         let mut all = vec!["-m", "opus", "--no-cache-1h", "-C", dir];
         all.extend(words);
-        new_settings(&args(&all)).unwrap()
+        new_settings(&args(&all)).unwrap().0
     };
     let default = new(&[]);
     assert_eq!(default.project_instructions, project::Files::One);
@@ -120,10 +122,10 @@ fn the_flags_choose_for_new_and_resumed_sessions() {
         worker_project_instructions: false,
         ..default
     };
-    assert!(!project_from_args(&args(&["-c"]), &mut resumed));
+    assert!(!project_from_options(&args(&["-c"]), &mut resumed));
     assert_eq!(resumed.project_instructions, project::Files::One);
     assert!(!resumed.worker_project_instructions);
-    assert!(project_from_args(
+    assert!(project_from_options(
         &args(&[
             "-c",
             "--project-instructions",

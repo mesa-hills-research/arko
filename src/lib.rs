@@ -34,6 +34,7 @@ mod message;
 #[cfg(test)]
 mod mock_model;
 mod model_command;
+mod options;
 mod outside;
 mod project;
 mod providers;
@@ -54,6 +55,7 @@ pub use crate::cli::cli_main;
 pub(crate) use crate::harness::{Conversation, Harness, conversation_of};
 #[cfg(test)]
 pub(crate) use crate::harness::{Managers, tests};
+pub use crate::options::{Options, SessionChoice};
 #[cfg(test)]
 pub(crate) use crate::status::Gauges;
 

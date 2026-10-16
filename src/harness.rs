@@ -2658,6 +2658,7 @@ pub(crate) mod tests {
     use crate::agents::{AgentSettings, Effort, ExtraRules, ModelSettings, resolve_model};
     use crate::cli::*;
     use crate::inputs::*;
+    use crate::options::{Options, SessionChoice};
     use crate::shell::WindowsShell;
     use clap::Parser;
 
@@ -2754,7 +2755,7 @@ pub(crate) mod tests {
         let args =
             Args::try_parse_from(["arko", "-m", "cc:opus", "-C", dir, "--handover-at", "300k"])
                 .unwrap();
-        let settings = new_settings(&args).unwrap();
+        let (settings, _) = new_settings(&args.options().unwrap()).unwrap();
         assert_eq!(settings.main.handover_at, Some(300_000));
         assert_eq!(settings.worker.handover_at, Some(300_000));
         // Each agent's size is held at 95% of what its model accepts.
@@ -2772,11 +2773,66 @@ pub(crate) mod tests {
             "2000k",
         ])
         .unwrap();
-        let settings = new_settings(&args).unwrap();
+        let (settings, _) = new_settings(&args.options().unwrap()).unwrap();
         assert_eq!(settings.main.handover_at, Some(950_000));
         let luna = agents::max_handover(&resolve_model("luna").unwrap(), settings.openai_auth);
         assert_eq!(settings.worker.handover_at, luna);
         assert!(luna < Some(950_000));
+    }
+
+    /// The flags become the session's options: which session, each pair of
+    /// flags as yes, no or neither, -p's message as a new session's title,
+    /// and whether someone takes part (at a terminal or on the web page).
+    #[test]
+    fn the_flags_become_the_sessions_options() {
+        let options = |words: &[&str], terminal: bool| {
+            Args::try_parse_from(std::iter::once("arko").chain(words.iter().copied()))
+                .unwrap()
+                .options_at(terminal)
+        };
+        let new = options(&[], true).unwrap();
+        assert_eq!(new.session, SessionChoice::New);
+        assert!(new.interactive && !new.one_shot);
+        assert_eq!(
+            (new.cache_1h, new.cc_compact, new.text_replies),
+            (None, None, None)
+        );
+        assert_eq!(
+            (new.extra_rules, new.worker_project_instructions),
+            (None, None)
+        );
+        assert_eq!(
+            options(&["-c"], true).unwrap().session,
+            SessionChoice::ContinueLatest
+        );
+        assert_eq!(
+            options(&["--resume", "abc"], true).unwrap().session,
+            SessionChoice::Resume("abc".into())
+        );
+        let flags = options(
+            &[
+                "--no-cache-1h",
+                "--cc-compact",
+                "--no-extra-rules",
+                "--no-worker-project-instructions",
+                "--text-replies",
+            ],
+            false,
+        )
+        .unwrap();
+        assert_eq!(flags.cache_1h, Some(false));
+        assert_eq!(flags.cc_compact, Some(true));
+        assert_eq!(flags.extra_rules, Some(ExtraRules::Off));
+        assert_eq!(flags.worker_project_instructions, Some(false));
+        assert_eq!(flags.text_replies, Some(true));
+        assert!(!flags.interactive, "no terminal and no web page");
+        let one_shot = options(&["-p", "Count the files."], true).unwrap();
+        assert!(one_shot.one_shot && !one_shot.interactive);
+        assert_eq!(one_shot.title.as_deref(), Some("Count the files."));
+        let remote = options(&["--remote", "0.0.0.0:9000"], false).unwrap();
+        assert!(remote.interactive);
+        assert_eq!(remote.remote.and_then(|bind| bind.port), Some(9000));
+        assert!(options(&["--remote", "nowhere:x"], false).is_err());
     }
 
     /// `--handover-at` when resuming sets both sizes, as `/handover-at`
@@ -2796,7 +2852,10 @@ pub(crate) mod tests {
     #[test]
     fn commands_move_to_the_background_unless_with_p() {
         let args = |line: &[&str]| {
-            Args::try_parse_from(std::iter::once("arko").chain(line.iter().copied())).unwrap()
+            Args::try_parse_from(std::iter::once("arko").chain(line.iter().copied()))
+                .unwrap()
+                .options()
+                .unwrap()
         };
         assert_eq!(background_after_for(&args(&[]), 600), 600);
         assert_eq!(background_after_for(&args(&["-c"]), 90), 90);
