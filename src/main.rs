@@ -3552,6 +3552,159 @@ mod tests {
         );
     }
 
+    /// A session fin (Arko's name before) saved resumes in Arko: its
+    /// checkpoint names the workflow `fin`, and its agents' saved
+    /// configurations say "You are fin", which Arko keeps for it. The main
+    /// agent goes on, a worker it started continues, and a new worker
+    /// starts, all as the session was saved.
+    #[tokio::test]
+    async fn a_session_saved_by_fin_resumes() {
+        use crate::mock_model::{ModelServer, complete, tool_call};
+        let bodies: Arc<Mutex<Vec<String>>> = Arc::default();
+        let server = ModelServer::start(Arc::new({
+            let bodies = bodies.clone();
+            move |_, body: String| {
+                bodies.lock().unwrap().push(body.clone());
+                let wait = |step| {
+                    tool_call(
+                        step,
+                        crew::WAIT_FOR_AGENTS,
+                        serde_json::json!({"timeout_seconds": 10}),
+                    )
+                };
+                let start = |step, task| {
+                    tool_call(
+                        step,
+                        crew::START_AGENT,
+                        serde_json::json!({"agent": WORKER, "task": task}),
+                    )
+                };
+                Box::pin(async move {
+                    if body.contains("You are agent run r1") {
+                        if body.contains("Count the pears too.") {
+                            complete("w2", "4 pears.")
+                        } else {
+                            complete("w1", "3 apples.")
+                        }
+                    } else if body.contains("You are agent run r2") {
+                        complete("w3", "2 plums.")
+                    } else if body.contains("2 plums.") {
+                        complete("m9", "Plums: 2.")
+                    } else if body.contains("call_m7") {
+                        wait("m8")
+                    } else if body.contains("Count the plums.") {
+                        start("m7", "Count the plums.")
+                    } else if body.contains("4 pears.") {
+                        complete("m6", "Pears: 4.")
+                    } else if body.contains("call_m4") {
+                        wait("m5")
+                    } else if body.contains("Ask it about pears.") {
+                        tool_call(
+                            "m4",
+                            crew::MESSAGE_AGENT,
+                            serde_json::json!({"to": "r1", "message": "Count the pears too."}),
+                        )
+                    } else if body.contains("3 apples.") {
+                        complete("m3", "Apples: 3.")
+                    } else if body.contains("call_m1") {
+                        wait("m2")
+                    } else {
+                        start("m1", "Count the apples.")
+                    }
+                })
+            }
+        }))
+        .await;
+        let temp = tempfile::tempdir().unwrap();
+        let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
+        let arko = (harness.main_config.clone(), harness.worker_config.clone());
+        // The agents as fin built them.
+        for config in [&mut harness.main_config, &mut harness.worker_config] {
+            config.name = config.name.replace("Arko", "fin");
+            config.role_description = config.role_description.replace("Arko", "fin");
+            config.instructions = config.instructions.replace("Arko", "fin");
+        }
+        assert!(
+            harness
+                .main_config
+                .role_description
+                .starts_with("You are fin,")
+        );
+        harness.open(false).unwrap();
+        let end = harness
+            .turn(Prompt::User("How many apples?".into()), &mut inputs)
+            .await;
+        assert!(matches!(end, TurnEnd::Answered));
+        assert_eq!(summary(&harness), "Apples: 3.");
+        harness.crew.as_ref().unwrap().shutdown().await;
+        // fin named the workflow `fin`.
+        let run = harness.session.run_dir();
+        for entry in std::fs::read_dir(&run).unwrap() {
+            let path = entry.unwrap().path();
+            if path
+                .extension()
+                .is_some_and(|extension| extension == "json")
+            {
+                let text = std::fs::read_to_string(&path).unwrap();
+                let text = text
+                    .replace(r#""workflow_name": "arko""#, r#""workflow_name": "fin""#)
+                    .replace(r#""workflow_name":"arko""#, r#""workflow_name":"fin""#);
+                std::fs::write(&path, text).unwrap();
+            }
+        }
+        let checkpoint = harness.session.latest_checkpoint().unwrap();
+        assert_eq!(saved_setup(&checkpoint, &run).unwrap().name, "fin");
+
+        // Arko builds its agents as Arko, and resumes the session.
+        (harness.main_config, harness.worker_config) = arko;
+        harness.open(true).unwrap();
+        harness.start_new_workers();
+        assert!(harness.unoffered.is_none(), "{:?}", harness.unoffered);
+        let end = harness
+            .turn(Prompt::User("Ask it about pears.".into()), &mut inputs)
+            .await;
+        assert!(matches!(end, TurnEnd::Answered));
+        assert_eq!(summary(&harness), "Pears: 4.");
+        let end = harness
+            .turn(Prompt::User("Count the plums.".into()), &mut inputs)
+            .await;
+        assert!(matches!(end, TurnEnd::Answered));
+        assert_eq!(summary(&harness), "Plums: 2.");
+        let bodies = bodies.lock().unwrap().clone();
+        let resumed = bodies
+            .iter()
+            .rfind(|body| body.contains("2 plums.") && !body.contains("You are agent run"))
+            .unwrap();
+        assert!(
+            resumed.contains("You are fin,"),
+            "the main agent's saved instructions"
+        );
+        assert!(!resumed.contains("You are Arko"));
+        let follow_up = bodies
+            .iter()
+            .find(|body| {
+                body.contains("Count the pears too.") && body.contains("You are agent run r1")
+            })
+            .unwrap();
+        assert!(
+            follow_up.contains("3 apples."),
+            "r1 continued its conversation"
+        );
+        assert!(
+            bodies
+                .iter()
+                .any(|body| body.contains("You are agent run r2"))
+        );
+        harness.crew.as_ref().unwrap().shutdown().await;
+
+        // It is still fin's workflow, so it resumes again.
+        let checkpoint = harness.session.latest_checkpoint().unwrap();
+        let saved = saved_setup(&checkpoint, &harness.session.run_dir()).unwrap();
+        assert_eq!(saved.name, "fin");
+        harness.open(true).unwrap();
+        harness.crew.as_ref().unwrap().shutdown().await;
+    }
+
     fn request(questions: &str) -> UserInputRequest {
         UserInputRequest {
             workflow_run_id: uuid::Uuid::new_v4(),
