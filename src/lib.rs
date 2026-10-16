@@ -25,6 +25,7 @@ mod context;
 mod conversations;
 mod credentials;
 mod crew;
+pub mod details;
 mod engine;
 mod glyphs;
 mod handover;

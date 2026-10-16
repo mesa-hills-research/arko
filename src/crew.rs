@@ -69,6 +69,24 @@ pub struct Setup {
 /// See [`Setup::refuse`].
 pub type Refuse = Arc<dyn Fn(&arko_ai::Model) -> Option<String> + Send + Sync>;
 
+/// A worker, as `/workers` tells it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WorkerFacts {
+    /// Its handle: r1, r2, ...
+    pub id: String,
+    /// Its run's state: running, finished, failed, stopped, ...
+    pub state: String,
+    pub task: String,
+    /// The model it started on, when new workers start on another.
+    pub other_model: Option<String>,
+    /// How long its prompt cache lasts, when that is known.
+    pub cache_lifetime: Option<Duration>,
+    /// The worktree it works in, with its branch.
+    pub worktree: Option<(PathBuf, Option<String>)>,
+    /// Its report, or why it failed.
+    pub report: Option<String>,
+}
+
 /// What a worker run starts with that the workers' model decides: the
 /// model with its generation settings (the prompt cache's lifetime too),
 /// Claude Code's settings, and the handover size.
@@ -554,75 +572,102 @@ impl Crew {
         })
     }
     pub fn describe(&self) -> String {
-        self.workflow()
-            .map(|workflow| {
-                workflow
-                    .subagents()
-                    .iter()
-                    .map(|run| {
-                        let status = format!("{:?}", run.state).to_lowercase();
-                        let mut line =
-                            format!("{}  {status}  {}", run.handle, ui::cut(&run.task, 100));
-                        // A run on another model than new workers' says it.
-                        let started = self.run_model(run.run_id);
-                        let new = self.new_workers();
-                        if let (Some(started), Some(new)) = (&started, &new)
-                            && started.llm_config.model.id != new.model.llm_config.model.id
-                        {
-                            line.push_str(&format!(
-                                "\n  runs {}, the model it started on",
-                                crate::providers::model_name(&started.llm_config.model)
-                            ));
-                        }
-                        let mut lifetime = match (&started, &new) {
-                            (Some(started), Some(new)) => {
-                                arko_ai::prompt_cache::prompt_cache_lifetime(
-                                    &started.llm_config.model,
-                                    &started.llm_config.generation_config,
-                                    new.chatgpt,
-                                )
-                            }
-                            (None, Some(new)) => new.cache_lifetime,
-                            _ => self.setup.cache_lifetime,
-                        };
-                        if workflow
-                            .context()
-                            .agent_configs
-                            .get(&run.agent)
-                            .is_some_and(|config| {
-                                crate::providers::takes_cache_ttl(&config.llm_config.model)
-                            })
-                        {
-                            lifetime = match run.parameters.get(CACHE_PARAM).and_then(Value::as_str)
-                            {
-                                Some("1h") => PromptCacheLifetime::Known(Duration::from_secs(3600)),
-                                Some("5m") => PromptCacheLifetime::Known(Duration::from_secs(300)),
-                                _ => lifetime,
-                            };
-                        }
-                        if let PromptCacheLifetime::Known(lifetime) = lifetime {
-                            line.push_str(&format!(
-                                "\n  prompt cache: {} minutes",
-                                lifetime.as_secs() / 60
-                            ));
-                        }
-                        if let Some(worktree) = &run.isolated {
-                            line.push_str(&format!(
-                                "\n  {} ({})",
-                                worktree.path.display(),
-                                worktree.branch.as_deref().unwrap_or("worktree")
-                            ));
-                        }
-                        if let Some(report) = run.report.as_ref().or(run.error.as_ref()) {
-                            line.push_str(&format!("\n  {}", ui::cut(report, 240)));
-                        }
-                        line
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n")
+        self.facts()
+            .iter()
+            .map(|worker| {
+                let mut line = format!(
+                    "{}  {}  {}",
+                    worker.id,
+                    worker.state,
+                    ui::cut(&worker.task, 100)
+                );
+                if let Some(model) = &worker.other_model {
+                    line.push_str(&format!("\n  runs {model}, the model it started on"));
+                }
+                if let Some(lifetime) = worker.cache_lifetime {
+                    line.push_str(&format!(
+                        "\n  prompt cache: {} minutes",
+                        lifetime.as_secs() / 60
+                    ));
+                }
+                if let Some((path, branch)) = &worker.worktree {
+                    line.push_str(&format!(
+                        "\n  {} ({})",
+                        path.display(),
+                        branch.as_deref().unwrap_or("worktree")
+                    ));
+                }
+                if let Some(report) = &worker.report {
+                    line.push_str(&format!("\n  {}", ui::cut(report, 240)));
+                }
+                line
             })
-            .unwrap_or_default()
+            .collect::<Vec<_>>()
+            .join("\n")
     }
+
+    /// The session's workers, as [`describe`](Self::describe) tells them.
+    pub fn facts(&self) -> Vec<WorkerFacts> {
+        let Some(workflow) = self.workflow() else {
+            return Vec::new();
+        };
+        let new = self.new_workers();
+        workflow
+            .subagents()
+            .into_iter()
+            .map(|run| {
+                // A run on another model than new workers' says it.
+                let started = self.run_model(run.run_id);
+                let other_model = match (&started, &new) {
+                    (Some(started), Some(new))
+                        if started.llm_config.model.id != new.model.llm_config.model.id =>
+                    {
+                        Some(crate::providers::model_name(&started.llm_config.model))
+                    }
+                    _ => None,
+                };
+                let mut lifetime = match (&started, &new) {
+                    (Some(started), Some(new)) => arko_ai::prompt_cache::prompt_cache_lifetime(
+                        &started.llm_config.model,
+                        &started.llm_config.generation_config,
+                        new.chatgpt,
+                    ),
+                    (None, Some(new)) => new.cache_lifetime,
+                    _ => self.setup.cache_lifetime,
+                };
+                if workflow
+                    .context()
+                    .agent_configs
+                    .get(&run.agent)
+                    .is_some_and(|config| {
+                        crate::providers::takes_cache_ttl(&config.llm_config.model)
+                    })
+                {
+                    lifetime = match run.parameters.get(CACHE_PARAM).and_then(Value::as_str) {
+                        Some("1h") => PromptCacheLifetime::Known(Duration::from_secs(3600)),
+                        Some("5m") => PromptCacheLifetime::Known(Duration::from_secs(300)),
+                        _ => lifetime,
+                    };
+                }
+                WorkerFacts {
+                    state: format!("{:?}", run.state).to_lowercase(),
+                    task: run.task.clone(),
+                    other_model,
+                    cache_lifetime: match lifetime {
+                        PromptCacheLifetime::Known(lifetime) => Some(lifetime),
+                        _ => None,
+                    },
+                    worktree: run
+                        .isolated
+                        .as_ref()
+                        .map(|worktree| (worktree.path.clone(), worktree.branch.clone())),
+                    report: run.report.clone().or_else(|| run.error.clone()),
+                    id: run.handle,
+                }
+            })
+            .collect()
+    }
+
     pub fn stop_all(&self, reason: &str) -> usize {
         self.workflow().map_or(0, |workflow| {
             workflow

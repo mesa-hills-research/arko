@@ -1230,18 +1230,21 @@ pub struct CostLine {
     pub detail: bool,
 }
 
-/// One agent's (the main agent's, or the workers') calls, for `/cost`.
-#[derive(Default)]
-struct Part {
-    billed: f64,
-    api: f64,
-    input: usize,
-    output: usize,
+/// Some agents' part of the costs (the main agent's, or the workers'), as
+/// `/cost` adds it up from the ledger.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct CostShare {
+    /// What was billed, in dollars.
+    pub billed: f64,
+    /// What it would cost at API list prices.
+    pub api: f64,
+    pub input: usize,
+    pub output: usize,
     /// The plan that covered its calls, when one did.
-    plan: Option<&'static str>,
+    pub plan: Option<&'static str>,
 }
 
-impl Part {
+impl CostShare {
     fn tokens(&self) -> String {
         format!(
             "{}k input and {}k output tokens",
@@ -1255,11 +1258,18 @@ impl Part {
 /// it would have cost at API prices and the plan's usage windows. The main
 /// agent and the workers are told apart when they were paid for
 /// differently (one on a plan, the other per token).
+#[cfg(test)]
 pub fn cost_report(
     ledger: &CostLedger,
     settings: &Settings,
     plans: &std::collections::BTreeMap<String, String>,
 ) -> Vec<CostLine> {
+    let (main, workers) = cost_shares(ledger, settings);
+    cost_lines(&main, &workers, plans)
+}
+
+/// The main agent's part of the costs in `ledger` and the workers'.
+pub fn cost_shares(ledger: &CostLedger, settings: &Settings) -> (CostShare, CostShare) {
     let plan_of = |model: &ModelSettings| match resolve_model(&model.model).map(|m| m.provider) {
         Ok(Provider::ClaudeCode) => Some(plan_name(Some(SubscriptionPlan::ClaudeCode))),
         Ok(Provider::OpenAI) if settings.openai_auth != Some(OpenAiAuth::ApiKey) => {
@@ -1267,8 +1277,8 @@ pub fn cost_report(
         }
         _ => None,
     };
-    let mut main = Part::default();
-    let mut workers = Part::default();
+    let mut main = CostShare::default();
+    let mut workers = CostShare::default();
     for entry in &ledger.entries {
         let CostSource::Agent { agent_name, usage } = &entry.source else {
             continue;
@@ -1286,20 +1296,30 @@ pub fn cost_report(
             part.plan = plan_of(model);
         }
     }
+    (main, workers)
+}
+
+/// `/cost`'s lines for the main agent's part `main` and the workers' part
+/// `workers`, with the plans' usage windows (`plans`, by plan).
+pub fn cost_lines(
+    main: &CostShare,
+    workers: &CostShare,
+    plans: &std::collections::BTreeMap<String, String>,
+) -> Vec<CostLine> {
     let line = |text: String| CostLine {
         text,
         detail: false,
     };
     let detail = |text: String| CostLine { text, detail: true };
-    let used = |part: &Part| part.input + part.output > 0;
+    let used = |part: &CostShare| part.input + part.output > 0;
     let mut lines = vec![line(format!(
         "${:.2} billed in this session · {}k input and {}k output tokens",
         main.billed + workers.billed,
         (main.input + workers.input) / 1000,
         (main.output + workers.output) / 1000
     ))];
-    let parts = [&main, &workers];
-    let paid_alike = !used(&main) || !used(&workers) || main.plan == workers.plan;
+    let parts = [main, workers];
+    let paid_alike = !used(main) || !used(workers) || main.plan == workers.plan;
     if paid_alike {
         let plan = parts.iter().find_map(|part| part.plan);
         if let Some(plan) = plan {
@@ -1308,7 +1328,7 @@ pub fn cost_report(
                 main.api + workers.api
             )));
         }
-        if used(&workers) {
+        if used(workers) {
             lines.push(detail(match plan {
                 Some(_) => format!(
                     "of which the workers: ≈ ${:.2} at API prices · {}",
@@ -1323,7 +1343,7 @@ pub fn cost_report(
             }));
         }
     } else {
-        for (name, part) in [("main agent", &main), ("workers", &workers)] {
+        for (name, part) in [("main agent", main), ("workers", workers)] {
             lines.push(detail(match part.plan {
                 Some(plan) => format!(
                     "{name}: ≈ ${:.2} at API prices, on the {plan} · {}",

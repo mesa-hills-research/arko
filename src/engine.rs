@@ -103,6 +103,9 @@ pub struct Seam {
     pub meter: Arc<dyn remote::Meter>,
     /// The same figures, sent as they change.
     pub status: tokio::sync::watch::Receiver<Arc<remote::Reading>>,
+    /// What `/cost`, `/session`, `/mcp`, `/skills` and `/workers` say, as
+    /// data.
+    pub details: Arc<crate::details::Details>,
     /// The user's input.
     pub input: mpsc::UnboundedSender<Input>,
     /// The API keys, which the front end can add and remove.
@@ -593,7 +596,17 @@ impl Engine {
             (None, None)
         };
 
+        let details = Arc::new(crate::details::Details::new(
+            session.id.clone(),
+            session.dir.clone(),
+            root.clone(),
+            gauges.clone(),
+            indexes.clone(),
+            skill_folders.clone(),
+            crate::details::McpFacts::of(&mcp, &mcp_notes, &root),
+        ));
         let mut harness = Harness {
+            details,
             settings,
             providers: provider_setup.clone(),
             session,
@@ -604,7 +617,6 @@ impl Engine {
             tools,
             root: root.clone(),
             mcp,
-            mcp_notes,
             skill_folders,
             indexes,
             unoffered: None,
@@ -670,6 +682,7 @@ impl Engine {
             feed: harness.feed.clone(),
             meter: harness.gauges.clone(),
             status: harness.gauges.watch(),
+            details: harness.details.clone(),
             input: input_sender,
             keys: harness.keys.clone(),
             quit_asks,

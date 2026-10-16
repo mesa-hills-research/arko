@@ -24,8 +24,8 @@ use crate::shell::{Shell, ShellTool};
 use crate::status::Gauges;
 use crate::ui::{Control, Input, Output, Stats};
 use crate::{
-    agents, commands, conversations, crew, glyphs, handover, index, keys, mcp, message, outside,
-    project, providers, remote, shell, skills, ui,
+    agents, commands, conversations, crew, details, glyphs, handover, index, keys, mcp, message,
+    outside, project, providers, remote, shell, skills, ui,
 };
 use crate::{and_list, lock};
 
@@ -276,7 +276,6 @@ pub(crate) struct Harness {
     pub(crate) root: PathBuf,
     /// The MCP servers started, and what was left out and why.
     pub(crate) mcp: mcp::Running,
-    pub(crate) mcp_notes: Vec<String>,
     /// The skill folders that exist.
     pub(crate) skill_folders: Vec<PathBuf>,
     /// The search indexes; `None` when they couldn't be opened.
@@ -334,6 +333,8 @@ pub(crate) struct Harness {
     pub(crate) remote_bind: Option<(remote::Bind, u16)>,
     /// The figures of the page's status.
     pub(crate) gauges: Arc<Gauges>,
+    /// The session's details as data, for the commands and for front ends.
+    pub(crate) details: Arc<details::Details>,
     /// Outside access, which the user turns on and off (`/outside`).
     pub(crate) outside: Arc<outside::Outside>,
     /// The main agent's handover size, and the watch that asks for its
@@ -526,6 +527,8 @@ impl Harness {
         }
         self.workflow = Some(workflow);
         self.publish_conversations();
+        self.details.set_unoffered(self.unoffered.clone());
+        self.publish_details();
         Ok(())
     }
 
@@ -679,32 +682,65 @@ impl Harness {
         }
     }
 
-    /// The workers, as the banner and `/session` say it.
-    /// When the agents hand over, as `/session` says it.
-    pub(crate) fn handover_summary(&self) -> String {
-        let what = |compacts: bool| if compacts { "compaction" } else { "handover" };
-        let main = format!(
-            "{} at {}k tokens",
-            what(self.handover.compacts()),
-            self.handover.at() / 1000
-        );
-        let worker = format!(
-            "{} at {}k tokens",
-            what(agents::compacts(&self.worker_config)),
-            self.new_workers_handover_at().unwrap_or(
+    /// When the main agent and new workers hand over (or compact).
+    pub(crate) fn handover_facts(&self) -> details::HandoverFacts {
+        details::HandoverFacts {
+            main_at: self.handover.at(),
+            main_compacts: self.handover.compacts(),
+            workers_at: self.new_workers_handover_at().unwrap_or(
                 self.settings
                     .worker
                     .handover_at
-                    .unwrap_or(self.settings.handover_at)
-            ) / 1000
-        );
-        if self.settings.max_workers == 0 || main == worker {
-            format!("{main} of input")
-        } else {
-            format!("{main} of input (main), {worker} (workers)")
+                    .unwrap_or(self.settings.handover_at),
+            ),
+            workers_compact: agents::compacts(&self.worker_config),
         }
     }
 
+    /// The session's facts, as `/session` says them.
+    pub(crate) fn session_facts(&self) -> details::SessionFacts {
+        let settings = &self.settings;
+        let model = |model: &agents::ModelSettings| details::ModelFacts {
+            model: model.model.clone(),
+            shown: settings.describe(model),
+            effort: model.effort,
+            fast: model.fast,
+            cache_1h: model.cache_1h,
+        };
+        details::SessionFacts {
+            id: self.session.id.clone(),
+            dir: self.session.dir.clone(),
+            workspace: settings.workspace.clone(),
+            title: settings.title.clone(),
+            created: settings.created,
+            main: model(&settings.main),
+            workers: (settings.max_workers > 0).then(|| details::WorkersFacts {
+                model: model(&settings.worker),
+                max_running: (settings.max_workers != NO_LIMIT).then_some(settings.max_workers),
+            }),
+            handover: self.handover_facts(),
+            text_replies: settings.text_replies,
+            extra_rules: settings.extra_rules,
+            cc_compact: !settings.cc_handover,
+            project_files: settings.project_instructions,
+            project_workers: self
+                .has_workers()
+                .then_some(settings.worker_project_instructions),
+            outside: self.outside.is_on(),
+            background_after: self.background.after().map_or(0, |after| after.as_secs()),
+            show_thinking: settings.show_thinking,
+            hide_thinking: settings.hide_thinking,
+        }
+    }
+
+    /// Tells the session's details what changed: what front ends read and
+    /// the commands say.
+    pub(crate) fn publish_details(&self) {
+        self.details
+            .publish_session(self.session_facts(), self.settings.clone());
+    }
+
+    /// The workers, as the banner and `/session` say it.
     pub(crate) fn workers_summary(&self) -> String {
         let mut text = match self.settings.max_workers {
             0 => return "no workers".to_string(),
@@ -1176,8 +1212,9 @@ impl Harness {
             "/background-after" => self.background_after_command(argument, source),
             _ => self.handover_at_command(argument, source),
         }
-        // (A setting it changed shows in the status.)
+        // (A setting it changed shows in the status and the details.)
         self.gauges.touch();
+        self.publish_details();
         true
     }
 
@@ -1730,22 +1767,24 @@ impl Harness {
         let out = &self.output;
         match command {
             "/cost" => {
-                let plans = self.stats.lock().unwrap().plans.clone();
-                let ledger = self.workflow().cost_ledger();
-                for line in providers::cost_report(&ledger, &self.settings, &plans) {
+                self.publish_details();
+                let report = self.details.cost();
+                let plans = report
+                    .plans
+                    .iter()
+                    .map(|plan| (plan.plan.clone(), plan.text.clone()))
+                    .collect();
+                for line in providers::cost_lines(&report.main, &report.workers, &plans) {
                     match line.detail {
                         true => out.line(&out.dim(&format!("  {}", line.text))),
                         false => out.line(&line.text),
                     }
                 }
-                if let Some(indexes) = &self.indexes {
-                    let (tokens, dollars) = indexes.spent();
-                    if tokens > 0 {
-                        out.line(&format!(
-                            "${dollars:.3} for embeddings (Voyage) while Arko ran · {}k tokens",
-                            tokens.div_ceil(1000)
-                        ));
-                    }
+                if let Some((tokens, dollars)) = report.embeddings {
+                    out.line(&format!(
+                        "${dollars:.3} for embeddings (Voyage) while Arko ran · {}k tokens",
+                        tokens.div_ceil(1000)
+                    ));
                 }
             }
             "/workers" => match &self.crew {
@@ -1780,40 +1819,43 @@ impl Harness {
             "/mcp" => self.list_mcp(),
             "/skills" => self.list_skills(),
             "/session" => {
-                out.line(&format!("session {}", self.session.id));
-                out.line(&out.dim(&format!("{}", self.session.dir.display())));
+                self.publish_details();
+                let facts = self.details.session();
+                out.line(&format!("session {}", facts.id));
+                out.line(&out.dim(&format!("{}", facts.dir.display())));
                 out.line(&out.dim(&format!(
                     "main: {} · {}",
-                    self.settings.describe(&self.settings.main),
-                    if self.settings.max_workers == 0 {
-                        "no workers".to_string()
-                    } else {
-                        format!(
+                    facts.main.shown,
+                    match &facts.workers {
+                        None => "no workers".to_string(),
+                        Some(workers) => format!(
                             "workers: {} ({})",
-                            self.settings.describe(&self.settings.worker),
-                            match self.settings.max_workers {
-                                NO_LIMIT => "no limit".to_string(),
-                                n => format!("up to {n} at once"),
+                            workers.model.shown,
+                            match workers.max_running {
+                                None => "no limit".to_string(),
+                                Some(n) => format!("up to {n} at once"),
                             }
-                        )
+                        ),
                     }
                 )));
-                out.line(&out.dim(&self.handover_summary()));
+                out.line(&out.dim(&details::handover_text(
+                    &facts.handover,
+                    facts.workers.is_some(),
+                )));
                 out.line(&out.dim(&format!(
                     "text replies {}: {}",
-                    if self.settings.text_replies {
-                        "on"
-                    } else {
-                        "off"
-                    },
-                    agents::replies_text(self.settings.text_replies)
+                    if facts.text_replies { "on" } else { "off" },
+                    agents::replies_text(facts.text_replies)
                 )));
                 out.line(&out.dim(&format!(
                     "extra rules {}: {}",
-                    self.settings.extra_rules.name(),
-                    self.settings.extra_rules.describe()
+                    facts.extra_rules.name(),
+                    facts.extra_rules.describe()
                 )));
-                out.line(&out.dim(&self.project_summary()));
+                out.line(&out.dim(&details::project_text(
+                    facts.project_files,
+                    facts.project_workers,
+                )));
             }
             "/new" => out.line(&out.dim("Wait for the turn to end (or press Ctrl-C) first.")),
             other if conversations::resume_argument(other).is_some() => {
@@ -1842,15 +1884,15 @@ impl Harness {
     /// `/mcp`: each server with its tools, or why it didn't start.
     pub(crate) fn list_mcp(&self) {
         let out = &self.output;
-        if self.mcp.servers.is_empty() {
+        let facts = self.details.mcp();
+        if facts.servers.is_empty() {
             out.line(&format!(
                 "No MCP servers. Arko starts those set up in {}, in the project's {} (once you approve them) and in --mcp-config files.",
-                self.root.join(mcp::USER_FILE).display(),
+                facts.user_file.display(),
                 mcp::PROJECT_FILE
             ));
         }
-        for started in &self.mcp.servers {
-            let server = &started.server;
+        for server in &facts.servers {
             out.line(&format!(
                 "{}  {}",
                 out.bold(&server.name),
@@ -1860,53 +1902,45 @@ impl Harness {
                     server.file.display()
                 ))
             ));
-            match &started.result {
+            match &server.tools {
                 Ok(tools) if tools.is_empty() => out.line(&out.dim("  no tools")),
-                Ok(tools) => out.line(&format!(
-                    "  {}",
-                    tools
-                        .iter()
-                        .map(|name| mcp::split_tool_name(name)
-                            .map_or(name.as_str(), |(_, tool)| tool))
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                )),
+                Ok(tools) => out.line(&format!("  {}", tools.join(", "))),
                 Err(error) => out.line(&out.error(&format!("  didn't start: {error}"))),
             }
         }
-        for note in &self.mcp_notes {
+        for note in &facts.notes {
             out.line(&out.dim(note));
         }
-        if let Some(note) = &self.unoffered {
+        if let Some(note) = &facts.unoffered {
             out.line(&out.warn(note));
         }
     }
 
-    /// `/skills`: the skills in the skill folders now.
     pub(crate) fn list_skills(&self) {
         let out = &self.output;
-        let skills = match skills::list(&self.skill_folders, &self.settings.workspace) {
+        self.publish_details();
+        let skills = match self.details.skills() {
             Ok(skills) => skills,
             Err(error) => {
                 out.line(&out.error(&format!("The skills couldn't be read: {error}")));
                 return;
             }
         };
-        if skills.on_demand_skills.is_empty() && skills.auto_loaded_skills.is_empty() {
+        if skills.skills.is_empty() {
             out.line(&format!(
                 "No skills. Arko reads them (folders with a SKILL.md) from the project's .agents/skills, .claude/skills and .skills, from {}, and from ~/.agents/skills and ~/.claude/skills.",
-                self.root.join("skills").display()
+                skills.own_folder.display()
             ));
             return;
         }
-        for skill in &skills.on_demand_skills {
+        for skill in skills.skills.iter().filter(|skill| !skill.always) {
             out.line(&format!(
                 "{}  {}",
                 out.bold(&skill.name),
                 ui::cut(&skill.description, 160)
             ));
         }
-        for skill in &skills.auto_loaded_skills {
+        for skill in skills.skills.iter().filter(|skill| skill.always) {
             out.line(&format!(
                 "{}  {}",
                 out.bold(&skill.name),
@@ -1915,7 +1949,8 @@ impl Harness {
         }
         out.line(&out.dim(&format!(
             "From {}",
-            self.skill_folders
+            skills
+                .folders
                 .iter()
                 .map(|folder| folder.display().to_string())
                 .collect::<Vec<_>>()
@@ -3375,7 +3410,17 @@ pub(crate) mod tests {
             changed: Default::default(),
             published: Default::default(),
         });
+        let details = Arc::new(details::Details::new(
+            session.id.clone(),
+            session.dir.clone(),
+            root.clone(),
+            gauges.clone(),
+            None,
+            Vec::new(),
+            details::McpFacts::of(&mcp::Running::default(), &[], &root),
+        ));
         let mut harness = Harness {
+            details,
             settings,
             providers: providers::Setup::new(None),
             session,
@@ -3386,7 +3431,6 @@ pub(crate) mod tests {
             tools: Vec::new(),
             root,
             mcp: mcp::Running::default(),
-            mcp_notes: Vec::new(),
             skill_folders: Vec::new(),
             indexes: None,
             unoffered: None,
@@ -3511,6 +3555,17 @@ pub(crate) mod tests {
                 .await
                 .unwrap();
         assert!(matches!(end, TurnEnd::Answered));
+        // /workers, as data.
+        let workers = harness.details.workers();
+        assert_eq!(workers.len(), 1);
+        assert_eq!(workers[0].id, "r1");
+        assert_eq!(workers[0].task, "Count the files.");
+        assert_eq!(workers[0].report.as_deref(), Some("There are 3 files."));
+        let cost = harness.details.cost();
+        assert!(
+            cost.main.input > 0 && cost.workers.input >= 7_777,
+            "{cost:?}"
+        );
         let reading = remote::Meter::read(harness.gauges.as_ref());
         assert_eq!(reading.agents.len(), 1, "{:?}", reading.agents);
         let r1 = &reading.agents[0];
@@ -3519,6 +3574,41 @@ pub(crate) mod tests {
         assert_eq!(r1.handover_at, Some(200_000), "luna's own size");
         assert!(!r1.compacts);
         harness.crew.as_ref().unwrap().shutdown().await;
+    }
+
+    /// What /session, /mcp and /skills say is there as data too, as the
+    /// session changes.
+    #[tokio::test]
+    async fn the_details_answer_as_data() {
+        let temp = tempfile::tempdir().unwrap();
+        let (mut harness, _inputs, _sender) = harness(temp.path(), LLMClient::new(), true);
+        let session = harness.details.session();
+        assert_eq!(session.id, harness.session.id);
+        assert_eq!(session.workspace, harness.settings.workspace);
+        assert_eq!(session.main.model, resolve_model("luna").unwrap().id);
+        assert_eq!(
+            session.main.shown,
+            harness.settings.describe(&harness.settings.main)
+        );
+        assert_eq!(
+            session.workers.as_ref().map(|workers| workers.max_running),
+            Some(None)
+        );
+        assert!(!session.outside);
+        assert!(harness.live_command("/outside on", Source::Terminal));
+        assert!(
+            harness.details.session().outside,
+            "published by the command"
+        );
+        let mcp = harness.details.mcp();
+        assert!(mcp.servers.is_empty());
+        assert_eq!(mcp.user_file, temp.path().join("arko").join(mcp::USER_FILE));
+        let skills = harness.details.skills().unwrap();
+        assert!(skills.skills.is_empty());
+        assert_eq!(skills.own_folder, temp.path().join("arko").join("skills"));
+        assert!(harness.details.workers().is_empty());
+        let cost = harness.details.cost();
+        assert_eq!((cost.billed(), cost.embeddings), (0.0, None));
     }
 
     /// A resumed conversation's size is in the status before its next

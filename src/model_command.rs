@@ -654,6 +654,7 @@ impl Harness {
     /// models, and whether the main agent's can still change.
     pub(crate) fn publish_models(&self) {
         self.gauges.touch();
+        self.publish_details();
         self.gauges.text_replies.store(
             self.settings.text_replies,
             std::sync::atomic::Ordering::Relaxed,

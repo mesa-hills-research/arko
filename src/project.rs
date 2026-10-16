@@ -334,24 +334,6 @@ impl crate::Harness {
     pub(crate) fn project_names(&self) -> String {
         listed(&self.project.names(self.settings.project_instructions))
     }
-
-    /// The settings as `/session` says them.
-    pub(crate) fn project_summary(&self) -> String {
-        let files = self.settings.project_instructions;
-        let workers = match (
-            self.has_workers(),
-            self.settings.worker_project_instructions,
-        ) {
-            (false, _) => "",
-            (true, true) => ", workers on",
-            (true, false) => ", workers off",
-        };
-        format!(
-            "project instructions {}{workers}: {}",
-            files.name(),
-            files.describe()
-        )
-    }
 }
 
 #[cfg(test)]
