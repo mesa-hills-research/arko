@@ -191,7 +191,10 @@ pub const KEYS: &[(&str, &str)] = &[
         "↑ ↓",
         "earlier messages from the first or last line, then ↓ goes to the agent list",
     ),
-    ("Tab", "complete a command in the menu"),
+    (
+        "Tab",
+        "complete a command in the menu, or its argument (↑ ↓ show the others)",
+    ),
     ("Ctrl+A E B F", "line start, end, back, forward (readline)"),
     (
         "Ctrl+K U W Y",

@@ -185,6 +185,35 @@ pub fn matching(prefix: &str, screen: bool) -> Vec<&'static Command> {
         .collect()
 }
 
+const ON_OFF: &[&str] = &["on", "off"];
+
+/// The words an argument may be, where they are fixed: the command, the
+/// words before the argument, and its words. The full-screen view
+/// completes them (and the arguments that depend on the session).
+const CHOICES: &[(&str, &[&str], &[&str])] = &[
+    ("/view", &[], &["full", "quiet", "messages"]),
+    ("/outside", &[], ON_OFF),
+    ("/text-replies", &[], ON_OFF),
+    ("/extra-rules", &[], &["small", "all", "off"]),
+    (
+        "/project-instructions",
+        &[],
+        &["one", "both", "off", "workers"],
+    ),
+    ("/project-instructions", &["workers"], ON_OFF),
+    ("/remote", &[], &["qr", "off", "new-key"]),
+    ("/keys", &[], &["add", "remove"]),
+];
+
+/// The fixed words that may follow `before` in the arguments of the
+/// command `name`.
+pub fn choices(name: &str, before: &[&str]) -> &'static [&'static str] {
+    CHOICES
+        .iter()
+        .find(|(command, words, _)| *command == name && *words == before)
+        .map_or(&[], |(_, _, choices)| choices)
+}
+
 /// The help's lines for the session's commands, as the line prompt shows
 /// them: each name, padded, then what it does.
 pub fn help_lines() -> Vec<String> {
@@ -240,5 +269,23 @@ mod tests {
         all.sort();
         all.dedup();
         assert_eq!(all.len(), count);
+    }
+
+    /// Each fixed choice is a word its command's hint shows, so the two
+    /// don't drift apart.
+    #[test]
+    fn the_choices_are_the_hints_words() {
+        for (name, before, words) in CHOICES {
+            let command = find(name).unwrap();
+            let hint: Vec<&str> = command
+                .args
+                .split(|c: char| !c.is_ascii_lowercase() && c != '-')
+                .collect();
+            for word in before.iter().chain(words.iter()) {
+                assert!(hint.contains(word), "{name} {word}");
+            }
+        }
+        assert_eq!(choices("/project-instructions", &["workers"]), ON_OFF);
+        assert!(choices("/view", &["full"]).is_empty());
     }
 }

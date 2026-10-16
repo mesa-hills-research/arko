@@ -92,6 +92,8 @@ pub struct Menu {
     pub selected: usize,
     /// Esc closed it: it stays closed until the text changes.
     pub dismissed: Option<String>,
+    /// The argument's choice ↑ ↓ moved to.
+    pub choice: Option<String>,
 }
 
 /// The view's state.
@@ -150,6 +152,23 @@ pub struct App {
     /// The API keys as they are now, without their values, for the keys
     /// menu.
     pub key_states: fn() -> Vec<KeyState>,
+    /// The models `/model` completes, found once for the session's models
+    /// (finding them can ask Claude Code for its login).
+    model_names: std::cell::OnceCell<Vec<String>>,
+}
+
+/// The argument being typed on a command line, and what it may be.
+struct Argument {
+    /// The command's name, and the words before the argument.
+    name: &'static str,
+    before: Vec<String>,
+    /// The line, and the length of the argument's part typed (in bytes).
+    line: String,
+    typed: usize,
+    /// The choices that start with what is typed, and go further.
+    choices: Vec<String>,
+    /// What the command takes, on its first argument.
+    hint: Option<&'static str>,
 }
 
 impl App {
@@ -208,6 +227,7 @@ impl App {
             last_click: None,
             model_needs: model_picker::needs,
             key_states: crate::credentials::key_states,
+            model_names: Default::default(),
         }
     }
 
@@ -222,6 +242,9 @@ impl App {
             }
             banner.model = reading.models.banner_model.clone();
             banner.workers = reading.models.banner_workers.clone();
+        }
+        if reading.models != self.reading.models {
+            self.model_names.take();
         }
         self.reading = reading;
     }
@@ -338,6 +361,160 @@ impl App {
             return Vec::new();
         }
         commands::matching(&text, true)
+    }
+
+    /// The argument typed at the end of a command line, unless Esc closed
+    /// its completion.
+    fn argument(&self) -> Option<Argument> {
+        if self.overlay.is_some() {
+            return None;
+        }
+        let line = self.editor.command_line()?;
+        if self.menu.dismissed.as_deref() == Some(line.as_str()) {
+            return None;
+        }
+        let (name, rest) = line.split_once(' ')?;
+        let command = commands::find(name).filter(|command| !command.args.is_empty())?;
+        let (before, typed) = rest.rsplit_once(' ').unwrap_or(("", rest));
+        let before: Vec<String> = before.split_whitespace().map(String::from).collect();
+        let choices = self
+            .choices(command.name, &before)
+            .into_iter()
+            .filter(|choice| choice.starts_with(typed) && choice != typed)
+            .collect();
+        Some(Argument {
+            name: command.name,
+            hint: before.is_empty().then_some(command.args),
+            before,
+            typed: typed.len(),
+            choices,
+            line,
+        })
+    }
+
+    /// The words that may follow `before` in the arguments of the command
+    /// `name`: its fixed ones, or the session's workers, models and so on.
+    fn choices(&self, name: &str, before: &[String]) -> Vec<String> {
+        let before: Vec<&str> = before.iter().map(String::as_str).collect();
+        match (name, before.as_slice()) {
+            ("/watch", []) => self
+                .transcript
+                .workers()
+                .iter()
+                .map(|worker| worker.id.clone())
+                .chain(["main".to_string()])
+                .collect(),
+            ("/keys", ["add" | "remove"]) => crate::credentials::KEYS
+                .iter()
+                .map(|key| key.id.to_string())
+                .collect(),
+            ("/remote", ["qr"]) => {
+                let mut names: Vec<String> = super::overlay::page_links(self)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter_map(|link| link.interface)
+                    .collect();
+                names.dedup();
+                names
+            }
+            ("/model", words) => self.model_choices(words),
+            (name, words) => commands::choices(name, words)
+                .iter()
+                .map(|word| word.to_string())
+                .collect(),
+        }
+    }
+
+    /// `/model`'s words: `worker`, the models the picker offers, `main`
+    /// for the workers, then the efforts the model takes.
+    fn model_choices(&self, words: &[&str]) -> Vec<String> {
+        let models = &self.reading.models;
+        let (workers, words) = match words {
+            ["worker" | "workers", rest @ ..] => (true, rest),
+            _ => (false, words),
+        };
+        let names = || {
+            self.model_names.get_or_init(|| {
+                let needs = self.model_needs;
+                model_picker::names(models, |name| needs(&models.reachable, name))
+            })
+        };
+        match words {
+            // The main agent keeps its model once the conversation starts.
+            [] if !workers && models.started => {
+                if models.has_workers {
+                    vec!["worker".into()]
+                } else {
+                    Vec::new()
+                }
+            }
+            [] if workers => std::iter::once("main".to_string())
+                .chain(names().iter().cloned())
+                .collect(),
+            [] => names()
+                .iter()
+                .cloned()
+                .chain(models.has_workers.then(|| "worker".to_string()))
+                .collect(),
+            [model] if *model != "main" => crate::providers::resolve_model(model)
+                .map(|model| {
+                    crate::providers::efforts(&model)
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect()
+                })
+                .unwrap_or_default(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// The choice ↑ ↓ show: the one moved to, else the first once a
+    /// letter is typed.
+    fn chosen(&self, argument: &Argument) -> Option<usize> {
+        let moved = self
+            .menu
+            .choice
+            .as_ref()
+            .and_then(|choice| argument.choices.iter().position(|c| c == choice));
+        moved.or((argument.typed > 0 && !argument.choices.is_empty()).then_some(0))
+    }
+
+    /// The dim text after the cursor on a command line: the rest of the
+    /// choice shown (and which of how many), else what the argument may be.
+    pub fn ghost(&self) -> Option<String> {
+        let argument = self.argument()?;
+        if let Some(index) = self.chosen(&argument) {
+            let rest = &argument.choices[index][argument.typed..];
+            let count = argument.choices.len();
+            return Some(if count > 1 {
+                let keys = crate::glyphs::render("↑↓");
+                format!("{rest}  {keys} {} of {count}", index + 1)
+            } else {
+                rest.to_string()
+            });
+        }
+        if argument.typed > 0 {
+            return None;
+        }
+        match argument.hint {
+            Some(hint) => Some(hint.to_string()),
+            None => (!argument.choices.is_empty()).then(|| argument.choices.join("|")),
+        }
+    }
+
+    /// Tab: the choice shown, else the first, in place of what is typed,
+    /// then a space when another word may follow.
+    fn accept(&mut self, argument: &Argument, index: usize) {
+        let choice = &argument.choices[index];
+        let start = &argument.line[..argument.line.len() - argument.typed];
+        let mut text = format!("{start}{choice}");
+        let mut words = argument.before.clone();
+        words.push(choice.clone());
+        if !self.choices(argument.name, &words).is_empty() {
+            text.push(' ');
+        }
+        self.editor.set(&text);
+        self.menu.choice = None;
     }
 
     // ----- updates from the session -----
@@ -459,6 +636,24 @@ impl App {
                 _ => {}
             }
         }
+        // An argument's choices: ↑ ↓ show each, Tab takes it. Enter sends
+        // only what is typed.
+        if let Some(argument) = self.argument()
+            && !argument.choices.is_empty()
+        {
+            let count = argument.choices.len();
+            let chosen = self.chosen(&argument);
+            let moved = match key.code {
+                KeyCode::Up => Some(chosen.map_or(count - 1, |at| (at + count - 1) % count)),
+                KeyCode::Down => Some(chosen.map_or(0, |at| (at + 1) % count)),
+                KeyCode::Tab => return self.accept(&argument, chosen.unwrap_or(0)),
+                _ => None,
+            };
+            if let Some(at) = moved {
+                self.menu.choice = Some(argument.choices[at].clone());
+                return;
+            }
+        }
         match key.code {
             KeyCode::Enter if shift || alt || ctrl => self.editor.newline(),
             KeyCode::Enter => self.submit(),
@@ -525,6 +720,7 @@ impl App {
     fn typing(&mut self) {
         self.menu.selected = 0;
         self.menu.dismissed = None;
+        self.menu.choice = None;
         if !self.editor.starts_with('/') {
             self.put_off = None;
         }
@@ -565,7 +761,7 @@ impl App {
 
     /// Esc: closes what is open, nearest first.
     fn escape(&mut self) {
-        if !self.menu_items().is_empty() {
+        if !self.menu_items().is_empty() || self.ghost().is_some() {
             self.menu.dismissed = Some(self.editor.shown());
         } else if self.watching.is_some() {
             self.watching = None;
@@ -1947,6 +2143,85 @@ pub(super) mod tests {
             openai_auth: Some("OpenAI API key".into()),
             has_workers: true,
         }
+    }
+
+    /// A command's argument completes from its choices: the rest shows
+    /// dim, ↑ ↓ show the others, Tab takes one, and Enter sends only what
+    /// is typed.
+    #[test]
+    fn arguments_complete_from_their_choices() {
+        let mut app = app();
+        let keys = crate::glyphs::render("↑↓");
+        type_text(&mut app, "/view ");
+        assert_eq!(app.ghost().as_deref(), Some("full|quiet|messages"));
+        type_text(&mut app, "q");
+        assert_eq!(app.ghost().as_deref(), Some("uiet"));
+        press(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+        assert_eq!(app.editor.text(), "/view quiet");
+        assert_eq!(app.ghost(), None);
+        app.editor.clear();
+        // Several match: the first, then ↓ the next. Enter takes neither.
+        type_text(&mut app, "/outside o");
+        assert_eq!(app.ghost(), Some(format!("n  {keys} 1 of 2")));
+        press(&mut app, KeyCode::Down, KeyModifiers::NONE);
+        assert_eq!(app.ghost(), Some(format!("ff  {keys} 2 of 2")));
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(sent(&mut app), ["/outside o"]);
+        // ↑ before a letter, then the next word's choices, and Esc.
+        type_text(&mut app, "/project-instructions ");
+        press(&mut app, KeyCode::Up, KeyModifiers::NONE);
+        assert_eq!(app.ghost(), Some(format!("workers  {keys} 4 of 4")));
+        press(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+        assert_eq!(app.editor.text(), "/project-instructions workers ");
+        assert_eq!(app.ghost().as_deref(), Some("on|off"));
+        press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!(app.ghost(), None);
+        type_text(&mut app, "o");
+        assert_eq!(app.ghost(), Some(format!("n  {keys} 1 of 2")));
+        app.editor.clear();
+        // Free text: the hint until a letter, then nothing.
+        type_text(&mut app, "/handover-at ");
+        assert_eq!(app.ghost().as_deref(), Some("SIZE"));
+        type_text(&mut app, "2");
+        assert_eq!(app.ghost(), None);
+        press(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+        assert_eq!(app.editor.text(), "/handover-at 2");
+    }
+
+    /// `/model` completes the models the picker offers, then their efforts.
+    #[test]
+    fn model_arguments_complete_from_the_picker() {
+        let mut app = app();
+        hermetic(&mut app);
+        app.set_reading(Reading {
+            models: models(false),
+            ..Reading::default()
+        });
+        type_text(&mut app, "/model l");
+        assert_eq!(app.ghost().as_deref(), Some("una"));
+        press(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+        assert_eq!(app.editor.text(), "/model luna ");
+        assert!(app.ghost().unwrap().starts_with("low|medium|high"));
+        type_text(&mut app, "hi");
+        press(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+        assert_eq!(app.editor.text(), "/model luna high");
+        app.editor.clear();
+        // Models the session can't reach aren't offered.
+        type_text(&mut app, "/model op");
+        assert_eq!(app.ghost(), None);
+        app.editor.clear();
+        type_text(&mut app, "/model w");
+        press(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+        assert!(app.ghost().unwrap().starts_with("main|sol|gpt-6.1-sol"));
+        app.editor.clear();
+        // Once the conversation starts, only the workers' model changes.
+        app.set_reading(Reading {
+            models: models(true),
+            ..Reading::default()
+        });
+        type_text(&mut app, "/model ");
+        press(&mut app, KeyCode::Down, KeyModifiers::NONE);
+        assert_eq!(app.ghost().as_deref(), Some("worker"));
     }
 
     /// A picker that doesn't ask Claude Code (whose login differs from one

@@ -15,7 +15,6 @@ use super::markdown;
 use super::overlay::{self, hints};
 use super::transcript::{self, View};
 use super::wrap::{self, width as text_width};
-use crate::commands;
 use crate::glyphs;
 
 /// The input box grows to this many lines, then scrolls.
@@ -157,18 +156,13 @@ fn draw_input(
                 .buffer_mut()
                 .set_line(x, rect.y + row as u16, &Line::from(spans.clone()), width);
         }
-        // What a command takes, after its name.
-        let typed = app.editor.shown();
-        if let Some(name) = typed.strip_suffix(' ')
-            && let Some(command) = commands::find(name)
-            && !command.args.is_empty()
-            && !name.contains(' ')
-        {
-            let column = (text_width_of(lines.last()) as u16).min(width);
+        // A command's argument: what completes it, or what it takes.
+        if let Some(ghost) = app.ghost() {
+            let column = (cursor.1 as u16).min(width);
             frame.buffer_mut().set_line(
                 x + column,
-                rect.bottom() - 1,
-                &Line::from(Span::styled(command.args.to_string(), theme.dim())),
+                rect.y + (cursor.0 as u16).min(height - 1),
+                &Line::from(Span::styled(ghost, theme.dim())),
                 width - column,
             );
         }
@@ -270,12 +264,6 @@ fn draw_list(frame: &mut Frame, app: &mut App, area: Rect) {
                 .set_line(area.right() - rw, y, &right, rw);
         }
     }
-}
-
-fn text_width_of(spans: Option<&Vec<Span>>) -> usize {
-    spans.map_or(0, |spans| {
-        spans.iter().map(|span| text_width(&span.content)).sum()
-    })
 }
 
 /// The status line: is it working (or how long the last turn ran), how
@@ -701,6 +689,12 @@ mod tests {
         );
         assert!(rows[3].ends_with("WORKER|main"), "{rows:?}");
         assert_eq!(rows[6], " › /wa");
+        // An argument's completion follows the cursor.
+        for c in "tch m".chars() {
+            app.key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        let rows = screen(&mut app, 100, 8);
+        assert_eq!(rows[6], " › /watch main");
     }
 
     fn mouse(app: &mut App, kind: crossterm::event::MouseEventKind, x: u16, y: u16) {

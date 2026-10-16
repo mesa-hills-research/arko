@@ -88,6 +88,20 @@ impl Editor {
         Some(name)
     }
 
+    /// The text when it is a command line, cursor at its end (`/view q`):
+    /// one short line that starts with a slash, without chips. What the
+    /// argument completion looks at.
+    pub fn command_line(&self) -> Option<String> {
+        let plain = self.starts_with('/')
+            && self.cursor == self.text.len()
+            && self.text.len() <= 200
+            && self
+                .text
+                .iter()
+                .all(|c| *c != '\n' && self.chip(*c).is_none());
+        plain.then(|| self.text.iter().collect())
+    }
+
     /// The chip's label, for a chip's character.
     fn chip(&self, c: char) -> Option<String> {
         let index = (c as u32).checked_sub(CHIP_BASE)? as usize;
