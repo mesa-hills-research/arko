@@ -354,6 +354,7 @@ impl Harness {
     /// conversations.
     pub(crate) fn publish_conversations(&self) {
         self.gauges.touch();
+        self.publish_title();
         let workflow = self.workflow().clone();
         *lock(&self.gauges.conversations) =
             self.conversations.entries(|run| last_used(&workflow, run));

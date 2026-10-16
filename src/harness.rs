@@ -804,6 +804,10 @@ impl Harness {
                     drop(question);
                     continue;
                 }
+                Event::Request(request) => {
+                    self.request(request);
+                    continue;
+                }
                 Event::Input(None | Some(Input::Eof)) => {
                     // Without a terminal, the workers finish first.
                     if self.queue_lines {
@@ -1230,6 +1234,41 @@ impl Harness {
         self.gauges.touch();
         self.publish_details();
         true
+    }
+
+    /// Does what the front end asks, and answers it.
+    pub(crate) fn request(&mut self, request: crate::engine::Request) {
+        match request {
+            crate::engine::Request::Rename { title, reply } => {
+                let renamed = self.session.rename(&title);
+                if renamed.is_ok() {
+                    self.publish_title();
+                }
+                let _ = reply.send(renamed);
+            }
+        }
+    }
+
+    /// The session's name, as the status gives it: the one the user gave
+    /// it, else its current conversation's, else its first message's start.
+    pub(crate) fn publish_title(&self) {
+        let title = self
+            .session
+            .renamed()
+            .or_else(|| {
+                self.conversations
+                    .current
+                    .and_then(|index| self.conversations.list.get(index))
+                    .map(|record| record.title.clone())
+                    .filter(|title| !title.is_empty())
+            })
+            .or_else(|| self.settings.title.clone())
+            .unwrap_or_else(|| match self.settings.mode {
+                crate::session::Mode::Agent => "New session".to_string(),
+                crate::session::Mode::Chat => "New chat".to_string(),
+            });
+        *lock(&self.gauges.title) = title;
+        self.gauges.touch();
     }
 
     /// The answer `text`, from `source`, to the question `question`: given
@@ -2044,6 +2083,17 @@ impl Harness {
         self.exit_warned = false;
         self.jobs_shown.clear();
         self.news_hint_shown = false;
+        // A session takes its first message's start as its name, as -p does.
+        if let Prompt::User(text) = &prompt
+            && self.settings.title.is_none()
+            && !text.trim().is_empty()
+        {
+            self.settings.title = Some(ui::cut(text.trim(), 80));
+            if let Err(error) = self.session.save_settings(&self.settings) {
+                log::warn!("could not save the session's title: {error}");
+            }
+            self.publish_title();
+        }
         self.feed.turn_started();
         // The main agent's model is the conversation's from now on.
         self.publish_models();
@@ -2097,6 +2147,10 @@ impl Harness {
                 outcome = &mut call => break outcome,
                 event = input.next_event(false) => {
                     let (line, source) = match event {
+                        Event::Request(request) => {
+                            self.request(request);
+                            continue;
+                        }
                         Event::Question(question) => {
                             if question.answer.is_closed() {
                                 continue;
@@ -2434,6 +2488,7 @@ impl Harness {
                     }
                 }
                 Event::Question(question) => drop(question),
+                Event::Request(request) => self.request(request),
                 Event::Input(Some(Input::Line(_))) => {}
                 Event::Input(Some(Input::Background(agent))) => self.move_to_background(&agent),
                 Event::Remote(Action::Message(_) | Action::Answer { .. })
@@ -3475,6 +3530,7 @@ pub(crate) mod tests {
             background: background.clone(),
             page: Mutex::default(),
             changed: Default::default(),
+            title: Default::default(),
             published: Default::default(),
         });
         let details = Arc::new(details::Details::new(
@@ -3539,6 +3595,7 @@ pub(crate) mod tests {
             questions,
             woken: Some(woken),
             remote: remote_input,
+            requests: mpsc::unbounded_channel().1,
             finished: None,
             late: None,
         };
@@ -3678,6 +3735,45 @@ pub(crate) mod tests {
         assert!(harness.details.workers().is_empty());
         let cost = harness.details.cost();
         assert_eq!((cost.billed(), cost.embeddings), (0.0, None));
+    }
+
+    /// A session is named by its first message's start until the user
+    /// renames it (also during a turn); an empty name goes back.
+    #[tokio::test]
+    async fn the_session_is_named_by_its_first_message_or_by_the_user() {
+        use crate::mock_model::{ModelServer, complete};
+        let server = ModelServer::start(Arc::new(move |_, _| {
+            Box::pin(async move { complete("1", "Done.") })
+        }))
+        .await;
+        let temp = tempfile::tempdir().unwrap();
+        let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), false);
+        let title = |harness: &Harness| remote::Meter::read(harness.gauges.as_ref()).title;
+        let end = harness
+            .turn(
+                Prompt::User("Count the pears in the basket.".into()),
+                &mut inputs,
+            )
+            .await;
+        assert!(matches!(end, TurnEnd::Answered));
+        assert_eq!(title(&harness), "Count the pears in the basket.");
+        assert_eq!(
+            harness.session.load_settings().unwrap().title.as_deref(),
+            Some("Count the pears in the basket.")
+        );
+        let rename = |harness: &mut Harness, name: &str| {
+            let (reply, answer) = oneshot::channel();
+            harness.request(crate::engine::Request::Rename {
+                title: name.into(),
+                reply,
+            });
+            answer
+        };
+        assert_eq!(rename(&mut harness, "Pears").await.unwrap(), Ok(()));
+        assert_eq!(title(&harness), "Pears");
+        assert_eq!(rename(&mut harness, "").await.unwrap(), Ok(()));
+        assert_eq!(title(&harness), "Count the pears in the basket.");
+        harness.crew.as_ref().unwrap().shutdown().await;
     }
 
     /// A resumed conversation's size is in the status before its next

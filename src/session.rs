@@ -13,6 +13,25 @@ use crate::providers::OpenAiAuth;
 use crate::shell::WindowsShell;
 
 const SETTINGS_FILE: &str = "session.json";
+/// The name the user gave the session, when they renamed it: apart from
+/// its settings, which the session rewrites while it runs.
+const TITLE_FILE: &str = "title";
+
+/// What a session is: an agent working in a folder with its tools and
+/// workers, or a chat with no tools.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Mode {
+    #[default]
+    Agent,
+    Chat,
+}
+
+impl Mode {
+    fn is_agent(&self) -> bool {
+        *self == Mode::Agent
+    }
+}
 /// The session's log, in its folder.
 #[cfg(feature = "tui")]
 pub const LOG_FILE: &str = "arko.log";
@@ -55,6 +74,10 @@ pub struct Settings {
     /// The start of the first message, to tell sessions apart.
     #[serde(default)]
     pub title: Option<String>,
+    /// An agent's session or a chat (sessions saved before chats: an
+    /// agent's).
+    #[serde(default, skip_serializing_if = "Mode::is_agent")]
+    pub mode: Mode,
     /// The shell commands run in on Windows. `None` in sessions saved
     /// before it could be chosen, which ran PowerShell.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -126,6 +149,7 @@ impl Settings {
             hide_thinking: false,
             created: Utc::now(),
             title: None,
+            mode: Mode::Agent,
             windows_shell: None,
             openai_auth: None,
             own_worker_model: false,
@@ -217,6 +241,34 @@ impl Session {
         std::fs::metadata(self.latest_checkpoint()?)
             .and_then(|metadata| metadata.modified())
             .ok()
+    }
+
+    /// The name the user gave the session, if they renamed it.
+    pub fn renamed(&self) -> Option<String> {
+        std::fs::read_to_string(self.dir.join(TITLE_FILE))
+            .ok()
+            .map(|title| title.trim().to_string())
+            .filter(|title| !title.is_empty())
+    }
+
+    /// Renames the session `title` (an empty title: back to the one it
+    /// takes from its conversation). A running session may be renamed: the
+    /// name isn't in the settings it rewrites.
+    pub fn rename(&self, title: &str) -> Result<(), String> {
+        let path = self.dir.join(TITLE_FILE);
+        let title = title.trim();
+        if title.is_empty() {
+            return match std::fs::remove_file(&path) {
+                Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+                    Err(format!("could not rename the session: {error}"))
+                }
+                _ => Ok(()),
+            };
+        }
+        let temporary = self.dir.join(format!("{TITLE_FILE}.tmp"));
+        std::fs::write(&temporary, title)
+            .and_then(|()| std::fs::rename(&temporary, &path))
+            .map_err(|error| format!("could not rename the session: {error}"))
     }
 
     pub fn load_settings(&self) -> Result<Settings, String> {

@@ -9,6 +9,7 @@ use arko_workflows::user_input::{UserInputHandler, UserInputRequest};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::agents::MAIN;
+use crate::engine::Request;
 use crate::remote::Action;
 use crate::ui::Input;
 
@@ -23,6 +24,8 @@ pub(crate) struct Inputs {
     pub(crate) woken: Option<mpsc::UnboundedReceiver<()>>,
     /// What the remote page sends.
     pub(crate) remote: mpsc::UnboundedReceiver<Action>,
+    /// What the front end asks of the session.
+    pub(crate) requests: mpsc::UnboundedReceiver<Request>,
     /// The terminal's jobs that finish in the background; `None` with -p,
     /// where they wake no one.
     pub(crate) finished:
@@ -44,6 +47,8 @@ pub(crate) enum Event {
     Finished(arko_agents::terminal::JobFinished),
     /// The remote page sent something.
     Remote(Action),
+    /// The front end asks something of the session.
+    Request(Request),
 }
 
 impl Inputs {
@@ -60,6 +65,7 @@ impl Inputs {
             input = self.receiver.recv() => Event::Input(input),
             Some(question) = self.questions.recv() => Event::Question(question),
             Some(action) = self.remote.recv() => Event::Remote(action),
+            Some(request) = self.requests.recv() => Event::Request(request),
             () = wake(&mut self.woken), if woken => Event::Woken,
             finished = job_finished(&mut self.finished), if woken => Event::Finished(finished),
         }

@@ -9,7 +9,7 @@ use crate::options::Options;
 use crate::prompter::Prompter;
 use crate::providers::Failure;
 use crate::remote::Level;
-use crate::session::Settings;
+use crate::session::{Mode, Settings};
 use crate::shell::WindowsShell;
 use crate::{agents, credentials, handover, providers, session, shell};
 
@@ -234,6 +234,7 @@ pub(crate) fn new_settings(
         created: chrono::Utc::now(),
         windows_shell: Some(windows_shell(options)?),
         title: options.title.clone(),
+        mode: Mode::Agent,
         openai_auth,
         own_worker_model,
         background_after: background_after_for(options, shell::DEFAULT_BACKGROUND_AFTER),

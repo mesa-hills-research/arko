@@ -1,0 +1,434 @@
+//! The sessions in Arko's folder, as an app lists them: their names, what
+//! they are and where they work, when they were last used, their
+//! conversations and who has them open; renaming and deleting them.
+
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::time::SystemTime;
+
+use chrono::{DateTime, Utc};
+
+use crate::conversations::Conversations;
+pub use crate::remote::ConversationEntry;
+use crate::session::{self, Session};
+pub use crate::session::{Holder, Mode, data_root};
+
+/// A session, as the list shows it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SessionEntry {
+    pub id: String,
+    pub dir: PathBuf,
+    /// Its name: the one the user gave it, else its current conversation's
+    /// (the first line of its first message), else "New session" (or "New
+    /// chat").
+    pub title: String,
+    pub mode: Mode,
+    /// Where its agents work; `None` for a chat.
+    pub workspace: Option<PathBuf>,
+    /// The main agent's model, as `/session` says it.
+    pub model: String,
+    pub created: DateTime<Utc>,
+    /// When it was last worked in; `None` before its first message.
+    pub last_active: Option<SystemTime>,
+    /// Its conversations, the first first.
+    pub conversations: Vec<ConversationEntry>,
+    /// Who has it open now, if anyone.
+    pub holder: Option<Holder>,
+}
+
+/// The sessions in Arko's folder `root`, the latest worked in first (those
+/// never worked in by when they were made).
+pub fn list(root: &Path) -> Vec<SessionEntry> {
+    let mut entries: Vec<SessionEntry> = session::list(root)
+        .into_iter()
+        .map(|(session, settings)| {
+            let conversations = Conversations::load(&session.dir).unwrap_or_default();
+            let entries: Vec<ConversationEntry> = conversations
+                .list
+                .iter()
+                .enumerate()
+                .map(|(index, record)| ConversationEntry {
+                    number: index + 1,
+                    title: record.title.clone(),
+                    last_used: None,
+                    current: conversations.current == Some(index),
+                })
+                .collect();
+            let current = entries
+                .iter()
+                .find(|conversation| conversation.current)
+                .map(|conversation| conversation.title.clone())
+                .filter(|title| !title.is_empty());
+            let title = session
+                .renamed()
+                .or(current)
+                .or_else(|| settings.title.clone())
+                .unwrap_or_else(|| match settings.mode {
+                    Mode::Agent => "New session".to_string(),
+                    Mode::Chat => "New chat".to_string(),
+                });
+            SessionEntry {
+                title,
+                mode: settings.mode,
+                workspace: (settings.mode == Mode::Agent).then(|| settings.workspace.clone()),
+                model: settings.describe(&settings.main),
+                created: settings.created,
+                last_active: session.last_active(),
+                conversations: entries,
+                holder: session::holder(&session.dir),
+                id: session.id,
+                dir: session.dir,
+            }
+        })
+        .collect();
+    entries.sort_by(|a, b| {
+        let when = |entry: &SessionEntry| {
+            entry
+                .last_active
+                .unwrap_or_else(|| SystemTime::from(entry.created))
+        };
+        when(b).cmp(&when(a))
+    });
+    entries
+}
+
+/// Gives the session `id` the name `title` (empty: back to its
+/// conversation's). An open session takes it too, told so through its
+/// requests (`Request::Rename`).
+pub fn rename(root: &Path, id: &str, title: &str) -> Result<(), String> {
+    Session::open(root, id)?.rename(title)
+}
+
+/// Who has the session `id` open, if anyone.
+pub fn holder(root: &Path, id: &str) -> Option<Holder> {
+    session::holder(&root.join("sessions").join(id))
+}
+
+/// What deleting a session leaves: its workers' worktrees with changes
+/// that aren't committed stay (with their branches); the clean ones go.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct DeletePlan {
+    pub worktrees_clean: Vec<PathBuf>,
+    /// Each with its branch.
+    pub worktrees_dirty: Vec<(PathBuf, Option<String>)>,
+}
+
+/// What deleting a session left.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Deleted {
+    /// The worktrees with changes, kept in place.
+    pub kept_worktrees: Vec<PathBuf>,
+}
+
+/// Why a session wasn't deleted.
+#[derive(Debug, Clone, PartialEq)]
+pub enum DeleteError {
+    /// It is open (who has it, if they said).
+    Locked {
+        holder: Option<Holder>,
+    },
+    Io(String),
+}
+
+impl std::fmt::Display for DeleteError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DeleteError::Locked { holder } => write!(
+                f,
+                "the session is open in {}: close it there first",
+                holder
+                    .as_ref()
+                    .map_or("another Arko".to_string(), Holder::describe)
+            ),
+            DeleteError::Io(error) => f.write_str(error),
+        }
+    }
+}
+
+/// What deleting the session `id` would do, for the user to agree to.
+pub fn delete_plan(root: &Path, id: &str) -> Result<DeletePlan, DeleteError> {
+    let session = Session::open(root, id).map_err(DeleteError::Io)?;
+    let mut plan = DeletePlan::default();
+    for worktree in worktrees(&session.dir) {
+        if is_clean(&worktree) {
+            plan.worktrees_clean.push(worktree);
+        } else {
+            let branch = branch(&worktree);
+            plan.worktrees_dirty.push((worktree, branch));
+        }
+    }
+    Ok(plan)
+}
+
+/// Deletes the session `id`: its folder, but not its workers' worktrees
+/// with uncommitted changes, which stay in place (and registered with
+/// their repository), nor any branch. The clean worktrees are removed as
+/// git removes them (`git worktree remove`, never forced). The workspace is
+/// left alone. A session open anywhere isn't deleted.
+pub fn delete(root: &Path, id: &str) -> Result<Deleted, DeleteError> {
+    let session = Session::open(root, id).map_err(DeleteError::Io)?;
+    // Held while deleting: no Arko opens it meanwhile.
+    let lock = session.lock("arko-studio").map_err(|error| match error {
+        session::LockError::Held(holder) => DeleteError::Locked { holder },
+        session::LockError::Io(error) => DeleteError::Io(error.to_string()),
+    })?;
+    let mut kept = Vec::new();
+    for worktree in worktrees(&session.dir) {
+        if !(is_clean(&worktree) && remove_worktree(&worktree)) {
+            kept.push(worktree);
+        }
+    }
+    drop(lock);
+    let worktrees = session.dir.join(WORKTREES);
+    for entry in std::fs::read_dir(&session.dir)
+        .map_err(|error| DeleteError::Io(error.to_string()))?
+        .filter_map(Result::ok)
+    {
+        let path = entry.path();
+        let result = if path == worktrees {
+            // The kept worktrees stay; the rest of the folder goes.
+            remove_all_but(&path, &kept)
+        } else if path.is_dir() {
+            std::fs::remove_dir_all(&path)
+        } else {
+            std::fs::remove_file(&path)
+        };
+        result.map_err(|error| {
+            DeleteError::Io(format!("could not delete {}: {error}", path.display()))
+        })?;
+    }
+    if kept.is_empty() {
+        std::fs::remove_dir(&session.dir).map_err(|error| DeleteError::Io(error.to_string()))?;
+    }
+    Ok(Deleted {
+        kept_worktrees: kept,
+    })
+}
+
+/// The folder in a session's folder that holds its workers' worktrees.
+const WORKTREES: &str = "worktrees";
+
+/// The worktrees in the session's folder `dir`.
+fn worktrees(dir: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(dir.join(WORKTREES)) else {
+        return Vec::new();
+    };
+    let mut found: Vec<PathBuf> = entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.join(".git").exists())
+        .collect();
+    found.sort();
+    found
+}
+
+fn git(dir: &Path, args: &[&str]) -> Option<String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .output()
+        .ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+/// Whether the worktree at `dir` has nothing that isn't committed (git
+/// can't tell: it has).
+fn is_clean(dir: &Path) -> bool {
+    git(dir, &["status", "--porcelain"]).is_some_and(|status| status.is_empty())
+}
+
+fn branch(dir: &Path) -> Option<String> {
+    git(dir, &["rev-parse", "--abbrev-ref", "HEAD"]).filter(|branch| branch != "HEAD")
+}
+
+/// Removes the clean worktree at `dir` as git does, from its repository.
+fn remove_worktree(dir: &Path) -> bool {
+    let Some(common) = git(
+        dir,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    ) else {
+        return false;
+    };
+    Command::new("git")
+        .arg("--git-dir")
+        .arg(&common)
+        .args(["worktree", "remove"])
+        .arg(dir)
+        .output()
+        .is_ok_and(|output| output.status.success())
+}
+
+/// Removes what is in `dir` but the folders `keep`.
+fn remove_all_but(dir: &Path, keep: &[PathBuf]) -> std::io::Result<()> {
+    for entry in std::fs::read_dir(dir)?.filter_map(Result::ok) {
+        let path = entry.path();
+        if keep.contains(&path) {
+            continue;
+        }
+        if path.is_dir() {
+            std::fs::remove_dir_all(&path)?;
+        } else {
+            std::fs::remove_file(&path)?;
+        }
+    }
+    if keep.is_empty() {
+        std::fs::remove_dir(dir)?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agents::{Effort, ModelSettings, resolve_model};
+    use crate::session::Settings;
+
+    fn settings(workspace: &Path) -> Settings {
+        let luna = ModelSettings {
+            model: resolve_model("luna").unwrap().id,
+            effort: Effort::High,
+            fast: false,
+            cache_1h: false,
+            handover_at: None,
+        };
+        Settings::for_test(workspace, &luna)
+    }
+
+    /// The list names each session (as the user renamed it, else as its
+    /// first message), says what it is and where it works, and who has it
+    /// open; an open session is renamed but not deleted.
+    #[test]
+    fn sessions_are_listed_renamed_and_deleted() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("arko");
+        let workspace = temp.path().join("work");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let first = Session::create(&root).unwrap();
+        first
+            .save_settings(&Settings {
+                title: Some("Count the pears".into()),
+                ..settings(&workspace)
+            })
+            .unwrap();
+        let chat = Session::create(&root).unwrap();
+        chat.save_settings(&Settings {
+            mode: Mode::Chat,
+            created: Utc::now() + chrono::Duration::seconds(1),
+            ..settings(&workspace)
+        })
+        .unwrap();
+        let listed = list(&root);
+        assert_eq!(
+            listed
+                .iter()
+                .map(|entry| (entry.id.as_str(), entry.title.as_str(), entry.mode))
+                .collect::<Vec<_>>(),
+            [
+                (chat.id.as_str(), "New chat", Mode::Chat),
+                (first.id.as_str(), "Count the pears", Mode::Agent),
+            ],
+            "the newest first"
+        );
+        assert_eq!(listed[0].workspace, None, "a chat works nowhere");
+        assert_eq!(listed[1].workspace.as_deref(), Some(workspace.as_path()));
+        assert!(listed.iter().all(|entry| entry.holder.is_none()));
+
+        let lock = first.lock("arko").unwrap();
+        rename(&root, &first.id, "  Pears  ").unwrap();
+        let listed = list(&root);
+        let entry = listed.iter().find(|entry| entry.id == first.id).unwrap();
+        assert_eq!(entry.title, "Pears");
+        assert_eq!(
+            entry.holder.as_ref().map(|holder| holder.app.as_str()),
+            Some("arko")
+        );
+        assert!(matches!(
+            delete(&root, &first.id),
+            Err(DeleteError::Locked { holder: Some(_) })
+        ));
+        drop(lock);
+        rename(&root, &first.id, "").unwrap();
+        assert_eq!(
+            list(&root)
+                .iter()
+                .find(|entry| entry.id == first.id)
+                .unwrap()
+                .title,
+            "Count the pears"
+        );
+        assert_eq!(delete(&root, &first.id), Ok(Deleted::default()));
+        assert!(!first.dir.exists());
+        assert_eq!(list(&root).len(), 1);
+        assert!(workspace.is_dir(), "the workspace stays");
+    }
+
+    /// A deleted session's clean worker worktrees go as git removes them;
+    /// one with uncommitted changes stays in place, and every branch stays.
+    #[test]
+    fn a_dirty_worker_worktree_is_kept_on_delete() {
+        let temp = tempfile::tempdir().unwrap();
+        let repo = temp.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        let run = |dir: &Path, args: &[&str]| {
+            let output = Command::new("git")
+                .arg("-C")
+                .arg(dir)
+                .args(["-c", "user.name=Arko", "-c", "user.email=arko@example.com"])
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "git {args:?}: {output:?}");
+            String::from_utf8_lossy(&output.stdout).into_owned()
+        };
+        run(&repo, &["init", "-q", "-b", "main"]);
+        std::fs::write(repo.join("a.txt"), "a").unwrap();
+        run(&repo, &["add", "a.txt"]);
+        run(&repo, &["commit", "-q", "-m", "a"]);
+        let root = temp.path().join("arko");
+        let session = Session::create(&root).unwrap();
+        session.save_settings(&settings(&repo)).unwrap();
+        let clean = session.dir.join(WORKTREES).join("r1");
+        let dirty = session.dir.join(WORKTREES).join("r2");
+        for (path, branch) in [(&clean, "arko/s/r1"), (&dirty, "arko/s/r2")] {
+            run(
+                &repo,
+                &[
+                    "worktree",
+                    "add",
+                    "-q",
+                    "-b",
+                    branch,
+                    path.to_str().unwrap(),
+                ],
+            );
+        }
+        std::fs::write(dirty.join("b.txt"), "work in progress").unwrap();
+
+        let plan = delete_plan(&root, &session.id).unwrap();
+        assert_eq!(plan.worktrees_clean, std::slice::from_ref(&clean));
+        assert_eq!(
+            plan.worktrees_dirty,
+            [(dirty.clone(), Some("arko/s/r2".to_string()))]
+        );
+
+        let deleted = delete(&root, &session.id).unwrap();
+        assert_eq!(deleted.kept_worktrees, std::slice::from_ref(&dirty));
+        assert!(!clean.exists());
+        assert!(dirty.join("b.txt").is_file());
+        assert!(!session.dir.join("session.json").exists());
+        let branches = run(&repo, &["branch", "--list"]);
+        assert!(
+            branches.contains("arko/s/r1") && branches.contains("arko/s/r2"),
+            "{branches}"
+        );
+        let worktrees = run(&repo, &["worktree", "list"]);
+        assert!(
+            !worktrees.contains("/r1 ") && worktrees.contains("/r2 "),
+            "{worktrees}"
+        );
+    }
+}

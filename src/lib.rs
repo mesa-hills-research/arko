@@ -48,6 +48,7 @@ mod remote;
 #[cfg(test)]
 mod remote_demo;
 mod session;
+pub mod sessions;
 mod shell;
 mod skills;
 mod start;
@@ -67,7 +68,9 @@ use std::sync::Mutex;
 #[cfg(feature = "tui")]
 pub use crate::cli::cli_main;
 pub use crate::credentials::{Env, Need};
-pub use crate::engine::{Engine, FrontEnd, OpenError, RunEnd, Running, Seam, SessionInfo, spawn};
+pub use crate::engine::{
+    Engine, FrontEnd, OpenError, Reply, Request, RunEnd, Running, Seam, SessionInfo, spawn,
+};
 pub(crate) use crate::harness::{Conversation, Harness, conversation_of};
 #[cfg(test)]
 pub(crate) use crate::harness::{Managers, tests};

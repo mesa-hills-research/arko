@@ -126,6 +126,10 @@ pub struct Reading {
     /// The web page, while it is served.
     #[serde(skip)]
     pub page: Option<Page>,
+    /// The session's name: the one the user gave it, else its current
+    /// conversation's, else its first message's start.
+    #[serde(skip)]
+    pub title: String,
     /// What the main agent's model accepts, in tokens (the ChatGPT login's
     /// limit where the session reaches OpenAI models with it).
     #[serde(skip)]

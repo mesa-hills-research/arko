@@ -108,6 +108,8 @@ pub struct Seam {
     pub details: Arc<crate::details::Details>,
     /// The user's input.
     pub input: mpsc::UnboundedSender<Input>,
+    /// What the front end asks of the session, answered as it can.
+    pub requests: mpsc::UnboundedSender<Request>,
     /// The API keys, which the front end can add and remove.
     pub keys: Arc<keys::Keys>,
     /// The background jobs quitting would stop, to ask the user about
@@ -120,6 +122,19 @@ pub struct Seam {
     /// The agents' thinking shows whole from the start.
     pub show_thinking: bool,
 }
+
+/// What a front end asks of an open session, with where the answer goes:
+/// `Err` with the sentence to show when it can't be done.
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum Request {
+    /// Gives the session this name (empty: back to its conversation's),
+    /// also during a turn.
+    Rename { title: String, reply: Reply<()> },
+}
+
+/// Where a request's answer goes.
+pub type Reply<T> = oneshot::Sender<Result<T, String>>;
 
 /// How the front end shows the session, which changes what Arko prints.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -537,6 +552,7 @@ impl Engine {
             tools.extend(indexes.tools());
         }
         let (input_sender, input) = mpsc::unbounded_channel();
+        let (requests_sender, requests) = mpsc::unbounded_channel();
         // Someone answers the agent's questions, and what they type while it
         // works reaches it as notes (else each line is a turn of its own).
         let interactive = options.interactive;
@@ -567,6 +583,7 @@ impl Engine {
             background: managers.background.clone(),
             page: Mutex::default(),
             changed: Default::default(),
+            title: Default::default(),
             published: Default::default(),
         });
         // The main agent's questions are put to the user at the prompt; with
@@ -672,6 +689,7 @@ impl Engine {
             questions,
             woken,
             remote: remote_input,
+            requests,
             // With -p, Arko exits when the agent finishes, jobs or not.
             finished: (!one_shot).then(|| managers.jobs.subscribe_finished()),
             late: None,
@@ -690,6 +708,7 @@ impl Engine {
             status: harness.gauges.watch(),
             details: harness.details.clone(),
             input: input_sender,
+            requests: requests_sender,
             keys: harness.keys.clone(),
             quit_asks,
             // (With what Arko said before the front end opened.)

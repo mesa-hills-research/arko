@@ -46,6 +46,8 @@ pub(crate) struct Gauges {
     pub(crate) background: Arc<shell::Background>,
     /// The web page, while it is served.
     pub(crate) page: Mutex<Option<remote::Page>>,
+    /// The session's name, as the harness last published it.
+    pub(crate) title: Mutex<String>,
     /// Rings when something the status shows changed ([`touch`](Self::touch)).
     pub(crate) changed: Notify,
     /// The status as last published.
@@ -286,6 +288,7 @@ impl remote::Meter for Gauges {
             },
             conversations: lock(&self.conversations).clone(),
             page: lock(&self.page).clone(),
+            title: lock(&self.title).clone(),
             context_window: stats.context_window,
             plans,
             agents,

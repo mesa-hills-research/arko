@@ -244,6 +244,7 @@ async fn remote_page_demo() {
         background: managers.background.clone(),
         page: std::sync::Mutex::default(),
         changed: Default::default(),
+        title: Default::default(),
         published: Default::default(),
     });
     harness.open(false).unwrap();
