@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 use arko_agents::AgentEvent;
 use arko_workflows::WorkflowEvent;
 use serde::Serialize;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, mpsc};
 use uuid::Uuid;
 
 use super::render::{self, Outcome};
@@ -332,6 +332,103 @@ pub enum Update {
     Activity,
 }
 
+/// A batched client's updates: see [`Feed::subscribe_batched`].
+pub struct Batches {
+    updates: mpsc::UnboundedReceiver<Update>,
+}
+
+impl Batches {
+    /// The updates since the last batch, waiting for the first: merged, so
+    /// a client applies a burst at once ([`merged`]). `None` once the feed
+    /// is gone.
+    pub async fn next(&mut self) -> Option<Vec<Update>> {
+        let mut batch = Vec::new();
+        if self.updates.recv_many(&mut batch, 1024).await == 0 {
+            return None;
+        }
+        while let Ok(update) = self.updates.try_recv() {
+            batch.push(update);
+        }
+        Some(merged(batch))
+    }
+
+    /// The updates since the last batch, merged, if there are any.
+    pub fn try_next(&mut self) -> Option<Vec<Update>> {
+        let mut batch = Vec::new();
+        while let Ok(update) = self.updates.try_recv() {
+            batch.push(update);
+        }
+        (!batch.is_empty()).then(|| merged(batch))
+    }
+}
+
+/// `updates`, merged into fewer that leave a client where they all would:
+/// text appended to an item goes into the item when it came in the same
+/// batch (or into the batch's one append to it), an item's change replaces
+/// what the batch had of it (it is the whole item), a worker's summary
+/// only its last, and the activity is told once.
+pub fn merged(updates: Vec<Update>) -> Vec<Update> {
+    let mut out: Vec<Option<Update>> = Vec::with_capacity(updates.len());
+    // Where the batch has each item: created, changed or appended to.
+    let mut whole: HashMap<u64, usize> = HashMap::new();
+    let mut appended: HashMap<u64, usize> = HashMap::new();
+    let mut workers: HashMap<String, usize> = HashMap::new();
+    let mut activity: Option<usize> = None;
+    for update in updates {
+        match update {
+            Update::Item(item) => {
+                whole.insert(item.id, out.len());
+                out.push(Some(Update::Item(item)));
+            }
+            Update::Append { id, text } => {
+                if let Some(&at) = whole.get(&id)
+                    && let Some(Update::Item(item) | Update::Change(item)) = &mut out[at]
+                {
+                    item.text.push_str(&text);
+                } else if let Some(&at) = appended.get(&id)
+                    && let Some(Update::Append { text: earlier, .. }) = &mut out[at]
+                {
+                    earlier.push_str(&text);
+                } else {
+                    appended.insert(id, out.len());
+                    out.push(Some(Update::Append { id, text }));
+                }
+            }
+            Update::Change(item) => {
+                // It is the whole item: what the batch appended to it is in it.
+                if let Some(at) = appended.remove(&item.id) {
+                    out[at] = None;
+                }
+                match whole.get(&item.id).copied() {
+                    Some(at) => {
+                        out[at] = Some(match out[at].take() {
+                            Some(Update::Item(_)) => Update::Item(item),
+                            _ => Update::Change(item),
+                        });
+                    }
+                    None => {
+                        whole.insert(item.id, out.len());
+                        out.push(Some(Update::Change(item)));
+                    }
+                }
+            }
+            Update::Worker(summary) => {
+                if let Some(at) = workers.insert(summary.id.clone(), out.len()) {
+                    out[at] = None;
+                }
+                out.push(Some(Update::Worker(summary)));
+            }
+            Update::Activity => {
+                if let Some(at) = activity.replace(out.len()) {
+                    out[at] = None;
+                }
+                out.push(Some(Update::Activity));
+            }
+        }
+    }
+    out.into_iter().flatten().collect()
+}
+
 /// The history, the workers and the activity at one moment.
 #[derive(Debug, Clone, Default)]
 pub struct Snapshot {
@@ -354,6 +451,8 @@ struct Inner {
     main: String,
     state: Mutex<State>,
     updates: broadcast::Sender<Update>,
+    /// The batched clients' queues ([`Feed::subscribe_batched`]).
+    batched: Mutex<Vec<mpsc::UnboundedSender<Update>>>,
 }
 
 /// A transcript kept within its budget.
@@ -489,6 +588,7 @@ impl Feed {
                 main: main.to_string(),
                 state: Mutex::new(State::default()),
                 updates,
+                batched: Mutex::default(),
             }),
         }
     }
@@ -504,6 +604,28 @@ impl Feed {
     /// from then on.
     pub fn subscribe(&self) -> (Snapshot, broadcast::Receiver<Update>) {
         let state = self.lock();
+        (Self::snapshot(&state), self.inner.updates.subscribe())
+    }
+
+    /// The history, the workers and the activity now, and from then on
+    /// every update, in batches: for a client in this process, which reads
+    /// them when it can (an app, once per frame). Unlike
+    /// [`subscribe`](Self::subscribe), it never misses one, however far
+    /// behind it falls.
+    pub fn subscribe_batched(&self) -> (Snapshot, Batches) {
+        // (Updates are sent with the state locked: none is missed or seen
+        // twice.)
+        let state = self.lock();
+        let (sender, updates) = mpsc::unbounded_channel();
+        self.inner
+            .batched
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(sender);
+        (Self::snapshot(&state), Batches { updates })
+    }
+
+    fn snapshot(state: &State) -> Snapshot {
         let mut items: Vec<Item> = state
             .main
             .items
@@ -513,14 +635,11 @@ impl Feed {
             .collect();
         // (Two runs in order: the sort merges them.)
         items.sort_by_key(|item| item.id);
-        (
-            Snapshot {
-                items,
-                workers: state.workers.iter().map(|w| w.summary.clone()).collect(),
-                activity: state.activity.clone(),
-            },
-            self.inner.updates.subscribe(),
-        )
+        Snapshot {
+            items,
+            workers: state.workers.iter().map(|w| w.summary.clone()).collect(),
+            activity: state.activity.clone(),
+        }
     }
 
     pub fn activity(&self) -> Activity {
@@ -538,6 +657,14 @@ impl Feed {
     }
 
     fn send(&self, update: Update) {
+        let mut batched = self
+            .inner
+            .batched
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if !batched.is_empty() {
+            batched.retain(|client| client.send(update.clone()).is_ok());
+        }
         // No client may be connected.
         let _ = self.inner.updates.send(update);
     }
@@ -1212,6 +1339,76 @@ impl Feed {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A batched client misses nothing however far behind it falls: 10,000
+    /// pieces of text it didn't read come as one item with all of them,
+    /// where a broadcast client lagged. A worker's summaries come as the
+    /// last, an item's change as the item, and the activity once.
+    #[tokio::test]
+    async fn batches_merge_appends_and_never_reset() {
+        let feed = Feed::new("main");
+        let (_, mut lagging) = feed.subscribe();
+        let (snapshot, mut batches) = feed.subscribe_batched();
+        assert!(snapshot.items.is_empty());
+        assert!(batches.try_next().is_none());
+        let id = feed.add(Item::new(Kind::Text, "0").agent("main"));
+        for _ in 0..10_000 {
+            let mut state = feed.lock();
+            feed.append(&mut state, "main", Kind::Text, "x");
+        }
+        let batch = batches.next().await.unwrap();
+        assert_eq!(batch.len(), 1, "one item");
+        match &batch[0] {
+            Update::Item(item) => {
+                assert_eq!(item.id, id);
+                assert_eq!(item.text.len(), 10_001);
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(matches!(
+            lagging.try_recv(),
+            Err(broadcast::error::TryRecvError::Lagged(_))
+        ));
+
+        // Appended to an item from an earlier batch: one append.
+        for _ in 0..3 {
+            let mut state = feed.lock();
+            feed.append(&mut state, "main", Kind::Text, "y");
+        }
+        let batch = batches.try_next().unwrap();
+        assert!(
+            matches!(batch.as_slice(), [Update::Append { id: appended, text }] if *appended == id && text == "yyy")
+        );
+
+        let summary = |state: WorkerState| WorkerSummary {
+            id: "r1".into(),
+            title: "Count the files.".into(),
+            state,
+            tool_calls: 0,
+            started_at: None,
+            ended_at: None,
+            last: None,
+            report: None,
+        };
+        let mut changed = Item::new(Kind::Text, "0x").agent("main");
+        changed.id = id;
+        let merged = merged(vec![
+            Update::Worker(summary(WorkerState::Running)),
+            Update::Activity,
+            Update::Append {
+                id,
+                text: "z".into(),
+            },
+            Update::Change(changed.clone()),
+            Update::Worker(summary(WorkerState::Finished)),
+            Update::Activity,
+        ]);
+        assert!(matches!(merged.as_slice(), [
+            Update::Change(item),
+            Update::Worker(worker),
+            Update::Activity,
+        ] if item.text == "0x" && worker.state == WorkerState::Finished));
+    }
     use crate::shell::SHELL_TOOL_NAME;
 
     fn event(agent: &str, event: AgentEvent) -> WorkflowEvent {

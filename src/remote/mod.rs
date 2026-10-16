@@ -36,8 +36,8 @@ use tokio::sync::mpsc;
 // of the feed.
 #[allow(unused_imports)]
 pub use feed::{
-    Activity, CallStatus, Delivery, Feed, Item, Kind, Level, MAIN_AGENT, Question, Snapshot,
-    Source, Update, WorkerChange, WorkerState, WorkerSummary,
+    Activity, Batches, CallStatus, Delivery, Feed, Item, Kind, Level, MAIN_AGENT, Question,
+    Snapshot, Source, Update, WorkerChange, WorkerState, WorkerSummary,
 };
 pub use history::items as history;
 #[cfg(any(test, feature = "remote"))]
