@@ -318,6 +318,162 @@ pub(crate) fn move_fin_folder_in(data_directory: &Path) -> Option<String> {
     ))
 }
 
+/// The file an open session holds locked: one Arko (in any process) has a
+/// session open at a time.
+const LOCK_FILE: &str = "lock";
+/// Who holds the lock, as they wrote it once they had it.
+const HOLDER_FILE: &str = "holder.json";
+
+/// Who has a session open: the app, its process and machine, and since when.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Holder {
+    /// `arko` (the command line) or `arko-studio`.
+    pub app: String,
+    pub pid: u32,
+    pub host: String,
+    pub since: DateTime<Utc>,
+}
+
+impl Holder {
+    /// This process, as `app`, from now.
+    fn now(app: &str) -> Holder {
+        Holder {
+            app: app.to_string(),
+            pid: std::process::id(),
+            host: host_name(),
+            since: Utc::now(),
+        }
+    }
+
+    /// One that holds the lock but hasn't said who it is (yet).
+    #[cfg_attr(not(test), allow(dead_code))] // (The session list's, to come.)
+    fn unknown() -> Holder {
+        Holder {
+            app: String::new(),
+            pid: 0,
+            host: String::new(),
+            since: Utc::now(),
+        }
+    }
+
+    /// As the user reads it: "Arko in a terminal (process 41233), since
+    /// 14:02".
+    pub fn describe(&self) -> String {
+        let app = match self.app.as_str() {
+            "" => return "another Arko".to_string(),
+            "arko" => "Arko in a terminal".to_string(),
+            "arko-studio" => "Arko Studio".to_string(),
+            other => other.to_string(),
+        };
+        let host = if self.host.is_empty() || self.host == host_name() {
+            String::new()
+        } else {
+            format!(" on {}", self.host)
+        };
+        let since = self.since.with_timezone(&Local);
+        let when = if since.date_naive() == Local::now().date_naive() {
+            since.format("%H:%M").to_string()
+        } else {
+            since.format("%b %-d, %H:%M").to_string()
+        };
+        format!("{app} (process {}{host}), since {when}", self.pid)
+    }
+}
+
+/// This machine's name, as far as Arko can tell.
+fn host_name() -> String {
+    #[cfg(unix)]
+    {
+        let mut name = [0u8; 256];
+        // SAFETY: the buffer is as long as the length given.
+        if unsafe { libc::gethostname(name.as_mut_ptr().cast(), name.len()) } == 0 {
+            let end = name
+                .iter()
+                .position(|byte| *byte == 0)
+                .unwrap_or(name.len());
+            return String::from_utf8_lossy(&name[..end]).into_owned();
+        }
+        String::new()
+    }
+    #[cfg(not(unix))]
+    {
+        std::env::var("COMPUTERNAME").unwrap_or_default()
+    }
+}
+
+/// Why a session couldn't be locked.
+#[derive(Debug)]
+pub enum LockError {
+    /// Another Arko has it open: who, when it said so.
+    Held(Option<Holder>),
+    Io(std::io::Error),
+}
+
+/// An open session's lock: it is released when this is dropped.
+#[derive(Debug)]
+pub struct SessionLock {
+    _file: std::fs::File,
+    holder: PathBuf,
+}
+
+impl Drop for SessionLock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.holder);
+    }
+}
+
+impl Session {
+    /// Takes the session for `app` (`arko` or `arko-studio`) in this
+    /// process, until the lock is dropped, and says who has it. A session
+    /// open in another Arko, also in this process, can't be taken: who has
+    /// it, if they said.
+    pub fn lock(&self, app: &str) -> Result<SessionLock, LockError> {
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(self.dir.join(LOCK_FILE))
+            .map_err(LockError::Io)?;
+        match file.try_lock() {
+            Ok(()) => {}
+            Err(std::fs::TryLockError::WouldBlock) => {
+                return Err(LockError::Held(read_holder(&self.dir)));
+            }
+            Err(std::fs::TryLockError::Error(error)) => return Err(LockError::Io(error)),
+        }
+        let holder = self.dir.join(HOLDER_FILE);
+        let text = serde_json::to_string_pretty(&Holder::now(app))
+            .map_err(|error| LockError::Io(std::io::Error::other(error)))?;
+        std::fs::write(&holder, text).map_err(LockError::Io)?;
+        Ok(SessionLock {
+            _file: file,
+            holder,
+        })
+    }
+}
+
+/// Who has the session in `dir` open, if anyone does: its lock is held. (A
+/// holder file left without the lock, by an Arko that ended without
+/// removing it, says nothing.)
+#[cfg_attr(not(test), allow(dead_code))] // (The session list's, to come.)
+pub fn holder(dir: &Path) -> Option<Holder> {
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(dir.join(LOCK_FILE))
+        .ok()?;
+    match file.try_lock() {
+        Ok(()) => None,
+        Err(_) => Some(read_holder(dir).unwrap_or_else(Holder::unknown)),
+    }
+}
+
+fn read_holder(dir: &Path) -> Option<Holder> {
+    let text = std::fs::read_to_string(dir.join(HOLDER_FILE)).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
 /// The sessions in `root`, newest first, with their settings.
 pub fn list(root: &Path) -> Vec<(Session, Settings)> {
     let Ok(entries) = std::fs::read_dir(root.join("sessions")) else {
@@ -350,6 +506,55 @@ pub fn latest_in(root: &Path, workspace: &Path) -> Option<Session> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// One Arko has a session open at a time, also in one process: another
+    /// is told who has it, until it is closed. A holder file left behind
+    /// without the lock (an Arko that ended without removing it) holds
+    /// nothing.
+    #[test]
+    fn a_session_open_elsewhere_says_who_has_it() {
+        let root = tempfile::tempdir().unwrap();
+        let session = Session::create(root.path()).unwrap();
+        assert_eq!(holder(&session.dir), None);
+        let lock = session.lock("arko").unwrap();
+        let held = holder(&session.dir).unwrap();
+        assert_eq!((held.app.as_str(), held.pid), ("arko", std::process::id()));
+        match session.lock("arko-studio") {
+            Err(LockError::Held(Some(by))) => assert_eq!(by, held),
+            other => panic!("{other:?}"),
+        }
+        assert!(held.describe().starts_with(&format!(
+            "Arko in a terminal (process {}), since ",
+            std::process::id()
+        )));
+        drop(lock);
+        assert_eq!(holder(&session.dir), None);
+        assert!(!session.dir.join(HOLDER_FILE).exists());
+
+        // A holder file without its lock.
+        let stale = Holder {
+            app: "arko-studio".into(),
+            pid: 1,
+            host: "elsewhere".into(),
+            since: Utc::now(),
+        };
+        assert_eq!(
+            stale.describe(),
+            format!(
+                "Arko Studio (process 1 on elsewhere), since {}",
+                Local::now().format("%H:%M")
+            )
+        );
+        std::fs::write(
+            session.dir.join(HOLDER_FILE),
+            serde_json::to_string(&stale).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(holder(&session.dir), None);
+        let _lock = session.lock("arko-studio").unwrap();
+        assert_eq!(holder(&session.dir).unwrap().pid, std::process::id());
+        assert_eq!(Holder::unknown().describe(), "another Arko");
+    }
     use crate::agents::Effort;
 
     fn settings(workspace: &Path, created: DateTime<Utc>) -> Settings {

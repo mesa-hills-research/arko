@@ -320,6 +320,7 @@ impl Args {
             // At the full screen or the line prompt.
             interactive: !one_shot && terminal,
             title: self.prompt.as_deref().map(|prompt| ui::cut(prompt, 80)),
+            app: "arko",
             #[cfg(any(test, feature = "testing"))]
             client: None,
         })

@@ -98,6 +98,9 @@ pub struct Options {
     pub interactive: bool,
     /// A new session's title; `None`: none until it has one.
     pub title: Option<String>,
+    /// Who opens the session, as others trying to open it are told:
+    /// `arko` (the command line) or `arko-studio`.
+    pub app: &'static str,
     /// A client to use in place of the one the session's credentials make
     /// (tests: the mock model server's).
     #[cfg(any(test, feature = "testing"))]
@@ -160,6 +163,7 @@ impl Default for Options {
             one_shot: false,
             interactive: true,
             title: None,
+            app: "arko-studio",
             #[cfg(any(test, feature = "testing"))]
             client: None,
         }

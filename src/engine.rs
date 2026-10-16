@@ -18,7 +18,7 @@ use crate::inputs::{Asker, Inputs};
 use crate::options::{Options, SessionChoice};
 use crate::prompter::Prompter;
 use crate::remote::Level;
-use crate::session::Session;
+use crate::session::{Holder, LockError, Session, SessionLock};
 use crate::shell::{Shell, WindowsShell};
 use crate::start::{
     background_after_for, client_asking, default_model, new_settings, project_from_options,
@@ -35,6 +35,9 @@ use crate::{
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum OpenError {
+    /// The session is open in another Arko (this process's too): who, when
+    /// it said so (an Arko from before sessions said doesn't).
+    Locked { holder: Option<Holder> },
     /// What went wrong, as the user reads it: credentials missing, the
     /// user cancelled, a session that isn't there.
     Failed(String),
@@ -43,7 +46,26 @@ pub enum OpenError {
 impl std::fmt::Display for OpenError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            OpenError::Locked { holder } => write!(
+                f,
+                "the session is open in {}. Close it there first",
+                holder
+                    .as_ref()
+                    .map_or("another Arko".to_string(), Holder::describe)
+            ),
             OpenError::Failed(message) => f.write_str(message),
+        }
+    }
+}
+
+impl OpenError {
+    /// `session` couldn't be locked.
+    fn from_lock(error: LockError) -> Self {
+        match error {
+            LockError::Held(holder) => OpenError::Locked { holder },
+            LockError::Io(error) => {
+                OpenError::Failed(format!("could not lock the session: {error}"))
+            }
         }
     }
 }
@@ -121,6 +143,8 @@ pub enum RunEnd {
 
 /// An open session.
 pub struct Engine {
+    /// Held while the session is open; released after shutdown.
+    _lock: SessionLock,
     harness: Harness,
     inputs: Inputs,
     managers: Managers,
@@ -163,6 +187,12 @@ impl Engine {
             }
             SessionChoice::New => None,
         };
+        // A session open elsewhere is left alone.
+        let mut lock = resumed
+            .as_ref()
+            .map(|session| session.lock(options.app))
+            .transpose()
+            .map_err(OpenError::from_lock)?;
         let (session, settings, new) = match resumed {
             Some(session) => {
                 let mut settings = session.load_settings()?;
@@ -292,9 +322,14 @@ impl Engine {
 
         let session = match session {
             Some(session) => session,
-            None => Session::create(&root)
-                .map_err(|error| format!("could not create a session: {error}"))?,
+            None => {
+                let session = Session::create(&root)
+                    .map_err(|error| format!("could not create a session: {error}"))?;
+                lock = Some(session.lock(options.app).map_err(OpenError::from_lock)?);
+                session
+            }
         };
+        let lock = lock.expect("the session is locked");
         if new {
             session
                 .save_settings(&settings)
@@ -311,7 +346,14 @@ impl Engine {
         }
         prompter.session_found(&session.dir);
 
-        let managers = Managers::open(&session, &shell)?;
+        let managers = Managers::open(&session, &shell).map_err(|error| {
+            // An Arko from before session locks holds only its terminal's.
+            if error.contains("already in use") {
+                OpenError::Locked { holder: None }
+            } else {
+                OpenError::Failed(error)
+            }
+        })?;
         // Outside access as the session left it; the flag turns it on below.
         let outside = Arc::new(outside::Outside::new(
             settings.allow_outside_workspace,
@@ -553,6 +595,7 @@ impl Engine {
             show_thinking: harness.settings.show_thinking,
         };
         let engine = Engine {
+            _lock: lock,
             harness,
             inputs,
             managers,
@@ -677,6 +720,44 @@ mod tests {
         send(engine.shutdown());
         fn sendable<T: Send + 'static>() {}
         sendable::<Seam>();
+    }
+
+    /// A session open in another Arko isn't opened: the front end is told
+    /// who has it.
+    #[tokio::test]
+    async fn a_session_open_elsewhere_isnt_opened() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("arko");
+        let workspace = temp.path().join("work");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let luna = ModelSettings {
+            model: resolve_model("luna").unwrap().id,
+            effort: Effort::High,
+            fast: false,
+            cache_1h: false,
+            handover_at: None,
+        };
+        let session = Session::create(&root).unwrap();
+        session
+            .save_settings(&Settings::for_test(&workspace, &luna))
+            .unwrap();
+        let _held = session.lock("arko").unwrap();
+        let options = Options {
+            root: Some(root.clone()),
+            session: SessionChoice::Resume(session.id.clone()),
+            interactive: false,
+            ..Options::default()
+        };
+        match Engine::open(options, Arc::new(NoPrompter)).await {
+            Err(OpenError::Locked {
+                holder: Some(holder),
+            }) => {
+                assert_eq!(holder.app, "arko");
+                assert_eq!(holder.pid, std::process::id());
+            }
+            Err(error) => panic!("{error}"),
+            Ok(_) => panic!("opened"),
+        }
     }
 
     /// A session opens, answers a message and shuts down with no terminal:
