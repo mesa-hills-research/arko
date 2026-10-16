@@ -23,6 +23,10 @@ pub struct Prefs {
     /// The notice about flashing was shown (once is enough).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub flash_notice: bool,
+    /// Whether quitting with background jobs running asks first (on unless
+    /// turned off).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confirm_quit: Option<bool>,
 }
 
 impl Prefs {
@@ -62,6 +66,7 @@ mod tests {
             mouse: Some(false),
             theme_previews: Some(false),
             flash_notice: true,
+            confirm_quit: Some(false),
         };
         prefs.save(Some(&path));
         assert_eq!(Prefs::load(Some(&path)), prefs);

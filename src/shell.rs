@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use arko_agents::terminal::{
-    JobState, StartOptions, TerminalError, TerminalManager, TerminalSnapshot,
+    BackgroundJob, JobState, StartOptions, TerminalError, TerminalManager, TerminalSnapshot,
 };
 use arko_agents::{
     TaskContext, Tool, ToolDefinition, ToolError, ToolParameterDefinition, ToolParameterType,
@@ -182,14 +182,16 @@ fn find_program(name: &str) -> Option<PathBuf> {
 }
 
 /// When the shell tool's commands move to the background on their own (the
-/// session's "background after"), and the commands running, which the user
-/// can move at once (Ctrl+B).
+/// session's "background after"), the commands running, which the user
+/// can move at once (Ctrl+B), and the jobs in the background.
 #[derive(Debug, Default)]
 pub struct Background {
     /// After how many seconds a command still running moves; 0: never.
     after: AtomicU64,
     /// The commands running, by job.
     running: Mutex<HashMap<Uuid, Running>>,
+    /// The session's terminal jobs, whose manager owns them.
+    jobs: std::sync::Weak<TerminalManager>,
 }
 
 /// A command running, as [`Background`] keeps it.
@@ -202,12 +204,23 @@ struct Running {
 }
 
 impl Background {
-    /// Commands move after `after` seconds (0: never).
-    pub fn new(after: u64) -> Arc<Self> {
+    /// Commands move after `after` seconds (0: never), as jobs of `jobs`.
+    pub fn new(after: u64, jobs: &Arc<TerminalManager>) -> Arc<Self> {
         Arc::new(Self {
             after: after.into(),
             running: Mutex::default(),
+            jobs: Arc::downgrade(jobs),
         })
+    }
+
+    /// The jobs running in the background, oldest first: the commands moved
+    /// there and those the terminal tools started. They stop when Arko
+    /// exits.
+    pub fn jobs(&self) -> Vec<BackgroundJob> {
+        self.jobs
+            .upgrade()
+            .map(|jobs| jobs.background_jobs())
+            .unwrap_or_default()
     }
 
     /// After how long a command still running moves; `None`: never.
@@ -559,6 +572,8 @@ impl Tool for ShellTool {
                     timeout: Some(Duration::from_secs(timeout)),
                     held: true,
                     shell_args: Some(self.shell.args.clone()),
+                    // Without the lines `wrap` adds.
+                    label: Some(command.to_string()),
                 },
             )
             .map_err(|error| match error {
@@ -724,11 +739,8 @@ mod tests {
         let mut config = TerminalConfig::new(directory.join("jobs"));
         config.shell = shell.program.clone();
         config.shell_args = shell.job_args.clone();
-        ShellTool::new(
-            TerminalManager::new(config).unwrap(),
-            shell,
-            Background::new(after),
-        )
+        let manager = TerminalManager::new(config).unwrap();
+        ShellTool::new(manager.clone(), shell, Background::new(after, &manager))
     }
 
     async fn run(tool: &ShellTool, directory: &Path, params: Value) -> Result<String, ToolError> {
@@ -976,7 +988,7 @@ mod tests {
         let tool = ShellTool::new(
             TerminalManager::new(config).unwrap(),
             Shell::cmd("cmd.exe".into()),
-            Background::new(0),
+            Arc::default(),
         );
         let error = run(
             &tool,

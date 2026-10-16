@@ -90,6 +90,10 @@ pub struct Reading {
     /// background: [`MAIN_AGENT`], or a worker's ID.
     #[serde(skip)]
     pub commands: Vec<String>,
+    /// The jobs running in the background, which stop when Arko exits: the
+    /// full-screen view asks before it quits. (The page can't quit Arko.)
+    #[serde(skip)]
+    pub jobs: Vec<arko_agents::terminal::BackgroundJob>,
     /// The agents' models, as `/model` changes them.
     pub models: Models,
     /// The session's conversations with the main agent, newest first, for

@@ -254,6 +254,58 @@ async fn ctrl_b_moves_the_running_command_and_the_user_writes_at_once() {
     managers.shutdown().await;
 }
 
+/// At the line prompt, `/exit` with a job in the background only warns, as
+/// the job stops when Arko exits, and the next `/exit` quits. The
+/// full-screen view asks in its popup instead, so there `/exit` warns of
+/// the workers only.
+#[cfg(unix)]
+#[tokio::test]
+async fn exit_with_a_background_job_warns_first_at_the_line_prompt() {
+    let server = ModelServer::start(Arc::new(|_, body: String| {
+        Box::pin(async move {
+            if body.contains("call_m1") {
+                complete("m2", "It goes on in the background.")
+            } else {
+                tool_call("m1", SHELL_TOOL, serde_json::json!({"command": "sleep 30"}))
+            }
+        })
+    }))
+    .await;
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
+    let managers = equip(&mut harness, &mut inputs, 1);
+    let end = tokio::time::timeout(
+        Duration::from_secs(20),
+        harness.turn(Prompt::User("Wait a while.".into()), &mut inputs),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(end, TurnEnd::Answered));
+    // The job shows the command the agent gave, not the shell's wrapping.
+    let jobs = harness.background.jobs();
+    assert_eq!(
+        jobs.iter().map(|job| job.command.as_str()).collect::<Vec<_>>(),
+        ["sleep 30"]
+    );
+
+    assert!(!harness.mirrored(|harness| harness.may_exit()));
+    let warnings: Vec<String> = shown(&harness.feed)
+        .into_iter()
+        .filter(|(kind, text, _)| kind == "output" && text.contains("/exit again"))
+        .map(|(_, text, _)| text)
+        .collect();
+    assert_eq!(
+        warnings,
+        ["1 background job is running: /exit again stops it and quits."]
+    );
+    assert!(harness.mirrored(|harness| harness.may_exit()));
+
+    harness.exit_warned = false;
+    harness.screen = true;
+    assert!(harness.mirrored(|harness| harness.may_exit()));
+    managers.shutdown().await;
+}
+
 /// The first body with `with`.
 fn body_with(bodies: &Bodies, with: &str) -> String {
     bodies

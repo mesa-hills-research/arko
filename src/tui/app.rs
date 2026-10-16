@@ -692,7 +692,7 @@ impl App {
                 // As at the line prompt: an empty box quits (through /exit,
                 // which warns about running workers).
                 if self.editor.is_empty() {
-                    self.send("/exit");
+                    self.quit("/exit");
                 } else {
                     self.editor.delete();
                 }
@@ -839,11 +839,30 @@ impl App {
             .is_some_and(|at| now.duration_since(at) < AGAIN)
         {
             self.last_interrupt = None;
-            self.send("/exit");
+            self.quit("/exit");
         } else {
             self.last_interrupt = Some(now);
             self.say("Ctrl+C again quits");
         }
+    }
+
+    /// Quits with `line` (`/exit`, `/quit`). Background jobs stop when Arko
+    /// exits and never come back, so with any running the popup asks first,
+    /// unless the user turned that off.
+    fn quit(&mut self, line: &str) {
+        if self.reading.jobs.is_empty() || !self.confirms_quit() {
+            self.send(line);
+        } else {
+            self.overlay = Some(Overlay::Quit {
+                choice: 0,
+                dont_ask: false,
+            });
+        }
+    }
+
+    /// Whether quitting with background jobs running asks first.
+    pub fn confirms_quit(&self) -> bool {
+        self.prefs.confirm_quit.unwrap_or(true)
     }
 
     fn cycle_view(&mut self) {
@@ -962,6 +981,10 @@ impl App {
                 }
                 ("/help", _) => {
                     self.overlay = Some(Overlay::Help { scroll: 0 });
+                    true
+                }
+                ("/exit", _) => {
+                    self.quit(trimmed);
                     true
                 }
                 // Without a number, the picker. With one, the session.
@@ -1163,6 +1186,36 @@ impl App {
                     choice,
                 }),
             },
+            // Esc is No. Yes saves a ticked box, and quits at once: the
+            // popup said what stops, the workers too. No leaves the choice
+            // unsaved, so the next quit asks again.
+            Overlay::Quit { choice, dont_ask } => match key.code {
+                _ if close => None,
+                KeyCode::Left | KeyCode::Up | KeyCode::BackTab => Some(Overlay::Quit {
+                    choice: (choice + 2) % 3,
+                    dont_ask,
+                }),
+                KeyCode::Right | KeyCode::Down | KeyCode::Tab => Some(Overlay::Quit {
+                    choice: (choice + 1) % 3,
+                    dont_ask,
+                }),
+                KeyCode::Enter | KeyCode::Char(' ') => match choice {
+                    0 => {
+                        if dont_ask {
+                            self.prefs.confirm_quit = Some(false);
+                            self.prefs.save(self.info.prefs.as_deref());
+                        }
+                        self.effects.push(Effect::Input(Input::Eof));
+                        None
+                    }
+                    1 => None,
+                    _ => Some(Overlay::Quit {
+                        choice,
+                        dont_ask: !dont_ask,
+                    }),
+                },
+                _ => Some(Overlay::Quit { choice, dont_ask }),
+            },
         };
     }
 
@@ -1173,6 +1226,7 @@ impl App {
             SettingsRow::Theme,
             SettingsRow::Previews,
             SettingsRow::Mouse,
+            SettingsRow::ConfirmQuit,
         ];
         if commands::find("/outside on").is_some() {
             rows.push(SettingsRow::Outside);
@@ -1327,6 +1381,10 @@ impl App {
                     self.prefs.mouse = Some(self.mouse);
                     self.prefs.save(self.info.prefs.as_deref());
                     self.effects.push(Effect::Mouse(self.mouse));
+                }
+                SettingsRow::ConfirmQuit => {
+                    self.prefs.confirm_quit = Some(!self.confirms_quit());
+                    self.prefs.save(self.info.prefs.as_deref());
                 }
                 SettingsRow::Outside => {
                     let on = !self.outside();
@@ -1820,6 +1878,106 @@ pub(super) mod tests {
         // Ctrl+D on an empty box quits the same way.
         press(&mut app, KeyCode::Char('d'), KeyModifiers::CONTROL);
         assert_eq!(sent(&mut app), ["/exit"]);
+    }
+
+    /// A job in the background, started `ago`.
+    pub fn job(command: &str, ago: Duration) -> arko_agents::terminal::BackgroundJob {
+        arko_agents::terminal::BackgroundJob {
+            owner: uuid::Uuid::nil(),
+            job_id: uuid::Uuid::new_v4(),
+            command: command.into(),
+            started: Instant::now() - ago,
+        }
+    }
+
+    /// With background jobs running, quitting opens the popup. Esc and No
+    /// stay, and the box ticked with No isn't kept. Yes quits at once, and
+    /// with the box ticked it is kept, so quitting doesn't ask again until
+    /// the settings' row turns the question back on.
+    #[test]
+    fn quitting_with_background_jobs_asks_first() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("tui.json");
+        let mut app = App::new(
+            Snapshot::default(),
+            Editor::new(History::load(None)),
+            Info {
+                prefs: Some(path.clone()),
+                ..Info::default()
+            },
+            Catalog::load(None),
+            Depth::Rgb,
+        );
+        let popup = |app: &App| match app.overlay {
+            Some(Overlay::Quit { choice, dont_ask }) => Some((choice, dont_ask)),
+            _ => None,
+        };
+        let ctrl = |app: &mut App, c: char| press(app, KeyCode::Char(c), KeyModifiers::CONTROL);
+        let key = |app: &mut App, code: KeyCode| press(app, code, KeyModifiers::NONE);
+        // Without jobs, Ctrl+D quits as before.
+        ctrl(&mut app, 'd');
+        assert_eq!(sent(&mut app), ["/exit"]);
+
+        app.reading.jobs = vec![job("sleep 300", Duration::from_secs(90))];
+        ctrl(&mut app, 'd');
+        assert_eq!(popup(&app), Some((0, false)));
+        assert!(app.take_effects().is_empty());
+        key(&mut app, KeyCode::Esc);
+        assert_eq!(app.overlay, None);
+        // `/quit` asks too, and No stays.
+        type_text(&mut app, "/quit");
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(popup(&app), Some((0, false)));
+        key(&mut app, KeyCode::Right);
+        assert_eq!(popup(&app), Some((1, false)));
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(app.overlay, None);
+        assert!(app.take_effects().is_empty());
+        // Ctrl+C twice asks too. The box ticked, then No: nothing is kept.
+        ctrl(&mut app, 'c');
+        ctrl(&mut app, 'c');
+        assert_eq!(popup(&app), Some((0, false)));
+        key(&mut app, KeyCode::Tab);
+        key(&mut app, KeyCode::Tab);
+        key(&mut app, KeyCode::Char(' '));
+        assert_eq!(popup(&app), Some((2, true)));
+        key(&mut app, KeyCode::Left);
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(app.overlay, None);
+        assert!(app.take_effects().is_empty());
+        assert!(app.confirms_quit());
+        assert_eq!(Prefs::load(Some(&path)).confirm_quit, None);
+
+        // The box ticked, then Yes: Arko quits at once, and it is kept.
+        ctrl(&mut app, 'd');
+        assert_eq!(popup(&app), Some((0, false)), "the box starts clear");
+        key(&mut app, KeyCode::BackTab);
+        key(&mut app, KeyCode::Enter);
+        key(&mut app, KeyCode::Tab);
+        assert_eq!(popup(&app), Some((0, true)));
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(app.overlay, None);
+        assert_eq!(app.take_effects(), [Effect::Input(Input::Eof)]);
+        assert_eq!(Prefs::load(Some(&path)).confirm_quit, Some(false));
+        // From then on quitting doesn't ask (the session still warns of
+        // running workers).
+        ctrl(&mut app, 'd');
+        assert_eq!(app.overlay, None);
+        assert_eq!(sent(&mut app), ["/exit"]);
+
+        // The settings' row turns the question back on.
+        let row = app
+            .settings_rows()
+            .iter()
+            .position(|row| *row == SettingsRow::ConfirmQuit)
+            .unwrap();
+        app.overlay = Some(Overlay::Settings { row, picker: None });
+        key(&mut app, KeyCode::Enter);
+        assert!(app.confirms_quit());
+        assert_eq!(Prefs::load(Some(&path)).confirm_quit, Some(true));
+        key(&mut app, KeyCode::Esc);
+        ctrl(&mut app, 'd');
+        assert_eq!(popup(&app), Some((0, false)));
     }
 
     #[test]
