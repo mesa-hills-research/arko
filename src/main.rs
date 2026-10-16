@@ -323,6 +323,11 @@ fn main() -> ExitCode {
 }
 
 async fn run(args: Args) -> Result<ExitCode, String> {
+    // fin's data folder, made before the rename to Arko, becomes Arko's
+    // before anything reads it (keys, sessions, indexes).
+    if let Some(note) = session::move_fin_folder() {
+        eprintln!("arko: {note}");
+    }
     let root = session::data_root()?;
     if args.sessions {
         list_sessions(&root);

@@ -194,7 +194,14 @@ pub fn data_root() -> Result<PathBuf, String> {
     if let Some(home) = std::env::var_os("ARKO_HOME").filter(|value| !value.is_empty()) {
         return Ok(PathBuf::from(home));
     }
-    let base = if cfg!(windows) {
+    data_directory()
+        .map(|base| base.join("arko"))
+        .ok_or_else(|| "could not find your data directory. Set ARKO_HOME".to_string())
+}
+
+/// The user's data directory, which holds Arko's folder.
+fn data_directory() -> Option<PathBuf> {
+    if cfg!(windows) {
         std::env::var_os("LOCALAPPDATA").map(PathBuf::from)
     } else if cfg!(target_os = "macos") {
         std::env::var_os("HOME").map(|home| PathBuf::from(home).join("Library/Application Support"))
@@ -205,9 +212,37 @@ pub fn data_root() -> Result<PathBuf, String> {
             .or_else(|| {
                 std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share"))
             })
-    };
-    base.map(|base| base.join("arko"))
-        .ok_or_else(|| "could not find your data directory. Set ARKO_HOME".to_string())
+    }
+}
+
+/// Renames the data folder of fin (Arko's name before) to Arko's, for
+/// folders made before the rename. Only without ARKO_HOME, and only while
+/// Arko has no folder of its own. A note says when fin's folder stays.
+pub fn move_fin_folder() -> Option<String> {
+    if std::env::var_os("ARKO_HOME").is_some_and(|value| !value.is_empty()) {
+        return None;
+    }
+    move_fin_folder_in(&data_directory()?)
+}
+
+pub(crate) fn move_fin_folder_in(data_directory: &Path) -> Option<String> {
+    let (fin, arko) = (data_directory.join("fin"), data_directory.join("arko"));
+    if !fin.is_dir() {
+        return None;
+    }
+    if arko.exists() {
+        return Some(format!(
+            "fin's data folder {} wasn't moved, since Arko's folder {} already exists",
+            fin.display(),
+            arko.display()
+        ));
+    }
+    let error = std::fs::rename(&fin, &arko).err()?;
+    Some(format!(
+        "could not move fin's data folder {} to {}: {error}. Arko goes on without it",
+        fin.display(),
+        arko.display()
+    ))
 }
 
 /// The sessions in `root`, newest first, with their settings.
@@ -353,5 +388,84 @@ mod tests {
             settings.describe(&settings.main),
             "gpt-6.1-sol (xhigh effort) via ChatGPT login"
         );
+    }
+
+    /// fin's data folder (Arko's name before) becomes Arko's once, with its
+    /// sessions, keys and indexes, and the sessions list and open from it.
+    #[test]
+    fn fins_data_folder_moves_to_arkos_once() {
+        let data = tempfile::tempdir().unwrap();
+        let (fin, arko) = (data.path().join("fin"), data.path().join("arko"));
+        let session = Session::create(&fin).unwrap();
+        session
+            .save_settings(&settings(data.path(), Utc::now()))
+            .unwrap();
+        std::fs::write(fin.join(".env"), "ANTHROPIC_API_KEY=sk-ant-1\n").unwrap();
+        std::fs::create_dir_all(fin.join("indexes/work-code-1")).unwrap();
+
+        assert_eq!(move_fin_folder_in(data.path()), None);
+        assert!(!fin.exists());
+        let listed = list(&arko);
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].0.id, session.id);
+        assert_eq!(listed[0].1.workspace, data.path());
+        assert!(Session::open(&arko, &session.id).is_ok());
+        assert_eq!(
+            std::fs::read_to_string(arko.join(".env")).unwrap(),
+            "ANTHROPIC_API_KEY=sk-ant-1\n"
+        );
+        assert!(arko.join("indexes/work-code-1").is_dir());
+        // Nothing to move the next time.
+        assert_eq!(move_fin_folder_in(data.path()), None);
+        assert_eq!(list(&arko).len(), 1);
+    }
+
+    /// When Arko has a folder already, fin's stays where it is, and a note
+    /// says so.
+    #[test]
+    fn fins_data_folder_stays_beside_a_folder_of_arkos() {
+        let data = tempfile::tempdir().unwrap();
+        let (fin, arko) = (data.path().join("fin"), data.path().join("arko"));
+        Session::create(&fin).unwrap();
+        std::fs::create_dir_all(arko.join("sessions")).unwrap();
+        let note = move_fin_folder_in(data.path()).unwrap();
+        assert_eq!(
+            note,
+            format!(
+                "fin's data folder {} wasn't moved, since Arko's folder {} already exists",
+                fin.display(),
+                arko.display()
+            )
+        );
+        assert_eq!(std::fs::read_dir(fin.join("sessions")).unwrap().count(), 1);
+        assert!(list(&arko).is_empty());
+    }
+
+    /// A move that fails is said, and Arko goes on with its own folder.
+    #[cfg(unix)]
+    #[test]
+    fn a_move_that_fails_is_said() {
+        use std::os::unix::fs::PermissionsExt;
+        // Root renames in a folder it can't write to.
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+        let data = tempfile::tempdir().unwrap();
+        Session::create(&data.path().join("fin")).unwrap();
+        let mode = |mode| std::fs::Permissions::from_mode(mode);
+        std::fs::set_permissions(data.path(), mode(0o555)).unwrap();
+        let note = move_fin_folder_in(data.path());
+        std::fs::set_permissions(data.path(), mode(0o755)).unwrap();
+        let note = note.unwrap();
+        assert!(
+            note.starts_with(&format!(
+                "could not move fin's data folder {} to {}: ",
+                data.path().join("fin").display(),
+                data.path().join("arko").display()
+            )),
+            "{note}"
+        );
+        assert!(note.ends_with(". Arko goes on without it"), "{note}");
+        assert!(data.path().join("fin/sessions").is_dir());
     }
 }

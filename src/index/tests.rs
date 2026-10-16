@@ -964,6 +964,66 @@ fn watching_reconciles_changes_made_while_arko_was_not_running() {
     fixture.shutdown(&second);
 }
 
+/// An index made in fin's data folder (Arko's name before) opens, searches
+/// and keeps current after the folder moves to Arko's: nothing saved in it
+/// names the data folder.
+#[test]
+fn an_index_moved_with_fins_data_folder_still_works() {
+    let fixture = Fixture::new();
+    let root = fixture.code_project();
+    let share = fixture.base.join("share");
+    let open = |data: &Path| {
+        let _guard = fixture.runtime.enter();
+        let indexes =
+            Indexes::open_with(data, &root, Backend::Hash, true, fast(false), None).unwrap();
+        indexes.watch_related();
+        indexes
+    };
+    let first = open(&share.join("fin"));
+    let outcome = first.create_blocking(&create_args(&root, None)).unwrap();
+    wait_for("the watcher", || {
+        first.watch_state(&outcome.layout).active()
+    });
+    fixture.shutdown(&first);
+
+    assert_eq!(crate::session::move_fin_folder_in(&share), None);
+    let second = open(&share.join("arko"));
+    let moved = Layout::new(
+        store::indexes_dir(&share.join("arko")).join(outcome.layout.dir.file_name().unwrap()),
+    );
+    wait_for("the watcher of the moved index", || {
+        second.watch_state(&moved).active()
+    });
+    for (mode, searched) in [
+        (ModeArg::Semantic, Mode::Dense),
+        (ModeArg::Hybrid, Mode::Hybrid),
+        (ModeArg::Lexical, Mode::Lexical),
+    ] {
+        let output = second
+            .search_blocking(&search_args(&root, "retry backoff delay", Some(mode)))
+            .unwrap();
+        assert_eq!(output.searched[0].2, searched, "{mode:?}");
+        assert_eq!(hit_files(&output)[0], "src/net.rs", "{mode:?}: {output:?}");
+        assert!(output.notes.is_empty(), "{:?}", output.notes);
+    }
+    write(
+        &root.join("src/later.rs"),
+        "pub fn written_after_the_move() {}\n",
+    );
+    wait_for("the moved index to take the new file", || {
+        second
+            .search_blocking(&search_args(
+                &root,
+                "written_after_the_move",
+                Some(ModeArg::Lexical),
+            ))
+            .is_ok_and(|output| {
+                hit_files(&output).first().map(String::as_str) == Some("src/later.rs")
+            })
+    });
+    fixture.shutdown(&second);
+}
+
 #[test]
 fn an_index_folder_inside_the_tree_is_left_out() {
     let fixture = Fixture::new();
