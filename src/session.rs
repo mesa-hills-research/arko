@@ -215,9 +215,11 @@ fn data_directory() -> Option<PathBuf> {
     }
 }
 
-/// Renames the data folder of fin (Arko's name before) to Arko's, for
-/// folders made before the rename. Only without ARKO_HOME, and only while
-/// Arko has no folder of its own. A note says when fin's folder stays.
+/// Moves the data folder of fin (Arko's name before) to Arko's, for folders
+/// made before the rename. Only without ARKO_HOME. arko_workflows keeps its
+/// own runs in Arko's folder too, so it may be there already. Then each of
+/// fin's files and folders moves in unless Arko's has one by that name, and
+/// a note says what stayed.
 pub fn move_fin_folder() -> Option<String> {
     if std::env::var_os("ARKO_HOME").is_some_and(|value| !value.is_empty()) {
         return None;
@@ -230,18 +232,33 @@ pub(crate) fn move_fin_folder_in(data_directory: &Path) -> Option<String> {
     if !fin.is_dir() {
         return None;
     }
-    if arko.exists() {
+    if !arko.exists() {
+        let error = std::fs::rename(&fin, &arko).err()?;
         return Some(format!(
-            "fin's data folder {} wasn't moved, since Arko's folder {} already exists",
+            "could not move fin's data folder {} to {}: {error}. Arko goes on without it",
             fin.display(),
             arko.display()
         ));
     }
-    let error = std::fs::rename(&fin, &arko).err()?;
+    let mut stayed = Vec::new();
+    for entry in std::fs::read_dir(&fin).ok()?.filter_map(Result::ok) {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let to = arko.join(entry.file_name());
+        if to.exists() {
+            stayed.push(format!("{name} (Arko's folder has one)"));
+        } else if let Err(error) = std::fs::rename(entry.path(), &to) {
+            stayed.push(format!("{name} ({error})"));
+        }
+    }
+    if stayed.is_empty() {
+        let _ = std::fs::remove_dir(&fin);
+        return None;
+    }
     Some(format!(
-        "could not move fin's data folder {} to {}: {error}. Arko goes on without it",
+        "some of fin's data stayed in {} when the rest moved to {}: {}",
         fin.display(),
-        arko.display()
+        arko.display(),
+        stayed.join(", ")
     ))
 }
 
@@ -420,25 +437,48 @@ mod tests {
         assert_eq!(list(&arko).len(), 1);
     }
 
-    /// When Arko has a folder already, fin's stays where it is, and a note
-    /// says so.
+    /// arko_workflows' own runs may have made Arko's folder first. fin's
+    /// data moves in beside them.
     #[test]
-    fn fins_data_folder_stays_beside_a_folder_of_arkos() {
+    fn fins_data_moves_into_a_folder_arko_workflows_made() {
+        let data = tempfile::tempdir().unwrap();
+        let (fin, arko) = (data.path().join("fin"), data.path().join("arko"));
+        let session = Session::create(&fin).unwrap();
+        session
+            .save_settings(&settings(data.path(), Utc::now()))
+            .unwrap();
+        std::fs::write(fin.join(".env"), "ANTHROPIC_API_KEY=sk-ant-1\n").unwrap();
+        std::fs::create_dir_all(arko.join("workflows/other")).unwrap();
+
+        assert_eq!(move_fin_folder_in(data.path()), None);
+        assert!(!fin.exists());
+        assert_eq!(list(&arko).len(), 1);
+        assert!(arko.join(".env").is_file());
+        assert!(arko.join("workflows/other").is_dir());
+    }
+
+    /// What Arko's folder has already stays in fin's, the rest moves, and a
+    /// note says what stayed.
+    #[test]
+    fn fins_data_that_arko_has_already_stays() {
         let data = tempfile::tempdir().unwrap();
         let (fin, arko) = (data.path().join("fin"), data.path().join("arko"));
         Session::create(&fin).unwrap();
+        std::fs::write(fin.join("history.txt"), "hello\n").unwrap();
         std::fs::create_dir_all(arko.join("sessions")).unwrap();
         let note = move_fin_folder_in(data.path()).unwrap();
         assert_eq!(
             note,
             format!(
-                "fin's data folder {} wasn't moved, since Arko's folder {} already exists",
+                "some of fin's data stayed in {} when the rest moved to {}: sessions (Arko's folder has one)",
                 fin.display(),
                 arko.display()
             )
         );
         assert_eq!(std::fs::read_dir(fin.join("sessions")).unwrap().count(), 1);
         assert!(list(&arko).is_empty());
+        assert!(arko.join("history.txt").is_file());
+        assert!(!fin.join("history.txt").exists());
     }
 
     /// A move that fails is said, and Arko goes on with its own folder.
