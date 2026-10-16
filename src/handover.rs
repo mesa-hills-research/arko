@@ -203,14 +203,17 @@ impl Handover {
         feed: remote::Feed,
     ) -> Self {
         let openai_auth = Arc::new(Mutex::new(None));
-        let auth = openai_auth.clone();
-        let workers = HandoverThreshold::new(workers_at).with_most(move |config| {
-            agents::max_handover(&config.llm_config.model, *crate::lock(&auth))
-        });
+        // Each run goes by at most what its model leaves room for.
+        let most = |threshold: HandoverThreshold| {
+            let auth = openai_auth.clone();
+            threshold.with_most(move |config| {
+                agents::max_handover(&config.llm_config.model, *crate::lock(&auth))
+            })
+        };
         Self {
             runs,
-            threshold: HandoverThreshold::new(at),
-            workers,
+            threshold: most(HandoverThreshold::new(at)),
+            workers: most(HandoverThreshold::new(workers_at)),
             openai_auth,
             configured: AtomicUsize::new(usize::MAX),
             most: AtomicUsize::new(usize::MAX),
@@ -228,11 +231,13 @@ impl Handover {
         self.runs.clone()
     }
 
-    /// The size the main agent hands over at.
+    /// The size the main agent hands over at: the one the user set, else
+    /// the configured one, up to what its model leaves room for.
     pub fn at(&self) -> usize {
         self.threshold
             .get()
             .unwrap_or_else(|| self.configured.load(Ordering::SeqCst))
+            .min(self.most())
     }
 
     /// The largest size the user can set.
@@ -290,11 +295,11 @@ impl Handover {
     /// one in a resumed session), hands over at `configured`, and its model
     /// leaves room up to `most` (`None` when its limit isn't known: then
     /// up to the configured size). The size the user set stays, up to
-    /// that.
+    /// that, and so does a configured size over it (a session saved before
+    /// sizes were held under the model's room): the runs go by `most`.
     fn configure(&self, configured: Option<usize>, most: Option<usize>) {
         let configured = configured.unwrap_or(usize::MAX);
-        // A session started at a larger size can go back to it.
-        let most = most.map_or(configured, |most| most.max(configured));
+        let most = most.unwrap_or(configured);
         self.configured.store(configured, Ordering::SeqCst);
         self.most.store(most, Ordering::SeqCst);
         if self.threshold.get().is_some_and(|at| at > most) {
@@ -650,9 +655,11 @@ mod tests {
         // A model whose limit isn't known: up to the configured size.
         handover.configure(Some(250_000), None);
         assert_eq!(handover.set_at(300_000), 250_000);
-        // A session started over the model's room can go back to its size.
+        // A session saved at a size over the model's room goes by the room.
+        let (handover, _) = handover_at(&runs, None);
         handover.configure(Some(240_000), Some(190_000));
-        assert_eq!(handover.set_at(1_000_000), 240_000);
+        assert_eq!(handover.at(), 190_000);
+        assert_eq!(handover.set_at(1_000_000), 190_000);
     }
 
     /// The watch leaves the size to the runtime: it asks for no handover

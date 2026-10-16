@@ -1081,6 +1081,18 @@ fn apply_catalog(
         }
         if !explicit_handover {
             model.handover_at = Some(default_handover(&listed, None));
+        } else if let Some(most) = crate::agents::max_handover(&listed, None)
+            && model.handover_at.is_some_and(|at| at > most)
+        {
+            // --handover-at, held under what the model leaves room for.
+            model.handover_at = Some(most);
+            note(
+                &mut notes,
+                format!(
+                    "{name} hands over at {} tokens, the largest size Arko allows for its model.",
+                    crate::handover::shown(most)
+                ),
+            );
         }
     }
     // What sessions read before the handover was set per model.
@@ -1555,11 +1567,20 @@ mod tests {
         assert_eq!(session.worker.handover_at, Some(102_400), "80% of 128k");
         assert_eq!(session.handover_at, 500_000);
 
-        // --handover-at stands.
+        // --handover-at stands, up to 95% of what the model accepts.
         let mut session = settings(model("openrouter:meta/small-model"), model("opus"));
-        session.main.handover_at = Some(300_000);
+        session.main.handover_at = Some(100_000);
         apply_catalog(&mut session, Ok(&catalog), true).unwrap();
-        assert_eq!(session.main.handover_at, Some(300_000));
+        assert_eq!(session.main.handover_at, Some(100_000));
+        session.main.handover_at = Some(300_000);
+        let notes = apply_catalog(&mut session, Ok(&catalog), true).unwrap();
+        assert_eq!(session.main.handover_at, Some(121_600), "95% of 128k");
+        assert_eq!(
+            notes,
+            [
+                "openrouter:meta/small-model hands over at 121k tokens, the largest size Arko allows for its model."
+            ]
+        );
 
         // A slug the catalog doesn't list, or a model without tools, is
         // refused before the session starts.

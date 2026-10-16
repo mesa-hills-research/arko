@@ -969,13 +969,19 @@ fn new_settings(args: &Args) -> Result<Settings, String> {
         None
     };
     // On the ChatGPT login, OpenAI models hand over below its backend's
-    // input limit.
+    // input limit. A size given is held under what the model leaves room
+    // for, as /handover-at holds it.
     let handover_at = |id: &str| {
-        args.handover_at.or_else(|| {
-            resolve_model(id)
-                .ok()
-                .map(|model| agents::default_handover(&model, openai_auth))
-        })
+        let model = resolve_model(id).ok();
+        match args.handover_at {
+            Some(tokens) => Some(
+                model
+                    .as_ref()
+                    .and_then(|model| agents::max_handover(model, openai_auth))
+                    .map_or(tokens, |most| tokens.min(most)),
+            ),
+            None => model.map(|model| agents::default_handover(&model, openai_auth)),
+        }
     };
     let main = ModelSettings {
         cache_1h: cache_1h(&main_model),
@@ -1000,6 +1006,22 @@ fn new_settings(args: &Args) -> Result<Settings, String> {
             ..main.clone()
         },
     };
+    // A size given that a model holds lower is said.
+    if let Some(tokens) = args.handover_at {
+        let mut said = Vec::new();
+        for model in [&main, &worker] {
+            if let Some(at) = model.handover_at.filter(|at| *at < tokens)
+                && !said.contains(&model.model)
+            {
+                eprintln!(
+                    "arko: {} hands over at {}, the largest size Arko allows for its model",
+                    model.model,
+                    handover::shown(at)
+                );
+                said.push(model.model.clone());
+            }
+        }
+    }
     // What sessions read before the handover was set per model.
     let session_handover = main.handover_at.unwrap_or(200_000);
     if args.cache_1h && !main.cache_1h && !worker.cache_1h {
@@ -4146,6 +4168,26 @@ mod tests {
         let settings = new_settings(&args).unwrap();
         assert_eq!(settings.main.handover_at, Some(300_000));
         assert_eq!(settings.worker.handover_at, Some(300_000));
+        // Each agent's size is held at 95% of what its model accepts.
+        let args = Args::try_parse_from([
+            "arko",
+            "-m",
+            "cc:opus",
+            "--worker-model",
+            "luna",
+            "--openai-auth",
+            "api-key",
+            "-C",
+            dir,
+            "--handover-at",
+            "2000k",
+        ])
+        .unwrap();
+        let settings = new_settings(&args).unwrap();
+        assert_eq!(settings.main.handover_at, Some(950_000));
+        let luna = agents::max_handover(&resolve_model("luna").unwrap(), settings.openai_auth);
+        assert_eq!(settings.worker.handover_at, luna);
+        assert!(luna < Some(950_000));
     }
 
     /// `--handover-at` when resuming sets both sizes, as `/handover-at`

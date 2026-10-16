@@ -688,7 +688,8 @@ impl Harness {
 
 /// `old`'s settings on `model` at `effort`: fast mode where the model has
 /// it, the 1-hour cache where it takes one and it was asked for, and the
-/// handover size the model's own unless one was given.
+/// handover size the model's own unless one was given (held under what
+/// the model leaves room for).
 fn switched(
     old: &ModelSettings,
     model: &Model,
@@ -700,7 +701,9 @@ fn switched(
         .as_ref()
         .map(|model| agents::default_handover(model, openai_auth));
     let handover_at = match old.handover_at {
-        Some(at) if Some(at) != default_before => Some(at),
+        Some(at) if Some(at) != default_before => {
+            Some(agents::max_handover(model, openai_auth).map_or(at, |most| at.min(most)))
+        }
         _ => Some(agents::default_handover(model, openai_auth)),
     };
     let wants_1h = old.cache_1h
@@ -796,14 +799,26 @@ mod tests {
         let on_cc = switched(&opus, &cc, Effort::Xhigh, None);
         assert!(on_cc.fast);
         assert!(!on_cc.cache_1h, "Claude Code chooses its own");
-        // A size given (--handover-at) stays.
+        // A size given (--handover-at) stays, up to 95% of what the new
+        // model accepts.
         let given = ModelSettings {
             handover_at: Some(123_000),
-            ..opus
+            ..opus.clone()
         };
         assert_eq!(
             switched(&given, &gemini, Effort::High, None).handover_at,
             Some(123_000)
+        );
+        let large = ModelSettings {
+            handover_at: Some(900_000),
+            ..opus
+        };
+        let luna = providers::resolve_model("luna").unwrap();
+        let most = agents::max_handover(&luna, None).unwrap();
+        assert!(most < 900_000);
+        assert_eq!(
+            switched(&large, &luna, Effort::High, None).handover_at,
+            Some(most)
         );
     }
 }
