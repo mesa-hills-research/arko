@@ -18,6 +18,7 @@
 
 mod agents;
 mod claude_code;
+#[cfg(feature = "tui")]
 mod cli;
 mod commands;
 mod conversations;
@@ -32,7 +33,7 @@ mod inputs;
 mod keys;
 mod mcp;
 mod message;
-#[cfg(test)]
+#[cfg(any(test, feature = "testing"))]
 mod mock_model;
 mod model_command;
 mod options;
@@ -46,14 +47,21 @@ mod remote_demo;
 mod session;
 mod shell;
 mod skills;
+mod start;
 mod status;
+#[cfg(feature = "tui")]
 mod term;
+#[cfg(feature = "tui")]
 mod terminal;
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
+#[cfg(feature = "tui")]
 mod tui;
 mod ui;
 
 use std::sync::Mutex;
 
+#[cfg(feature = "tui")]
 pub use crate::cli::cli_main;
 pub use crate::credentials::Need;
 pub use crate::engine::{Engine, FrontEnd, OpenError, RunEnd, Seam, SessionInfo};

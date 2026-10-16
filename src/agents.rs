@@ -28,9 +28,8 @@ pub const MAIN: &str = "main";
 /// The agent `main` hands tasks to.
 pub const WORKER: &str = "worker";
 
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, clap::ValueEnum,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[cfg_attr(feature = "tui", derive(clap::ValueEnum))]
 #[serde(rename_all = "lowercase")]
 pub enum Effort {
     Low,
@@ -38,6 +37,22 @@ pub enum Effort {
     High,
     Xhigh,
     Max,
+}
+
+impl std::str::FromStr for Effort {
+    type Err = ();
+
+    /// Its name as the flags take it, in any case.
+    fn from_str(text: &str) -> Result<Self, ()> {
+        match text.to_ascii_lowercase().as_str() {
+            "low" => Ok(Effort::Low),
+            "medium" => Ok(Effort::Medium),
+            "high" => Ok(Effort::High),
+            "xhigh" => Ok(Effort::Xhigh),
+            "max" => Ok(Effort::Max),
+            _ => Err(()),
+        }
+    }
 }
 
 impl From<Effort> for AnthropicReasoningEffort {

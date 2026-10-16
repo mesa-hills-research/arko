@@ -11,10 +11,6 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 
 use crate::agents::{AgentSettings, MAIN};
-use crate::cli::{
-    background_after_for, client_asking, default_model, new_settings, project_from_options,
-    workspace,
-};
 use crate::credentials::{Need, VOYAGE_KEY};
 use crate::crew::Crew;
 use crate::harness::{Conversation, Harness, Managers, Prompt, TurnEnd};
@@ -24,11 +20,15 @@ use crate::prompter::Prompter;
 use crate::remote::Level;
 use crate::session::Session;
 use crate::shell::{Shell, WindowsShell};
+use crate::start::{
+    background_after_for, client_asking, default_model, new_settings, project_from_options,
+    workspace,
+};
 use crate::status::Gauges;
 use crate::ui::{Input, Output, Stats};
 use crate::{
     agents, credentials, crew, handover, index, keys, mcp, outside, project, providers, remote,
-    session, skills, tui,
+    session, skills,
 };
 
 /// Why a session didn't open.
@@ -87,7 +87,7 @@ pub struct Seam {
     /// (when the front end asks before quitting: [`FrontEnd::asks_to_quit`]).
     pub quit_asks: mpsc::UnboundedReceiver<Vec<arko_agents::terminal::BackgroundJob>>,
     /// The session's facts for a banner.
-    pub banner: tui::Banner,
+    pub banner: crate::ui::Banner,
     /// The main agent's handover size as the session started.
     pub handover_at: usize,
     /// The agents' thinking shows whole from the start.
@@ -555,6 +555,7 @@ impl Engine {
 
     /// Where Arko prints: the front end attaches a printer to it, or the
     /// feed it shows.
+    #[cfg(feature = "tui")]
     pub(crate) fn output(&self) -> Arc<Output> {
         self.harness.output.clone()
     }

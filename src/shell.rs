@@ -43,13 +43,27 @@ const MAX_OUTPUT_CHARS: usize = 30_000;
 const HEAD_CHARS: usize = 10_000;
 
 /// The shells Arko can run commands in on Windows.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "tui", derive(clap::ValueEnum))]
 #[serde(rename_all = "lowercase")]
 pub enum WindowsShell {
     /// cmd.exe.
     Cmd,
     /// PowerShell 7 (`pwsh`) where installed, else Windows PowerShell.
     Powershell,
+}
+
+impl std::str::FromStr for WindowsShell {
+    type Err = ();
+
+    /// Its name as the flags take it, in any case.
+    fn from_str(text: &str) -> Result<Self, ()> {
+        match text.to_ascii_lowercase().as_str() {
+            "cmd" => Ok(WindowsShell::Cmd),
+            "powershell" => Ok(WindowsShell::Powershell),
+            _ => Err(()),
+        }
+    }
 }
 
 /// A shell's syntax, for what Arko adds around a command.

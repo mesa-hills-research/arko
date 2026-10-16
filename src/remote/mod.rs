@@ -16,8 +16,12 @@
 mod feed;
 mod history;
 mod links;
+#[cfg(not(feature = "remote"))]
+mod no_server;
+#[cfg(feature = "remote")]
 mod qr;
 mod render;
+#[cfg(feature = "remote")]
 mod server;
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, ToSocketAddrs};
@@ -36,8 +40,22 @@ pub use feed::{
     Source, Update, WorkerChange, WorkerState, WorkerSummary,
 };
 pub use history::items as history;
-pub use links::{HOST_VARIABLE, Interface, Kind as LinkKind, Link};
-pub use server::{Info, Server};
+#[cfg(any(test, feature = "remote"))]
+pub use links::Kind as LinkKind;
+pub use links::{HOST_VARIABLE, Interface, Link};
+#[cfg(not(feature = "remote"))]
+pub use no_server::Server;
+#[cfg(feature = "remote")]
+pub use server::Server;
+
+/// What the page's header says of the session.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct Info {
+    /// The models, as the banner says them.
+    pub model: String,
+    pub workspace: String,
+    pub session: String,
+}
 
 /// The port served on when none is given; another free one when it is
 /// taken.
@@ -48,6 +66,7 @@ pub const KEY_FILE: &str = "remote.key";
 
 /// What the page asks of the session.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(not(feature = "remote"), allow(dead_code))]
 pub enum Action {
     /// A message, as if typed at the prompt: a note while the agent works,
     /// a new turn when it is idle, the answer to its question, a command.
@@ -393,10 +412,17 @@ pub fn plain(text: &str) -> String {
 /// `text` as a QR code, in lines of half blocks (two rows of modules a
 /// line), light modules drawn: for a terminal with a dark background.
 pub fn qr_lines(text: &str) -> Option<Vec<String>> {
-    qr::lines(text)
+    #[cfg(feature = "remote")]
+    return qr::lines(text);
+    #[cfg(not(feature = "remote"))]
+    {
+        let _ = text;
+        None
+    }
 }
 
 /// `text` as a QR code in SVG, dark on light.
+#[cfg(feature = "remote")]
 pub fn qr_svg(text: &str) -> Option<String> {
     qr::svg(text)
 }

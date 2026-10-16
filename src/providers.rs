@@ -322,17 +322,31 @@ fn reasoning_effort(effort: Effort) -> ReasoningEffort {
 
 /// How a session reaches OpenAI models: one way for all of them, since
 /// arko's client holds one OpenAI client.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "tui", derive(clap::ValueEnum))]
 pub enum OpenAiAuth {
     /// The ChatGPT login (a Codex auth.json): usage counts against the
     /// ChatGPT plan.
     #[serde(rename = "chatgpt")]
-    #[value(name = "chatgpt")]
+    #[cfg_attr(feature = "tui", value(name = "chatgpt"))]
     ChatGpt,
     /// An OpenAI API key, billed per token.
     #[serde(rename = "api-key")]
-    #[value(name = "api-key")]
+    #[cfg_attr(feature = "tui", value(name = "api-key"))]
     ApiKey,
+}
+
+impl std::str::FromStr for OpenAiAuth {
+    type Err = ();
+
+    /// Its name as the flags take it, in any case.
+    fn from_str(text: &str) -> Result<Self, ()> {
+        match text.to_ascii_lowercase().as_str() {
+            "chatgpt" => Ok(OpenAiAuth::ChatGpt),
+            "api-key" => Ok(OpenAiAuth::ApiKey),
+            _ => Err(()),
+        }
+    }
 }
 
 impl OpenAiAuth {
@@ -366,7 +380,9 @@ pub fn choose_openai_auth(
         return Ok((auth, false));
     }
     if let Some(value) = credentials::var(credentials::OPENAI_AUTH) {
-        return <OpenAiAuth as clap::ValueEnum>::from_str(value.trim(), true)
+        return value
+            .trim()
+            .parse::<OpenAiAuth>()
             .map(|auth| (auth, false))
             .map_err(|_| format!("ARKO_OPENAI_AUTH is `{value}`. Set it to chatgpt or api-key"));
     }
@@ -668,7 +684,7 @@ pub fn fit_effort(model: &Model, wanted: Effort) -> Effort {
 
 /// An effort's name (`low` … `max`), or what the names are.
 pub fn parse_effort(text: &str) -> Result<Effort, String> {
-    <Effort as clap::ValueEnum>::from_str(text.trim(), true).map_err(|_| {
+    text.trim().parse::<Effort>().map_err(|_| {
         format!("`{text}` isn't an effort. The efforts are low, medium, high, xhigh and max.")
     })
 }
@@ -697,6 +713,7 @@ pub fn efforts_text(model: &Model) -> String {
 
 /// A group of the models `/model` offers: one way to reach them, and what
 /// it needs when that isn't there.
+#[cfg(feature = "tui")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelGroup {
     /// The way, as the picker heads it: "Claude Code, on your Claude plan".
@@ -713,6 +730,7 @@ pub struct ModelGroup {
 /// there, and `openai_auth` how OpenAI models are reached. `current` (the
 /// agents' models now) are listed in their group when the list leaves
 /// them out.
+#[cfg(feature = "tui")]
 pub fn model_menu(
     needs: impl Fn(&str) -> Option<String>,
     openai_auth: Option<OpenAiAuth>,

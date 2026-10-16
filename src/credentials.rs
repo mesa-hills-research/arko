@@ -13,23 +13,34 @@
 //! the keys menu (`/keys`, see `keys`) takes. Nothing read here is put in the
 //! environment, so the commands the agents run don't see it.
 
+#[cfg(feature = "tui")]
 use std::borrow::Cow;
 use std::collections::HashMap;
+#[cfg(feature = "tui")]
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
+#[cfg(feature = "tui")]
 use arko_ai::CodexAuthFile;
+#[cfg(feature = "tui")]
 use rustyline::completion::{Completer, FilenameCompleter, Pair};
+#[cfg(feature = "tui")]
 use rustyline::config::Configurer;
+#[cfg(feature = "tui")]
 use rustyline::error::ReadlineError;
+#[cfg(feature = "tui")]
 use rustyline::highlight::{CmdKind, Highlighter};
+#[cfg(feature = "tui")]
 use rustyline::hint::Hinter;
+#[cfg(feature = "tui")]
 use rustyline::validate::Validator;
+#[cfg(feature = "tui")]
 use rustyline::{ColorMode, Context, Helper};
 
 use crate::claude_code;
 use crate::session;
+#[cfg(feature = "tui")]
 use crate::ui::Output;
 
 /// The Anthropic API key.
@@ -52,6 +63,8 @@ pub const CACHE_1H: &str = "ARKO_CACHE_1H";
 pub const SHELL: &str = "ARKO_SHELL";
 /// The Voyage API key, for the search indexes' embeddings.
 pub const VOYAGE_KEY: &str = "VOYAGE_API_KEY";
+/// The full-screen view's theme, by name.
+pub const THEME: &str = "ARKO_THEME";
 /// The settings a `.env` file can hold; it may set others, which are left
 /// alone.
 const DOTENV_KEYS: [&str; 13] = [
@@ -66,7 +79,7 @@ const DOTENV_KEYS: [&str; 13] = [
     SHELL,
     VOYAGE_KEY,
     crate::glyphs::SYMBOLS,
-    crate::tui::theme::SETTING,
+    THEME,
     crate::remote::HOST_VARIABLE,
 ];
 
@@ -294,6 +307,7 @@ impl Need {
 
 /// Whether the setup screen can be shown: standard input and output are a
 /// terminal.
+#[cfg(feature = "tui")]
 pub fn can_ask() -> bool {
     std::io::stdin().is_terminal() && std::io::stdout().is_terminal()
 }
@@ -398,6 +412,7 @@ pub struct KeyState {
 
 impl KeyState {
     /// Whether the keys menu can remove it: Arko saved it.
+    #[cfg(feature = "tui")]
     pub fn removable(&self) -> bool {
         matches!(self.source, Some(KeySource::Arko(_)))
     }
@@ -541,6 +556,7 @@ pub fn source_text(source: &KeySource, variable: &str) -> String {
 }
 
 /// What the setup screen's menu offers.
+#[cfg(feature = "tui")]
 #[derive(Clone, Copy)]
 enum Choice {
     Key(&'static Key),
@@ -549,6 +565,7 @@ enum Choice {
 }
 
 /// The menu: what each choice is for.
+#[cfg(feature = "tui")]
 const MENU: [(Choice, &str); 7] = [
     (
         Choice::Key(&ANTHROPIC),
@@ -583,6 +600,7 @@ const MENU: [(Choice, &str); 7] = [
 /// The setup screen: asks for what `need` names (anything with `None` or
 /// `Need::Any`), saves it in Arko's `.env` and uses it in this run. An error
 /// when the user quits.
+#[cfg(feature = "tui")]
 pub fn setup(need: Option<&Need>) -> Result<(), String> {
     let out = Output::new(None, false);
     let dotenv = arko_dotenv()?;
@@ -711,11 +729,13 @@ fn describe(source: &Source) -> String {
     }
 }
 
+#[cfg(feature = "tui")]
 fn cancelled() -> String {
     "setup cancelled".into()
 }
 
 /// Asks for `key`, saves it in Arko's `.env` and uses it in this run.
+#[cfg(feature = "tui")]
 fn ask_key(out: &Output, editor: &mut Editor, dotenv: &Path, key: &Key) -> Result<(), String> {
     out.line(&out.dim(&format!(
         "Paste {} (from {}). The input is hidden, and an empty line quits.",
@@ -733,6 +753,7 @@ fn ask_key(out: &Output, editor: &mut Editor, dotenv: &Path, key: &Key) -> Resul
 
 /// Reads `key` with the input hidden until it looks like one: an error when
 /// the line is empty or the user presses Ctrl-C.
+#[cfg(feature = "tui")]
 fn ask_value(out: &Output, editor: &mut Editor, key: &Key) -> Result<String, String> {
     let prompt = format!("{}: ", capitalized(key.what));
     loop {
@@ -762,6 +783,7 @@ pub fn prefix_note(value: &str, key: &Key) -> Option<String> {
 /// The line prompt's `/keys add`: reads `key` with the input hidden, as the
 /// setup screen does. `None` when the user leaves it empty or presses
 /// Ctrl-C.
+#[cfg(feature = "tui")]
 pub fn read_key(out: &Output, key: &Key) -> Result<Option<String>, String> {
     out.line(&out.dim(&format!(
         "Paste {} (from {}). The input is hidden, and an empty line goes back.",
@@ -803,6 +825,7 @@ fn capitalized(what: &str) -> String {
 /// Checks Claude Code until it is installed and signed in, while the user
 /// sets it up in another terminal. `known` is what a check before found,
 /// which the screen has said already.
+#[cfg(feature = "tui")]
 fn ask_claude_code(
     out: &Output,
     editor: &mut Editor,
@@ -864,6 +887,7 @@ fn ask_claude_code(
     }
 }
 
+#[cfg(feature = "tui")]
 fn claude_code_ready(out: &Output, ready: &claude_code::Ready) -> Result<(), String> {
     out.line(&format!(
         "Claude Code ({}) is ready: {}. Arko runs Claude models in it with -m cc:opus or -m cc:fable.",
@@ -877,6 +901,7 @@ fn claude_code_ready(out: &Output, ready: &claude_code::Ready) -> Result<(), Str
     Ok(())
 }
 
+#[cfg(feature = "tui")]
 fn ask_login(out: &Output, editor: &mut Editor, dotenv: &Path) -> Result<(), String> {
     out.line(&out.dim(
         "Give the path to a Codex auth.json holding a ChatGPT login (`codex login` writes ~/.codex/auth.json). Tab completes, and an empty line quits.",
@@ -915,6 +940,7 @@ fn ask_login(out: &Output, editor: &mut Editor, dotenv: &Path) -> Result<(), Str
 }
 
 /// Says where the setting was saved, and what comes before it in later runs.
+#[cfg(feature = "tui")]
 fn saved(out: &Output, dotenv: &Path, name: &str) {
     let saved = saved_text(dotenv, name);
     out.line(&saved.said);
@@ -1057,14 +1083,17 @@ fn quote(value: &str) -> String {
     }
 }
 
+#[cfg(feature = "tui")]
 type Editor = rustyline::Editor<Prompt, rustyline::history::DefaultHistory>;
 
 /// The setup screen's prompts: file names complete, and a key is hidden.
+#[cfg(feature = "tui")]
 struct Prompt {
     files: FilenameCompleter,
     hidden: bool,
 }
 
+#[cfg(feature = "tui")]
 impl Prompt {
     fn editor() -> Result<Editor, String> {
         let config = rustyline::Config::builder().auto_add_history(false).build();
@@ -1078,6 +1107,7 @@ impl Prompt {
 }
 
 /// Reads a line; an error when the user presses Ctrl-C or Ctrl-D.
+#[cfg(feature = "tui")]
 fn read(editor: &mut Editor, prompt: &str, initial: &str, hidden: bool) -> Result<String, String> {
     if let Some(helper) = editor.helper_mut() {
         helper.hidden = hidden;
@@ -1096,6 +1126,7 @@ fn read(editor: &mut Editor, prompt: &str, initial: &str, hidden: bool) -> Resul
     }
 }
 
+#[cfg(feature = "tui")]
 impl Completer for Prompt {
     type Candidate = Pair;
 
@@ -1113,10 +1144,12 @@ impl Completer for Prompt {
     }
 }
 
+#[cfg(feature = "tui")]
 impl Hinter for Prompt {
     type Hint = String;
 }
 
+#[cfg(feature = "tui")]
 impl Highlighter for Prompt {
     fn highlight<'l>(&self, line: &'l str, _pos: usize) -> Cow<'l, str> {
         if self.hidden {
@@ -1131,8 +1164,10 @@ impl Highlighter for Prompt {
     }
 }
 
+#[cfg(feature = "tui")]
 impl Validator for Prompt {}
 
+#[cfg(feature = "tui")]
 impl Helper for Prompt {}
 
 #[cfg(test)]

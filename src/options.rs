@@ -100,16 +100,16 @@ pub struct Options {
     pub title: Option<String>,
     /// A client to use in place of the one the session's credentials make
     /// (tests: the mock model server's).
-    #[cfg(test)]
+    #[cfg(any(test, feature = "testing"))]
     pub client: Option<GivenClient>,
 }
 
 /// A client made beforehand: see [`Options::client`].
-#[cfg(test)]
+#[cfg(any(test, feature = "testing"))]
 #[derive(Clone)]
 pub struct GivenClient(pub std::sync::Arc<arko_ai::LLMClient>);
 
-#[cfg(test)]
+#[cfg(any(test, feature = "testing"))]
 impl std::fmt::Debug for GivenClient {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("GivenClient")
@@ -119,7 +119,7 @@ impl std::fmt::Debug for GivenClient {
 impl Options {
     /// The client given in place of the session's own, if any.
     pub(crate) fn given_client(&self) -> Option<std::sync::Arc<arko_ai::LLMClient>> {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "testing"))]
         if let Some(GivenClient(client)) = &self.client {
             return Some(client.clone());
         }
@@ -160,7 +160,7 @@ impl Default for Options {
             one_shot: false,
             interactive: true,
             title: None,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "testing"))]
             client: None,
         }
     }

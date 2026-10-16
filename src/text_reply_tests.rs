@@ -15,8 +15,8 @@ type Bodies = Arc<Mutex<Vec<String>>>;
 #[derive(Clone, Default)]
 struct Lines(Arc<Mutex<Vec<String>>>);
 
-impl rustyline::ExternalPrinter for Lines {
-    fn print(&mut self, text: String) -> rustyline::Result<()> {
+impl crate::ui::Printer for Lines {
+    fn print(&mut self, text: String) -> Result<(), ()> {
         let mut lines = self.0.lock().unwrap();
         lines.extend(text.lines().map(str::to_string));
         Ok(())

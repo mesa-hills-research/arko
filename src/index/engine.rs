@@ -274,6 +274,7 @@ pub struct SearchOutput {
 #[derive(Clone, Debug)]
 pub struct IndexReport {
     pub id: String,
+    #[cfg_attr(not(feature = "tui"), allow(dead_code))]
     pub dir: PathBuf,
     /// The manifest, or why it couldn't be read.
     pub manifest: Result<Manifest, String>,
@@ -337,6 +338,7 @@ pub enum EmbedPlan {
 /// What `create` did.
 #[derive(Clone, Debug)]
 pub struct CreateOutcome {
+    #[cfg_attr(not(feature = "tui"), allow(dead_code))]
     pub layout: Layout,
     pub manifest: Manifest,
     /// The index existed (same directory and kind): its settings were updated.
@@ -2171,6 +2173,7 @@ impl Indexes {
     // ----- for the CLI -----
 
     /// An embedding run in the foreground, with progress (blocking).
+    #[cfg(feature = "tui")]
     pub(crate) fn embed_foreground(
         &self,
         found: &Found,
@@ -2182,18 +2185,21 @@ impl Indexes {
         self.run_embed(&entry, cap, true, Some(progress), Some(stop))
     }
 
+    #[cfg(feature = "tui")]
     pub(crate) fn estimate_of(&self, found: &Found) -> Result<Estimate, String> {
         self.estimate(&self.entry(&found.layout))
     }
 
     /// Reconciles the index with its tree (rebuilding when anything changed),
     /// as a search would.
+    #[cfg(feature = "tui")]
     pub(crate) fn update_of(&self, found: &Found) -> Result<Option<BuildRecord>, String> {
         let entry = self.entry(&found.layout);
         lock(&entry.live).last_reconcile = None;
         self.reconcile(&entry, &found.manifest)
     }
 
+    #[cfg(feature = "tui")]
     pub(crate) fn rebuild_of(&self, found: &Found) -> Result<BuildRecord, String> {
         self.build(
             &self.entry(&found.layout),
@@ -2203,6 +2209,7 @@ impl Indexes {
     }
 
     /// Starts watching `found` (the CLI's `watch`; needs a monitoring instance).
+    #[cfg(feature = "tui")]
     pub(crate) fn watch_index(self: &Arc<Self>, found: &Found) {
         let entry = self.entry(&found.layout);
         self.start_watch(&entry);

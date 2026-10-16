@@ -254,6 +254,7 @@ pub fn when(at: DateTime<Utc>, now: DateTime<Local>) -> String {
 }
 
 /// The widest [`when`] text: "yesterday 14:05".
+#[cfg(feature = "tui")]
 pub const WHEN_WIDTH: usize = 15;
 
 /// How long the titles in `/resume`'s list at the line prompt (and on the

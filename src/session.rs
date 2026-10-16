@@ -14,6 +14,7 @@ use crate::shell::WindowsShell;
 
 const SETTINGS_FILE: &str = "session.json";
 /// The session's log, in its folder.
+#[cfg(feature = "tui")]
 pub const LOG_FILE: &str = "arko.log";
 
 /// What a session was started with.
@@ -273,6 +274,7 @@ fn data_directory() -> Option<PathBuf> {
 /// own runs in Arko's folder too, so it may be there already. Then each of
 /// fin's files and folders moves in unless Arko's has one by that name, and
 /// a note says what stayed.
+#[cfg(feature = "tui")]
 pub fn move_fin_folder() -> Option<String> {
     if std::env::var_os("ARKO_HOME").is_some_and(|value| !value.is_empty()) {
         return None;
@@ -280,6 +282,7 @@ pub fn move_fin_folder() -> Option<String> {
     move_fin_folder_in(&data_directory()?)
 }
 
+#[cfg(feature = "tui")]
 pub(crate) fn move_fin_folder_in(data_directory: &Path) -> Option<String> {
     let (fin, arko) = (data_directory.join("fin"), data_directory.join("arko"));
     if !fin.is_dir() {

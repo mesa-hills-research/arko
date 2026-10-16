@@ -25,6 +25,7 @@
 //! all Arko processes; the one that holds an index's watch lock keeps it current.
 
 mod census;
+#[cfg(feature = "tui")]
 mod cli;
 mod embed;
 mod engine;
@@ -35,6 +36,7 @@ mod tools;
 #[cfg(test)]
 mod tests;
 
+#[cfg(feature = "tui")]
 pub use cli::{IndexCommand, run_command};
 pub use engine::{Indexes, Known};
 pub use tools::TOOL_NAMES;

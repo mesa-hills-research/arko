@@ -57,6 +57,9 @@ pub struct Interface {
 
 /// The interfaces of this machine with an address.
 pub fn interfaces() -> Vec<Interface> {
+    #[cfg(not(feature = "remote"))]
+    return Vec::new();
+    #[cfg(feature = "remote")]
     if_addrs::get_if_addrs()
         .unwrap_or_default()
         .into_iter()
@@ -68,7 +71,7 @@ pub fn interfaces() -> Vec<Interface> {
         .collect()
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(feature = "remote", target_os = "linux"))]
 fn physical(name: &str) -> Option<bool> {
     Some(
         std::path::Path::new("/sys/class/net")
@@ -78,7 +81,7 @@ fn physical(name: &str) -> Option<bool> {
     )
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(all(feature = "remote", not(target_os = "linux")))]
 fn physical(_: &str) -> Option<bool> {
     None
 }

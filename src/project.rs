@@ -35,7 +35,8 @@ const WORKER_PLACE: &str = "your lead's working directory";
 /// Which of the project's instruction files the agents get. `One` is the
 /// default, and what sessions saved before the choice gave. (The variants'
 /// comments are `--project-instructions`'s help.)
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, clap::ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "tui", derive(clap::ValueEnum))]
 #[serde(rename_all = "lowercase")]
 pub enum Files {
     /// AGENTS.md, or CLAUDE.md when there is no AGENTS.md.

@@ -59,6 +59,7 @@ pub struct Ready {
 
 impl Ready {
     /// How it signs in, as the setup screen says it.
+    #[cfg(feature = "tui")]
     pub fn describe(&self) -> String {
         match (&self.method, &self.plan) {
             (Some(method), Some(plan)) if method == "claude.ai" => {

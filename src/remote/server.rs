@@ -25,7 +25,7 @@ use tokio::sync::{broadcast, mpsc, watch};
 use tokio::task::JoinHandle;
 
 use super::feed::{Activity, Feed, Update};
-use super::{Action, Meter, Reading};
+use super::{Action, Info, Meter, Reading};
 
 const INDEX: &str = include_str!("page/index.html");
 const SCRIPT: &str = include_str!("page/app.js");
@@ -46,15 +46,6 @@ const MAX_WAIT: Duration = Duration::from_secs(300);
 const MAX_SESSIONS: usize = 64;
 /// How often a stream looks for changes in the status (cost, workers).
 const STATUS_EVERY: Duration = Duration::from_secs(2);
-
-/// What the page's header says of the session.
-#[derive(Debug, Clone, Default, Serialize)]
-pub struct Info {
-    /// The models, as the banner says them.
-    pub model: String,
-    pub workspace: String,
-    pub session: String,
-}
 
 /// A running server; dropping it stops it.
 pub struct Server {

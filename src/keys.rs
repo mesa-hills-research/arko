@@ -357,6 +357,7 @@ pub const USAGE: &str = "/keys lists the API keys. /keys add PROVIDER adds or re
 
 /// The key `/keys add PROVIDER` (a whole line) adds, which the line prompt
 /// reads with the input hidden.
+#[cfg(feature = "tui")]
 pub fn added_at_prompt(line: &str) -> Option<&'static Key> {
     match line.split_whitespace().collect::<Vec<_>>().as_slice() {
         ["/keys", "add", provider] => credentials::key_named(provider),
@@ -367,6 +368,7 @@ pub fn added_at_prompt(line: &str) -> Option<&'static Key> {
 /// The line prompt's `/keys add`: reads `key` with the input hidden, saves
 /// it and uses it, saying what happens. (On the input thread, so that the
 /// terminal is the prompt's.)
+#[cfg(feature = "tui")]
 pub fn add_at_prompt(keys: &Keys, key: &'static Key) {
     let out = crate::ui::Output::new(None, false);
     let value = match credentials::read_key(&out, key) {

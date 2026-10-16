@@ -198,6 +198,7 @@ pub fn find(text: &str) -> Option<&'static Command> {
 
 /// The commands whose names start with `prefix` (which starts with `/`),
 /// for the menu: those of the session, and the screen's when `screen`.
+#[cfg(feature = "tui")]
 pub fn matching(prefix: &str, screen: bool) -> Vec<&'static Command> {
     COMMANDS
         .iter()
@@ -206,11 +207,13 @@ pub fn matching(prefix: &str, screen: bool) -> Vec<&'static Command> {
         .collect()
 }
 
+#[cfg(feature = "tui")]
 const ON_OFF: &[&str] = &["on", "off"];
 
 /// The words an argument may be, where they are fixed: the command, the
 /// words before the argument, and its words. The full-screen view
 /// completes them (and the arguments that depend on the session).
+#[cfg(feature = "tui")]
 const CHOICES: &[(&str, &[&str], &[&str])] = &[
     ("/view", &[], &["full", "quiet", "messages"]),
     ("/outside", &[], ON_OFF),
@@ -231,6 +234,7 @@ const CHOICES: &[(&str, &[&str], &[&str])] = &[
 
 /// The fixed words that may follow `before` in the arguments of the
 /// command `name`.
+#[cfg(feature = "tui")]
 pub fn choices(name: &str, before: &[&str]) -> &'static [&'static str] {
     CHOICES
         .iter()

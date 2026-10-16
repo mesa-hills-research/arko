@@ -104,23 +104,7 @@ struct Cached {
     lines: Vec<Wrapped>,
 }
 
-/// The session's top-level facts: the box that opens the transcript.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct Banner {
-    pub model: String,
-    pub workers: String,
-    pub workspace: String,
-    pub session: String,
-    /// The project's instructions file, when one was loaded.
-    pub project: Option<String>,
-    /// MCP servers, skills, indexes.
-    pub tools: Vec<String>,
-    /// Why the session runs its model, when Arko chose it (the last
-    /// session's). It goes once `/model` picks another.
-    pub model_note: Option<String>,
-    /// Short notes, a warning's with its level.
-    pub notes: Vec<(String, Option<Level>)>,
-}
+pub use crate::ui::Banner;
 
 /// What a block of the drawn transcript is.
 #[derive(Debug, Clone, PartialEq)]

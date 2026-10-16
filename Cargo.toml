@@ -15,6 +15,19 @@ doctest = false
 [[bin]]
 name = "arko"
 path = "src/main.rs"
+required-features = ["tui"]
+
+[features]
+default = ["tui", "remote"]
+# The command line and the terminal's front ends: the full-screen view, the
+# line prompt, the setup screen. Arko Studio builds without it.
+tui = ["dep:arboard", "dep:clap", "dep:crossterm", "dep:ratatui", "dep:rustyline", "dep:windows-sys"]
+# The web page's server (--remote, /remote): without it, the session says
+# this build has no web page.
+remote = ["dep:axum", "dep:if-addrs", "dep:qrcodegen"]
+# For tests only, Arko Studio's among them: `arko::testing` (a local model
+# server and the client for it, `Options::client`). Not for builds that ship.
+testing = []
 
 [dependencies]
 arko_ai = { path = "../arko_framework/arko_ai" }
@@ -25,37 +38,37 @@ arko_index = { path = "../arko_framework/arko_index" }
 async-trait = "0.1.79"
 # The system clipboard, for the full-screen view's copies: X11 (and
 # XWayland), Wayland where the compositor has data-control, macOS, Windows.
-arboard = { version = "3.6.1", default-features = false, features = ["wayland-data-control"] }
+arboard = { version = "3.6.1", default-features = false, features = ["wayland-data-control"], optional = true }
 # The remote web page's server (--remote): HTTP/1.1, JSON and SSE only.
-axum = { version = "0.8.9", default-features = false, features = ["http1", "json", "tokio"] }
+axum = { version = "0.8.9", default-features = false, features = ["http1", "json", "tokio"], optional = true }
 base64 = "0.22.1"
 chrono = { version = "0.4.38", features = ["serde"] }
-clap = { version = "4.5", features = ["derive"] }
+clap = { version = "4.5", features = ["derive"], optional = true }
 # The full-screen view (the default front end): terminal events as a
 # stream, and copying through the terminal (OSC 52).
-crossterm = { version = "0.29.0", features = ["event-stream", "osc52"] }
+crossterm = { version = "0.29.0", features = ["event-stream", "osc52"], optional = true }
 dotenvy = "0.15.7"
 env_logger = "0.10"
 futures-util = "0.3.31"
 getrandom = "0.3.3"
-if-addrs = "0.15.0"
+if-addrs = { version = "0.15.0", optional = true }
 ignore = "0.4.22"
 log = "0.4.21"
-qrcodegen = "1.8.0"
-ratatui = { version = "0.30.2", default-features = false, features = ["crossterm", "underline-color"] }
+qrcodegen = { version = "1.8.0", optional = true }
+ratatui = { version = "0.30.2", default-features = false, features = ["crossterm", "underline-color"], optional = true }
 serde = { version = "1.0.197", features = ["derive"] }
 serde_json = "1.0.115"
 subtle = "2.6.1"
 tokio = { version = "1.37.0", features = ["full"] }
 unicode-width = "0.2.0"
 uuid = { version = "1.8.0", features = ["v4"] }
-rustyline = { version = "18.0.1", default-features = false, features = ["with-file-history"] }
+rustyline = { version = "18.0.1", default-features = false, features = ["with-file-history"], optional = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2.182"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_System_Console"] }
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_System_Console"], optional = true }
 
 [dev-dependencies]
 # Tests of the remote's server (built as arko_ai builds it).

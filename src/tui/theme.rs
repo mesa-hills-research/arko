@@ -24,7 +24,7 @@ pub const DEFAULT: &str = "macOS Classic Dark";
 /// The theme of the terminal's own colours and background.
 pub const TERMINAL: &str = "terminal";
 /// The setting that chooses the theme: a variant's name, or `terminal`.
-pub const SETTING: &str = "ARKO_THEME";
+pub const SETTING: &str = crate::credentials::THEME;
 
 include!("themes.rs");
 

@@ -2,8 +2,12 @@
 //! prints above it, and how their events are shown.
 
 use std::collections::HashMap;
-use std::io::{BufRead, IsTerminal, Write};
+#[cfg(feature = "tui")]
+use std::io::BufRead;
+use std::io::{IsTerminal, Write};
+#[cfg(feature = "tui")]
 use std::path::PathBuf;
+#[cfg(feature = "tui")]
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -16,11 +20,17 @@ use arko_agents::terminal::TerminalTool;
 use arko_agents::{AgentEvent, LOAD_SKILL_TOOL_NAME, TaskState};
 use arko_workflows::WorkflowEvent;
 use arko_workflows::services::RUN_WORKFLOW_AGENT_TOOL_NAME;
+#[cfg(feature = "tui")]
 use rustyline::completion::Completer;
+#[cfg(feature = "tui")]
 use rustyline::error::ReadlineError;
+#[cfg(feature = "tui")]
 use rustyline::highlight::Highlighter;
+#[cfg(feature = "tui")]
 use rustyline::hint::Hinter;
+#[cfg(feature = "tui")]
 use rustyline::validate::{ValidationContext, ValidationResult, Validator};
+#[cfg(feature = "tui")]
 use rustyline::{ExternalPrinter, Helper};
 use tokio::sync::{broadcast, mpsc, oneshot};
 use uuid::Uuid;
@@ -54,12 +64,31 @@ pub enum Input {
     Background(String),
 }
 
+/// Prints a front end's lines where the front end shows them: the line
+/// prompt's printer, above the line being edited.
+pub trait Printer: Send {
+    /// Prints `text` (whole lines, each ending in a newline). `Err` when it
+    /// can't: the text goes to the terminal instead.
+    fn print(&mut self, text: String) -> Result<(), ()>;
+}
+
+/// The line editor's printer.
+#[cfg(feature = "tui")]
+struct LinePrinter(Box<dyn ExternalPrinter + Send>);
+
+#[cfg(feature = "tui")]
+impl Printer for LinePrinter {
+    fn print(&mut self, text: String) -> Result<(), ()> {
+        self.0.print(text).map_err(|_| ())
+    }
+}
+
 /// Where everything is printed: above the prompt when there is one, else
 /// to standard output (and, in one-shot mode, progress to standard error).
 /// While the full-screen view owns the terminal, lines go to the feed it
 /// shows instead, and echoes (what the feed has already) nowhere.
 pub struct Output {
-    printer: Mutex<Option<Box<dyn ExternalPrinter + Send>>>,
+    printer: Mutex<Option<Box<dyn Printer>>>,
     /// The full-screen view's feed, while it shows the session.
     feed: Mutex<Option<remote::Feed>>,
     color: bool,
@@ -68,7 +97,7 @@ pub struct Output {
 }
 
 impl Output {
-    pub fn new(printer: Option<Box<dyn ExternalPrinter + Send>>, progress_to_stderr: bool) -> Self {
+    pub fn new(printer: Option<Box<dyn Printer>>, progress_to_stderr: bool) -> Self {
         let terminal = if progress_to_stderr {
             std::io::stderr().is_terminal()
         } else {
@@ -85,23 +114,27 @@ impl Output {
 
     /// Prints straight to the terminal from now on, not above the prompt
     /// (nor to the full-screen view's feed).
+    #[cfg(feature = "tui")]
     pub fn detach(&self) {
         self.printer.lock().unwrap().take();
         self.feed.lock().unwrap().take();
     }
 
     /// Prints above the line prompt `printer` from now on.
-    pub fn attach(&self, printer: Box<dyn ExternalPrinter + Send>) {
+    #[cfg(feature = "tui")]
+    pub fn attach(&self, printer: Box<dyn Printer>) {
         *self.printer.lock().unwrap() = Some(printer);
     }
 
     /// Sends lines to `feed` from now on, which the full-screen view shows;
     /// echoes are left out.
+    #[cfg(feature = "tui")]
     pub fn to_feed(&self, feed: remote::Feed) {
         *self.feed.lock().unwrap() = Some(feed);
     }
 
     /// Clears the line the cursor is on (the prompt's).
+    #[cfg(feature = "tui")]
     pub fn clear_line(&self) {
         if self.color {
             let mut stdout = std::io::stdout().lock();
@@ -211,18 +244,23 @@ impl Output {
 }
 
 /// Lines ending with `\` continue on the next line.
+#[cfg(feature = "tui")]
 struct InputHelper;
 
+#[cfg(feature = "tui")]
 impl Completer for InputHelper {
     type Candidate = String;
 }
 
+#[cfg(feature = "tui")]
 impl Hinter for InputHelper {
     type Hint = String;
 }
 
+#[cfg(feature = "tui")]
 impl Highlighter for InputHelper {}
 
+#[cfg(feature = "tui")]
 impl Validator for InputHelper {
     fn validate(&self, context: &mut ValidationContext) -> rustyline::Result<ValidationResult> {
         Ok(if context.input().ends_with('\\') {
@@ -233,18 +271,22 @@ impl Validator for InputHelper {
     }
 }
 
+#[cfg(feature = "tui")]
 impl Helper for InputHelper {}
 
 /// A line as typed: continuation backslashes removed.
+#[cfg(feature = "tui")]
 fn joined(line: &str) -> String {
     line.replace("\\\r\n", "\n").replace("\\\n", "\n")
 }
 
 /// Set when Arko is closing: the line editor doesn't read again, so it
 /// doesn't put the terminal back in raw mode after it was restored.
+#[cfg(feature = "tui")]
 static CLOSING: AtomicBool = AtomicBool::new(false);
 
 /// Stops the line editor once the line it is reading (if any) ends.
+#[cfg(feature = "tui")]
 pub fn stop_reading() {
     CLOSING.store(true, Ordering::SeqCst);
 }
@@ -254,11 +296,12 @@ pub fn stop_reading() {
 /// above it; without one, lines are read from standard input as they come.
 /// `/keys add PROVIDER` is read here, with the key's input hidden, and
 /// added to `keys`: neither reaches the session as a line.
+#[cfg(feature = "tui")]
 pub fn spawn_input(
     history: PathBuf,
     sender: mpsc::UnboundedSender<Input>,
     keys: Option<Arc<crate::keys::Keys>>,
-) -> Option<Box<dyn ExternalPrinter + Send>> {
+) -> Option<Box<dyn Printer>> {
     if std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
         let (printer_sender, printer_receiver) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
@@ -284,7 +327,7 @@ pub fn spawn_input(
             let printer = editor
                 .create_external_printer()
                 .ok()
-                .map(|printer| Box::new(printer) as Box<dyn ExternalPrinter + Send>);
+                .map(|printer| Box::new(LinePrinter(Box::new(printer))) as Box<dyn Printer>);
             let _ = printer_sender.send(printer);
             let prompt = glyphs::render(PROMPT).into_owned();
             while !CLOSING.load(Ordering::SeqCst) {
@@ -320,6 +363,7 @@ pub fn spawn_input(
     }
 }
 
+#[cfg(feature = "tui")]
 fn read_lines(sender: mpsc::UnboundedSender<Input>) {
     for line in std::io::stdin().lock().lines() {
         let Ok(line) = line else { break };
@@ -328,6 +372,25 @@ fn read_lines(sender: mpsc::UnboundedSender<Input>) {
         }
     }
     let _ = sender.send(Input::Eof);
+}
+
+/// The session's top-level facts, as a banner shows them (the box that
+/// opens the full-screen view's transcript).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Banner {
+    pub model: String,
+    pub workers: String,
+    pub workspace: String,
+    pub session: String,
+    /// The project's instructions file, when one was loaded.
+    pub project: Option<String>,
+    /// MCP servers, skills, indexes.
+    pub tools: Vec<String>,
+    /// Why the session runs its model, when Arko chose it (the last
+    /// session's). It goes once `/model` picks another.
+    pub model_note: Option<String>,
+    /// Short notes, a warning's with its level.
+    pub notes: Vec<(String, Option<remote::Level>)>,
 }
 
 /// What the footer after each turn shows, gathered from the events.
@@ -1315,8 +1378,8 @@ mod tests {
     #[derive(Clone, Default)]
     struct Printed(Arc<Mutex<Vec<String>>>);
 
-    impl ExternalPrinter for Printed {
-        fn print(&mut self, text: String) -> rustyline::Result<()> {
+    impl Printer for Printed {
+        fn print(&mut self, text: String) -> Result<(), ()> {
             self.0
                 .lock()
                 .unwrap()

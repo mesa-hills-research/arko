@@ -22,10 +22,12 @@ use crate::remote::{Action, Delivery, Level, Source};
 use crate::session::{Session, Settings};
 use crate::shell::{Shell, ShellTool};
 use crate::status::Gauges;
+#[cfg(feature = "tui")]
+use crate::tui;
 use crate::ui::{Control, Input, Output, Stats};
 use crate::{
     agents, commands, conversations, crew, glyphs, handover, index, keys, mcp, message, outside,
-    project, providers, remote, shell, skills, tui, ui,
+    project, providers, remote, shell, skills, ui,
 };
 use crate::{and_list, lock};
 
@@ -515,7 +517,7 @@ impl Harness {
     /// What the full-screen view's banner shows: the session's top-level
     /// facts, and its notes (`notes` first: what Arko said before the
     /// session started).
-    pub(crate) fn header(&self, model_note: Option<String>) -> tui::Banner {
+    pub(crate) fn header(&self, model_note: Option<String>) -> ui::Banner {
         let mut tools = Vec::new();
         tools.extend(self.mcp.summary());
         let mut notes: Vec<(String, Option<Level>)> = Vec::new();
@@ -553,7 +555,7 @@ impl Harness {
                 Some(Level::Warn),
             ));
         }
-        tui::Banner {
+        ui::Banner {
             model: self.settings.describe(&self.settings.main),
             workers: self.workers_summary(),
             workspace: self.settings.workspace.display().to_string(),
@@ -1011,6 +1013,7 @@ impl Harness {
             Ok(server) => {
                 self.announce_remote(server.addr(), &key);
                 self.remote_bind = Some((bind, server.addr().port()));
+                #[cfg(feature = "tui")]
                 tui::page_at(Some(server.addr()));
                 self.remote = Some(server);
             }
@@ -1025,6 +1028,7 @@ impl Harness {
     /// Stops the web page: its streams end, and its sessions with them.
     pub(crate) async fn stop_remote(&mut self) {
         if let Some(server) = self.remote.take() {
+            #[cfg(feature = "tui")]
             tui::page_at(None);
             server.stop().await;
         }
@@ -2642,8 +2646,8 @@ pub(crate) struct Tee {
     pub(crate) lines: Arc<Mutex<Vec<(Option<Level>, String)>>>,
 }
 
-impl rustyline::ExternalPrinter for Tee {
-    fn print(&mut self, text: String) -> rustyline::Result<()> {
+impl ui::Printer for Tee {
+    fn print(&mut self, text: String) -> Result<(), ()> {
         let text = text.strip_suffix('\n').unwrap_or(&text);
         // (The feed gets the whole output when the command ends.)
         if self.to.in_color() {
@@ -2667,6 +2671,7 @@ pub(crate) mod tests {
     use crate::prompter::{McpApproval, NoPrompter, Prompter};
     use crate::providers::Failure;
     use crate::shell::WindowsShell;
+    use crate::start::*;
     use clap::Parser;
 
     /// The live settings' end-to-end tests, in their own file. Most run
@@ -2842,6 +2847,26 @@ pub(crate) mod tests {
         assert!(!remote.interactive && text_replies_for(&remote));
         assert_eq!(remote.remote.and_then(|bind| bind.port), Some(9000));
         assert!(options(&["--remote", "nowhere:x"], false).is_err());
+    }
+
+    /// The names the flags take for an effort, a shell and the OpenAI login
+    /// are the ones Arko reads elsewhere (`/model`, ARKO_SHELL,
+    /// ARKO_OPENAI_AUTH), which builds without the command line read too.
+    #[test]
+    fn the_settings_read_the_names_the_flags_take() {
+        use clap::ValueEnum;
+        fn same<T: ValueEnum + std::str::FromStr + PartialEq + std::fmt::Debug>() {
+            for value in T::value_variants() {
+                let name = value.to_possible_value().unwrap().get_name().to_string();
+                assert_eq!(name.parse::<T>().ok().as_ref(), Some(value), "{name}");
+                let shouted = name.to_uppercase();
+                assert_eq!(shouted.parse::<T>().ok().as_ref(), Some(value), "{shouted}");
+            }
+            assert!("nonsense".parse::<T>().is_err());
+        }
+        same::<Effort>();
+        same::<WindowsShell>();
+        same::<providers::OpenAiAuth>();
     }
 
     /// A missing credential is asked for through the prompter, and the
