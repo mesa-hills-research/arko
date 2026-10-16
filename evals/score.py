@@ -200,7 +200,8 @@ def score(run_dir: Path) -> dict:
         "model": meta["model"],
         "tier": tier(meta["model"]),
         "number": meta["number"],
-        "fin_args": meta["fin_args"],
+        # Runs made before the rename to Arko have fin_args.
+        "arko_args": meta.get("arko_args", meta.get("fin_args")),
         "wall": meta["wall_seconds"],
         "timed_out": meta["timed_out"],
         "exit_code": meta["exit_code"],

@@ -1,4 +1,4 @@
-"""The eval tasks: what each one asks of fin, how its copy of the project is
+"""The eval tasks: what each one asks of Arko, how its copy of the project is
 set up, and how its result is checked.
 
 Each task runs on a fresh copy of `project/` (a small Python spending

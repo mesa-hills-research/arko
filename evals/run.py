@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Runs fin on the eval tasks, each run on a fresh copy of the project.
+"""Runs Arko on the eval tasks, each run on a fresh copy of the project.
 
     python3 evals/run.py --out ~/evals --batch base \\
         --models cc:claude-haiku-5-5,cc:opus,luna,astra --runs 3
@@ -7,7 +7,7 @@
 Every run gets a folder, <out>/<batch>/<task>/<model>-<n>/, with:
 - work/: the copy of evals/project, a git repository whose first commit is
   where the run started (with the task's setup applied).
-- home/: the run's FIN_HOME. It starts as a copy of --template-home, which
+- home/: the run's ARKO_HOME. It starts as a copy of --template-home, which
   holds a .env with VOYAGE_API_KEY and an index of an unrelated project, so
   the agent sees an index list as the owner does. Tasks marked `index` also
   get an index of work/. The session is saved here too, apart from the
@@ -48,19 +48,19 @@ def provider(model: str) -> str:
 
 def clean_env(home: Path) -> dict:
     """The environment of a run: this one, without the variables of a Claude
-    Code session fin may be started from (they would reach the `claude` that
-    runs cc: models), and with FIN_HOME set to the run's own."""
+    Code session Arko may be started from (they would reach the `claude` that
+    runs cc: models), and with ARKO_HOME set to the run's own."""
     env = {
         key: value
         for key, value in os.environ.items()
         if not (key == "CLAUDECODE" or key.startswith("CLAUDE_"))
     }
-    env["FIN_HOME"] = str(home)
+    env["ARKO_HOME"] = str(home)
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     return env
 
 
-def prepare(run_dir: Path, task, fin: str, template_home: Path) -> tuple[Path, Path, str]:
+def prepare(run_dir: Path, task, arko: str, template_home: Path) -> tuple[Path, Path, str]:
     work = run_dir / "work"
     shutil.copytree(PROJECT, work, ignore=shutil.ignore_patterns("__pycache__", "ledger.json"))
     if task.setup:
@@ -81,7 +81,7 @@ def prepare(run_dir: Path, task, fin: str, template_home: Path) -> tuple[Path, P
     if task.index:
         with open(run_dir / "index.log", "w") as log:
             subprocess.run(
-                [fin, "index", "create", str(work)],
+                [arko, "index", "create", str(work)],
                 cwd=work, env=clean_env(home), stdin=subprocess.DEVNULL, stdout=log, stderr=log, check=True,
             )
     return work, home, base
@@ -95,8 +95,8 @@ def run_one(args, task, model: str, number: int, limits: dict, printing: threadi
         shutil.rmtree(run_dir)
     run_dir.mkdir(parents=True)
     with limits[provider(model)]:
-        work, home, base = prepare(run_dir, task, args.fin, Path(args.template_home))
-        command = [args.fin, "-m", model, *args.fin_args, "-p", task.prompt]
+        work, home, base = prepare(run_dir, task, args.arko, Path(args.template_home))
+        command = [args.arko, "-m", model, *args.arko_args, "-p", task.prompt]
         timeout = args.timeout or task.timeout
         started = time.time()
         timed_out = False
@@ -121,9 +121,9 @@ def run_one(args, task, model: str, number: int, limits: dict, printing: threadi
         "model": model,
         "number": number,
         "batch": args.batch,
-        "fin_args": args.fin_args,
-        "fin": args.fin,
-        "fin_sha256": args.fin_sha256,
+        "arko_args": args.arko_args,
+        "arko": args.arko,
+        "arko_sha256": args.arko_sha256,
         "command": command,
         "base": base,
         "index": task.index,
@@ -143,23 +143,23 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--out", required=True, help="where the batches' folders go (outside the repository)")
     parser.add_argument("--batch", required=True, help="this batch's name, such as base")
-    parser.add_argument("--models", required=True, help="comma-separated fin model names")
+    parser.add_argument("--models", required=True, help="comma-separated Arko model names")
     parser.add_argument("--tasks", default=",".join(task.id for task in TASKS), help="comma-separated task ids")
     parser.add_argument("--runs", type=int, default=3, help="runs per task and model")
     parser.add_argument("--first", type=int, default=1, help="the number of the first run")
-    parser.add_argument("--fin", required=True, help="the fin binary, best a copy that no build replaces")
-    parser.add_argument("--template-home", required=True, help="the FIN_HOME each run's home starts from")
+    parser.add_argument("--arko", required=True, help="the arko binary, best a copy that no build replaces")
+    parser.add_argument("--template-home", required=True, help="the ARKO_HOME each run's home starts from")
     parser.add_argument("--timeout", type=int, default=0, help="seconds per run (default: the task's)")
     parser.add_argument("--claude-jobs", type=int, default=3, help="cc: runs at once")
     parser.add_argument("--chatgpt-jobs", type=int, default=3, help="runs at once on the ChatGPT login")
     parser.add_argument(
-        "--fin-arg", dest="fin_args", action="append", default=[],
-        help="an argument for fin, before -p (repeatable), such as --text-replies",
+        "--arko-arg", dest="arko_args", action="append", default=[],
+        help="an argument for Arko, before -p (repeatable), such as --text-replies",
     )
     args = parser.parse_args()
     # The binary each run used: build the one to measure apart from the
-    # one you work on, since a build replaces target/release/fin.
-    args.fin_sha256 = hashlib.sha256(Path(args.fin).read_bytes()).hexdigest()
+    # one you work on, since a build replaces target/release/arko.
+    args.arko_sha256 = hashlib.sha256(Path(args.arko).read_bytes()).hexdigest()
     tasks = [BY_ID[name] for name in args.tasks.split(",")]
     models = args.models.split(",")
     limits = {

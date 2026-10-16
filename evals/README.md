@@ -1,6 +1,6 @@
 # Agent evals
 
-These scripts run fin on a set of small coding tasks with several models and score each run from its saved session. They measure how models behave in fin: whether the task got done, how long it took, which tools the agent used, and the moves it wasted.
+These scripts run Arko on a set of small coding tasks with several models and score each run from its saved session. They measure how models behave in Arko: whether the task got done, how long it took, which tools the agent used, and the moves it wasted.
 
 Each run works on a fresh copy of `project/`, a small Python spending tracker (`tally`) with a unittest suite and no dependencies. The tasks are in `tasks.py`, each with a prompt and a check:
 
@@ -18,18 +18,18 @@ Tasks without an index of the copy still list an unrelated index, so the agent s
 
 ## Running
 
-Build the binary to measure and copy it somewhere a later build won't replace it. Make a template `FIN_HOME` with a `.env` holding `VOYAGE_API_KEY` and an index of an unrelated project. Then run a batch:
+Build the binary to measure and copy it somewhere a later build won't replace it. Make a template `ARKO_HOME` with a `.env` holding `VOYAGE_API_KEY` and an index of an unrelated project. Then run a batch:
 
 ```
-cp target/release/fin ~/evals/bin/fin
-FIN_HOME=~/evals/template-home fin index create ~/evals/decoy/some-project
+cp target/release/arko ~/evals/bin/arko
+ARKO_HOME=~/evals/template-home arko index create ~/evals/decoy/some-project
 
-python3 evals/run.py --fin ~/evals/bin/fin --template-home ~/evals/template-home \
+python3 evals/run.py --arko ~/evals/bin/arko --template-home ~/evals/template-home \
     --out ~/evals/runs --batch base --runs 3 \
-    --models cc:claude-haiku-5-5,cc:opus,luna,astra --fin-arg=--text-replies
+    --models cc:claude-haiku-5-5,cc:opus,luna,astra --arko-arg=--text-replies
 ```
 
-`--fin-arg` passes an argument to fin before `-p` (repeat it for more). `--tasks` picks tasks, and `--worker-model` goes through `--fin-arg` for the `delegate` task. Each run gets its own `FIN_HOME` under the batch folder, so its session and indexes stay apart from yours. A batch run again skips the runs it finished.
+`--arko-arg` passes an argument to Arko before `-p` (repeat it for more). `--tasks` picks tasks, and `--worker-model` goes through `--arko-arg` for the `delegate` task. Each run gets its own `ARKO_HOME` under the batch folder, so its session and indexes stay apart from yours. A batch run again skips the runs it finished.
 
 ## Scoring
 
