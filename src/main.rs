@@ -1355,6 +1355,9 @@ enum Prompt {
     /// A background job of the agent's finished, without a message from
     /// the user: its terminal update follows.
     Jobs,
+    /// What the user typed during the last turn, which the agent finished
+    /// before it read, without a new message.
+    Unread,
     /// A turn Arko stopped in the middle of goes on, without a message.
     Recover,
 }
@@ -3231,15 +3234,16 @@ impl Harness {
         let end = match outcome {
             Ok(result) => {
                 self.output.echo("");
-                // With -p, a reply the workers' news will follow isn't the
-                // answer.
-                if self.one_shot && self.news_coming() {
+                let unread = unread_notes(&notes, &workflow);
+                // With -p, a reply the workers' news or a turn for what the
+                // user typed will follow isn't the answer.
+                if self.one_shot && (self.news_coming() || !unread.is_empty()) {
                     self.output.line(result.summary.trim());
                 } else {
                     self.output.answer(result.summary.trim());
                 }
                 self.feed.reply(&result.summary);
-                self.keep_unread(&notes, &workflow);
+                self.keep_unread(unread, true);
                 // Its task keeps that update for the next turn, which the
                 // job starts as if it finished now.
                 input.late = finished
@@ -3251,14 +3255,14 @@ impl Harness {
             }
             Err(WorkflowError::AgentStopped { .. } | WorkflowError::Cancelled) if stopping => {
                 self.say(Level::Warn, "Stopped.");
-                self.keep_unread(&notes, &workflow);
+                self.keep_unread(unread_notes(&notes, &workflow), false);
                 self.track_conversations();
                 self.conversation = conversation_of(&workflow, self.conversations.current_run());
                 TurnEnd::Stopped
             }
             Err(error) => {
                 self.say(Level::Error, &format!("The turn failed: {error}"));
-                self.keep_unread(&notes, &workflow);
+                self.keep_unread(unread_notes(&notes, &workflow), false);
                 self.recover_after_error(&workflow);
                 TurnEnd::Failed
             }
@@ -3272,6 +3276,12 @@ impl Harness {
             if let TurnEnd::Exit = Box::pin(self.turn(Prompt::User(line), input)).await {
                 return TurnEnd::Exit;
             }
+        }
+        // What the user typed that the agent replied before reading starts
+        // a turn of its own, as the workers' news does. (After a stop or a
+        // failure it waits for the next message.)
+        if matches!(end, TurnEnd::Answered) && !self.unread.is_empty() {
+            return Box::pin(self.turn(Prompt::Unread, input)).await;
         }
         end
     }
@@ -3445,7 +3455,7 @@ impl Harness {
         let message = match prompt {
             Prompt::Recover => return String::new(),
             Prompt::User(message) => Some(message),
-            Prompt::News | Prompt::Jobs => None,
+            Prompt::News | Prompt::Jobs | Prompt::Unread => None,
         };
         let mut parts = Vec::new();
         if matches!(self.conversation, Conversation::New)
@@ -3515,28 +3525,22 @@ impl Harness {
         }
     }
 
-    /// Notes the run never read go with the next message.
-    fn keep_unread(&mut self, notes: &[(u64, String)], workflow: &Workflow) {
-        let given = workflow
-            .result()
-            .agent_results
-            .iter()
-            .filter(|run| run.agent_name == MAIN)
-            .map(|run| workflow.notes_given(run.agent_run_id))
-            .max()
-            .unwrap_or(0);
-        let unread: Vec<String> = notes
-            .iter()
-            .filter(|(seq, _)| *seq > given)
-            .map(|(_, text)| text.clone())
-            .collect();
-        if !unread.is_empty() {
-            self.say(
-                Level::Info,
-                "  (the agent finished before it read what you typed, so it goes with your next message)",
-            );
-            self.unread.extend(unread);
+    /// Keeps the notes the run never read for the agent: a new turn takes
+    /// them to it now (`now`, after a reply), else they go with the next
+    /// message.
+    fn keep_unread(&mut self, unread: Vec<String>, now: bool) {
+        if unread.is_empty() {
+            return;
         }
+        self.say(
+            Level::Info,
+            if now {
+                "  (the agent finished before it read what you typed, so a new turn takes it to the agent)"
+            } else {
+                "  (the agent finished before it read what you typed, so it goes with your next message)"
+            },
+        );
+        self.unread.extend(unread);
     }
 
     fn stop(&self, workflow: &Workflow) -> bool {
@@ -3860,6 +3864,24 @@ async fn job_finished(
         *finished = None;
     }
     std::future::pending().await
+}
+
+/// The notes of the turn (`notes`, with their sequence numbers) that the
+/// main agent's runs never read.
+fn unread_notes(notes: &[(u64, String)], workflow: &Workflow) -> Vec<String> {
+    let given = workflow
+        .result()
+        .agent_results
+        .iter()
+        .filter(|run| run.agent_name == MAIN)
+        .map(|run| workflow.notes_given(run.agent_run_id))
+        .max()
+        .unwrap_or(0);
+    notes
+        .iter()
+        .filter(|(seq, _)| *seq > given)
+        .map(|(_, text)| text.clone())
+        .collect()
 }
 
 /// Whether the terminal update of `job` came while the agent made its last
@@ -5300,6 +5322,82 @@ mod tests {
         assert!(matches!(end, TurnEnd::Answered));
         assert_eq!(summary(&harness), "Indented with two spaces.");
         drop(answering.await.unwrap());
+    }
+
+    /// What the user types while the agent makes its last request comes
+    /// too late for the turn: once the agent replies, a new turn takes it
+    /// to the agent (once), as the workers' news starts one, and the agent
+    /// answers it.
+    #[tokio::test]
+    async fn what_the_agent_finished_before_reading_starts_a_turn() {
+        use crate::mock_model::{ModelServer, complete};
+        let bodies: Arc<Mutex<Vec<String>>> = Arc::default();
+        let release = Arc::new(tokio::sync::Notify::new());
+        let server = ModelServer::start(Arc::new({
+            let (bodies, hold) = (bodies.clone(), release.clone());
+            move |_, body: String| {
+                bodies.lock().unwrap().push(body.clone());
+                let hold = hold.clone();
+                Box::pin(async move {
+                    if body.contains("Also count the directories.") {
+                        complete("m2", "And 2 directories.")
+                    } else {
+                        hold.notified().await;
+                        complete("m1", "3 files.")
+                    }
+                })
+            }
+        }))
+        .await;
+        let temp = tempfile::tempdir().unwrap();
+        let (mut harness, mut inputs, sender) = harness(temp.path(), server.client(), true);
+        let feed = harness.feed.clone();
+        let typing = tokio::spawn(async move {
+            until(|| feed.activity().working).await;
+            sender
+                .send(Input::Line("Also count the directories.".into()))
+                .unwrap();
+            until(|| has(&feed, "user", "Also count the directories.", "note")).await;
+            release.notify_one();
+            sender
+        });
+        let end = tokio::time::timeout(
+            Duration::from_secs(30),
+            harness.turn(Prompt::User("Count the files.".into()), &mut inputs),
+        )
+        .await
+        .unwrap();
+        let _sender = typing.await.unwrap();
+        assert!(matches!(end, TurnEnd::Answered));
+        assert_eq!(summary(&harness), "And 2 directories.");
+        assert!(harness.unread.is_empty());
+        let bodies = bodies.lock().unwrap().clone();
+        assert_eq!(bodies.len(), 2, "{bodies:#?}");
+        assert!(
+            bodies[1].contains("What I typed during your last turn"),
+            "{}",
+            bodies[1]
+        );
+        assert_eq!(
+            bodies[1].matches("Also count the directories.").count(),
+            1,
+            "{}",
+            bodies[1]
+        );
+        let shown = shown(&harness.feed);
+        let said = |text: &str| {
+            shown
+                .iter()
+                .any(|(kind, shown, _)| kind == "notice" && shown.contains(text))
+        };
+        assert!(said("so a new turn takes it to the agent"), "{shown:#?}");
+        assert!(!said("goes with your next message"), "{shown:#?}");
+        let replies: Vec<&str> = shown
+            .iter()
+            .filter(|(kind, _, _)| kind == "reply")
+            .map(|(_, text, _)| text.as_str())
+            .collect();
+        assert_eq!(replies, ["3 files.", "And 2 directories."]);
     }
 
     #[test]
