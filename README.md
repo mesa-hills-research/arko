@@ -1,6 +1,6 @@
-# fin
+# Arko
 
-fin is a general-purpose agent for the terminal. It works in your project with a shell, background
+Arko is a general-purpose agent for the terminal. It works in your project with a shell, background
 jobs and file tools, and it can start workers that run in parallel while it carries on, each in the
 working directory or in a git worktree of its own. It runs on Claude, OpenAI, Gemini and OpenRouter
 models, and on your Claude plan through an installed Claude Code.
@@ -9,7 +9,7 @@ models, and on your Claude plan through an installed Claude Code.
   its reply (`-p`)
 - Saved sessions you can continue or resume, with handovers to a fresh conversation as the
   context fills
-- Search indexes of code and docs (`fin index`), kept current while fin runs
+- Search indexes of code and docs (`arko index`), kept current while Arko runs
 - A web page for following a session and taking part from a browser, such as a phone's
   (`--remote`)
 - MCP servers in Claude Code's `.mcp.json` format, and skills from `.agents/skills` or
@@ -18,35 +18,35 @@ models, and on your Claude plan through an installed Claude Code.
 
 ## Install
 
-fin needs Rust 1.89 or later and a checkout of
+Arko needs Rust 1.89 or later and a checkout of
 [arko_framework](https://github.com/mesa-hills-research/arko_framework) next to it, since it builds
 against that through path dependencies.
 
 ```bash
 git clone https://github.com/mesa-hills-research/arko_framework.git
-git clone https://github.com/mesa-hills-research/fin.git
-cd fin
+git clone https://github.com/mesa-hills-research/arko.git
+cd arko
 cargo install --path .
 ```
 
 ## Usage
 
 ```bash
-fin                                  # start a session in the current directory
-fin -m sonnet                        # pick the model
-fin -p "List the TODOs in src/"      # send one message, print the reply and exit
-fin -c                               # continue the last session here
-fin --remote 0.0.0.0                 # also serve the web page to your network
+arko                                 # start a session in the current directory
+arko -m sonnet                       # pick the model
+arko -p "List the TODOs in src/"     # send one message, print the reply and exit
+arko -c                              # continue the last session here
+arko --remote 0.0.0.0                # also serve the web page to your network
 ```
 
-fin picks a model from the credentials it finds. Set `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`,
+Arko picks a model from the credentials it finds. Set `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`,
 `GEMINI_API_KEY` or `OPENROUTER_API_KEY`, sign in to Codex for a ChatGPT login, or sign in to Claude
-Code for `cc:` models. When the key for a model is missing, fin asks for it on a setup screen. Keys
+Code for `cc:` models. When the key for a model is missing, Arko asks for it on a setup screen. Keys
 can also go in a `.env` file. Semantic search in the indexes uses `VOYAGE_API_KEY`, and without it
 search is by keywords.
 
 In a session, `/help` lists the keys and commands, and `/settings` holds the view, the theme, the
-web page and the API keys. `fin --help` describes every option and setting.
+web page and the API keys. `arko --help` describes every option and setting.
 
 ## Tests
 
@@ -59,7 +59,7 @@ The tests run against a mock model server, so they need no API keys.
 
 ## Docs
 
-- [What fin needs from arko_framework](docs/arko-framework-gaps.md): where fin works around the
+- [What Arko needs from arko_framework](docs/arko-framework-gaps.md): where Arko works around the
   framework, and the changes that would remove each workaround.
 
 ## License
