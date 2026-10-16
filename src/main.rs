@@ -5335,6 +5335,83 @@ mod tests {
         drop(answering.await.unwrap());
     }
 
+    /// An OpenAI organization that isn't verified for reasoning summaries
+    /// refuses them: the request goes again without them and the turn goes
+    /// on. The session says so once, no later request asks for them, and
+    /// the main agent's saved configuration asks for none either.
+    #[tokio::test]
+    async fn refused_reasoning_summaries_are_dropped_with_one_notice() {
+        use crate::mock_model::{ModelServer, complete, tool_call};
+        let bodies: Arc<Mutex<Vec<String>>> = Arc::default();
+        let server = ModelServer::start(Arc::new({
+            let bodies = bodies.clone();
+            move |_, body: String| {
+                bodies.lock().unwrap().push(body.clone());
+                Box::pin(async move {
+                    if body.contains(r#""summary":"auto""#) {
+                        let error = serde_json::json!({"error": {
+                            "message": "Your organization must be verified to generate reasoning summaries. Please go to: https://platform.openai.com/settings/organization/general and click on Verify Organization.",
+                            "type": "invalid_request_error",
+                            "param": "reasoning.summary",
+                            "code": "unsupported_value",
+                        }})
+                        .to_string();
+                        format!(
+                            "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{error}",
+                            error.len()
+                        )
+                    } else if body.contains("Second.") {
+                        complete("m3", "Again.")
+                    } else if body.contains("call_m1") {
+                        complete("m2", "Listed.")
+                    } else {
+                        tool_call("m1", "list_files", serde_json::json!({"directory": "."}))
+                    }
+                })
+            }
+        }))
+        .await;
+        let temp = tempfile::tempdir().unwrap();
+        let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
+        for (message, reply) in [("First.", "Listed."), ("Second.", "Again.")] {
+            let end = tokio::time::timeout(
+                Duration::from_secs(30),
+                harness.turn(Prompt::User(message.into()), &mut inputs),
+            )
+            .await
+            .unwrap();
+            assert!(matches!(end, TurnEnd::Answered), "{message}");
+            assert_eq!(summary(&harness), reply);
+        }
+        harness.flush_printer().await;
+        let bodies = bodies.lock().unwrap().clone();
+        let asked = bodies
+            .iter()
+            .filter(|body| body.contains(r#""summary":"auto""#))
+            .count();
+        assert_eq!((asked, bodies.len()), (1, 4), "{bodies:#?}");
+        let told = shown(&harness.feed)
+            .into_iter()
+            .filter(|(kind, text, _)| kind == "notice" && text == providers::THINKING_REFUSED)
+            .count();
+        assert_eq!(told, 1);
+        let Conversation::Answered(result) = &harness.conversation else {
+            unreachable!()
+        };
+        let generation = &result.task.agent_config.llm_config.generation_config;
+        assert!(
+            matches!(
+                generation.reasoning,
+                Some(arko_ai::ReasoningConfig::OpenAI {
+                    include_summaries: false,
+                    ..
+                })
+            ),
+            "{:?}",
+            generation.reasoning
+        );
+    }
+
     /// What the user types while the agent makes its last request comes
     /// too late for the turn: once the agent replies, a new turn takes it
     /// to the agent (once), as the workers' news starts one, and the agent

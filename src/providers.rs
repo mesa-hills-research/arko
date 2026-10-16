@@ -212,12 +212,19 @@ pub fn is_small(model: &Model) -> bool {
     SMALL_FAMILIES.iter().any(|family| id.contains(family))
 }
 
+/// What the session says, once, when OpenAI refuses the reasoning summaries
+/// Arko asks for (the organization isn't verified for them): the framework
+/// sends the request again without them, and no request asks again.
+pub const THINKING_REFUSED: &str = "OpenAI gives reasoning summaries only to verified organizations, and this one isn't verified, so the agents' thinking isn't shown and Arko stops asking for it. Verifying the organization in OpenAI's settings turns it on for new sessions.";
+
 /// The generation settings of an agent on `model`: its reasoning at
 /// `effort`, and fast mode and the 1-hour cache where the provider has them.
 /// With `thinking_text`, the model is asked for the text of its thinking
 /// where it needs asking, for the views to show: Claude by API key for its
 /// summarized thinking (Claude Code passes it on by itself), OpenAI and
-/// OpenRouter for reasoning summaries, Gemini for its thoughts.
+/// OpenRouter for reasoning summaries, Gemini for its thoughts. An OpenAI
+/// organization that isn't verified for summaries refuses them, and the
+/// framework then asks without them ([`THINKING_REFUSED`]).
 pub fn generation(
     model: &Model,
     effort: Effort,

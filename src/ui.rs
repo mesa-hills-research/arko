@@ -426,6 +426,8 @@ struct EventPrinter {
     label: Option<String>,
     /// Shell commands the main agent is running, by call ID.
     commands: HashMap<Uuid, String>,
+    /// The provider's refusal of reasoning summaries was told.
+    thinking_refused: bool,
 }
 
 impl EventPrinter {
@@ -445,6 +447,7 @@ impl EventPrinter {
             workers: HashMap::new(),
             label,
             commands: HashMap::new(),
+            thinking_refused: false,
         }
     }
 
@@ -592,6 +595,14 @@ impl EventPrinter {
                 self.output.echo(&self.output.warn(&format!(
                     "  ! the reply reached the model's output limit ({output_tokens} tokens)"
                 )));
+            }
+            AgentEvent::ReasoningSummariesRefused { .. } if !self.thinking_refused => {
+                self.thinking_refused = true;
+                self.output.echo(
+                    &self
+                        .output
+                        .dim(&format!("  {}", crate::providers::THINKING_REFUSED)),
+                );
             }
             AgentEvent::HandoverRequested { input_tokens } if main => {
                 self.flush();

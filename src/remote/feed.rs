@@ -436,6 +436,8 @@ struct State {
     open_text: HashMap<String, (Kind, u64)>,
     /// The agents' thinking isn't kept (`--hide-thinking`).
     hide_thinking: bool,
+    /// The provider's refusal of reasoning summaries was told.
+    thinking_refused: bool,
     activity: Activity,
     next_question: u64,
     turn: Option<u64>,
@@ -786,6 +788,12 @@ impl Feed {
                 let text =
                     format!("the reply reached the model's output limit ({output_tokens} tokens)");
                 self.push(&mut state, notice(text, Level::Warn));
+            }
+            // Once, in the main transcript: it holds for every agent.
+            AgentEvent::ReasoningSummariesRefused { .. } if !state.thinking_refused => {
+                state.thinking_refused = true;
+                let item = Item::new(Kind::Notice, crate::providers::THINKING_REFUSED);
+                self.push(&mut state, item.level(Level::Info));
             }
             AgentEvent::HandoverRequested { input_tokens } if main => {
                 let text = crate::handover::requested_text(event.agent_run_id, *input_tokens);
