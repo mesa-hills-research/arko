@@ -1523,25 +1523,10 @@ mod tests {
 
     fn settings(main: ModelSettings, worker: ModelSettings) -> Settings {
         Settings {
-            workspace: "/work".into(),
             handover_at: main.handover_at.unwrap_or(200_000),
-            main_handover_at: None,
-            main,
             worker,
             max_workers: 4,
-            allow_outside_workspace: false,
-            show_thinking: false,
-            created: chrono::Utc::now(),
-            title: None,
-            windows_shell: None,
-            openai_auth: None,
-            own_worker_model: false,
-            text_replies: false,
-            cc_handover: false,
-            extra_rules: Default::default(),
-            project_instructions: Default::default(),
-            worker_project_instructions: false,
-            background_after: 0,
+            ..Settings::for_test(std::path::Path::new("/work"), &main)
         }
     }
 

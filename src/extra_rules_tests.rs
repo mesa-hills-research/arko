@@ -73,25 +73,8 @@ fn the_choice_is_saved_with_the_session_and_old_sessions_load_with_it_off() {
         handover_at: None,
     };
     let mut settings = Settings {
-        workspace: temp.path().to_path_buf(),
-        main: model.clone(),
-        worker: model,
-        max_workers: NO_LIMIT,
-        handover_at: 200_000,
-        main_handover_at: None,
-        allow_outside_workspace: false,
-        show_thinking: false,
-        created: chrono::Utc::now(),
-        title: None,
-        windows_shell: None,
-        openai_auth: None,
-        own_worker_model: false,
-        text_replies: false,
-        cc_handover: false,
         extra_rules: ExtraRules::Small,
-        project_instructions: Default::default(),
-        worker_project_instructions: false,
-        background_after: 0,
+        ..Settings::for_test(temp.path(), &model)
     };
     let file = session.dir.join("session.json");
     let saved = || -> serde_json::Value {

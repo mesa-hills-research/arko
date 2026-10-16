@@ -92,6 +92,34 @@ fn default_background_after() -> u64 {
 }
 
 impl Settings {
+    /// Settings for tests: a session in `workspace` with both agents on
+    /// `model`, no limit on workers, and nothing else on. Tests change what
+    /// they test.
+    #[cfg(test)]
+    pub fn for_test(workspace: &Path, model: &ModelSettings) -> Self {
+        Self {
+            workspace: workspace.to_path_buf(),
+            main: model.clone(),
+            worker: model.clone(),
+            max_workers: crate::agents::NO_LIMIT,
+            handover_at: 200_000,
+            main_handover_at: None,
+            allow_outside_workspace: false,
+            show_thinking: false,
+            created: Utc::now(),
+            title: None,
+            windows_shell: None,
+            openai_auth: None,
+            own_worker_model: false,
+            text_replies: false,
+            cc_handover: false,
+            extra_rules: Default::default(),
+            project_instructions: Default::default(),
+            worker_project_instructions: false,
+            background_after: 0,
+        }
+    }
+
     /// Whether the workers run the main agent's model, and follow it when
     /// it changes before the conversation starts.
     pub fn workers_follow_main(&self) -> bool {
@@ -317,25 +345,9 @@ mod tests {
             handover_at: None,
         };
         Settings {
-            workspace: workspace.to_path_buf(),
-            main: model.clone(),
-            worker: model,
             max_workers: 4,
-            handover_at: 200_000,
-            main_handover_at: None,
-            allow_outside_workspace: false,
-            show_thinking: false,
             created,
-            title: None,
-            windows_shell: None,
-            openai_auth: None,
-            own_worker_model: false,
-            text_replies: false,
-            cc_handover: false,
-            extra_rules: Default::default(),
-            project_instructions: Default::default(),
-            worker_project_instructions: false,
-            background_after: 0,
+            ..Settings::for_test(workspace, &model)
         }
     }
 
