@@ -131,6 +131,12 @@ pub enum Request {
     /// Gives the session this name (empty: back to its conversation's),
     /// also during a turn.
     Rename { title: String, reply: Reply<()> },
+    /// A chat's instructions from the user (`None`: none), before its first
+    /// message (a new chat takes them in `Options::chat_instructions`).
+    ChatInstructions {
+        text: Option<String>,
+        reply: Reply<()>,
+    },
 }
 
 /// Where a request's answer goes.
@@ -298,7 +304,7 @@ impl Engine {
         if let Some(session) = &resumed {
             crate::context::name_session(&session.id);
         }
-        let (session, settings, new) = match resumed {
+        let (session, mut settings, new) = match resumed {
             Some(session) => {
                 let mut settings = session.load_settings()?;
                 // Its settings and keys, as its own folder has them.
@@ -413,17 +419,25 @@ impl Engine {
             ),
         };
         let provider_setup = providers::Setup::new(settings.openai_auth);
-        let agent_settings = AgentSettings::for_session(&settings, &provider_setup);
-        // Settings the agents can't be built with leave no session behind.
-        agents::main_config(&agent_settings)?;
-        agents::worker_config(&agent_settings)?;
+        {
+            // Settings the agents can't be built with leave no session behind.
+            let agent_settings = AgentSettings::for_session(&settings, &provider_setup);
+            agents::main_config(&agent_settings)?;
+            agents::worker_config(&agent_settings)?;
+        }
+        // A chat has no tools: no MCP servers, skills, indexes or workers.
+        let chat = settings.mode == crate::session::Mode::Chat;
         // A project's MCP servers are started once the user approves them.
-        let mcp_plan = mcp::plan(&root, &settings.workspace, &options.mcp_config)?;
-        let mcp_answer = match &mcp_plan.approval {
-            Some(approval) => prompter.approve_project_mcp(approval).await?,
-            None => None,
+        let (mcp_servers, mcp_notes) = if chat {
+            (Vec::new(), Vec::new())
+        } else {
+            let mcp_plan = mcp::plan(&root, &settings.workspace, &options.mcp_config)?;
+            let mcp_answer = match &mcp_plan.approval {
+                Some(approval) => prompter.approve_project_mcp(approval).await?,
+                None => None,
+            };
+            mcp_plan.decide(mcp_answer)?
         };
-        let (mcp_servers, mcp_notes) = mcp_plan.decide(mcp_answer)?;
 
         let session = match session {
             Some(session) => session,
@@ -436,6 +450,11 @@ impl Engine {
             }
         };
         let lock = lock.expect("the session is locked");
+        if new && chat {
+            // A chat works in no folder of the user's: its own, which `arko
+            // -c` never takes for a project's.
+            settings.workspace = session.dir.clone();
+        }
         if new {
             session
                 .save_settings(&settings)
@@ -499,14 +518,24 @@ impl Engine {
                 )));
             }
         }
-        let skill_folders = skills::folders(&settings.workspace, &root);
-        let indexes = match index::Indexes::open(
-            &root,
-            &settings.workspace,
-            credentials::var(VOYAGE_KEY),
-            !one_shot,
-        ) {
-            Ok(indexes) => Some(indexes),
+        let skill_folders = if chat {
+            Vec::new()
+        } else {
+            skills::folders(&settings.workspace, &root)
+        };
+        let indexes = if chat {
+            Ok(None)
+        } else {
+            index::Indexes::open(
+                &root,
+                &settings.workspace,
+                credentials::var(VOYAGE_KEY),
+                !one_shot,
+            )
+            .map(Some)
+        };
+        let indexes = match indexes {
+            Ok(indexes) => indexes,
             Err(error) => {
                 startup.line(&startup.warn(&format!("arko: search indexes are off: {error}")));
                 None
@@ -540,13 +569,17 @@ impl Engine {
                 &[]
             },
             indexes: &known_indexes,
-            ..agent_settings
+            ..AgentSettings::for_session(&settings, &provider_setup)
         };
         let main_config = agents::main_config(&agent_settings)?;
         let worker_config = agents::worker_config(&agent_settings)?;
         // Where the runs' command channels are kept, to ask for handovers.
         let runs = Arc::new(handover::Runs::default());
-        let mut tools = managers.tools(&shell, runs.clone());
+        let mut tools = if chat {
+            Vec::new()
+        } else {
+            managers.tools(&shell, runs.clone())
+        };
         tools.extend(mcp.tools().iter().cloned());
         if let Some(indexes) = &indexes {
             tools.extend(indexes.tools());
@@ -1197,6 +1230,202 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(seam.feed.activity().since, None);
+        seam.input.send(Input::Quit(Some(Vec::new()))).unwrap();
+        assert_eq!(
+            tokio::time::timeout(wait, running.ended)
+                .await
+                .unwrap()
+                .unwrap(),
+            RunEnd::Quit
+        );
+    }
+
+    /// A chat's agent is offered no tools and told the user's
+    /// instructions, set before its first message (not after). A chat works
+    /// in its own folder, lists without one, and has no workers.
+    #[tokio::test]
+    async fn a_chat_has_no_tools_and_takes_the_users_instructions() {
+        let temp = tempfile::tempdir().unwrap();
+        let bodies: Arc<Mutex<Vec<String>>> = Arc::default();
+        let server = ModelServer::start(Arc::new({
+            let bodies = bodies.clone();
+            move |_, body: String| {
+                bodies.lock().unwrap().push(body);
+                Box::pin(async { reply("a", "Ahoy.") })
+            }
+        }))
+        .await;
+        let root = temp.path().join("arko");
+        let running = spawn(
+            Options {
+                root: Some(root.clone()),
+                mode: crate::session::Mode::Chat,
+                chat_instructions: Some("Answer briefly.".into()),
+                model: Some("luna".into()),
+                openai_auth: Some(OpenAiAuth::ApiKey),
+                cache_1h: Some(false),
+                client: Some(GivenClient(Arc::new(server.client()))),
+                ..Options::default()
+            },
+            Arc::new(NoPrompter),
+        );
+        let wait = Duration::from_secs(30);
+        let seam = tokio::time::timeout(wait, running.opened)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        /// Sends `text`, and waits until the feed has `count` replies.
+        async fn ask(seam: &Seam, text: &str, count: usize) {
+            seam.input
+                .send(Input::Message(crate::ui::Message {
+                    text: text.into(),
+                    images: Vec::new(),
+                }))
+                .unwrap();
+            let replies = || {
+                seam.feed
+                    .subscribe()
+                    .0
+                    .items
+                    .iter()
+                    .filter(|item| item.text == "Ahoy.")
+                    .count()
+            };
+            tokio::time::timeout(Duration::from_secs(30), async {
+                while replies() < count {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .unwrap();
+        }
+        let instructions = |text: &str| {
+            let (reply_to, answer) = tokio::sync::oneshot::channel();
+            seam.requests
+                .send(Request::ChatInstructions {
+                    text: Some(text.into()),
+                    reply: reply_to,
+                })
+                .unwrap();
+            answer
+        };
+        // Before the first message, the new instructions replace the old.
+        assert_eq!(instructions("Answer like a pirate.").await.unwrap(), Ok(()));
+        ask(&seam, "Hello.", 1).await;
+        let first = bodies.lock().unwrap()[0].clone();
+        let request: serde_json::Value = serde_json::from_str(&first).unwrap();
+        assert!(
+            request.get("tools").is_none() && request.get("tool_choice").is_none(),
+            "{first}"
+        );
+        assert!(first.contains("# The user's instructions"), "{first}");
+        assert!(first.contains("Answer like a pirate."));
+        assert!(!first.contains("Tool Usage"));
+        let listed = crate::sessions::list(&root);
+        assert_eq!(listed[0].mode, crate::session::Mode::Chat);
+        assert_eq!(listed[0].workspace, None);
+        let settings = Session::open(&root, &seam.session.id)
+            .unwrap()
+            .load_settings()
+            .unwrap();
+        assert_eq!(settings.workspace, seam.session.dir);
+        assert_eq!(settings.max_workers, 0);
+        assert_eq!(
+            settings.chat_instructions.as_deref(),
+            Some("Answer like a pirate.")
+        );
+        // After it, they stay.
+        assert!(instructions("Be brief.").await.unwrap().is_err());
+        assert!(!first.contains("Answer briefly."));
+
+        seam.input.send(Input::Quit(Some(Vec::new()))).unwrap();
+        assert_eq!(
+            tokio::time::timeout(wait, running.ended)
+                .await
+                .unwrap()
+                .unwrap(),
+            RunEnd::Quit
+        );
+    }
+
+    /// At the handover size a chat writes a summary in text, and the fresh
+    /// conversation answers the message it was asked before.
+    #[tokio::test]
+    async fn a_chat_hands_over_with_a_summary_and_answers() {
+        let temp = tempfile::tempdir().unwrap();
+        // (A conversation that starts over the size isn't handed over: the
+        // first request is small.)
+        let server = ModelServer::start(Arc::new(|_, body: String| {
+            Box::pin(async move {
+                if body.contains(
+                    "This conversation is getting long, so it will continue in a fresh one",
+                ) {
+                    reply("s", "SUMMARY: the user greeted Arko twice.")
+                } else if body.contains("SUMMARY: the user greeted Arko twice.") {
+                    reply("b", "Answered from the summary.")
+                } else if body.contains("Hello again.") {
+                    with_input(reply("a", "Second answer."), 40_000)
+                } else {
+                    with_input(reply("a", "First answer."), 1_000)
+                }
+            })
+        }))
+        .await;
+        let running = spawn(
+            Options {
+                root: Some(temp.path().join("arko")),
+                mode: crate::session::Mode::Chat,
+                model: Some("luna".into()),
+                openai_auth: Some(OpenAiAuth::ApiKey),
+                cache_1h: Some(false),
+                handover_at: Some(30_000),
+                client: Some(GivenClient(Arc::new(server.client()))),
+                ..Options::default()
+            },
+            Arc::new(NoPrompter),
+        );
+        let wait = Duration::from_secs(30);
+        let seam = tokio::time::timeout(wait, running.opened)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let texts = || -> Vec<String> {
+            seam.feed
+                .subscribe()
+                .0
+                .items
+                .into_iter()
+                .map(|item| item.text)
+                .collect()
+        };
+        for (text, expected) in [
+            ("Hello.", "First answer."),
+            ("Hello again.", "Second answer."),
+            ("And once more.", "Answered from the summary."),
+        ] {
+            seam.input
+                .send(Input::Message(crate::ui::Message {
+                    text: text.into(),
+                    images: Vec::new(),
+                }))
+                .unwrap();
+            tokio::time::timeout(wait, async {
+                while !texts().iter().any(|said| said == expected) {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .unwrap_or_else(|_| panic!("{:?}", texts()));
+        }
+        assert!(
+            texts()
+                .iter()
+                .any(|said| said.contains("fresh conversation")),
+            "{:?}",
+            texts()
+        );
         seam.input.send(Input::Quit(Some(Vec::new()))).unwrap();
         assert_eq!(
             tokio::time::timeout(wait, running.ended)

@@ -17,6 +17,7 @@
 //! run from the command line as `arko index ...`).
 
 mod agents;
+mod chat;
 mod claude_code;
 #[cfg(feature = "tui")]
 mod cli;

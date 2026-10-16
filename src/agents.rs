@@ -212,7 +212,7 @@ impl ModelSettings {
         resolve_model(&self.model).is_ok_and(|model| providers::takes_cache_ttl(&model))
     }
 
-    fn llm_config(&self, thinking_text: bool) -> Result<AgentLLMConfig, String> {
+    pub(crate) fn llm_config(&self, thinking_text: bool) -> Result<AgentLLMConfig, String> {
         let model = resolve_model(&self.model)?;
         let generation_config =
             providers::generation(&model, self.effort, self.fast, self.cache_1h, thinking_text)?;
@@ -258,6 +258,10 @@ pub struct AgentSettings<'a> {
     /// Which agents get the extra rules for small models, each by its own
     /// model.
     pub extra_rules: ExtraRules,
+    /// A chat's agent (no tools), or an agent at work.
+    pub mode: crate::session::Mode,
+    /// A chat's instructions from the user, if any.
+    pub chat_instructions: Option<&'a str>,
 }
 
 impl<'a> AgentSettings<'a> {
@@ -280,6 +284,8 @@ impl<'a> AgentSettings<'a> {
             text_replies: settings.text_replies,
             cc_compact: !settings.cc_handover,
             extra_rules: settings.extra_rules,
+            mode: settings.mode,
+            chat_instructions: settings.chat_instructions.as_deref(),
         }
     }
 
@@ -302,6 +308,8 @@ impl<'a> AgentSettings<'a> {
             text_replies: false,
             cc_compact: true,
             extra_rules: ExtraRules::Off,
+            mode: crate::session::Mode::Agent,
+            chat_instructions: None,
         }
     }
 }
@@ -367,7 +375,7 @@ fn on_chatgpt(model: &Model, openai_auth: Option<OpenAiAuth>) -> bool {
 /// and the agent goes on in the same conversation. Otherwise, and on the
 /// other providers, it hands over: it writes a report and goes on from it
 /// in a fresh conversation.
-fn handover(model: &ModelSettings, tokens: usize, cc_compact: bool) -> HandoverConfig {
+pub(crate) fn handover(model: &ModelSettings, tokens: usize, cc_compact: bool) -> HandoverConfig {
     HandoverConfig {
         compact_in_claude_code: model.in_claude_code() && cc_compact,
         ..HandoverConfig::at_input_tokens(tokens)
@@ -478,6 +486,9 @@ pub fn cc_text(cc_compact: bool) -> &'static str {
 /// `complete_task`, whose summary is its reply, and answers with
 /// `message_user`.
 pub fn main_config(settings: &AgentSettings) -> Result<AgentConfig, String> {
+    if settings.mode == crate::session::Mode::Chat {
+        return crate::chat::config(settings);
+    }
     let mut tools = shared_tool_names(settings);
     tools.push(ASK_USER_TOOL_NAME.into());
     if !settings.text_replies {

@@ -104,6 +104,11 @@ pub struct Options {
     /// Where the user's input comes from, as the feed tags it: the
     /// terminal, or an app.
     pub source: remote::Source,
+    /// A new session's kind: an agent working in `workspace` with its tools
+    /// and workers, or a chat with none (which works in no folder).
+    pub mode: crate::session::Mode,
+    /// A new chat's instructions from the user.
+    pub chat_instructions: Option<String>,
     /// A client to use in place of the one the session's credentials make
     /// (tests: the mock model server's).
     #[cfg(any(test, feature = "testing"))]
@@ -168,6 +173,8 @@ impl Default for Options {
             title: None,
             app: "arko-studio",
             source: remote::Source::App,
+            mode: crate::session::Mode::Agent,
+            chat_instructions: None,
             #[cfg(any(test, feature = "testing"))]
             client: None,
         }

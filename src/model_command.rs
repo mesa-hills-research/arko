@@ -611,7 +611,7 @@ impl Harness {
     /// starts: their configurations, the workflow, the main agent's handover
     /// size and new workers' model. The session and the next session's
     /// default keep them.
-    fn rebuild_agents(&mut self, settings: Settings) -> Result<(), String> {
+    pub(crate) fn rebuild_agents(&mut self, settings: Settings) -> Result<(), String> {
         let setup = providers::Setup {
             openai_auth: settings.openai_auth,
             claude_code: self.providers.claude_code.clone(),

@@ -322,6 +322,8 @@ impl Args {
             title: self.prompt.as_deref().map(|prompt| ui::cut(prompt, 80)),
             app: "arko",
             source: remote::Source::Terminal,
+            mode: crate::session::Mode::Agent,
+            chat_instructions: None,
             #[cfg(any(test, feature = "testing"))]
             client: None,
         })

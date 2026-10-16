@@ -1246,7 +1246,28 @@ impl Harness {
                 }
                 let _ = reply.send(renamed);
             }
+            crate::engine::Request::ChatInstructions { text, reply } => {
+                let _ = reply.send(self.set_chat_instructions(text));
+            }
         }
+    }
+
+    /// The chat's instructions from the user, before its first message.
+    /// (A chat that has conversations keeps the instructions it was saved
+    /// with: its earlier conversations would no longer resume with others.)
+    fn set_chat_instructions(&mut self, text: Option<String>) -> Result<(), String> {
+        if self.settings.mode != crate::session::Mode::Chat {
+            return Err("This session isn't a chat.".into());
+        }
+        if !self.conversations.list.is_empty() || !matches!(self.conversation, Conversation::New) {
+            return Err(
+                "This chat has its instructions: they change before a chat's first message. A new chat takes the new ones."
+                    .into(),
+            );
+        }
+        let mut settings = self.settings.clone();
+        settings.chat_instructions = text.filter(|text| !text.trim().is_empty());
+        self.rebuild_agents(settings)
     }
 
     /// The session's name, as the status gives it: the one the user gave

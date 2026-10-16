@@ -9,7 +9,7 @@ use crate::options::Options;
 use crate::prompter::Prompter;
 use crate::providers::Failure;
 use crate::remote::Level;
-use crate::session::{Mode, Settings};
+use crate::session::Settings;
 use crate::shell::WindowsShell;
 use crate::{agents, credentials, handover, providers, session, shell};
 
@@ -234,12 +234,21 @@ pub(crate) fn new_settings(
         created: chrono::Utc::now(),
         windows_shell: Some(windows_shell(options)?),
         title: options.title.clone(),
-        mode: Mode::Agent,
+        mode: options.mode,
+        chat_instructions: options.chat_instructions.clone(),
         openai_auth,
         own_worker_model,
         background_after: background_after_for(options, shell::DEFAULT_BACKGROUND_AFTER),
     };
     project_from_options(options, &mut settings);
+    if settings.mode == crate::session::Mode::Chat {
+        // A chat has no tools, workers or project, and the user reads its
+        // replies.
+        settings.max_workers = 0;
+        settings.text_replies = true;
+        settings.project_instructions = crate::project::Files::Off;
+        settings.worker_project_instructions = false;
+    }
     providers::check_openai_choices(&settings)?;
     // The model Arko chose: the last session's, else one the credentials
     // allow.

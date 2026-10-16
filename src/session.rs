@@ -78,6 +78,9 @@ pub struct Settings {
     /// agent's).
     #[serde(default, skip_serializing_if = "Mode::is_agent")]
     pub mode: Mode,
+    /// A chat's instructions from the user, for its next conversations.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chat_instructions: Option<String>,
     /// The shell commands run in on Windows. `None` in sessions saved
     /// before it could be chosen, which ran PowerShell.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -150,6 +153,7 @@ impl Settings {
             created: Utc::now(),
             title: None,
             mode: Mode::Agent,
+            chat_instructions: None,
             windows_shell: None,
             openai_auth: None,
             own_worker_model: false,
