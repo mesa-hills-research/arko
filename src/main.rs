@@ -77,7 +77,7 @@ use crate::ui::{Control, Input, Output, Stats};
     name = "arko",
     version,
     about = "A general-purpose agent for the terminal: a shell, background jobs, file tools and workers that run in parallel.",
-    after_help = "Credentials: ANTHROPIC_API_KEY for Claude models. For OpenAI models, a ChatGPT login or OPENAI_API_KEY, one per session (--openai-auth). The ChatGPT login is a Codex auth.json (--codex-auth, else ARKO_CODEX_AUTH, else Codex's own from `codex login`), or OPENAI_OAUTH_ACCESS_TOKEN with OPENAI_OAUTH_ACCOUNT_ID. GEMINI_API_KEY (or GOOGLE_API_KEY) for Gemini models, and OPENROUTER_API_KEY for openrouter: models. cc: models run in your installed Claude Code (`claude`, signed in with `claude auth login`) on your Claude plan, never on ANTHROPIC_API_KEY. When the model's credential is missing, Arko asks for it on a setup screen and saves it in Arko's .env. --setup opens that screen. While Arko runs, /keys (also in /settings) adds, replaces and removes API keys, and a key added is used at once.\n\nSettings: the API keys above, ARKO_CODEX_AUTH, ARKO_OPENAI_AUTH (chatgpt or api-key), ARKO_CACHE_1H (1 turns on --cache-1h), ARKO_SHELL (cmd or powershell, on Windows), ARKO_SYMBOLS, ARKO_THEME, ARKO_REMOTE_HOST and VOYAGE_API_KEY can be in the environment or in a .env file. Arko reads the nearest .env in the current directory or a parent, then the one in Arko's folder (ARKO_HOME, else arko in your data directory, such as ~/.local/share/arko).\n\nThe screen: in a terminal, Arko shows the session full screen (--repl keeps the line prompt). Enter sends, and Ctrl+J (or Shift+Enter where the terminal reports it) starts a new line. While the agent works, what you send adds to its task. Ctrl+O switches the view between full, quiet (each worker as one line) and messages. Ctrl+T, or ↓ from the input, reaches the agent list, where Enter shows a worker's own work and Esc goes back. Ctrl+C stops the turn, and the workers go on. Drag over the transcript to select text, and it is copied when you let go. A double click copies a word, and a triple click a line. A click on a command's \"more lines\" shows its whole output, and a click on the line at its end folds it again. /help lists the keys, and /settings holds the view, the theme and its previews, the mouse, outside access, the handover size, text replies, the extra rules, the project instructions, the web page and the API keys.\n\nThemes: ARKO_THEME picks a theme by name, such as \"macOS Classic Light\" or \"Windows Dark\". The default is macOS Classic Dark, and `terminal` keeps the terminal's own colours. Your own themes go in the themes folder in Arko's folder, in GPUI Kit's theme format. The theme list in /settings shows a theme when you rest on it, and Previews off there shows none until you choose one.\n\nOutside access: the agents change files only inside the working directory. /outside on, or --allow-outside-workspace (also when resuming), lets commands and the file tools change paths outside it too, and /outside off stops that. The agents are told when it changes, and workers follow it. Protected paths, such as the home directory itself, stay refused.\n\nModels: --model (-m) and --effort set the main agent's model, and --worker-model and --worker-effort the workers'. Before the conversation starts, /model MODEL [EFFORT] changes the main agent's model. After that the main agent keeps its model for the session, and /model worker MODEL [EFFORT] sets the model of workers started from now on. /model worker main makes them follow the main agent again. A worker keeps the model it started on, also when it is resumed or continued. /model and /model worker without a model open a picker of the models you can use.\n\nReplies: in a session you take part in, the main agent ends each turn with a plain reply. With -p it ends each turn by calling complete_task instead, so a reply that wasn't meant to be its last doesn't end the run. --text-replies and --no-text-replies choose for a new session, and /text-replies (also in /settings) changes it before the conversation starts. A resumed session keeps its own.\n\nExtra rules: agents on small models (Haiku, luna) get a few extra rules in their instructions. Each agent goes by its own model, so a worker on Haiku gets them under a main agent on Opus, which doesn't. --extra-rules gives them to every agent and --no-extra-rules to none, for a new session, and /extra-rules (also in /settings) changes it before the conversation starts. A resumed session keeps its own.\n\nProject instructions: the agents get AGENTS.md from the working directory, or CLAUDE.md when there is no AGENTS.md. The main agent gets it once per conversation, in the first message. Each worker gets the same text once, in its first message, also when it works in a worktree of its own. Both get it again after a handover. --project-instructions both gives both files, each under its own name, and --project-instructions off neither. --no-worker-project-instructions keeps them from the workers. The flags work for a new session or a resumed one, and /project-instructions (also in /settings) changes them as you go. A change reaches the conversations and the workers that start after it.\n\nConversations: /new starts a new conversation in the session, and /resume goes back to an earlier one. The screen opens a list to choose from. At the line prompt and on the web page, /resume lists them and /resume N goes back to number N. A resumed session (-c, --resume) goes on with the conversation it was in.\n\nHandovers: when the main agent's input reaches the handover size (500k tokens on Claude models, 250k on the ChatGPT login, 200k on others), it writes a report and goes on from it in a fresh conversation. On cc: models, Claude Code compacts the conversation at that size instead, and the agent goes on in the same conversation from Claude Code's summary. Workers do the same. /handover-at SIZE changes the main agent's size for the session, larger or smaller, up to 80% of what its model accepts (250k on the ChatGPT login). The running conversation goes by the new size from its next step. /handover hands over (or compacts) now.\n\nCost: /cost shows what the session billed. For work on a Claude or ChatGPT plan, it also shows the cost at API prices and the plan's usage.\n\nMCP servers: Arko starts those set up in --mcp-config files, in the project's .mcp.json (it asks first, and remembers the answer until the file's servers change) and in mcp.json in Arko's folder. They use Claude Code's format ({\"mcpServers\": {\"name\": {\"command\": ..., \"args\": [...], \"env\": {...}}}}) and talk over standard input and output. Skills: folders with a SKILL.md, in the project's .agents/skills, .claude/skills or .skills, in skills in Arko's folder, or in ~/.agents/skills or ~/.claude/skills.\n\nSearch indexes: `arko index create [PATH]` indexes a codebase or its docs, in any directory (the agents can create indexes too). Arko keeps the working directory's indexes current while it runs, and other indexes once the agent searches them. The agents' searches return the top results' whole functions and sections. `arko index --help` lists the commands. Without VOYAGE_API_KEY, search is by keywords only.\n\nWorkers: the agent starts them to work in parallel while it goes on, each in the working directory or in a git worktree of its own (made in the session's folder, on a branch arko/<session>/<worker>). Their reports reach it as they finish. /workers lists them, /watch shows one's own work, and /stop-workers stops them.\n\nRemote: --remote (or /remote during a session) serves a web page for following the session and taking part in it from a browser, such as a phone's. It has the same views as the screen, and its settings change outside access, text replies, the extra rules, the project instructions and the handover size and show links for other devices. Arko prints the links best first: the local network's, then Tailscale's, then other addresses, with VPN tunnels last. ARKO_REMOTE_HOST (an interface or an address) puts its link first. The QR code is for the first link, and /remote qr [INTERFACE] draws one again. The link holds the session's key (kept in the session's folder), which the page trades for a cookie. Arko listens on 127.0.0.1:8765 by default, and --remote 0.0.0.0 (or 0.0.0.0:PORT) lets in the devices on your network, or on your tailnet with Tailscale. The page is served without TLS. On a network you don't trust, reach it through an SSH tunnel (ssh -L 8765:127.0.0.1:8765 HOST, then open the link on your side) or Tailscale. /remote off stops it and ends its sessions, and /remote new-key makes a new key.\n\nSymbols: the classic Windows console (cmd.exe or PowerShell outside Windows Terminal) shows characters its fonts lack as question marks, so there Arko prints stand-ins those fonts have. ARKO_SYMBOLS sets the symbols: full, basic (those stand-ins) or ascii.\n\nCommands: /new, /resume, /model, /keys, /cost, /workers, /watch, /stop-workers, /view, /copy, /settings, /mcp, /skills, /session, /remote, /outside, /text-replies, /extra-rules, /project-instructions, /handover, /handover-at, /help, /exit."
+    after_help = "Credentials: ANTHROPIC_API_KEY for Claude models. For OpenAI models, a ChatGPT login or OPENAI_API_KEY, one per session (--openai-auth). The ChatGPT login is a Codex auth.json (--codex-auth, else ARKO_CODEX_AUTH, else Codex's own from `codex login`), or OPENAI_OAUTH_ACCESS_TOKEN with OPENAI_OAUTH_ACCOUNT_ID. GEMINI_API_KEY (or GOOGLE_API_KEY) for Gemini models, and OPENROUTER_API_KEY for openrouter: models. cc: models run in your installed Claude Code (`claude`, signed in with `claude auth login`) on your Claude plan, never on ANTHROPIC_API_KEY. When the model's credential is missing, Arko asks for it on a setup screen and saves it in Arko's .env. --setup opens that screen. While Arko runs, /keys (also in /settings) adds, replaces and removes API keys, and a key added is used at once.\n\nSettings: the API keys above, ARKO_CODEX_AUTH, ARKO_OPENAI_AUTH (chatgpt or api-key), ARKO_CACHE_1H (1 turns on --cache-1h), ARKO_SHELL (cmd or powershell, on Windows), ARKO_SYMBOLS, ARKO_THEME, ARKO_REMOTE_HOST and VOYAGE_API_KEY can be in the environment or in a .env file. Arko reads the nearest .env in the current directory or a parent, then the one in Arko's folder (ARKO_HOME, else arko in your data directory, such as ~/.local/share/arko).\n\nThe screen: in a terminal, Arko shows the session full screen (--repl keeps the line prompt). Enter sends, and Ctrl+J (or Shift+Enter where the terminal reports it) starts a new line. While the agent works, what you send adds to its task. Ctrl+O switches the view between full, quiet (each worker as one line) and messages. Ctrl+T, or ↓ from the input, reaches the agent list, where Enter shows a worker's own work and Esc goes back. Ctrl+C stops the turn, and the workers go on. While a shell command of the agent shown runs, Ctrl+B moves it to the background. Drag over the transcript to select text, and it is copied when you let go. A double click copies a word, and a triple click a line. A click on a command's \"more lines\" shows its whole output, and a click on the line at its end folds it again. /help lists the keys, and /settings holds the view, the theme and its previews, the mouse, outside access, the handover size, when commands move to the background, text replies, the extra rules, the project instructions, the web page and the API keys.\n\nThemes: ARKO_THEME picks a theme by name, such as \"macOS Classic Light\" or \"Windows Dark\". The default is macOS Classic Dark, and `terminal` keeps the terminal's own colours. Your own themes go in the themes folder in Arko's folder, in GPUI Kit's theme format. The theme list in /settings shows a theme when you rest on it, and Previews off there shows none until you choose one.\n\nOutside access: the agents change files only inside the working directory. /outside on, or --allow-outside-workspace (also when resuming), lets commands and the file tools change paths outside it too, and /outside off stops that. The agents are told when it changes, and workers follow it. Protected paths, such as the home directory itself, stay refused.\n\nBackground commands: a shell command still running after 10 minutes moves to the background, where it goes on as a job and the agent goes on with its work. The agent hears when it finishes, and a job that finishes while the agent waits for you starts a turn, as a worker's report does. Ctrl+B moves a command to the background at once. /background-after DURATION|off (also in /settings), or --background-after for a new or resumed session, sets the time. With -p commands stay in the foreground unless the flag says otherwise.\n\nModels: --model (-m) and --effort set the main agent's model, and --worker-model and --worker-effort the workers'. Before the conversation starts, /model MODEL [EFFORT] changes the main agent's model. After that the main agent keeps its model for the session, and /model worker MODEL [EFFORT] sets the model of workers started from now on. /model worker main makes them follow the main agent again. A worker keeps the model it started on, also when it is resumed or continued. /model and /model worker without a model open a picker of the models you can use.\n\nReplies: in a session you take part in, the main agent ends each turn with a plain reply. With -p it ends each turn by calling complete_task instead, so a reply that wasn't meant to be its last doesn't end the run. --text-replies and --no-text-replies choose for a new session, and /text-replies (also in /settings) changes it before the conversation starts. A resumed session keeps its own.\n\nExtra rules: agents on small models (Haiku, luna) get a few extra rules in their instructions. Each agent goes by its own model, so a worker on Haiku gets them under a main agent on Opus, which doesn't. --extra-rules gives them to every agent and --no-extra-rules to none, for a new session, and /extra-rules (also in /settings) changes it before the conversation starts. A resumed session keeps its own.\n\nProject instructions: the agents get AGENTS.md from the working directory, or CLAUDE.md when there is no AGENTS.md. The main agent gets it once per conversation, in the first message. Each worker gets the same text once, in its first message, also when it works in a worktree of its own. Both get it again after a handover. --project-instructions both gives both files, each under its own name, and --project-instructions off neither. --no-worker-project-instructions keeps them from the workers. The flags work for a new session or a resumed one, and /project-instructions (also in /settings) changes them as you go. A change reaches the conversations and the workers that start after it.\n\nConversations: /new starts a new conversation in the session, and /resume goes back to an earlier one. The screen opens a list to choose from. At the line prompt and on the web page, /resume lists them and /resume N goes back to number N. A resumed session (-c, --resume) goes on with the conversation it was in.\n\nHandovers: when the main agent's input reaches the handover size (500k tokens on Claude models, 250k on the ChatGPT login, 200k on others), it writes a report and goes on from it in a fresh conversation. On cc: models, Claude Code compacts the conversation at that size instead, and the agent goes on in the same conversation from Claude Code's summary. Workers do the same. /handover-at SIZE changes the main agent's size for the session, larger or smaller, up to 80% of what its model accepts (250k on the ChatGPT login). The running conversation goes by the new size from its next step. /handover hands over (or compacts) now.\n\nCost: /cost shows what the session billed. For work on a Claude or ChatGPT plan, it also shows the cost at API prices and the plan's usage.\n\nMCP servers: Arko starts those set up in --mcp-config files, in the project's .mcp.json (it asks first, and remembers the answer until the file's servers change) and in mcp.json in Arko's folder. They use Claude Code's format ({\"mcpServers\": {\"name\": {\"command\": ..., \"args\": [...], \"env\": {...}}}}) and talk over standard input and output. Skills: folders with a SKILL.md, in the project's .agents/skills, .claude/skills or .skills, in skills in Arko's folder, or in ~/.agents/skills or ~/.claude/skills.\n\nSearch indexes: `arko index create [PATH]` indexes a codebase or its docs, in any directory (the agents can create indexes too). Arko keeps the working directory's indexes current while it runs, and other indexes once the agent searches them. The agents' searches return the top results' whole functions and sections. `arko index --help` lists the commands. Without VOYAGE_API_KEY, search is by keywords only.\n\nWorkers: the agent starts them to work in parallel while it goes on, each in the working directory or in a git worktree of its own (made in the session's folder, on a branch arko/<session>/<worker>). Their reports reach it as they finish. /workers lists them, /watch shows one's own work, and /stop-workers stops them.\n\nRemote: --remote (or /remote during a session) serves a web page for following the session and taking part in it from a browser, such as a phone's. It has the same views as the screen, and its settings change outside access, text replies, the extra rules, the project instructions, the handover size and when commands move to the background, and show links for other devices. Arko prints the links best first: the local network's, then Tailscale's, then other addresses, with VPN tunnels last. ARKO_REMOTE_HOST (an interface or an address) puts its link first. The QR code is for the first link, and /remote qr [INTERFACE] draws one again. The link holds the session's key (kept in the session's folder), which the page trades for a cookie. Arko listens on 127.0.0.1:8765 by default, and --remote 0.0.0.0 (or 0.0.0.0:PORT) lets in the devices on your network, or on your tailnet with Tailscale. The page is served without TLS. On a network you don't trust, reach it through an SSH tunnel (ssh -L 8765:127.0.0.1:8765 HOST, then open the link on your side) or Tailscale. /remote off stops it and ends its sessions, and /remote new-key makes a new key.\n\nSymbols: the classic Windows console (cmd.exe or PowerShell outside Windows Terminal) shows characters its fonts lack as question marks, so there Arko prints stand-ins those fonts have. ARKO_SYMBOLS sets the symbols: full, basic (those stand-ins) or ascii.\n\nCommands: /new, /resume, /model, /keys, /cost, /workers, /watch, /stop-workers, /view, /copy, /settings, /mcp, /skills, /session, /remote, /outside, /background-after, /text-replies, /extra-rules, /project-instructions, /handover, /handover-at, /help, /exit."
 )]
 struct Args {
     /// Send this message, print the reply and exit. Progress goes to
@@ -206,6 +206,14 @@ struct Args {
     /// on in a resumed session, and /outside turns it on and off as you go.
     #[arg(long)]
     allow_outside_workspace: bool,
+
+    /// Move a shell command still running after this long to the
+    /// background, where it goes on as a job while the agent goes on with
+    /// its work: 90s, 10m, 1h (at most 60m), or off. Default: 10m in a
+    /// session you take part in, off with -p. For a new or resumed session,
+    /// which keeps it. With -p it is off unless this flag sets it.
+    #[arg(long, value_name = "DURATION|off", value_parser = shell::parse_background_after)]
+    background_after: Option<u64>,
 
     /// Show the main agent's reasoning as it works.
     #[arg(long)]
@@ -392,8 +400,12 @@ async fn run(args: Args) -> Result<ExitCode, String> {
                     settings.workspace.display()
                 ));
             }
-            // The project's instructions can change at any time.
-            if project_from_args(&args, &mut settings) {
+            // The project's instructions can change at any time, and so can
+            // when commands move to the background.
+            let background = args.background_after.is_some_and(|after| {
+                std::mem::replace(&mut settings.background_after, after) != after
+            });
+            if project_from_args(&args, &mut settings) | background {
                 session
                     .save_settings(&settings)
                     .map_err(|error| format!("could not save the session: {error}"))?;
@@ -485,6 +497,9 @@ async fn run(args: Args) -> Result<ExitCode, String> {
         settings.workspace.clone(),
     ));
     let one_shot = args.prompt.is_some();
+    managers
+        .background
+        .set_after(background_after_for(&args, settings.background_after));
 
     // MCP servers, skills and search indexes: what goes wrong with them is
     // said, and the session goes on without.
@@ -603,6 +618,7 @@ async fn run(args: Args) -> Result<ExitCode, String> {
         text_replies: Default::default(),
         extra_rules: Default::default(),
         project: Default::default(),
+        background: managers.background.clone(),
     });
     // The main agent's questions are put to the user at the prompt; with
     // no terminal, it is told there is no one to ask.
@@ -685,6 +701,7 @@ async fn run(args: Args) -> Result<ExitCode, String> {
         gauges,
         outside,
         handover,
+        background: managers.background.clone(),
     };
     harness.project = project::Found::read(&harness.settings.workspace);
     // Before the workflow opens: it may restart a worker that hadn't started.
@@ -705,6 +722,9 @@ async fn run(args: Args) -> Result<ExitCode, String> {
         questions,
         woken,
         remote: remote_input,
+        // With -p, Arko exits when the agent finishes, jobs or not.
+        finished: (!one_shot).then(|| managers.jobs.subscribe_finished()),
+        late: None,
     };
 
     let code = if let Some(prompt) = args.prompt.clone() {
@@ -836,6 +856,17 @@ fn text_replies_for(args: &Args, terminal: bool) -> bool {
         return args.text_replies;
     }
     args.prompt.is_none() && (args.remote.is_some() || terminal)
+}
+
+/// After how many seconds this run's shell commands move to the background
+/// (0: never): as the flag says, else never with -p (Arko exits when the
+/// agent finishes, jobs or not), else as the session keeps it (`saved`).
+fn background_after_for(args: &Args, saved: u64) -> u64 {
+    match args.background_after {
+        Some(after) => after,
+        None if args.prompt.is_some() => 0,
+        None => saved,
+    }
 }
 
 /// Which agents of a new session get the extra rules for small models: as
@@ -987,6 +1018,7 @@ fn new_settings(args: &Args) -> Result<Settings, String> {
         title: args.prompt.as_deref().map(|prompt| ui::cut(prompt, 80)),
         openai_auth,
         own_worker_model,
+        background_after: background_after_for(args, shell::DEFAULT_BACKGROUND_AFTER),
     };
     project_from_args(args, &mut settings);
     providers::check_openai_choices(&settings)?;
@@ -1057,42 +1089,43 @@ fn list_sessions(root: &Path) {
     }
 }
 
-/// The two terminal managers: one runs the `shell` tool's commands, the
-/// other the terminal tools' background jobs. Each keeps its jobs' logs in
+/// The session's terminal: its manager runs the terminal tools' background
+/// jobs and the `shell` tool's commands (held, with the shell's own
+/// arguments, until one moves to the background) and keeps their logs in
 /// the session's folder.
 struct Managers {
-    commands: Arc<TerminalManager>,
     jobs: Arc<TerminalManager>,
+    /// When the shell's commands move to the background, and those running.
+    background: Arc<shell::Background>,
 }
 
 impl Managers {
-    /// Opens them with outside access off: [`outside::Outside`] sets it.
+    /// Opens it with outside access off ([`outside::Outside`] sets it) and
+    /// the shell's commands kept in the foreground: set
+    /// [`background`](Self::background) before making the tools.
     fn open(session: &Session, shell: &Shell) -> Result<Self, String> {
-        let open = |directory: PathBuf, args: &[String]| {
-            let mut config = TerminalConfig::new(directory);
-            config.shell = shell.program.clone();
-            config.shell_args = args.to_vec();
-            TerminalManager::new(config).map_err(|error| {
-                format!(
-                    "could not open the session's terminal ({error}). Is it open in another Arko?"
-                )
-            })
-        };
+        let mut config = TerminalConfig::new(session.jobs_dir());
+        config.shell = shell.program.clone();
+        config.shell_args = shell.job_args.clone();
+        let jobs = TerminalManager::new(config).map_err(|error| {
+            format!("could not open the session's terminal ({error}). Is it open in another Arko?")
+        })?;
         Ok(Self {
-            commands: open(session.commands_dir(), &shell.args)?,
-            jobs: open(session.jobs_dir(), &shell.job_args)?,
+            jobs,
+            background: shell::Background::new(0),
         })
     }
 
     fn list(&self) -> Vec<Arc<TerminalManager>> {
-        vec![self.commands.clone(), self.jobs.clone()]
+        vec![self.jobs.clone()]
     }
 
     /// The shell tool, which keeps the command channels of the runs it is
     /// bound to in `runs`, and the terminal tools.
     fn tools(&self, shell: &Shell, runs: Arc<handover::Runs>) -> Vec<Arc<dyn Tool>> {
         let mut tools: Vec<Arc<dyn Tool>> = vec![Arc::new(
-            ShellTool::new(self.commands.clone(), shell.clone()).keeping_runs(runs),
+            ShellTool::new(self.jobs.clone(), shell.clone(), self.background.clone())
+                .keeping_runs(runs),
         )];
         for tool in TerminalTool::all(self.jobs.clone()) {
             tools.push(Arc::new(tool));
@@ -1100,10 +1133,9 @@ impl Managers {
         tools
     }
 
-    /// Stops the background jobs still running.
+    /// Stops the jobs still running.
     async fn shutdown(&self) {
         self.jobs.shutdown().await;
-        self.commands.shutdown().await;
     }
 }
 
@@ -1269,6 +1301,9 @@ enum Prompt {
     User(String),
     /// The workers' news, without a message from the user.
     News,
+    /// A background job of the agent's finished, without a message from
+    /// the user: its terminal update follows.
+    Jobs,
     /// A turn Arko stopped in the middle of goes on, without a message.
     Recover,
 }
@@ -1362,6 +1397,9 @@ struct Harness {
     /// The main agent's handover size, and the watch that asks for its
     /// handovers (`/handover`, `/handover-at`).
     handover: Arc<handover::Handover>,
+    /// When the shell's commands move to the background, and those running
+    /// (`/background-after`, Ctrl+B).
+    background: Arc<shell::Background>,
 }
 
 impl Harness {
@@ -1745,6 +1783,16 @@ impl Harness {
                     if let News::Exit = self.deliver_news(input).await {
                         break;
                     }
+                    continue;
+                }
+                Event::Finished(finished) => {
+                    if let News::Exit = self.deliver_finished(finished, input).await {
+                        break;
+                    }
+                    continue;
+                }
+                Event::Input(Some(Input::Background(agent))) => {
+                    self.move_to_background(&agent);
                     continue;
                 }
                 Event::Question(question) => {
@@ -2139,6 +2187,7 @@ impl Harness {
             "/text-replies" => self.text_replies_command(argument, source),
             "/extra-rules" => self.extra_rules_command(argument, source),
             "/project-instructions" => self.project_command(argument, source),
+            "/background-after" => self.background_after_command(argument, source),
             _ => self.handover_at_command(argument, source),
         }
         true
@@ -2385,6 +2434,72 @@ impl Harness {
         }
     }
 
+    /// `/background-after`: when shell commands move to the background, and
+    /// with a time (or `off`), sets it.
+    fn background_after_command(&mut self, argument: &str, source: Source) {
+        let now = self.background.after().map_or(0, |after| after.as_secs());
+        if argument.is_empty() {
+            let mut text = background_after_text(now);
+            text.push_str(if now == 0 {
+                " /background-after 10m moves them after 10 minutes."
+            } else {
+                " /background-after off keeps them in the foreground."
+            });
+            self.mirrored(|harness| harness.output.line(&text));
+            return;
+        }
+        let after = match shell::parse_background_after(argument) {
+            Ok(after) => after,
+            Err(error) => {
+                self.mirrored(|harness| harness.output.line(&harness.output.error(&error)));
+                return;
+            }
+        };
+        if after == now {
+            let text = format!("No change: {}", background_after_text(after));
+            self.mirrored(|harness| harness.output.line(&text));
+            return;
+        }
+        if source == Source::Web {
+            self.say(
+                Level::Info,
+                &format!(
+                    "Background after was set to {} from the web page.",
+                    shell::shown_background_after(after)
+                ),
+            );
+        }
+        self.set_background_after(after);
+        let text = background_after_text(after);
+        self.mirrored(|harness| harness.output.line(&text));
+    }
+
+    /// Sets when shell commands move to the background: the commands
+    /// started from now on follow, the session keeps it, and the agents get
+    /// a note (their shell's description says what it was as Arko started).
+    fn set_background_after(&mut self, after: u64) {
+        self.background.set_after(after);
+        self.settings.background_after = after;
+        if let Err(error) = self.session.save_settings(&self.settings) {
+            self.say(
+                Level::Error,
+                &format!("arko: could not save the session's settings: {error}"),
+            );
+        }
+        let note = match after {
+            0 => format!(
+                "From now on, shell commands no longer move to the background on their own: each runs until it finishes or timeout_seconds passes, which now defaults to {}.",
+                shell::default_timeout(0)
+            ),
+            after => format!(
+                "From now on, a shell command still running after {} moves to the background, where it goes on as a job: the result gives its job ID and output so far, and a terminal update tells you when it finishes. timeout_seconds now defaults to {}.",
+                shell::background_after_words(after),
+                shell::default_timeout(after)
+            ),
+        };
+        self.tell_agents(&note);
+    }
+
     /// `/exit` quits; with workers running, the first one only warns.
     fn may_exit(&mut self) -> bool {
         let running = self.crew.as_ref().map_or(0, |crew| crew.running().len());
@@ -2621,9 +2736,16 @@ impl Harness {
         let resumes = !matches!(prompt, Prompt::Recover)
             && matches!(&self.conversation, Conversation::Stopped(run) if run.restart != Restart::Recover);
         let news_turn = matches!(prompt, Prompt::News);
+        let jobs_turn = matches!(prompt, Prompt::Jobs);
         let message = self.compose(prompt);
         if news_turn {
             self.say(Level::Info, "  ⇠ the workers' news goes to the agent");
+        }
+        if jobs_turn {
+            self.say(
+                Level::Info,
+                "  ⇠ a background job finished: its update goes to the agent",
+            );
         }
         if resumes {
             self.say(
@@ -2675,7 +2797,11 @@ impl Harness {
                             }
                             continue;
                         }
-                        Event::Woken => continue,
+                        Event::Woken | Event::Finished(_) => continue,
+                        Event::Input(Some(Input::Background(agent))) => {
+                            self.move_to_background(&agent);
+                            continue;
+                        }
                         Event::Input(Some(Input::Line(line))) => {
                             (input.coalesce(line).await, Source::Terminal)
                         }
@@ -2784,6 +2910,9 @@ impl Harness {
             }
         };
         self.flush_printer().await;
+        // The jobs that finished meanwhile told the agent as it worked,
+        // unless an update came during its last request (below).
+        let finished = input.drain_finished();
         let outcome = outcome.unwrap_or_else(|error| {
             Err(WorkflowError::Channel(format!(
                 "the turn's task failed: {error}"
@@ -2804,6 +2933,11 @@ impl Harness {
                 }
                 self.feed.reply(&result.summary);
                 self.keep_unread(&notes, &workflow);
+                // Its task keeps that update for the next turn, which the
+                // job starts as if it finished now.
+                input.late = finished
+                    .into_iter()
+                    .find(|job| waits_with(&result.task, job));
                 self.conversation = Conversation::Answered(result);
                 self.track_conversations();
                 TurnEnd::Answered
@@ -2872,6 +3006,68 @@ impl Harness {
         }
     }
 
+    /// While the main agent's conversation waits for a message, a background
+    /// job of its that finished starts a turn of it: the job's terminal
+    /// update reaches the agent as the turn starts. (One that finishes while
+    /// the agent works reaches it as a note.)
+    async fn deliver_finished(
+        &mut self,
+        finished: arko_agents::terminal::JobFinished,
+        input: &mut Inputs,
+    ) -> News {
+        let run = match &self.conversation {
+            Conversation::New => return News::Done,
+            Conversation::Answered(result) => result.agent_run_id,
+            Conversation::Stopped(run) => run.result.agent_run_id,
+        };
+        if finished.owner != run {
+            return News::Done;
+        }
+        if !matches!(self.conversation, Conversation::Answered(_)) {
+            self.say(
+                Level::Info,
+                "  (a background job finished: its update goes with your next message)",
+            );
+            return News::Waiting;
+        }
+        // Others that finished meanwhile go with it.
+        input.drain_finished();
+        match self.turn(Prompt::Jobs, input).await {
+            TurnEnd::Answered => News::Done,
+            TurnEnd::Exit => News::Exit,
+            TurnEnd::Stopped => News::Stopped,
+            TurnEnd::Failed => News::Failed,
+        }
+    }
+
+    /// Ctrl+B: moves the shell command `agent` runs (the main agent, or a
+    /// worker by its ID) to the background at once.
+    fn move_to_background(&self, agent: &str) {
+        let workers = self.workflow().subagents();
+        // The runs that aren't workers' are the main agent's.
+        let runs: Vec<uuid::Uuid> = self
+            .background
+            .running()
+            .into_iter()
+            .filter(
+                |run| match workers.iter().find(|worker| worker.run_id == *run) {
+                    Some(worker) => worker.handle == agent,
+                    None => agent == remote::MAIN_AGENT,
+                },
+            )
+            .collect();
+        let moved: usize = runs
+            .into_iter()
+            .map(|run| self.background.move_run(run))
+            .sum();
+        if moved == 0 {
+            self.say(
+                Level::Info,
+                "  No command is running to move to the background.",
+            );
+        }
+    }
+
     /// Without a terminal (with -p, or input from a pipe), Arko waits for
     /// the workers before it ends: their news goes to the agent as it
     /// comes. Returns how the last turn ended.
@@ -2907,8 +3103,14 @@ impl Harness {
             }
             match input.next_event(true).await {
                 Event::Woken => {}
+                Event::Finished(finished) => {
+                    if let News::Exit = self.deliver_finished(finished, input).await {
+                        return TurnEnd::Exit;
+                    }
+                }
                 Event::Question(question) => drop(question),
                 Event::Input(Some(Input::Line(_))) => {}
+                Event::Input(Some(Input::Background(agent))) => self.move_to_background(&agent),
                 Event::Remote(Action::Message(_) | Action::Answer { .. }) => {
                     self.feed.notice(
                         Level::Warn,
@@ -2932,10 +3134,11 @@ impl Harness {
     /// arko injects worker news from its mailbox when the run continues.
     /// Recovery keeps the existing prompt.
     fn compose(&mut self, prompt: Prompt) -> String {
+        let jobs = matches!(prompt, Prompt::Jobs);
         let message = match prompt {
             Prompt::Recover => return String::new(),
             Prompt::User(message) => Some(message),
-            Prompt::News => None,
+            Prompt::News | Prompt::Jobs => None,
         };
         let mut parts = Vec::new();
         if matches!(self.conversation, Conversation::New)
@@ -2988,6 +3191,9 @@ impl Harness {
         }
         if let Some(notice) = &self.unoffered {
             parts.push(format!("# Session capabilities\n\n{notice}"));
+        }
+        if jobs {
+            parts.push("A background job of yours finished after your last turn ended: its terminal update follows. (Arko started this turn for it. The user hasn't written.)".to_string());
         }
         match message {
             Some(message) if parts.is_empty() => message,
@@ -3175,7 +3381,7 @@ fn place(link: &remote::Link) -> String {
 
 /// The commands that change a setting while the session runs, which take
 /// an argument: `/outside`, `/model`, `/handover`, `/handover-at`, `/keys`.
-const LIVE_COMMANDS: [&str; 8] = [
+const LIVE_COMMANDS: [&str; 9] = [
     "/outside",
     "/model",
     "/handover",
@@ -3184,7 +3390,24 @@ const LIVE_COMMANDS: [&str; 8] = [
     "/text-replies",
     "/extra-rules",
     "/project-instructions",
+    "/background-after",
 ];
+
+/// What the user is told of when shell commands move to the background,
+/// after `after` seconds (0: never).
+fn background_after_text(after: u64) -> String {
+    match after {
+        0 => format!(
+            "Shell commands stay in the foreground until they finish, and timeout_seconds defaults to {} s.",
+            shell::default_timeout(0)
+        ),
+        after => format!(
+            "A shell command still running after {} moves to the background, where it goes on as a job, and timeout_seconds defaults to {} s.",
+            shell::background_after_words(after),
+            shell::default_timeout(after)
+        ),
+    }
+}
 
 /// What the user is told of a handover asked for, or of a compaction when
 /// the main agent `compacts` in Claude Code.
@@ -3227,6 +3450,12 @@ struct Inputs {
     woken: Option<mpsc::UnboundedReceiver<()>>,
     /// What the remote page sends.
     remote: mpsc::UnboundedReceiver<Action>,
+    /// The terminal's jobs that finish in the background; `None` with -p,
+    /// where they wake no one.
+    finished: Option<tokio::sync::broadcast::Receiver<arko_agents::terminal::JobFinished>>,
+    /// A job that finished during the agent's last turn, too late for it
+    /// to read the update (see `waits_with`).
+    late: Option<arko_agents::terminal::JobFinished>,
 }
 
 /// What [`Inputs::next_event`] returns.
@@ -3237,22 +3466,28 @@ enum Event {
     Question(Question),
     /// The crew woke Arko up.
     Woken,
+    /// A job finished in the background.
+    Finished(arko_agents::terminal::JobFinished),
     /// The remote page sent something.
     Remote(Action),
 }
 
 impl Inputs {
     /// The next input, question, action from the remote page, or (when
-    /// `woken`) wake-up; cancel-safe.
+    /// `woken`) wake-up or job finished; cancel-safe.
     async fn next_event(&mut self, woken: bool) -> Event {
         if let Some(input) = self.pending.take() {
             return Event::Input(Some(input));
+        }
+        if woken && let Some(job) = self.late.take() {
+            return Event::Finished(job);
         }
         tokio::select! {
             input = self.receiver.recv() => Event::Input(input),
             Some(question) = self.questions.recv() => Event::Question(question),
             Some(action) = self.remote.recv() => Event::Remote(action),
             () = wake(&mut self.woken), if woken => Event::Woken,
+            finished = job_finished(&mut self.finished), if woken => Event::Finished(finished),
         }
     }
 
@@ -3261,6 +3496,22 @@ impl Inputs {
         if let Some(woken) = &mut self.woken {
             while woken.try_recv().is_ok() {}
         }
+    }
+
+    /// Forgets the jobs that finished so far, and returns them: their
+    /// updates reached the agent, or go with the turn starting.
+    fn drain_finished(&mut self) -> Vec<arko_agents::terminal::JobFinished> {
+        let mut jobs: Vec<_> = self.late.take().into_iter().collect();
+        if let Some(finished) = &mut self.finished {
+            loop {
+                match finished.try_recv() {
+                    Ok(job) => jobs.push(job),
+                    Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => continue,
+                    Err(_) => break,
+                }
+            }
+        }
+        jobs
     }
 
     /// A pasted block arrives as several lines in quick succession (where
@@ -3280,6 +3531,37 @@ impl Inputs {
         }
         text
     }
+}
+
+/// The next job that finishes in the background; never, without a
+/// terminal to hear from. (Missed ones are told by the next: a turn they
+/// start gets all their updates.)
+async fn job_finished(
+    finished: &mut Option<tokio::sync::broadcast::Receiver<arko_agents::terminal::JobFinished>>,
+) -> arko_agents::terminal::JobFinished {
+    if let Some(receiver) = finished {
+        loop {
+            match receiver.recv().await {
+                Ok(job) => return job,
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            }
+        }
+        *finished = None;
+    }
+    std::future::pending().await
+}
+
+/// Whether the terminal update of `job` came while the agent made its last
+/// request, too late for it to read: its task keeps it for the next turn.
+/// shortcut: misses an update the turn's runtime ended before it was sent
+/// (it goes with the next message), upgrade with a TerminalManager query
+/// if that shows up.
+fn waits_with(task: &arko_agents::Task, job: &arko_agents::terminal::JobFinished) -> bool {
+    let id = job.job_id.to_string();
+    task.pending_context_injections
+        .iter()
+        .any(|content| content.starts_with("Terminal update:") && content.contains(&id))
 }
 
 /// The crew's next wake-up; never, without a crew.
@@ -3324,6 +3606,39 @@ struct Gauges {
     /// Which of the project's instruction files the agents get, and whether
     /// workers do, as the harness last published them.
     project: Mutex<(project::Files, bool)>,
+    /// When the shell's commands move to the background, and those running.
+    background: Arc<shell::Background>,
+}
+
+impl Gauges {
+    /// The agents running a shell command, as the clients name them:
+    /// [`remote::MAIN_AGENT`], or a worker's ID.
+    fn commands_running(&self) -> Vec<String> {
+        let running = self.background.running();
+        if running.is_empty() {
+            return Vec::new();
+        }
+        let workers = lock(&self.workflow)
+            .as_ref()
+            .map(|workflow| workflow.subagents())
+            .unwrap_or_default();
+        // The runs that aren't workers' are the main agent's.
+        let mut agents: Vec<String> = running
+            .into_iter()
+            .map(|run| {
+                workers
+                    .iter()
+                    .find(|worker| worker.run_id == run)
+                    .map_or_else(
+                        || remote::MAIN_AGENT.to_string(),
+                        |worker| worker.handle.clone(),
+                    )
+            })
+            .collect();
+        agents.sort();
+        agents.dedup();
+        agents
+    }
 }
 
 impl remote::Meter for Gauges {
@@ -3350,7 +3665,9 @@ impl remote::Meter for Gauges {
                 extra_rules: *lock(&self.extra_rules),
                 project_instructions,
                 worker_project_instructions,
+                background_after: self.background.after().map_or(0, |after| after.as_secs()),
             },
+            commands: self.commands_running(),
             models: {
                 let mut models = lock(&self.models).clone();
                 models.reachable = self.keys.reachable();
@@ -3438,6 +3755,14 @@ mod tests {
         include!("live_tests.rs");
     }
 
+    /// The end-to-end tests of commands moving to the background, in their
+    /// own file. Most run only on Unix.
+    #[cfg_attr(not(unix), allow(dead_code))]
+    mod background {
+        use super::*;
+        include!("background_tests.rs");
+    }
+
     /// `/model`'s end-to-end tests, in their own file.
     mod model {
         use super::*;
@@ -3484,6 +3809,25 @@ mod tests {
     mod request_sizes {
         use super::*;
         include!("request_size_tests.rs");
+    }
+
+    #[test]
+    fn commands_move_to_the_background_unless_with_p() {
+        let args = |line: &[&str]| {
+            Args::try_parse_from(std::iter::once("arko").chain(line.iter().copied())).unwrap()
+        };
+        assert_eq!(background_after_for(&args(&[]), 600), 600);
+        assert_eq!(background_after_for(&args(&["-c"]), 90), 90);
+        assert_eq!(background_after_for(&args(&["-p", "hi"]), 600), 0);
+        assert_eq!(
+            background_after_for(&args(&["-p", "hi", "--background-after", "90s"]), 600),
+            90
+        );
+        assert_eq!(
+            background_after_for(&args(&["--background-after", "off"]), 600),
+            0
+        );
+        assert!(Args::try_parse_from(["arko", "--background-after", "soon"]).is_err());
     }
 
     #[test]
@@ -3839,6 +4183,7 @@ mod tests {
             extra_rules: Default::default(),
             project_instructions: Default::default(),
             worker_project_instructions: false,
+            background_after: 0,
         };
         let agent_settings = AgentSettings {
             main: &luna,
@@ -3892,6 +4237,7 @@ mod tests {
         let (input_sender, receiver) = mpsc::unbounded_channel();
         let (remote_actions, remote_input) = mpsc::unbounded_channel();
         let outside = Arc::new(outside::Outside::new(false, Vec::new(), workspace.clone()));
+        let background = shell::Background::new(0);
         let handover = Arc::new(handover::Handover::new(
             Arc::default(),
             None,
@@ -3910,6 +4256,7 @@ mod tests {
             text_replies: Default::default(),
             extra_rules: Default::default(),
             project: Default::default(),
+            background: background.clone(),
         });
         let mut harness = Harness {
             settings,
@@ -3951,6 +4298,7 @@ mod tests {
             gauges,
             outside,
             handover,
+            background,
         };
         harness.open(false).unwrap();
         let inputs = Inputs {
@@ -3959,6 +4307,8 @@ mod tests {
             questions,
             woken: Some(woken),
             remote: remote_input,
+            finished: None,
+            late: None,
         };
         (harness, inputs, input_sender)
     }
@@ -4880,6 +5230,7 @@ mod tests {
         let shell = Shell::detect(WindowsShell::Cmd);
         let managers = Managers::open(&harness.session, &shell).unwrap();
         harness.tools = managers.tools(&shell, harness.handover.runs());
+        harness.background = managers.background.clone();
         harness.outside = Arc::new(outside::Outside::new(
             harness.settings.allow_outside_workspace,
             managers.list(),

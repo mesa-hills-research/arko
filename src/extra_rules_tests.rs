@@ -90,6 +90,7 @@ fn the_choice_is_saved_with_the_session_and_old_sessions_load_with_it_off() {
         extra_rules: ExtraRules::Small,
         project_instructions: Default::default(),
         worker_project_instructions: false,
+        background_after: 0,
     };
     let file = session.dir.join("session.json");
     let saved = || -> serde_json::Value {

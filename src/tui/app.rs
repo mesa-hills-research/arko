@@ -592,6 +592,8 @@ impl App {
         }
         // Keys that work whatever is typed.
         match key.code {
+            // (Else back a character, as in readline.)
+            KeyCode::Char('b') if ctrl && self.command_running() => return self.move_command(),
             KeyCode::Char('c') if ctrl => return self.interrupt(),
             KeyCode::Char('o') if ctrl => return self.cycle_view(),
             KeyCode::Char('t') if ctrl => return self.focus_list(),
@@ -783,6 +785,30 @@ impl App {
         } else if !self.transcript.following() {
             self.transcript.follow();
         }
+    }
+
+    /// Whether the agent whose transcript is shown (the main agent, or the
+    /// worker watched) runs a shell command now.
+    pub fn command_running(&self) -> bool {
+        let shown = self
+            .watching
+            .as_deref()
+            .unwrap_or(crate::remote::MAIN_AGENT);
+        self.reading.commands.iter().any(|agent| agent == shown)
+    }
+
+    /// Ctrl+B while the agent shown runs a shell command: the command moves
+    /// to the background, and the agent goes on (what is typed meanwhile
+    /// reaches it as a note, the call no longer in the way).
+    fn move_command(&mut self) {
+        let shown = self
+            .watching
+            .clone()
+            .unwrap_or_else(|| crate::remote::MAIN_AGENT.to_string());
+        // Until the status says again: a second Ctrl+B is a key again.
+        self.reading.commands.retain(|agent| *agent != shown);
+        self.effects.push(Effect::Input(Input::Background(shown)));
+        self.say("Moved to the background");
     }
 
     /// Ctrl+C: stops the turn; else clears the box; else, pressed twice,
@@ -1140,6 +1166,9 @@ impl App {
         if commands::find("/handover-at 200k").is_some() {
             rows.push(SettingsRow::Handover);
         }
+        if commands::find("/background-after 10m").is_some() {
+            rows.push(SettingsRow::Background);
+        }
         if commands::find("/text-replies on").is_some() {
             rows.push(SettingsRow::Replies);
         }
@@ -1300,6 +1329,22 @@ impl App {
                         self.send(&format!("/handover-at {}k", size / 1000));
                     }
                 }
+                SettingsRow::Background => {
+                    // The next step down (to off) or up.
+                    let now = self.background_after();
+                    let steps = super::overlay::BACKGROUND_STEPS;
+                    let next = if step < 0 {
+                        steps.iter().rev().find(|after| **after < now)
+                    } else {
+                        steps.iter().find(|after| **after > now)
+                    };
+                    if let Some(after) = next {
+                        self.send(&format!(
+                            "/background-after {}",
+                            crate::shell::shown_background_after(*after)
+                        ));
+                    }
+                }
                 SettingsRow::Replies => {
                     let on = !self.text_replies();
                     self.send(if on {
@@ -1416,6 +1461,12 @@ impl App {
     /// setting (like its model) stays as it is then.
     pub fn conversation_started(&self) -> bool {
         self.reading.models.started
+    }
+
+    /// After how many seconds a shell command still running moves to the
+    /// background; 0: never.
+    pub fn background_after(&self) -> u64 {
+        self.reading.settings.background_after
     }
 
     /// The handover size now.
@@ -1986,6 +2037,73 @@ pub(super) mod tests {
         assert_eq!(sent(&mut app), ["/handover-at 300k", "/handover-at 200k"]);
     }
 
+    /// Ctrl+B moves the shell command of the agent shown to the background,
+    /// the main agent's or a watched worker's. Without one it moves back a
+    /// character, as in readline.
+    #[test]
+    fn ctrl_b_moves_the_command_of_the_agent_shown() {
+        let moved = |app: &mut App| -> Vec<String> {
+            app.take_effects()
+                .into_iter()
+                .filter_map(|effect| match effect {
+                    Effect::Input(Input::Background(agent)) => Some(agent),
+                    _ => None,
+                })
+                .collect()
+        };
+        let mut app = app();
+        type_text(&mut app, "ab");
+        press(&mut app, KeyCode::Char('b'), KeyModifiers::CONTROL);
+        type_text(&mut app, "X");
+        assert_eq!(app.editor.text(), "aXb");
+        assert!(moved(&mut app).is_empty());
+
+        app.reading.commands = vec!["main".into()];
+        assert!(app.command_running());
+        press(&mut app, KeyCode::Char('b'), KeyModifiers::CONTROL);
+        assert_eq!(moved(&mut app), ["main"]);
+        assert_eq!(app.editor.text(), "aXb", "the box is left as it was");
+        // Until the status says again, a second press is a key again.
+        assert!(!app.command_running());
+
+        app.reading.commands = vec!["main".into()];
+        app.watching = Some("r1".into());
+        assert!(!app.command_running(), "the main agent's isn't shown");
+        app.reading.commands = vec!["main".into(), "r1".into()];
+        press(&mut app, KeyCode::Char('b'), KeyModifiers::CONTROL);
+        assert_eq!(moved(&mut app), ["r1"]);
+    }
+
+    /// When commands move to the background is a session setting: the row
+    /// steps through round times, down to off, with `/background-after`.
+    #[test]
+    fn the_background_row_sends_the_command() {
+        let mut app = app();
+        let rows = app.settings_rows();
+        let row = rows
+            .iter()
+            .position(|row| *row == SettingsRow::Background)
+            .unwrap();
+        let handover = rows
+            .iter()
+            .position(|row| *row == SettingsRow::Handover)
+            .unwrap();
+        assert_eq!(row, handover + 1);
+        app.overlay = Some(Overlay::Settings { row, picker: None });
+        press(&mut app, KeyCode::Right, KeyModifiers::NONE);
+        assert_eq!(sent(&mut app), ["/background-after 1m"]);
+        app.reading.settings.background_after = 600;
+        press(&mut app, KeyCode::Right, KeyModifiers::NONE);
+        press(&mut app, KeyCode::Left, KeyModifiers::NONE);
+        assert_eq!(
+            sent(&mut app),
+            ["/background-after 15m", "/background-after 5m"]
+        );
+        app.reading.settings.background_after = 60;
+        press(&mut app, KeyCode::Left, KeyModifiers::NONE);
+        assert_eq!(sent(&mut app), ["/background-after off"]);
+    }
+
     /// Text replies are a session setting: the row turns them on or off with
     /// `/text-replies`, and says what they do and whether they can change.
     #[test]
@@ -1996,12 +2114,12 @@ pub(super) mod tests {
             .iter()
             .position(|row| *row == SettingsRow::Replies)
             .unwrap();
-        let handover = app
+        let background = app
             .settings_rows()
             .iter()
-            .position(|row| *row == SettingsRow::Handover)
+            .position(|row| *row == SettingsRow::Background)
             .unwrap();
-        assert_eq!(row, handover + 1, "beside the other session settings");
+        assert_eq!(row, background + 1, "beside the other session settings");
         app.overlay = Some(Overlay::Settings { row, picker: None });
         press(&mut app, KeyCode::Right, KeyModifiers::NONE);
         assert_eq!(sent(&mut app), ["/text-replies on"]);

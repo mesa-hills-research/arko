@@ -168,6 +168,7 @@ fn the_choices_are_saved_with_the_session_and_old_sessions_load_as_they_were() {
         extra_rules: Default::default(),
         project_instructions: project::Files::Both,
         worker_project_instructions: true,
+        background_after: 0,
     };
     let file = session.dir.join("session.json");
     let saved = || -> serde_json::Value {

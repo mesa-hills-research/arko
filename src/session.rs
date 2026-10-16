@@ -74,6 +74,15 @@ pub struct Settings {
     /// False in sessions saved before workers got them.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub worker_project_instructions: bool,
+    /// After how many seconds a shell command still running moves to the
+    /// background (0: never), as `/background-after` last set it. Ten
+    /// minutes in sessions saved before it.
+    #[serde(default = "default_background_after")]
+    pub background_after: u64,
+}
+
+fn default_background_after() -> u64 {
+    crate::shell::DEFAULT_BACKGROUND_AFTER
 }
 
 impl Settings {
@@ -138,14 +147,11 @@ impl Session {
         self.dir.join("run")
     }
 
-    /// The background jobs' folder (the terminal tools).
+    /// The terminal's jobs' folder: the terminal tools' background jobs and
+    /// the `shell` tool's commands. (Sessions saved before the shell's
+    /// commands could move to the background kept those in `commands`.)
     pub fn jobs_dir(&self) -> PathBuf {
         self.dir.join("jobs")
-    }
-
-    /// The `shell` tool's commands' folder.
-    pub fn commands_dir(&self) -> PathBuf {
-        self.dir.join("commands")
     }
 
     pub fn log_file(&self) -> PathBuf {
@@ -322,6 +328,7 @@ mod tests {
             extra_rules: Default::default(),
             project_instructions: Default::default(),
             worker_project_instructions: false,
+            background_after: 0,
         }
     }
 

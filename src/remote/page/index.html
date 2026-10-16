@@ -143,6 +143,23 @@
       <p id="handover-note" class="note" hidden></p>
     </section>
 
+    <section class="group">
+      <h3>Background commands</h3>
+      <div class="setting">
+        <div class="setting-text"><span class="setting-name">Move to the background after</span><span class="setting-about">A shell command still running after this long goes on as a job, and the agent goes on with its work.</span></div>
+        <span id="background-value" class="setting-value"></span>
+      </div>
+      <details class="more" id="background-more">
+        <summary>Change</summary>
+        <form id="background-form" class="inline-form">
+          <label for="background-input">Time</label>
+          <input id="background-input" autocomplete="off" placeholder="10m or off">
+          <button class="secondary" type="submit">Set</button>
+        </form>
+      </details>
+      <p id="background-note" class="note" hidden></p>
+    </section>
+
     <section id="links-group" class="group" hidden>
       <h3>Open on another device</h3>
       <div id="links-first" class="link-card"></div>

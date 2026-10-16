@@ -86,6 +86,10 @@ pub struct Reading {
     pub workers: Option<String>,
     /// The settings a client may change (with commands).
     pub settings: LiveSettings,
+    /// The agents running a shell command now, which Ctrl+B moves to the
+    /// background: [`MAIN_AGENT`], or a worker's ID.
+    #[serde(skip)]
+    pub commands: Vec<String>,
     /// The agents' models, as `/model` changes them.
     pub models: Models,
     /// The session's conversations with the main agent, newest first, for
@@ -156,6 +160,9 @@ pub struct LiveSettings {
     pub project_instructions: crate::project::Files,
     /// Workers started from now on get the project's instructions too.
     pub worker_project_instructions: bool,
+    /// After how many seconds a shell command still running moves to the
+    /// background; 0: never.
+    pub background_after: u64,
 }
 
 /// A random token of `bytes` bytes, in URL-safe base64.

@@ -170,6 +170,7 @@ fn the_mode_is_saved_with_the_session_and_old_sessions_load_with_it_off() {
         extra_rules: Default::default(),
         project_instructions: Default::default(),
         worker_project_instructions: false,
+        background_after: 0,
     };
     session.save_settings(&settings).unwrap();
     assert!(session.load_settings().unwrap().text_replies);
