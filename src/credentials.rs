@@ -362,6 +362,89 @@ pub fn codex_auth(flag: Option<&Path>) -> Option<PathBuf> {
         .or_else(|| var(CODEX_AUTH).map(|path| expand_home(&path)))
 }
 
+/// Whether the Codex auth.json at `path` holds a ChatGPT login; else why
+/// not.
+fn check_login(path: &Path) -> Result<(), String> {
+    arko_ai::CodexAuthFile::load(path)
+        .map_err(|error| error.to_string())
+        .and_then(|auth| {
+            auth.credentials()
+                .map(|_| ())
+                .map_err(|error| format!("it holds no ChatGPT login ({error})"))
+        })
+}
+
+/// Where the ChatGPT login is read from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoginSource {
+    /// Entered in this process (the setup screen, an app's accounts).
+    Entered,
+    /// `--codex-auth`.
+    Flag,
+    /// ARKO_CODEX_AUTH, in the environment or a .env file.
+    Setting,
+    /// Codex's own (`$CODEX_HOME/auth.json`, else `~/.codex/auth.json`).
+    Default,
+}
+
+/// Whether the ChatGPT login can be used.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LoginState {
+    Ready,
+    /// There is no file there.
+    Missing,
+    /// The file is there but holds no login Arko can use: why.
+    Invalid(String),
+}
+
+/// The ChatGPT login: its Codex auth.json, where Arko takes it from, and
+/// whether it works.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChatGptLogin {
+    /// `None` when no file is set and Codex's own folder isn't known.
+    pub path: Option<PathBuf>,
+    pub source: LoginSource,
+    pub state: LoginState,
+}
+
+/// The ChatGPT login Arko uses: one entered in this process, else `flag`
+/// (`--codex-auth`), else ARKO_CODEX_AUTH, else Codex's own.
+pub fn chatgpt_login(flag: Option<&Path>) -> ChatGptLogin {
+    let (path, source) = if let Some(path) = entered(CODEX_AUTH) {
+        (Some(PathBuf::from(path)), LoginSource::Entered)
+    } else if let Some(path) = flag {
+        (Some(path.to_path_buf()), LoginSource::Flag)
+    } else if let Some(path) = var(CODEX_AUTH) {
+        (Some(expand_home(&path)), LoginSource::Setting)
+    } else {
+        (arko_ai::CodexAuthFile::default_path(), LoginSource::Default)
+    };
+    let state = match &path {
+        Some(path) if path.is_file() => match check_login(path) {
+            Ok(()) => LoginState::Ready,
+            Err(why) => LoginState::Invalid(why),
+        },
+        _ => LoginState::Missing,
+    };
+    ChatGptLogin {
+        path,
+        source,
+        state,
+    }
+}
+
+/// Uses the Codex auth.json at `path` as the ChatGPT login from now on,
+/// in this process and (saved as ARKO_CODEX_AUTH in Arko's .env) in later
+/// ones, when it holds a login; else why not.
+pub fn set_chatgpt_login(path: &Path) -> Result<ChatGptLogin, String> {
+    let path = std::path::absolute(path).map_err(|error| error.to_string())?;
+    check_login(&path).map_err(|why| format!("Could not use {}: {why}.", path.display()))?;
+    let text = path.to_string_lossy().into_owned();
+    save(&arko_dotenv()?, CODEX_AUTH, &text)?;
+    enter(CODEX_AUTH, text);
+    Ok(chatgpt_login(None))
+}
+
 /// Credentials a session can't start without.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Need {
@@ -1033,14 +1116,7 @@ fn ask_login(out: &Output, editor: &mut Editor, dotenv: &Path) -> Result<(), Str
             return Err(cancelled());
         }
         let path = std::path::absolute(expand_home(line)).unwrap_or_else(|_| line.into());
-        let checked = CodexAuthFile::load(&path)
-            .map_err(|error| error.to_string())
-            .and_then(|auth| {
-                auth.credentials()
-                    .map(|_| ())
-                    .map_err(|error| format!("it holds no ChatGPT login ({error})"))
-            });
-        match checked {
+        match check_login(&path) {
             Ok(()) => break path,
             Err(error) => out.line(&out.warn(&format!(
                 "Could not use {}: {error}. Try another path.",
@@ -1289,6 +1365,32 @@ impl Helper for Prompt {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The ChatGPT login says where Arko reads it and whether it holds a
+    /// login it can use.
+    #[test]
+    fn the_chatgpt_login_says_where_it_is_and_whether_it_works() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("auth.json");
+        let login = chatgpt_login(Some(&path));
+        assert_eq!(
+            (login.source, login.state),
+            (LoginSource::Flag, LoginState::Missing)
+        );
+        std::fs::write(&path, "{}").unwrap();
+        assert!(matches!(
+            chatgpt_login(Some(&path)).state,
+            LoginState::Invalid(_)
+        ));
+        std::fs::write(
+            &path,
+            r#"{"auth_mode": "chatgpt", "tokens": {"access_token": "access-1", "account_id": "account-1", "id_token": "id-1", "refresh_token": "refresh-1"}}"#,
+        )
+        .unwrap();
+        let login = chatgpt_login(Some(&path));
+        assert_eq!(login.path.as_deref(), Some(path.as_path()));
+        assert_eq!(login.state, LoginState::Ready);
+    }
 
     /// A session reads the nearest `.env` in its folder or a parent first,
     /// then the one beside Arko's program, then Arko's own, each once: a

@@ -96,6 +96,64 @@ struct State {
     withdrawn: Vec<Provider>,
 }
 
+/// Adds `key` (or replaces it) with `value` without a session (an app's
+/// accounts): saved in Arko's `.env` as the keys menu saves it, and used at
+/// once by the sessions open on Arko's folder `root` in this process, and
+/// by those that start.
+pub fn add(root: &std::path::Path, key: &'static Key, value: Secret) -> Outcome {
+    let value = value.reveal().trim();
+    if let Err(problem) = credentials::check_pasted(value, key) {
+        return Outcome::Failed(problem);
+    }
+    let saved = match credentials::save_key(key, value) {
+        Ok(saved) => saved,
+        Err(error) => return Outcome::Failed(capitalized(&error)),
+    };
+    log::info!("keys: {} saved", key.name);
+    share(root, key, Some(value));
+    let mut warnings: Vec<String> = credentials::prefix_note(value, key).into_iter().collect();
+    warnings.extend(saved.note);
+    Outcome::Done {
+        said: format!("Arko saved the {}.", without_article(key.what)),
+        warnings,
+    }
+}
+
+/// Removes `key` without a session, when Arko saved the one in use: from
+/// Arko's `.env`, and from the sessions open on Arko's folder `root` (each
+/// goes by the next it reads, if any).
+pub fn remove(root: &std::path::Path, key: &'static Key) -> Outcome {
+    let after = match credentials::remove_key(key) {
+        Ok(after) => after,
+        Err(error) => return Outcome::Failed(capitalized(&error)),
+    };
+    log::info!("keys: {} removed", key.name);
+    share(root, key, None);
+    let what = without_article(key.what);
+    Outcome::Done {
+        said: match &after.source {
+            Some(source) => format!(
+                "Arko removed the {what} from its .env, and now uses {}.",
+                credentials::source_text(source, after.variable)
+            ),
+            None => format!("Arko removed the {what} from its .env."),
+        },
+        warnings: Vec::new(),
+    }
+}
+
+/// Tells the sessions open on Arko's folder `root` of `key` added (`value`)
+/// or removed outside them.
+fn share(root: &std::path::Path, key: &'static Key, value: Option<&str>) {
+    credentials::announce(credentials::KeyChange {
+        root: root.to_path_buf(),
+        key,
+        value: value.map(str::to_string),
+        // (No session's keys.)
+        origin: 0,
+    });
+}
+
 impl Keys {
     /// The keys of a session whose model client is `client` (which reaches
     /// OpenAI models as `openai` says: see [`openai_way`]) and search indexes
@@ -515,6 +573,26 @@ impl crate::Harness {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A key added without a session (an app's accounts) is used at once by
+    /// the sessions open on that Arko folder.
+    #[tokio::test]
+    async fn a_key_added_without_a_session_reaches_open_sessions() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("arko");
+        let feed = remote::Feed::new("main");
+        let keys = Keys::new(Arc::new(LLMClient::new()), None, None, Some(feed));
+        keys.share(root.clone());
+        // As `add` does once the key is saved.
+        share(&root, &credentials::OPENROUTER, Some("sk-or-test"));
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while !keys.reaches(&Provider::OpenRouter) {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+    }
 
     /// A key added in one session is used at once by the others open on the
     /// same Arko folder (not by those on another), and they say so; the one
