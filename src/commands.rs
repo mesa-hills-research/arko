@@ -201,7 +201,6 @@ pub fn find(text: &str) -> Option<&'static Command> {
 
 /// The commands whose names start with `prefix` (which starts with `/`),
 /// for the menu: those of the session, and the screen's when `screen`.
-#[cfg(feature = "tui")]
 pub fn matching(prefix: &str, screen: bool) -> Vec<&'static Command> {
     COMMANDS
         .iter()
@@ -210,13 +209,11 @@ pub fn matching(prefix: &str, screen: bool) -> Vec<&'static Command> {
         .collect()
 }
 
-#[cfg(feature = "tui")]
 const ON_OFF: &[&str] = &["on", "off"];
 
 /// The words an argument may be, where they are fixed: the command, the
 /// words before the argument, and its words. The full-screen view
 /// completes them (and the arguments that depend on the session).
-#[cfg(feature = "tui")]
 const CHOICES: &[(&str, &[&str], &[&str])] = &[
     ("/view", &[], &["full", "quiet", "messages"]),
     ("/outside", &[], ON_OFF),
@@ -235,9 +232,85 @@ const CHOICES: &[(&str, &[&str], &[&str])] = &[
     ("/keys", &[], &["add", "remove"]),
 ];
 
+/// The words that may follow `before` in the arguments of the command
+/// `name`, for a front end's completion: its fixed ones, or what the session
+/// has (its workers, the keys, the web page's interfaces, the models), as
+/// its status `reading` says.
+pub fn dynamic_choices(
+    reading: &crate::remote::Reading,
+    name: &str,
+    before: &[&str],
+) -> Vec<String> {
+    let workers = || -> Vec<String> {
+        reading
+            .agents
+            .iter()
+            .map(|agent| agent.id.clone())
+            .collect()
+    };
+    match (name, before) {
+        ("/watch", []) => workers().into_iter().chain(["main".to_string()]).collect(),
+        ("/message", []) => workers(),
+        ("/stop-workers", []) => reading.workers_running.clone(),
+        ("/keys", ["add" | "remove"]) => crate::credentials::KEYS
+            .iter()
+            .map(|key| key.id.to_string())
+            .collect(),
+        ("/remote", ["qr"]) => {
+            let mut names: Vec<String> = reading
+                .page
+                .iter()
+                .flat_map(|page| page.links.iter())
+                .filter_map(|link| link.interface.clone())
+                .collect();
+            names.dedup();
+            names
+        }
+        ("/model", words) => model_choices(&reading.models, words),
+        (name, words) => choices(name, words)
+            .iter()
+            .map(|word| word.to_string())
+            .collect(),
+    }
+}
+
+/// `/model`'s words: `worker`, the models the picker offers, `main` for the
+/// workers, then the efforts the model takes.
+fn model_choices(models: &crate::remote::Models, words: &[&str]) -> Vec<String> {
+    let (workers, words) = match words {
+        ["worker" | "workers", rest @ ..] => (true, rest),
+        _ => (false, words),
+    };
+    let names =
+        || crate::models::names(models, |name| crate::models::needs(&models.reachable, name));
+    match words {
+        // The main agent keeps its model once the conversation starts.
+        [] if !workers && models.started => {
+            if models.has_workers {
+                vec!["worker".into()]
+            } else {
+                Vec::new()
+            }
+        }
+        [] if workers => std::iter::once("main".to_string()).chain(names()).collect(),
+        [] => names()
+            .into_iter()
+            .chain(models.has_workers.then(|| "worker".to_string()))
+            .collect(),
+        [model] if *model != "main" => crate::providers::resolve_model(model)
+            .map(|model| {
+                crate::providers::efforts(&model)
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect()
+            })
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    }
+}
+
 /// The fixed words that may follow `before` in the arguments of the
 /// command `name`.
-#[cfg(feature = "tui")]
 pub fn choices(name: &str, before: &[&str]) -> &'static [&'static str] {
     CHOICES
         .iter()
@@ -258,6 +331,48 @@ pub fn help_lines() -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An app completes a command's arguments from the session's status:
+    /// its workers, those running, the web page's interfaces, the models.
+    #[test]
+    fn choices_come_from_the_status() {
+        use crate::remote::{AgentStatus, Link, LinkKind, Page, Reading};
+        let agent = |id: &str| AgentStatus {
+            id: id.into(),
+            context_tokens: None,
+            context_window: None,
+            handover_at: None,
+            compacts: false,
+        };
+        let mut reading = Reading {
+            agents: vec![agent("r1"), agent("r2")],
+            workers_running: vec!["r2".into()],
+            ..Reading::default()
+        };
+        reading.page = Some(Page {
+            addr: "0.0.0.0:8765".parse().unwrap(),
+            links: vec![Link {
+                url: "http://192.168.1.2:8765/#key=k".into(),
+                interface: Some("eth0".into()),
+                kind: LinkKind::Lan,
+                loopback: false,
+            }],
+            note: None,
+        });
+        reading.models.has_workers = true;
+        assert_eq!(
+            dynamic_choices(&reading, "/watch", &[]),
+            ["r1", "r2", "main"]
+        );
+        assert_eq!(dynamic_choices(&reading, "/message", &[]), ["r1", "r2"]);
+        assert_eq!(dynamic_choices(&reading, "/stop-workers", &[]), ["r2"]);
+        assert_eq!(dynamic_choices(&reading, "/remote", &["qr"]), ["eth0"]);
+        assert!(dynamic_choices(&reading, "/keys", &["add"]).contains(&"anthropic".to_string()));
+        let workers = dynamic_choices(&reading, "/model", &["worker"]);
+        assert_eq!(workers.first().map(String::as_str), Some("main"));
+        assert!(dynamic_choices(&reading, "/model", &["opus"]).contains(&"high".to_string()));
+        assert_eq!(dynamic_choices(&reading, "/outside", &[]), ["on", "off"]);
+    }
 
     #[test]
     fn only_whole_commands_are_commands() {

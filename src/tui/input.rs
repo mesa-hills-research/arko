@@ -2,19 +2,16 @@
 //! (kept in Arko's `history.txt`, in the line editor's format, so both
 //! front ends share it), and long pastes folded into chips.
 
-use std::path::PathBuf;
-
 use ratatui::style::Style;
 use ratatui::text::Span;
 
 use super::wrap::char_width;
+pub use crate::history::History;
 
 /// A paste of more lines than this (or more characters) is a chip: the box
 /// grows to about this many lines.
 const CHIP_LINES: usize = 8;
 const CHIP_CHARS: usize = 2000;
-/// The history kept, as the line editor keeps it.
-const HISTORY_SIZE: usize = 1000;
 /// Chips are characters of the supplementary private use area, from here.
 const CHIP_BASE: u32 = 0xF0000;
 
@@ -541,94 +538,6 @@ impl Editor {
             })
             .collect()
     }
-}
-
-/// The messages sent before, oldest first, in the line editor's file.
-pub struct History {
-    path: Option<PathBuf>,
-    entries: Vec<String>,
-}
-
-impl History {
-    /// The history in `path` (none yet is an empty one).
-    pub fn load(path: Option<PathBuf>) -> Self {
-        let entries = path
-            .as_ref()
-            .and_then(|path| std::fs::read_to_string(path).ok())
-            .map(|text| parse(&text))
-            .unwrap_or_default();
-        Self { path, entries }
-    }
-
-    /// Adds `entry` (not a repeat of the last), and saves the history.
-    fn add(&mut self, entry: &str) {
-        if entry.trim().is_empty() || self.entries.last().is_some_and(|last| last == entry) {
-            return;
-        }
-        self.entries.push(entry.to_string());
-        let extra = self.entries.len().saturating_sub(HISTORY_SIZE);
-        self.entries.drain(..extra);
-        self.save();
-    }
-
-    /// Saves it as the line editor does (rustyline's version 2 format:
-    /// line breaks and backslashes escaped), readable by the user only.
-    fn save(&self) {
-        let Some(path) = &self.path else {
-            return;
-        };
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        let mut text = String::from("#V2\n");
-        for entry in &self.entries {
-            text.push_str(&entry.replace('\\', "\\\\").replace('\n', "\\n"));
-            text.push('\n');
-        }
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create(true).truncate(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        if let Ok(mut file) = options.open(path) {
-            use std::io::Write;
-            let _ = file.write_all(text.as_bytes());
-        }
-    }
-}
-
-/// The entries of a history file: version 2 (escaped) or the older plain
-/// one.
-fn parse(text: &str) -> Vec<String> {
-    let mut lines = text.lines();
-    let v2 = text.starts_with("#V2");
-    if v2 {
-        lines.next();
-    }
-    lines
-        .filter(|line| !line.is_empty())
-        .map(|line| {
-            if !v2 {
-                return line.to_string();
-            }
-            let mut entry = String::new();
-            let mut chars = line.chars();
-            while let Some(c) = chars.next() {
-                if c == '\\' {
-                    match chars.next() {
-                        Some('n') => entry.push('\n'),
-                        Some(other) => entry.push(other),
-                        None => {}
-                    }
-                } else {
-                    entry.push(c);
-                }
-            }
-            entry
-        })
-        .collect()
 }
 
 #[cfg(test)]

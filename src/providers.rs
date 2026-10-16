@@ -713,7 +713,6 @@ pub fn efforts_text(model: &Model) -> String {
 
 /// A group of the models `/model` offers: one way to reach them, and what
 /// it needs when that isn't there.
-#[cfg(feature = "tui")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelGroup {
     /// The way, as the picker heads it: "Claude Code, on your Claude plan".
@@ -730,7 +729,6 @@ pub struct ModelGroup {
 /// there, and `openai_auth` how OpenAI models are reached. `current` (the
 /// agents' models now) are listed in their group when the list leaves
 /// them out.
-#[cfg(feature = "tui")]
 pub fn model_menu(
     needs: impl Fn(&str) -> Option<String>,
     openai_auth: Option<OpenAiAuth>,

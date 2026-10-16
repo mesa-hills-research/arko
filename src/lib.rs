@@ -20,7 +20,7 @@ mod agents;
 mod claude_code;
 #[cfg(feature = "tui")]
 mod cli;
-mod commands;
+pub mod commands;
 mod context;
 mod conversations;
 mod credentials;
@@ -30,6 +30,7 @@ mod engine;
 mod glyphs;
 mod handover;
 mod harness;
+pub mod history;
 mod index;
 mod inputs;
 mod keys;
@@ -39,12 +40,13 @@ mod message;
 #[cfg(any(test, feature = "testing"))]
 mod mock_model;
 mod model_command;
+pub mod models;
 mod options;
 mod outside;
 mod project;
 mod prompter;
 mod providers;
-mod remote;
+pub mod remote;
 #[cfg(test)]
 mod remote_demo;
 mod session;
@@ -65,9 +67,15 @@ mod ui;
 
 use std::sync::Mutex;
 
+pub use crate::agents::{Effort, ExtraRules};
 #[cfg(feature = "tui")]
 pub use crate::cli::cli_main;
 pub use crate::credentials::{Env, Need};
+pub use crate::keys::Keys;
+pub use crate::project::Files as ProjectFiles;
+pub use crate::providers::OpenAiAuth;
+pub use crate::shell::WindowsShell;
+pub use crate::ui::{Attachment, Banner, Input, Message, QuitAsk};
 
 /// API keys and logins, for an app's accounts page (no session needed).
 pub mod accounts {
