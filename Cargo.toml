@@ -7,6 +7,11 @@ description = "A general-purpose agent for the terminal, built on arko_workflows
 license = "MIT OR Apache-2.0"
 publish = false
 
+[lib]
+path = "src/lib.rs"
+# No examples in the docs to run.
+doctest = false
+
 [[bin]]
 name = "arko"
 path = "src/main.rs"
