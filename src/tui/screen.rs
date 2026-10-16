@@ -629,6 +629,30 @@ mod tests {
         );
     }
 
+    /// The input box moves a word that crosses its edge whole to the next
+    /// line, and the cursor is drawn after it.
+    #[test]
+    fn the_input_box_wraps_whole_words_with_the_cursor_after_them() {
+        let mut app = app();
+        for c in "Please explain the Methodology".chars() {
+            app.editor.insert(c);
+        }
+        let mut terminal = Terminal::new(TestBackend::new(30, 12)).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        let row = |y: u16| {
+            (0..30)
+                .map(|x| buffer[(x, y)].symbol().to_string())
+                .collect::<String>()
+                .trim_end()
+                .to_string()
+        };
+        assert_eq!(row(9), " › Please explain the");
+        assert_eq!(row(10), "   Methodology");
+        let cursor = terminal.get_cursor_position().unwrap();
+        assert_eq!((cursor.x, cursor.y), (14, 10));
+    }
+
     /// The agent list under the input: the main agent, five of the workers
     /// running and how many more; a worker that ended isn't in it.
     #[test]
