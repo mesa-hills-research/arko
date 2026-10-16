@@ -4,9 +4,11 @@
 
 use std::time::Duration;
 
+use arko_workflows::prelude::*;
 use arko_workflows::user_input::{UserInputHandler, UserInputRequest};
 use tokio::sync::{mpsc, oneshot};
 
+use crate::agents::MAIN;
 use crate::remote::Action;
 use crate::ui::Input;
 
@@ -122,6 +124,24 @@ pub(crate) async fn job_finished(
         *finished = None;
     }
     std::future::pending().await
+}
+
+/// The notes of the turn (`notes`, with their sequence numbers) that the
+/// main agent's runs never read.
+pub(crate) fn unread_notes(notes: &[(u64, String)], workflow: &Workflow) -> Vec<String> {
+    let given = workflow
+        .result()
+        .agent_results
+        .iter()
+        .filter(|run| run.agent_name == MAIN)
+        .map(|run| workflow.notes_given(run.agent_run_id))
+        .max()
+        .unwrap_or(0);
+    notes
+        .iter()
+        .filter(|(seq, _)| *seq > given)
+        .map(|(_, text)| text.clone())
+        .collect()
 }
 
 /// Whether the terminal update of `job` came while the agent made its last

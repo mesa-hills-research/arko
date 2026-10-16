@@ -46,6 +46,8 @@ fn fruit_model(bodies: Bodies, hold: Arc<Notify>) -> Arc<crate::mock_model::Resp
                 complete("m5", "Green.")
             } else if body.contains("Which fruit?") {
                 complete("m4", "Apples.")
+            } else if body.contains("What I typed during your last turn") {
+                complete("m3", "Metric noted.")
             } else if body.contains("Pears are green.") {
                 hold.notified().await;
                 complete("m2", "Pears noted.")
@@ -59,9 +61,10 @@ fn fruit_model(bodies: Bodies, hold: Arc<Notify>) -> Arc<crate::mock_model::Resp
 /// At the prompt: a conversation, `/new` and another, then `/resume` lists
 /// both and `/resume 1` goes back to the first. Its history shows again,
 /// and the model's next request has that conversation and not the other.
-/// What the user typed during the other's last turn, which its agent
-/// didn't read, stays with it: it doesn't reach the first conversation,
-/// and goes with the next message once the user goes back to the other.
+/// What the user typed during the other's last turn, which the user
+/// stopped before its agent read it, stays with it: it doesn't reach the
+/// first conversation, and goes with the next message once the user goes
+/// back to the other.
 #[tokio::test]
 async fn resume_goes_back_to_the_conversation_new_left() {
     let temp = tempfile::tempdir().unwrap();
@@ -88,8 +91,8 @@ async fn resume_goes_back_to_the_conversation_new_left() {
                 .await;
             say("Use the metric system.");
             until(|| has(&feed, "user", "Use the metric system.", "note")).await;
-            hold.notify_one();
-            until(|| has(&feed, "reply", "Pears noted.", "")).await;
+            sender.send(Input::Interrupt).unwrap();
+            until(|| has(&feed, "notice", "Stopped.", "")).await;
             say("/resume");
             until(|| {
                 texts(&feed, "output")
@@ -102,7 +105,15 @@ async fn resume_goes_back_to_the_conversation_new_left() {
             say("Which fruit?");
             until(|| has(&feed, "reply", "Apples.", "")).await;
             say("/resume 2");
-            until(|| count(&feed, "notice", "Your next message continues it.") == 2).await;
+            until(|| {
+                has(
+                    &feed,
+                    "notice",
+                    "Its last turn was stopped. Your next message continues it.",
+                    "",
+                )
+            })
+            .await;
             say("And the colour?");
             until(|| has(&feed, "reply", "Green.", "")).await;
             sender.send(Input::Eof).unwrap();
@@ -146,6 +157,10 @@ async fn resume_goes_back_to_the_conversation_new_left() {
 
     // Back in the second: what the user typed during its last turn comes
     // with the next message, once.
+    assert!(says(
+        &harness.feed,
+        "(what you typed during its last turn, which the agent didn't read, goes with your next message)"
+    ));
     let second = request_with(&bodies, "And the colour?");
     assert!(second.contains("Pears are green."), "{second}");
     assert!(!second.contains("Which fruit?"), "{second}");
@@ -154,9 +169,10 @@ async fn resume_goes_back_to_the_conversation_new_left() {
     assert_eq!(summary(&harness), "Green.");
 }
 
-/// A line typed during a turn that ends before the agent reads it goes
-/// with the next message of the same conversation, once: not also as a
-/// note when the run continues.
+/// A line typed during a turn that ends before the agent reads it starts
+/// a turn of its own once the agent replies, and reaches the agent once:
+/// not also as a note when the run continues, nor again with the next
+/// message.
 #[tokio::test]
 async fn a_line_the_agent_did_not_read_reaches_it_once() {
     let temp = tempfile::tempdir().unwrap();
@@ -176,6 +192,7 @@ async fn a_line_the_agent_did_not_read_reaches_it_once() {
             until(|| has(&feed, "user", "Use the metric system.", "note")).await;
             hold.notify_one();
             until(|| has(&feed, "reply", "Pears noted.", "")).await;
+            until(|| has(&feed, "reply", "Metric noted.", "")).await;
             say("And the colour?");
             until(|| has(&feed, "reply", "Green.", "")).await;
             sender.send(Input::Eof).unwrap();
@@ -186,6 +203,20 @@ async fn a_line_the_agent_did_not_read_reaches_it_once() {
         .await
         .unwrap();
     let _sender = typing.await.unwrap();
+    // The turn of its own: the line once, under its heading.
+    let unread = bodies
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|body| body.contains("What I typed during your last turn"))
+        .cloned()
+        .unwrap();
+    assert!(!unread.contains("And the colour?"), "{unread}");
+    assert_eq!(
+        unread.matches("Use the metric system.").count(),
+        1,
+        "{unread}"
+    );
     let next = request_with(&bodies, "And the colour?");
     assert_eq!(next.matches("Use the metric system.").count(), 1, "{next}");
 }

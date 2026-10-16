@@ -66,6 +66,9 @@ pub enum Kind {
     User,
     /// An agent's text, as it streams.
     Text,
+    /// An agent's thinking (its reasoning, or its summary), as it streams:
+    /// clients show it folded. The user reads the agent's text, not this.
+    Thinking,
     /// The main agent's message to the user while it works, or a message a
     /// worker got (`from` says whose).
     Message,
@@ -428,8 +431,13 @@ struct State {
     main: Lane,
     workers_lane: Lane,
     next_id: u64,
-    /// The text item each agent's next chunk continues.
-    open_text: HashMap<String, u64>,
+    /// The item each agent's next chunk continues, if its kind is the
+    /// chunk's: its text, or its thinking.
+    open_text: HashMap<String, (Kind, u64)>,
+    /// The agents' thinking isn't kept (`--hide-thinking`).
+    hide_thinking: bool,
+    /// The provider's refusal of reasoning summaries was told.
+    thinking_refused: bool,
     activity: Activity,
     next_question: u64,
     turn: Option<u64>,
@@ -540,8 +548,10 @@ impl Feed {
         item.at = now_ms();
         item.turn = state.turn;
         match item.kind {
-            Kind::Text => {
-                state.open_text.insert(item.agent.clone(), item.id);
+            Kind::Text | Kind::Thinking => {
+                state
+                    .open_text
+                    .insert(item.agent.clone(), (item.kind, item.id));
             }
             // A worker's placeholder doesn't break the main agent's text.
             Kind::WorkerLine => {}
@@ -561,12 +571,14 @@ impl Feed {
         self.push(&mut state, item)
     }
 
-    /// An agent's text goes on.
-    fn append(&self, state: &mut State, agent: &str, chunk: &str) {
+    /// An agent's text (or its thinking, `kind`) goes on: in the item it
+    /// was in, else in a new one. Thinking and text don't share an item.
+    fn append(&self, state: &mut State, agent: &str, kind: Kind, chunk: &str) {
         if chunk.is_empty() {
             return;
         }
-        if let Some(id) = state.open_text.get(agent).copied()
+        if let Some((open, id)) = state.open_text.get(agent).copied()
+            && open == kind
             && state.lane(agent).0.append(id, chunk)
         {
             self.send(Update::Append {
@@ -575,7 +587,12 @@ impl Feed {
             });
             return;
         }
-        self.push(state, Item::new(Kind::Text, chunk).agent(agent));
+        self.push(state, Item::new(kind, chunk).agent(agent));
+    }
+
+    /// Whether the agents' thinking is left out (`--hide-thinking`).
+    pub fn hide_thinking(&self, hide: bool) {
+        self.lock().hide_thinking = hide;
     }
 
     /// The call `id` ended with `outcome`: its line says so, and a block
@@ -654,7 +671,13 @@ impl Feed {
                 if !main {
                     self.saw_worker(&mut state, &agent);
                 }
-                self.append(&mut state, &agent, text);
+                self.append(&mut state, &agent, Kind::Text, text);
+            }
+            AgentEvent::ReasoningChunk(text) if !state.hide_thinking => {
+                if !main {
+                    self.saw_worker(&mut state, &agent);
+                }
+                self.append(&mut state, &agent, Kind::Thinking, text);
             }
             AgentEvent::ToolCallFormatted {
                 tool_call_id,
@@ -662,6 +685,10 @@ impl Feed {
                 parameters,
             } => {
                 let Some(mut item) = render::call(tool_name, parameters) else {
+                    // A call the feed doesn't draw (`ask_user`,
+                    // `complete_task`) still ends the agent's text: the
+                    // next response's text doesn't run on into it.
+                    state.open_text.remove(&agent);
                     return;
                 };
                 if !main {
@@ -761,6 +788,12 @@ impl Feed {
                 let text =
                     format!("the reply reached the model's output limit ({output_tokens} tokens)");
                 self.push(&mut state, notice(text, Level::Warn));
+            }
+            // Once, in the main transcript: it holds for every agent.
+            AgentEvent::ReasoningSummariesRefused { .. } if !state.thinking_refused => {
+                state.thinking_refused = true;
+                let item = Item::new(Kind::Notice, crate::providers::THINKING_REFUSED);
+                self.push(&mut state, item.level(Level::Info));
             }
             AgentEvent::HandoverRequested { input_tokens } if main => {
                 let text = crate::handover::requested_text(event.agent_run_id, *input_tokens);
@@ -883,12 +916,10 @@ impl Feed {
     /// the latest of its items but for notices (an output limit reached,
     /// say) and the workers' places.
     fn streamed_reply(state: &mut State, reply: &str) -> Option<u64> {
-        let last = state
-            .main
-            .items
-            .iter()
-            .rev()
-            .find(|item| !matches!(item.kind, Kind::Notice | Kind::WorkerLine))?;
+        let last =
+            state.main.items.iter().rev().find(|item| {
+                !matches!(item.kind, Kind::Notice | Kind::WorkerLine | Kind::Thinking)
+            })?;
         (last.kind == Kind::Text && last.is_main() && last.text.trim() == reply).then_some(last.id)
     }
 
@@ -1322,6 +1353,80 @@ mod tests {
                 ("main".to_string(), "The plan is set.".to_string()),
                 ("r1".to_string(), "Looking around.".to_string()),
             ]
+        );
+    }
+
+    /// An agent's thinking streams into an item of its own, the main
+    /// agent's and a worker's: text after it starts a text item, and
+    /// thinking after text a thinking item, so the two never merge. A
+    /// reply in text still takes over the text it streamed, after
+    /// thinking. With the thinking hidden, there is none.
+    #[test]
+    fn thinking_streams_into_items_of_its_own() {
+        let thinking = |text: &str| AgentEvent::ReasoningChunk(text.into());
+        let feed = Feed::new("main");
+        feed.event(&event("main", thinking("The user asks")), None);
+        feed.event(&event("main", thinking(" about the tests.")), None);
+        feed.event(&event("main", chunk("Running them.")), None);
+        feed.event(&event("worker", thinking("Where is it?")), Some("r1"));
+        feed.event(&event("main", thinking("Then report.")), None);
+        feed.event(&event("main", chunk("All pass.")), None);
+        feed.reply("All pass.");
+        let shown: Vec<(Kind, String, String)> = items(&feed)
+            .into_iter()
+            .filter(|item| item.kind != Kind::WorkerLine)
+            .map(|item| (item.kind, item.agent, item.text))
+            .collect();
+        let item = |kind, agent: &str, text: &str| (kind, agent.to_string(), text.to_string());
+        assert_eq!(
+            shown,
+            [
+                item(Kind::Thinking, "main", "The user asks about the tests."),
+                item(Kind::Text, "main", "Running them."),
+                item(Kind::Thinking, "r1", "Where is it?"),
+                item(Kind::Thinking, "main", "Then report."),
+                item(Kind::Reply, "main", "All pass."),
+            ]
+        );
+        assert_eq!(
+            serde_json::to_value(&items(&feed)[0]).unwrap()["kind"],
+            "thinking"
+        );
+
+        let hidden = Feed::new("main");
+        hidden.hide_thinking(true);
+        hidden.event(&event("main", thinking("Hmm.")), None);
+        hidden.event(&event("main", chunk("Done.")), None);
+        let kinds: Vec<Kind> = items(&hidden).iter().map(|item| item.kind).collect();
+        assert_eq!(kinds, [Kind::Text]);
+    }
+
+    /// A call the feed doesn't draw, such as `ask_user`, still ends the
+    /// text before it: the text of the next response is an item of its own.
+    #[test]
+    fn a_call_not_drawn_still_ends_the_text_before_it() {
+        let feed = Feed::new("main");
+        feed.event(&event("main", chunk("Here are the questions:")), None);
+        feed.event(
+            &event(
+                "main",
+                AgentEvent::ToolCallFormatted {
+                    tool_call_id: Uuid::new_v4(),
+                    tool_name: arko_agents::builtins::ASK_USER_TOOL_NAME.into(),
+                    parameters: [("questions".to_string(), "Which one?".into())].into(),
+                },
+            ),
+            None,
+        );
+        feed.event(&event("main", chunk("I sent you the questions.")), None);
+        let texts: Vec<String> = items(&feed)
+            .into_iter()
+            .filter(|item| item.kind == Kind::Text)
+            .map(|item| item.text)
+            .collect();
+        assert_eq!(
+            texts,
+            ["Here are the questions:", "I sent you the questions."]
         );
     }
 

@@ -17,7 +17,7 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::agents::{MAIN, NO_LIMIT, WORKER};
 use crate::crew::Crew;
-use crate::inputs::{Asker, Event, Inputs, waits_with};
+use crate::inputs::{Asker, Event, Inputs, unread_notes, waits_with};
 use crate::remote::{Action, Delivery, Level, Source};
 use crate::session::{Session, Settings};
 use crate::shell::{Shell, ShellTool};
@@ -236,6 +236,9 @@ pub(crate) enum Prompt {
     /// A background job of the agent's finished, without a message from
     /// the user: its terminal update follows.
     Jobs,
+    /// What the user typed during the last turn, which the agent finished
+    /// before it read, without a new message.
+    Unread,
     /// A turn Arko stopped in the middle of goes on, without a message.
     Recover,
 }
@@ -2112,15 +2115,16 @@ impl Harness {
         let end = match outcome {
             Ok(result) => {
                 self.output.echo("");
-                // With -p, a reply the workers' news will follow isn't the
-                // answer.
-                if self.one_shot && self.news_coming() {
+                let unread = unread_notes(&notes, &workflow);
+                // With -p, a reply the workers' news or a turn for what the
+                // user typed will follow isn't the answer.
+                if self.one_shot && (self.news_coming() || !unread.is_empty()) {
                     self.output.line(result.summary.trim());
                 } else {
                     self.output.answer(result.summary.trim());
                 }
                 self.feed.reply(&result.summary);
-                self.keep_unread(&notes, &workflow);
+                self.keep_unread(unread, true);
                 // Its task keeps that update for the next turn, which the
                 // job starts as if it finished now.
                 input.late = finished
@@ -2132,14 +2136,14 @@ impl Harness {
             }
             Err(WorkflowError::AgentStopped { .. } | WorkflowError::Cancelled) if stopping => {
                 self.say(Level::Warn, "Stopped.");
-                self.keep_unread(&notes, &workflow);
+                self.keep_unread(unread_notes(&notes, &workflow), false);
                 self.track_conversations();
                 self.conversation = conversation_of(&workflow, self.conversations.current_run());
                 TurnEnd::Stopped
             }
             Err(error) => {
                 self.say(Level::Error, &format!("The turn failed: {error}"));
-                self.keep_unread(&notes, &workflow);
+                self.keep_unread(unread_notes(&notes, &workflow), false);
                 self.recover_after_error(&workflow);
                 TurnEnd::Failed
             }
@@ -2153,6 +2157,12 @@ impl Harness {
             if let TurnEnd::Exit = Box::pin(self.turn(Prompt::User(line), input)).await {
                 return TurnEnd::Exit;
             }
+        }
+        // What the user typed that the agent replied before reading starts
+        // a turn of its own, as the workers' news does. (After a stop or a
+        // failure it waits for the next message.)
+        if matches!(end, TurnEnd::Answered) && !self.unread.is_empty() {
+            return Box::pin(self.turn(Prompt::Unread, input)).await;
         }
         end
     }
@@ -2326,7 +2336,7 @@ impl Harness {
         let message = match prompt {
             Prompt::Recover => return String::new(),
             Prompt::User(message) => Some(message),
-            Prompt::News | Prompt::Jobs => None,
+            Prompt::News | Prompt::Jobs | Prompt::Unread => None,
         };
         let mut parts = Vec::new();
         if matches!(self.conversation, Conversation::New)
@@ -2396,28 +2406,22 @@ impl Harness {
         }
     }
 
-    /// Notes the run never read go with the next message.
-    pub(crate) fn keep_unread(&mut self, notes: &[(u64, String)], workflow: &Workflow) {
-        let given = workflow
-            .result()
-            .agent_results
-            .iter()
-            .filter(|run| run.agent_name == MAIN)
-            .map(|run| workflow.notes_given(run.agent_run_id))
-            .max()
-            .unwrap_or(0);
-        let unread: Vec<String> = notes
-            .iter()
-            .filter(|(seq, _)| *seq > given)
-            .map(|(_, text)| text.clone())
-            .collect();
-        if !unread.is_empty() {
-            self.say(
-                Level::Info,
-                "  (the agent finished before it read what you typed, so it goes with your next message)",
-            );
-            self.unread.extend(unread);
+    /// Keeps the notes the run never read for the agent: a new turn takes
+    /// them to it now (`now`, after a reply), else they go with the next
+    /// message.
+    pub(crate) fn keep_unread(&mut self, unread: Vec<String>, now: bool) {
+        if unread.is_empty() {
+            return;
         }
+        self.say(
+            Level::Info,
+            if now {
+                "  (the agent finished before it read what you typed, so a new turn takes it to the agent)"
+            } else {
+                "  (the agent finished before it read what you typed, so it goes with your next message)"
+            },
+        );
+        self.unread.extend(unread);
     }
 
     pub(crate) fn stop(&self, workflow: &Workflow) -> bool {
@@ -2826,6 +2830,7 @@ pub(crate) mod tests {
         assert_eq!(flags.worker_project_instructions, Some(false));
         assert_eq!(flags.text_replies, Some(true));
         assert!(!flags.interactive, "no terminal and no web page");
+        assert!(options(&["--hide-thinking"], true).unwrap().hide_thinking);
         let one_shot = options(&["-p", "Count the files."], true).unwrap();
         assert!(one_shot.one_shot && !one_shot.interactive);
         assert_eq!(one_shot.title.as_deref(), Some("Count the files."));
@@ -3528,9 +3533,12 @@ pub(crate) mod tests {
         let seen = workers.clone();
         let started = Arc::new(tokio::sync::Notify::new());
         let ready = started.clone();
+        let bodies: Arc<Mutex<Vec<String>>> = Arc::default();
+        let kept = bodies.clone();
         let server = ModelServer::start(Arc::new(move |_, body: String| {
             let seen = seen.clone();
             let ready = ready.clone();
+            kept.lock().unwrap().push(body.clone());
             Box::pin(async move {
                 if body.contains("You are agent run r1") {
                     if seen.fetch_add(1, Ordering::SeqCst) == 0 {
@@ -3574,6 +3582,14 @@ pub(crate) mod tests {
         ));
         assert_eq!(summary(&harness), "Worker recovery finished.");
         assert_eq!(workers.load(Ordering::SeqCst), 2);
+        // The lead isn't told that r1 stopped as Arko closed: it goes on.
+        let told = bodies.lock().unwrap().clone();
+        assert!(
+            told.iter()
+                .filter(|body| !body.contains("You are agent run r1"))
+                .all(|body| !body.contains("stopped before it finished")),
+            "{told:#?}"
+        );
         harness.crew.as_ref().unwrap().shutdown().await;
     }
 
@@ -3935,6 +3951,159 @@ pub(crate) mod tests {
         assert!(matches!(end, TurnEnd::Answered));
         assert_eq!(summary(&harness), "Indented with two spaces.");
         drop(answering.await.unwrap());
+    }
+
+    /// An OpenAI organization that isn't verified for reasoning summaries
+    /// refuses them: the request goes again without them and the turn goes
+    /// on. The session says so once, no later request asks for them, and
+    /// the main agent's saved configuration asks for none either.
+    #[tokio::test]
+    async fn refused_reasoning_summaries_are_dropped_with_one_notice() {
+        use crate::mock_model::{ModelServer, complete, tool_call};
+        let bodies: Arc<Mutex<Vec<String>>> = Arc::default();
+        let server = ModelServer::start(Arc::new({
+            let bodies = bodies.clone();
+            move |_, body: String| {
+                bodies.lock().unwrap().push(body.clone());
+                Box::pin(async move {
+                    if body.contains(r#""summary":"auto""#) {
+                        let error = serde_json::json!({"error": {
+                            "message": "Your organization must be verified to generate reasoning summaries. Please go to: https://platform.openai.com/settings/organization/general and click on Verify Organization.",
+                            "type": "invalid_request_error",
+                            "param": "reasoning.summary",
+                            "code": "unsupported_value",
+                        }})
+                        .to_string();
+                        format!(
+                            "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{error}",
+                            error.len()
+                        )
+                    } else if body.contains("Second.") {
+                        complete("m3", "Again.")
+                    } else if body.contains("call_m1") {
+                        complete("m2", "Listed.")
+                    } else {
+                        tool_call("m1", "list_files", serde_json::json!({"directory": "."}))
+                    }
+                })
+            }
+        }))
+        .await;
+        let temp = tempfile::tempdir().unwrap();
+        let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
+        for (message, reply) in [("First.", "Listed."), ("Second.", "Again.")] {
+            let end = tokio::time::timeout(
+                Duration::from_secs(30),
+                harness.turn(Prompt::User(message.into()), &mut inputs),
+            )
+            .await
+            .unwrap();
+            assert!(matches!(end, TurnEnd::Answered), "{message}");
+            assert_eq!(summary(&harness), reply);
+        }
+        harness.flush_printer().await;
+        let bodies = bodies.lock().unwrap().clone();
+        let asked = bodies
+            .iter()
+            .filter(|body| body.contains(r#""summary":"auto""#))
+            .count();
+        assert_eq!((asked, bodies.len()), (1, 4), "{bodies:#?}");
+        let told = shown(&harness.feed)
+            .into_iter()
+            .filter(|(kind, text, _)| kind == "notice" && text == providers::THINKING_REFUSED)
+            .count();
+        assert_eq!(told, 1);
+        let Conversation::Answered(result) = &harness.conversation else {
+            unreachable!()
+        };
+        let generation = &result.task.agent_config.llm_config.generation_config;
+        assert!(
+            matches!(
+                generation.reasoning,
+                Some(arko_ai::ReasoningConfig::OpenAI {
+                    include_summaries: false,
+                    ..
+                })
+            ),
+            "{:?}",
+            generation.reasoning
+        );
+    }
+
+    /// What the user types while the agent makes its last request comes
+    /// too late for the turn: once the agent replies, a new turn takes it
+    /// to the agent (once), as the workers' news starts one, and the agent
+    /// answers it.
+    #[tokio::test]
+    async fn what_the_agent_finished_before_reading_starts_a_turn() {
+        use crate::mock_model::{ModelServer, complete};
+        let bodies: Arc<Mutex<Vec<String>>> = Arc::default();
+        let release = Arc::new(tokio::sync::Notify::new());
+        let server = ModelServer::start(Arc::new({
+            let (bodies, hold) = (bodies.clone(), release.clone());
+            move |_, body: String| {
+                bodies.lock().unwrap().push(body.clone());
+                let hold = hold.clone();
+                Box::pin(async move {
+                    if body.contains("Also count the directories.") {
+                        complete("m2", "And 2 directories.")
+                    } else {
+                        hold.notified().await;
+                        complete("m1", "3 files.")
+                    }
+                })
+            }
+        }))
+        .await;
+        let temp = tempfile::tempdir().unwrap();
+        let (mut harness, mut inputs, sender) = harness(temp.path(), server.client(), true);
+        let feed = harness.feed.clone();
+        let typing = tokio::spawn(async move {
+            until(|| feed.activity().working).await;
+            sender
+                .send(Input::Line("Also count the directories.".into()))
+                .unwrap();
+            until(|| has(&feed, "user", "Also count the directories.", "note")).await;
+            release.notify_one();
+            sender
+        });
+        let end = tokio::time::timeout(
+            Duration::from_secs(30),
+            harness.turn(Prompt::User("Count the files.".into()), &mut inputs),
+        )
+        .await
+        .unwrap();
+        let _sender = typing.await.unwrap();
+        assert!(matches!(end, TurnEnd::Answered));
+        assert_eq!(summary(&harness), "And 2 directories.");
+        assert!(harness.unread.is_empty());
+        let bodies = bodies.lock().unwrap().clone();
+        assert_eq!(bodies.len(), 2, "{bodies:#?}");
+        assert!(
+            bodies[1].contains("What I typed during your last turn"),
+            "{}",
+            bodies[1]
+        );
+        assert_eq!(
+            bodies[1].matches("Also count the directories.").count(),
+            1,
+            "{}",
+            bodies[1]
+        );
+        let shown = shown(&harness.feed);
+        let said = |text: &str| {
+            shown
+                .iter()
+                .any(|(kind, shown, _)| kind == "notice" && shown.contains(text))
+        };
+        assert!(said("so a new turn takes it to the agent"), "{shown:#?}");
+        assert!(!said("goes with your next message"), "{shown:#?}");
+        let replies: Vec<&str> = shown
+            .iter()
+            .filter(|(kind, _, _)| kind == "reply")
+            .map(|(_, text, _)| text.as_str())
+            .collect();
+        assert_eq!(replies, ["3 files.", "And 2 directories."]);
     }
 
     #[test]

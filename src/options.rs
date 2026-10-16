@@ -72,7 +72,11 @@ pub struct Options {
     /// After how many seconds shell commands move to the background (0:
     /// never); `None`: the session's own, or never when one-shot.
     pub background_after: Option<u64>,
+    /// Show the agents' thinking whole from the start (a new session).
     pub show_thinking: bool,
+    /// Neither ask the models for the text of their thinking nor show it
+    /// (a new session).
+    pub hide_thinking: bool,
     /// The Codex auth file of the ChatGPT login.
     pub codex_auth: Option<PathBuf>,
     pub openai_auth: Option<OpenAiAuth>,
@@ -117,6 +121,7 @@ impl Default for Options {
             allow_outside_workspace: false,
             background_after: None,
             show_thinking: false,
+            hide_thinking: false,
             codex_auth: None,
             openai_auth: None,
             shell: None,

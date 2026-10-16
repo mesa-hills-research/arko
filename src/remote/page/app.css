@@ -448,6 +448,15 @@ details.call pre, .row.result pre {
 .row.count .failed { color: var(--error); }
 
 .row.notice { font-size: 13.5px; color: var(--muted); }
+
+.row.thinking { margin: 4px 0; font-size: 13.5px; color: var(--muted); }
+details.thinking > summary { list-style: none; cursor: pointer; display: flex; gap: 6px; min-width: 0; }
+details.thinking > summary::-webkit-details-marker { display: none; }
+details.thinking > summary .what { font-weight: 600; flex: none; }
+details.thinking > summary .first { font-style: italic; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+details.thinking[open] > summary .mark { transform: rotate(90deg); }
+details.thinking[open] > summary .first { display: none; }
+details.thinking .thinking-text { font-style: italic; margin: 4px 0 0 18px; }
 .row.notice.level-warn { color: var(--warn); }
 .row.notice.level-error { color: var(--error); }
 
