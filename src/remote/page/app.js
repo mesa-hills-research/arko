@@ -872,6 +872,7 @@
       ? 'The agents may work anywhere on this computer.'
       : 'The agents stay in ' + (info.workspace || 'the workspace') + '.';
     $('handover-value').textContent = settings.handover_at ? C.tokens(settings.handover_at) + ' tokens' : 'Not set';
+    $('background-value').textContent = settings.background_after ? duration(settings.background_after) : 'Off';
     // Text replies change only before the conversation starts.
     const replies = $('replies-switch');
     const replying = pending && pending.replies !== undefined;
@@ -883,6 +884,20 @@
       ? 'The agent ends its turn with a plain reply.'
       : 'The agent ends its turn by calling complete_task.')
       + (started ? ' It keeps this for the session.' : ' It changes before the conversation starts.');
+    // What agents on cc: models do at the handover size changes only before the conversation starts.
+    const models = (status && status.models) || {};
+    const compacting = pending && pending.compact !== undefined;
+    const compacts = compacting ? pending.compact : settings.cc_compact !== false;
+    const compact = $('cc-compact-switch');
+    $('cc-compact').hidden = ![models.main, models.workers].some((model) => String(model || '').startsWith('cc:'));
+    compact.setAttribute('aria-checked', String(compacts));
+    compact.setAttribute('aria-busy', String(Boolean(compacting)));
+    compact.disabled = started && !compacting;
+    $('cc-compact-about').textContent = (compacts
+      ? 'At the handover size, Claude Code compacts the conversation of the agents on cc: models.'
+      : 'At the handover size, the agents on cc: models write a report and go on in a fresh conversation.')
+      + (started ? ' The session keeps this.' : ' It changes before the conversation starts.');
+    for (const node of document.querySelectorAll('.cc-compacts')) node.hidden = !compacts;
     // The extra rules change only before the conversation starts.
     const choosing = pending && pending.rules !== undefined;
     const chosen = choosing ? pending.rules : (settings.extra_rules || 'off');
@@ -936,6 +951,13 @@
     }
     $('workers-more').hidden = !(status && status.workers);
     $('workers-text').textContent = (status && status.workers) || '';
+  }
+
+  /** A time in seconds as the sheet says it: `10 min`, `90 s`, `1 h`. */
+  function duration(seconds) {
+    if (seconds % 3600 === 0) return seconds / 3600 + ' h';
+    if (seconds % 60 === 0) return seconds / 60 + ' min';
+    return seconds + ' s';
   }
 
   function note(id, message, error) {
@@ -1019,6 +1041,12 @@
     command('/text-replies ' + (on ? 'on' : 'off'), 'replies-note', (settings) => Boolean(settings.text_replies) === on, { replies: on });
   });
 
+  $('cc-compact-switch').addEventListener('click', () => {
+    if (pending) return;
+    const on = !(status && status.settings && status.settings.cc_compact);
+    command('/cc-compact ' + (on ? 'on' : 'off'), 'handover-note', (settings) => Boolean(settings.cc_compact) === on, { compact: on });
+  });
+
   function chooseRules(key) {
     if (pending) return;
     const now = (status && status.settings && status.settings.extra_rules) || 'off';
@@ -1050,6 +1078,19 @@
     // Arko reads the size ("200k", "200000") and says what's wrong with it.
     command('/handover-at ' + size, 'handover-note', (settings) => settings.handover_at !== before).then((sent) => {
       if (sent) $('handover-input').value = '';
+    });
+  });
+  $('background-form').addEventListener('submit', (event) => {
+    event.preventDefault();
+    const time = $('background-input').value.trim();
+    if (!time) {
+      note('background-note', 'Give a time, such as 10m, or off.', true);
+      return;
+    }
+    const before = status && status.settings ? status.settings.background_after : 0;
+    // Arko reads the time ("90s", "10m", "off") and says what's wrong with it.
+    command('/background-after ' + time, 'background-note', (settings) => settings.background_after !== before).then((sent) => {
+      if (sent) $('background-input').value = '';
     });
   });
   $('handover-now').addEventListener('click', () => ($('handover-confirm').hidden = false));

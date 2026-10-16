@@ -1,14 +1,20 @@
 //! The `shell` tool: runs one command and returns its output once it
-//! finishes. It runs commands through its own [`TerminalManager`], so the
-//! command guard, process-group cleanup and logs are the terminal module's;
-//! long-running and interactive programs use the terminal tools instead.
+//! finishes. It runs commands as held jobs of the terminal tools'
+//! [`TerminalManager`], so the command guard, process-group cleanup and
+//! logs are the terminal module's. A command that runs too long, or that
+//! the user moves (Ctrl+B), goes on in the background as a job the
+//! terminal tools see. Interactive programs, and those meant to run on,
+//! use the terminal tools from the start.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use arko_agents::terminal::{JobState, StartOptions, TerminalError, TerminalManager};
+use arko_agents::terminal::{
+    JobState, StartOptions, TerminalError, TerminalManager, TerminalSnapshot,
+};
 use arko_agents::{
     TaskContext, Tool, ToolDefinition, ToolError, ToolParameterDefinition, ToolParameterType,
     ToolTypeDetails,
@@ -22,6 +28,14 @@ pub const SHELL_TOOL_NAME: &str = "shell";
 
 /// The time a command may run when the call doesn't say.
 pub const DEFAULT_TIMEOUT_SECONDS: u64 = 300;
+/// The time a command may run when the call doesn't say, while commands
+/// move to the background: well past the time they move at.
+pub const BACKGROUND_TIMEOUT_SECONDS: u64 = 1_800;
+/// How long a command runs before it moves to the background, by default
+/// in sessions the user takes part in (in seconds).
+pub const DEFAULT_BACKGROUND_AFTER: u64 = 600;
+/// How a backgrounded command's result starts, as the transcript reads it.
+pub const IN_THE_BACKGROUND: &str = "in the background as job ";
 /// The most a call may ask for.
 pub const MAX_TIMEOUT_SECONDS: u64 = 3_600;
 /// Output longer than this many characters keeps its start and end.
@@ -167,20 +181,175 @@ fn find_program(name: &str) -> Option<PathBuf> {
         .find(|candidate| candidate.is_file())
 }
 
+/// When the shell tool's commands move to the background on their own (the
+/// session's "background after"), and the commands running, which the user
+/// can move at once (Ctrl+B).
+#[derive(Debug, Default)]
+pub struct Background {
+    /// After how many seconds a command still running moves; 0: never.
+    after: AtomicU64,
+    /// The commands running, by job.
+    running: Mutex<HashMap<Uuid, Running>>,
+}
+
+/// A command running, as [`Background`] keeps it.
+#[derive(Debug)]
+struct Running {
+    /// The run of the agent whose call it is.
+    run: Uuid,
+    /// Moves it to the background.
+    moved: Arc<tokio::sync::Notify>,
+}
+
+impl Background {
+    /// Commands move after `after` seconds (0: never).
+    pub fn new(after: u64) -> Arc<Self> {
+        Arc::new(Self {
+            after: after.into(),
+            running: Mutex::default(),
+        })
+    }
+
+    /// After how long a command still running moves; `None`: never.
+    pub fn after(&self) -> Option<Duration> {
+        match self.after.load(Ordering::Relaxed) {
+            0 => None,
+            seconds => Some(Duration::from_secs(seconds)),
+        }
+    }
+
+    /// Commands started from now on move after `after` seconds (0: never).
+    pub fn set_after(&self, after: u64) {
+        self.after.store(after, Ordering::Relaxed);
+    }
+
+    /// The runs of the agents running a command.
+    pub fn running(&self) -> Vec<Uuid> {
+        let running = self.running.lock().unwrap();
+        let mut runs: Vec<Uuid> = running.values().map(|command| command.run).collect();
+        runs.sort();
+        runs.dedup();
+        runs
+    }
+
+    /// Moves the commands of `run` to the background; returns how many.
+    pub fn move_run(&self, run: Uuid) -> usize {
+        let running = self.running.lock().unwrap();
+        let mut moved = 0;
+        for command in running.values().filter(|command| command.run == run) {
+            command.moved.notify_one();
+            moved += 1;
+        }
+        moved
+    }
+
+    /// Keeps `job`, a command of `run`, among the commands running until
+    /// the guard is dropped.
+    fn hold(&self, job: Uuid, run: Uuid) -> Held<'_> {
+        let moved = Arc::new(tokio::sync::Notify::new());
+        self.running.lock().unwrap().insert(
+            job,
+            Running {
+                run,
+                moved: moved.clone(),
+            },
+        );
+        Held {
+            background: self,
+            job,
+            moved,
+        }
+    }
+}
+
+/// A command among those running (see [`Background::hold`]).
+struct Held<'a> {
+    background: &'a Background,
+    job: Uuid,
+    moved: Arc<tokio::sync::Notify>,
+}
+
+impl Drop for Held<'_> {
+    fn drop(&mut self) {
+        self.background.running.lock().unwrap().remove(&self.job);
+    }
+}
+
+/// `text` as a time after which commands move to the background, in
+/// seconds: `90s`, `10m`, `1h`, or `off` (0).
+pub fn parse_background_after(text: &str) -> Result<u64, String> {
+    let text = text.trim().to_ascii_lowercase();
+    if text == "off" {
+        return Ok(0);
+    }
+    let invalid = || {
+        format!(
+            "`{text}` isn't a time: give one such as 90s, 10m or 1h (at most {}m), or off",
+            MAX_TIMEOUT_SECONDS / 60
+        )
+    };
+    let (number, unit) = text.split_at(text.len().saturating_sub(1));
+    let scale = match unit {
+        "s" => 1,
+        "m" => 60,
+        "h" => 3_600,
+        _ => return Err(invalid()),
+    };
+    let seconds = number
+        .trim()
+        .parse::<u64>()
+        .ok()
+        .and_then(|number| number.checked_mul(scale))
+        .ok_or_else(invalid)?;
+    if seconds == 0 || seconds > MAX_TIMEOUT_SECONDS {
+        return Err(invalid());
+    }
+    Ok(seconds)
+}
+
+/// A time in seconds as `/background-after` takes it: `90s`, `10m`, `1h`,
+/// or `off` for 0.
+pub fn shown_background_after(seconds: u64) -> String {
+    match seconds {
+        0 => "off".into(),
+        seconds if seconds % 3_600 == 0 => format!("{}h", seconds / 3_600),
+        seconds if seconds % 60 == 0 => format!("{}m", seconds / 60),
+        seconds => format!("{seconds}s"),
+    }
+}
+
+/// A time in seconds in words: `90 seconds`, `10 minutes`, `1 hour`.
+pub fn background_after_words(seconds: u64) -> String {
+    let (count, unit) = match seconds {
+        seconds if seconds % 3_600 == 0 => (seconds / 3_600, "hour"),
+        seconds if seconds % 60 == 0 => (seconds / 60, "minute"),
+        seconds => (seconds, "second"),
+    };
+    format!("{count} {unit}{}", if count == 1 { "" } else { "s" })
+}
+
 #[derive(Debug)]
 pub struct ShellTool {
     manager: Arc<TerminalManager>,
     shell: Shell,
     /// Where the runs it is bound to keep their command channels.
     runs: Option<Arc<crate::handover::Runs>>,
+    /// When commands move to the background, and those running.
+    background: Arc<Background>,
+    /// When commands moved to the background as the tool was made, which
+    /// its description says: it stays the same through a conversation, so
+    /// the prompt cache holds (a change reaches the agents as a note).
+    described_after: u64,
 }
 
 impl ShellTool {
-    pub fn new(manager: Arc<TerminalManager>, shell: Shell) -> Self {
+    pub fn new(manager: Arc<TerminalManager>, shell: Shell, background: Arc<Background>) -> Self {
         Self {
             manager,
             shell,
             runs: None,
+            described_after: background.after.load(Ordering::Relaxed),
+            background,
         }
     }
 
@@ -252,15 +421,26 @@ fn directory(
     Ok((path != arko_agents::utils::normalize_path(workspace)).then_some(path))
 }
 
-fn timeout_seconds(params: &HashMap<String, Value>) -> Result<u64, ToolError> {
+/// The time a command may run when the call doesn't say: longer while
+/// commands move to the background (after `after` seconds, 0 for never),
+/// so that one isn't stopped as it should move.
+pub fn default_timeout(after: u64) -> u64 {
+    if after == 0 {
+        DEFAULT_TIMEOUT_SECONDS
+    } else {
+        BACKGROUND_TIMEOUT_SECONDS
+    }
+}
+
+fn timeout_seconds(params: &HashMap<String, Value>, default: u64) -> Result<u64, ToolError> {
     let invalid = || ToolError::ParameterValidation {
         param_name: "timeout_seconds".into(),
         message: format!("expected a whole number of seconds from 1 to {MAX_TIMEOUT_SECONDS}"),
     };
     let seconds = match params.get("timeout_seconds") {
-        None | Some(Value::Null) => return Ok(DEFAULT_TIMEOUT_SECONDS),
+        None | Some(Value::Null) => return Ok(default),
         Some(Value::Number(number)) => number.as_u64().ok_or_else(invalid)?,
-        Some(Value::String(text)) if text.trim().is_empty() => return Ok(DEFAULT_TIMEOUT_SECONDS),
+        Some(Value::String(text)) if text.trim().is_empty() => return Ok(default),
         Some(Value::String(text)) => text.trim().parse().map_err(|_| invalid())?,
         Some(_) => return Err(invalid()),
     };
@@ -276,12 +456,19 @@ impl Tool for ShellTool {
         ToolDefinition {
             name: SHELL_TOOL_NAME.into(),
             description: format!(
-                "Runs a command in {} and returns its exit code and output (standard output and error together) once it finishes. Each call starts a new shell in the working directory, so a `cd` doesn't carry over to the next call: to run a command somewhere else, give the call that directory as `cwd`. {} A command still running after timeout_seconds is stopped. Output over {MAX_OUTPUT_CHARS} characters keeps its start and end, and the result names a log file with all of it.",
+                "Runs a command in {} and returns its exit code and output (standard output and error together) once it finishes. Each call starts a new shell in the working directory, so a `cd` doesn't carry over to the next call: to run a command somewhere else, give the call that directory as `cwd`. {} A command still running after timeout_seconds is stopped.{} Output over {MAX_OUTPUT_CHARS} characters keeps its start and end, and the result names a log file with all of it.",
                 self.shell.name,
                 if self.shell.kind == ShellKind::Posix {
                     "Standard input is closed: a program that asks for input fails instead of waiting."
                 } else {
                     "A program that waits for input waits until timeout_seconds: give it its input (`echo y| command`), or run it with terminal_start."
+                },
+                match self.described_after {
+                    0 => String::new(),
+                    after => format!(
+                        " A command still running after {} moves to the background, where it goes on as a job: the result gives its job ID and output so far, and a terminal update tells you when it finishes.",
+                        background_after_words(after)
+                    ),
                 }
             ),
             parameters: vec![
@@ -296,7 +483,8 @@ impl Tool for ShellTool {
                     ..parameter(
                         "timeout_seconds",
                         &format!(
-                            "How long the command may run, in seconds (default {DEFAULT_TIMEOUT_SECONDS}, at most {MAX_TIMEOUT_SECONDS})."
+                            "How long the command may run, in seconds (default {}, at most {MAX_TIMEOUT_SECONDS}).",
+                            default_timeout(self.described_after)
                         ),
                         false,
                     )
@@ -319,6 +507,9 @@ impl Tool for ShellTool {
         task_id: Uuid,
         sender: tokio::sync::mpsc::WeakSender<arko_agents::UserCommand>,
     ) {
+        // Its commands moved to the background tell the agent how they end,
+        // as the terminal tools' jobs do.
+        self.manager.bind_runtime(task_id, sender.clone());
         if let Some(runs) = &self.runs {
             runs.bind(task_id, sender);
         }
@@ -349,9 +540,14 @@ impl Tool for ShellTool {
         } else {
             command
         };
-        let timeout = timeout_seconds(&params)?;
+        let after = self.background.after();
+        let timeout = timeout_seconds(
+            &params,
+            default_timeout(after.map_or(0, |after| after.as_secs())),
+        )?;
         let directory = directory(&params, context.current_working_directory)?;
         let started = Instant::now();
+        // Held: the agent hears of it only if it moves to the background.
         let job = self
             .manager
             .start(
@@ -361,6 +557,8 @@ impl Tool for ShellTool {
                     terminal: false,
                     detect_prompts: false,
                     timeout: Some(Duration::from_secs(timeout)),
+                    held: true,
+                    shell_args: Some(self.shell.args.clone()),
                 },
             )
             .map_err(|error| match error {
@@ -373,23 +571,45 @@ impl Tool for ShellTool {
             job: job.job_id,
             armed: true,
         };
+        let held = self.background.hold(job.job_id, context.task_id);
+        let moves_at = after.map(|after| tokio::time::Instant::from_std(started + after));
+        let failed = |error: TerminalError| ToolError::ExecutionFailed(error.to_string());
         let mut revision = job.revision;
         let done = loop {
-            let snapshot = self
-                .manager
-                .wait(
+            let moved_by_user = tokio::select! {
+                snapshot = self.manager.wait(
                     context.task_id,
                     job.job_id,
                     revision,
                     Duration::from_secs(30),
-                )
-                .await
-                .map_err(|error| ToolError::ExecutionFailed(error.to_string()))?;
-            if snapshot.state.is_terminal() {
-                break snapshot;
+                ) => {
+                    let snapshot = snapshot.map_err(failed)?;
+                    if snapshot.state.is_terminal() {
+                        break snapshot;
+                    }
+                    revision = snapshot.revision;
+                    continue;
+                }
+                () = tokio::time::sleep_until(moves_at.unwrap_or_else(tokio::time::Instant::now)), if moves_at.is_some() => false,
+                () = held.moved.notified() => true,
+            };
+            match self.manager.release(context.task_id, job.job_id) {
+                Ok(snapshot) => {
+                    // The command goes on: a stopped turn no longer stops it.
+                    guard.armed = false;
+                    return Ok(moved(&snapshot, started.elapsed(), after, moved_by_user));
+                }
+                // It finished as it was to move: its result is here.
+                Err(TerminalError::Finished) => {
+                    break self
+                        .manager
+                        .status(context.task_id, job.job_id, None)
+                        .map_err(failed)?;
+                }
+                Err(error) => return Err(failed(error)),
             }
-            revision = snapshot.revision;
         };
+        drop(held);
         guard.armed = false;
         let elapsed = started.elapsed();
         let output = std::fs::read(&done.log_path)
@@ -418,6 +638,33 @@ impl Tool for ShellTool {
             body(&output, &done.log_path, done.log_truncated)
         ))
     }
+}
+
+/// The result of a command that moved to the background after `elapsed`,
+/// by the user (`by_user`) or as it ran past `after`: its job, what to do
+/// next, and its output so far.
+fn moved(
+    job: &TerminalSnapshot,
+    elapsed: Duration,
+    after: Option<Duration>,
+    by_user: bool,
+) -> String {
+    let output = std::fs::read(&job.log_path)
+        .map(|bytes| String::from_utf8_lossy(&bytes).replace("\r\n", "\n"))
+        .unwrap_or_default();
+    let why = match after.filter(|_| !by_user) {
+        Some(after) => format!(
+            "It ran longer than {}, so it moved to the background.",
+            background_after_words(after.as_secs())
+        ),
+        None => "The user moved it to the background.".to_string(),
+    };
+    format!(
+        "{IN_THE_BACKGROUND}{}, {}\n{why} It goes on running, and timeout_seconds still stops it. A terminal update tells you when it finishes. terminal_status reads its output, and terminal_control waits for it or stops it. Its output so far:\n{}",
+        job.job_id,
+        seconds(elapsed),
+        body(&output, &job.log_path, job.log_truncated)
+    )
 }
 
 fn seconds(elapsed: Duration) -> String {
@@ -467,11 +714,21 @@ mod tests {
     }
 
     fn tool(directory: &Path) -> ShellTool {
+        tool_moving_after(directory, 0)
+    }
+
+    /// The tool, with commands moving to the background after `after`
+    /// seconds (0: never).
+    fn tool_moving_after(directory: &Path, after: u64) -> ShellTool {
         let shell = Shell::detect(WindowsShell::Cmd);
         let mut config = TerminalConfig::new(directory.join("jobs"));
         config.shell = shell.program.clone();
-        config.shell_args = shell.args.clone();
-        ShellTool::new(TerminalManager::new(config).unwrap(), shell)
+        config.shell_args = shell.job_args.clone();
+        ShellTool::new(
+            TerminalManager::new(config).unwrap(),
+            shell,
+            Background::new(after),
+        )
     }
 
     async fn run(tool: &ShellTool, directory: &Path, params: Value) -> Result<String, ToolError> {
@@ -629,12 +886,16 @@ mod tests {
             )
             .unwrap()
         };
-        assert_eq!(timeout_seconds(&HashMap::new()).unwrap(), 300);
-        assert_eq!(timeout_seconds(&params("60".into())).unwrap(), 60);
-        assert_eq!(timeout_seconds(&params(90.into())).unwrap(), 90);
-        assert!(timeout_seconds(&params("0".into())).is_err());
-        assert!(timeout_seconds(&params("3601".into())).is_err());
-        assert!(timeout_seconds(&params("soon".into())).is_err());
+        let check = |params: &HashMap<String, Value>| timeout_seconds(params, 300);
+        assert_eq!(check(&HashMap::new()).unwrap(), 300);
+        assert_eq!(check(&params("60".into())).unwrap(), 60);
+        assert_eq!(check(&params(90.into())).unwrap(), 90);
+        assert!(check(&params("0".into())).is_err());
+        assert!(check(&params("3601".into())).is_err());
+        assert!(check(&params("soon".into())).is_err());
+        // While commands move to the background, the default is longer.
+        assert_eq!(default_timeout(0), 300);
+        assert_eq!(default_timeout(600), 1800);
     }
 
     /// The text the tool adds around a command passes the guard, which
@@ -715,6 +976,7 @@ mod tests {
         let tool = ShellTool::new(
             TerminalManager::new(config).unwrap(),
             Shell::cmd("cmd.exe".into()),
+            Background::new(0),
         );
         let error = run(
             &tool,
@@ -736,5 +998,157 @@ mod tests {
             description.contains("waits until timeout_seconds"),
             "{description}"
         );
+    }
+
+    /// A command still running at the set time moves to the background: the
+    /// call returns its job, which runs on, and the agent's runtime hears
+    /// when it ends.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_command_moves_to_the_background_after_the_set_time() {
+        let temp = tempfile::tempdir().unwrap();
+        let tool = tool_moving_after(temp.path(), 1);
+        let task = Uuid::new_v4();
+        let (sender, mut updates) = tokio::sync::mpsc::channel(8);
+        tool.bind_runtime(task, sender.downgrade());
+        let mut finished = tool.manager.subscribe_finished();
+        let params = serde_json::from_value(
+            serde_json::json!({"command": "echo early; sleep 2; echo late"}),
+        )
+        .unwrap();
+        let result = tool
+            .execute(&context(task, temp.path()), params)
+            .await
+            .unwrap();
+        let mut lines = result.lines();
+        let first = lines.next().unwrap();
+        assert!(first.starts_with(IN_THE_BACKGROUND), "{result}");
+        assert!(
+            lines
+                .next()
+                .unwrap()
+                .starts_with("It ran longer than 1 second, so it moved to the background."),
+            "{result}"
+        );
+        assert!(result.ends_with("Its output so far:\nearly"), "{result}");
+        let job: Uuid = first[IN_THE_BACKGROUND.len()..]
+            .split(',')
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert!(tool.background.running().is_empty());
+        assert_eq!(
+            tool.manager.status(task, job, None).unwrap().state,
+            JobState::Running
+        );
+        let done = tokio::time::timeout(Duration::from_secs(10), finished.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!((done.job_id, done.state), (job, JobState::Succeeded));
+        let Some(arko_agents::UserCommand::InjectContext { content }) =
+            tokio::time::timeout(Duration::from_secs(5), updates.recv())
+                .await
+                .unwrap()
+        else {
+            panic!("no terminal update")
+        };
+        assert!(content.contains("\"succeeded\""), "{content}");
+        assert!(content.contains("late"), "{content}");
+    }
+
+    /// The user moves a command at once (Ctrl+B), also with the setting off.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_user_moves_a_command_to_the_background() {
+        let temp = tempfile::tempdir().unwrap();
+        let tool = Arc::new(tool(temp.path()));
+        let task = Uuid::new_v4();
+        let call = {
+            let (tool, directory) = (tool.clone(), temp.path().to_path_buf());
+            tokio::spawn(async move {
+                let params =
+                    serde_json::from_value(serde_json::json!({"command": "sleep 30"})).unwrap();
+                tool.execute(&context(task, &directory), params).await
+            })
+        };
+        while tool.background.running().is_empty() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(tool.background.running(), [task]);
+        assert_eq!(tool.background.move_run(Uuid::new_v4()), 0);
+        assert_eq!(tool.background.move_run(task), 1);
+        let result = tokio::time::timeout(Duration::from_secs(5), call)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(result.starts_with(IN_THE_BACKGROUND), "{result}");
+        assert!(
+            result.contains("\nThe user moved it to the background."),
+            "{result}"
+        );
+        assert!(
+            result.ends_with("Its output so far:\n(no output)"),
+            "{result}"
+        );
+        // A command that finishes quickly is still returned whole.
+        let result = run(
+            &tool,
+            temp.path(),
+            serde_json::json!({"command": "echo hi"}),
+        )
+        .await
+        .unwrap();
+        assert!(result.starts_with("exit code 0, "), "{result}");
+    }
+
+    /// The description says when commands move to the background, as they
+    /// did when the tool was made, and the longer default time.
+    #[test]
+    fn the_description_says_when_commands_move() {
+        let temp = tempfile::tempdir().unwrap();
+        let description = |tool: &ShellTool| {
+            let definition = tool.definition();
+            let timeout = definition
+                .parameters
+                .iter()
+                .find(|parameter| parameter.name == "timeout_seconds")
+                .unwrap()
+                .description
+                .clone();
+            (definition.description, timeout)
+        };
+        let (text, timeout) = description(&tool_moving_after(&temp.path().join("on"), 600));
+        assert!(
+            text.contains("A command still running after 10 minutes moves to the background"),
+            "{text}"
+        );
+        assert!(timeout.contains("default 1800"), "{timeout}");
+        let tool = tool(&temp.path().join("off"));
+        let (text, timeout) = description(&tool);
+        assert!(!text.contains("background"), "{text}");
+        assert!(timeout.contains("default 300"), "{timeout}");
+        // A change while the tool runs leaves its description as it was.
+        tool.background.set_after(60);
+        assert_eq!(description(&tool).0, text);
+    }
+
+    #[test]
+    fn background_times_read_and_show() {
+        assert_eq!(parse_background_after("10m"), Ok(600));
+        assert_eq!(parse_background_after(" 90S "), Ok(90));
+        assert_eq!(parse_background_after("1h"), Ok(3600));
+        assert_eq!(parse_background_after("off"), Ok(0));
+        for wrong in ["", "10", "0m", "61m", "2h", "m", "soon", "-5s"] {
+            assert!(parse_background_after(wrong).is_err(), "{wrong}");
+        }
+        assert_eq!(shown_background_after(600), "10m");
+        assert_eq!(shown_background_after(90), "90s");
+        assert_eq!(shown_background_after(3600), "1h");
+        assert_eq!(shown_background_after(0), "off");
+        assert_eq!(background_after_words(60), "1 minute");
+        assert_eq!(background_after_words(90), "90 seconds");
     }
 }

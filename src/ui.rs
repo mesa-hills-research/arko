@@ -44,6 +44,9 @@ pub enum Input {
     Interrupt,
     /// Ctrl-D, or the end of standard input.
     Eof,
+    /// Ctrl+B in the full-screen view: the shell command this agent runs
+    /// (the main agent, or a worker by its ID) moves to the background.
+    Background(String),
 }
 
 /// Where everything is printed: above the prompt when there is one, else
@@ -781,8 +784,13 @@ impl EventPrinter {
         const SHOWN: usize = 4;
         let mut lines = output.lines();
         let status = lines.next().unwrap_or_default();
-        let rest: Vec<&str> = lines.collect();
-        let failed = !status.starts_with("exit code 0,");
+        let mut rest: Vec<&str> = lines.collect();
+        // Moved to the background: what the agent can do next is left out.
+        let moved = status.starts_with(crate::shell::IN_THE_BACKGROUND);
+        if moved && !rest.is_empty() {
+            rest.remove(0);
+        }
+        let failed = !status.starts_with("exit code 0,") && !moved;
         let mut text = Vec::new();
         if !(rest.len() == 1 && rest[0] == "(no output)") {
             for line in rest.iter().take(SHOWN) {

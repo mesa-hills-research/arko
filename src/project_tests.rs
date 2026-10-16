@@ -165,9 +165,11 @@ fn the_choices_are_saved_with_the_session_and_old_sessions_load_as_they_were() {
         openai_auth: None,
         own_worker_model: false,
         text_replies: false,
+        cc_handover: false,
         extra_rules: Default::default(),
         project_instructions: project::Files::Both,
         worker_project_instructions: true,
+        background_after: 0,
     };
     let file = session.dir.join("session.json");
     let saved = || -> serde_json::Value {
