@@ -152,6 +152,11 @@ pub struct LiveSettings {
     /// The main agent hands over at this many input tokens; 0 when it is
     /// not known.
     pub handover_at: usize,
+    /// New workers hand over at this many input tokens, on their model (the
+    /// size `/handover-at` set for the workers, held under what the model
+    /// leaves room for, else the model's own). A worker on another model
+    /// goes by its own. 0 when the session has no workers.
+    pub workers_handover_at: usize,
     /// The main agent ends its turns with a reply in plain text (else with
     /// `complete_task`). It changes only before the conversation starts
     /// (`Models::started`).

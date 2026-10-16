@@ -347,6 +347,24 @@ impl Crew {
         self.models.lock().unwrap().runs.get(&run).cloned()
     }
 
+    /// The models the session's worker runs started on, as Arko recorded
+    /// them, each once (a run keeps its own when it is continued or
+    /// resumed).
+    pub fn run_models(&self) -> Vec<arko_ai::Model> {
+        let models = self.models.lock().unwrap();
+        let mut found: Vec<arko_ai::Model> = Vec::new();
+        for run in models.runs.values() {
+            let model = &run.llm_config.model;
+            if !found
+                .iter()
+                .any(|known| known.id == model.id && known.provider == model.provider)
+            {
+                found.push(model.clone());
+            }
+        }
+        found
+    }
+
     pub fn attach(self: &Arc<Self>, workflow: &Arc<Workflow>, lead: Option<Uuid>) {
         *self.workflow.lock().unwrap() = Arc::downgrade(workflow);
         self.models.lock().unwrap().attached = true;

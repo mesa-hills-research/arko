@@ -660,6 +660,14 @@ details.more > summary { color: var(--accent-text); cursor: pointer; padding: 6p
   padding: 7px 10px;
   font-size: 16px;
 }
+.inline-form select {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg);
+  color: inherit;
+  padding: 7px 6px;
+  font-size: 16px;
+}
 
 .link-card { display: flex; gap: 14px; align-items: center; margin: 6px 0; }
 .link-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }

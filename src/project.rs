@@ -230,7 +230,7 @@ impl crate::Harness {
 
     /// Whether the session has workers (not `--workers 0`, nor the old
     /// worker tools).
-    fn has_workers(&self) -> bool {
+    pub(crate) fn has_workers(&self) -> bool {
         self.settings.max_workers > 0 && self.crew.is_some()
     }
 

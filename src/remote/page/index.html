@@ -121,8 +121,12 @@
     <section class="group">
       <h3>Handover</h3>
       <div class="setting">
-        <div class="setting-text"><span class="setting-name">Hand over at</span><span class="setting-about">The agent writes a report and goes on in a fresh conversation.<span class="cc-compacts"> On cc: models, Claude Code compacts the conversation instead.</span></span></div>
+        <div class="setting-text"><span class="setting-name">Main agent</span><span class="setting-about">At this size it writes a report and goes on in a fresh conversation.<span class="cc-compacts"> On cc: models, Claude Code compacts the conversation instead.</span></span></div>
         <span id="handover-value" class="setting-value"></span>
+      </div>
+      <div id="workers-handover" class="setting" hidden>
+        <div class="setting-text"><span class="setting-name">Workers</span><span class="setting-about">The running ones go by it from their next step. A worker on a model with less room goes by the most its model allows.</span></div>
+        <span id="workers-handover-value" class="setting-value"></span>
       </div>
       <div id="cc-compact" class="setting" hidden>
         <div class="setting-text"><span class="setting-name">Claude Code compacts</span><span id="cc-compact-about" class="setting-about"></span></div>
@@ -133,6 +137,7 @@
         <form id="handover-form" class="inline-form">
           <label for="handover-input">Tokens</label>
           <input id="handover-input" inputmode="numeric" autocomplete="off" placeholder="250k">
+          <select id="handover-whose" aria-label="Whose size" hidden><option value="">Both</option><option value="main">Main agent</option><option value="workers">Workers</option></select>
           <button class="secondary" type="submit">Set</button>
         </form>
         <div class="setting">

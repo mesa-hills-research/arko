@@ -167,8 +167,8 @@ pub const COMMANDS: &[Command] = &[
     ),
     Command {
         name: "/handover-at",
-        args: "SIZE",
-        about: "the input size the main agent hands over at, or Claude Code compacts at on cc: models (/handover-at 200k)",
+        args: "[main|workers] SIZE",
+        about: "the input size the main agent and the workers hand over at, or Claude Code compacts at on cc: models, each up to 95% of what its model accepts. main or workers sets one of them. Running workers go by it from their next step (/handover-at 950k)",
         aliases: &[],
         runs: Runs::Session,
     },
@@ -225,6 +225,7 @@ const CHOICES: &[(&str, &[&str], &[&str])] = &[
     ),
     ("/project-instructions", &["workers"], ON_OFF),
     ("/remote", &[], &["qr", "off", "new-key"]),
+    ("/handover-at", &[], &["main", "workers"]),
     ("/keys", &[], &["add", "remove"]),
 ];
 

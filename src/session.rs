@@ -30,6 +30,13 @@ pub struct Settings {
     /// place of the size their saved configuration holds (see `handover`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub main_handover_at: Option<usize>,
+    /// The input size, in tokens, at which the workers hand over, as
+    /// `/handover-at` (or `--handover-at` when resuming) last set it; `None`:
+    /// each as its model settings say. Every worker run, also one started
+    /// before it was set, hands over at it in place of the size its
+    /// configuration holds, up to what its own model leaves room for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workers_handover_at: Option<usize>,
     /// Outside access, as the session last had it (`/outside`).
     pub allow_outside_workspace: bool,
     /// Show the models' reasoning as they work (OpenAI models then also
@@ -104,6 +111,7 @@ impl Settings {
             max_workers: crate::agents::NO_LIMIT,
             handover_at: 200_000,
             main_handover_at: None,
+            workers_handover_at: None,
             allow_outside_workspace: false,
             show_thinking: false,
             created: Utc::now(),
@@ -431,6 +439,26 @@ mod tests {
             settings.describe(&settings.main),
             "gpt-6.1-sol (xhigh effort) via ChatGPT login"
         );
+    }
+
+    /// The workers' handover size `/handover-at` set is kept with the
+    /// session, for a resumed one to set again. A session saved before it
+    /// has none: its workers go by their models' own sizes.
+    #[test]
+    fn the_workers_handover_size_is_saved_with_the_session() {
+        let root = tempfile::tempdir().unwrap();
+        let session = Session::create(root.path()).unwrap();
+        let mut settings = settings(root.path(), Utc::now());
+        session.save_settings(&settings).unwrap();
+        let text = std::fs::read_to_string(session.dir.join(SETTINGS_FILE)).unwrap();
+        assert!(!text.contains("workers_handover_at"), "{text}");
+        assert_eq!(session.load_settings().unwrap().workers_handover_at, None);
+        settings.main_handover_at = Some(950_000);
+        settings.workers_handover_at = Some(950_000);
+        session.save_settings(&settings).unwrap();
+        let loaded = session.load_settings().unwrap();
+        assert_eq!(loaded.main_handover_at, Some(950_000));
+        assert_eq!(loaded.workers_handover_at, Some(950_000));
     }
 
     /// fin's data folder (Arko's name before) becomes Arko's once, with its

@@ -1238,9 +1238,6 @@ impl App {
         if commands::find("/outside on").is_some() {
             rows.push(SettingsRow::Outside);
         }
-        if commands::find("/handover-at 200k").is_some() {
-            rows.push(SettingsRow::Handover);
-        }
         if commands::find("/background-after 10m").is_some() {
             rows.push(SettingsRow::Background);
         }
@@ -1250,10 +1247,16 @@ impl App {
         if commands::find("/extra-rules small").is_some() {
             rows.push(SettingsRow::Rules);
         }
+        rows.push(SettingsRow::Page);
+        if commands::find("/handover-at 200k").is_some() {
+            rows.push(SettingsRow::Handover);
+            if self.reading.models.has_workers {
+                rows.push(SettingsRow::WorkersHandover);
+            }
+        }
         if commands::find("/cc-compact on").is_some() && self.in_claude_code() {
             rows.push(SettingsRow::Compact);
         }
-        rows.push(SettingsRow::Page);
         if commands::find("/project-instructions one").is_some() {
             rows.push(SettingsRow::ProjectFiles);
             if self.reading.models.has_workers {
@@ -1397,10 +1400,14 @@ impl App {
                     let on = !self.outside();
                     self.send(if on { "/outside on" } else { "/outside off" });
                 }
-                SettingsRow::Handover => {
+                SettingsRow::Handover | SettingsRow::WorkersHandover => {
                     // The next round size down or up (the session may hold
                     // it under the model's limit; the status says).
-                    let now = self.handover_at();
+                    let (now, whose) = if rows[row] == SettingsRow::Handover {
+                        (self.handover_at(), "main")
+                    } else {
+                        (self.workers_handover_at(), "workers")
+                    };
                     let steps = super::overlay::HANDOVER_STEPS;
                     let next = if step < 0 {
                         steps.iter().rev().find(|size| **size < now)
@@ -1408,7 +1415,7 @@ impl App {
                         steps.iter().find(|size| **size > now)
                     };
                     if let Some(size) = next {
-                        self.send(&format!("/handover-at {}k", size / 1000));
+                        self.send(&format!("/handover-at {whose} {}k", size / 1000));
                     }
                 }
                 SettingsRow::Background => {
@@ -1578,6 +1585,11 @@ impl App {
             0 => self.info.handover_at,
             size => size,
         }
+    }
+
+    /// The size new workers hand over at now.
+    pub fn workers_handover_at(&self) -> usize {
+        self.reading.settings.workers_handover_at
     }
 
     // ----- the mouse -----
@@ -2285,7 +2297,32 @@ pub(super) mod tests {
         app.overlay = Some(Overlay::Settings { row, picker: None });
         press(&mut app, KeyCode::Right, KeyModifiers::NONE);
         press(&mut app, KeyCode::Left, KeyModifiers::NONE);
-        assert_eq!(sent(&mut app), ["/handover-at 300k", "/handover-at 200k"]);
+        assert_eq!(
+            sent(&mut app),
+            ["/handover-at main 300k", "/handover-at main 200k"]
+        );
+        // The workers' size, in a session with workers, the same way.
+        assert!(!app.settings_rows().contains(&SettingsRow::WorkersHandover));
+        let mut reading = app.reading.clone();
+        reading.models.has_workers = true;
+        reading.settings.workers_handover_at = 500_000;
+        app.set_reading(reading);
+        let rows = app.settings_rows();
+        let workers = rows
+            .iter()
+            .position(|row| *row == SettingsRow::WorkersHandover)
+            .unwrap();
+        assert_eq!(workers, row + 1, "under the main agent's");
+        app.overlay = Some(Overlay::Settings {
+            row: workers,
+            picker: None,
+        });
+        press(&mut app, KeyCode::Right, KeyModifiers::NONE);
+        press(&mut app, KeyCode::Left, KeyModifiers::NONE);
+        assert_eq!(
+            sent(&mut app),
+            ["/handover-at workers 750k", "/handover-at workers 400k"]
+        );
     }
 
     /// Ctrl+B moves the shell command of the agent shown to the background,
@@ -2335,11 +2372,11 @@ pub(super) mod tests {
             .iter()
             .position(|row| *row == SettingsRow::Background)
             .unwrap();
-        let handover = rows
+        let outside = rows
             .iter()
-            .position(|row| *row == SettingsRow::Handover)
+            .position(|row| *row == SettingsRow::Outside)
             .unwrap();
-        assert_eq!(row, handover + 1);
+        assert_eq!(row, outside + 1);
         app.overlay = Some(Overlay::Settings { row, picker: None });
         press(&mut app, KeyCode::Right, KeyModifiers::NONE);
         assert_eq!(sent(&mut app), ["/background-after 1m"]);
@@ -2428,11 +2465,11 @@ pub(super) mod tests {
             .iter()
             .position(|row| *row == SettingsRow::Compact)
             .unwrap();
-        let rules = rows
+        let handover = rows
             .iter()
-            .position(|row| *row == SettingsRow::Rules)
+            .position(|row| *row == SettingsRow::Handover)
             .unwrap();
-        assert_eq!(row, rules + 1, "beside the other session settings");
+        assert_eq!(row, handover + 1, "beside the handover size");
         app.overlay = Some(Overlay::Settings { row, picker: None });
         press(&mut app, KeyCode::Right, KeyModifiers::NONE);
         assert_eq!(sent(&mut app), ["/cc-compact off"]);
@@ -2454,11 +2491,11 @@ pub(super) mod tests {
             .iter()
             .position(|row| *row == SettingsRow::ProjectFiles)
             .unwrap();
-        let page = rows
+        let handover = rows
             .iter()
-            .position(|row| *row == SettingsRow::Page)
+            .position(|row| *row == SettingsRow::Handover)
             .unwrap();
-        assert_eq!(files, page + 1, "after the session's settings");
+        assert_eq!(files, handover + 1, "after the session's settings");
         assert!(!rows.contains(&SettingsRow::ProjectWorkers), "no workers");
         app.overlay = Some(Overlay::Settings {
             row: files,
@@ -2480,6 +2517,10 @@ pub(super) mod tests {
         let workers = rows
             .iter()
             .position(|row| *row == SettingsRow::ProjectWorkers)
+            .unwrap();
+        let files = rows
+            .iter()
+            .position(|row| *row == SettingsRow::ProjectFiles)
             .unwrap();
         assert_eq!(workers, files + 1);
         app.overlay = Some(Overlay::Settings {
@@ -2615,7 +2656,7 @@ pub(super) mod tests {
         app.editor.clear();
         // Free text: the hint until a letter, then nothing.
         type_text(&mut app, "/handover-at ");
-        assert_eq!(app.ghost().as_deref(), Some("SIZE"));
+        assert_eq!(app.ghost().as_deref(), Some("[main|workers] SIZE"));
         type_text(&mut app, "2");
         assert_eq!(app.ghost(), None);
         press(&mut app, KeyCode::Tab, KeyModifiers::NONE);

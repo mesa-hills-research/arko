@@ -872,6 +872,11 @@
       ? 'The agents may work anywhere on this computer.'
       : 'The agents stay in ' + (info.workspace || 'the workspace') + '.';
     $('handover-value').textContent = settings.handover_at ? C.tokens(settings.handover_at) + ' tokens' : 'Not set';
+    // The workers' size, in a session with workers: Set sets both, or the one chosen.
+    const hasWorkers = Boolean(status && status.models && status.models.has_workers);
+    $('workers-handover').hidden = !hasWorkers;
+    $('handover-whose').hidden = !hasWorkers;
+    $('workers-handover-value').textContent = settings.workers_handover_at ? C.tokens(settings.workers_handover_at) + ' tokens' : 'Not set';
     $('background-value').textContent = settings.background_after ? duration(settings.background_after) : 'Off';
     // Text replies change only before the conversation starts.
     const replies = $('replies-switch');
@@ -1074,9 +1079,11 @@
       note('handover-note', 'Give a size, such as 200k.', true);
       return;
     }
-    const before = status && status.settings ? status.settings.handover_at : 0;
+    const now = (status && status.settings) || {};
+    const before = [now.handover_at, now.workers_handover_at];
+    const whose = $('handover-whose').hidden ? '' : $('handover-whose').value;
     // Arko reads the size ("200k", "200000") and says what's wrong with it.
-    command('/handover-at ' + size, 'handover-note', (settings) => settings.handover_at !== before).then((sent) => {
+    command('/handover-at ' + (whose ? whose + ' ' : '') + size, 'handover-note', (settings) => settings.handover_at !== before[0] || settings.workers_handover_at !== before[1]).then((sent) => {
       if (sent) $('handover-input').value = '';
     });
   });

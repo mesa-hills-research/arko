@@ -1,15 +1,19 @@
-//! The main agent's handover size, which the user changes while the
-//! session runs (`/handover-at`), and the handovers Arko asks it for at
-//! once (`/handover`).
+//! The handover sizes of the main agent and of the workers, which the user
+//! changes while the session runs (`/handover-at`), and the handovers Arko
+//! asks the main agent for at once (`/handover`).
 //!
 //! An agent's configuration holds the size it hands over at, and it is
 //! saved with the session: a resumed conversation keeps it, and its prompt
 //! cache with it. So the size the user sets goes to the framework instead,
-//! as the main agent's `HandoverThreshold`, which the workflow gives each
-//! of its runs (`WorkflowBuilder::agent_handover_threshold`). The runtime
-//! hands over at it in place of the configured size, larger or smaller,
-//! from its next check on. The session keeps it in its settings
-//! (`main_handover_at`), and a resumed session sets it again. At the size,
+//! as the main agent's `HandoverThreshold` and the workers' one, which the
+//! workflow gives each run of the agent (`WorkflowBuilder::
+//! agent_handover_threshold`). The runtime hands over at it in place of the
+//! configured size, larger or smaller, from its next check on: a worker
+//! running too, and one started, continued or resumed later. Each worker
+//! goes by it up to what its own model leaves room for, since workers can
+//! be on different models (`HandoverThreshold::with_most`). The session
+//! keeps the sizes in its settings (`main_handover_at`,
+//! `workers_handover_at`), and a resumed session sets them again. At the size,
 //! the agent writes its report and goes on from it in a fresh
 //! conversation. An agent in Claude Code compacts instead (see
 //! `agents::compacts`): Claude Code's `/compact` summarises the
@@ -130,12 +134,21 @@ pub enum Asked {
     Already,
 }
 
-/// The main agent's handover size, and the watch that asks for handovers.
+/// The main agent's handover size and the workers', and the watch that
+/// asks for the main agent's handovers.
 pub struct Handover {
     runs: Arc<Runs>,
     /// The size the user set, which the main agent's runs hand over at in
     /// place of the configured one. Unset, the configured one applies.
     threshold: HandoverThreshold,
+    /// The size the user set for the workers, which every worker run hands
+    /// over at in place of its configured one, each up to what its own
+    /// model leaves room for (see `agents::max_handover`), the configured
+    /// size too. Unset, each goes by its configured size.
+    workers: HandoverThreshold,
+    /// How the session reaches OpenAI models, which decides what their
+    /// models leave room for (on the ChatGPT login, less).
+    openai_auth: Arc<Mutex<Option<OpenAiAuth>>>,
     /// The size the main agent's configuration hands over at.
     configured: AtomicUsize,
     /// The largest size the user can set: what the main agent's model
@@ -180,16 +193,25 @@ impl Drop for Handover {
 }
 
 impl Handover {
-    /// With `at`, the size the user set (kept with the session), if any.
+    /// With `at` and `workers_at`, the sizes the user set for the main
+    /// agent and for the workers (kept with the session), if any.
     pub fn new(
         runs: Arc<Runs>,
         at: Option<usize>,
+        workers_at: Option<usize>,
         output: Arc<Output>,
         feed: remote::Feed,
     ) -> Self {
+        let openai_auth = Arc::new(Mutex::new(None));
+        let auth = openai_auth.clone();
+        let workers = HandoverThreshold::new(workers_at).with_most(move |config| {
+            agents::max_handover(&config.llm_config.model, *crate::lock(&auth))
+        });
         Self {
             runs,
             threshold: HandoverThreshold::new(at),
+            workers,
+            openai_auth,
             configured: AtomicUsize::new(usize::MAX),
             most: AtomicUsize::new(usize::MAX),
             compacts: AtomicBool::new(false),
@@ -222,6 +244,40 @@ impl Handover {
     /// runs.
     pub fn threshold(&self) -> HandoverThreshold {
         self.threshold.clone()
+    }
+
+    /// The size the user set for the workers, as the workflow gives it to
+    /// their runs (each capped by its own model).
+    pub fn workers_threshold(&self) -> HandoverThreshold {
+        self.workers.clone()
+    }
+
+    /// The size the user set for the workers, if any: each worker hands
+    /// over at it, or at less where its model leaves less room.
+    pub fn workers_at(&self) -> Option<usize> {
+        self.workers.get()
+    }
+
+    /// Sets the size the workers hand over at, larger or smaller: the
+    /// running ones from their next check on, and the ones started,
+    /// continued or resumed later. Each goes by it up to what its own
+    /// model leaves room for ([`worker_most`](Self::worker_most)).
+    pub fn set_workers_at(&self, tokens: usize) {
+        self.workers.set(Some(tokens));
+    }
+
+    /// The largest size a worker on `model` hands over at, when its limit
+    /// is known.
+    pub fn worker_most(&self, model: &arko_ai::Model) -> Option<usize> {
+        agents::max_handover(model, *crate::lock(&self.openai_auth))
+    }
+
+    /// The size a worker on `model` whose configuration hands over at
+    /// `configured` goes by: the workers' size the user set, else its
+    /// configured one, up to what its model leaves room for.
+    pub fn worker_at(&self, model: &arko_ai::Model, configured: Option<usize>) -> Option<usize> {
+        let at = self.workers.get().or(configured)?;
+        Some(self.worker_most(model).map_or(at, |most| at.min(most)))
     }
 
     /// Whether the main agent compacts in Claude Code at the size, instead
@@ -312,6 +368,7 @@ impl Handover {
         main: &arko_agents::AgentConfig,
         openai_auth: Option<OpenAiAuth>,
     ) {
+        *crate::lock(&self.openai_auth) = openai_auth;
         self.configure(
             main.handover
                 .as_ref()
@@ -424,6 +481,31 @@ impl Handover {
     }
 }
 
+/// Whose handover size `/handover-at` says or sets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Whose {
+    /// The main agent's and the workers' (`/handover-at 950k`).
+    Both,
+    /// The main agent's (`/handover-at main 950k`).
+    Main,
+    /// The workers' (`/handover-at workers 950k`).
+    Workers,
+}
+
+/// Reads `/handover-at`'s argument: whose size (`main`, `workers`, else
+/// both), and the rest (the size, if any).
+pub fn whose(argument: &str) -> (Whose, &str) {
+    let argument = argument.trim();
+    let (first, rest) = argument
+        .split_once(char::is_whitespace)
+        .map_or((argument, ""), |(first, rest)| (first, rest.trim()));
+    match first.to_ascii_lowercase().as_str() {
+        "main" => (Whose::Main, rest),
+        "workers" | "worker" => (Whose::Workers, rest),
+        _ => (Whose::Both, argument),
+    }
+}
+
 /// Reads a number of tokens as `/handover-at` takes it: `200000`,
 /// `200,000`, `200_000` or `200k`.
 pub fn parse_tokens(text: &str) -> Result<usize, String> {
@@ -437,12 +519,10 @@ pub fn parse_tokens(text: &str) -> Result<usize, String> {
         .parse::<usize>()
         .ok()
         .and_then(|tokens| tokens.checked_mul(scale))
-        .ok_or_else(|| {
-            format!("`{text}` isn't a number of tokens: /handover-at 200000 (or 200k).")
-        })?;
+        .ok_or_else(|| format!("`{text}` isn't a number of tokens, such as 200000 or 200k."))?;
     if tokens < MIN_TOKENS {
         return Err(format!(
-            "{tokens} tokens is too small: the main agent's fresh conversation would start near it. Give at least {MIN_TOKENS}."
+            "{tokens} tokens is too small: an agent's fresh conversation would start near it. Give at least {MIN_TOKENS}."
         ));
     }
     Ok(tokens)
@@ -470,6 +550,36 @@ mod tests {
         assert!(parse_tokens("99999999999999999999999k").is_err());
     }
 
+    #[test]
+    fn whose_size_is_the_first_word() {
+        assert_eq!(whose("950k"), (Whose::Both, "950k"));
+        assert_eq!(whose(" main 950k "), (Whose::Main, "950k"));
+        assert_eq!(whose("workers 950,000"), (Whose::Workers, "950,000"));
+        assert_eq!(whose("Worker"), (Whose::Workers, ""));
+        assert_eq!(whose(""), (Whose::Both, ""));
+    }
+
+    /// Unset, a worker goes by its configured size. Set, every worker goes
+    /// by the workers' size, each up to what its own model leaves room for.
+    #[test]
+    fn each_worker_goes_by_the_workers_size_up_to_its_models_room() {
+        let runs = Arc::new(Runs::default());
+        let (handover, _) = handover_at(&runs, None);
+        let opus = agents::resolve_model("cc:opus").unwrap();
+        let luna = agents::resolve_model("luna").unwrap();
+        assert_eq!(handover.worker_at(&opus, Some(500_000)), Some(500_000));
+        assert_eq!(handover.workers_threshold().get(), None);
+        handover.set_workers_at(2_000_000);
+        assert_eq!(handover.workers_at(), Some(2_000_000));
+        assert_eq!(handover.worker_at(&opus, Some(500_000)), Some(950_000));
+        let most = agents::max_handover(&luna, None).unwrap();
+        assert!(most < 950_000);
+        assert_eq!(handover.worker_at(&luna, Some(200_000)), Some(most));
+        handover.set_workers_at(300_000);
+        assert_eq!(handover.worker_at(&opus, Some(500_000)), Some(300_000));
+        assert_eq!(handover.workers_threshold().get(), Some(300_000));
+    }
+
     fn event(run: Uuid, event: AgentEvent) -> WorkflowEvent {
         WorkflowEvent {
             timestamp: chrono::Utc::now(),
@@ -495,6 +605,7 @@ mod tests {
         let handover = Handover::new(
             runs.clone(),
             at,
+            None,
             Arc::new(Output::new(None, true)),
             feed.clone(),
         );

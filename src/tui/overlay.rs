@@ -59,12 +59,15 @@ pub enum SettingsRow {
     Mouse,
     ConfirmQuit,
     Outside,
-    Handover,
     Background,
     Replies,
     Rules,
-    Compact,
     Page,
+    /// The main agent's handover size.
+    Handover,
+    /// The workers' handover size.
+    WorkersHandover,
+    Compact,
     ProjectFiles,
     ProjectWorkers,
     Keys,
@@ -499,8 +502,8 @@ fn settings(frame: &mut Frame, app: &App, area: Rect, selected: usize) {
                 "Whether the agents may change files outside the working directory.".to_string(),
             ),
             SettingsRow::Handover => (
-                "Session",
-                "Handover at",
+                "Handover",
+                "Main agent",
                 vec![
                     Span::styled(format!("{} ", glyphs::render("←")), theme.dim()),
                     Span::styled(format!(" {}k ", app.handover_at() / 1000), theme.chosen()),
@@ -510,6 +513,24 @@ fn settings(frame: &mut Frame, app: &App, area: Rect, selected: usize) {
                     "The input size the main agent hands over at: it writes a report of its work and goes on from it, fresh. On cc: models, Claude Code compacts the conversation at that size instead. /handover does it now."
                 } else {
                     "The input size the main agent hands over at: it writes a report of its work and goes on from it, fresh. /handover does it now."
+                }
+                .to_string(),
+            ),
+            SettingsRow::WorkersHandover => (
+                "Handover",
+                "Workers",
+                vec![
+                    Span::styled(format!("{} ", glyphs::render("←")), theme.dim()),
+                    Span::styled(
+                        format!(" {}k ", app.workers_handover_at() / 1000),
+                        theme.chosen(),
+                    ),
+                    Span::styled(format!(" {}", glyphs::render("→")), theme.dim()),
+                ],
+                if app.cc_compact() {
+                    "The input size the workers hand over at, the running ones from their next step, or Claude Code compacts their conversation on cc: models. A worker on a model with less room goes by the most its model allows."
+                } else {
+                    "The input size the workers hand over at, the running ones from their next step. A worker on a model with less room goes by the most its model allows."
                 }
                 .to_string(),
             ),
@@ -583,7 +604,7 @@ fn settings(frame: &mut Frame, app: &App, area: Rect, selected: usize) {
                 },
             ),
             SettingsRow::Compact => (
-                "Session",
+                "Handover",
                 "Claude Code",
                 choices(
                     theme,

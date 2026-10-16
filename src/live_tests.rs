@@ -777,11 +777,13 @@ async fn handover_sizes_are_checked_kept_and_acted_on() {
     assert!(output(&mut harness, "/handover-at lots").contains("isn't a number of tokens"));
     assert!(output(&mut harness, "/handover-at 5k").contains("too small"));
     assert_eq!(harness.handover.at(), 200_000);
+    // The size for the main agent and the workers.
     assert_eq!(
         output(&mut harness, "/handover-at 300k"),
-        "The main agent now hands over at 300k tokens of input."
+        "The main agent now hands over at 300k tokens of input.\nWorkers now hand over at 300k tokens of input."
     );
     assert_eq!(harness.handover.threshold().get(), Some(300_000));
+    assert_eq!(harness.handover.workers_threshold().get(), Some(300_000));
     // Arko closes, and the session is resumed: its runs go by the size.
     harness.open(true).unwrap();
     let end = tokio::time::timeout(
@@ -807,11 +809,21 @@ async fn handover_sizes_are_checked_kept_and_acted_on() {
     assert_eq!(
         output(&mut harness, "/handover-at 2000k"),
         format!(
-            "The main agent now hands over at {}k tokens of input, the largest size Arko allows for its model.",
+            "The main agent now hands over at {}k tokens of input, the largest size Arko allows for its model.\nWorkers now hand over at {}k tokens of input, the largest size Arko allows for their model.",
+            most / 1000,
             most / 1000
         )
     );
     assert_eq!(harness.handover.at(), most);
+    // The workers' size stays as asked: each worker is held under its own
+    // model's room.
+    assert_eq!(harness.handover.workers_at(), Some(2_000_000));
+    assert_eq!(
+        remote::Meter::read(harness.gauges.as_ref())
+            .settings
+            .workers_handover_at,
+        most
+    );
     let lowered = output(&mut harness, "/handover-at 100,000");
     assert!(
         lowered.starts_with("The main agent now hands over at 100k tokens of input."),
@@ -821,6 +833,10 @@ async fn handover_sizes_are_checked_kept_and_acted_on() {
     assert_eq!(harness.handover.at(), 100_000);
     assert_eq!(
         harness.session.load_settings().unwrap().main_handover_at,
+        Some(100_000)
+    );
+    assert_eq!(
+        harness.session.load_settings().unwrap().workers_handover_at,
         Some(100_000)
     );
     assert_eq!(
@@ -1600,4 +1616,109 @@ async fn a_message_to_a_finished_worker_continues_it_and_its_lead_hears_of_it() 
     assert_eq!(lead.matches(copy).count(), 1, "{lead}");
     assert!(lead.find(copy) < lead.find("Docs done."), "{lead}");
     crew.shutdown().await;
+}
+
+/// `/handover-at workers` reaches a worker that is already running: it
+/// hands over at the new size from its next check, under its configured
+/// one. `/handover-at main` leaves the workers' size alone, and in a
+/// session without workers `/handover-at workers` says there are none.
+#[cfg(unix)]
+#[tokio::test]
+async fn the_workers_size_reaches_a_running_worker() {
+    let temp = tempfile::tempdir().unwrap();
+    let bodies: Bodies = Arc::default();
+    let hold = Arc::new(Notify::new());
+    let server = ModelServer::start(Arc::new({
+        let (bodies, hold) = (bodies.clone(), hold.clone());
+        move |_, body: String| {
+            bodies.lock().unwrap().push(body.clone());
+            let hold = hold.clone();
+            Box::pin(async move {
+                if body.contains("You are agent run r1") {
+                    let first = !body.contains("call_w1") && !body.contains("REPORT:");
+                    if first {
+                        hold.notified().await;
+                    }
+                    // A first request well under the size, then one over it.
+                    let (id, input) = if first { ("w1", 10_000) } else { ("w2", 150_000) };
+                    let before = crate::mock_model::with_input(
+                        tool_call(id, SHELL_TOOL, serde_json::json!({"command": "echo hi"})),
+                        input,
+                    );
+                    handing_over(&body, before, complete("w3", "Read it."))
+                } else if body.contains("call_m1") {
+                    complete("m2", "Started r1.")
+                } else {
+                    tool_call("m1", crew::START_AGENT, serde_json::json!({"agent": WORKER, "task": "Read it."}))
+                }
+            })
+        }
+    }))
+    .await;
+    let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
+    let _managers = equip(&mut harness, false);
+    // The workers' own size, by default: 200k on luna by API key.
+    let configured = harness
+        .worker_config
+        .handover
+        .as_ref()
+        .and_then(|handover| handover.at_input_tokens);
+    assert_eq!(configured, Some(200_000));
+    let end = tokio::time::timeout(
+        Duration::from_secs(30),
+        harness.turn(Prompt::User("Start a worker.".into()), &mut inputs),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(end, TurnEnd::Answered));
+    let output = |harness: &mut Harness, command: &str| {
+        assert!(harness.live_command(command, Source::Terminal));
+        texts(&harness.feed, "output").last().unwrap().clone()
+    };
+    assert_eq!(
+        output(&mut harness, "/handover-at main 300k"),
+        "The main agent now hands over at 300k tokens of input."
+    );
+    assert_eq!(harness.handover.workers_at(), None);
+    assert!(
+        output(&mut harness, "/handover-at workers").starts_with(
+            "Workers hand over at 200k tokens of input, their model's own size. /handover-at [main|workers] 200k sets another size"
+        )
+    );
+    // While r1 waits for its first answer.
+    until(|| !harness.crew.as_ref().unwrap().running().is_empty()).await;
+    assert_eq!(
+        output(&mut harness, "/handover-at workers 100k"),
+        "Workers now hand over at 100k tokens of input, those running from their next step."
+    );
+    assert_eq!(harness.handover.at(), 300_000, "the main agent's stays");
+    assert_eq!(
+        harness.session.load_settings().unwrap().workers_handover_at,
+        Some(100_000)
+    );
+    hold.notify_one();
+    let workflow = harness.workflow().clone();
+    until(|| {
+        workflow
+            .subagents()
+            .first()
+            .is_some_and(|run| run.report.as_deref() == Some("Read it."))
+    })
+    .await;
+    let asked = body(&bodies, "Your conversation is getting long", "REPORT:");
+    assert!(asked.contains("You are agent run r1"), "{asked}");
+    harness.crew.as_ref().unwrap().shutdown().await;
+
+    // A session without workers.
+    let temp = tempfile::tempdir().unwrap();
+    let (mut alone, _inputs, _sender) = super::harness(temp.path(), LLMClient::new(), true);
+    alone.settings.max_workers = 0;
+    alone.crew = None;
+    assert!(alone.live_command("/handover-at workers 100k", Source::Terminal));
+    assert!(says(&alone.feed, "output", "This session has no workers"));
+    assert_eq!(
+        output(&mut alone, "/handover-at 250k"),
+        "The main agent now hands over at 250k tokens of input."
+    );
+    assert_eq!(alone.handover.workers_at(), None);
 }
