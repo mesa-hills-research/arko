@@ -86,7 +86,7 @@ pub const COMMANDS: &[Command] = &[
     Command::screen(
         "/settings",
         "",
-        "the view, theme, mouse, outside access, handover size, background commands, text replies, extra rules, project instructions, web page and API keys",
+        "the view, theme, mouse, outside access, handover size, background commands, text replies, extra rules, Claude Code compaction, project instructions, web page and API keys",
     ),
     Command {
         name: "/model",
@@ -130,6 +130,13 @@ pub const COMMANDS: &[Command] = &[
         name: "/text-replies",
         args: "on|off",
         about: "how the main agent ends its turns: with a plain reply (on) or by calling complete_task (off). It changes before the conversation starts (/text-replies off)",
+        aliases: &[],
+        runs: Runs::Session,
+    },
+    Command {
+        name: "/cc-compact",
+        args: "on|off",
+        about: "what agents on cc: models do at the handover size: Claude Code compacts their conversation (on) or they hand over as on the other providers (off). It changes before the conversation starts (/cc-compact off)",
         aliases: &[],
         runs: Runs::Session,
     },
@@ -202,6 +209,7 @@ const CHOICES: &[(&str, &[&str], &[&str])] = &[
     ("/outside", &[], ON_OFF),
     ("/background-after", &[], &["off"]),
     ("/text-replies", &[], ON_OFF),
+    ("/cc-compact", &[], ON_OFF),
     ("/extra-rules", &[], &["small", "all", "off"]),
     (
         "/project-instructions",

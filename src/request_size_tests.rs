@@ -109,6 +109,7 @@ async fn request_sizes() {
             index_tools: index::TOOL_NAMES,
             indexes: &known,
             text_replies,
+            cc_compact: true,
             extra_rules: Default::default(),
         };
         let main_config = agents::main_config(&settings).unwrap();

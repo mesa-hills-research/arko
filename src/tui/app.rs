@@ -1175,6 +1175,9 @@ impl App {
         if commands::find("/extra-rules small").is_some() {
             rows.push(SettingsRow::Rules);
         }
+        if commands::find("/cc-compact on").is_some() && self.in_claude_code() {
+            rows.push(SettingsRow::Compact);
+        }
         rows.push(SettingsRow::Page);
         if commands::find("/project-instructions one").is_some() {
             rows.push(SettingsRow::ProjectFiles);
@@ -1353,6 +1356,14 @@ impl App {
                         "/text-replies off"
                     });
                 }
+                SettingsRow::Compact => {
+                    let on = !self.cc_compact();
+                    self.send(if on {
+                        "/cc-compact on"
+                    } else {
+                        "/cc-compact off"
+                    });
+                }
                 SettingsRow::Rules => {
                     let all = ExtraRules::ALL;
                     let index = all.iter().position(|rules| *rules == self.extra_rules());
@@ -1440,6 +1451,19 @@ impl App {
     /// Whether the main agent ends its turns with a reply in plain text.
     pub fn text_replies(&self) -> bool {
         self.reading.settings.text_replies
+    }
+
+    /// Whether the agents on `cc:` models compact at the handover size
+    /// (else they hand over).
+    pub fn cc_compact(&self) -> bool {
+        self.reading.settings.cc_compact
+    }
+
+    /// Whether an agent of the session runs in Claude Code: the main agent,
+    /// or the workers it starts.
+    fn in_claude_code(&self) -> bool {
+        let models = &self.reading.models;
+        models.main.starts_with("cc:") || models.workers.starts_with("cc:")
     }
 
     /// Which agents get the extra rules for small models.
@@ -2159,6 +2183,37 @@ pub(super) mod tests {
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         press(&mut app, KeyCode::Left, KeyModifiers::NONE);
         assert_eq!(sent(&mut app), ["/extra-rules all", "/extra-rules off"]);
+    }
+
+    /// What agents in Claude Code do at the handover size is a session
+    /// setting, shown only when an agent of the session is on a cc: model:
+    /// the row has them compact or hand over with `/cc-compact`.
+    #[test]
+    fn the_claude_code_row_sends_the_command() {
+        let mut app = app();
+        assert!(!app.settings_rows().contains(&SettingsRow::Compact));
+        let mut reading = app.reading.clone();
+        reading.models.workers = "cc:opus".into();
+        reading.settings.cc_compact = true;
+        app.set_reading(reading);
+        let rows = app.settings_rows();
+        let row = rows
+            .iter()
+            .position(|row| *row == SettingsRow::Compact)
+            .unwrap();
+        let rules = rows
+            .iter()
+            .position(|row| *row == SettingsRow::Rules)
+            .unwrap();
+        assert_eq!(row, rules + 1, "beside the other session settings");
+        app.overlay = Some(Overlay::Settings { row, picker: None });
+        press(&mut app, KeyCode::Right, KeyModifiers::NONE);
+        assert_eq!(sent(&mut app), ["/cc-compact off"]);
+        let mut reading = app.reading.clone();
+        reading.settings.cc_compact = false;
+        app.set_reading(reading);
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(sent(&mut app), ["/cc-compact on"]);
     }
 
     /// The project's instructions are a group of their own, after the

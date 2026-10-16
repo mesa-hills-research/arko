@@ -521,10 +521,10 @@ mod tests {
     fn the_size_set_is_the_runs_threshold_up_to_the_models_room() {
         let runs = Arc::new(Runs::default());
         let (handover, _) = handover_at(&runs, None);
-        handover.configure(Some(250_000), Some(737_600));
+        handover.configure(Some(250_000), Some(950_000));
         assert_eq!(handover.at(), 250_000);
         assert_eq!(handover.threshold().get(), None);
-        assert_eq!(handover.set_at(800_000), 737_600);
+        assert_eq!(handover.set_at(2_000_000), 950_000);
         assert_eq!(handover.set_at(300_000), 300_000);
         assert_eq!(handover.threshold().get(), Some(300_000));
         assert_eq!(handover.set_at(100_000), 100_000);
@@ -532,7 +532,7 @@ mod tests {
 
         // A resumed session's size, and a model with less room.
         let (handover, _) = handover_at(&runs, Some(600_000));
-        handover.configure(Some(250_000), Some(737_600));
+        handover.configure(Some(250_000), Some(950_000));
         assert_eq!(handover.at(), 600_000);
         handover.configure(Some(250_000), Some(400_000));
         assert_eq!(handover.threshold().get(), Some(400_000));
@@ -540,8 +540,8 @@ mod tests {
         handover.configure(Some(250_000), None);
         assert_eq!(handover.set_at(300_000), 250_000);
         // A session started over the model's room can go back to its size.
-        handover.configure(Some(900_000), Some(737_600));
-        assert_eq!(handover.set_at(1_000_000), 900_000);
+        handover.configure(Some(240_000), Some(190_000));
+        assert_eq!(handover.set_at(1_000_000), 240_000);
     }
 
     /// The watch leaves the size to the runtime: it asks for no handover
@@ -551,7 +551,7 @@ mod tests {
     async fn the_watch_warns_of_a_fresh_conversation_over_the_size() {
         let runs = Arc::new(Runs::default());
         let (handover, feed) = handover_at(&runs, Some(100_000));
-        handover.configure(Some(250_000), Some(737_600));
+        handover.configure(Some(250_000), Some(950_000));
         let run = Uuid::new_v4();
         let (sender, mut commands) = mpsc::channel(8);
         runs.bind(run, sender.downgrade());
@@ -591,7 +591,7 @@ mod tests {
     async fn the_watch_starts_over_after_a_compaction_or_a_turn() {
         let runs = Arc::new(Runs::default());
         let (handover, _) = handover_at(&runs, Some(100_000));
-        handover.configure(Some(250_000), Some(737_600));
+        handover.configure(Some(250_000), Some(950_000));
         let run = Uuid::new_v4();
         let (sender, mut commands) = mpsc::channel(8);
         runs.bind(run, sender.downgrade());
