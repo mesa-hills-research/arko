@@ -128,7 +128,6 @@ impl Output {
 
     /// Sends lines to `feed` from now on, which the full-screen view shows;
     /// echoes are left out.
-    #[cfg(feature = "tui")]
     pub fn to_feed(&self, feed: remote::Feed) {
         *self.feed.lock().unwrap() = Some(feed);
     }

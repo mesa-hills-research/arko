@@ -211,8 +211,12 @@ fn dotenv_paths(
 /// directory's.
 static CURRENT: Mutex<Option<Env>> = Mutex::new(None);
 
-/// The `Env` settings and keys are read from now: the session's.
+/// The `Env` settings and keys are read from now: the session's (each
+/// session's own, where several run in one process).
 pub fn current() -> Env {
+    if let Some(env) = crate::context::env() {
+        return env;
+    }
     CURRENT
         .lock()
         .unwrap()
@@ -223,7 +227,9 @@ pub fn current() -> Env {
 /// Reads settings and keys from `env` from now on: the session's, once it is
 /// known.
 pub fn use_env(env: Env) {
-    *CURRENT.lock().unwrap() = Some(env);
+    if !crate::context::set_env(&env) {
+        *CURRENT.lock().unwrap() = Some(env);
+    }
 }
 
 /// An API key added or removed in this process, which the other sessions

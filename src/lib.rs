@@ -21,6 +21,7 @@ mod claude_code;
 #[cfg(feature = "tui")]
 mod cli;
 mod commands;
+mod context;
 mod conversations;
 mod credentials;
 mod crew;
@@ -31,6 +32,7 @@ mod harness;
 mod index;
 mod inputs;
 mod keys;
+pub mod logging;
 mod mcp;
 mod message;
 #[cfg(any(test, feature = "testing"))]
@@ -64,7 +66,7 @@ use std::sync::Mutex;
 #[cfg(feature = "tui")]
 pub use crate::cli::cli_main;
 pub use crate::credentials::{Env, Need};
-pub use crate::engine::{Engine, FrontEnd, OpenError, RunEnd, Seam, SessionInfo};
+pub use crate::engine::{Engine, FrontEnd, OpenError, RunEnd, Running, Seam, SessionInfo, spawn};
 pub(crate) use crate::harness::{Conversation, Harness, conversation_of};
 #[cfg(test)]
 pub(crate) use crate::harness::{Managers, tests};

@@ -8,7 +8,7 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
 use crate::agents::{AgentSettings, MAIN};
 use crate::credentials::{Need, VOYAGE_KEY};
@@ -141,6 +141,82 @@ pub enum RunEnd {
     Quit,
 }
 
+/// A session running on threads of its own: see [`spawn`].
+pub struct Running {
+    /// The session opened (its seam, to show it and send it input), or why
+    /// it didn't.
+    pub opened: oneshot::Receiver<Result<Seam, OpenError>>,
+    /// How it ended, once it has shut down and its threads are gone. (It
+    /// fails when the session didn't open.)
+    pub ended: oneshot::Receiver<RunEnd>,
+}
+
+/// Opens the session `options` choose and runs it until the user quits
+/// (`Input::Quit`), on a thread and a runtime of its own: several sessions
+/// run side by side in one process, each with its own settings (its
+/// folder's `.env`) and its log lines tagged with its ID
+/// ([`ProcessLog`](crate::logging::ProcessLog)), and nothing it started
+/// outlives it. The front end is an app's: it draws the banner itself, asks
+/// before quitting with jobs running ([`Seam::quit_asks`]), and shows
+/// Arko's lines from the feed.
+pub fn spawn(options: Options, prompter: Arc<dyn Prompter>) -> Running {
+    static SESSIONS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let number = SESSIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let (opened_sender, opened) = oneshot::channel();
+    let (ended_sender, ended) = oneshot::channel();
+    let context = Arc::new(crate::context::SessionContext::default());
+    let name = format!("arko-s{number}");
+    let thread = std::thread::Builder::new()
+        .name(name.clone())
+        .spawn(move || {
+            crate::context::enter(context.clone());
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .thread_name(name)
+                .on_thread_start(move || crate::context::enter(context.clone()))
+                .enable_all()
+                .build();
+            let runtime = match runtime {
+                Ok(runtime) => runtime,
+                Err(error) => {
+                    let _ = opened_sender.send(Err(OpenError::Failed(error.to_string())));
+                    return;
+                }
+            };
+            let end = runtime.block_on(async move {
+                let (mut engine, seam) = match Engine::open(options, prompter).await {
+                    Ok(open) => open,
+                    Err(error) => {
+                        let _ = opened_sender.send(Err(error));
+                        return None;
+                    }
+                };
+                engine.output().to_feed(seam.feed.clone());
+                engine.front_end(FrontEnd {
+                    boxed_banner: true,
+                    asks_to_quit: true,
+                });
+                let end = if opened_sender.send(Ok(seam)).is_ok() {
+                    engine.run().await
+                } else {
+                    // No one to show it to.
+                    RunEnd::Quit
+                };
+                engine.shutdown().await;
+                Some(end)
+            });
+            // Whatever the session left running stops here.
+            runtime.shutdown_timeout(std::time::Duration::from_secs(2));
+            if let Some(end) = end {
+                let _ = ended_sender.send(end);
+            }
+        });
+    if let Err(error) = thread {
+        log::error!("could not start a session's thread: {error}");
+    }
+    Running { opened, ended }
+}
+
 /// An open session.
 pub struct Engine {
     /// Held while the session is open; released after shutdown.
@@ -193,6 +269,9 @@ impl Engine {
             .map(|session| session.lock(options.app))
             .transpose()
             .map_err(OpenError::from_lock)?;
+        if let Some(session) = &resumed {
+            crate::context::name_session(&session.id);
+        }
         let (session, settings, new) = match resumed {
             Some(session) => {
                 let mut settings = session.load_settings()?;
@@ -326,6 +405,7 @@ impl Engine {
                 let session = Session::create(&root)
                     .map_err(|error| format!("could not create a session: {error}"))?;
                 lock = Some(session.lock(options.app).map_err(OpenError::from_lock)?);
+                crate::context::name_session(&session.id);
                 session
             }
         };
@@ -610,7 +690,6 @@ impl Engine {
 
     /// Where Arko prints: the front end attaches a printer to it, or the
     /// feed it shows.
-    #[cfg(feature = "tui")]
     pub(crate) fn output(&self) -> Arc<Output> {
         self.harness.output.clone()
     }
@@ -704,10 +783,12 @@ mod tests {
 
     use super::*;
     use crate::agents::{Effort, ModelSettings, resolve_model};
-    use crate::mock_model::{ModelServer, complete};
+    use crate::mock_model::{ModelServer, complete, reply};
     use crate::options::GivenClient;
     use crate::prompter::NoPrompter;
+    use crate::providers::OpenAiAuth;
     use crate::session::Settings;
+    use crate::shell::WindowsShell;
 
     /// The engine, its seam and its futures can go to any thread: a front
     /// end can run a session on a runtime of its own or on a shared one.
@@ -721,6 +802,185 @@ mod tests {
         send(engine.shutdown());
         fn sendable<T: Send + 'static>() {}
         sendable::<Seam>();
+    }
+
+    /// Two sessions run side by side in one process, each on its own
+    /// runtime: each reads its own folder's settings, answers its messages
+    /// in its own feed, holds its own lock and tags its log lines with its
+    /// ID; once closed, its threads are gone.
+    #[tokio::test]
+    async fn two_sessions_run_turns_at_once() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("arko");
+        let log = temp.path().join("logs").join("arko-studio.log");
+        let logging = crate::logging::ProcessLog::install(&log);
+        let server = ModelServer::start(Arc::new(|_, body: String| {
+            Box::pin(async move {
+                if body.contains("Hello, first.") {
+                    reply("a1", "First's answer.")
+                } else {
+                    reply("b1", "Second's answer.")
+                }
+            })
+        }))
+        .await;
+        let start = |name: &str, shell: &str| {
+            let workspace = temp.path().join(name);
+            std::fs::create_dir_all(&workspace).unwrap();
+            std::fs::write(workspace.join(".env"), format!("ARKO_SHELL={shell}\n")).unwrap();
+            spawn(
+                Options {
+                    root: Some(root.clone()),
+                    workspace: Some(workspace),
+                    model: Some("luna".into()),
+                    openai_auth: Some(OpenAiAuth::ApiKey),
+                    cache_1h: Some(false),
+                    text_replies: Some(true),
+                    client: Some(GivenClient(Arc::new(server.client()))),
+                    ..Options::default()
+                },
+                Arc::new(NoPrompter),
+            )
+        };
+        let wait = Duration::from_secs(30);
+        let (first, second) = (start("first", "powershell"), start("second", "cmd"));
+        let first_seam = tokio::time::timeout(wait, first.opened)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let second_seam = tokio::time::timeout(wait, second.opened)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let shell_of = |id: &str| {
+            Session::open(&root, id)
+                .unwrap()
+                .load_settings()
+                .unwrap()
+                .windows_shell
+        };
+        assert_eq!(
+            shell_of(&first_seam.session.id),
+            Some(WindowsShell::Powershell)
+        );
+        assert_eq!(shell_of(&second_seam.session.id), Some(WindowsShell::Cmd));
+
+        // A session open in this process can't be opened again.
+        let again = spawn(
+            Options {
+                root: Some(root.clone()),
+                session: SessionChoice::Resume(first_seam.session.id.clone()),
+                ..Options::default()
+            },
+            Arc::new(NoPrompter),
+        );
+        match tokio::time::timeout(wait, again.opened)
+            .await
+            .unwrap()
+            .unwrap()
+        {
+            Err(OpenError::Locked {
+                holder: Some(holder),
+            }) => {
+                assert_eq!(
+                    (holder.app.as_str(), holder.pid),
+                    ("arko-studio", std::process::id())
+                );
+            }
+            Err(error) => panic!("{error}"),
+            Ok(_) => panic!("opened twice"),
+        }
+
+        first_seam
+            .input
+            .send(Input::Line("Hello, first.".into()))
+            .unwrap();
+        second_seam
+            .input
+            .send(Input::Line("Hello, second.".into()))
+            .unwrap();
+        let texts = |seam: &Seam| -> Vec<String> {
+            seam.feed
+                .subscribe()
+                .0
+                .items
+                .into_iter()
+                .map(|item| item.text)
+                .collect()
+        };
+        tokio::time::timeout(wait, async {
+            loop {
+                let (one, two) = (texts(&first_seam), texts(&second_seam));
+                if one.iter().any(|text| text.contains("First's answer."))
+                    && two.iter().any(|text| text.contains("Second's answer."))
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(
+            !texts(&first_seam)
+                .iter()
+                .any(|text| text.contains("Second's"))
+        );
+        assert!(
+            !texts(&second_seam)
+                .iter()
+                .any(|text| text.contains("First's"))
+        );
+
+        for seam in [&first_seam, &second_seam] {
+            seam.input.send(Input::Quit(Some(Vec::new()))).unwrap();
+        }
+        assert_eq!(
+            tokio::time::timeout(wait, first.ended)
+                .await
+                .unwrap()
+                .unwrap(),
+            RunEnd::Quit
+        );
+        assert_eq!(
+            tokio::time::timeout(wait, second.ended)
+                .await
+                .unwrap()
+                .unwrap(),
+            RunEnd::Quit
+        );
+        // The sessions' locks are free again.
+        assert_eq!(crate::session::holder(&first_seam.session.dir), None);
+
+        #[cfg(target_os = "linux")]
+        {
+            let session_threads = || {
+                std::fs::read_dir("/proc/self/task")
+                    .unwrap()
+                    .filter_map(|task| std::fs::read_to_string(task.ok()?.path().join("comm")).ok())
+                    .filter(|name| name.starts_with("arko-s"))
+                    .count()
+            };
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while session_threads() > 0 {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .expect("the sessions' threads end");
+        }
+
+        // The process's log tags each session's lines. (When another test
+        // installed a logger first, there is nothing to read here.)
+        if logging.is_ok() {
+            log::logger().flush();
+            let text = std::fs::read_to_string(&log).unwrap();
+            for id in [&first_seam.session.id, &second_seam.session.id] {
+                assert!(text.contains(&format!("] [{id}] ")), "{id}: {text}");
+            }
+        }
     }
 
     /// A session open in another Arko isn't opened: the front end is told
