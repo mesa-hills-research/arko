@@ -52,6 +52,22 @@ pub(crate) fn env() -> Option<Env> {
     current().and_then(|context| crate::lock(&context.env).clone())
 }
 
+/// Runs `work` on this thread as a session with the settings `env` would
+/// run it (a session not yet opened, whose folder is known), then goes back
+/// to this thread's own context.
+pub(crate) fn with_env<T>(env: Env, work: impl FnOnce() -> T) -> T {
+    struct Restore(Option<Arc<SessionContext>>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            CONTEXT.with(|current| *current.borrow_mut() = self.0.take());
+        }
+    }
+    let context = SessionContext::default();
+    *crate::lock(&context.env) = Some(env);
+    let _restore = Restore(CONTEXT.with(|current| current.replace(Some(Arc::new(context)))));
+    work()
+}
+
 /// Sets the session's settings, when this thread works for a session in a
 /// context. Returns whether it did (else they are the process's).
 pub(crate) fn set_env(env: &Env) -> bool {

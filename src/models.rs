@@ -46,3 +46,134 @@ pub fn needs(reachable: &[String], name: &str) -> Option<String> {
         provider => Some(providers::credential_name(provider).to_string()),
     }
 }
+
+/// The models a new session can start on, before it opens: grouped as the
+/// picker groups them, each group with what it needs that isn't there, and
+/// the models a new session takes by default.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewSessionModels {
+    pub groups: Vec<ModelGroup>,
+    /// The main agent's model a new session takes by default (the last
+    /// session's, else one the credentials allow); `None` without any
+    /// credential.
+    pub main: Option<String>,
+    /// The workers' model by default, when it isn't the main agent's.
+    pub worker: Option<String>,
+    /// Why the default isn't the last session's models as they were: a
+    /// credential one of them needs is gone.
+    pub note: Option<String>,
+}
+
+/// The models a new session in Arko's folder `root` can start on, checked
+/// as opening one checks them: the keys (also those in the `.env` files of
+/// `workspace`, the session's folder, else the current directory), the
+/// ChatGPT login, Claude Code. It may run `claude auth status`: call it off
+/// a UI thread.
+pub fn for_new_session(
+    root: &std::path::Path,
+    workspace: Option<&std::path::Path>,
+) -> NewSessionModels {
+    let folder = workspace
+        .map(std::path::Path::to_path_buf)
+        .or_else(|| std::env::current_dir().ok());
+    let env = crate::credentials::Env::for_folder(folder.as_deref(), true);
+    crate::context::with_env(env, || models_for_new_session(root))
+}
+
+fn models_for_new_session(root: &std::path::Path) -> NewSessionModels {
+    let default = providers::default_models(None, root);
+    let auth = providers::choose_openai_auth(None, None)
+        .ok()
+        .map(|(auth, _)| auth);
+    let current: Vec<&str> = default
+        .iter()
+        .flat_map(|default| std::iter::once(default.main.as_str()).chain(default.worker.as_deref()))
+        .collect();
+    let groups = providers::model_menu(
+        |name| providers::missing_credential(name, None),
+        auth,
+        &current,
+    );
+    NewSessionModels {
+        groups,
+        main: default.as_ref().map(|default| default.main.clone()),
+        worker: default.as_ref().and_then(|default| default.worker.clone()),
+        note: default.and_then(|default| default.reason),
+    }
+}
+
+/// A model's name as people say it ("Opus 5.5", "GPT-6.1 Sol", "Gemini
+/// 3.1 Pro Preview"), from an ID or alias as `/model` takes it. `cc:` and
+/// `openrouter:` say how a model is reached, not which it is: they are left
+/// out, as is an OpenRouter slug's maker.
+pub fn display_name(model: &str) -> String {
+    let id =
+        providers::resolve_model(model).map_or_else(|_| model.trim().to_string(), |model| model.id);
+    let id = id.rsplit('/').next().unwrap_or(&id);
+    let mut words: Vec<&str> = id.split('-').filter(|word| !word.is_empty()).collect();
+    // A date at the end (claude-sonnet-4-5-20250929) isn't part of the name.
+    if words
+        .last()
+        .is_some_and(|last| last.len() == 8 && last.chars().all(|c| c.is_ascii_digit()))
+    {
+        words.pop();
+    }
+    let capital = |word: &&str| -> String {
+        let mut chars = word.chars();
+        chars
+            .next()
+            .map(|first| first.to_uppercase().chain(chars).collect())
+            .unwrap_or_default()
+    };
+    match words.as_slice() {
+        // claude-opus-5-5 → Opus 5.5
+        ["claude", family, version @ ..] if !version.is_empty() => {
+            format!("{} {}", capital(family), version.join("."))
+        }
+        // gpt-6.1-sol → GPT-6.1 Sol
+        ["gpt", version, rest @ ..] => std::iter::once(format!("GPT-{version}"))
+            .chain(rest.iter().map(capital))
+            .collect::<Vec<_>>()
+            .join(" "),
+        words => words.iter().map(capital).collect::<Vec<_>>().join(" "),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Models go by the names people say, also by their aliases and on any
+    /// way to reach them.
+    #[test]
+    fn models_have_names_people_say() {
+        assert_eq!(display_name("claude-opus-5-5"), "Opus 5.5");
+        assert_eq!(display_name("gpt-6.1-sol"), "GPT-6.1 Sol");
+        assert_eq!(
+            display_name("gemini-3.1-pro-preview"),
+            "Gemini 3.1 Pro Preview"
+        );
+        assert_eq!(display_name("claude-sonnet-4-5-20250929"), "Sonnet 4.5");
+        assert_eq!(
+            display_name("openrouter:meta-llama/llama-4-maverick"),
+            "Llama 4 Maverick"
+        );
+        assert_eq!(
+            display_name("openrouter:anthropic/claude-opus-5.5"),
+            "Opus 5.5"
+        );
+        assert_eq!(display_name("luna"), "GPT-6 Luna");
+        assert_eq!(display_name("cc:opus"), "Opus 5.5");
+    }
+
+    /// A new session's models come grouped, before any session opens.
+    #[test]
+    fn a_new_sessions_models_are_listed_before_it_opens() {
+        let root = tempfile::tempdir().unwrap();
+        let models = for_new_session(root.path(), Some(root.path()));
+        assert!(!models.groups.is_empty());
+        assert!(models.groups.iter().all(|group| !group.models.is_empty()));
+        // The thread is back in its own context, outside any session.
+        assert!(crate::context::env().is_none());
+    }
+}
