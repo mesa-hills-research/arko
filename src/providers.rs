@@ -1540,6 +1540,7 @@ mod tests {
             extra_rules: Default::default(),
             project_instructions: Default::default(),
             worker_project_instructions: false,
+            background_after: 0,
         }
     }
 

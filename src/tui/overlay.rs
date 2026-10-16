@@ -55,6 +55,7 @@ pub enum SettingsRow {
     Mouse,
     Outside,
     Handover,
+    Background,
     Replies,
     Rules,
     Page,
@@ -67,6 +68,10 @@ pub enum SettingsRow {
 pub const HANDOVER_STEPS: [usize; 9] = [
     100_000, 150_000, 200_000, 250_000, 300_000, 400_000, 500_000, 750_000, 1_000_000,
 ];
+
+/// The times ← and → step through for when shell commands move to the
+/// background, in seconds (0: never).
+pub const BACKGROUND_STEPS: [u64; 9] = [0, 60, 120, 300, 600, 900, 1_200, 1_800, 3_600];
 
 /// The theme picker, open in the settings.
 #[derive(Debug, Clone, PartialEq)]
@@ -207,6 +212,10 @@ pub const KEYS: &[(&str, &str)] = &[
     (
         "End",
         "back to the bottom, when the box is empty (Ctrl+End always)",
+    ),
+    (
+        "Ctrl+B",
+        "move the agent's running shell command to the background, else back a character",
     ),
     ("Ctrl+O", "next view: full, quiet, messages"),
     ("Ctrl+T", "the agent list: Enter shows a worker's own work"),
@@ -399,6 +408,30 @@ fn settings(frame: &mut Frame, app: &App, area: Rect, selected: usize) {
                 ],
                 "The input size the main agent hands over at: it writes a report of its work and goes on from it, fresh. On cc: models, Claude Code compacts the conversation at that size instead. /handover does it now."
                     .to_string(),
+            ),
+            SettingsRow::Background => (
+                "Session",
+                "Background",
+                vec![
+                    Span::styled(format!("{} ", glyphs::render("←")), theme.dim()),
+                    Span::styled(
+                        match app.background_after() {
+                            0 => " off ".to_string(),
+                            after => {
+                                format!(" after {} ", crate::shell::shown_background_after(after))
+                            }
+                        },
+                        theme.chosen(),
+                    ),
+                    Span::styled(format!(" {}", glyphs::render("→")), theme.dim()),
+                ],
+                match app.background_after() {
+                    0 => "Shell commands stay in the foreground until they finish. Ctrl+B moves one to the background at once.".to_string(),
+                    after => format!(
+                        "A shell command still running after {} moves to the background, where it goes on as a job and the agent goes on with its work. Ctrl+B moves one at once.",
+                        crate::shell::background_after_words(after)
+                    ),
+                },
             ),
             SettingsRow::Replies => (
                 "Session",

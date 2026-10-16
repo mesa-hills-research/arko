@@ -862,6 +862,7 @@
       ? 'The agents may work anywhere on this computer.'
       : 'The agents stay in ' + (info.workspace || 'the workspace') + '.';
     $('handover-value').textContent = settings.handover_at ? C.tokens(settings.handover_at) + ' tokens' : 'Not set';
+    $('background-value').textContent = settings.background_after ? duration(settings.background_after) : 'Off';
     // Text replies change only before the conversation starts.
     const replies = $('replies-switch');
     const replying = pending && pending.replies !== undefined;
@@ -926,6 +927,13 @@
     }
     $('workers-more').hidden = !(status && status.workers);
     $('workers-text').textContent = (status && status.workers) || '';
+  }
+
+  /** A time in seconds as the sheet says it: `10 min`, `90 s`, `1 h`. */
+  function duration(seconds) {
+    if (seconds % 3600 === 0) return seconds / 3600 + ' h';
+    if (seconds % 60 === 0) return seconds / 60 + ' min';
+    return seconds + ' s';
   }
 
   function note(id, message, error) {
@@ -1040,6 +1048,19 @@
     // Arko reads the size ("200k", "200000") and says what's wrong with it.
     command('/handover-at ' + size, 'handover-note', (settings) => settings.handover_at !== before).then((sent) => {
       if (sent) $('handover-input').value = '';
+    });
+  });
+  $('background-form').addEventListener('submit', (event) => {
+    event.preventDefault();
+    const time = $('background-input').value.trim();
+    if (!time) {
+      note('background-note', 'Give a time, such as 10m, or off.', true);
+      return;
+    }
+    const before = status && status.settings ? status.settings.background_after : 0;
+    // Arko reads the time ("90s", "10m", "off") and says what's wrong with it.
+    command('/background-after ' + time, 'background-note', (settings) => settings.background_after !== before).then((sent) => {
+      if (sent) $('background-input').value = '';
     });
   });
   $('handover-now').addEventListener('click', () => ($('handover-confirm').hidden = false));

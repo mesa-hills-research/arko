@@ -16,7 +16,7 @@ use serde_json::Value;
 use super::feed::{CallStatus, Item, Kind, Level};
 use crate::crew;
 use crate::message;
-use crate::shell::SHELL_TOOL_NAME;
+use crate::shell::{IN_THE_BACKGROUND, SHELL_TOOL_NAME};
 use crate::ui;
 
 type Parameters = HashMap<String, Value>;
@@ -296,12 +296,22 @@ pub fn outcome(tool: &str, output: &str) -> Outcome {
 fn command_outcome(output: &str) -> Outcome {
     let mut lines = output.lines();
     let status = lines.next().unwrap_or_default();
-    let rest: Vec<&str> = lines.collect();
-    let ok = status.starts_with("exit code 0,");
+    let mut rest: Vec<&str> = lines.collect();
+    // "in the background as job 1f0c…, 600.0 s", then what the agent can do
+    // with it (left out), then the output so far.
+    let job = status
+        .strip_prefix(IN_THE_BACKGROUND)
+        .and_then(|rest| rest.split(',').next());
+    if job.is_some() && !rest.is_empty() {
+        rest.remove(0);
+    }
+    let ok = status.starts_with("exit code 0,") || job.is_some();
     // "exit code 1, 2.0 s", "cancelled, 0.4 s", "stopped after 60 s (timeout_seconds), 60.0 s"
     let (how, time) = status.rsplit_once(", ").unwrap_or((status, ""));
     let tests = tests(&rest);
-    let text = if ok {
+    let text = if let Some(job) = job {
+        format!("in the background · job {}", job.get(..8).unwrap_or(job))
+    } else if ok {
         tests.unwrap_or_else(|| time.to_string())
     } else {
         let how = match how.strip_prefix("exit code ") {
@@ -517,5 +527,24 @@ mod tests {
         assert_eq!(failed.text.as_deref(), Some("boom"));
         assert_eq!(failed.block.unwrap().text, "boom\nat line 3");
         assert!(Outcome::failed("short").block.is_none());
+    }
+
+    /// A command moved to the background shows as such, with its output so
+    /// far, not as a failure.
+    #[test]
+    fn a_command_moved_to_the_background() {
+        let output = "in the background as job 1f0c2d3e-0000-4000-8000-000000000000, 600.0 s\nIt ran longer than 10 minutes, so it moved to the background. It goes on running.\nCompiling arko\nCompiling arko_agents";
+        let moved = outcome(SHELL_TOOL_NAME, output);
+        assert_eq!(moved.status, CallStatus::Ok);
+        assert_eq!(
+            moved.text.as_deref(),
+            Some("in the background · job 1f0c2d3e")
+        );
+        let block = moved.block.unwrap();
+        assert_eq!(block.level, None);
+        assert_eq!(
+            block.detail.as_deref(),
+            Some("Compiling arko\nCompiling arko_agents")
+        );
     }
 }

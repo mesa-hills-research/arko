@@ -240,6 +240,7 @@ async fn remote_page_demo() {
         text_replies: Default::default(),
         extra_rules: Default::default(),
         project: Default::default(),
+        background: managers.background.clone(),
     });
     harness.open(false).unwrap();
     let _ = feed_cell.set(harness.feed.clone());

@@ -375,8 +375,12 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
     } else {
         let pairs: &[(&str, &str)] = if app.list_focus.is_some() {
             &[("Enter", "view"), ("Esc", "back to the box")]
+        } else if app.watching.is_some() && app.command_running() {
+            &[("Ctrl+B", "background"), ("Esc", "back")]
         } else if app.watching.is_some() {
             &[("Esc", "back")]
+        } else if app.activity.working && app.activity.question.is_none() && app.command_running() {
+            &[("Ctrl+B", "background"), ("Ctrl+C", "stop")]
         } else if app.activity.working && app.activity.question.is_none() {
             &[("Ctrl+C", "stop")]
         } else {
@@ -649,6 +653,35 @@ mod tests {
         let rows = screen(&mut app, 80, 6);
         assert!(
             rows[2].starts_with(" ○ idle · last turn 0s · 142k/250k · $3.20 · quiet"),
+            "{}",
+            rows[2]
+        );
+    }
+
+    /// While the agent shown runs a shell command, the status line offers
+    /// Ctrl+B, the main agent's or a watched worker's.
+    #[test]
+    fn the_status_line_offers_ctrl_b_while_a_command_runs() {
+        let mut app = app();
+        app.set_activity(Activity {
+            working: true,
+            question: None,
+        });
+        app.reading.commands = vec!["main".into()];
+        let rows = screen(&mut app, 80, 6);
+        assert!(
+            rows[2].ends_with("Ctrl+B  background   Ctrl+C  stop"),
+            "{}",
+            rows[2]
+        );
+        app.watching = Some("r1".into());
+        let rows = screen(&mut app, 80, 6);
+        assert!(rows[2].ends_with("Esc  back"), "{}", rows[2]);
+        assert!(!rows[2].contains("Ctrl+B"), "{}", rows[2]);
+        app.reading.commands = vec!["r1".into()];
+        let rows = screen(&mut app, 80, 6);
+        assert!(
+            rows[2].ends_with("Ctrl+B  background   Esc  back"),
             "{}",
             rows[2]
         );

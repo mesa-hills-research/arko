@@ -86,7 +86,7 @@ pub const COMMANDS: &[Command] = &[
     Command::screen(
         "/settings",
         "",
-        "the view, theme, mouse, outside access, handover size, text replies, extra rules, project instructions, web page and API keys",
+        "the view, theme, mouse, outside access, handover size, background commands, text replies, extra rules, project instructions, web page and API keys",
     ),
     Command {
         name: "/model",
@@ -116,6 +116,13 @@ pub const COMMANDS: &[Command] = &[
         name: "/outside",
         args: "on|off",
         about: "outside access: whether the agents may change paths outside the working directory (/outside on, /outside off)",
+        aliases: &[],
+        runs: Runs::Session,
+    },
+    Command {
+        name: "/background-after",
+        args: "DURATION|off",
+        about: "when a shell command still running moves to the background, where it goes on as a job and the agent goes on with its work (/background-after 10m, /background-after off)",
         aliases: &[],
         runs: Runs::Session,
     },
@@ -193,6 +200,7 @@ const ON_OFF: &[&str] = &["on", "off"];
 const CHOICES: &[(&str, &[&str], &[&str])] = &[
     ("/view", &[], &["full", "quiet", "messages"]),
     ("/outside", &[], ON_OFF),
+    ("/background-after", &[], &["off"]),
     ("/text-replies", &[], ON_OFF),
     ("/extra-rules", &[], &["small", "all", "off"]),
     (
