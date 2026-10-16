@@ -32,18 +32,25 @@ struct Budget {
     items: usize,
     /// About this many bytes of text.
     bytes: usize,
+    /// About this many bytes of commands' whole outputs (an item's
+    /// `whole`), the latest. They don't count in `bytes`, so long outputs
+    /// don't push items out. Past it, the oldest commands' blocks keep
+    /// their first lines only.
+    wholes: usize,
 }
 
 /// The main transcript kept for clients that connect.
 const MAIN_BUDGET: Budget = Budget {
     items: 3000,
     bytes: 2 * 1024 * 1024,
+    wholes: 4 * 1024 * 1024,
 };
 /// The workers' items, kept apart: a busy worker doesn't push the main
 /// agent's items out.
 const WORKER_BUDGET: Budget = Budget {
     items: 3000,
     bytes: 2 * 1024 * 1024,
+    wholes: 4 * 1024 * 1024,
 };
 /// Updates a client's stream may fall behind by before it starts over.
 const BACKLOG: usize = 2048;
@@ -157,6 +164,11 @@ pub struct Item {
     /// call's own line.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub outcome: Option<String>,
+    /// A command's whole output, when its `detail` shows the first lines:
+    /// the terminal's view opens it on a click. The web page doesn't get
+    /// it, and its clones share it.
+    #[serde(skip)]
+    pub whole: Option<Arc<str>>,
     /// The worker a `worker_line` stands for.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub worker: Option<String>,
@@ -182,6 +194,7 @@ impl Item {
             delivery: None,
             status: None,
             outcome: None,
+            whole: None,
             worker: None,
             call: None,
         }
@@ -213,6 +226,11 @@ impl Item {
         96 + self.text.len()
             + self.detail.as_ref().map_or(0, String::len)
             + self.outcome.as_ref().map_or(0, String::len)
+    }
+
+    /// The bytes of its whole output.
+    pub fn whole_size(&self) -> usize {
+        self.whole.as_ref().map_or(0, |whole| whole.len())
     }
 }
 
@@ -334,17 +352,31 @@ struct Inner {
 struct Lane {
     items: VecDeque<Item>,
     bytes: usize,
+    /// The bytes of the items' whole outputs.
+    wholes: usize,
 }
 
 impl Lane {
     fn push(&mut self, item: Item, budget: Budget) {
         self.bytes += item.size();
+        self.wholes += item.whole_size();
         self.items.push_back(item);
         while self.items.len() > budget.items || self.bytes > budget.bytes {
             match self.items.pop_front() {
-                Some(old) => self.bytes = self.bytes.saturating_sub(old.size()),
+                Some(old) => {
+                    self.bytes = self.bytes.saturating_sub(old.size());
+                    self.wholes -= old.whole_size();
+                }
                 None => break,
             }
+        }
+        // The oldest whole outputs go first.
+        for item in self.items.iter_mut() {
+            if self.wholes <= budget.wholes {
+                break;
+            }
+            self.wholes -= item.whole_size();
+            item.whole = None;
         }
     }
 
@@ -1585,6 +1617,45 @@ mod tests {
         assert!(sent(updates(&mut receiver)).is_empty(), "too soon");
         tokio::time::sleep(WORKER_EVERY * 2).await;
         assert_eq!(sent(updates(&mut receiver)), [50]);
+    }
+
+    /// A command's whole output stays on its block for the terminal's
+    /// view, out of what the web page gets, and only the latest outputs
+    /// keep theirs.
+    #[test]
+    fn whole_outputs_are_kept_apart_and_bounded() {
+        let feed = Feed::new("main");
+        let run = |output: &str| {
+            let call = Uuid::new_v4();
+            feed.event(&event("main", shell(call, "seq")), None);
+            let output = format!("exit code 0, 0.1 s\n{output}");
+            feed.event(&event("main", result(call, &output)), None);
+        };
+        let output = (1..=10).map(|n| n.to_string()).collect::<Vec<_>>();
+        run(&output.join("\n"));
+        let block = items(&feed).pop().unwrap();
+        assert_eq!(block.detail.as_deref(), Some("1\n2\n3\n4\n… 6 more lines"));
+        assert_eq!(block.whole.as_deref(), Some(output.join("\n").as_str()));
+        let json = serde_json::to_value(&block).unwrap();
+        assert!(json.get("whole").is_none(), "{json}");
+        assert!(json.get("detail").is_some());
+        // (A short output has nothing more to show.)
+        run("1\n2");
+        assert_eq!(items(&feed).pop().unwrap().whole, None);
+        // About a quarter of the budget each: the oldest lose theirs.
+        let long = "x\n".repeat(MAIN_BUDGET.wholes / 8);
+        for _ in 0..6 {
+            run(&long);
+        }
+        let wholes: Vec<usize> = items(&feed)
+            .iter()
+            .filter(|item| item.kind == Kind::Result)
+            .map(Item::whole_size)
+            .collect();
+        assert_eq!(wholes.len(), 8, "the blocks stay");
+        assert!(wholes.iter().sum::<usize>() <= MAIN_BUDGET.wholes);
+        assert_eq!(wholes[0], 0);
+        assert!(wholes[7] > 0);
     }
 
     /// Each transcript keeps to its budget: the workers' items don't push

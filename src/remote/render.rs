@@ -292,7 +292,8 @@ pub fn outcome(tool: &str, output: &str) -> Outcome {
 }
 
 /// A shell command's outcome: its tests' counts when it ran tests, else
-/// its time, or how it failed; with its first lines of output as a block.
+/// its time, or how it failed; with its first lines of output as a block
+/// (and its whole output, when there are more).
 fn command_outcome(output: &str) -> Outcome {
     let mut lines = output.lines();
     let status = lines.next().unwrap_or_default();
@@ -321,7 +322,10 @@ fn command_outcome(output: &str) -> Outcome {
         }
     }
     let block = (!shown.is_empty()).then(|| {
-        let block = Item::new(Kind::Result, status).detail(shown.join("\n"));
+        let mut block = Item::new(Kind::Result, status).detail(shown.join("\n"));
+        if rest.len() > SHOWN_LINES {
+            block.whole = Some(rest.join("\n").into());
+        }
         if ok { block } else { block.level(Level::Warn) }
     });
     Outcome {

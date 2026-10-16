@@ -142,6 +142,8 @@ pub struct App {
     press: Option<Press>,
     /// The last click: when, where, and how many in a row.
     last_click: Option<(Instant, u16, u16, u8)>,
+    /// The block whose fold the last click opened or closed.
+    folded: Option<u64>,
     /// Where the agent list was drawn, and the row of its first line: for
     /// the mouse.
     pub list_drawn: (ratatui::layout::Rect, usize),
@@ -225,6 +227,7 @@ impl App {
             list_drawn: Default::default(),
             press: None,
             last_click: None,
+            folded: None,
             model_needs: model_picker::needs,
             key_states: crate::credentials::key_states,
             model_names: Default::default(),
@@ -1464,6 +1467,7 @@ impl App {
                     _ => 1,
                 };
                 self.last_click = Some((now, x, y, count));
+                let folded = self.folded.take();
                 let on_marker = self
                     .transcript
                     .drawn
@@ -1472,11 +1476,19 @@ impl App {
                 if on_marker || !self.transcript.drawn.area.contains(at) {
                     return;
                 }
-                let Some(point) = self.transcript.point_at(x, y) else {
+                let Some(mut point) = self.transcript.point_at(x, y) else {
                     return;
                 };
                 let filter = self.filter();
                 let theme = self.theme.clone();
+                // A double click on a fold's line selects a word of it: the
+                // fold its first click opened or closed goes back.
+                if count == 2
+                    && let Some(key) = folded
+                    && let Some(line) = self.transcript.toggle(key, y, &filter, &theme)
+                {
+                    point = super::transcript::Point { key, line, ..point };
+                }
                 let span = match count {
                     2 => self.transcript.word_at(point, &filter, &theme),
                     3 => self.transcript.line_at(point, &filter, &theme),
@@ -1573,8 +1585,9 @@ impl App {
 
     /// A click (no drag) at `at`: a row of the agent list shows that
     /// agent, the "new" marker goes to the end, a turn's counted calls
-    /// open in the Full view, and a worker's line opens its transcript.
-    /// Elsewhere it does nothing.
+    /// open in the Full view, a command's fold line opens or closes its
+    /// whole output, and a worker's line opens its transcript. Elsewhere it
+    /// does nothing.
     fn click(&mut self, at: ratatui::layout::Position) {
         if self.overlay.is_some() {
             return;
@@ -1603,6 +1616,12 @@ impl App {
         if self.transcript.is_counter(key) {
             self.set_view(View::Full);
             self.transcript.show(key);
+            return;
+        }
+        let (filter, theme) = (self.filter(), self.theme.clone());
+        if let Some(key) = self.transcript.fold_at(at.x, at.y, &filter, &theme) {
+            self.transcript.toggle(key, at.y, &filter, &theme);
+            self.folded = Some(key);
             return;
         }
         if let Some(item) = self.transcript.item(key)

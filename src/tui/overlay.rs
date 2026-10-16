@@ -221,7 +221,7 @@ pub const KEYS: &[(&str, &str)] = &[
     ),
     (
         "Click",
-        "open a worker's line, a row of the agent list or a count of calls",
+        "open a worker's line, a row of the agent list, a count of calls, or a command's whole output at its \"more lines\"",
     ),
 ];
 

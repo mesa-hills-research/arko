@@ -765,6 +765,91 @@ mod tests {
         );
     }
 
+    /// A click on a command's "more lines" opens its whole output, and a
+    /// click on the line that ends it closes it: the line clicked stays
+    /// under the mouse. A drag, a double click and a triple click select
+    /// text as anywhere else, and leave the block as it was.
+    #[test]
+    fn a_click_opens_and_closes_a_commands_output() {
+        use crate::remote::CallStatus;
+        use crate::tui::app::Effect;
+        use crossterm::event::{MouseButton, MouseEventKind};
+        let mut app = app();
+        let mut call = Item::new(Kind::Call, "$ seq 10");
+        call.status = Some(CallStatus::Ok);
+        // (As the feed makes a command's block.)
+        let output: Vec<String> = (1..=10).map(|n| format!("line {n}")).collect();
+        let mut block = Item::new(Kind::Result, "exit code 0, 0.1 s")
+            .detail(format!("{}\n… 6 more lines", output[..4].join("\n")));
+        block.whole = Some(output.join("\n").into());
+        block.call = Some(2);
+        let after = Item::new(Kind::Output, "a\nb\nc\nd\ne\nf");
+        for (id, mut item) in [Item::new(Kind::Reply, "Intro."), call, block, after]
+            .into_iter()
+            .enumerate()
+        {
+            item.id = id as u64 + 1;
+            app.update(Update::Item(item), Activity::default);
+        }
+        // Eight rows of transcript, scrolled up to the block's lines.
+        screen(&mut app, 40, 12);
+        app.transcript.scroll(-4);
+        let rows = screen(&mut app, 40, 12);
+        assert_eq!(rows[0], "  │ line 1");
+        assert_eq!(rows[4], "  │ … 6 more lines");
+        let left = MouseButton::Left;
+        let click = |app: &mut App, x: u16| {
+            mouse(app, MouseEventKind::Down(left), x, 4);
+            mouse(app, MouseEventKind::Up(left), x, 4);
+            screen(app, 40, 12)
+        };
+        let rows = click(&mut app, 12);
+        assert_eq!(
+            rows[..6],
+            [
+                "  │ line 7",
+                "  │ line 8",
+                "  │ line 9",
+                "  │ line 10",
+                "  │ ↑ show the first lines only",
+                "",
+            ]
+        );
+        // (Elsewhere on the line: the same cell again would be a double
+        // click.)
+        let rows = click(&mut app, 14);
+        assert_eq!(rows[0], "  │ line 1");
+        assert_eq!(rows[4], "  │ … 6 more lines");
+        assert!(app.take_effects().is_empty());
+        let copy = |text: &str, what: &str| Effect::Copy {
+            text: text.into(),
+            what: what.into(),
+        };
+        // A drag over it copies.
+        mouse(&mut app, MouseEventKind::Down(left), 4, 4);
+        mouse(&mut app, MouseEventKind::Drag(left), 7, 4);
+        mouse(&mut app, MouseEventKind::Up(left), 7, 4);
+        assert_eq!(screen(&mut app, 40, 12)[4], "  │ … 6 more lines");
+        assert_eq!(app.take_effects(), [copy("… 6", "3 characters")]);
+        // A double click copies a word, then a triple click (on another
+        // cell) the line. (Frames are drawn between the clicks.)
+        click(&mut app, 9);
+        let rows = click(&mut app, 9);
+        assert_eq!(rows[4], "  │ … 6 more lines");
+        for _ in 0..3 {
+            click(&mut app, 10);
+        }
+        assert_eq!(screen(&mut app, 40, 12)[4], "  │ … 6 more lines");
+        assert_eq!(
+            app.take_effects(),
+            [
+                copy("more", "4 characters"),
+                copy("more", "4 characters"),
+                copy("… 6 more lines", "14 characters"),
+            ]
+        );
+    }
+
     #[test]
     fn the_theme_picker_opens_with_the_flash_notice() {
         let mut app = app();

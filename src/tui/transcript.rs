@@ -71,16 +71,34 @@ impl View {
     }
 }
 
+/// About this many bytes of commands' whole outputs are kept, the latest
+/// (as the feed keeps them): an older command's block keeps its first lines.
+const WHOLES_KEPT: usize = 8 * 1024 * 1024;
+
 /// An item, with its lines as last drawn.
 struct Entry {
     item: Item,
     cache: Option<Cached>,
+    /// A command's block shows its whole output (a click opened it).
+    open: bool,
+}
+
+impl Entry {
+    fn new(item: Item) -> Self {
+        Self {
+            item,
+            cache: None,
+            open: false,
+        }
+    }
 }
 
 struct Cached {
     /// What the lines were drawn for.
     width: usize,
     style: u64,
+    /// A running call's time.
+    clock: Option<String>,
     lines: Vec<Wrapped>,
 }
 
@@ -196,6 +214,12 @@ pub struct Drawn {
 impl Drawn {
     /// The block on the screen's row `y` (not the blank line before it).
     pub fn key_at(&self, x: u16, y: u16) -> Option<u64> {
+        self.row_at(x, y).map(|row| row.key)
+    }
+
+    /// The block's line on the screen's row `y` (not the blank line
+    /// before it).
+    fn row_at(&self, x: u16, y: u16) -> Option<RowRef> {
         if !self.area.contains(ratatui::layout::Position { x, y }) {
             return None;
         }
@@ -204,7 +228,6 @@ impl Drawn {
             .copied()
             .flatten()
             .filter(|row| !row.gap)
-            .map(|row| row.key)
     }
 }
 
@@ -228,6 +251,9 @@ pub struct Transcript {
     pub drawn: Drawn,
     /// Lines a scroll moved while the screen was not drawn yet.
     pending_scroll: i64,
+    /// A fold was opened or closed: the next draw keeps its block's last
+    /// line (the one clicked) on this row of the area.
+    pin: Option<(u64, usize)>,
 }
 
 impl Default for Transcript {
@@ -248,6 +274,7 @@ impl Transcript {
             hold: false,
             drawn: Drawn::default(),
             pending_scroll: 0,
+            pin: None,
         }
     }
 
@@ -255,11 +282,7 @@ impl Transcript {
     /// fell behind): the reading position and selection stay on their
     /// items.
     pub fn reset(&mut self, snapshot: Snapshot) {
-        self.entries = snapshot
-            .items
-            .into_iter()
-            .map(|item| Entry { item, cache: None })
-            .collect();
+        self.entries = snapshot.items.into_iter().map(Entry::new).collect();
         self.workers = snapshot.workers;
         self.trim();
     }
@@ -268,7 +291,7 @@ impl Transcript {
     pub fn apply(&mut self, update: Update) {
         match update {
             Update::Item(item) => {
-                self.entries.push_back(Entry { item, cache: None });
+                self.entries.push_back(Entry::new(item));
                 self.trim();
             }
             // (Text added at an item's end leaves what is highlighted
@@ -306,8 +329,16 @@ impl Transcript {
     }
 
     /// Keeps as many items as the feed does, the main agent's and the
-    /// workers' each.
+    /// workers' each, and the latest whole outputs.
     fn trim(&mut self) {
+        let mut wholes = 0;
+        for entry in self.entries.iter_mut().rev() {
+            wholes += entry.item.whole_size();
+            if wholes > WHOLES_KEPT && entry.item.whole.take().is_some() {
+                entry.open = false;
+                entry.cache = None;
+            }
+        }
         let main = self.entries.iter().filter(|e| e.item.is_main()).count();
         let mut drop_main = main.saturating_sub(KEPT);
         let mut drop_workers = (self.entries.len() - main).saturating_sub(KEPT);
@@ -426,6 +457,7 @@ impl Transcript {
         // where the activity began.
         let mut counters: HashMap<Option<u64>, usize> = HashMap::new();
         let mut last_group: Option<Group> = blocks.first().map(|_| Group::Prose);
+        let now = chrono::Utc::now().timestamp_millis();
         for index in self.order() {
             let item = &self.entries[index].item;
             let shown = match filter.show(item) {
@@ -477,15 +509,24 @@ impl Transcript {
             let lines = match &shown {
                 Shown::Entry(index) => {
                     let entry = &mut self.entries[*index];
+                    let clock = running_time(&entry.item, now);
                     let fresh = entry
                         .cache
                         .as_ref()
-                        .is_some_and(|c| c.width == width && c.style == style);
+                        .is_some_and(|c| c.width == width && c.style == style && c.clock == clock);
                     if !fresh {
                         entry.cache = Some(Cached {
                             width,
                             style,
-                            lines: entry_lines(&entry.item, theme, width, own),
+                            lines: entry_lines(
+                                &entry.item,
+                                theme,
+                                width,
+                                own,
+                                entry.open,
+                                clock.as_deref(),
+                            ),
+                            clock,
                         });
                     }
                     entry.cache.as_ref().map_or(0, |c| c.lines.len())
@@ -578,6 +619,12 @@ impl Transcript {
                 }
             }
         };
+        // A fold opened or closed: the line clicked stays under the mouse.
+        if let Some((key, row)) = self.pin.take()
+            && let Some(index) = blocks.iter().position(|block| block.key == key)
+        {
+            top = (starts[index] + blocks[index].height()).saturating_sub(row + 1);
+        }
         if self.pending_scroll != 0 {
             top = (top as i64 + self.pending_scroll).clamp(0, bottom as i64) as usize;
             self.pending_scroll = 0;
@@ -841,6 +888,26 @@ impl Transcript {
     /// The drag ended: at the bottom, the view follows again.
     pub fn release(&mut self) {
         self.hold = false;
+    }
+
+    /// The command's block whose fold line is on the screen's `x`, `y`:
+    /// its last line, which opens or closes its whole output.
+    pub fn fold_at(&mut self, x: u16, y: u16, filter: &Filter, theme: &Theme) -> Option<u64> {
+        let row = self.drawn.row_at(x, y)?;
+        self.item(row.key)?.whole.as_ref()?;
+        let rows = self.rows_of(row.key, filter, theme)?;
+        (row.line + 1 == rows.len()).then_some(row.key)
+    }
+
+    /// Opens or closes the fold of the block `key`, its fold line held on
+    /// the screen's row `y` at the next draw. Returns that line.
+    pub fn toggle(&mut self, key: u64, y: u16, filter: &Filter, theme: &Theme) -> Option<usize> {
+        let entry = self.find_mut(key)?;
+        entry.item.whole.as_ref()?;
+        entry.open = !entry.open;
+        entry.cache = None;
+        self.pin = Some((key, y.saturating_sub(self.drawn.area.y) as usize));
+        Some(self.rows_of(key, filter, theme)?.len() - 1)
     }
 
     /// The lines of the block `key` in `filter`'s view.
@@ -1143,9 +1210,22 @@ fn theme_key(theme: &Theme) -> u64 {
 /// the tool lines' markers use.
 const MARGIN: usize = 2;
 
+/// The last line of a command's block that shows its whole output: a click
+/// on it shows the first lines again.
+const FOLD_CLOSE: &str = "↑ show the first lines only";
+
 /// An item's lines at `width` (margins included), with what a copy of each
 /// needs. `own`: in its worker's own view, a worker's lines don't name it.
-fn entry_lines(item: &Item, theme: &Theme, width: usize, own: bool) -> Vec<Wrapped> {
+/// `open`: a command's block shows its whole output. `clock`: how long a
+/// running call has run.
+fn entry_lines(
+    item: &Item,
+    theme: &Theme,
+    width: usize,
+    own: bool,
+    open: bool,
+    clock: Option<&str>,
+) -> Vec<Wrapped> {
     let inner = width.saturating_sub(MARGIN).max(1);
     let blank = || Span::raw(" ".repeat(MARGIN));
     let mark = |symbol: &str, style: Style| {
@@ -1238,10 +1318,15 @@ fn entry_lines(item: &Item, theme: &Theme, width: usize, own: bool) -> Vec<Wrapp
                         theme.error(),
                     ));
                 }
-                _ => spans.push(Span::styled(
-                    format!(" {}", glyphs::render("…")),
-                    theme.dim(),
-                )),
+                _ => {
+                    if let Some(clock) = clock {
+                        spans.push(Span::styled(format!(" · {clock}"), theme.dim()));
+                    }
+                    spans.push(Span::styled(
+                        format!(" {}", glyphs::render("…")),
+                        theme.dim(),
+                    ));
+                }
             }
             let marker_style = if failed { theme.error() } else { theme.dim() };
             wrap::prefixed(
@@ -1256,14 +1341,26 @@ fn entry_lines(item: &Item, theme: &Theme, width: usize, own: bool) -> Vec<Wrapp
                 Some(Level::Warn) => theme.warning(),
                 _ => theme.dim(),
             };
-            let text = match &item.detail {
-                Some(detail) if item.level == Some(Level::Error) => {
+            let whole = item.whole.as_deref().filter(|_| open);
+            let text = match (&item.detail, whole) {
+                (_, Some(whole)) => whole.to_string(),
+                (Some(detail), None) if item.level == Some(Level::Error) => {
                     format!("{}\n{detail}", item.text)
                 }
-                Some(detail) => detail.clone(),
-                None => item.text.clone(),
+                (Some(detail), None) => detail.clone(),
+                (None, None) => item.text.clone(),
             };
-            gutter(&text, style, theme, inner)
+            let mut lines = gutter(&text, style, theme, inner);
+            // An open fold ends with the line that closes it, which a copy
+            // leaves out (it isn't the output's).
+            if whole.is_some() {
+                lines.extend(
+                    gutter(FOLD_CLOSE, style, theme, inner)
+                        .into_iter()
+                        .map(|line| Wrapped { bare: true, ..line }),
+                );
+            }
+            lines
         }
         Kind::Notice => {
             let (symbol, style) = match item.level {
@@ -1530,6 +1627,13 @@ pub fn duration(ms: i64) -> String {
     }
 }
 
+/// How long a running call has run, once that is a second or more: a
+/// quick call doesn't flash a time.
+fn running_time(item: &Item, now: i64) -> Option<String> {
+    let ms = now - item.at;
+    (item.status == Some(CallStatus::Running) && ms >= 1000).then(|| duration(ms))
+}
+
 /// A worker's state in a word, and its style.
 pub fn state(worker: &WorkerSummary, theme: &Theme) -> (&'static str, Style) {
     match worker.state {
@@ -1643,6 +1747,7 @@ mod tests {
     fn item(id: u64, kind: Kind, text: &str) -> Item {
         let mut item = Item::new(kind, text);
         item.id = id;
+        item.at = chrono::Utc::now().timestamp_millis();
         item
     }
 
@@ -1663,6 +1768,30 @@ mod tests {
 
     fn full() -> Filter {
         Filter::Main(View::Full)
+    }
+
+    /// A running call shows how long it has run once that is a second,
+    /// and the time goes on with nothing new from the feed; its outcome
+    /// takes its place.
+    #[test]
+    fn a_running_call_shows_its_time() {
+        let mut t = Transcript::new();
+        let mut call = item(1, Kind::Call, "$ sleep 30");
+        call.status = Some(CallStatus::Running);
+        call.agent = "r1".into();
+        call.at -= 900;
+        t.apply(Update::Item(call.clone()));
+        let own = Filter::Worker("r1".into());
+        assert_eq!(rows(&mut t, &own, 40, 1)[0], "▸ $ sleep 30 …");
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        assert_eq!(rows(&mut t, &own, 40, 1)[0], "▸ $ sleep 30 · 1s …");
+        call.at -= 2 * 60_000;
+        t.apply(Update::Change(call.clone()));
+        assert_eq!(rows(&mut t, &full(), 40, 1)[0], "▸ r1 $ sleep 30 · 2m …");
+        call.status = Some(CallStatus::Ok);
+        call.outcome = Some("30.0 s".into());
+        t.apply(Update::Change(call));
+        assert_eq!(rows(&mut t, &own, 40, 1)[0], "▸ $ sleep 30 · ✓ 30.0 s");
     }
 
     /// A call's outcome is on its line; a command's output is a block
