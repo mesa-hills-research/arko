@@ -5660,8 +5660,19 @@ mod tests {
     #[tokio::test]
     async fn a_mixed_session_s_cost_shows_each_part() {
         use crate::mock_model::{ModelServer, complete};
-        let server = ModelServer::start(Arc::new(move |_, _| {
-            Box::pin(async move { complete("w", "There are 3 files.") })
+        // The worker answers once the lead's first turn has ended, so its
+        // report starts a turn of its own instead of coming as a note in
+        // that one (which a busy machine could make happen).
+        let first_turn_over = Arc::new(tokio::sync::Semaphore::new(0));
+        let server = ModelServer::start(Arc::new({
+            let first_turn_over = first_turn_over.clone();
+            move |_, _| {
+                let first_turn_over = first_turn_over.clone();
+                Box::pin(async move {
+                    let _over = first_turn_over.acquire().await;
+                    complete("w", "There are 3 files.")
+                })
+            }
         }))
         .await;
         let temp = tempfile::tempdir().unwrap();
@@ -5692,6 +5703,7 @@ mod tests {
         .await
         .unwrap();
         assert!(matches!(end, TurnEnd::Answered));
+        first_turn_over.add_permits(1);
         let end =
             tokio::time::timeout(Duration::from_secs(60), harness.finish_workers(&mut inputs))
                 .await
