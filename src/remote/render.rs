@@ -126,6 +126,23 @@ pub fn call(tool: &str, parameters: &Parameters) -> Option<Item> {
     })
 }
 
+/// The message of a `message_agent` call: the worker that gets it shows it
+/// in its own transcript.
+pub fn message(tool: &str, parameters: &Parameters) -> Option<String> {
+    (tool == crew::MESSAGE_AGENT).then(|| text(parameters, "message").trim().to_string())
+}
+
+/// The worker a `message_agent` call's result says got the message: "Sent:
+/// r1 reads it at its next step." or "Sent to r2." (not the lead's "Sent.
+/// Your lead's answer ...").
+pub fn sent_to(output: &str) -> Option<&str> {
+    let rest = output
+        .strip_prefix("Sent: ")
+        .or_else(|| output.strip_prefix("Sent to "))?;
+    let id = rest.split_whitespace().next()?.trim_end_matches('.');
+    (!id.is_empty()).then_some(id)
+}
+
 /// `text` when `cut` would shorten it: the detail of a line that shows
 /// only its start.
 fn long(text: &str, limit: usize) -> String {

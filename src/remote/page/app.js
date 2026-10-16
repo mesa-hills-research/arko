@@ -289,9 +289,12 @@
       case 'text':
         box.append(md(item.text));
         break;
-      case 'message':
-        box.append(element('span', 'label', 'Message'), md(item.text));
+      case 'message': {
+        // A worker's message says whose it is.
+        const from = item.from && (item.from === C.MAIN ? 'the lead' : item.from);
+        box.append(element('span', 'label', from ? 'Message from ' + from : 'Message'), md(item.text));
         break;
+      }
       case 'reply':
         if (item.agent !== C.MAIN) {
           box.classList.add('report');

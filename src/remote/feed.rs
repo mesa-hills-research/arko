@@ -66,7 +66,8 @@ pub enum Kind {
     User,
     /// An agent's text, as it streams.
     Text,
-    /// The main agent's message to the user while it works.
+    /// The main agent's message to the user while it works, or a message a
+    /// worker got (`from` says whose).
     Message,
     /// A tool call; its `status` and `outcome` follow as a [`Update::Change`].
     Call,
@@ -172,6 +173,10 @@ pub struct Item {
     /// The worker a `worker_line` stands for.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub worker: Option<String>,
+    /// Who sent a worker's `message`: [`MAIN_AGENT`] (its lead), or
+    /// another worker's ID.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
     /// The call a `result` is of: clients show it under that call, which
     /// other items may have followed by the time the result came.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -196,6 +201,7 @@ impl Item {
             outcome: None,
             whole: None,
             worker: None,
+            from: None,
             call: None,
         }
     }
@@ -402,6 +408,8 @@ impl Lane {
 struct Call {
     item: u64,
     agent: String,
+    /// A `message_agent` call's message, for the worker that gets it.
+    message: Option<String>,
 }
 
 struct Worker {
@@ -671,6 +679,7 @@ impl Feed {
                         Call {
                             item: id,
                             agent: agent.clone(),
+                            message: render::message(tool_name, parameters),
                         },
                     );
                 }
@@ -684,7 +693,20 @@ impl Feed {
                 tool_call_id,
                 tool_name,
                 output,
-            } => self.settle(&mut state, tool_call_id, render::outcome(tool_name, output)),
+            } => {
+                let message = state
+                    .calls
+                    .get_mut(tool_call_id)
+                    .and_then(|call| call.message.take());
+                self.settle(&mut state, tool_call_id, render::outcome(tool_name, output));
+                // The worker that got a message shows it in its own
+                // transcript (a message to the lead is its call's line).
+                if let (Some(message), Some(to)) = (message, render::sent_to(output)) {
+                    let mut item = Item::new(Kind::Message, message).agent(to);
+                    item.from = Some(agent.clone());
+                    self.push(&mut state, item);
+                }
+            }
             AgentEvent::ToolRejected {
                 tool_call_id,
                 reason,
@@ -1617,6 +1639,92 @@ mod tests {
         assert!(sent(updates(&mut receiver)).is_empty(), "too soon");
         tokio::time::sleep(WORKER_EVERY * 2).await;
         assert_eq!(sent(updates(&mut receiver)), [50]);
+    }
+
+    /// A message the lead or a worker sends a worker shows in that
+    /// worker's transcript once it is sent, with who sent it. One to the
+    /// lead is only its call's line. A finished worker's report, the
+    /// message that continues it and its new work come in that order.
+    #[test]
+    fn messages_reach_the_workers_that_get_them() {
+        let feed = Feed::new("main");
+        let send = |agent: &str, label: Option<&str>, to: &str, text: &str, output: &str| {
+            let call = Uuid::new_v4();
+            let tool_name = crate::crew::MESSAGE_AGENT.to_string();
+            let parameters = [
+                ("to".to_string(), to.into()),
+                ("message".to_string(), text.into()),
+            ]
+            .into();
+            feed.event(
+                &event(
+                    agent,
+                    AgentEvent::ToolCallFormatted {
+                        tool_call_id: call,
+                        tool_name: tool_name.clone(),
+                        parameters,
+                    },
+                ),
+                label,
+            );
+            let output = output.into();
+            feed.event(
+                &event(
+                    agent,
+                    AgentEvent::ToolResult {
+                        tool_call_id: call,
+                        tool_name,
+                        output,
+                    },
+                ),
+                label,
+            );
+        };
+        feed.worker("r1", "Fix it", WorkerChange::Started);
+        feed.worker("r1", "Fix it", WorkerChange::Finished { report: "Fixed." });
+        send(
+            "main",
+            None,
+            "r1",
+            "Also the docs.",
+            "Sent: r1 continues its task with your message, with its context; its new report reaches you when it finishes.",
+        );
+        feed.worker("r1", "Fix it", WorkerChange::Started);
+        feed.event(&event("worker", chunk("On it.")), Some("r1"));
+        send("worker", Some("r1"), "r2", "a.rs is done.", "Sent to r2.");
+        send(
+            "worker",
+            Some("r1"),
+            "lead",
+            "Halfway.",
+            "Sent. Your lead's answer, if any, reaches you at your next step (or through wait_for_agents).",
+        );
+        send("main", None, "r9", "Hello?", "no agent run is called r9");
+        let items = items(&feed);
+        let of = |agent: &str| -> Vec<(Kind, Option<&str>, &str)> {
+            items
+                .iter()
+                .filter(|item| item.agent == agent)
+                .map(|item| (item.kind, item.from.as_deref(), item.text.as_str()))
+                .collect()
+        };
+        assert_eq!(
+            of("r1"),
+            [
+                (Kind::Reply, None, "Fixed."),
+                (Kind::Message, Some("main"), "Also the docs."),
+                (Kind::Text, None, "On it."),
+                (Kind::Call, None, "message r2: a.rs is done."),
+                (Kind::Call, None, "message lead: Halfway."),
+            ]
+        );
+        assert_eq!(of("r2"), [(Kind::Message, Some("r1"), "a.rs is done.")]);
+        assert!(of("r9").is_empty());
+        assert!(
+            of("main")
+                .iter()
+                .all(|(kind, ..)| matches!(kind, Kind::Call | Kind::WorkerLine))
+        );
     }
 
     /// A command's whole output stays on its block for the terminal's

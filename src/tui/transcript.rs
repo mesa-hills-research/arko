@@ -29,7 +29,8 @@ use super::theme::Theme;
 use super::wrap::{self, Join, Wrapped, width as text_width};
 use crate::glyphs;
 use crate::remote::{
-    CallStatus, Delivery, Item, Kind, Level, Snapshot, Source, Update, WorkerState, WorkerSummary,
+    CallStatus, Delivery, Item, Kind, Level, MAIN_AGENT, Snapshot, Source, Update, WorkerState,
+    WorkerSummary,
 };
 
 /// The items kept, as the feed keeps them: the main agent's and the
@@ -1284,7 +1285,16 @@ fn entry_lines(
             wrap::prefixed(lines, blank(), blank())
         }
         Kind::Message => {
-            let lines = markdown::render(&item.text, theme.text(), theme, inner);
+            let mut lines = Vec::new();
+            // A worker's message says whose it is.
+            if let Some(from) = &item.from {
+                let from = if from == MAIN_AGENT { "the lead" } else { from };
+                lines.push(Wrapped::line(vec![Span::styled(
+                    format!("Message from {from}"),
+                    theme.dim().add_modifier(Modifier::BOLD),
+                )]));
+            }
+            lines.extend(markdown::render(&item.text, theme.text(), theme, inner));
             wrap::prefixed(lines, mark("✉", theme.dim()), blank())
         }
         Kind::Question => {
@@ -1742,7 +1752,6 @@ fn heading_lines(worker: &WorkerSummary, theme: &Theme, width: usize) -> Vec<Wra
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::remote::MAIN_AGENT;
 
     fn item(id: u64, kind: Kind, text: &str) -> Item {
         let mut item = Item::new(kind, text);
@@ -1768,6 +1777,29 @@ mod tests {
 
     fn full() -> Filter {
         Filter::Main(View::Full)
+    }
+
+    /// A message a worker got shows in its own view with whose it is, and
+    /// not in the main transcript, where the lead's call says it.
+    #[test]
+    fn a_workers_message_shows_in_its_own_view() {
+        let mut t = Transcript::new();
+        let mut call = item(1, Kind::Call, "message r1: Also the docs.");
+        call.status = Some(CallStatus::Ok);
+        call.outcome = Some("sent".into());
+        t.apply(Update::Item(call));
+        let mut message = item(2, Kind::Message, "Also the docs.");
+        message.agent = "r1".into();
+        message.from = Some(MAIN_AGENT.into());
+        t.apply(Update::Item(message));
+        assert_eq!(
+            rows(&mut t, &full(), 40, 2),
+            ["▸ message r1: Also the docs. · ✓ sent", ""]
+        );
+        assert_eq!(
+            rows(&mut t, &Filter::Worker("r1".into()), 40, 2),
+            ["✉ Message from the lead", "  Also the docs."]
+        );
     }
 
     /// A running call shows how long it has run once that is a second,
