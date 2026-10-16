@@ -13,7 +13,7 @@ use crate::agents::{ExtraRules, WORKER};
 use crate::crew::Crew;
 use crate::lock;
 use crate::ui::Stats;
-use crate::{crew, handover, keys, outside, project, providers, remote, shell};
+use crate::{crew, handover, keys, outside, project, remote, shell};
 
 /// The session's figures for the remote page's status, read as the page
 /// asks. The workflow and its worker view are refreshed on session resume.
@@ -159,6 +159,38 @@ impl Gauges {
     }
 }
 
+/// What the session billed, what that would cost at list prices when a plan
+/// paid for some of it, and its split between the main agent and the
+/// workers: from the budget's running totals, without reading its ledger
+/// (which grows with every call).
+fn costs(workflow: Option<&Workflow>) -> (f64, Option<f64>, remote::CostSplit) {
+    let Some(workflow) = workflow else {
+        return (0.0, None, remote::CostSplit::default());
+    };
+    let billed = workflow.context().budget.total_spent();
+    let mut split = remote::CostSplit::default();
+    for (agent, totals) in workflow.cost_totals_by_agent() {
+        let part = if agent == crate::agents::MAIN {
+            &mut split.main
+        } else {
+            &mut split.workers
+        };
+        part.billed += totals.billed;
+        part.list_price += totals.list_price;
+        part.input_tokens += totals.input_tokens;
+        part.output_tokens += totals.output_tokens;
+        part.calls += totals.calls;
+    }
+    let agents_billed = split.main.billed + split.workers.billed;
+    let agents_list = split.main.list_price + split.workers.list_price;
+    // The costs added by hand (the search indexes' embeddings) count at
+    // what they billed.
+    let manual = (billed - agents_billed).max(0.0);
+    // A plan covered calls when the list price is more than was billed.
+    let api_price = (agents_list > agents_billed + 1e-9).then_some(agents_list + manual);
+    (billed, api_price, split)
+}
+
 impl remote::Meter for Gauges {
     fn read(&self) -> remote::Reading {
         let workflow = lock(&self.workflow).clone();
@@ -217,11 +249,11 @@ impl remote::Meter for Gauges {
                 text: text.clone(),
             })
             .collect();
+        let (cost, api_price, costs) = costs(workflow.as_deref());
         remote::Reading {
-            cost: workflow
-                .as_ref()
-                .map_or(0.0, |workflow| workflow.context().budget.total_spent()),
-            api_price: workflow.and_then(|workflow| providers::api_price(&workflow.cost_ledger())),
+            cost,
+            api_price,
+            costs,
             context_tokens: stats.context_tokens,
             plan_usage: stats.plan_usage,
             workers_running: crew.as_ref().map(|crew| crew.running()).unwrap_or_default(),

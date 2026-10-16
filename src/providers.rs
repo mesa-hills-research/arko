@@ -1206,6 +1206,7 @@ fn at_api_prices(usage: &UsageInfo, billed: f64) -> f64 {
 /// calls billed per token cost, and the list-price estimate of those a
 /// plan covered (Claude Code, the ChatGPT login). `None` when nothing ran
 /// on a plan: what was billed says it all then.
+#[cfg(test)]
 pub fn api_price(ledger: &CostLedger) -> Option<f64> {
     let on_a_plan = ledger.entries.iter().any(|entry| {
         matches!(&entry.source, CostSource::Agent { usage, .. } if usage.billing == BillingKind::Subscription)

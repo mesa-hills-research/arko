@@ -95,6 +95,9 @@ pub struct Reading {
     /// all.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub api_price: Option<f64>,
+    /// The main agent's part of the costs and the workers'.
+    #[serde(skip)]
+    pub costs: CostSplit,
     /// The input of the main agent's latest model request, in tokens.
     pub context_tokens: Option<usize>,
     /// The plans' usage windows (ChatGPT, Claude), as last reported.
@@ -133,6 +136,25 @@ pub struct Reading {
     /// Each worker's context and handover size.
     #[serde(skip)]
     pub agents: Vec<AgentStatus>,
+}
+
+/// The costs, the main agent's and the workers'.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct CostSplit {
+    pub main: CostPart,
+    pub workers: CostPart,
+}
+
+/// Some agents' model calls: what they billed and would cost at list
+/// prices (more, where a plan covered them), their tokens and how many.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct CostPart {
+    pub billed: f64,
+    pub list_price: f64,
+    /// Input tokens, cached input included.
+    pub input_tokens: usize,
+    pub output_tokens: usize,
+    pub calls: usize,
 }
 
 /// A subscription plan's usage (the ChatGPT plan, the Claude plan).

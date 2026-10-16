@@ -3439,6 +3439,39 @@ pub(crate) mod tests {
         }
     }
 
+    /// The status is read without the cost ledger, which grows with every
+    /// call: run with --ignored --nocapture for the times, with 10,000
+    /// entries, of a read and of what each read did before (the list price
+    /// from a copy of the ledger).
+    #[tokio::test]
+    #[ignore]
+    async fn reading_the_status_doesnt_walk_the_ledger() {
+        let temp = tempfile::tempdir().unwrap();
+        let (harness, _inputs, _sender) = harness(temp.path(), LLMClient::new(), false);
+        let workflow = harness.workflow().clone();
+        for n in 0..10_000 {
+            workflow
+                .context()
+                .budget
+                .add_manual_cost(0.0001, &format!("cost {n}"), None);
+        }
+        let reads = 200;
+        let start = std::time::Instant::now();
+        for _ in 0..reads {
+            std::hint::black_box(remote::Meter::read(harness.gauges.as_ref()));
+        }
+        let read = start.elapsed() / reads;
+        let start = std::time::Instant::now();
+        for _ in 0..reads {
+            std::hint::black_box(providers::api_price(&workflow.cost_ledger()));
+        }
+        let ledger = start.elapsed() / reads;
+        println!(
+            "10,000 ledger entries: a status read {read:?}; a copy of the ledger and its list price {ledger:?}"
+        );
+        assert!((remote::Meter::read(harness.gauges.as_ref()).cost - 1.0).abs() < 1e-6);
+    }
+
     /// The status gives what the main agent's model accepts from the start,
     /// and each worker's context, as its latest request reported it, with
     /// its handover size.
@@ -5009,6 +5042,13 @@ pub(crate) mod tests {
         let reading = remote::Meter::read(harness.gauges.as_ref());
         let api_price = reading.api_price.expect("the calls ran on the plan");
         assert!(api_price > 0.0);
+        // As /cost reads it from the ledger.
+        let ledger = providers::api_price(&harness.workflow().cost_ledger()).unwrap();
+        assert!((api_price - ledger).abs() < 1e-9, "{api_price} {ledger}");
+        assert_eq!(reading.costs.main.calls, 1);
+        assert_eq!(reading.costs.main.billed, 0.0);
+        assert!((reading.costs.main.list_price - api_price).abs() < 1e-9);
+        assert_eq!(reading.costs.workers, remote::CostPart::default());
         let lines = providers::cost_report(
             &harness.workflow().cost_ledger(),
             &harness.settings,
