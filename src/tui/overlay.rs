@@ -193,7 +193,7 @@ pub const KEYS: &[(&str, &str)] = &[
     ),
     (
         "Tab",
-        "complete a command in the menu, or its argument (↑ ↓ show the others)",
+        "complete a command in the menu, or its argument (↑ ↓ show the others, → takes the one shown)",
     ),
     ("Ctrl+A E B F", "line start, end, back, forward (readline)"),
     (

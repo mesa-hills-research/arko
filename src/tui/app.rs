@@ -643,6 +643,13 @@ impl App {
         {
             let count = argument.choices.len();
             let chosen = self.chosen(&argument);
+            // → takes the choice shown, as in fish and PowerShell: the
+            // cursor is at the end, where → did nothing.
+            let right = (key.code == KeyCode::Right && !ctrl && !alt)
+                || (key.code == KeyCode::Char('f') && ctrl);
+            if let Some(at) = chosen.filter(|_| right) {
+                return self.accept(&argument, at);
+            }
             let moved = match key.code {
                 KeyCode::Up => Some(chosen.map_or(count - 1, |at| (at + count - 1) % count)),
                 KeyCode::Down => Some(chosen.map_or(0, |at| (at + 1) % count)),
@@ -2167,6 +2174,14 @@ pub(super) mod tests {
         assert_eq!(app.ghost(), Some(format!("ff  {keys} 2 of 2")));
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         assert_eq!(sent(&mut app), ["/outside o"]);
+        // → takes the choice shown, and nothing over the hint.
+        type_text(&mut app, "/outside ");
+        press(&mut app, KeyCode::Right, KeyModifiers::NONE);
+        assert_eq!(app.editor.text(), "/outside ");
+        type_text(&mut app, "of");
+        press(&mut app, KeyCode::Right, KeyModifiers::NONE);
+        assert_eq!(app.editor.text(), "/outside off");
+        app.editor.clear();
         // ↑ before a letter, then the next word's choices, and Esc.
         type_text(&mut app, "/project-instructions ");
         press(&mut app, KeyCode::Up, KeyModifiers::NONE);
