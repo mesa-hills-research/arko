@@ -91,6 +91,17 @@ impl WorkerModel {
         }
     }
 
+    /// Whether Claude Code compacts the run's conversation at the handover
+    /// size, instead of a handover (as `agents::compacts` says of a
+    /// configuration).
+    pub fn compacts(&self) -> bool {
+        self.llm_config.model.provider == arko_ai::Provider::ClaudeCode
+            && self
+                .handover
+                .as_ref()
+                .is_some_and(|handover| handover.compact_in_claude_code)
+    }
+
     fn apply(&self, config: &mut AgentConfig) {
         config.llm_config = self.llm_config.clone();
         config.claude_code = self.claude_code.clone();

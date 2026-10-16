@@ -397,6 +397,14 @@ pub struct Banner {
 pub struct Stats {
     /// The input of the main agent's latest model request, in tokens.
     pub context_tokens: Option<usize>,
+    /// What the main agent's model accepts, in tokens: as its latest request
+    /// said, else as the session started.
+    pub context_window: Option<usize>,
+    /// Each plan's usage windows, by plan, as last reported.
+    pub plan_windows: std::collections::BTreeMap<String, Vec<remote::PlanWindow>>,
+    /// Each worker's context, by its handle: the input of its latest
+    /// request and what its model accepts, in tokens.
+    pub workers: std::collections::BTreeMap<String, (usize, Option<usize>)>,
     /// The subscription plans' usage windows, as last reported: one line
     /// for every plan the session's agents use (ChatGPT, Claude).
     pub plan_usage: Option<String>,
@@ -443,6 +451,13 @@ pub async fn print_events(
                     };
                     if let Some(label) = &label {
                         printer.workers.insert(event.agent_run_id, label.clone());
+                        // The worker's context, for the status.
+                        if let AgentEvent::ModelCallUsageReported(usage) = &event.event {
+                            printer.stats.lock().unwrap().workers.insert(
+                                label.clone(),
+                                (usage.input_tokens, usage.max_input_tokens),
+                            );
+                        }
                     }
                     if let Some(feed) = &feed {
                         feed.event(&event, label.as_deref());
@@ -704,7 +719,11 @@ impl EventPrinter {
                 self.text.clear();
             }
             AgentEvent::ModelCallUsageReported(usage) if main => {
-                self.stats.lock().unwrap().context_tokens = Some(usage.input_tokens);
+                let mut stats = self.stats.lock().unwrap();
+                stats.context_tokens = Some(usage.input_tokens);
+                if usage.max_input_tokens.is_some() {
+                    stats.context_window = usage.max_input_tokens;
+                }
             }
             AgentEvent::PlanUsageReported(usage) => {
                 if let Some(text) = crate::providers::plan_usage_text(&usage) {
@@ -712,6 +731,9 @@ impl EventPrinter {
                     let plan = crate::providers::plan_name(usage.plan);
                     stats.plans.insert(plan.to_string(), text);
                     stats.plan_usage = crate::providers::plan_usage_line(&stats.plans);
+                    stats
+                        .plan_windows
+                        .insert(plan.to_string(), crate::providers::plan_windows(&usage));
                 }
             }
             _ => {}

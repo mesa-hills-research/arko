@@ -1155,6 +1155,27 @@ pub fn plan_usage_text(usage: &PlanUsage) -> Option<String> {
     Some(format!("{} {}", plan_name(usage.plan), windows.join(", ")))
 }
 
+/// `usage`'s windows (5 hours, 7 days), as the status gives them.
+pub fn plan_windows(usage: &PlanUsage) -> Vec<crate::remote::PlanWindow> {
+    [(&usage.primary, "5 h"), (&usage.secondary, "7 d")]
+        .into_iter()
+        .filter_map(|(window, name)| {
+            let window = window.as_ref()?;
+            let label = match window.window_minutes {
+                Some(300) => "5 h".to_string(),
+                Some(10_080) => "7 d".to_string(),
+                Some(minutes) => format!("{minutes} min"),
+                None => name.to_string(),
+            };
+            Some(crate::remote::PlanWindow {
+                label,
+                used_percent: window.used_percent,
+                resets_at: window.resets_at.and_then(|at| i64::try_from(at).ok()),
+            })
+        })
+        .collect()
+}
+
 /// Every plan's latest usage, in one line: a session with agents on both
 /// plans shows both.
 pub fn plan_usage_line(plans: &std::collections::BTreeMap<String, String>) -> Option<String> {
@@ -1754,6 +1775,16 @@ mod tests {
             Some("ChatGPT plan 7 d 40%")
         );
         assert_eq!(plan_usage_text(&PlanUsage::default()), None);
+        // The same windows as data, for the status.
+        let windows = plan_windows(&claude);
+        assert_eq!(
+            windows
+                .iter()
+                .map(|window| (window.label.as_str(), window.used_percent))
+                .collect::<Vec<_>>(),
+            [("5 h", 12.4), ("7 d", 3.0)]
+        );
+        assert!(plan_windows(&PlanUsage::default()).is_empty());
     }
 
     /// What `client_with` needs when nothing is set, Claude Code is

@@ -13,7 +13,7 @@ use crate::agents::{ExtraRules, WORKER};
 use crate::crew::Crew;
 use crate::lock;
 use crate::ui::Stats;
-use crate::{handover, keys, outside, project, providers, remote, shell};
+use crate::{crew, handover, keys, outside, project, providers, remote, shell};
 
 /// The session's figures for the remote page's status, read as the page
 /// asks. The workflow and its worker view are refreshed on session resume.
@@ -187,6 +187,36 @@ impl remote::Meter for Gauges {
                     }),
             })
             .unwrap_or(0);
+        // Each worker's context and handover size, on the model it started on.
+        let agents = match (&workflow, &crew) {
+            (Some(workflow), Some(crew)) => workflow
+                .subagents()
+                .into_iter()
+                .map(|run| {
+                    let model = crew.run_model(run.run_id);
+                    let context = stats.workers.get(&run.handle).copied();
+                    remote::AgentStatus {
+                        context_tokens: context.map(|(tokens, _)| tokens),
+                        context_window: context.and_then(|(_, window)| window),
+                        handover_at: model.as_ref().and_then(|model| {
+                            worker_at(&model.llm_config.model, model.handover.as_ref())
+                        }),
+                        compacts: model.as_ref().is_some_and(crew::WorkerModel::compacts),
+                        id: run.handle,
+                    }
+                })
+                .collect(),
+            _ => Vec::new(),
+        };
+        let plans = stats
+            .plans
+            .iter()
+            .map(|(plan, text)| remote::PlanStatus {
+                plan: plan.clone(),
+                windows: stats.plan_windows.get(plan).cloned().unwrap_or_default(),
+                text: text.clone(),
+            })
+            .collect();
         remote::Reading {
             cost: workflow
                 .as_ref()
@@ -224,6 +254,9 @@ impl remote::Meter for Gauges {
             },
             conversations: lock(&self.conversations).clone(),
             page: lock(&self.page).clone(),
+            context_window: stats.context_window,
+            plans,
+            agents,
         }
     }
 }

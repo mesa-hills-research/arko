@@ -123,6 +123,50 @@ pub struct Reading {
     /// The web page, while it is served.
     #[serde(skip)]
     pub page: Option<Page>,
+    /// What the main agent's model accepts, in tokens (the ChatGPT login's
+    /// limit where the session reaches OpenAI models with it).
+    #[serde(skip)]
+    pub context_window: Option<usize>,
+    /// Each plan's usage windows, as last reported.
+    #[serde(skip)]
+    pub plans: Vec<PlanStatus>,
+    /// Each worker's context and handover size.
+    #[serde(skip)]
+    pub agents: Vec<AgentStatus>,
+}
+
+/// A subscription plan's usage (the ChatGPT plan, the Claude plan).
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlanStatus {
+    /// The plan, as `/cost` names it: "ChatGPT plan".
+    pub plan: String,
+    pub windows: Vec<PlanWindow>,
+    /// The windows in a line: "ChatGPT plan 5 h 12%, 7 d 40%".
+    pub text: String,
+}
+
+/// One of a plan's usage windows.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlanWindow {
+    /// "5 h", "7 d", or its length in minutes.
+    pub label: String,
+    pub used_percent: f64,
+    /// When it starts over (Unix seconds), if the plan says.
+    pub resets_at: Option<i64>,
+}
+
+/// A worker's context, as its latest request reported it, and the size it
+/// hands over (or Claude Code compacts) at.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AgentStatus {
+    /// Its handle: r1, r2, ...
+    pub id: String,
+    pub context_tokens: Option<usize>,
+    pub context_window: Option<usize>,
+    pub handover_at: Option<usize>,
+    /// Claude Code compacts its conversation at the size, instead of a
+    /// handover.
+    pub compacts: bool,
 }
 
 /// The web page while it is served: where, and its links as they were when

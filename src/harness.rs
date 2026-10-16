@@ -501,6 +501,23 @@ impl Harness {
         self.open_conversations(&workflow, resume);
         let lead = self.conversations.current_run();
         self.conversation = conversation_of(&workflow, lead);
+        {
+            // What the main agent's model accepts, and (resumed) how much
+            // of it the conversation takes, before its next request says.
+            let model = &configs[0].llm_config.model;
+            let chatgpt = model.provider == arko_ai::Provider::OpenAI
+                && self.settings.openai_auth == Some(providers::OpenAiAuth::ChatGpt);
+            let mut stats = lock(&self.stats);
+            stats.context_window = arko_ai::input_limit::effective_max_input_tokens(model, chatgpt);
+            let task = match &self.conversation {
+                Conversation::Answered(result) => Some(&result.task),
+                Conversation::Stopped(run) => Some(&run.result.task),
+                Conversation::New => None,
+            };
+            if let Some(size) = task.and_then(|task| task.current_conversation_context_size()) {
+                stats.context_tokens = Some(size);
+            }
+        }
         if let Some(crew) = &self.crew {
             crew.attach(&workflow, lead);
             if resume {
@@ -3420,6 +3437,78 @@ pub(crate) mod tests {
             Conversation::Answered(result) => result.summary.clone(),
             _ => panic!("the conversation wasn't answered"),
         }
+    }
+
+    /// The status gives what the main agent's model accepts from the start,
+    /// and each worker's context, as its latest request reported it, with
+    /// its handover size.
+    #[tokio::test]
+    async fn the_status_reports_the_models_room_and_each_workers_context() {
+        use crate::mock_model::{ModelServer, complete, tool_call, with_input};
+        let server = ModelServer::start(Arc::new(move |_, body: String| {
+            Box::pin(async move {
+                if body.contains("You are agent run r1") {
+                    with_input(complete("w", "There are 3 files."), 7_777)
+                } else if body.contains("There are 3 files.") {
+                    complete("m3", "Final: 3 files.")
+                } else if body.contains("Started r1") {
+                    complete("m2", "r1 is counting.")
+                } else {
+                    tool_call(
+                        "m1",
+                        crew::START_AGENT,
+                        serde_json::json!({"agent": WORKER, "task": "Count the files."}),
+                    )
+                }
+            })
+        }))
+        .await;
+        let temp = tempfile::tempdir().unwrap();
+        let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), false);
+        let luna = resolve_model("luna").unwrap();
+        let reading = remote::Meter::read(harness.gauges.as_ref());
+        assert_eq!(reading.context_window, Some(luna.max_input_tokens));
+        assert!(reading.agents.is_empty());
+        let end = harness
+            .turn(Prompt::User("How many files?".into()), &mut inputs)
+            .await;
+        assert!(matches!(end, TurnEnd::Answered));
+        let end =
+            tokio::time::timeout(Duration::from_secs(30), harness.finish_workers(&mut inputs))
+                .await
+                .unwrap();
+        assert!(matches!(end, TurnEnd::Answered));
+        let reading = remote::Meter::read(harness.gauges.as_ref());
+        assert_eq!(reading.agents.len(), 1, "{:?}", reading.agents);
+        let r1 = &reading.agents[0];
+        assert_eq!(r1.id, "r1");
+        assert_eq!(r1.context_tokens, Some(7_777));
+        assert_eq!(r1.handover_at, Some(200_000), "luna's own size");
+        assert!(!r1.compacts);
+        harness.crew.as_ref().unwrap().shutdown().await;
+    }
+
+    /// A resumed conversation's size is in the status before its next
+    /// request says it.
+    #[tokio::test]
+    async fn a_resumed_conversation_reports_its_size_at_once() {
+        use crate::mock_model::{ModelServer, complete, with_input};
+        let server = ModelServer::start(Arc::new(move |_, _| {
+            Box::pin(async move { with_input(complete("1", "Done."), 4_242) })
+        }))
+        .await;
+        let temp = tempfile::tempdir().unwrap();
+        let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), false);
+        let end = harness
+            .turn(Prompt::User("Do it.".into()), &mut inputs)
+            .await;
+        assert!(matches!(end, TurnEnd::Answered));
+        // As a new Arko resumes it.
+        lock(&harness.stats).context_tokens = None;
+        harness.open(true).unwrap();
+        let reading = remote::Meter::read(harness.gauges.as_ref());
+        assert_eq!(reading.context_tokens, Some(4_242));
+        harness.crew.as_ref().unwrap().shutdown().await;
     }
 
     /// With -p, the agent starts a worker and replies; Arko waits for the
