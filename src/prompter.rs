@@ -4,6 +4,8 @@
 //! command line asks at the terminal (`terminal::TerminalPrompter`); Arko
 //! Studio asks in its own sheets.
 
+use std::path::Path;
+
 use async_trait::async_trait;
 
 use crate::credentials::Need;
@@ -28,6 +30,10 @@ pub trait Prompter: Send + Sync {
     /// What Arko tells the user as the session opens, before its feed
     /// exists: a flag a resumed session ignores, a model it chose.
     fn note(&self, level: Level, text: &str);
+
+    /// The session's folder is known, before its agents, MCP servers and
+    /// workflow start: the front end can start logging there.
+    fn session_found(&self, _dir: &Path) {}
 }
 
 /// A front end with no one to ask: missing credentials keep the session

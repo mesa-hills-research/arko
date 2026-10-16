@@ -49,8 +49,9 @@ pub struct Options {
     /// The 1-hour prompt cache; `None`: as `ARKO_CACHE_1H` says.
     pub cache_1h: Option<bool>,
     /// The main agent ends its turns with a plain reply; `None`: when
-    /// someone takes part in the session ([`interactive`](Self::interactive))
-    /// and it isn't one-shot.
+    /// someone takes part in the session as it runs (it is
+    /// [`interactive`](Self::interactive), or the web page serves it) and it
+    /// isn't one-shot.
     pub text_replies: Option<bool>,
     /// Agents on `cc:` models compact at the handover size (`Some(false)`:
     /// they hand over); `None`: they compact.
@@ -90,11 +91,40 @@ pub struct Options {
     /// turns with `complete_task`, commands stay in the foreground, and the
     /// next session's default models stay as they are.
     pub one_shot: bool,
-    /// Someone takes part in the session as it runs: at a terminal, in an
-    /// app or on the web page.
+    /// Someone at the front end takes part as the session runs (at a
+    /// terminal, in an app): the agent's questions are put to them, and what
+    /// they type while it works reaches it as notes. Else the agent is told
+    /// no one can answer, and each line is a turn of its own.
     pub interactive: bool,
     /// A new session's title; `None`: none until it has one.
     pub title: Option<String>,
+    /// A client to use in place of the one the session's credentials make
+    /// (tests: the mock model server's).
+    #[cfg(test)]
+    pub client: Option<GivenClient>,
+}
+
+/// A client made beforehand: see [`Options::client`].
+#[cfg(test)]
+#[derive(Clone)]
+pub struct GivenClient(pub std::sync::Arc<arko_ai::LLMClient>);
+
+#[cfg(test)]
+impl std::fmt::Debug for GivenClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("GivenClient")
+    }
+}
+
+impl Options {
+    /// The client given in place of the session's own, if any.
+    pub(crate) fn given_client(&self) -> Option<std::sync::Arc<arko_ai::LLMClient>> {
+        #[cfg(test)]
+        if let Some(GivenClient(client)) = &self.client {
+            return Some(client.clone());
+        }
+        None
+    }
 }
 
 impl Default for Options {
@@ -130,6 +160,8 @@ impl Default for Options {
             one_shot: false,
             interactive: true,
             title: None,
+            #[cfg(test)]
+            client: None,
         }
     }
 }

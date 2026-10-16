@@ -2789,7 +2789,7 @@ pub(crate) mod tests {
 
     /// The flags become the session's options: which session, each pair of
     /// flags as yes, no or neither, -p's message as a new session's title,
-    /// and whether someone takes part (at a terminal or on the web page).
+    /// and whether someone takes part at the terminal.
     #[test]
     fn the_flags_become_the_sessions_options() {
         let options = |words: &[&str], terminal: bool| {
@@ -2837,8 +2837,9 @@ pub(crate) mod tests {
         let one_shot = options(&["-p", "Count the files."], true).unwrap();
         assert!(one_shot.one_shot && !one_shot.interactive);
         assert_eq!(one_shot.title.as_deref(), Some("Count the files."));
+        // The web page: text replies, but no one at the terminal to ask.
         let remote = options(&["--remote", "0.0.0.0:9000"], false).unwrap();
-        assert!(remote.interactive);
+        assert!(!remote.interactive && text_replies_for(&remote));
         assert_eq!(remote.remote.and_then(|bind| bind.port), Some(9000));
         assert!(options(&["--remote", "nowhere:x"], false).is_err());
     }

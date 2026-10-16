@@ -3,31 +3,24 @@
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use clap::Parser;
-use tokio::sync::mpsc;
 
-use crate::agents::{
-    AgentSettings, Effort, ExtraRules, MAIN, ModelSettings, NO_LIMIT, resolve_model,
-};
+use crate::agents::{Effort, ExtraRules, ModelSettings, NO_LIMIT, resolve_model};
 use crate::credentials::{Need, VOYAGE_KEY};
-use crate::crew::Crew;
-use crate::harness::{Conversation, Harness, Managers, Prompt, TurnEnd};
-use crate::inputs::{Asker, Inputs};
+use crate::engine::{Engine, FrontEnd, RunEnd};
 use crate::options::{Options, SessionChoice};
 use crate::prompter::Prompter;
 use crate::providers::{Failure, OpenAiAuth};
 use crate::remote::Level;
-use crate::session::{Session, Settings};
-use crate::shell::{Shell, WindowsShell};
-use crate::status::Gauges;
+use crate::session::Settings;
+use crate::shell::WindowsShell;
 use crate::terminal::TerminalPrompter;
-use crate::ui::{Input, Output, Stats};
+use crate::ui::Input;
 use crate::{
-    agents, credentials, crew, handover, index, keys, mcp, outside, project, providers, remote,
-    session, shell, skills, term, tui, ui,
+    agents, credentials, handover, index, project, providers, remote, session, shell, term, tui, ui,
 };
 
 #[derive(Parser, Debug)]
@@ -329,9 +322,11 @@ impl Args {
             mcp_config: self.mcp_config.clone(),
             remote: self.remote.as_deref().map(remote::parse_bind).transpose()?,
             one_shot,
-            // At the full screen or the line prompt, or on the web page.
-            interactive: !one_shot && (terminal || self.remote.is_some()),
+            // At the full screen or the line prompt.
+            interactive: !one_shot && terminal,
             title: self.prompt.as_deref().map(|prompt| ui::cut(prompt, 80)),
+            #[cfg(test)]
+            client: None,
         })
     }
 }
@@ -401,330 +396,16 @@ pub(crate) async fn run(args: Args) -> Result<ExitCode, String> {
         return index::run_command(command.clone(), &root, credentials::var(VOYAGE_KEY)).await;
     }
     let options = args.options()?;
-    let prompter = TerminalPrompter::new(can_ask);
-    let remote_bind = options.remote;
-    // Why the session doesn't run the last session's models, as Arko said
-    // before the session started: the full-screen view opens over it, so
-    // its banner says it again.
-    let mut model_note = None;
-
-    // The session: resumed with the settings it was started with, or new.
-    let resumed = match &options.session {
-        SessionChoice::Resume(id) => Some(Session::open(&root, id)?),
-        SessionChoice::ContinueLatest => {
-            let workspace = workspace(&options)?;
-            Some(session::latest_in(&root, &workspace).ok_or_else(|| {
-                format!(
-                    "no session to continue in {}. `arko --sessions` lists them",
-                    workspace.display()
-                )
-            })?)
-        }
-        SessionChoice::New => None,
-    };
-    let (session, settings, new) = match resumed {
-        Some(session) => {
-            let mut settings = session.load_settings()?;
-            if options.model.is_some()
-                || options.worker_model.is_some()
-                || options.fast
-                || options.cache_1h.is_some()
-                || options.shell.is_some()
-                || options.openai_auth.is_some()
-            {
-                prompter.note(
-                    Level::Warn,
-                    &format!(
-                        "a resumed session keeps the models and shell it was started with ({})",
-                        settings.describe(&settings.main)
-                    ),
-                );
-            }
-            if options.text_replies.is_some() {
-                prompter.note(
-                    Level::Warn,
-                    &format!(
-                        "a resumed session keeps how its main agent ends its turns: {}",
-                        agents::replies_text(settings.text_replies)
-                    ),
-                );
-            }
-            if options.cc_compact.is_some() {
-                prompter.note(
-                    Level::Warn,
-                    &format!(
-                        "a resumed session keeps what its agents in Claude Code do at the handover size: {}",
-                        agents::cc_text(!settings.cc_handover)
-                    ),
-                );
-            }
-            if options.extra_rules.is_some() {
-                prompter.note(
-                    Level::Warn,
-                    &format!(
-                        "a resumed session keeps its extra rules for small models: {}",
-                        settings.extra_rules.describe()
-                    ),
-                );
-            }
-            if !settings.workspace.is_dir() {
-                return Err(format!(
-                    "the session's working directory {} no longer exists",
-                    settings.workspace.display()
-                ));
-            }
-            // The project's instructions can change at any time, and so can
-            // when commands move to the background.
-            let background = options.background_after.is_some_and(|after| {
-                std::mem::replace(&mut settings.background_after, after) != after
-            });
-            if project_from_options(&options, &mut settings) | background {
-                session
-                    .save_settings(&settings)
-                    .map_err(|error| format!("could not save the session: {error}"))?;
-            }
-            (Some(session), settings, false)
-        }
-        None => {
-            if options.model.is_none() && default_model(&options).is_none() {
-                prompter.need_credentials(&Need::Any).await?;
-            }
-            let (mut settings, note) = new_settings(&options, &prompter)?;
-            model_note = note;
-            let notes = providers::check_openrouter(
-                &mut settings,
-                options.handover_at.is_some(),
-                providers::openrouter_url(),
-            )
-            .await?;
-            for note in notes {
-                prompter.note(Level::Info, &note);
-            }
-            (None, settings, true)
-        }
-    };
-
-    // Sessions saved before the shell could be chosen ran PowerShell.
-    let shell = Shell::detect(settings.windows_shell.unwrap_or(WindowsShell::Powershell));
-    if new && options.shell.is_some() && !cfg!(windows) {
-        prompter.note(
-            Level::Warn,
-            &format!(
-                "--shell picks the shell on Windows. Here commands run in {}",
-                shell.name
-            ),
-        );
-    }
-
-    // Missing credentials, or an auth file that fails, are asked for.
-    let client = Arc::new(
-        client_asking(&prompter, || {
-            providers::client(options.codex_auth.as_deref(), &settings)
-        })
-        .await?,
-    );
-    let provider_setup = providers::Setup::new(settings.openai_auth);
-    let agent_settings = AgentSettings::for_session(&settings, &provider_setup);
-    // Settings the agents can't be built with leave no session behind.
-    agents::main_config(&agent_settings)?;
-    agents::worker_config(&agent_settings)?;
-    // A project's MCP servers are started once the user approves them.
-    let mcp_plan = mcp::plan(&root, &settings.workspace, &options.mcp_config)?;
-    let mcp_answer = match &mcp_plan.approval {
-        Some(approval) => prompter.approve_project_mcp(approval).await?,
-        None => None,
-    };
-    let (mcp_servers, mcp_notes) = mcp_plan.decide(mcp_answer)?;
-
-    let session = match session {
-        Some(session) => session,
-        None => Session::create(&root)
-            .map_err(|error| format!("could not create a session: {error}"))?,
-    };
-    if new {
-        session
-            .save_settings(&settings)
-            .map_err(|error| format!("could not save the session: {error}"))?;
-        // The next session's default; see `providers::LastModels::remember`.
-        if !options.one_shot
-            && let Err(error) = providers::LastModels::remember(&root, &settings)
-        {
-            prompter.note(
-                Level::Warn,
-                &format!("could not keep this session's models for the next one: {error}"),
-            );
-        }
-    }
-    start_log(&session);
-
-    let managers = Managers::open(&session, &shell)?;
-    // Outside access as the session left it; the flag turns it on below.
-    let outside = Arc::new(outside::Outside::new(
-        settings.allow_outside_workspace,
-        managers.list(),
-        settings.workspace.clone(),
-    ));
     let one_shot = options.one_shot;
-    managers
-        .background
-        .set_after(background_after_for(&options, settings.background_after));
-
-    // MCP servers, skills and search indexes: what goes wrong with them is
-    // said, and the session goes on without.
-    let startup = Output::new(None, one_shot);
-    for note in &mcp_notes {
-        startup.line(&startup.warn(&format!("arko: {note}")));
-    }
-    let mcp = if mcp_servers.is_empty() {
-        mcp::Running::default()
-    } else {
-        startup.line(&startup.dim(&format!(
-            "Starting MCP servers: {}…",
-            mcp_servers
-                .iter()
-                .map(|server| server.name.as_str())
-                .collect::<Vec<_>>()
-                .join(", ")
-        )));
-        mcp::Running::start(mcp_servers).await
-    };
-    for started in &mcp.servers {
-        if let Err(error) = &started.result {
-            startup.line(&startup.warn(&format!(
-                "arko: the MCP server `{}` (in {}) didn't start: {error}",
-                started.server.name,
-                started.server.file.display()
-            )));
-        }
-    }
-    let skill_folders = skills::folders(&settings.workspace, &root);
-    let indexes = match index::Indexes::open(
-        &root,
-        &settings.workspace,
-        credentials::var(VOYAGE_KEY),
-        !one_shot,
-    ) {
-        Ok(indexes) => Some(indexes),
-        Err(error) => {
-            startup.line(&startup.warn(&format!("arko: search indexes are off: {error}")));
-            None
-        }
-    };
-    // What the remote page shows, kept from the start so that a page
-    // opened later has the history.
-    let feed = remote::Feed::new(MAIN);
-    feed.hide_thinking(settings.hide_thinking);
-    let keys = keys::Keys::new(
-        client.clone(),
-        keys::openai_way(&client).await,
-        indexes.clone(),
-        Some(feed.clone()),
-    );
-    let mcp_tools = mcp.tool_names();
-    let mcp_started = mcp.started();
-    let known_indexes = indexes
-        .as_ref()
-        .map(|indexes| indexes.known(&settings.workspace))
-        .unwrap_or_default();
-    let agent_settings = AgentSettings {
-        mcp_tools: &mcp_tools,
-        mcp_servers: &mcp_started,
-        skill_folders: &skill_folders,
-        index_tools: if indexes.is_some() {
-            index::TOOL_NAMES
-        } else {
-            &[]
-        },
-        indexes: &known_indexes,
-        ..agent_settings
-    };
-    let main_config = agents::main_config(&agent_settings)?;
-    let worker_config = agents::worker_config(&agent_settings)?;
-    // Where the runs' command channels are kept, to ask for handovers.
-    let runs = Arc::new(handover::Runs::default());
-    let mut tools = managers.tools(&shell, runs.clone());
-    tools.extend(mcp.tools().iter().cloned());
-    if let Some(indexes) = &indexes {
-        tools.extend(indexes.tools());
-    }
-    let (input_sender, input) = mpsc::unbounded_channel();
-    // The full-screen view is the front end with a terminal (not with
-    // --repl); it reads the input itself.
-    let full_screen = !one_shot && !args.repl && tui::available();
-    let printer = if one_shot {
-        None
-    } else {
-        term::save();
-        if full_screen {
-            None
-        } else {
-            ui::spawn_input(
-                root.join("history.txt"),
-                input_sender.clone(),
-                Some(keys.clone()),
-            )
-        }
-    };
-    let interactive = printer.is_some() || full_screen;
-    let output = Arc::new(Output::new(printer, one_shot));
-    let stats = Arc::new(Mutex::new(Stats::default()));
-    let (remote_actions, remote_input) = mpsc::unbounded_channel();
-    let handover = Arc::new(handover::Handover::new(
-        runs,
-        settings.main_handover_at,
-        settings.workers_handover_at,
-        output.clone(),
-        feed.clone(),
-    ));
-    let gauges = Arc::new(Gauges {
-        models: Mutex::default(),
-        conversations: Mutex::default(),
-        workflow: Mutex::new(None),
-        crew: Mutex::new(None),
-        stats: stats.clone(),
-        outside: outside.clone(),
-        handover: handover.clone(),
-        keys: keys.clone(),
-        text_replies: Default::default(),
-        cc_compact: Default::default(),
-        extra_rules: Default::default(),
-        project: Default::default(),
-        background: managers.background.clone(),
-    });
-    // The main agent's questions are put to the user at the prompt; with
-    // no terminal, it is told there is no one to ask.
-    let (questions_sender, questions) = mpsc::unbounded_channel();
-    let asker = Arc::new(Asker {
-        questions: interactive.then_some(questions_sender),
-    });
-    // The workers, and those of a resumed session.
-    let (crew, woken) = if settings.max_workers > 0 {
-        let (crew, woken) = Crew::new(crew::Setup {
-            session_id: session.id.clone(),
-            session_dir: session.dir.clone(),
-            output: output.clone(),
-            max_running: settings.max_workers,
-            cache_1h: settings.worker.cache_1h,
-            cache_lifetime: client
-                .prompt_cache_lifetime(
-                    &worker_config.llm_config.model,
-                    &worker_config.llm_config.generation_config,
-                )
-                .await,
-            feed: Some(feed.clone()),
-            refuse: Some({
-                let keys = keys.clone();
-                Arc::new(move |model: &arko_ai::Model| keys.refusal(model))
-            }),
-        });
-        (Some(crew), Some(woken))
-    } else {
-        (None, None)
-    };
+    let prompter = Arc::new(TerminalPrompter::new(can_ask));
+    let (mut engine, seam) = Engine::open(options, prompter)
+        .await
+        .map_err(|error| error.to_string())?;
+    let output = engine.output();
     {
         // Ctrl-C when the line editor isn't reading (in raw mode it reads
         // Ctrl-C as a key).
-        let sender = input_sender.clone();
+        let sender = seam.input.clone();
         tokio::spawn(async move {
             while tokio::signal::ctrl_c().await.is_ok() {
                 if sender.send(Input::Interrupt).is_err() {
@@ -733,171 +414,76 @@ pub(crate) async fn run(args: Args) -> Result<ExitCode, String> {
             }
         });
     }
-
-    let mut harness = Harness {
-        settings,
-        providers: provider_setup.clone(),
-        session,
-        client,
-        keys,
-        main_config,
-        worker_config,
-        tools,
-        root: root.clone(),
-        mcp,
-        mcp_notes,
-        skill_folders,
-        indexes,
-        unoffered: None,
-        output: output.clone(),
-        stats,
-        workflow: None,
-        printer: None,
-        conversation: Conversation::New,
-        conversations: Default::default(),
-        project: Default::default(),
-        unread: Vec::new(),
-        switched: false,
-        queue_lines: !interactive,
-        exiting: false,
-        crew,
-        asker,
-        one_shot,
-        exit_warned: false,
-        jobs_shown: Vec::new(),
-        quit_popup: None,
-        news_hint_shown: false,
-        feed,
-        remote: None,
-        remote_actions,
-        remote_bind: None,
-        gauges,
-        outside,
-        handover,
-        background: managers.background.clone(),
-    };
-    harness.project = project::Found::read(&harness.settings.workspace);
-    // Before the workflow opens: it may restart a worker that hadn't started.
-    harness.give_workers_project();
-    harness.open(!new)?;
-    harness.start_new_workers();
-    harness.publish_models();
-    harness.outside_at_start(new, options.allow_outside_workspace);
-    if !new && let Some(tokens) = options.handover_at {
-        harness.handover_at_start(tokens);
-    }
-    if one_shot && let Some(note) = &harness.unoffered {
-        output.line(&output.warn(&format!("arko: {note}")));
-    }
-    let mut input = Inputs {
-        receiver: input,
-        pending: None,
-        questions,
-        woken,
-        remote: remote_input,
-        // With -p, Arko exits when the agent finishes, jobs or not.
-        finished: (!one_shot).then(|| managers.jobs.subscribe_finished()),
-        late: None,
-    };
-
-    let code = if let Some(prompt) = args.prompt.clone() {
-        if !new {
-            harness.restart_unfinished(&mut input).await;
+    // The full-screen view is the front end with a terminal (not with
+    // --repl); it reads the input itself. Else the line prompt reads it.
+    let full_screen = !one_shot && !args.repl && tui::available();
+    let mut prompt_shown = false;
+    if !one_shot {
+        term::save();
+        if !full_screen
+            && let Some(printer) = ui::spawn_input(
+                seam.session.root.join("history.txt"),
+                seam.input.clone(),
+                Some(seam.keys.clone()),
+            )
+        {
+            output.attach(printer);
+            prompt_shown = true;
         }
-        let end = if harness.exiting {
-            TurnEnd::Exit
-        } else {
-            harness.turn(Prompt::User(prompt), &mut input).await
-        };
-        // The reply waits for the workers the agent started: their news
-        // goes to it as it comes.
-        let end = match end {
-            TurnEnd::Answered => harness.finish_workers(&mut input).await,
-            other => other,
-        };
-        match end {
-            TurnEnd::Answered => ExitCode::SUCCESS,
-            TurnEnd::Stopped | TurnEnd::Exit => ExitCode::from(130),
-            TurnEnd::Failed => ExitCode::FAILURE,
+    }
+    let session_id = seam.session.id.clone();
+    let code = if let Some(prompt) = args.prompt.clone() {
+        engine.front_end(FrontEnd::default());
+        match engine.run_prompt(prompt).await {
+            RunEnd::Answered | RunEnd::Quit => ExitCode::SUCCESS,
+            RunEnd::Stopped => ExitCode::from(130),
+            RunEnd::Failed => ExitCode::FAILURE,
         }
     } else {
-        let (quit_popup, quit_asks) = mpsc::unbounded_channel();
         let screen = full_screen
             .then(|| {
                 tui::start(
                     tui::Setup {
-                        feed: harness.feed.clone(),
-                        meter: harness.gauges.clone(),
-                        input: input_sender.clone(),
-                        root: root.clone(),
-                        session_dir: harness.session.dir.clone(),
-                        workspace: harness.settings.workspace.clone(),
-                        handover_at: harness
-                            .settings
-                            .main
-                            .handover_at
-                            .unwrap_or(harness.settings.handover_at),
-                        show_thinking: harness.settings.show_thinking,
-                        // (With what Arko said before the screen opened.)
-                        banner: harness.header(model_note.take()),
-                        keys: harness.keys.clone(),
-                        quit_asks,
+                        feed: seam.feed.clone(),
+                        meter: seam.meter.clone(),
+                        input: seam.input.clone(),
+                        root: seam.session.root.clone(),
+                        session_dir: seam.session.dir.clone(),
+                        workspace: seam.session.workspace.clone(),
+                        handover_at: seam.handover_at,
+                        show_thinking: seam.show_thinking,
+                        banner: seam.banner,
+                        keys: seam.keys.clone(),
+                        quit_asks: seam.quit_asks,
                     },
                     &output,
                 )
             })
             .flatten();
-        harness.quit_popup = screen.is_some().then_some(quit_popup);
-        harness.banner(new, screen.is_some());
-        if let Some(bind) = remote_bind {
-            harness.start_remote(bind).await;
-        }
-        if !new {
-            harness.restart_unfinished(&mut input).await;
-        }
-        if !harness.exiting {
-            harness.repl(&mut input).await;
-        }
+        prompt_shown |= full_screen;
+        engine.front_end(FrontEnd {
+            boxed_banner: screen.is_some(),
+            asks_to_quit: screen.is_some(),
+        });
+        engine.run().await;
         if let Some(screen) = screen {
             screen.close().await;
         }
         ExitCode::SUCCESS
     };
     ui::stop_reading();
-    if harness.remote.is_some() {
-        harness
-            .feed
-            .notice(Level::Info, "Arko closed. The session is saved.");
-        harness.stop_remote().await;
-    }
-    if let Some(crew) = &harness.crew {
-        let running = crew.running().len();
-        if running > 0 {
-            output.line(&output.dim(&format!(
-                "Stopping {running} worker{}… (resuming the session lets the agent continue {})",
-                if running == 1 { "" } else { "s" },
-                if running == 1 { "it" } else { "them" }
-            )));
-        }
-        crew.shutdown().await;
-    }
-    harness.mcp.shutdown().await;
-    if let Some(indexes) = &harness.indexes {
-        indexes.shutdown().await;
-    }
-    managers.shutdown().await;
+    engine.shutdown().await;
     // The prompt is still drawn, and its thread still reading: what is
     // printed from here goes straight to the terminal, below the prompt
     // line cleared and with the terminal's modes restored.
     output.detach();
-    if interactive {
+    if prompt_shown {
         tokio::time::sleep(Duration::from_millis(30)).await;
         output.clear_line();
     }
     term::restore();
     output.line(&output.dim(&format!(
-        "Session {} saved. Continue it with: arko --resume {}",
-        harness.session.id, harness.session.id
+        "Session {session_id} saved. Continue it with: arko --resume {session_id}"
     )));
     Ok(code)
 }
@@ -925,7 +511,7 @@ pub(crate) fn workspace(options: &Options) -> Result<PathBuf, String> {
 pub(crate) fn text_replies_for(options: &Options) -> bool {
     options
         .text_replies
-        .unwrap_or(!options.one_shot && options.interactive)
+        .unwrap_or(!options.one_shot && (options.interactive || options.remote.is_some()))
 }
 
 /// After how many seconds this run's shell commands move to the background
@@ -1166,13 +752,13 @@ pub(crate) fn default_model(options: &Options) -> Option<providers::DefaultModel
     providers::default_models(options.codex_auth.as_deref(), &root)
 }
 
-/// Logs go to the session's `arko.log`, not the terminal. `RUST_LOG` sets
-/// the level (default: info).
-pub(crate) fn start_log(session: &Session) {
+/// Logs go to the `arko.log` of the session in `dir`, not the terminal.
+/// `RUST_LOG` sets the level (default: info).
+pub(crate) fn start_log(dir: &Path) {
     let Ok(file) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open(session.log_file())
+        .open(dir.join(session::LOG_FILE))
     else {
         return;
     };

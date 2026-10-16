@@ -2,6 +2,8 @@
 //! credentials, the question about a project's MCP servers, and the notes on
 //! standard error.
 
+use std::path::Path;
+
 use async_trait::async_trait;
 
 use crate::credentials::{self, Need};
@@ -41,6 +43,10 @@ impl Prompter for TerminalPrompter {
 
     fn note(&self, _level: Level, text: &str) {
         eprintln!("arko: {text}");
+    }
+
+    fn session_found(&self, dir: &Path) {
+        crate::cli::start_log(dir);
     }
 }
 

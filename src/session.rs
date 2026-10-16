@@ -13,6 +13,8 @@ use crate::providers::OpenAiAuth;
 use crate::shell::WindowsShell;
 
 const SETTINGS_FILE: &str = "session.json";
+/// The session's log, in its folder.
+pub const LOG_FILE: &str = "arko.log";
 
 /// What a session was started with.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -201,10 +203,6 @@ impl Session {
     /// commands could move to the background kept those in `commands`.)
     pub fn jobs_dir(&self) -> PathBuf {
         self.dir.join("jobs")
-    }
-
-    pub fn log_file(&self) -> PathBuf {
-        self.dir.join("arko.log")
     }
 
     /// The checkpoint to resume from: the one `latest-checkpoint` names.
