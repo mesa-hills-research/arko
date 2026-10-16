@@ -249,7 +249,7 @@ pub const NO_LIMIT: u32 = u32::MAX;
 /// writes (a few thousand tokens), and the tool results of a step past
 /// the size. The size is checked before each request with its new tool
 /// results counted, so a step goes past it only by what the estimate
-/// misses, or when Arko asks after a request reported its size.
+/// misses.
 pub const CHATGPT_HANDOVER_ROOM: usize = 22_000;
 
 /// The input size, in tokens, at which an agent on `model` hands over
@@ -259,25 +259,35 @@ pub const CHATGPT_HANDOVER_ROOM: usize = 22_000;
 /// ([`CHATGPT_OAUTH_MAX_INPUT_TOKENS`](arko_ai::input_limit::CHATGPT_OAUTH_MAX_INPUT_TOKENS),
 /// 272k, less than the API's limit), so at 250k. Others hand over at 500k
 /// on Claude models (by API key, on OpenRouter or in Claude Code), 200k on
-/// the rest, and at most 80% of what the model accepts;
-/// [`providers::UNKNOWN_LIMIT_HANDOVER`] when that isn't known (an
-/// OpenRouter model without its catalog).
+/// the rest, and at most 80% of what the model accepts (see
+/// [`max_handover`]); [`providers::UNKNOWN_LIMIT_HANDOVER`] when that isn't
+/// known (an OpenRouter model without its catalog).
 pub fn default_handover(model: &Model, openai_auth: Option<OpenAiAuth>) -> usize {
-    if model.provider == Provider::OpenAI
-        && openai_auth == Some(OpenAiAuth::ChatGpt)
-        && let Some(limit) = effective_max_input_tokens(model, true)
-    {
-        return limit.saturating_sub(CHATGPT_HANDOVER_ROOM);
-    }
-    let tokens = match model.provider {
-        Provider::Anthropic | Provider::ClaudeCode => 500_000,
-        Provider::OpenRouter if providers::is_claude_slug(&model.id) => 500_000,
-        _ => 200_000,
+    let Some(most) = max_handover(model, openai_auth) else {
+        return providers::UNKNOWN_LIMIT_HANDOVER;
     };
-    match model.max_input_tokens {
-        0 => providers::UNKNOWN_LIMIT_HANDOVER,
-        limit => tokens.min(limit / 5 * 4),
+    match model.provider {
+        Provider::OpenAI if openai_auth == Some(OpenAiAuth::ChatGpt) => most,
+        Provider::Anthropic | Provider::ClaudeCode => most.min(500_000),
+        Provider::OpenRouter if providers::is_claude_slug(&model.id) => most.min(500_000),
+        _ => most.min(200_000),
     }
+}
+
+/// The largest handover size for an agent on `model`, in a session that
+/// reaches OpenAI models by `openai_auth`: it leaves room below what the
+/// model accepts for the report and the results of a step past the size.
+/// That is [`CHATGPT_HANDOVER_ROOM`] on the ChatGPT login, whose limit is
+/// small, and a fifth of the limit elsewhere. `None` when the limit isn't
+/// known.
+pub fn max_handover(model: &Model, openai_auth: Option<OpenAiAuth>) -> Option<usize> {
+    let chatgpt = model.provider == Provider::OpenAI && openai_auth == Some(OpenAiAuth::ChatGpt);
+    let limit = effective_max_input_tokens(model, chatgpt)?;
+    Some(if chatgpt {
+        limit.saturating_sub(CHATGPT_HANDOVER_ROOM)
+    } else {
+        limit / 5 * 4
+    })
 }
 
 /// What an agent on `model` does at `tokens` of input: in Claude Code,
@@ -1288,6 +1298,13 @@ mod tests {
         let mut small = sol.clone();
         small.max_input_tokens = 128_000;
         assert_eq!(default_handover(&small, Some(OpenAiAuth::ChatGpt)), 106_000);
+        // The largest size /handover-at takes: the same room below the limit.
+        assert_eq!(
+            max_handover(&opus, None),
+            Some(opus.max_input_tokens / 5 * 4)
+        );
+        assert_eq!(max_handover(&sol, Some(OpenAiAuth::ChatGpt)), Some(250_000));
+        assert_eq!(max_handover(&Model::openrouter("a/b"), None), None);
 
         let mut main = model("opus", false);
         main.handover_at = Some(default_handover(&opus, None));

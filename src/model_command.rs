@@ -541,14 +541,6 @@ impl Harness {
         self.main_config = main_config;
         self.worker_config = worker_config;
         self.open(false)?;
-        if self.settings.main_handover_at.is_none() {
-            let at = self
-                .settings
-                .main
-                .handover_at
-                .unwrap_or(self.settings.handover_at);
-            self.handover.set_at(at);
-        }
         self.start_new_workers();
         self.save_session();
         if !self.one_shot
