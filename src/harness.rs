@@ -1601,7 +1601,9 @@ impl Harness {
     /// A new session holding the conversation up to just before the user's
     /// message `before`, or all of it: its ID. It takes this session's
     /// settings, and its conversation from its seed when it opens (see
-    /// `import_seed`).
+    /// `import_seed`). Before the conversation's first message, it keeps
+    /// none of it but the report the conversation began from, if it was
+    /// handed over: the branch's first message goes on from it.
     fn branch(&self, before: Option<u64>) -> Result<String, String> {
         // (Its workers stay here: the branch's conversation would speak of
         // workers it doesn't have.)
@@ -1614,36 +1616,20 @@ impl Harness {
         }
         let task = self
             .conversation_task()
-            .ok_or("A branch starts from a conversation: send a message first.")?;
+            .ok_or(crate::sessions::NO_CONVERSATION)?;
         let index = match before {
             Some(item) => self.message_at(item, "branched from")?,
             None => task.conversation.messages.len(),
         };
-        if index == 0 {
-            return Err("A branch keeps the conversation up to a message, and this is its first: start a new session instead.".into());
-        }
-        let branch = task.branch(index).map_err(|error| error.to_string())?;
-        let seed = serde_json::to_string(&branch)
-            .map_err(|error| format!("could not write the branch's conversation: {error}"))?;
-        let session = Session::create(&self.root)
-            .map_err(|error| format!("could not create a session: {error}"))?;
-        let mut settings = self.settings.clone();
-        settings.created = chrono::Utc::now();
-        settings.branched_from = Some(self.session.id.clone());
         let title = lock(&self.gauges.title).clone();
-        settings.title = Some(format!("Branch of {title}"));
-        // A chat works in its own folder.
-        if settings.workspace == self.session.dir {
-            settings.workspace = session.dir.clone();
-        }
-        let written = session
-            .save_settings(&settings)
-            .and_then(|()| std::fs::write(session.dir.join(crate::session::SEED_FILE), seed));
-        if let Err(error) = written {
-            let _ = std::fs::remove_dir_all(&session.dir);
-            return Err(format!("could not save the branch: {error}"));
-        }
-        Ok(session.id)
+        crate::sessions::write_branch(
+            &self.root,
+            &self.session,
+            &self.settings,
+            &title,
+            task,
+            index,
+        )
     }
 
     /// A branch's first opening: its conversation, from its seed, becomes
@@ -1905,21 +1891,7 @@ impl Harness {
     /// The session's name, as the status gives it: the one the user gave
     /// it, else its current conversation's, else its first message's start.
     pub(crate) fn publish_title(&self) {
-        let title = self
-            .session
-            .renamed()
-            .or_else(|| {
-                self.conversations
-                    .current
-                    .and_then(|index| self.conversations.list.get(index))
-                    .map(|record| record.title.clone())
-                    .filter(|title| !title.is_empty())
-            })
-            .or_else(|| self.settings.title.clone())
-            .unwrap_or_else(|| match self.settings.mode {
-                Mode::Agent => "New session".to_string(),
-                Mode::Chat => "New chat".to_string(),
-            });
+        let title = crate::sessions::title(&self.session, &self.conversations, &self.settings);
         *lock(&self.gauges.title) = title;
         self.gauges.touch();
     }
@@ -2815,6 +2787,20 @@ impl Harness {
             && matches!(&self.conversation, Conversation::Stopped(run) if run.restart != Restart::Recover);
         let news_turn = matches!(prompt, Prompt::News);
         let jobs_turn = matches!(prompt, Prompt::Jobs);
+        // A branch made before its conversation's first message has none:
+        // it starts from this message, as one cut back to its first does,
+        // and goes on from the report its conversation began from.
+        if self.cut_back.is_none()
+            && let Conversation::Answered(result) = &self.conversation
+            && result.task.conversation.messages.is_empty()
+        {
+            self.cut_report = result
+                .task
+                .handovers
+                .last()
+                .map(|handover| handover.report.clone());
+            self.cut_back = Some(0);
+        }
         let mut message = self.compose(prompt);
         let cut = self.cut_back.take();
         // A conversation that began from a handover's report, cut back to

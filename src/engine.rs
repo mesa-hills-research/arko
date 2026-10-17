@@ -174,7 +174,10 @@ pub enum Request {
     /// message itself left out), or all of it (`None`), to go on apart
     /// from this one. Replies the new session's ID: open it
     /// ([`SessionChoice::Resume`]) to go on there. Its settings are this
-    /// one's. Workers stay with this session. Between turns.
+    /// one's. Before the conversation's first message, the branch has none
+    /// of it, but goes on from the report the conversation began from, if
+    /// it was handed over. Workers stay with this session. Between turns.
+    /// A closed session is branched with [`crate::sessions::branch`].
     Branch {
         before: Option<u64>,
         reply: Reply<String>,
@@ -2491,7 +2494,9 @@ mod tests {
 
     /// A branch is a new session with the conversation up to a message of
     /// the user's: it goes on apart from the session it came from, also
-    /// once it opens again. A branch keeps at least the first message.
+    /// once it opens again. One before the first message has none of it.
+    /// A closed session is branched from what it saved
+    /// (`sessions::branch`).
     #[tokio::test]
     async fn a_branch_goes_on_apart_from_its_session() {
         let temp = tempfile::tempdir().unwrap();
@@ -2507,13 +2512,19 @@ mod tests {
             .send(Input::Message(app_message("Two.")))
             .unwrap();
         answered(&seam, &bodies, 2).await;
+        // Before the first message: a branch with none of it.
         let one = user_item(&seam, "One.").id;
-        let refused = ask_for(&seam, |reply| Request::Branch {
+        let empty = ask_for(&seam, |reply| Request::Branch {
             before: Some(one),
             reply,
         })
-        .await;
-        assert!(refused.unwrap_err().contains("start a new session"));
+        .await
+        .unwrap();
+        // Open, it can't be branched from what it saved.
+        assert!(matches!(
+            crate::sessions::branch(&root, &id),
+            Err(crate::sessions::BranchError::Locked { holder: Some(_) })
+        ));
         let two = user_item(&seam, "Two.").id;
         let branch = ask_for(&seam, |reply| Request::Branch {
             before: Some(two),
@@ -2567,6 +2578,58 @@ mod tests {
             fourth.contains("Deux.") && fourth.contains("Reply 3.") && !fourth.contains("Two.")
         );
         quit(seam, ended).await;
+
+        // The branch before the first message starts from its own.
+        let (seam, ended) = open_app(
+            &root,
+            &project,
+            &server,
+            SessionChoice::Resume(empty.clone()),
+        )
+        .await;
+        assert!(exchanged(&seam).is_empty());
+        seam.input
+            .send(Input::Message(app_message("Uno.")))
+            .unwrap();
+        let fifth = answered(&seam, &bodies, 5).await;
+        assert!(fifth.contains("Uno.") && !fifth.contains("One."), "{fifth}");
+        quit(seam, ended).await;
+        let settings = Session::open(&root, &empty)
+            .unwrap()
+            .load_settings()
+            .unwrap();
+        assert_eq!(settings.branched_from.as_deref(), Some(id.as_str()));
+
+        // Closed, the session is branched from what it saved, as its own
+        // request branches all of it.
+        let saved = crate::sessions::branch(&root, &id).unwrap();
+        let settings = Session::open(&root, &saved)
+            .unwrap()
+            .load_settings()
+            .unwrap();
+        assert_eq!(settings.branched_from.as_deref(), Some(id.as_str()));
+        assert_eq!(settings.title.as_deref(), Some("Branch of One."));
+        let (seam, ended) = open_app(&root, &project, &server, SessionChoice::Resume(saved)).await;
+        resumed(&seam).await;
+        assert_eq!(exchanged(&seam), ["One.", "Reply 1.", "Two.", "Reply 2."]);
+        quit(seam, ended).await;
+        // One renamed is named so.
+        crate::sessions::rename(&root, &id, "Numbers").unwrap();
+        let renamed = crate::sessions::branch(&root, &id).unwrap();
+        let settings = Session::open(&root, &renamed)
+            .unwrap()
+            .load_settings()
+            .unwrap();
+        assert_eq!(settings.title.as_deref(), Some("Branch of Numbers"));
+        // A session without a conversation isn't.
+        let new = Session::create(&root).unwrap();
+        new.save_settings(&settings).unwrap();
+        let refused = crate::sessions::branch(&root, &new.id).unwrap_err();
+        assert_eq!(refused, crate::sessions::BranchError::NoConversation);
+        assert_eq!(
+            refused.to_string(),
+            "A branch starts from a conversation: send a message first."
+        );
     }
 
     /// A session switches between Agent and Chat between turns: it opens
@@ -2787,6 +2850,55 @@ mod tests {
         );
         assert!(edited.contains("Something else.") && !edited.contains("And once more."));
         assert_eq!(last(&bodies), edited);
+
+        // A branch before that message keeps the summary: the branch's
+        // first message goes on from it, also edited.
+        let something = user_item(&seam, "Something else.").id;
+        let branch = ask_for(&seam, |reply| Request::Branch {
+            before: Some(something),
+            reply,
+        })
+        .await
+        .unwrap();
+        quit(seam, running.ended).await;
+        let running = spawn(
+            Options {
+                root: Some(temp.path().join("arko")),
+                session: SessionChoice::Resume(branch),
+                model: Some("luna".into()),
+                openai_auth: Some(OpenAiAuth::ApiKey),
+                cache_1h: Some(false),
+                client: Some(GivenClient(Arc::new(server.client()))),
+                ..Options::default()
+            },
+            Arc::new(NoPrompter),
+        );
+        let seam = tokio::time::timeout(Duration::from_secs(30), running.opened)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(exchanged(&seam).is_empty());
+        seam.input
+            .send(Input::Message(app_message("Branched.")))
+            .unwrap();
+        let branched = answered(&seam, &bodies, 7).await;
+        assert!(
+            branched.contains("SUMMARY: the user greeted Arko twice.")
+                && branched.contains("Branched."),
+            "{branched}"
+        );
+        assert!(!branched.contains("Something else.") && !branched.contains("First answer."));
+        let first = user_item(&seam, "Branched.");
+        assert_eq!(first.message_index, Some(0));
+        assert_eq!(edit(&seam, first.id, "Branched again.").await, Ok(()));
+        let again = answered(&seam, &bodies, 8).await;
+        assert!(
+            again.contains("SUMMARY: the user greeted Arko twice.")
+                && again.contains("Branched again."),
+            "{again}"
+        );
+        assert!(!again.contains("Branched.\n"));
         quit(seam, running.ended).await;
     }
 

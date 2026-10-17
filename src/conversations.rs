@@ -72,10 +72,13 @@ pub struct Run {
 
 /// The main agent's runs in `workflow`, in the order they started.
 pub fn main_runs(workflow: &Workflow) -> Vec<Run> {
-    let mut runs: Vec<Run> = workflow
-        .context()
-        .agent_results
-        .read()
+    main_runs_of(&workflow.context().agent_results.read())
+}
+
+/// The main agent's runs in the agent runs `results`, in the order they
+/// started.
+pub fn main_runs_of(results: &[AgentResult]) -> Vec<Run> {
+    let mut runs: Vec<Run> = results
         .iter()
         .filter(|result| result.agent_name == MAIN)
         .map(|result| Run {

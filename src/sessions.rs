@@ -54,21 +54,8 @@ pub fn list(root: &Path) -> Vec<SessionEntry> {
                     current: conversations.current == Some(index),
                 })
                 .collect();
-            let current = entries
-                .iter()
-                .find(|conversation| conversation.current)
-                .map(|conversation| conversation.title.clone())
-                .filter(|title| !title.is_empty());
-            let title = session
-                .renamed()
-                .or(current)
-                .or_else(|| settings.title.clone())
-                .unwrap_or_else(|| match settings.mode {
-                    Mode::Agent => "New session".to_string(),
-                    Mode::Chat => "New chat".to_string(),
-                });
             SessionEntry {
-                title,
+                title: title(&session, &conversations, &settings),
                 mode: settings.mode,
                 workspace: (settings.mode == Mode::Agent).then(|| settings.workspace.clone()),
                 model: settings.describe(&settings.main),
@@ -90,6 +77,187 @@ pub fn list(root: &Path) -> Vec<SessionEntry> {
         when(b).cmp(&when(a))
     });
     entries
+}
+
+/// The name of `session`, with its `conversations` and `settings`: the one
+/// the user gave it, else its current conversation's (the first line of
+/// its first message), else the one its settings keep, else "New session"
+/// (or "New chat").
+pub(crate) fn title(
+    session: &Session,
+    conversations: &Conversations,
+    settings: &session::Settings,
+) -> String {
+    session
+        .renamed()
+        .or_else(|| {
+            conversations
+                .current
+                .and_then(|index| conversations.list.get(index))
+                .map(|record| record.title.clone())
+                .filter(|title| !title.is_empty())
+        })
+        .or_else(|| settings.title.clone())
+        .unwrap_or_else(|| match settings.mode {
+            Mode::Agent => "New session".to_string(),
+            Mode::Chat => "New chat".to_string(),
+        })
+}
+
+/// Why a session wasn't branched.
+#[derive(Debug, Clone, PartialEq)]
+pub enum BranchError {
+    /// It is open (who has it, if they said): its own requests branch it
+    /// there (`Request::Branch`).
+    Locked {
+        holder: Option<Holder>,
+    },
+    /// It has no conversation to go on from.
+    NoConversation,
+    Io(String),
+}
+
+impl std::fmt::Display for BranchError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            BranchError::Locked { holder } => write!(
+                f,
+                "the session is open in {}: branch it there",
+                holder
+                    .as_ref()
+                    .map_or("another Arko".to_string(), Holder::describe)
+            ),
+            BranchError::NoConversation => f.write_str(NO_CONVERSATION),
+            BranchError::Io(error) => f.write_str(error),
+        }
+    }
+}
+
+/// Why a session without a conversation isn't branched.
+pub(crate) const NO_CONVERSATION: &str =
+    "A branch starts from a conversation: send a message first.";
+
+/// Branches the session `id`, closed, from what it saved: a new session
+/// with all of its main agent's current conversation and its settings, as
+/// the session's own `Request::Branch` with no message makes one. Replies
+/// the new session's ID. The session is held while it is read, so no one
+/// opens it meanwhile: an open one is refused (`Locked`).
+pub fn branch(root: &Path, id: &str) -> Result<String, BranchError> {
+    let session = Session::open(root, id).map_err(BranchError::Io)?;
+    let locked = |error| match error {
+        session::LockError::Held(holder) => BranchError::Locked { holder },
+        session::LockError::Io(error) => BranchError::Io(error.to_string()),
+    };
+    // As `delete` holds it: the terminal's lock first (an Arko from before
+    // session locks holds only that one), then the session's.
+    let _terminal = session.lock_terminal().map_err(|error| match error {
+        session::LockError::Held(_) => BranchError::Locked {
+            holder: session::holder(&session.dir).filter(|holder| !holder.app.is_empty()),
+        },
+        session::LockError::Io(error) => BranchError::Io(error.to_string()),
+    })?;
+    let _lock = session.lock("arko", "Arko, branching it").map_err(locked)?;
+    let settings = session.load_settings().map_err(BranchError::Io)?;
+    let (task, conversations) = saved_conversation(&session).map_err(BranchError::Io)?;
+    let task = task.ok_or(BranchError::NoConversation)?;
+    let title = title(&session, &conversations, &settings);
+    let index = task.conversation.messages.len();
+    write_branch(root, &session, &settings, &title, &task, index).map_err(BranchError::Io)
+}
+
+/// The task of the main agent's current conversation in what `session`
+/// saved (as the session finds it when it opens: a run that answered, or
+/// one stopped or interrupted that goes on), if it has one, and its
+/// conversations.
+fn saved_conversation(
+    session: &Session,
+) -> Result<(Option<arko_agents::Task>, Conversations), String> {
+    let Some(checkpoint) = session.latest_checkpoint() else {
+        return Ok((None, Conversations::load(&session.dir).unwrap_or_default()));
+    };
+    let unreadable = |error: String| {
+        format!(
+            "could not read the session's checkpoint {}: {error}",
+            checkpoint.display()
+        )
+    };
+    let text =
+        std::fs::read_to_string(&checkpoint).map_err(|error| unreadable(error.to_string()))?;
+    let state: arko_workflows::persistence::state::WorkflowState =
+        serde_json::from_str(&text).map_err(|error| unreadable(error.to_string()))?;
+    let results = state
+        .agent_results_in(&session.run_dir())
+        .map_err(|error| unreadable(error.to_string()))?;
+    let runs = crate::conversations::main_runs_of(&results);
+    let mut conversations =
+        Conversations::load(&session.dir).unwrap_or_else(|| Conversations::derive(&runs));
+    conversations.take_in(&runs);
+    let task = conversations.current_run().and_then(|run| {
+        results
+            .into_iter()
+            .find(|result| result.agent_run_id == run)
+            .filter(goes_on)
+            .map(|result| result.task)
+    });
+    Ok((task, conversations))
+}
+
+/// Whether the main agent's saved run `result` goes on when its session
+/// opens (see `conversation_of`): it answered, or it was interrupted or
+/// stopped (not for good).
+fn goes_on(result: &arko_workflows::prelude::AgentResult) -> bool {
+    use arko_workflows::prelude::AgentRunStatus;
+    match result.status {
+        AgentRunStatus::Completed | AgentRunStatus::Interrupted => true,
+        AgentRunStatus::Cancelled => {
+            result.task.parent.is_none()
+                && result
+                    .stopped_by
+                    .as_ref()
+                    .is_some_and(|stop| !stop.is_retired())
+        }
+        _ => false,
+    }
+}
+
+/// Writes a branch of the session `from` (with its `settings` and named
+/// `title`) holding the conversation of `task` up to just before message
+/// `index`: all of it with the conversation's length, and none with 0 (it
+/// keeps the reports of the handovers the conversation had, the latest of
+/// which its first message goes on from). The branch is a new session
+/// with the settings copied, named "Branch of <title>", that knows where
+/// it came from (`branched_from`): a chat's own folder is its workspace.
+/// It takes in the conversation from its seed when it opens (see
+/// `Harness::import_seed`). Its ID.
+pub(crate) fn write_branch(
+    root: &Path,
+    from: &Session,
+    settings: &session::Settings,
+    title: &str,
+    task: &arko_agents::Task,
+    index: usize,
+) -> Result<String, String> {
+    let branch = task.branch(index).map_err(|error| error.to_string())?;
+    let seed = serde_json::to_string(&branch)
+        .map_err(|error| format!("could not write the branch's conversation: {error}"))?;
+    let session =
+        Session::create(root).map_err(|error| format!("could not create a session: {error}"))?;
+    let mut settings = settings.clone();
+    settings.created = Utc::now();
+    settings.branched_from = Some(from.id.clone());
+    settings.title = Some(format!("Branch of {title}"));
+    // A chat works in its own folder.
+    if settings.workspace == from.dir {
+        settings.workspace = session.dir.clone();
+    }
+    let written = session
+        .save_settings(&settings)
+        .and_then(|()| std::fs::write(session.dir.join(session::SEED_FILE), seed));
+    if let Err(error) = written {
+        let _ = std::fs::remove_dir_all(&session.dir);
+        return Err(format!("could not save the branch: {error}"));
+    }
+    Ok(session.id)
 }
 
 /// Gives the session `id` the name `title` (empty: back to its
@@ -156,7 +324,7 @@ pub fn delete_plan(root: &Path, id: &str) -> Result<DeletePlan, DeleteError> {
         if is_clean(&worktree) {
             plan.worktrees_clean.push(worktree);
         } else {
-            let branch = branch(&worktree);
+            let branch = git_branch(&worktree);
             plan.worktrees_dirty.push((worktree, branch));
         }
     }
@@ -299,7 +467,7 @@ fn is_clean(dir: &Path) -> bool {
     git(dir, &["status", "--porcelain"]).is_some_and(|status| status.is_empty())
 }
 
-fn branch(dir: &Path) -> Option<String> {
+fn git_branch(dir: &Path) -> Option<String> {
     git(dir, &["rev-parse", "--abbrev-ref", "HEAD"]).filter(|branch| branch != "HEAD")
 }
 
