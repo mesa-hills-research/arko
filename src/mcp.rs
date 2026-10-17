@@ -441,11 +441,59 @@ struct Approval {
     servers: Value,
 }
 
+fn read_approvals(root: &Path) -> Result<Approvals, String> {
+    let path = root.join(APPROVALS_FILE);
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(Approvals::default());
+        }
+        Err(error) => return Err(format!("could not read {} ({error})", path.display())),
+    };
+    serde_json::from_str(&text)
+        .map_err(|error| format!("could not read {} ({error})", path.display()))
+}
+
 fn approvals(root: &Path) -> Approvals {
-    std::fs::read_to_string(root.join(APPROVALS_FILE))
-        .ok()
-        .and_then(|text| serde_json::from_str(&text).ok())
-        .unwrap_or_default()
+    read_approvals(root).unwrap_or_default()
+}
+
+pub(crate) fn project_approval(root: &Path, workspace: &Path) -> Result<Option<bool>, String> {
+    let workspace = approval_workspace(workspace)?;
+    let file = workspace.join(PROJECT_FILE);
+    // An absent config has no current approval. Other read errors reach the caller.
+    match std::fs::metadata(&file) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("could not read {} ({error})", file.display())),
+        Ok(_) => {}
+    }
+    let parsed = parse_file(&file, &environment)?;
+    Ok(read_approvals(root)?
+        .projects
+        .get(&workspace.display().to_string())
+        .filter(|approval| approval.servers == parsed.raw)
+        .map(|approval| approval.start))
+}
+
+fn approval_workspace(workspace: &Path) -> Result<PathBuf, String> {
+    std::path::absolute(workspace)
+        .map(|path| arko_agents::utils::normalize_path(&path))
+        .map_err(|error| format!("could not resolve {} ({error})", workspace.display()))
+}
+
+pub(crate) fn forget_project_approval(root: &Path, workspace: &Path) -> Result<bool, String> {
+    let workspace = approval_workspace(workspace)?;
+    let key = workspace.display().to_string();
+    if !read_approvals(root)?.projects.contains_key(&key) {
+        return Ok(false);
+    }
+    let _lock = approval_lock(root)?;
+    let mut approvals = read_approvals(root)?;
+    let removed = approvals.projects.remove(&key).is_some();
+    if removed {
+        save_approvals(root, &approvals)?;
+    }
+    Ok(removed)
 }
 
 /// The answer remembered for the project's servers, if any (for these
@@ -460,8 +508,8 @@ pub(crate) fn remembered(root: &Path, workspace: &Path, parsed: &Parsed) -> Opti
 
 /// Remembers the user's answer about the project's servers.
 fn remember(root: &Path, workspace: &Path, parsed: &Parsed, start: bool) -> Result<(), String> {
-    let path = root.join(APPROVALS_FILE);
-    let mut approvals = approvals(root);
+    let _lock = approval_lock(root)?;
+    let mut approvals = read_approvals(root)?;
     approvals.projects.insert(
         workspace.display().to_string(),
         Approval {
@@ -469,11 +517,30 @@ fn remember(root: &Path, workspace: &Path, parsed: &Parsed, start: bool) -> Resu
             servers: parsed.raw.clone(),
         },
     );
-    let text = serde_json::to_string_pretty(&approvals).map_err(|error| error.to_string())?;
-    let temporary = root.join(format!("{APPROVALS_FILE}.tmp"));
-    std::fs::create_dir_all(root)
-        .and_then(|()| std::fs::write(&temporary, text))
-        .and_then(|()| std::fs::rename(&temporary, &path))
+    save_approvals(root, &approvals)
+}
+
+fn approval_lock(root: &Path) -> Result<std::fs::File, String> {
+    let path = root.join(format!("{APPROVALS_FILE}.lock"));
+    let file = std::fs::create_dir_all(root)
+        .and_then(|()| {
+            std::fs::OpenOptions::new()
+                .create(true)
+                .truncate(false)
+                .read(true)
+                .write(true)
+                .open(&path)
+        })
+        .map_err(|error| format!("could not open {} ({error})", path.display()))?;
+    file.lock()
+        .map_err(|error| format!("could not lock {} ({error})", path.display()))?;
+    Ok(file)
+}
+
+fn save_approvals(root: &Path, approvals: &Approvals) -> Result<(), String> {
+    let path = root.join(APPROVALS_FILE);
+    let text = serde_json::to_string_pretty(approvals).map_err(|error| error.to_string())?;
+    crate::session::write_whole(&path, text.as_bytes())
         .map_err(|error| format!("could not save {} ({error})", path.display()))
 }
 

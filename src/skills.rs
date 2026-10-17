@@ -27,16 +27,24 @@ const HOME_FOLDERS: [&str; 2] = [".agents/skills", ".claude/skills"];
 /// more than one is kept from the first, and the others are renamed
 /// (`name-2`).
 pub fn folders(workspace: &Path, root: &Path) -> Vec<PathBuf> {
+    folders_for(Some(workspace), root)
+}
+
+pub(crate) fn folders_for(workspace: Option<&Path>, root: &Path) -> Vec<PathBuf> {
     let home = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
         .filter(|home| !home.is_empty())
         .map(PathBuf::from);
     folders_in(workspace, root, home.as_deref())
 }
 
-fn folders_in(workspace: &Path, root: &Path, home: Option<&Path>) -> Vec<PathBuf> {
-    let candidates = PROJECT_FOLDERS
-        .iter()
-        .map(|folder| workspace.join(folder))
+fn folders_in(workspace: Option<&Path>, root: &Path, home: Option<&Path>) -> Vec<PathBuf> {
+    let candidates = workspace
+        .into_iter()
+        .flat_map(|workspace| {
+            PROJECT_FOLDERS
+                .iter()
+                .map(move |folder| workspace.join(folder))
+        })
         .chain(std::iter::once(root.join("skills")))
         .chain(
             home.into_iter()
@@ -119,12 +127,12 @@ mod tests {
         let workspace = temp.path().join("project");
         let root = temp.path().join("arko");
         let home = temp.path().join("home");
-        assert!(folders_in(&workspace, &root, Some(&home)).is_empty());
+        assert!(folders_in(Some(&workspace), &root, Some(&home)).is_empty());
         assert!(config(&[]).is_none());
         skill(&workspace.join(".claude/skills"), "review", "");
         skill(&home.join(".claude/skills"), "style", "auto_load: true\n");
         skill(&root.join("skills"), "deploy", "");
-        let found = folders_in(&workspace, &root, Some(&home));
+        let found = folders_in(Some(&workspace), &root, Some(&home));
         assert_eq!(
             found,
             [
@@ -133,8 +141,12 @@ mod tests {
                 home.join(".claude/skills")
             ]
         );
+        assert_eq!(
+            folders_in(None, &root, Some(&home)),
+            [root.join("skills"), home.join(".claude/skills")]
+        );
         // The home directory as the working directory: each folder once.
-        assert_eq!(folders_in(&home, &root, Some(&home)).len(), 2);
+        assert_eq!(folders_in(Some(&home), &root, Some(&home)).len(), 2);
 
         let skills = list(&found, &workspace).unwrap();
         let names: Vec<&str> = skills

@@ -45,6 +45,15 @@ pub struct SkillEntry {
     pub skipped: Option<String>,
 }
 
+/// A config file that could not be read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExtensionNote {
+    /// The file the note is about.
+    pub file: PathBuf,
+    /// What happened, suitable for display.
+    pub message: String,
+}
+
 /// What an agent session would get.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Extensions {
@@ -56,22 +65,26 @@ pub struct Extensions {
     /// the order of their names.
     pub skills: Vec<SkillEntry>,
     /// The MCP config files that can't be read, and why.
-    pub notes: Vec<String>,
+    pub notes: Vec<ExtensionNote>,
 }
 
 /// What an agent session in Arko's folder `root`, working in `workspace`,
 /// with the MCP config files `mcp_config` (an app's, as
 /// [`Options::mcp_config`](crate::Options::mcp_config) gives them), would
-/// get. It reads the files, so call it off a UI thread.
-pub fn list(root: &Path, workspace: &Path, mcp_config: &[PathBuf]) -> Extensions {
+/// get. With no workspace it lists the given MCP files, Arko's `mcp.json`,
+/// and the shared skill folders only. It reads the files, so call it off a
+/// UI thread.
+pub fn list(root: &Path, workspace: Option<&Path>, mcp_config: &[PathBuf]) -> Extensions {
     let mut extensions = Extensions::default();
-    let project = workspace.join(mcp::PROJECT_FILE);
-    let user = root.join(mcp::USER_FILE);
     let normal = |file: &Path| {
         arko_agents::utils::normalize_path(
             &std::path::absolute(file).unwrap_or_else(|_| file.to_path_buf()),
         )
     };
+    let workspace = workspace.map(normal);
+    let workspace = workspace.as_deref();
+    let project = workspace.map(|workspace| workspace.join(mcp::PROJECT_FILE));
+    let user = normal(&root.join(mcp::USER_FILE));
     let mut files: Vec<PathBuf> = Vec::new();
     for file in mcp_config.iter().map(|file| normal(file)) {
         if !files.contains(&file) {
@@ -79,7 +92,7 @@ pub fn list(root: &Path, workspace: &Path, mcp_config: &[PathBuf]) -> Extensions
         }
     }
     let given = files.len();
-    for file in [project.clone(), user] {
+    for file in project.iter().cloned().chain(std::iter::once(user)) {
         if file.is_file() && !files.contains(&normal(&file)) {
             files.push(file);
         }
@@ -88,23 +101,25 @@ pub fn list(root: &Path, workspace: &Path, mcp_config: &[PathBuf]) -> Extensions
         let parsed = match mcp::parse_file(file, &mcp::environment) {
             Ok(parsed) => parsed,
             Err(error) => {
-                extensions.notes.push(format!(
-                    "MCP servers not started. {}",
-                    crate::ui::sentence(&error)
-                ));
+                extensions.notes.push(ExtensionNote {
+                    file: file.clone(),
+                    message: format!("MCP servers not started. {}", crate::ui::sentence(&error)),
+                });
                 continue;
             }
         };
         // A project's servers start once the user agrees.
-        let held = (index >= given && *file == project)
-            .then(|| match mcp::remembered(root, workspace, &parsed) {
-                Some(true) => None,
-                Some(false) => Some("the user chose not to start the project's servers".into()),
-                None => {
-                    Some("a session asks the user before it starts the project's servers".into())
-                }
-            })
-            .flatten();
+        let held = workspace
+            .filter(|_| index >= given && Some(file) == project.as_ref())
+            .and_then(
+                |workspace| match mcp::remembered(root, workspace, &parsed) {
+                    Some(true) => None,
+                    Some(false) => Some("the user chose not to start the project's servers".into()),
+                    None => Some(
+                        "a session asks the user before it starts the project's servers".into(),
+                    ),
+                },
+            );
         for server in &parsed.servers {
             let taken = extensions
                 .servers
@@ -133,8 +148,8 @@ pub fn list(root: &Path, workspace: &Path, mcp_config: &[PathBuf]) -> Extensions
             });
         }
     }
-    let folders = skills::folders(workspace, root);
-    extensions.skills = skills::scan(&folders, workspace)
+    let folders = skills::folders_for(workspace, root);
+    extensions.skills = skills::scan(&folders, workspace.unwrap_or(root))
         .into_iter()
         .map(|skill| SkillEntry {
             path: skill.path,
@@ -147,9 +162,181 @@ pub fn list(root: &Path, workspace: &Path, mcp_config: &[PathBuf]) -> Extensions
     extensions
 }
 
+/// The answer remembered for the project's current `.mcp.json` servers.
+/// `Some(true)` approves them, `Some(false)` declines them, and `None`
+/// means no answer is remembered for this config (also when it is absent).
+/// Changes to `mcpServers` require a new answer. Unreadable files return an
+/// error. Call this off a UI thread.
+pub fn project_mcp_approval(root: &Path, workspace: &Path) -> Result<Option<bool>, String> {
+    mcp::project_approval(root, workspace)
+}
+
+/// Forgets the project's remembered answer, including an answer for an
+/// earlier config. Returns whether an answer was removed. Other projects
+/// keep their answers. The next session asks again before starting these
+/// servers, and servers in sessions already open keep running.
+/// Call this off a UI thread.
+pub fn forget_project_mcp_approval(root: &Path, workspace: &Path) -> Result<bool, String> {
+    mcp::forget_project_approval(root, workspace)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shared_extensions_can_be_listed_without_a_workspace() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let servers = r#"{"mcpServers":{"shared":{"command":"shared-server"}}}"#;
+        std::fs::write(root.join(mcp::USER_FILE), servers).unwrap();
+        std::fs::write(root.join(mcp::PROJECT_FILE), servers).unwrap();
+        for folder in ["skills", ".agents/skills"] {
+            std::fs::create_dir_all(root.join(folder)).unwrap();
+            std::fs::write(
+                root.join(folder).join("local.md"),
+                "---\nname: local\ndescription: A local skill.\n---\nInstructions.\n",
+            )
+            .unwrap();
+        }
+        let given = root.join("given.json");
+        std::fs::write(
+            &given,
+            r#"{"mcpServers":{"given":{"command":"given-server"}}}"#,
+        )
+        .unwrap();
+        let listed = list(root, None, &[given]);
+        assert_eq!(listed.servers.len(), 2);
+        assert_eq!(listed.servers[0].name, "given");
+        assert_eq!(listed.servers[1].file, root.join(mcp::USER_FILE));
+        assert!(
+            listed
+                .skills
+                .iter()
+                .any(|skill| skill.path == root.join("skills/local.md"))
+        );
+        assert!(
+            !listed
+                .skills
+                .iter()
+                .any(|skill| skill.path.starts_with(root.join(".agents")))
+        );
+        assert!(listed.notes.is_empty());
+    }
+
+    #[test]
+    fn project_approvals_can_be_read_and_forgotten_without_starting_servers() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("arko");
+        let workspace = temp.path().join("project");
+        let other = temp.path().join("other");
+        for project in [&workspace, &other] {
+            std::fs::create_dir_all(project).unwrap();
+            std::fs::write(
+                project.join(mcp::PROJECT_FILE),
+                r#"{"mcpServers":{"lint":{"command":"lint-server"}}}"#,
+            )
+            .unwrap();
+        }
+        assert_eq!(project_mcp_approval(&root, &workspace), Ok(None));
+        assert_eq!(forget_project_mcp_approval(&root, &workspace), Ok(false));
+        for answer in [true, false] {
+            mcp::plan(&root, &workspace, &[], false)
+                .unwrap()
+                .decide(Some(answer))
+                .unwrap();
+            mcp::plan(&root, &other, &[], false)
+                .unwrap()
+                .decide(Some(true))
+                .unwrap();
+            assert_eq!(project_mcp_approval(&root, &workspace), Ok(Some(answer)));
+            assert_eq!(
+                project_mcp_approval(&root, &workspace.join(".")),
+                Ok(Some(answer))
+            );
+            let listed = list(&root, Some(&workspace), &[]);
+            assert_eq!(listed.servers[0].skipped.is_none(), answer);
+            assert_eq!(forget_project_mcp_approval(&root, &workspace), Ok(true));
+            assert_eq!(project_mcp_approval(&root, &workspace), Ok(None));
+            assert_eq!(project_mcp_approval(&root, &other), Ok(Some(true)));
+            assert!(
+                mcp::plan(&root, &workspace, &[], false)
+                    .unwrap()
+                    .approval
+                    .is_some()
+            );
+        }
+        mcp::plan(&root, &workspace, &[], false)
+            .unwrap()
+            .decide(Some(true))
+            .unwrap();
+        std::fs::write(
+            workspace.join(mcp::PROJECT_FILE),
+            r#"{"mcpServers":{"changed":{"command":"another-server"}}}"#,
+        )
+        .unwrap();
+        assert_eq!(project_mcp_approval(&root, &workspace), Ok(None));
+        assert_eq!(forget_project_mcp_approval(&root, &workspace), Ok(true));
+        std::fs::write(workspace.join(mcp::PROJECT_FILE), "broken config").unwrap();
+        assert!(project_mcp_approval(&root, &workspace).is_err());
+        std::fs::remove_file(workspace.join(mcp::PROJECT_FILE)).unwrap();
+        assert_eq!(project_mcp_approval(&root, &workspace), Ok(None));
+        assert_eq!(forget_project_mcp_approval(&root, &workspace), Ok(false));
+        std::fs::write(root.join("mcp-approvals.json"), "broken approvals").unwrap();
+        assert!(project_mcp_approval(&root, &other).is_err());
+        assert!(forget_project_mcp_approval(&root, &other).is_err());
+        assert_eq!(
+            std::fs::read_to_string(root.join("mcp-approvals.json")).unwrap(),
+            "broken approvals"
+        );
+    }
+
+    #[test]
+    fn concurrent_approval_updates_keep_other_projects_answers() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("arko");
+        let projects: Vec<_> = (0..12)
+            .map(|index| temp.path().join(format!("p{index}")))
+            .collect();
+        for (index, project) in projects.iter().enumerate() {
+            std::fs::create_dir_all(project).unwrap();
+            std::fs::write(
+                project.join(mcp::PROJECT_FILE),
+                r#"{"mcpServers":{"lint":{"command":"lint-server"}}}"#,
+            )
+            .unwrap();
+            if index % 2 == 0 {
+                mcp::plan(&root, project, &[], false)
+                    .unwrap()
+                    .decide(Some(true))
+                    .unwrap();
+            }
+        }
+        let barrier = std::sync::Barrier::new(projects.len());
+        std::thread::scope(|scope| {
+            for (index, project) in projects.iter().enumerate() {
+                let root = &root;
+                let barrier = &barrier;
+                scope.spawn(move || {
+                    barrier.wait();
+                    if index % 2 == 0 {
+                        assert_eq!(forget_project_mcp_approval(root, project), Ok(true));
+                    } else {
+                        mcp::plan(root, project, &[], false)
+                            .unwrap()
+                            .decide(Some(false))
+                            .unwrap();
+                    }
+                });
+            }
+        });
+        for (index, project) in projects.iter().enumerate() {
+            assert_eq!(
+                project_mcp_approval(&root, project),
+                Ok((index % 2 != 0).then_some(false))
+            );
+        }
+    }
 
     /// The servers a session would start, and those it leaves out with
     /// why. The skills, with where each is, and those the agents don't
@@ -203,7 +390,7 @@ mod tests {
         )
         .unwrap();
 
-        let listed = list(&root, &workspace, &[given.clone(), missing]);
+        let listed = list(&root, Some(&workspace), &[given.clone(), missing.clone()]);
         let servers: Vec<(&str, Option<&str>)> = listed
             .servers
             .iter()
@@ -251,7 +438,12 @@ mod tests {
                 .unwrap()
                 .contains("servers.json")
         );
-        assert!(listed.notes.iter().any(|note| note.contains("gone.json")));
+        assert!(
+            listed
+                .notes
+                .iter()
+                .any(|note| note.file == missing && note.message.contains("gone.json"))
+        );
 
         // (The user's own skill folders may add theirs.)
         let ours: Vec<(&str, Option<&str>)> = listed

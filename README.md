@@ -55,6 +55,7 @@ An app opens a session and drives it with `arko::Engine`, or runs several side b
 process with `arko::spawn`. The app shows the session's feed of items and sends the session the
 user's input. Apps build Arko with `default-features = false`, which leaves out the terminal's
 front ends, and add the `remote` feature for the web page. `cargo doc --open` builds the API docs.
+See [listing extensions and managing project approvals](docs/extensions.md) for settings pages.
 
 ## Tests
 
