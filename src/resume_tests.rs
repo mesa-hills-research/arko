@@ -155,6 +155,12 @@ async fn resume_goes_back_to_the_conversation_new_left() {
     assert!(!first.contains("Pears"), "{first}");
     assert!(!first.contains("Use the metric system."), "{first}");
 
+    // The turn stopped before the agent read the line, so the user is told
+    // it waits for the next message.
+    assert!(says(
+        &harness.feed,
+        "(what you typed during the turn, which the agent didn't read, goes with your next message)"
+    ));
     // Back in the second: what the user typed during its last turn comes
     // with the next message, once.
     assert!(says(

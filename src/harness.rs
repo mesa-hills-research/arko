@@ -3436,21 +3436,20 @@ impl Harness {
         }
     }
 
-    /// Keeps the notes the run never read for the agent: a new turn takes
-    /// them to it now (`now`, after a reply), else they go with the next
-    /// message.
+    /// Keeps the notes the run never read for the agent. After a reply
+    /// (`now`) a new turn takes them to it at once, and that turn starting
+    /// is all the user needs to see. After a stop or a failure they wait
+    /// for the next message, which the user is told.
     pub(crate) fn keep_unread(&mut self, unread: Vec<String>, now: bool) {
         if unread.is_empty() {
             return;
         }
-        self.say(
-            Level::Info,
-            if now {
-                "  (the agent finished before it read what you typed, so a new turn takes it to the agent)"
-            } else {
-                "  (the agent finished before it read what you typed, so it goes with your next message)"
-            },
-        );
+        if !now {
+            self.say(
+                Level::Info,
+                "  (what you typed during the turn, which the agent didn't read, goes with your next message)",
+            );
+        }
         self.unread.extend(unread);
     }
 
@@ -5549,7 +5548,7 @@ pub(crate) mod tests {
     /// What the user types while the agent makes its last request comes
     /// too late for the turn: once the agent replies, a new turn takes it
     /// to the agent (once), as the workers' news starts one, and the agent
-    /// answers it.
+    /// answers it. No notice says so, since that turn starts at once.
     #[tokio::test]
     async fn what_the_agent_finished_before_reading_starts_a_turn() {
         use crate::mock_model::{ModelServer, complete};
@@ -5619,8 +5618,8 @@ pub(crate) mod tests {
                 .iter()
                 .any(|(kind, shown, _)| kind == "notice" && shown.contains(text))
         };
-        assert!(said("so a new turn takes it to the agent"), "{shown:#?}");
-        assert!(!said("goes with your next message"), "{shown:#?}");
+        // No notice tells of it. The turn that takes it shows it.
+        assert!(!said("typed"), "{shown:#?}");
         let replies: Vec<&str> = shown
             .iter()
             .filter(|(kind, _, _)| kind == "reply")
