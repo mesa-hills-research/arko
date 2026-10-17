@@ -15,8 +15,8 @@ models, and on your Claude plan through an installed Claude Code.
 - MCP servers in Claude Code's `.mcp.json` format, and skills from `.agents/skills` or
   `.claude/skills`
 - Themes for the full-screen view, and your own in GPUI Kit's format
-- A library too: other front ends open and drive sessions with `arko::Engine`, or several side by
-  side in one process with `arko::spawn`
+- A library for other front ends, which open and drive sessions with `arko::Engine`, or several
+  side by side in one process with `arko::spawn`
 
 ## Install
 
@@ -61,8 +61,8 @@ The tests run against a mock model server, so they need no API keys.
 
 ## Docs
 
-- [What Arko needs from arko_framework](docs/arko-framework-gaps.md): where Arko works around the
-  framework, and the changes that would remove each workaround.
+- [What Arko needs from arko_framework](docs/arko-framework-gaps.md) lists where Arko works around
+  the framework, and the changes that would remove each workaround.
 
 ## License
 

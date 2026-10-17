@@ -17,14 +17,14 @@ use super::tools::{self, format_create, format_search_detail, format_status};
 /// `arko index` subcommands.
 #[derive(Debug, Clone, clap::Subcommand)]
 pub enum IndexCommand {
-    /// Create (or update) the index of a directory: build it, estimate and run its embedding
+    /// Create (or update) the index of a directory, build it, and estimate and run its embedding
     Create {
-        /// The directory to index (default: the current directory)
+        /// The directory to index (by default the current directory)
         path: Option<PathBuf>,
         /// code (voyage-code-4), docs (voyage-4), or auto (by the files)
         #[arg(long, default_value = "auto")]
         kind: String,
-        /// The index's name (default: the directory's name)
+        /// The index's name (by default the directory's name)
         #[arg(long)]
         name: Option<String>,
         /// Only files matching these gitignore-style patterns (comma-separated, repeatable)
@@ -36,19 +36,19 @@ pub enum IndexCommand {
         /// Don't keep the index current while Arko runs
         #[arg(long)]
         no_monitor: bool,
-        /// Lexical only: no embeddings
+        /// Lexical only, without embeddings
         #[arg(long)]
         no_embed: bool,
         /// Token cap of each embedding run, such as 200k, 5M or 5000000 (default 5M)
         #[arg(long, value_parser = count_arg)]
         max_embed_tokens: Option<u64>,
-        /// Build and estimate only: embed later (Arko's monitoring or `arko index embed`)
+        /// Build and estimate only, and embed later (Arko's monitoring or `arko index embed`)
         #[arg(long)]
         no_wait: bool,
     },
     /// List the indexes
     List,
-    /// Show the state of an index (default: all)
+    /// Show the state of an index (all by default)
     Status {
         /// An index name or root path
         index: Option<String>,
@@ -61,7 +61,7 @@ pub enum IndexCommand {
         /// An index name, or a directory or file inside an index
         #[arg(long, short)]
         index: Option<String>,
-        /// hybrid, semantic or lexical (default: hybrid when the index has embeddings)
+        /// hybrid, semantic or lexical (by default hybrid when the index has embeddings)
         #[arg(long, short)]
         mode: Option<String>,
         /// Results, 1-50
@@ -82,9 +82,9 @@ pub enum IndexCommand {
         #[arg(long, conflicts_with = "lines")]
         full: bool,
     },
-    /// Bring an index up to date with its files: rebuild what changed, embed it
+    /// Bring an index up to date with its files, rebuilding what changed and embedding it
     Update {
-        /// An index name or root path (default: the current directory's)
+        /// An index name or root path (by default the current directory's)
         index: Option<String>,
         /// Rebuild even when no file changed
         #[arg(long)]
@@ -92,16 +92,16 @@ pub enum IndexCommand {
     },
     /// Embed the chunks without vectors (or only --estimate the cost)
     Embed {
-        /// An index name or root path (default: the current directory's)
+        /// An index name or root path (by default the current directory's)
         index: Option<String>,
-        /// The run's token cap (default: the index's)
+        /// The run's token cap (by default the index's)
         #[arg(long, value_parser = count_arg)]
         max_tokens: Option<u64>,
         /// Only estimate (free)
         #[arg(long)]
         estimate: bool,
     },
-    /// Keep indexes current until Ctrl-C (default: the monitored indexes of the current directory)
+    /// Keep indexes current until Ctrl-C (by default the monitored indexes of the current directory)
     Watch {
         /// Index names or root paths
         indexes: Vec<String>,

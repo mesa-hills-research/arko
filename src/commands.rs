@@ -69,12 +69,12 @@ pub const COMMANDS: &[Command] = &[
     Command {
         name: "/resume",
         args: "[NUMBER]",
-        about: "go back to an earlier conversation of this session: /resume lists them, and /resume 2 goes back to the second",
+        about: "go back to an earlier conversation of this session. /resume lists them, and /resume 2 goes back to the second",
         aliases: &[],
         runs: Runs::Session,
     },
     Command::session("/cost", "what this session has cost"),
-    Command::session("/workers", "the workers: what each is doing, or reported"),
+    Command::session("/workers", "what each worker is doing, or reported"),
     Command {
         name: "/stop-workers",
         args: "[WORKER]",
@@ -115,7 +115,7 @@ pub const COMMANDS: &[Command] = &[
     Command {
         name: "/keys",
         args: "[add|remove PROVIDER]",
-        about: "the API keys for Anthropic, OpenAI, Gemini, OpenRouter and Voyage: add, replace or remove one, and use it at once (/keys add openai)",
+        about: "add, replace or remove an API key for Anthropic, OpenAI, Gemini, OpenRouter or Voyage, used at once (/keys add openai)",
         aliases: &[],
         runs: Runs::Session,
     },
@@ -132,7 +132,7 @@ pub const COMMANDS: &[Command] = &[
     Command {
         name: "/outside",
         args: "on|off",
-        about: "outside access: whether the agents may change paths outside the working directory (/outside on, /outside off)",
+        about: "whether the agents may change paths outside the working directory (/outside on, /outside off)",
         aliases: &[],
         runs: Runs::Session,
     },
@@ -146,34 +146,34 @@ pub const COMMANDS: &[Command] = &[
     Command {
         name: "/text-replies",
         args: "on|off",
-        about: "how the main agent ends its turns: with a plain reply (on) or by calling complete_task (off). It changes before the conversation starts (/text-replies off)",
+        about: "whether the main agent ends its turns with a plain reply (on) or by calling complete_task (off). It changes before the conversation starts (/text-replies off)",
         aliases: &[],
         runs: Runs::Session,
     },
     Command {
         name: "/cc-compact",
         args: "on|off",
-        about: "what agents on cc: models do at the handover size: Claude Code compacts their conversation (on) or they hand over as on the other providers (off). It changes before the conversation starts (/cc-compact off)",
+        about: "whether Claude Code compacts the conversation of agents on cc: models at the handover size (on), or they hand over as on the other providers (off). It changes before the conversation starts (/cc-compact off)",
         aliases: &[],
         runs: Runs::Session,
     },
     Command {
         name: "/extra-rules",
         args: "small|all|off",
-        about: "the extra rules for small models in the agents' instructions: agents on small models get them (small), every agent does (all), or none does (off). It changes before the conversation starts (/extra-rules off)",
+        about: "which agents get the extra rules for small models in their instructions, those on small models (small), every agent (all) or none (off). It changes before the conversation starts (/extra-rules off)",
         aliases: &[],
         runs: Runs::Session,
     },
     Command {
         name: "/project-instructions",
         args: "one|both|off | workers on|off",
-        about: "which of the project's AGENTS.md and CLAUDE.md the agents get: AGENTS.md, else CLAUDE.md (one), both, or neither (off), and whether workers get them (workers on|off). The main agent gets them once per conversation, in its first message, and each worker once, in its first message. A change reaches the conversations and workers that start after it (/project-instructions both)",
+        about: "which of the project's AGENTS.md and CLAUDE.md the agents get, AGENTS.md else CLAUDE.md (one), both, or neither (off), and whether workers get them (workers on|off). The main agent gets them once per conversation, in its first message, and each worker once, in its first message. A change reaches the conversations and workers that start after it (/project-instructions both)",
         aliases: &[],
         runs: Runs::Session,
     },
     Command::session(
         "/handover",
-        "the main agent hands over now: it writes a report and goes on from it in a fresh conversation. On cc: models, Claude Code compacts the conversation instead",
+        "the main agent hands over now, writing a report and going on from it in a fresh conversation. On cc: models, Claude Code compacts the conversation instead",
     ),
     Command {
         name: "/handover-at",

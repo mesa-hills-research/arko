@@ -13,18 +13,18 @@ Paths are relative to the arko_framework repository. Line numbers in the remaini
 | 5 | Stopping a single run (upstream only) | Resolved |
 | 6 | No way to know whether a note or message was read | Resolved |
 | 7 | Resumed runs keep their old tools and instructions | Medium |
-| 8 | MCP servers: stdio only, no working directory | Medium |
+| 8 | MCP servers start over stdio only, without a working directory | Medium |
 | 9 | A failing `ask_user` handler ends the run | Low |
 | 10 | Terminal tool rough edges | Low |
 | 11 | The mock model server is private to arko_framework's tests | Low |
 | 12 | Base URLs can't be set from the environment | Low |
 | 13 | Missing re-exports | Low |
-| 14 | Skills: paths, scripts and sources | Low |
+| 14 | Skill paths, scripts and sources | Low |
 | 15 | A reply without a tool call counts as a failure | Resolved |
 | 16 | ChatGPT's prompt cache is reported as 5 minutes | Resolved |
 | 17 | A host can't ask a workflow's run for a handover | Low |
 
-## Resolved: native workers (1–6)
+## Native workers (1–6), resolved
 
 `arko_workflows::subagents` now runs background agents inside one workflow. Arko uses `start_agent`, `message_agent`, `wait_for_agents`, `list_agents` and `stop_agent`. Runs above the concurrency cap queue, and the cap can be unlimited. Mail and run state survive checkpoints. Reports reach a running lead at a turn boundary, and `NewsWaiting` wakes an idle lead. `resume_subagents` continues interrupted workers.
 
@@ -42,9 +42,9 @@ Single-run stops leave other agents running. `stop_subagent` also stops queued r
 
 **Arko's workaround.** Saved sessions retain their original agent configurations. Sessions with old worker tools preserve their workers and worktrees as archives. Calls to retired worker tools return a migration notice. Start a new Arko session to use native workers. `/new` resets a conversation inside the same saved session and keeps its original tools.
 
-**Request.** An opt-in way to continue a run with the current configuration: the new tool list and instructions, with the system message replaced (or a short "your tools changed" note added).
+**Request.** An opt-in way to continue a run with the current configuration (the new tool list and instructions), with the system message replaced (or a short "your tools changed" note added).
 
-## 8. MCP servers: stdio only, no working directory
+## 8. MCP servers start over stdio only, without a working directory
 
 **Today.** `McpServerConfig` has `name`, `command`, `args` and `env` (`arko_agents/src/mcp/config.rs:7-15`). `connect_server` sets no `current_dir`, so a server inherits the host's directory (`mcp/manager.rs:203-211`). rmcp is built with only `client` and `transport-child-process` (`arko_agents/Cargo.toml:26`), so HTTP and SSE servers aren't supported. Unknown keys such as `cwd` or `url` are ignored without a warning.
 
@@ -97,7 +97,7 @@ Single-run stops leave other agents running. `stop_subagent` also stops queued r
 
 **Request.** Re-export `PathSafetyPolicy` at the root and make the terminal tool name constants public.
 
-## 14. Skills: paths, scripts and sources
+## 14. Skill paths, scripts and sources
 
 **Today.** `SkillsConfig` (`arko_agents/src/skill/config.rs:35-63`) takes one workspace source and several global sources.
 - Global paths are used as given, so `~` and environment variables aren't expanded (`skill/loader.rs:32`).
@@ -114,17 +114,17 @@ Single-run stops leave other agents running. `stop_subagent` also stops queued r
 
 **Today.** `UserCommand::RequestHandover` asks a running agent for a handover at its next turn boundary (`arko_agents/src/runtime/command.rs`). A workflow host reaches a run's command channel only through `AgentHandle::into_parts` (`arko_workflows/src/workflow/mod.rs`), which returns the raw event and command channels, so the workflow's hooks and budget tracking no longer apply. `run_agent`, `continue_agent` and `restart` keep the channel to themselves.
 
-**Effect.** A host can't ask a running agent to hand over now. (The size is solved: `WorkflowBuilder::agent_handover_threshold` gives an agent's runs a `HandoverThreshold` the host changes while they run, in place of the size saved in `AgentConfig::handover`. Arko's `/handover-at` sets the main agent's.)
+**Effect.** A host can't ask a running agent to hand over now. (The size is solved. `WorkflowBuilder::agent_handover_threshold` gives an agent's runs a `HandoverThreshold` the host changes while they run, in place of the size saved in `AgentConfig::handover`. Arko's `/handover-at` sets the main agent's.)
 
 **Arko's workaround.** Arko's shell tool keeps each run's command channel when the runtime binds it (`Tool::bind_runtime`, which gives every offered tool the run's channel as the run starts). For `/handover`, Arko sends `RequestHandover` on that channel. This works only for runs offered one of Arko's tools.
 
 **Request.** `Workflow::request_handover(run_id)`, which sends the command to a running run or keeps it for the run's next start.
 
-## Resolved: messages to the user (15)
+## Messages to the user (15), resolved
 
 arko_agents supplies `message_user` and a `MessageToUser` event. A message can reach the user while the agent keeps working. Hosts can still override the tool, as Arko does. The runtime also offers an opt-in setting for treating text-only responses as progress messages.
 
-## Resolved: ChatGPT prompt cache (16)
+## ChatGPT prompt cache (16), resolved
 
 `LLMClient::prompt_cache_lifetime` distinguishes ChatGPT OAuth's 30-minute cache from OpenAI API keys' 5-minute cache. Native worker waits use that value. Claude workers retain Arko's `cache` choice of `5m` or `1h`, supplied through a `start_agent` parameter and preparation hook.
 
