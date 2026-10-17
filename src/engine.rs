@@ -1751,7 +1751,14 @@ mod tests {
                 .unwrap(),
             RunEnd::Quit
         );
-        // The sessions' locks are free again.
+        // The sessions' locks are free again. (A process another test forks
+        // may hold a lock's file for a moment, until it runs its program.)
+        let released = std::time::Instant::now();
+        while crate::session::holder(&first_seam.session.dir).is_some()
+            && released.elapsed() < Duration::from_secs(2)
+        {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
         assert_eq!(crate::session::holder(&first_seam.session.dir), None);
 
         #[cfg(target_os = "linux")]
