@@ -196,6 +196,12 @@ pub struct Item {
     /// latest are kept.
     #[serde(skip)]
     pub output: Option<Arc<str>>,
+    /// A user's message that started a turn: its index in the main agent's
+    /// conversation, which an app can edit it at or send it again from
+    /// (`Request::Edit`, `Request::Regenerate`). The web page doesn't get
+    /// it.
+    #[serde(skip)]
+    pub message_index: Option<usize>,
     /// The worker a `worker_line` stands for.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub worker: Option<String>,
@@ -229,6 +235,7 @@ impl Item {
             tool: None,
             parameters: None,
             output: None,
+            message_index: None,
             worker: None,
             from: None,
             call: None,
@@ -1046,7 +1053,7 @@ impl Feed {
 
     /// The user's text, and what became of it. Text that starts a turn
     /// counts in that turn.
-    pub fn user(&self, text: &str, source: Source, delivery: Delivery) {
+    pub fn user(&self, text: &str, source: Source, delivery: Delivery) -> u64 {
         let mut item = Item::new(Kind::User, text.trim());
         item.source = Some(source);
         item.delivery = Some(delivery);
@@ -1055,7 +1062,35 @@ impl Feed {
             state.turn = Some(state.turn.map_or(1, |turn| turn + 1));
             state.turn_opened = true;
         }
-        self.push(&mut state, item);
+        self.push(&mut state, item)
+    }
+
+    /// The main transcript's item `id`, while it is kept.
+    pub fn main_item(&self, id: u64) -> Option<Item> {
+        self.lock().main.find(id).map(|item| item.clone())
+    }
+
+    /// The user's latest message that started a turn, while it is kept.
+    pub fn last_turn_message(&self) -> Option<Item> {
+        let state = self.lock();
+        let item = state
+            .main
+            .items
+            .iter()
+            .rev()
+            .find(|item| item.kind == Kind::User && item.delivery == Some(Delivery::Turn));
+        item.cloned()
+    }
+
+    /// The user's message `id` is the main agent's message `index`: it can
+    /// be edited (the clients get the change).
+    pub(crate) fn mark_message(&self, id: u64, index: usize) {
+        let mut state = self.lock();
+        if let Some(item) = state.main.find(id) {
+            item.message_index = Some(index);
+            let item = item.clone();
+            self.send(Update::Change(item));
+        }
     }
 
     /// The user's message to `worker`, which went to it directly: the

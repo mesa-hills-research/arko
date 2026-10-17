@@ -20,7 +20,9 @@ const MESSAGES: usize = 600;
 /// response of text alone is a reply, unless the user's answer to a
 /// question follows it (Claude Code ends its turn after `ask_user`).
 pub fn items(messages: &[Message], text_replies: bool) -> Vec<Item> {
-    let messages = &messages[messages.len().saturating_sub(MESSAGES)..];
+    // The index of the first message read, in the conversation.
+    let first = messages.len().saturating_sub(MESSAGES);
+    let messages = &messages[first..];
     let mut items: Vec<Item> = Vec::new();
     // The calls waiting for their results: their items, by call ID.
     let mut calls: HashMap<String, (usize, String)> = HashMap::new();
@@ -61,7 +63,12 @@ pub fn items(messages: &[Message], text_replies: bool) -> Vec<Item> {
                             }
                         }
                         Content::Text(text) => {
-                            if let Some(item) = user_item(text) {
+                            if let Some(mut item) = user_item(text) {
+                                // A message that started a turn can be
+                                // edited at its index.
+                                if item.delivery == Some(Delivery::Turn) {
+                                    item.message_index = Some(first + index);
+                                }
                                 push(&mut items, item);
                             }
                         }

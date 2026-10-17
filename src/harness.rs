@@ -307,6 +307,11 @@ pub(crate) struct Harness {
     /// The session switched between Chat and Agent: it closes, for the
     /// front end to open it again in its new mode.
     pub(crate) reopen: bool,
+    /// An edited message (or one sent again) waits to start a turn, cutting
+    /// the conversation back to its index (`Request::Edit`).
+    pub(crate) edited: Option<(usize, String)>,
+    /// The next turn cuts the conversation back to this message first.
+    pub(crate) cut_back: Option<usize>,
     /// Native workers. None when disabled or when resuming a legacy session.
     pub(crate) crew: Option<Arc<Crew>>,
     /// Puts the main agent's questions to the user.
@@ -833,6 +838,18 @@ impl Harness {
                     if self.reopen {
                         break;
                     }
+                    // An edited message, or one sent again.
+                    let Some((index, text)) = self.edited.take() else {
+                        continue;
+                    };
+                    self.cut_back = Some(index);
+                    self.feed.user(&text, Source::App, Delivery::Turn);
+                    if let TurnEnd::Exit = self.turn(Prompt::User(text), input).await {
+                        break;
+                    }
+                    if let News::Exit = self.deliver_news(input).await {
+                        break;
+                    }
                     continue;
                 }
                 Event::Input(None | Some(Input::Eof)) => {
@@ -1277,10 +1294,28 @@ impl Harness {
                 }
                 let _ = reply.send(renamed);
             }
-            Request::ChatInstructions { reply, .. } | Request::SwitchMode { reply, .. }
+            Request::ChatInstructions { reply, .. }
+            | Request::SwitchMode { reply, .. }
+            | Request::Edit { reply, .. }
+            | Request::Regenerate { reply }
                 if working =>
             {
                 let _ = reply.send(Err(WAIT.into()));
+            }
+            Request::Edit {
+                item,
+                message,
+                reply,
+            } => {
+                let edited = if message.images.is_empty() {
+                    self.edit(item, message.text)
+                } else {
+                    Err("This version of Arko can't send images yet: send the message without them.".into())
+                };
+                let _ = reply.send(edited);
+            }
+            Request::Regenerate { reply } => {
+                let _ = reply.send(self.regenerate());
             }
             Request::ChatInstructions { text, reply } => {
                 let _ = reply.send(self.set_chat_instructions(text));
@@ -1320,6 +1355,82 @@ impl Harness {
         } else {
             options
         }
+    }
+
+    /// The user's message `item` started the turn just made, at message
+    /// `at` of the conversation or after it: it can be edited at the index
+    /// the task gives it.
+    fn mark_message(&self, item: u64, at: usize) {
+        let task = match &self.conversation {
+            Conversation::New => return,
+            Conversation::Answered(result) => &result.task,
+            Conversation::Stopped(run) => &run.result.task,
+        };
+        if let Some(turn) = task
+            .user_turns()
+            .into_iter()
+            .find(|turn| turn.index >= at && turn.kind != arko_agents::UserTurnKind::ContextUpdate)
+        {
+            self.feed.mark_message(item, turn.index);
+        }
+    }
+
+    /// The user's message `item` edited to `text`: the conversation is cut
+    /// back to just before it, and `text` starts a turn in its place (in
+    /// `repl`). Refused, saying why, while a worker runs, and for a message
+    /// the conversation no longer has (one before a handover, or of
+    /// another conversation).
+    fn edit(&mut self, item: u64, text: String) -> Result<(), String> {
+        let text = text.trim().to_string();
+        if text.is_empty() {
+            return Err("The message is empty.".into());
+        }
+        if command(&text).is_some() {
+            return Err("A command can't take a message's place.".into());
+        }
+        if let Some(crew) = &self.crew
+            && let Some(worker) = crew.running().first()
+        {
+            return Err(format!(
+                "{worker} is running: wait for the workers or stop them first."
+            ));
+        }
+        let gone = "The agent's conversation no longer has this message (it was handed over since, or it is another conversation's): edit a later message, or start a new conversation.";
+        let index = self
+            .feed
+            .main_item(item)
+            .filter(|item| item.kind == remote::Kind::User)
+            .and_then(|item| item.message_index.map(|index| (index, item.text)));
+        let Some((index, words)) = index else {
+            return Err("This message can't be edited.".into());
+        };
+        let task = match &self.conversation {
+            Conversation::New => return Err(gone.into()),
+            Conversation::Answered(result) => &result.task,
+            Conversation::Stopped(run) => &run.result.task,
+        };
+        let there = task.user_turns().into_iter().any(|turn| {
+            turn.index == index
+                && turn.kind != arko_agents::UserTurnKind::ContextUpdate
+                && turn.text.contains(words.trim())
+        });
+        if !there {
+            return Err(gone.into());
+        }
+        self.feed.truncate(item);
+        // What the user typed during the turns cut goes with them.
+        self.unread.clear();
+        self.edited = Some((index, text));
+        Ok(())
+    }
+
+    /// The user's latest message sent again: its turn's reply and what
+    /// followed are cut, and a new reply comes.
+    fn regenerate(&mut self) -> Result<(), String> {
+        let Some(item) = self.feed.last_turn_message() else {
+            return Err("There is no message to send again.".into());
+        };
+        self.edit(item.id, item.text)
     }
 
     /// Whether the main agent's saved conversations each resume with their
@@ -2317,6 +2428,7 @@ impl Harness {
         // A turn Arko stopped in the middle of (a crash) goes on where it
         // was saved, without a message: the message follows it.
         if !matches!(prompt, Prompt::Recover)
+            && self.cut_back.is_none()
             && let Conversation::Stopped(run) = &self.conversation
             && matches!(run.restart, Restart::Recover)
             && let TurnEnd::Exit = Box::pin(self.turn(Prompt::Recover, input)).await
@@ -2337,6 +2449,12 @@ impl Harness {
             }
             self.publish_title();
         }
+        // The user's message that starts it, which can be edited once the
+        // turn says where it is in the conversation.
+        let user_item = match &prompt {
+            Prompt::User(_) => self.feed.last_turn_message().map(|item| item.id),
+            _ => None,
+        };
         self.feed.turn_started();
         // The main agent's model is the conversation's from now on.
         self.publish_models();
@@ -2347,6 +2465,7 @@ impl Harness {
         let news_turn = matches!(prompt, Prompt::News);
         let jobs_turn = matches!(prompt, Prompt::Jobs);
         let message = self.compose(prompt);
+        let cut = self.cut_back.take();
         if news_turn {
             self.say(Level::Info, "  ⇠ the workers' news goes to the agent");
         }
@@ -2365,7 +2484,16 @@ impl Harness {
         let spent_before = self.spent();
         let started = Instant::now();
         let conversation = std::mem::replace(&mut self.conversation, Conversation::New);
-        let options = self.continue_options(&conversation);
+        // Where this turn's message goes in the conversation.
+        let at = cut.unwrap_or(match &conversation {
+            Conversation::New => 0,
+            Conversation::Answered(result) => result.task.conversation.messages.len(),
+            Conversation::Stopped(run) => run.result.task.conversation.messages.len(),
+        });
+        let mut options = self.continue_options(&conversation);
+        if let Some(index) = cut {
+            options = options.cut_back_to(index);
+        }
         let call = {
             let workflow = workflow.clone();
             tokio::spawn(async move {
@@ -2374,6 +2502,12 @@ impl Harness {
                     Conversation::Answered(previous) => {
                         workflow
                             .continue_agent_with(&previous, &message, options)
+                            .await
+                    }
+                    // A stopped run is cut back whatever its state.
+                    Conversation::Stopped(run) if cut.is_some() => {
+                        workflow
+                            .continue_agent_with(&run.result, &message, options)
                             .await
                     }
                     Conversation::Stopped(run) => {
@@ -2578,6 +2712,9 @@ impl Harness {
             }
         };
         self.footer(spent_before, started);
+        if let Some(item) = user_item {
+            self.mark_message(item, at);
+        }
         if exit {
             return TurnEnd::Exit;
         }
@@ -2770,9 +2907,9 @@ impl Harness {
             Prompt::News | Prompt::Jobs | Prompt::Unread => None,
         };
         let mut parts = Vec::new();
-        if matches!(self.conversation, Conversation::New)
-            && let Some(project) = self.project.for_main(self.settings.project_instructions)
-        {
+        // (A conversation cut back to its first message starts over.)
+        let starts = matches!(self.conversation, Conversation::New) || self.cut_back == Some(0);
+        if starts && let Some(project) = self.project.for_main(self.settings.project_instructions) {
             parts.push(project);
         }
         if !self.unread.is_empty() {
@@ -3819,6 +3956,8 @@ pub(crate) mod tests {
             queue_lines: !interactive,
             exiting: false,
             reopen: false,
+            edited: None,
+            cut_back: None,
             crew: Some(crew),
             asker: Arc::new(Asker {
                 questions: interactive.then_some(questions_sender),

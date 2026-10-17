@@ -151,6 +151,20 @@ pub enum Request {
         workspace: Option<PathBuf>,
         reply: Reply<()>,
     },
+    /// The user's message `item` (a `Kind::User` item with a
+    /// `message_index`) edited: the conversation is cut back to just before
+    /// it, and `message` goes in its place, starting a turn (the feed drops
+    /// the items from `item` on). Between turns, with no worker running, for
+    /// a message the conversation still has (not one before a handover).
+    /// Changes the agent made to files stay.
+    Edit {
+        item: u64,
+        message: crate::ui::Message,
+        reply: Reply<()>,
+    },
+    /// The user's latest message sent again, for a new reply: an edit of it
+    /// with its own words.
+    Regenerate { reply: Reply<()> },
 }
 
 /// Where a request's answer goes.
@@ -709,6 +723,8 @@ impl Engine {
             queue_lines: !interactive,
             exiting: false,
             reopen: false,
+            edited: None,
+            cut_back: None,
             crew,
             asker,
             one_shot,
@@ -899,7 +915,7 @@ mod tests {
     use crate::options::GivenClient;
     use crate::prompter::NoPrompter;
     use crate::providers::OpenAiAuth;
-    use crate::remote::Source;
+    use crate::remote::{Kind, Source};
     use crate::session::Settings;
     use crate::shell::WindowsShell;
 
@@ -1413,6 +1429,175 @@ mod tests {
                 .await
                 .unwrap()
                 .unwrap(),
+            RunEnd::Quit
+        );
+    }
+
+    /// An app edits the user's message, or sends the latest again: the
+    /// conversation is cut back to just before it and goes on from the new
+    /// message, in the model's requests and in the feed. Only the user's
+    /// messages can be edited, also those restored when the session opens
+    /// again.
+    #[tokio::test]
+    async fn an_app_edits_and_regenerates_messages() {
+        let temp = tempfile::tempdir().unwrap();
+        let bodies: Arc<Mutex<Vec<String>>> = Arc::default();
+        let server = ModelServer::start(Arc::new({
+            let bodies = bodies.clone();
+            move |_, body: String| {
+                let count = {
+                    let mut bodies = bodies.lock().unwrap();
+                    bodies.push(body);
+                    bodies.len()
+                };
+                Box::pin(async move { reply("a", &format!("Reply {count}.")) })
+            }
+        }))
+        .await;
+        let root = temp.path().join("arko");
+        let project = temp.path().join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        let wait = Duration::from_secs(30);
+        let open = |session: SessionChoice| {
+            let running = spawn(
+                Options {
+                    root: Some(root.clone()),
+                    session,
+                    workspace: Some(project.clone()),
+                    model: Some("luna".into()),
+                    openai_auth: Some(OpenAiAuth::ApiKey),
+                    cache_1h: Some(false),
+                    text_replies: Some(true),
+                    client: Some(GivenClient(Arc::new(server.client()))),
+                    ..Options::default()
+                },
+                Arc::new(NoPrompter),
+            );
+            async move {
+                let seam = tokio::time::timeout(wait, running.opened)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .unwrap();
+                (seam, running.ended)
+            }
+        };
+        // Waits for the turn of the `count`th request, and gives its body.
+        let answered = |seam: &Seam, count: usize| {
+            let feed = seam.feed.clone();
+            let bodies = bodies.clone();
+            async move {
+                tokio::time::timeout(wait, async {
+                    while bodies.lock().unwrap().len() < count || feed.activity().working {
+                        tokio::time::sleep(Duration::from_millis(20)).await;
+                    }
+                })
+                .await
+                .unwrap();
+                bodies.lock().unwrap()[count - 1].clone()
+            }
+        };
+        let message = |text: &str| crate::ui::Message {
+            text: text.into(),
+            images: Vec::new(),
+        };
+        let edit = |seam: &Seam, item: u64, text: &str| {
+            let (reply_to, answer) = tokio::sync::oneshot::channel();
+            seam.requests
+                .send(Request::Edit {
+                    item,
+                    message: message(text),
+                    reply: reply_to,
+                })
+                .unwrap();
+            async move { answer.await.unwrap() }
+        };
+        let texts = |seam: &Seam| -> Vec<String> {
+            seam.feed
+                .subscribe()
+                .0
+                .items
+                .into_iter()
+                .filter(|item| matches!(item.kind, Kind::User | Kind::Reply))
+                .map(|item| item.text)
+                .collect()
+        };
+        let user = |seam: &Seam, text: &str| {
+            seam.feed
+                .subscribe()
+                .0
+                .items
+                .into_iter()
+                .find(|item| item.kind == Kind::User && item.text == text)
+                .unwrap()
+        };
+
+        let (seam, ended) = open(SessionChoice::New).await;
+        let id = seam.session.id.clone();
+        seam.input.send(Input::Message(message("One."))).unwrap();
+        answered(&seam, 1).await;
+        seam.input.send(Input::Message(message("Two."))).unwrap();
+        answered(&seam, 2).await;
+        assert_eq!(user(&seam, "One.").message_index, Some(0));
+        let two = user(&seam, "Two.");
+        assert!(two.message_index.is_some());
+
+        // An edit: the conversation goes on from it.
+        assert_eq!(edit(&seam, two.id, "Deux.").await, Ok(()));
+        let third = answered(&seam, 3).await;
+        assert!(third.contains("One.") && third.contains("Reply 1.") && third.contains("Deux."));
+        assert!(
+            !third.contains("Two.") && !third.contains("Reply 2."),
+            "{third}"
+        );
+        assert_eq!(texts(&seam), ["One.", "Reply 1.", "Deux.", "Reply 3."]);
+        // Sent again: a new reply in place of the last.
+        let (reply_to, answer) = tokio::sync::oneshot::channel();
+        seam.requests
+            .send(Request::Regenerate { reply: reply_to })
+            .unwrap();
+        assert_eq!(answer.await.unwrap(), Ok(()));
+        let fourth = answered(&seam, 4).await;
+        assert_eq!(fourth.matches("Deux.").count(), 1, "{fourth}");
+        assert!(!fourth.contains("Reply 3."));
+        assert_eq!(texts(&seam), ["One.", "Reply 1.", "Deux.", "Reply 4."]);
+        // The first message: the conversation starts over.
+        assert_eq!(edit(&seam, user(&seam, "One.").id, "Uno.").await, Ok(()));
+        let fifth = answered(&seam, 5).await;
+        assert!(fifth.contains("Uno.") && !fifth.contains("One.") && !fifth.contains("Deux."));
+        assert_eq!(texts(&seam), ["Uno.", "Reply 5."]);
+        // Only the user's messages.
+        let reply = seam
+            .feed
+            .subscribe()
+            .0
+            .items
+            .into_iter()
+            .find(|item| item.text == "Reply 5.")
+            .unwrap();
+        assert_eq!(
+            edit(&seam, reply.id, "No.").await,
+            Err("This message can't be edited.".to_string())
+        );
+        seam.input.send(Input::Quit(Some(Vec::new()))).unwrap();
+        assert_eq!(
+            tokio::time::timeout(wait, ended).await.unwrap().unwrap(),
+            RunEnd::Quit
+        );
+
+        // Opened again, its restored messages can be edited.
+        let (seam, ended) = open(SessionChoice::Resume(id)).await;
+        let uno = user(&seam, "Uno.");
+        assert_eq!(uno.message_index, Some(0));
+        assert_eq!(edit(&seam, uno.id, "Eins.").await, Ok(()));
+        let sixth = answered(&seam, 6).await;
+        assert!(
+            sixth.contains("Eins.") && !sixth.contains("Uno."),
+            "{sixth}"
+        );
+        seam.input.send(Input::Quit(Some(Vec::new()))).unwrap();
+        assert_eq!(
+            tokio::time::timeout(wait, ended).await.unwrap().unwrap(),
             RunEnd::Quit
         );
     }
