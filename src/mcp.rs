@@ -73,8 +73,9 @@ pub struct Parsed {
     pub servers: Vec<Server>,
     pub skipped: Vec<String>,
     /// The entries not started, by name ("server 3" for one without a
-    /// name), with why: skipped, or disabled.
-    pub left_out: Vec<(String, String)>,
+    /// name), with their command line as the file writes it (empty when it
+    /// has none) and why (skipped, or disabled).
+    pub left_out: Vec<(String, String, String)>,
     /// The file's `mcpServers`, as written: what a project's approval is for.
     raw: Value,
 }
@@ -118,24 +119,52 @@ fn parse(
             parsed
                 .skipped
                 .push(format!("server {} has no name", index + 1));
-            parsed
-                .left_out
-                .push((format!("server {}", index + 1), "it has no name".into()));
+            parsed.left_out.push((
+                format!("server {}", index + 1),
+                written_command(entry),
+                "it has no name".into(),
+            ));
             continue;
         };
         match server(&name, entry, file, lookup) {
             Ok(Some(server)) => parsed.servers.push(server),
-            Ok(None) => parsed
-                .left_out
-                .push((name, "it is disabled in its file".into())),
+            Ok(None) => parsed.left_out.push((
+                name,
+                written_command(entry),
+                "it is disabled in its file".into(),
+            )),
             Err(why) => {
                 parsed.skipped.push(format!("`{name}` {why}"));
-                parsed.left_out.push((name, format!("it {why}")));
+                parsed
+                    .left_out
+                    .push((name, written_command(entry), format!("it {why}")));
             }
         }
     }
     parsed.raw = raw;
     Ok(parsed)
+}
+
+/// The command line of a server's `entry` as the file writes it, as far
+/// as it is text (empty without a `command`).
+fn written_command(entry: &Value) -> String {
+    let Some(command) = entry.get("command").and_then(Value::as_str) else {
+        return String::new();
+    };
+    let args = entry
+        .get("args")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|arg| match arg {
+            Value::String(text) => Some(text.clone()),
+            Value::Number(_) | Value::Bool(_) => Some(arg.to_string()),
+            _ => None,
+        });
+    std::iter::once(command.to_string())
+        .chain(args)
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// One server's entry; `None` when it is disabled.
@@ -385,7 +414,7 @@ impl Plan {
                         }
                     }
                     None => notes.push(format!(
-                        "the MCP servers in {} aren't started, because Arko asks before starting a project's servers and needs a terminal to ask",
+                        "the MCP servers in {} aren't started, because a project's servers start only once the user agrees, and no one here can be asked",
                         self.workspace.join(PROJECT_FILE).display()
                     )),
                 },

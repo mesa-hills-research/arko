@@ -1,5 +1,5 @@
 //! What an agent session would get of MCP servers and skills, read as a
-//! session reads them, without starting anything: for a front end that
+//! session reads them, without starting anything, for a front end that
 //! lists them. (A chat gets neither.)
 
 use std::path::{Path, PathBuf};
@@ -11,15 +11,16 @@ use crate::{mcp, skills};
 pub struct McpServerEntry {
     /// Its name ("server 3" for an entry without one).
     pub name: String,
-    /// Its command line as the file writes it (`${VAR}`s as written).
-    /// Empty for an entry that is left out before it has one.
+    /// Its command line as the file writes it (`${VAR}`s as written),
+    /// empty for an entry without one.
     pub command: String,
     /// The file that sets it up.
     pub file: PathBuf,
-    /// Why a session doesn't start it, when it doesn't: its entry (no name,
-    /// not a server Arko starts, a `${VAR}` that isn't set), disabled, a name
-    /// an earlier file sets up, or a project's servers that wait for the
-    /// user's answer or that the user chose not to start.
+    /// Why a session doesn't start it, if it doesn't. That may be its entry
+    /// (no name, not a server Arko starts, a `${VAR}` that isn't set), its
+    /// being disabled, a name an earlier file sets up, or a project's
+    /// servers that wait for the user's answer or that the user chose not
+    /// to start.
     pub skipped: Option<String>,
 }
 
@@ -27,19 +28,19 @@ pub struct McpServerEntry {
 /// why.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SkillEntry {
-    /// Where it is: a skill's folder, or its file (a `.md`, or a `.skill`
+    /// Where it is, a skill's folder or its file (a `.md`, or a `.skill`
     /// bundle).
     pub path: PathBuf,
-    /// Its name, as the agents load it (a name an earlier skill has is
-    /// renamed: `name-2`). One that can't be read goes by its folder's or
+    /// Its name as the agents load it (a name an earlier skill has is
+    /// renamed `name-2`). One that can't be read goes by its folder's or
     /// file's name.
     pub name: String,
     /// Its description (empty for one that can't be read).
     pub description: String,
     /// It is always in the agents' instructions, not loaded on demand.
     pub auto_load: bool,
-    /// Why the agents don't get it, when they don't: why it can't be read
-    /// (such as its front matter), or a skill with the same content
+    /// Why the agents don't get it, if they don't. That may be why it can't
+    /// be read (such as its front matter), or a skill with the same content
     /// before it.
     pub skipped: Option<String>,
 }
@@ -47,20 +48,21 @@ pub struct SkillEntry {
 /// What an agent session would get.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Extensions {
-    /// The MCP servers, in the order a session reads their files: the
-    /// files given, the project's `.mcp.json`, Arko's `mcp.json`.
+    /// The MCP servers, in the order a session reads their files (the files
+    /// given, the project's `.mcp.json`, Arko's `mcp.json`).
     pub servers: Vec<McpServerEntry>,
-    /// The skills, in the order the agents get them: the folders' (see
-    /// `skills`) in order, each's by name.
+    /// The skills, in the order the agents get them. The skill folders come
+    /// in the order `arko --help` gives them, and each folder's skills in
+    /// the order of their names.
     pub skills: Vec<SkillEntry>,
-    /// What can't be read: a file, a skill folder.
+    /// The MCP config files that can't be read, and why.
     pub notes: Vec<String>,
 }
 
 /// What an agent session in Arko's folder `root`, working in `workspace`,
 /// with the MCP config files `mcp_config` (an app's, as
 /// [`Options::mcp_config`](crate::Options::mcp_config) gives them), would
-/// get. Reads the files: call it off a UI thread.
+/// get. It reads the files, so call it off a UI thread.
 pub fn list(root: &Path, workspace: &Path, mcp_config: &[PathBuf]) -> Extensions {
     let mut extensions = Extensions::default();
     let project = workspace.join(mcp::PROJECT_FILE);
@@ -122,10 +124,10 @@ pub fn list(root: &Path, workspace: &Path, mcp_config: &[PathBuf]) -> Extensions
                 skipped,
             });
         }
-        for (name, why) in &parsed.left_out {
+        for (name, command, why) in &parsed.left_out {
             extensions.servers.push(McpServerEntry {
                 name: name.clone(),
-                command: String::new(),
+                command: command.clone(),
                 file: file.clone(),
                 skipped: Some(why.clone()),
             });
@@ -142,17 +144,6 @@ pub fn list(root: &Path, workspace: &Path, mcp_config: &[PathBuf]) -> Extensions
             skipped: skill.skipped,
         })
         .collect();
-    // A file that can't be read keeps the session from loading any.
-    if extensions
-        .skills
-        .iter()
-        .any(|skill| skill.skipped.is_some())
-        && let Err(error) = skills::list(&folders, workspace)
-    {
-        extensions
-            .notes
-            .push(format!("The skills couldn't be read ({error})."));
-    }
     extensions
 }
 
@@ -196,10 +187,16 @@ mod tests {
             ),
             (".hidden", "---\nname: .hidden\ndescription: d\n---\nx\n"),
             ("notes", "No front matter.\n"),
+            (
+                "unread",
+                "---\nname: unread\ndescription: d\n---\nIts reference isn't text.\n",
+            ),
         ] {
             std::fs::create_dir_all(skills.join(folder)).unwrap();
             std::fs::write(skills.join(folder).join("SKILL.md"), text).unwrap();
         }
+        // A resource that can't be read (not UTF-8).
+        std::fs::write(skills.join("unread/ref.md"), [0xff, 0xfe, 0x00]).unwrap();
         std::fs::write(
             skills.join("flat.md"),
             "---\nname: flat\ndescription: A flat skill.\n---\nDo the flat thing.\n",
@@ -231,6 +228,16 @@ mod tests {
             skipped("env")
         );
         assert!(skipped("off").contains("disabled"));
+        // A server left out keeps its command line as written.
+        let command = |name: &str| {
+            listed
+                .servers
+                .iter()
+                .find(|server| server.name == name)
+                .map(|server| server.command.clone())
+                .unwrap_or_default()
+        };
+        assert_eq!((command("env"), command("off")), ("x".into(), "y".into()));
         assert!(skipped("lint").contains("asks the user"));
         let project_gh = listed
             .servers
@@ -253,7 +260,7 @@ mod tests {
             .filter(|skill| skill.path.starts_with(&skills))
             .map(|skill| (skill.name.as_str(), skill.skipped.as_deref()))
             .collect();
-        assert_eq!(ours.len(), 3, "{ours:?}");
+        assert_eq!(ours.len(), 4, "{ours:?}");
         assert_eq!(ours[0], ("flat", None));
         assert_eq!(ours[1].0, "notes");
         assert!(
@@ -261,6 +268,22 @@ mod tests {
             "{ours:?}"
         );
         assert_eq!(ours[2], ("ok", None));
+        assert_eq!(ours[3].0, "unread");
+        assert!(ours[3].1.is_some(), "{ours:?}");
+        // As a session loads them: the one that can't be read is skipped.
+        let loaded = skills::list(&skills::folders(&workspace, &root), &workspace).unwrap();
+        assert!(
+            loaded
+                .on_demand_skills
+                .iter()
+                .any(|skill| skill.name == "ok")
+        );
+        assert!(
+            !loaded
+                .on_demand_skills
+                .iter()
+                .any(|skill| skill.name == "unread")
+        );
         let ok = listed
             .skills
             .iter()
@@ -269,7 +292,7 @@ mod tests {
         assert_eq!((ok.description.as_str(), ok.auto_load), ("A skill.", false));
         assert_eq!(ok.path, skills.join("ok"));
         assert_eq!(listed.skills[0].path, skills.join("flat.md"));
-        // A skill that can't be read isn't a note: the others load.
-        assert!(!listed.notes.iter().any(|note| note.contains("skills")));
+        // Only the MCP file that can't be read is a note.
+        assert_eq!(listed.notes.len(), 1, "{:?}", listed.notes);
     }
 }
