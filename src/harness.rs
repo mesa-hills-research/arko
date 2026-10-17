@@ -742,8 +742,13 @@ impl Harness {
             ));
         }
         if let Conversation::Answered(result) = &self.conversation {
-            out.echo(&out.dim("Resumed. The last reply is below."));
-            out.echo(&result.summary);
+            if result.task.conversation.messages.is_empty() {
+                // A branch before its conversation's first message.
+                out.echo(&out.dim("Resumed. Your next message starts this branch's conversation."));
+            } else {
+                out.echo(&out.dim("Resumed. The last reply is below."));
+                out.echo(&result.summary);
+            }
             self.feed.notice(Level::Info, "Resumed.");
         } else if self.conversations.current.is_none() && self.conversations.has_earlier() {
             self.say(

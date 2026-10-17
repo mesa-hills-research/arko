@@ -515,6 +515,9 @@ impl Harness {
             ));
         }
         let next = match &self.conversation {
+            Conversation::Answered(result) if result.task.conversation.messages.is_empty() => {
+                "Your next message starts it."
+            }
             Conversation::Answered(result) => {
                 out.echo(&out.dim("Its last reply is below."));
                 out.echo(result.summary.trim());
