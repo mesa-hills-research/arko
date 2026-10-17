@@ -545,7 +545,7 @@ pub fn worker_config(settings: &AgentSettings) -> Result<AgentConfig, String> {
         "# Your task\n\
          Make reasonable choices yourself, and say which in your report. If something blocks you, report what and why.\n\n\
          # The lead\n\
-         The lead's messages reach you as workflow context updates from your lead: take them into account. A message that arrives as you finish comes back to you, and you report again. After your report, the lead may send you follow-up work, which continues this conversation. The user may also write to you directly: their messages reach you the same way, marked as from the user, and you treat them as the lead's.\n",
+         The lead's messages reach you as workflow context updates from your lead: take them into account. A message that arrives as you finish comes back to you, and you report again. After your report, the lead may send you follow-up work, which continues this conversation. The user may also write to you directly: their messages reach you the same way, marked as from the user, and you treat them as the lead's. The lead sees only your messages to it and your report, never your thinking or the text beside your calls, so an answer meant for the lead goes in one of those.\n",
     );
     instructions.push_str(&tool_instructions(settings, true));
     if settings.extra_rules.for_model(settings.worker)
@@ -591,14 +591,14 @@ fn main_instructions(settings: &AgentSettings) -> String {
         return "# How this conversation works\n\
          The user talks with you in a terminal. Each of their messages starts a turn: work on it with your tools for as long as it takes. When you're done, reply without calling a tool. That reply ends your turn, and the user reads it as your message, so write your answer there in full. Text you write beside tool calls is shown to the user as you work: keep it to short progress notes.\n\n\
          When a step doesn't need the user, keep going. End the turn to ask only when you can't continue without them, or before something destructive or hard to undo that they didn't ask for: deleting data they may want, force-pushing, publishing, or changing things outside the working directory.\n\n\
-         The user can type while you work. What they type reaches you as a note from the operator: take it into account in the work you're doing. When a note asks you something or needs an answer before you finish (a question, \"progress?\"), answer it in text beside your next tool call and carry on with your work. The user sees only the text you write, never your thinking, so an answer meant for them goes in that text. Only a response without a tool call ends your turn, so don't answer a note that way unless you're done.\n\n\
+         The user can type while you work. What they type reaches you as a note from the operator: take it into account in the work you're doing. When a note asks you something or needs an answer before you finish (a question, \"progress?\"), answer it in text beside your next tool call and carry on with your work. The user never sees your thinking. In Claude Code (cc: models) and on the ChatGPT login they see none of it, and through the providers' APIs at most a summary. So every answer, question or progress note meant for them goes in the text you write, as one written only in your thinking never reaches them. Only a response without a tool call ends your turn, so don't answer a note that way unless you're done.\n\n\
          When you need the user to decide something before you can go on (a choice between approaches with real trade-offs, missing information only they have), ask with `ask_user`. If they can't be asked (Arko runs without a terminal), it says so, and you decide.\n"
             .to_string();
     }
     "# How this conversation works\n\
      The user talks with you in a terminal. Each of their messages starts a turn: work on it with your tools for as long as it takes, then end the turn by calling `complete_task`, whose summary is your reply. Text you write outside tool calls is shown to the user as you work; keep it to short progress notes, and don't repeat your reply in it.\n\n\
      When a step doesn't need the user, keep going. End the turn to ask only when you can't continue without them, or before something destructive or hard to undo that they didn't ask for: deleting data they may want, force-pushing, publishing, or changing things outside the working directory.\n\n\
-     The user can type while you work. What they type reaches you as a note from the operator: take it into account in the work you're doing. When a note asks you something or needs an answer before you finish (a question, \"progress?\"), answer it with `message_user` and carry on with your work. Use `message_user` too for anything they must know before you finish. The user sees only what you write (your text, `message_user` and your reply), never your thinking, so an answer meant for them goes there. Every response of yours must call a tool: a reply in plain text, without one, is an error.\n\n\
+     The user can type while you work. What they type reaches you as a note from the operator: take it into account in the work you're doing. When a note asks you something or needs an answer before you finish (a question, \"progress?\"), answer it with `message_user` and carry on with your work. Use `message_user` too for anything they must know before you finish. The user never sees your thinking. In Claude Code (cc: models) and on the ChatGPT login they see none of it, and through the providers' APIs at most a summary. So every answer, question or progress note meant for them goes in what you write (your text, `message_user` or your reply), as one written only in your thinking never reaches them. Every response of yours must call a tool: a reply in plain text, without one, is an error.\n\n\
      When you need the user to decide something before you can go on (a choice between approaches with real trade-offs, missing information only they have), ask with `ask_user`. If they can't be asked (Arko runs without a terminal), it says so, and you decide.\n"
         .to_string()
 }
@@ -1480,16 +1480,26 @@ mod tests {
             ..AgentSettings::for_test(&opus, &opus)
         })
         .unwrap();
+        let never = "The user never sees your thinking. In Claude Code (cc: models) and on the ChatGPT login they see none of it, and through the providers' APIs at most a summary.";
+        assert!(replying.instructions.contains(never));
         assert!(replying.instructions.contains(
-            "The user sees only the text you write, never your thinking, so an answer meant for them goes in that text."
+            "every answer, question or progress note meant for them goes in the text you write, as one written only in your thinking never reaches them."
         ));
         let calling = main_config(&AgentSettings::for_test(&opus, &opus)).unwrap();
+        assert!(calling.instructions.contains(never));
         assert!(calling.instructions.contains(
-            "The user sees only what you write (your text, `message_user` and your reply), never your thinking"
+            "goes in what you write (your text, `message_user` or your reply), as one written only in your thinking never reaches them."
         ));
-        // Workers report to the lead, which reads their reports.
+        // Workers answer the lead, which sees their messages and reports.
         let worker = worker_config(&AgentSettings::for_test(&opus, &opus)).unwrap();
-        assert!(!worker.instructions.contains("never your thinking"));
+        assert!(
+            !worker
+                .instructions
+                .contains("The user never sees your thinking")
+        );
+        assert!(worker.instructions.contains(
+            "The lead sees only your messages to it and your report, never your thinking"
+        ));
     }
 
     #[test]
