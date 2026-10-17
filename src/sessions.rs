@@ -174,7 +174,18 @@ fn saved_conversation(
     session: &Session,
 ) -> Result<(Option<arko_agents::Task>, Conversations), String> {
     let Some(checkpoint) = session.latest_checkpoint() else {
-        return Ok((None, Conversations::load(&session.dir).unwrap_or_default()));
+        // A branch not opened yet holds its conversation in its seed.
+        let unreadable =
+            |error: String| format!("could not read the branch's conversation ({error})");
+        let task = match std::fs::read_to_string(session.dir.join(session::SEED_FILE)) {
+            Ok(text) => Some(
+                serde_json::from_str::<arko_agents::Task>(&text)
+                    .map_err(|error| unreadable(error.to_string()))?,
+            ),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(unreadable(error.to_string())),
+        };
+        return Ok((task, Conversations::load(&session.dir).unwrap_or_default()));
     };
     let unreadable = |error: String| {
         format!(

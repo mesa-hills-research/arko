@@ -2680,6 +2680,12 @@ mod tests {
             .unwrap();
         assert_eq!(settings.branched_from.as_deref(), Some(id.as_str()));
         assert_eq!(settings.title.as_deref(), Some("Branch of One."));
+        // A branch never opened is branched from its seed.
+        let again = crate::sessions::branch(&root, &saved).unwrap();
+        let (seam, ended) = open_app(&root, &project, &server, SessionChoice::Resume(again)).await;
+        resumed(&seam).await;
+        assert_eq!(exchanged(&seam), ["One.", "Reply 1.", "Two.", "Reply 2."]);
+        quit(seam, ended).await;
         let (seam, ended) = open_app(&root, &project, &server, SessionChoice::Resume(saved)).await;
         resumed(&seam).await;
         assert_eq!(exchanged(&seam), ["One.", "Reply 1.", "Two.", "Reply 2."]);
