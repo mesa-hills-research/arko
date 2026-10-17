@@ -24,9 +24,10 @@ const NEWS_NOTICE: &str = "the workers' news went to the agent";
 
 /// The items of `messages` (a conversation of the main agent), numbered
 /// from 1 (a result's `call` names its call by that number), each with
-/// the turn it came in, from 1: the user's messages that started turns
-/// (and those that kept the cache warm, and the workers' news) begin one.
-/// With
+/// the turn it came in, from 1. A turn begins at each message from the
+/// user's side after one that ended a turn (a reply, or `complete_task`),
+/// whatever it holds, also one that shows no item (what the user typed
+/// during a turn, which Arko sends in a turn of its own). With
 /// `text_replies` (the agent ends its turns with a reply in plain text), a
 /// response of text alone is a reply, unless the user's answer to a
 /// question follows it (Claude Code ends its turn after `ask_user`).
@@ -45,7 +46,14 @@ pub fn items(messages: &[Message], text_replies: bool, images: &Images) -> Vec<I
         items.push(item);
         items.len() - 1
     };
+    let mut turn: Option<u64> = None;
+    let mut ended = true;
     for (index, message) in messages.iter().enumerate() {
+        let start = items.len();
+        if ended && starts_turn(message) {
+            turn = Some(turn.map_or(1, |turn| turn + 1));
+            ended = false;
+        }
         match message.role {
             Role::System => {}
             Role::User => {
@@ -161,20 +169,31 @@ pub fn items(messages: &[Message], text_replies: bool, images: &Images) -> Vec<I
                 }
             }
         }
-    }
-    let mut turn: Option<u64> = None;
-    for item in &mut items {
-        let starts = match item.kind {
-            Kind::User => matches!(item.delivery, Some(Delivery::Turn | Delivery::Refresh)),
-            Kind::Notice => item.text == NEWS_NOTICE,
-            _ => false,
-        };
-        if starts {
-            turn = Some(turn.map_or(1, |turn| turn + 1));
+        if message.role == Role::Assistant {
+            ended = message
+                .tool_calls
+                .iter()
+                .any(|call| call.name == "complete_task")
+                || (text_replies
+                    && message.tool_calls.is_empty()
+                    && !messages.get(index + 1).is_some_and(is_answer));
         }
-        item.turn = turn;
+        for item in &mut items[start..] {
+            item.turn = turn;
+        }
     }
     items
+}
+
+/// Whether `message` can begin a turn: a message from the user's side with
+/// text, not tool results alone, nor the user's answer to a question.
+fn starts_turn(message: &Message) -> bool {
+    message.role == Role::User
+        && message
+            .content
+            .iter()
+            .any(|content| content.as_text().is_some())
+        && !is_answer(message)
 }
 
 /// Whether `message` is the user's answer to the agent's questions.
@@ -305,6 +324,30 @@ mod tests {
         );
         assert_eq!(items[2].outcome.as_deref(), Some("12 passed"));
         assert_eq!(items[3].call, Some(items[2].id));
+    }
+
+    /// What the user typed during a turn, which Arko sends in a turn of its
+    /// own after the reply, begins a turn, though it shows no item.
+    #[test]
+    fn a_turn_for_what_was_typed_meanwhile_is_a_turn_of_its_own() {
+        let messages = vec![
+            Message::new_user("Slow."),
+            Message::new_assistant("Slow 4."),
+            Message::new_user("# What I typed during your last turn\n\n- Also the docs."),
+            Message::new_assistant("Main 5."),
+        ];
+        let turns: Vec<(Kind, Option<u64>)> = items(&messages, true, &Images::default())
+            .iter()
+            .map(|item| (item.kind, item.turn))
+            .collect();
+        assert_eq!(
+            turns,
+            [
+                (Kind::User, Some(1)),
+                (Kind::Reply, Some(1)),
+                (Kind::Reply, Some(2))
+            ]
+        );
     }
 
     /// With text replies, a response of text alone is the agent's reply,
