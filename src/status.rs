@@ -13,7 +13,7 @@ use crate::agents::{ExtraRules, WORKER};
 use crate::crew::Crew;
 use crate::lock;
 use crate::ui::Stats;
-use crate::{crew, handover, keys, outside, project, remote, shell};
+use crate::{crew, handover, keys, outside, project, providers, remote, shell};
 
 /// The session's figures for the remote page's status, read as the page
 /// asks. The workflow and its worker view are refreshed on session resume.
@@ -260,6 +260,8 @@ impl remote::Meter for Gauges {
             })
             .collect();
         let (cost, api_price, costs) = costs(workflow.as_deref());
+        let cache = cache_status(&stats, &lock(&self.models));
+        let last_request = stats.last_request.clone();
         remote::Reading {
             cost,
             api_price,
@@ -300,6 +302,93 @@ impl remote::Meter for Gauges {
             context_window: stats.context_window,
             plans,
             agents,
+            cache,
+            last_request,
         }
+    }
+}
+
+/// The main agent's prompt cache, from what its latest request said, priced
+/// for its model.
+fn cache_status(stats: &crate::ui::Stats, models: &remote::Models) -> remote::CacheStatus {
+    let model = providers::resolve_model(&models.main).ok();
+    let chatgpt = models.openai_auth.as_deref() == Some(providers::OpenAiAuth::ChatGpt.describe());
+    let on_plan = match model.as_ref().map(|model| &model.provider) {
+        Some(arko_ai::Provider::ClaudeCode) => Some("your Claude plan"),
+        Some(arko_ai::Provider::OpenAI) if chatgpt => Some("your ChatGPT plan"),
+        _ => None,
+    };
+    let tokens = stats.context_tokens;
+    let (miss_cost, refresh_cost) = match (&model, tokens) {
+        (Some(model), Some(tokens)) if on_plan.is_none() => {
+            let pricing = &model.pricing;
+            let hour = stats.cache_lifetime
+                == Some(arko_ai::prompt_cache::ANTHROPIC_EXTENDED_PROMPT_CACHE_LIFETIME);
+            // Where writes cost nothing extra (OpenAI, Gemini), they cost
+            // input.
+            let write = hour
+                .then_some(pricing.cache_write_1h_cost_per_million)
+                .flatten()
+                .or(pricing.cache_write_cost_per_million)
+                .unwrap_or(pricing.input_cost_per_million);
+            let read = pricing
+                .cached_input_cost_per_million
+                .unwrap_or(pricing.input_cost_per_million);
+            let cost = |per_million: f64| Some(tokens as f64 * per_million / 1e6);
+            (cost(write), cost(read))
+        }
+        _ => (None, None),
+    };
+    remote::CacheStatus {
+        lifetime: stats.cache_lifetime,
+        refreshed_at: stats.last_request.as_ref().map(|request| request.at),
+        tokens,
+        read: stats.cache_use.map(|(read, _)| read),
+        written: stats.cache_use.map(|(_, written)| written),
+        miss_cost,
+        refresh_cost,
+        on_plan,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The cache's costs follow the model's prices and its lifetime: a miss
+    /// writes the conversation again, keeping it warm reads it. A plan pays
+    /// for both.
+    #[test]
+    fn the_cache_is_priced_for_the_model() {
+        let stats = Stats {
+            context_tokens: Some(200_000),
+            cache_lifetime: Some(arko_ai::prompt_cache::ANTHROPIC_EXTENDED_PROMPT_CACHE_LIFETIME),
+            cache_use: Some((150_000, 50_000)),
+            ..Stats::default()
+        };
+        let models = remote::Models {
+            main: "claude-opus-5-5".into(),
+            ..remote::Models::default()
+        };
+        let pricing = providers::resolve_model("opus").unwrap().pricing;
+        let cache = cache_status(&stats, &models);
+        let close = |a: Option<f64>, b: f64| (a.unwrap() - b).abs() < 1e-9;
+        assert!(close(
+            cache.miss_cost,
+            0.2 * pricing.cache_write_1h_cost_per_million.unwrap()
+        ));
+        assert!(close(
+            cache.refresh_cost,
+            0.2 * pricing.cached_input_cost_per_million.unwrap()
+        ));
+        assert_eq!((cache.read, cache.written), (Some(150_000), Some(50_000)));
+        assert_eq!(cache.on_plan, None);
+        let models = remote::Models {
+            main: "cc:opus".into(),
+            ..models
+        };
+        let cache = cache_status(&stats, &models);
+        assert_eq!((cache.miss_cost, cache.refresh_cost), (None, None));
+        assert_eq!(cache.on_plan, Some("your Claude plan"));
     }
 }

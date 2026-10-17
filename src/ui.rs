@@ -446,6 +446,16 @@ pub struct Stats {
     pub plan_usage: Option<String>,
     /// Each plan's part of `plan_usage`, by plan (`providers::plan_name`).
     pub plans: std::collections::BTreeMap<String, String>,
+    /// The main agent's latest model request.
+    pub last_request: Option<remote::LastRequest>,
+    /// How long the main agent's prompt cache lasts: as its provider says,
+    /// or (Claude Code) as its cache writes show.
+    pub cache_lifetime: Option<std::time::Duration>,
+    /// The cache lifetime is learned from the cache writes (Claude Code).
+    pub learns_cache_lifetime: bool,
+    /// What the main agent's latest request read from the cache and wrote
+    /// to it, in tokens.
+    pub cache_use: Option<(usize, usize)>,
 }
 
 /// A request to the event printer.
@@ -606,6 +616,7 @@ impl EventPrinter {
 
     fn event(&mut self, event: WorkflowEvent) {
         let main = event.agent_name == MAIN;
+        let at = event.timestamp.timestamp_millis();
         match event.event {
             AgentEvent::AssistantResponseChunk(text) if main => {
                 self.flush_thinking();
@@ -753,6 +764,33 @@ impl EventPrinter {
                 if main && self.hold_text && self.text.trim() == summary.trim() =>
             {
                 self.text.clear();
+            }
+            // The conversation's own requests (not Claude Code's subagents').
+            AgentEvent::ModelRequestStarted {
+                model,
+                subagent: None,
+                sizes,
+                bytes_per_token,
+            } if main => {
+                self.stats.lock().unwrap().last_request = Some(remote::LastRequest {
+                    at,
+                    model,
+                    sizes,
+                    bytes_per_token,
+                });
+            }
+            AgentEvent::UsageReported(usage) if main => {
+                let mut stats = self.stats.lock().unwrap();
+                let written = usage.cache_write_tokens.unwrap_or(0);
+                stats.cache_use = Some((usage.cached_tokens.unwrap_or(0), written));
+                if stats.learns_cache_lifetime && written > 0 {
+                    let hour = usage.cache_write_1h_tokens.unwrap_or(0) > 0;
+                    stats.cache_lifetime = Some(if hour {
+                        arko_ai::prompt_cache::ANTHROPIC_EXTENDED_PROMPT_CACHE_LIFETIME
+                    } else {
+                        arko_ai::prompt_cache::ANTHROPIC_PROMPT_CACHE_LIFETIME
+                    });
+                }
             }
             AgentEvent::ModelCallUsageReported(usage) if main => {
                 let mut stats = self.stats.lock().unwrap();

@@ -543,6 +543,20 @@ impl Harness {
                 && self.settings.openai_auth == Some(providers::OpenAiAuth::ChatGpt);
             let mut stats = lock(&self.stats);
             stats.context_window = arko_ai::input_limit::effective_max_input_tokens(model, chatgpt);
+            // How long its prompt cache lasts, as the provider says; Claude
+            // Code's shows in its cache writes.
+            let lifetime = arko_ai::prompt_cache::prompt_cache_lifetime(
+                model,
+                &configs[0].llm_config.generation_config,
+                chatgpt,
+            );
+            stats.learns_cache_lifetime = model.provider == arko_ai::Provider::ClaudeCode;
+            if !stats.learns_cache_lifetime || stats.cache_lifetime.is_none() {
+                stats.cache_lifetime = match lifetime {
+                    arko_ai::PromptCacheLifetime::Known(lifetime) => Some(lifetime),
+                    _ => None,
+                };
+            }
             let task = match &self.conversation {
                 Conversation::Answered(result) => Some(&result.task),
                 Conversation::Stopped(run) => Some(&run.result.task),

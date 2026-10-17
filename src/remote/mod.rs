@@ -140,6 +140,54 @@ pub struct Reading {
     /// Each worker's context and handover size.
     #[serde(skip)]
     pub agents: Vec<AgentStatus>,
+    /// The main agent's prompt cache, as its latest request left it.
+    #[serde(skip)]
+    pub cache: CacheStatus,
+    /// The main agent's latest model request.
+    #[serde(skip)]
+    pub last_request: Option<LastRequest>,
+}
+
+/// The main agent's prompt cache, as its latest request left it: when it
+/// lapses, and what a miss and keeping it warm cost.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct CacheStatus {
+    /// How long the cache keeps the conversation after a request. `None`
+    /// where the provider doesn't say (Gemini, OpenRouter models other than
+    /// Claude, Claude Code until it writes the cache) or nothing is cached.
+    pub lifetime: Option<std::time::Duration>,
+    /// When the latest request went out (Unix milliseconds): the cache
+    /// lasts `lifetime` from then.
+    pub refreshed_at: Option<i64>,
+    /// The conversation's input at its latest request, in tokens: what a
+    /// miss writes to the cache again.
+    pub tokens: Option<usize>,
+    /// What the latest request read from the cache and wrote to it, in
+    /// tokens.
+    pub read: Option<usize>,
+    pub written: Option<usize>,
+    /// What a miss costs: `tokens` written again at the model's price.
+    /// `None` on a plan.
+    pub miss_cost: Option<f64>,
+    /// What keeping it warm costs: `tokens` read from the cache at the
+    /// model's price. `None` on a plan.
+    pub refresh_cost: Option<f64>,
+    /// The plan that pays instead ("your Claude plan").
+    pub on_plan: Option<&'static str>,
+}
+
+/// The main agent's latest model request.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LastRequest {
+    /// When it went out (Unix milliseconds).
+    pub at: i64,
+    /// The model it went to.
+    pub model: String,
+    /// What it held, by section, in bytes (for Claude Code, without what
+    /// Claude Code adds of its own).
+    pub sizes: Option<arko_ai::RequestSizes>,
+    /// The bytes per token that turn `sizes` into estimated tokens.
+    pub bytes_per_token: f64,
 }
 
 /// The costs, the main agent's and the workers'.

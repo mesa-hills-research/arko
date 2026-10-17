@@ -1636,6 +1636,35 @@ mod tests {
         quit(seam, ended).await;
     }
 
+    /// The status tells when the main agent's latest request went out (the
+    /// prompt cache lasts from then), what it held, and what the cache
+    /// costs.
+    #[tokio::test]
+    async fn the_status_tells_of_the_latest_request_and_the_cache() {
+        let temp = tempfile::tempdir().unwrap();
+        let (server, bodies) = counting_server().await;
+        let (root, project) = (temp.path().join("arko"), temp.path().join("project"));
+        let (seam, ended) = open_app(&root, &project, &server, SessionChoice::New).await;
+        assert_eq!(seam.meter.read().last_request, None);
+        let before = chrono::Utc::now().timestamp_millis();
+        seam.input
+            .send(Input::Message(app_message("One.")))
+            .unwrap();
+        answered(&seam, &bodies, 1).await;
+        let after = chrono::Utc::now().timestamp_millis();
+        let reading = seam.meter.read();
+        let request = reading.last_request.clone().unwrap();
+        assert_eq!(request.model, resolve_model("luna").unwrap().id);
+        assert!((before..=after).contains(&request.at));
+        let sizes = request.sizes.unwrap();
+        assert!(sizes.system_prompt > 0 && sizes.user_text >= "One.".len());
+        assert!(request.bytes_per_token > 0.0);
+        assert_eq!(reading.cache.refreshed_at, Some(request.at));
+        assert_eq!(reading.cache.tokens, reading.context_tokens);
+        assert_eq!(reading.cache.on_plan, None);
+        quit(seam, ended).await;
+    }
+
     /// A branch is a new session with the conversation up to a message of
     /// the user's: it goes on apart from the session it came from, also
     /// once it opens again. A branch keeps at least the first message.
