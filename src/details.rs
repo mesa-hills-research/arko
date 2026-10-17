@@ -1,7 +1,7 @@
-//! A session's details as data: what `/cost`, `/session`, `/mcp`,
-//! `/skills` and `/workers` say, for a front end that shows them its own
-//! way. The commands' text is made from the same facts. Each getter reads
-//! files or the cost ledger, briefly: call them off a UI thread.
+//! A session's details as data, for a front end that shows what `/cost`,
+//! `/session`, `/mcp`, `/skills` and `/workers` say in its own way. The
+//! commands' text is made from the same facts. Each getter briefly reads
+//! files or the cost ledger, so call them off a UI thread.
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -15,8 +15,8 @@ use crate::session::Settings;
 use crate::status::Gauges;
 use crate::{index, lock, mcp, project, providers, remote, skills};
 
-/// When the agents hand over, as `/session` says it: `workers` when the
-/// session has them.
+/// When the agents hand over, as `/session` says it. `workers` is set when
+/// the session has workers.
 pub fn handover_text(facts: &HandoverFacts, workers: bool) -> String {
     let what = |compacts: bool| if compacts { "compaction" } else { "handover" };
     let main = format!(
@@ -36,8 +36,8 @@ pub fn handover_text(facts: &HandoverFacts, workers: bool) -> String {
     }
 }
 
-/// The project's instructions, as `/session` says them: `workers`, whether
-/// workers get them (`None` without workers).
+/// The project's instructions, as `/session` says them. `workers` says
+/// whether workers get them (`None` without workers).
 pub fn project_text(files: project::Files, workers: Option<bool>) -> String {
     let workers = match workers {
         None => "",
@@ -74,8 +74,8 @@ pub struct CostReport {
     pub workers: CostShare,
     /// Each plan's usage windows, as last reported.
     pub plans: Vec<remote::PlanStatus>,
-    /// What the search indexes' embeddings cost while Arko ran: tokens and
-    /// dollars.
+    /// What the search indexes' embeddings cost while Arko ran, in tokens
+    /// and dollars.
     pub embeddings: Option<(u64, f64)>,
 }
 
@@ -91,7 +91,7 @@ impl CostReport {
 pub struct ModelFacts {
     /// Its ID, as the session keeps it.
     pub model: String,
-    /// As `/session` says it: "claude-opus-5-5 (xhigh effort) via Claude Code".
+    /// As `/session` says it ("claude-opus-5-5 (xhigh effort) via Claude Code").
     pub shown: String,
     pub effort: Effort,
     pub fast: bool,
@@ -102,7 +102,7 @@ pub struct ModelFacts {
 #[derive(Debug, Clone, PartialEq)]
 pub struct WorkersFacts {
     pub model: ModelFacts,
-    /// `None`: no limit.
+    /// `None` for no limit.
     pub max_running: Option<u32>,
 }
 
@@ -125,7 +125,7 @@ pub struct SessionFacts {
     pub title: Option<String>,
     pub created: DateTime<Utc>,
     pub main: ModelFacts,
-    /// `None`: the session has no workers.
+    /// `None` when the session has no workers.
     pub workers: Option<WorkersFacts>,
     pub handover: HandoverFacts,
     pub text_replies: bool,
@@ -137,7 +137,7 @@ pub struct SessionFacts {
     /// workers.
     pub project_workers: Option<bool>,
     pub outside: bool,
-    /// After how many seconds shell commands move to the background (0:
+    /// After how many seconds shell commands move to the background (0 for
     /// never).
     pub background_after: u64,
     pub show_thinking: bool,
@@ -258,8 +258,8 @@ impl Details {
         lock(&self.mcp).unoffered = note;
     }
 
-    /// What the session billed, and, where a plan covered calls, what they
-    /// would have cost: the main agent's part and the workers', the plans'
+    /// What the session billed, and what the calls a plan covered would
+    /// have cost. It has the main agent's part and the workers', the plans'
     /// usage, and the embeddings.
     pub fn cost(&self) -> CostReport {
         let workflow = lock(&self.gauges.workflow).clone();
@@ -375,8 +375,8 @@ impl Details {
             .unwrap_or_default()
     }
 
-    /// What switching the session to `to` (`Request::SwitchMode`) costs:
-    /// its next request writes the whole conversation to the prompt cache
+    /// What switching the session to `to` (`Request::SwitchMode`) costs.
+    /// Its next request writes the whole conversation to the prompt cache
     /// again, under the new mode's tools and instructions. `None` when the
     /// session is in `to` already or its conversation hasn't started (then
     /// it costs nothing).
@@ -390,7 +390,7 @@ impl Details {
     }
 }
 
-/// What a switch between Chat and Agent costs: see [`Details::switch_cost`].
+/// What a switch between Chat and Agent costs ([`Details::switch_cost`]).
 #[derive(Debug, Clone, PartialEq)]
 pub struct SwitchCost {
     /// The conversation's input at its last request, which the next one

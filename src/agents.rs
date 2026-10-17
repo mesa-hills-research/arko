@@ -92,14 +92,13 @@ impl std::fmt::Display for Effort {
 }
 
 /// Which agents get the extra rules for small models in their
-/// instructions ([`extra_rules`]). Each agent goes by its own model: a
-/// worker on a small model under a lead on a large one gets them, and the
-/// lead doesn't.
+/// instructions. Each agent goes by its own model, so a worker on a small
+/// model under a lead on a large one gets them, and the lead doesn't.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ExtraRules {
-    /// Agents on small models ([`providers::is_small`]): new sessions'
-    /// default.
+    /// Agents on small models, such as Haiku and luna. New sessions start
+    /// with this.
     Small,
     /// Every agent, whatever its model.
     All,

@@ -666,7 +666,7 @@ mod tests {
         assert!((Rgb(0, 0, 0).contrast(white) - 21.0).abs() < 0.01);
     }
 
-    /// The owner's examples: the background, the text and the blue.
+    /// The default theme's background, text and blue, and white.
     #[test]
     fn colours_map_to_the_nearest_of_xterms_256() {
         assert_eq!(Rgb(0x13, 0x13, 0x13).xterm256(), 233);

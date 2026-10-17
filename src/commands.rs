@@ -14,23 +14,23 @@ pub use crate::shell::{MAX_TIMEOUT_SECONDS as MAX_BACKGROUND_AFTER, parse_backgr
 /// Who runs a command.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Runs {
-    /// The session: typed at the line prompt, in the full-screen view or on
-    /// the web page.
+    /// The session, whether it's typed at the line prompt, in the
+    /// full-screen view or on the web page.
     Session,
-    /// The full-screen view itself: it has no meaning anywhere else.
+    /// The full-screen view itself, since it means nothing anywhere else.
     Screen,
 }
 
-/// A command: its name, what may follow it, and what it does.
+/// A command, with its name, what may follow it, and what it does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Command {
     pub name: &'static str,
-    /// What may follow the name, as the menu hints it (`ADDR|off|new-key`);
-    /// empty when nothing may.
+    /// What may follow the name, as the menu hints it (`ADDR|off|new-key`),
+    /// or empty when nothing may.
     pub args: &'static str,
     /// What it does, in a line.
     pub about: &'static str,
-    /// Other names it answers to; the menu and the help leave them out.
+    /// Other names it answers to, which the menu and the help leave out.
     pub aliases: &'static [&'static str],
     pub runs: Runs,
 }
@@ -194,8 +194,8 @@ pub const COMMANDS: &[Command] = &[
     },
 ];
 
-/// The command `text` (a whole line) is, if it is one: a command's name
-/// alone, or followed by arguments when it takes them. Other text that
+/// The command `text` (a whole line) is, if it is one. That is a command's
+/// name alone, or followed by arguments when it takes them. Other text that
 /// starts with a slash (`/usr/bin is missing`) is a message.
 pub fn find(text: &str) -> Option<&'static Command> {
     let text = text.trim();
@@ -209,7 +209,8 @@ pub fn find(text: &str) -> Option<&'static Command> {
 }
 
 /// The commands whose names start with `prefix` (which starts with `/`),
-/// for the menu: those of the session, and the screen's when `screen`.
+/// for the menu. They are the session's, and the screen's too when
+/// `screen` is set.
 pub fn matching(prefix: &str, screen: bool) -> Vec<&'static Command> {
     COMMANDS
         .iter()
@@ -242,9 +243,9 @@ const CHOICES: &[(&str, &[&str], &[&str])] = &[
 ];
 
 /// The words that may follow `before` in the arguments of the command
-/// `name`, for a front end's completion: its fixed ones, or what the session
-/// has (its workers, the keys, the web page's interfaces, the models), as
-/// its status `reading` says.
+/// `name`, for a front end's completion. They are the command's fixed
+/// words, or what the session has (its workers, the keys, the web page's
+/// interfaces, the models) as its status `reading` says.
 pub fn dynamic_choices(
     reading: &crate::remote::Reading,
     name: &str,
@@ -328,7 +329,7 @@ pub fn choices(name: &str, before: &[&str]) -> &'static [&'static str] {
 }
 
 /// The help's lines for the session's commands, as the line prompt shows
-/// them: each name, padded, then what it does.
+/// them, with each name, padded, then what it does.
 pub fn help_lines() -> Vec<String> {
     COMMANDS
         .iter()

@@ -1,8 +1,8 @@
-//! The images a session's transcript shows: those the user sends with a
-//! message and those tools return (a file `read_file` shows, a screenshot).
-//! Items name them by ID ([`ImageRef`]), and a front end reads their bytes
-//! from the session's store ([`Images`]), which keeps the latest within a
-//! budget. Events and items carry no image bytes.
+//! The images a session's transcript shows, which are those the user sends
+//! with a message and those tools return (a file `read_file` shows, a
+//! screenshot). Items name them by ID ([`ImageRef`]), and a front end reads
+//! their bytes from the session's store ([`Images`]), which keeps the latest
+//! within a budget. Events and items carry no image bytes.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
@@ -19,9 +19,9 @@ const BUDGET: usize = 128 * 1024 * 1024;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImageRef {
     pub id: u64,
-    /// Its MIME type: `image/png`.
+    /// Its MIME type, such as `image/png`.
     pub mime: String,
-    /// What it is: a file's name, a tool's description of it.
+    /// What it is, such as a file's name or a tool's description of it.
     pub label: String,
     /// Its size in bytes.
     pub bytes: usize,
@@ -35,7 +35,7 @@ pub struct Stored {
     pub label: String,
 }
 
-/// A session's images, by ID: the latest, within 128 MB. Clones share them.
+/// A session's latest images, by ID, within 128 MB. Clones share them.
 #[derive(Clone, Default)]
 pub struct Images {
     inner: Arc<Mutex<Store>>,
