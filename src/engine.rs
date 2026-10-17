@@ -2931,6 +2931,73 @@ mod tests {
         assert!(crate::sessions::conversation(&root, "20990101-000000-none", None).is_err());
     }
 
+    #[tokio::test]
+    async fn a_turn_after_stop_keeps_its_number_when_exported_and_reopened() {
+        let temp = tempfile::tempdir().unwrap();
+        let (root, project) = (temp.path().join("arko"), temp.path().join("project"));
+        let bodies: Arc<Mutex<Vec<String>>> = Arc::default();
+        let server = ModelServer::start(Arc::new({
+            let bodies = bodies.clone();
+            move |index, body: String| {
+                bodies.lock().unwrap().push(body.clone());
+                Box::pin(async move {
+                    if body.contains("Slow command.") && !body.contains("function_call_output") {
+                        tool_call("slow", "shell", serde_json::json!({"command": "sleep 20"}))
+                    } else {
+                        reply(&format!("r{index}"), &format!("Reply {index}."))
+                    }
+                })
+            }
+        }))
+        .await;
+        let (seam, ended) = open_app(&root, &project, &server, SessionChoice::New).await;
+        let id = seam.session.id.clone();
+        seam.input
+            .send(Input::Message(app_message("One.")))
+            .unwrap();
+        answered(&seam, &bodies, 1).await;
+        seam.input
+            .send(Input::Message(app_message("Slow command.")))
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(30), async {
+            while !seam
+                .feed
+                .subscribe()
+                .0
+                .items
+                .iter()
+                .any(|item| item.kind == Kind::Call)
+            {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap();
+        seam.input.send(Input::Interrupt).unwrap();
+        answered(&seam, &bodies, 2).await;
+        seam.input
+            .send(Input::Message(app_message("Go on.")))
+            .unwrap();
+        answered(&seam, &bodies, 3).await;
+        let reply_turn = |items: &[crate::remote::Item]| {
+            items
+                .iter()
+                .rev()
+                .find(|item| item.kind == Kind::Reply)
+                .unwrap()
+                .turn
+        };
+        let live = reply_turn(&seam.feed.subscribe().0.items);
+        assert_eq!(live, Some(3));
+        quit(seam, ended).await;
+        let exported = crate::sessions::conversation(&root, &id, None).unwrap();
+        assert_eq!(reply_turn(&exported.items), live);
+        let (seam, ended) = open_app(&root, &project, &server, SessionChoice::Resume(id)).await;
+        resumed(&seam).await;
+        assert_eq!(reply_turn(&seam.feed.subscribe().0.items), live);
+        quit(seam, ended).await;
+    }
+
     /// A session that stopped while a call ran (a crash: its folder as it
     /// was then) is branched from what it saved, and the branch's next
     /// request answers that call, as providers require.

@@ -24,10 +24,12 @@ const NEWS_NOTICE: &str = "the workers' news went to the agent";
 
 /// The items of `messages` (a conversation of the main agent), numbered
 /// from 1 (a result's `call` names its call by that number), each with
-/// the turn it came in, from 1. A turn begins at each message from the
-/// user's side after one that ended a turn (a reply, or `complete_task`),
-/// whatever it holds, also one that shows no item (what the user typed
-/// during a turn, which Arko sends in a turn of its own). With
+/// the turn it came in, from 1. A turn begins at each new prompt, including
+/// the context update that reopens a stopped run and messages that show no
+/// item (what the user typed during a turn, sent in a turn of its own).
+/// In-turn context updates and answers to questions keep the same turn.
+/// Recovery after a crash adds no saved message, so it keeps the interrupted
+/// turn's number here. With
 /// `text_replies` (the agent ends its turns with a reply in plain text), a
 /// response of text alone is a reply, unless the user's answer to a
 /// question follows it (Claude Code ends its turn after `ask_user`).
@@ -68,7 +70,17 @@ fn items_from(
     let mut ended = true;
     for (index, message) in messages.iter().enumerate() {
         let start = items.len();
-        if ended && starts_turn(message) {
+        if starts_turn(message)
+            && (ended
+                || message
+                    .content
+                    .iter()
+                    .filter_map(Content::as_text)
+                    .any(|text| {
+                        !text.trim_start().starts_with("# Workflow context update")
+                            || reopened(text)
+                    }))
+        {
             turn = Some(turn.map_or(1, |turn| turn + 1));
             ended = false;
         }
@@ -203,6 +215,15 @@ fn items_from(
     items
 }
 
+/// A stopped run gets this notice inside a context update when it restarts.
+/// Other context updates arrive during a turn and keep that turn's number.
+fn reopened(text: &str) -> bool {
+    text.trim_start().starts_with("# Workflow context update")
+        && text.lines().any(|line| {
+            line.starts_with("Your run was stopped before it finished and has now been reopened:")
+        })
+}
+
 /// Whether `message` can begin a turn: a message from the user's side with
 /// text, not tool results alone, nor the user's answer to a question.
 fn starts_turn(message: &Message) -> bool {
@@ -291,6 +312,56 @@ mod tests {
     fn call(id: &str, name: &str, arguments: serde_json::Value) -> ToolCall {
         serde_json::from_value(serde_json::json!({"id": id, "name": name, "arguments": arguments}))
             .unwrap()
+    }
+
+    #[test]
+    fn prompts_after_an_interrupted_call_start_their_own_turns() {
+        let mut shell = Message::new_assistant("");
+        shell.tool_calls = vec![call(
+            "shell",
+            "shell",
+            serde_json::json!({"command": "sleep 20"}),
+        )];
+        for prompt in [
+            "Go on.",
+            "# My message\n\nGo on.",
+            "# What I typed during your last turn, which you didn't get to read\n\n- Go on.",
+            "Your workers sent you news as your last turn ended.",
+            "A background job of yours finished after your last turn ended.",
+            super::super::feed::REFRESH_MESSAGE,
+            "# Workflow context update\n\nYour run was stopped before it finished and has now been reopened: continue your task where you were.\n\nGo on.",
+        ] {
+            for text_replies in [false, true] {
+                let messages = vec![
+                    Message::new_user("Start."),
+                    shell.clone(),
+                    Message::new_user("# Workflow context update\n\nA worker is running."),
+                    Message::new_user(prompt),
+                    Message::new_assistant("Done."),
+                ];
+                let items = all_items(&messages, text_replies, &Images::default());
+                assert_eq!(items.last().unwrap().turn, Some(2), "{prompt}");
+                assert_eq!(items[1].turn, Some(1));
+            }
+        }
+    }
+
+    #[test]
+    fn crash_recovery_without_a_prompt_keeps_the_saved_turn_number() {
+        let mut shell = Message::new_assistant("");
+        shell.tool_calls = vec![call(
+            "shell",
+            "shell",
+            serde_json::json!({"command": "sleep 20"}),
+        )];
+        let messages = vec![
+            Message::new_user("Start."),
+            shell,
+            Message::new_user("# Workflow context update\n\nA worker is running."),
+            Message::new_assistant("Recovered."),
+        ];
+        let items = all_items(&messages, true, &Images::default());
+        assert!(items.iter().all(|item| item.turn == Some(1)));
     }
 
     /// The user's words (not Arko's sections or context updates), the
