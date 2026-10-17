@@ -482,7 +482,7 @@
       $('empty').textContent = !worker
         ? 'Nothing here yet.'
         : summary && summary.report
-          ? 'Its work came before this page’s history began. Its report: ' + summary.report
+          ? 'Its work came before this page’s history began. It reported “' + summary.report + '”'
           : 'Nothing from it yet.';
     }
     if (following) {
@@ -654,7 +654,7 @@
     const settings = status && status.settings;
     $('figures').title =
       status && status.context_tokens != null
-        ? 'Context: ' + C.tokens(status.context_tokens) + ' tokens' + (settings && settings.handover_at ? ', handover size ' + C.tokens(settings.handover_at) : '')
+        ? 'Context ' + C.tokens(status.context_tokens) + ' tokens' + (settings && settings.handover_at ? ', handover size ' + C.tokens(settings.handover_at) : '')
         : '';
     $('outside').hidden = !(status && status.settings && status.settings.outside);
     const working = status && status.working && connection === 'live';
@@ -1010,7 +1010,7 @@
     if (pending === change) pending = null;
     const said = change.lines.join('\n');
     if (ok) note(change.note, said);
-    else note(change.note, said || 'Arko didn’t change it: see the transcript for why.', true);
+    else note(change.note, said || 'Arko didn’t change it. The transcript says why.', true);
     renderSettings();
   }
 
@@ -1240,8 +1240,8 @@
     stream = null;
     $('lock-why').textContent =
       why === 'wait'
-        ? 'Too many wrong keys: wait a minute, then try again.'
-        : 'Open the link Arko printed in its console: it holds the key. (A new session, or /remote new-key, makes a new one.)';
+        ? 'Too many wrong keys. Wait a minute, then try again.'
+        : 'Open the link Arko printed in its console, which holds the key. (A new session, or /remote new-key, makes a new one.)';
     $('lock').hidden = false;
     $('app').hidden = true;
   }
@@ -1304,7 +1304,7 @@
     // comes back within a second or two.
     setConnection(failures > 1 ? 'offline' : 'connecting');
     $('offline-text').textContent =
-      failures > 3 ? 'Arko isn’t reachable: it may have quit. The page reconnects when it’s back.' : 'Not connected. Reconnecting…';
+      failures > 3 ? 'Arko isn’t reachable, and it may have quit. The page reconnects when it’s back.' : 'Not connected. Reconnecting…';
     retryTimer = setTimeout(start, retry);
     retry = Math.min(retry * 2, 15000);
   }
@@ -1361,7 +1361,7 @@
           body: JSON.stringify(body || {}),
         });
       } catch {
-        showError('Not sent: Arko is out of reach. Your text is kept.');
+        showError('Not sent, because Arko is out of reach. Your text is kept.');
         return false;
       }
       if (response.status === 401 && attempt === 0) {
@@ -1372,9 +1372,9 @@
       }
       if (!response.ok) {
         const why = await response.json().catch(() => ({}));
-        if (why.error) showError('Not sent: ' + why.error + '.');
+        if (why.error) showError('Not sent (' + why.error + ').');
         // A proxy in front of Arko (Tailscale Serve, say) answers for it.
-        else if ([502, 503, 504].includes(response.status)) showError('Not sent: Arko is out of reach. Your text is kept.');
+        else if ([502, 503, 504].includes(response.status)) showError('Not sent, because Arko is out of reach. Your text is kept.');
         else showError('Not sent (' + response.status + ').');
         return false;
       }
