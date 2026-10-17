@@ -315,6 +315,9 @@ pub(crate) struct Harness {
     /// The prompt cache is kept warm with a message (`REFRESH_MESSAGE`):
     /// the provider takes no refresh out of band.
     pub(crate) refresh_turn: bool,
+    /// Arko only waits for the workers to finish (no terminal): requests
+    /// that would start something are refused.
+    pub(crate) only_workers: bool,
     /// The images the transcript shows.
     pub(crate) images: crate::images::Images,
     /// The images the user's next message (or note) sends, and as the
@@ -1328,9 +1331,17 @@ impl Harness {
     /// Does what the front end asks, and answers it.
     pub(crate) async fn request(&mut self, request: crate::engine::Request) {
         use crate::engine::Request;
-        // While a turn runs, the agent's configuration stays as it is.
-        const WAIT: &str = "Wait for the turn to end.";
-        let working = self.feed.activity().working;
+        // While a turn runs, the agent's configuration stays as it is; while
+        // Arko only waits for the workers (no terminal), nothing starts.
+        let busy = if self.feed.activity().working {
+            Some("Wait for the turn to end.")
+        } else if self.only_workers {
+            Some("Arko is only waiting for the workers now.")
+        } else {
+            None
+        };
+        let working = busy.is_some();
+        let wait = busy.unwrap_or_default();
         match request {
             Request::Rename { title, reply } => {
                 let renamed = self.session.rename(&title);
@@ -1345,13 +1356,13 @@ impl Harness {
             | Request::Regenerate { reply }
                 if working =>
             {
-                let _ = reply.send(Err(WAIT.into()));
+                let _ = reply.send(Err(wait.into()));
             }
             Request::Branch { reply, .. } if working => {
-                let _ = reply.send(Err(WAIT.into()));
+                let _ = reply.send(Err(wait.into()));
             }
             Request::RefreshCache { reply } if working => {
-                let _ = reply.send(Err(WAIT.into()));
+                let _ = reply.send(Err(wait.into()));
             }
             Request::RefreshCache { reply } => {
                 let _ = reply.send(self.refresh_cache().await);
@@ -1510,6 +1521,15 @@ impl Harness {
     /// settings, and its conversation from its seed when it opens (see
     /// `import_seed`).
     fn branch(&self, before: Option<u64>) -> Result<String, String> {
+        // (Its workers stay here: the branch's conversation would speak of
+        // workers it doesn't have.)
+        if let Some(crew) = &self.crew
+            && let Some(worker) = crew.running().first()
+        {
+            return Err(format!(
+                "{worker} is running: wait for the workers or stop them first."
+            ));
+        }
         let task = self
             .conversation_task()
             .ok_or("A branch starts from a conversation: send a message first.")?;
@@ -1587,6 +1607,8 @@ impl Harness {
             Conversation::Stopped(run) => run.result.clone(),
         };
         let workflow = self.workflow().clone();
+        // The cache lasts from the request's start, as a turn's does.
+        let started = chrono::Utc::now().timestamp_millis();
         // (Boxed: the session's loop would hold it on its stack.)
         match Box::pin(workflow.refresh_prompt_cache(&result)).await {
             Ok(refresh) => {
@@ -1597,7 +1619,7 @@ impl Harness {
                 );
                 {
                     let mut stats = lock(&self.stats);
-                    stats.cache_refreshed_at = Some(chrono::Utc::now().timestamp_millis());
+                    stats.cache_refreshed_at = Some(started);
                     stats.cache_use = Some((read, written));
                 }
                 self.gauges.touch();
@@ -1709,6 +1731,14 @@ impl Harness {
     fn switch_mode(&mut self, to: Mode, workspace: Option<PathBuf>) -> Result<(), String> {
         if to == self.settings.mode {
             return Ok(());
+        }
+        // (They go with the next message, which a session opened again
+        // wouldn't know of.)
+        if !self.unread.is_empty() {
+            return Err(
+                "What you typed during the last turn hasn't reached the agent yet: send a message first."
+                    .into(),
+            );
         }
         if let Some(crew) = &self.crew {
             let running = crew.running();
@@ -3134,7 +3164,11 @@ impl Harness {
                     }
                 }
                 Event::Question(question) => drop(question),
-                Event::Request(request) => Box::pin(self.request(request)).await,
+                Event::Request(request) => {
+                    self.only_workers = true;
+                    Box::pin(self.request(request)).await;
+                    self.only_workers = false;
+                }
                 Event::Input(Some(Input::Line(_))) => {}
                 Event::Input(Some(Input::Background(agent))) => self.move_to_background(&agent),
                 Event::Remote(Action::Message(_) | Action::Answer { .. })
@@ -4220,6 +4254,7 @@ pub(crate) mod tests {
             edited: None,
             cut_back: None,
             refresh_turn: false,
+            only_workers: false,
             images: Default::default(),
             pending_images: Vec::new(),
             pending_refs: Vec::new(),
@@ -4466,6 +4501,41 @@ pub(crate) mod tests {
         assert!(harness.details.workers().is_empty());
         let cost = harness.details.cost();
         assert_eq!((cost.billed(), cost.embeddings), (0.0, None));
+    }
+
+    /// What a front end asks waits while Arko only waits for the workers
+    /// (no terminal), and a switch between Chat and Agent waits for what the
+    /// user typed to reach the agent: each says so.
+    #[tokio::test]
+    async fn requests_say_what_they_wait_for() {
+        let temp = tempfile::tempdir().unwrap();
+        let (mut harness, _inputs, _sender) = harness(temp.path(), LLMClient::new(), true);
+        harness.open(false).unwrap();
+        harness.only_workers = true;
+        let (reply, answer) = oneshot::channel();
+        harness
+            .request(crate::engine::Request::RefreshCache { reply })
+            .await;
+        assert_eq!(
+            answer.await.unwrap(),
+            Err("Arko is only waiting for the workers now.".to_string())
+        );
+        harness.only_workers = false;
+        harness.unread = vec!["also the tests".into()];
+        let (reply, answer) = oneshot::channel();
+        harness
+            .request(crate::engine::Request::SwitchMode {
+                to: Mode::Chat,
+                workspace: None,
+                reply,
+            })
+            .await;
+        let refused = answer.await.unwrap().unwrap_err();
+        assert!(refused.contains("typed during the last turn"), "{refused}");
+        assert_eq!(harness.settings.mode, Mode::Agent);
+        if let Some(crew) = &harness.crew {
+            crew.shutdown().await;
+        }
     }
 
     /// A session is named by its first message's start until the user

@@ -145,9 +145,11 @@ pub enum Request {
     /// conversation goes on in the new mode. `workspace` is the folder an
     /// agent works in (`None`: the one it worked in before, which a chat
     /// that never was an agent's doesn't have). Refused while workers run,
-    /// while their news hasn't reached the agent, and (to Chat) while
-    /// background jobs run: the session closes, and [`Engine::run`] ends
-    /// with [`RunEnd::Reopen`], for the front end to open it again.
+    /// while their news or what the user typed hasn't reached the agent,
+    /// and (to Chat) while background jobs run: the session closes, and
+    /// [`Engine::run`] ends with [`RunEnd::Reopen`], for the front end to
+    /// open it again. Its web page stops with it: open it again with
+    /// `Options::remote` to serve the page.
     SwitchMode {
         to: crate::session::Mode,
         workspace: Option<PathBuf>,
@@ -229,7 +231,7 @@ pub enum RunEnd {
     Quit,
     /// The session switched between Chat and Agent ([`Request::SwitchMode`])
     /// and closed: open it again ([`SessionChoice::Resume`]) to go on in its
-    /// new mode.
+    /// new mode, with `Options::remote` for its web page.
     Reopen,
 }
 
@@ -790,6 +792,7 @@ impl Engine {
             edited: None,
             cut_back: None,
             refresh_turn: false,
+            only_workers: false,
             images: Default::default(),
             pending_images: Vec::new(),
             pending_refs: Vec::new(),

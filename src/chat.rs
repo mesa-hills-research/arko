@@ -20,10 +20,12 @@ pub fn config(settings: &AgentSettings) -> Result<AgentConfig, String> {
     .instructions(instructions(settings.chat_instructions))
     .tool_config(AgentToolConfig::chat())
     .environment_details_config(environment())
+    // A summary in text, also in Claude Code (whose own compaction is for
+    // agents that work).
     .handover(agents::handover(
         settings.main,
         settings.main.handover_at.unwrap_or(settings.handover_at),
-        settings.cc_compact,
+        false,
     ));
     if settings.main.in_claude_code() {
         builder = builder.claude_code(settings.providers.claude_code.clone());
@@ -59,5 +61,32 @@ fn environment() -> EnvironmentDetailsConfig {
         current_datetime: detail.clone(),
         operating_system: detail,
         ..EnvironmentDetailsConfig::default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agents::{Effort, ModelSettings};
+
+    /// A chat in Claude Code writes its summary in text at the handover
+    /// size, as every chat does: it isn't compacted.
+    #[test]
+    fn a_chat_in_claude_code_hands_over_with_a_summary() {
+        let opus = ModelSettings {
+            model: crate::providers::model_name(&agents::resolve_model("cc:opus").unwrap()),
+            effort: Effort::High,
+            fast: false,
+            cache_1h: false,
+            handover_at: None,
+        };
+        let settings = AgentSettings {
+            cc_compact: true,
+            mode: crate::session::Mode::Chat,
+            ..AgentSettings::for_test(&opus, &opus)
+        };
+        let config = config(&settings).unwrap();
+        assert!(config.runs_in_claude_code());
+        assert!(!agents::compacts(&config));
     }
 }
