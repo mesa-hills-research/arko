@@ -370,8 +370,10 @@ pub struct WorkerSummary {
     /// Its report, once it finished.
     pub report: Option<String>,
     /// How long its runs that ended ran, in milliseconds. That's the time it
-    /// worked (not the time it waited), in all its runs, also those before
-    /// the session was opened again.
+    /// worked (not the time it waited) in the runs that ended or that Arko
+    /// stopped as it closed, also before the session was opened again. A
+    /// run going on when Arko ended without closing (a crash) isn't
+    /// counted.
     pub ran_ms: u64,
     /// While it runs, when its current run started (Unix milliseconds), to
     /// add to `ran_ms` ([`run_time_ms`](Self::run_time_ms)).

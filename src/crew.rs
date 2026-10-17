@@ -549,7 +549,7 @@ impl Crew {
                 crate::session::write_whole(&self.setup.session_dir.join(RUN_TIMES_FILE), &text)
             });
         if let Err(error) = written {
-            log::warn!("could not keep how long the workers ran: {error}");
+            log::warn!("could not keep how long the workers ran ({error})");
         }
     }
 

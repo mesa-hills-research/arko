@@ -148,7 +148,9 @@ pub(crate) const NO_CONVERSATION: &str = "Send a message first, then branch from
 /// settings, as the session's own `Request::Branch` with no message makes
 /// one. Replies the new session's ID. The session is held while it is
 /// read, so no one opens it meanwhile, and an open one is refused
-/// (`Locked`).
+/// (`Locked`). It reads every run the session saved, so call it off a UI
+/// thread. Workers the session had running when it closed stay with it,
+/// and the branch's conversation doesn't hear from them.
 pub fn branch(root: &Path, id: &str) -> Result<String, BranchError> {
     let session = Session::open(root, id).map_err(BranchError::Io)?;
     let locked = |error| match error {
@@ -264,8 +266,9 @@ pub(crate) fn write_branch(
     settings.created = Utc::now();
     settings.branched_from = Some(from.id.clone());
     settings.title = Some(format!("Branch of {title}"));
-    // A chat works in its own folder.
-    if settings.workspace == from.dir {
+    // A chat works in its own folder (also when named another way).
+    let real = |path: &Path| std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    if real(&settings.workspace) == real(&from.dir) {
         settings.workspace = session.dir.clone();
     }
     let written = session
