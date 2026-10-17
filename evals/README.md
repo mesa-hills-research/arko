@@ -1,6 +1,6 @@
 # Agent evals
 
-These scripts run Arko on a set of small coding tasks with several models and score each run from its saved session. They measure how models behave in Arko: whether the task got done, how long it took, which tools the agent used, and the moves it wasted.
+These scripts run Arko on a set of small coding tasks with several models and score each run from its saved session. They measure how models behave in Arko. The scores say whether the task got done, how long it took, which tools the agent used, and the moves it wasted.
 
 Each run works on a fresh copy of `project/`, a small Python spending tracker (`tally`) with a unittest suite and no dependencies. The tasks are in `tasks.py`, each with a prompt and a check:
 
@@ -39,4 +39,4 @@ python3 evals/score.py --failures ~/evals/runs/base       # also each run that f
 python3 evals/score.py --show ~/evals/runs/base/rename/luna-2   # one run's transcript
 ```
 
-The tables count, per model and task: successes, the median wall time, tool calls, failed calls, wasted moves (searches of the disk, index searches no index covers, file edits through the shell, files read again, changes nobody asked for), turns that ended before the work was done, and tokens. `score.py` writes `scores.jsonl` in each batch folder with the details of every run.
+The tables count successes per model and task, with the median wall time, tool calls, failed calls, wasted moves (searches of the disk, index searches no index covers, file edits through the shell, files read again, changes nobody asked for), turns that ended before the work was done, and tokens. `score.py` writes `scores.jsonl` in each batch folder with the details of every run.
