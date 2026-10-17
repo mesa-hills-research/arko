@@ -17,8 +17,8 @@ pub(crate) const SETTINGS_FILE: &str = "session.json";
 /// its settings, which the session rewrites while it runs.
 const TITLE_FILE: &str = "title";
 
-/// What a session is: an agent working in a folder with its tools and
-/// workers, or a chat with no tools.
+/// What a session is, an agent working in a folder with its tools and
+/// workers or a chat with no tools.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Mode {
@@ -330,8 +330,8 @@ pub fn latest_checkpoint_in(run: &Path) -> Option<PathBuf> {
     path.is_file().then_some(path)
 }
 
-/// The folder sessions and the input history are kept in: `ARKO_HOME`, or
-/// `arko` in the user's data directory.
+/// The folder sessions and the input history are kept in, which is
+/// `ARKO_HOME`, else `arko` in the user's data directory.
 pub fn data_root() -> Result<PathBuf, String> {
     if let Some(home) = std::env::var_os("ARKO_HOME").filter(|value| !value.is_empty()) {
         return Ok(PathBuf::from(home));
@@ -430,10 +430,11 @@ pub fn is_session_id(id: &str) -> bool {
         )
 }
 
-/// Who has a session open: the app, its process and machine, and since when.
+/// Who has a session open, with the app, its process and machine, and since
+/// when.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Holder {
-    /// The app's identity: `arko` (the command line), or the one an app
+    /// The app's identity, `arko` for the command line, or the one an app
     /// gave ([`Options::app`](crate::Options::app)).
     pub app: String,
     /// The app's name, as people read it ("Arko in a terminal"). `None` in
@@ -469,8 +470,8 @@ impl Holder {
         }
     }
 
-    /// As the user reads it: "Arko in a terminal (process 41233), since
-    /// 14:02".
+    /// As the user reads it, such as "Arko in a terminal (process 41233),
+    /// since 14:02".
     pub fn describe(&self) -> String {
         // (Holder files written before the name was kept have the app's
         // identity alone.)

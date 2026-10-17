@@ -52,19 +52,18 @@ pub enum Input {
     Line(String),
     /// Ctrl-C.
     Interrupt,
-    /// The end of standard input, or of the terminal: Arko quits.
+    /// The end of standard input, or of the terminal, and Arko quits.
     Eof,
-    /// The full-screen view quits (Ctrl+D, Ctrl+C twice, /exit). With
-    /// `Some`, it asks about background jobs: those listed are the ones the
-    /// user agreed to stop (in the quit popup). `None`: the user turned
-    /// asking off.
+    /// The full-screen view quits (Ctrl+D, Ctrl+C twice, /exit). `Some`
+    /// lists the background jobs the user agreed to stop in the quit popup,
+    /// and `None` means the user turned asking off.
     Quit(Option<Vec<uuid::Uuid>>),
-    /// Ctrl+B in the full-screen view: the shell command this agent runs
+    /// Ctrl+B in the full-screen view. The shell command this agent runs
     /// (the main agent, or a worker by its ID) moves to the background.
     Background(String),
-    /// A message from an app: a turn when the agent is idle, a note while it
-    /// works, a command when it is one. Unlike a line, it is whole: it isn't
-    /// joined with what comes right after it.
+    /// A message from an app. It starts a turn when the agent is idle, is a
+    /// note while it works, and runs as a command when it is one. Unlike a
+    /// line, it is whole and isn't joined with what comes right after it.
     Message(Message),
     /// The answer to the agent's question `question` (the ID the feed gave
     /// it).
@@ -78,21 +77,23 @@ pub enum Input {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Message {
     pub text: String,
-    /// Images to send with it (not yet: a message with images is refused).
+    /// Images to send with it. The message isn't sent when the main agent's
+    /// model takes no images or not their type
+    /// ([`image_refusal`](crate::models::image_refusal)).
     pub images: Vec<Attachment>,
 }
 
-/// A file attached to a message: its bytes, its type, and its name.
+/// A file attached to a message, with its bytes, its type and its name.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Attachment {
     pub bytes: std::sync::Arc<[u8]>,
-    /// Its MIME type: `image/png`.
+    /// Its MIME type, such as `image/png`.
     pub mime: String,
     pub name: Option<String>,
 }
 
-/// What quitting would stop, for the front end to ask about first: the
-/// background jobs and the workers running.
+/// What quitting would stop (the background jobs and the workers running),
+/// for the front end to ask about first.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QuitAsk {
     pub jobs: Vec<arko_agents::terminal::BackgroundJob>,

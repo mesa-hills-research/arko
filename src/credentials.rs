@@ -111,12 +111,17 @@ fn lookup(name: &str) -> Option<(String, Source)> {
     current().lookup(name)
 }
 
-/// Where a session's settings and keys are looked up, in this order: what
-/// was entered in this process for its Arko folder (the setup screen, the
-/// keys menu, an app's accounts), the process's environment, the nearest
-/// `.env` in the session's folder or a parent, the `.env` beside Arko's
-/// program, and the one in Arko's folder, where keys are saved. The files
-/// are read once, as the `Env` is made.
+/// Where a session's settings and keys are looked up. The first place that
+/// sets one wins, in this order:
+///
+/// 1. What was entered in this process for its Arko folder (the setup
+///    screen, the keys menu, an app's accounts).
+/// 2. The process's environment.
+/// 3. The nearest `.env` in the session's folder or a parent.
+/// 4. The `.env` beside Arko's program.
+/// 5. The `.env` in Arko's folder, where keys are saved.
+///
+/// The files are read once, as the `Env` is made.
 #[derive(Debug, Clone, Default)]
 pub struct Env {
     /// The settings in the files, each with the first file that sets it.
@@ -138,7 +143,7 @@ impl Env {
     }
 
     /// As [`for_folder`](Self::for_folder), with Arko's folder `root` (an
-    /// app's, or [`Options::root`](crate::Options::root)): its `.env` is
+    /// app's, or [`Options::root`](crate::Options::root)). Its `.env` is
     /// read last, and keys are saved there.
     pub fn for_folder_in(folder: Option<&Path>, beside_binary: bool, root: Option<&Path>) -> Env {
         let program = beside_binary
@@ -222,7 +227,7 @@ impl Env {
         }
     }
 
-    /// A setting, if it is set: see [`var`].
+    /// A setting's value, if one of the places this looks in sets it.
     pub fn var(&self, name: &str) -> Option<String> {
         self.lookup(name).map(|(value, _)| value)
     }
@@ -303,8 +308,8 @@ pub fn current() -> Env {
         .clone()
 }
 
-/// Reads settings and keys from `env` from now on: the session's, once it is
-/// known.
+/// Reads settings and keys from `env` from now on, such as the session's
+/// once it is known.
 pub fn use_env(env: Env) {
     if !crate::context::set_env(&env) {
         *CURRENT.lock().unwrap() = Some(env);
@@ -468,12 +473,13 @@ pub enum LoginState {
     Ready,
     /// There is no file there.
     Missing,
-    /// The file is there but holds no login Arko can use: why.
+    /// The file is there but holds no login Arko can use, and the text says
+    /// why.
     Invalid(String),
 }
 
-/// The ChatGPT login: its Codex auth.json, where Arko takes it from, and
-/// whether it works.
+/// The ChatGPT login, with its Codex auth.json, where Arko takes it from,
+/// and whether it works.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChatGptLogin {
     /// `None` when no file is set and Codex's own folder isn't known.
@@ -482,8 +488,8 @@ pub struct ChatGptLogin {
     pub state: LoginState,
 }
 
-/// The ChatGPT login Arko uses: one entered in this process, else `flag`
-/// (`--codex-auth`), else ARKO_CODEX_AUTH, else Codex's own.
+/// The ChatGPT login Arko uses. That is the one entered in this process,
+/// else `flag` (`--codex-auth`), else ARKO_CODEX_AUTH, else Codex's own.
 pub fn chatgpt_login(flag: Option<&Path>) -> ChatGptLogin {
     let (path, source) = if let Some(path) = entered(CODEX_AUTH) {
         (Some(PathBuf::from(path)), LoginSource::Entered)
@@ -509,9 +515,9 @@ pub fn chatgpt_login(flag: Option<&Path>) -> ChatGptLogin {
 }
 
 /// Uses the Codex auth.json at `path` as the ChatGPT login from now on,
-/// for the sessions of Arko's folder `root`: in this process, and (saved as
-/// ARKO_CODEX_AUTH in its .env) in later ones, when it holds a login, else
-/// why not.
+/// for the sessions of Arko's folder `root`, in this process and (saved as
+/// ARKO_CODEX_AUTH in its .env) in later ones. Replies the login when the
+/// file holds one, else why not.
 pub fn set_chatgpt_login(root: &Path, path: &Path) -> Result<ChatGptLogin, String> {
     let env = Env::for_folder_in(None, true, Some(root));
     let path = std::path::absolute(path).map_err(|error| error.to_string())?;
@@ -553,10 +559,10 @@ pub enum Need {
     Any,
     /// The model needs an Anthropic API key.
     AnthropicKey { model: String },
-    /// The model needs a ChatGPT login; `problem` says what failed.
+    /// The model needs a ChatGPT login, and `problem` says what failed.
     ChatGptLogin { model: String, problem: String },
-    /// The model needs an OpenAI API key: the session reaches OpenAI models
-    /// with one.
+    /// The model needs an OpenAI API key, since the session reaches OpenAI
+    /// models with one.
     OpenAiKey { model: String },
     /// The model needs a Google Gemini API key.
     GeminiKey { model: String },
@@ -613,15 +619,15 @@ pub fn can_ask() -> bool {
     std::io::stdin().is_terminal() && std::io::stdout().is_terminal()
 }
 
-/// An API key Arko takes: on the setup screen and in the keys menu.
+/// An API key Arko takes on the setup screen and in the keys menu.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Key {
-    /// The provider, as the keys menu names it: "Anthropic".
+    /// The provider, as the keys menu names it ("Anthropic").
     pub provider: &'static str,
-    /// The provider as `/keys add` takes it: "anthropic".
+    /// The provider as `/keys add` takes it ("anthropic").
     pub id: &'static str,
     pub name: &'static str,
-    /// What it is, with its article: "an Anthropic API key".
+    /// What it is, with its article ("an Anthropic API key").
     pub what: &'static str,
     /// Where to get one.
     pub from: &'static str,
@@ -690,8 +696,8 @@ pub fn key_named(word: &str) -> Option<&'static Key> {
 /// Where the key in use comes from, as the keys menu says it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KeySource {
-    /// Arko's own `.env`, at this path: saved there on the setup screen or in
-    /// the keys menu.
+    /// Arko's own `.env`, at this path, where the setup screen and the keys
+    /// menu save keys.
     Arko(PathBuf),
     /// Arko's environment.
     Environment,
@@ -703,16 +709,17 @@ pub enum KeySource {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeyState {
     pub key: &'static Key,
-    /// The key in use, masked ([`masked`]); `None` when none is set.
+    /// The key in use, masked as its prefix and its last four characters
+    /// (`sk-…wxyz`), or `None` when none is set.
     pub masked: Option<String>,
-    /// The variable it is read from: GOOGLE_API_KEY for a Gemini key under
-    /// its older name.
+    /// The variable it is read from, such as GOOGLE_API_KEY for a Gemini key
+    /// under its older name.
     pub variable: &'static str,
     pub source: Option<KeySource>,
 }
 
 impl KeyState {
-    /// Whether the keys menu can remove it: Arko saved it.
+    /// Whether the keys menu can remove it, which it can when Arko saved it.
     #[cfg(feature = "tui")]
     pub fn removable(&self) -> bool {
         matches!(self.source, Some(KeySource::Arko(_)))

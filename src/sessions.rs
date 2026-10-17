@@ -278,8 +278,8 @@ pub(crate) fn write_branch(
     Ok(session.id)
 }
 
-/// Gives the session `id` the name `title` (empty: back to its
-/// conversation's). An open session takes it too, told so through its
+/// Gives the session `id` the name `title`, or back its conversation's when
+/// `title` is empty. An open session takes it too, told so through its
 /// requests (`Request::Rename`).
 pub fn rename(root: &Path, id: &str, title: &str) -> Result<(), String> {
     Session::open(root, id)?.rename(title)
@@ -293,7 +293,7 @@ pub fn holder(root: &Path, id: &str) -> Option<Holder> {
     session::holder(&root.join("sessions").join(id))
 }
 
-/// What deleting a session leaves: its workers' worktrees with changes
+/// What deleting a session leaves. Its workers' worktrees with changes
 /// that aren't committed stay (with their branches), and the clean ones go.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct DeletePlan {
@@ -349,11 +349,11 @@ pub fn delete_plan(root: &Path, id: &str) -> Result<DeletePlan, DeleteError> {
     Ok(plan)
 }
 
-/// Deletes the session `id`: its folder, but not its workers' worktrees
-/// with uncommitted changes, which stay in place (and registered with
-/// their repository), nor any branch. The clean worktrees are removed as
-/// git removes them (`git worktree remove`, never forced). The workspace is
-/// left alone. A session open anywhere isn't deleted.
+/// Deletes the session `id`, which removes its folder. Its workers'
+/// worktrees with uncommitted changes stay in place (and registered with
+/// their repository), and so do all branches. The clean worktrees are
+/// removed as git removes them (`git worktree remove`, never forced). The
+/// workspace is left alone. A session open anywhere isn't deleted.
 pub fn delete(root: &Path, id: &str) -> Result<Deleted, DeleteError> {
     let session = Session::open(root, id).map_err(DeleteError::Io)?;
     // A link to a folder elsewhere isn't the session's own folder: what is

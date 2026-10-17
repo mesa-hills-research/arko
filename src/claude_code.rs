@@ -70,8 +70,8 @@ impl Ready {
         }
     }
 
-    /// A warning when it doesn't sign in with a Claude plan: then its calls
-    /// may be billed, which Arko doesn't count.
+    /// A warning when it doesn't sign in with a Claude plan, since its calls
+    /// may then be billed, which Arko doesn't count.
     pub fn warning(&self) -> Option<String> {
         let method = self.method.as_deref()?;
         (method != "claude.ai").then(|| {
@@ -227,8 +227,8 @@ fn find_in(folders: impl IntoIterator<Item = PathBuf>) -> Option<PathBuf> {
         .find(|candidate| candidate.is_file())
 }
 
-/// Where Claude Code's installers put `claude`, besides the PATH: the
-/// native installer's `~/.local/bin` and `~/.claude/local`, npm's global
+/// Where Claude Code's installers put `claude` besides the PATH, which are
+/// the native installer's `~/.local/bin` and `~/.claude/local`, npm's global
 /// folders, Homebrew's and Bun's. An app started from a desktop doesn't get
 /// the PATH a shell sets up, so it looks there too.
 pub fn install_dirs() -> Vec<PathBuf> {
@@ -293,8 +293,8 @@ pub fn find_installed() -> Option<PathBuf> {
 /// puts its folder first on this process's PATH, so the sessions (and the
 /// programs they start) find it as a shell would. Returns the folder added.
 ///
-/// It changes the process's environment: call it before any other thread
-/// starts (an app, first thing in `main`).
+/// It changes the process's environment, so call it before any other
+/// thread starts (in an app, first thing in `main`).
 pub fn add_to_path() -> Option<PathBuf> {
     if find_cli().is_some() {
         return None;
@@ -325,8 +325,8 @@ pub struct ClaudeCodeStatus {
     pub ready: Result<Ready, Problem>,
 }
 
-/// Claude Code: where it is, its version, and whether it is signed in.
-/// Runs `claude` twice (up to 15 s each): call it off a UI thread.
+/// Where Claude Code is, its version, and whether it is signed in. It runs
+/// `claude` twice (up to 15 s each), so call it off a UI thread.
 pub fn status() -> ClaudeCodeStatus {
     let on_path = find_cli();
     let path = on_path.clone().or_else(|| find_in(install_dirs()));
