@@ -17,11 +17,22 @@ use crate::ui::Output;
 /// and the notes still go to standard error.
 pub(crate) struct TerminalPrompter {
     can_ask: bool,
+    /// The Ctrl-Cs from the time the workflow loads, for the session.
+    interrupts: std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<()>>>,
 }
 
 impl TerminalPrompter {
     pub(crate) fn new(can_ask: bool) -> Self {
-        Self { can_ask }
+        Self {
+            can_ask,
+            interrupts: std::sync::Mutex::new(None),
+        }
+    }
+
+    /// The Ctrl-Cs since the workflow started loading, and those to come:
+    /// the session's interrupts. `None` when it didn't get there.
+    pub(crate) fn take_interrupts(&self) -> Option<tokio::sync::mpsc::UnboundedReceiver<()>> {
+        crate::lock(&self.interrupts).take()
     }
 }
 
@@ -47,6 +58,21 @@ impl Prompter for TerminalPrompter {
 
     fn session_found(&self, dir: &Path) {
         crate::cli::start_log(dir);
+    }
+
+    /// From now on a Ctrl-C (when the line editor isn't reading: in raw
+    /// mode it reads Ctrl-C as a key) waits for the session: a turn it
+    /// restarts stops, as one the user starts would.
+    fn opening(&self) {
+        let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            while tokio::signal::ctrl_c().await.is_ok() {
+                if sender.send(()).is_err() {
+                    break;
+                }
+            }
+        });
+        *crate::lock(&self.interrupts) = Some(receiver);
     }
 }
 

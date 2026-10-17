@@ -398,16 +398,16 @@ pub(crate) async fn run(args: Args) -> Result<ExitCode, String> {
     let options = args.options()?;
     let one_shot = options.one_shot;
     let prompter = Arc::new(TerminalPrompter::new(can_ask));
-    let (mut engine, seam) = Engine::open(options, prompter)
+    let (mut engine, seam) = Engine::open(options, prompter.clone())
         .await
         .map_err(|error| error.to_string())?;
     let output = engine.output();
-    {
-        // Ctrl-C when the line editor isn't reading (in raw mode it reads
-        // Ctrl-C as a key).
+    // A Ctrl-C since the workflow started loading (when the line editor
+    // isn't reading: in raw mode it reads Ctrl-C as a key) is the session's.
+    if let Some(mut interrupts) = prompter.take_interrupts() {
         let sender = seam.input.clone();
         tokio::spawn(async move {
-            while tokio::signal::ctrl_c().await.is_ok() {
+            while interrupts.recv().await.is_some() {
                 if sender.send(Input::Interrupt).is_err() {
                     break;
                 }

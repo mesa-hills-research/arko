@@ -240,8 +240,10 @@ pub struct Running {
     /// The session opened (its seam, to show it and send it input), or why
     /// it didn't.
     pub opened: oneshot::Receiver<Result<Seam, OpenError>>,
-    /// How it ended, once it has shut down and its threads are gone. (It
-    /// fails when the session didn't open.)
+    /// How it ended, once it has shut down: its lock is released and its
+    /// runtime stopped, and its threads end within 2 s (a thread still
+    /// blocked then is left to end on its own). It fails when the session
+    /// didn't open.
     pub ended: oneshot::Receiver<RunEnd>,
 }
 
@@ -818,6 +820,7 @@ impl Engine {
         }
         // Before the workflow opens: it may restart a worker that hadn't started.
         harness.give_workers_project();
+        prompter.opening();
         harness.open(!new)?;
         harness.import_seed().await?;
         harness.start_new_workers();
@@ -999,6 +1002,53 @@ mod tests {
     /// The tests that open a session without a context of its own, one at a
     /// time (a process has one such session).
     static ALONE_TESTS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    /// A front end hears when the session's workflow starts loading, after
+    /// its questions: a terminal takes Ctrl-C for the session from then on.
+    #[tokio::test]
+    async fn the_front_end_hears_when_the_workflow_loads() {
+        struct Hearing(Arc<std::sync::atomic::AtomicBool>);
+        #[async_trait::async_trait]
+        impl Prompter for Hearing {
+            async fn need_credentials(&self, need: &credentials::Need) -> Result<(), String> {
+                Err(need.message())
+            }
+            async fn approve_project_mcp(
+                &self,
+                _approval: &crate::prompter::McpApproval,
+            ) -> Result<Option<bool>, String> {
+                Ok(None)
+            }
+            fn note(&self, _level: crate::remote::Level, _text: &str) {}
+            fn opening(&self) {
+                self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let (server, _bodies) = counting_server().await;
+        let heard = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let project = temp.path().join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        let running = spawn(
+            Options {
+                root: Some(temp.path().join("arko")),
+                workspace: Some(project),
+                model: Some("luna".into()),
+                openai_auth: Some(OpenAiAuth::ApiKey),
+                cache_1h: Some(false),
+                client: Some(GivenClient(Arc::new(server.client()))),
+                ..Options::default()
+            },
+            Arc::new(Hearing(heard.clone())),
+        );
+        let seam = tokio::time::timeout(Duration::from_secs(30), running.opened)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(heard.load(std::sync::atomic::Ordering::SeqCst));
+        quit(seam, running.ended).await;
+    }
 
     /// A reply streamed in a burst (more pieces than the workflow's
     /// broadcast of events holds) reaches the feed whole: none of it is
@@ -1367,14 +1417,13 @@ mod tests {
             .expect("the sessions' threads end");
         }
 
-        // The process's log tags each session's lines. (When another test
-        // installed a logger first, there is nothing to read here.)
-        if logging.is_ok() {
-            log::logger().flush();
-            let text = std::fs::read_to_string(&log).unwrap();
-            for id in [&first_seam.session.id, &second_seam.session.id] {
-                assert!(text.contains(&format!("] [{id}] ")), "{id}: {text}");
-            }
+        // The process's log tags each session's lines. (No other test
+        // installs a logger: one would have to read its own.)
+        logging.expect("the process's log is this test's");
+        log::logger().flush();
+        let text = std::fs::read_to_string(&log).unwrap();
+        for id in [&first_seam.session.id, &second_seam.session.id] {
+            assert!(text.contains(&format!("] [{id}] ")), "{id}: {text}");
         }
     }
 

@@ -34,6 +34,11 @@ pub trait Prompter: Send + Sync {
     /// The session's folder is known, before its agents, MCP servers and
     /// workflow start: the front end can start logging there.
     fn session_found(&self, _dir: &Path) {}
+
+    /// The session's workflow loads now (the questions are over): what the
+    /// user does from now on, until the session takes the front end's
+    /// input, is for the session (a terminal's Ctrl-C waits for it).
+    fn opening(&self) {}
 }
 
 /// A front end with no one to ask: missing credentials keep the session
