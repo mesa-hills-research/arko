@@ -206,6 +206,31 @@ fn turn_with_text(id: &str, text: &str, call: Option<(&str, Value)>) -> String {
         .collect()
 }
 
+/// A model turn whose reply streams in `pieces`, all at once: a burst.
+pub fn reply_in_pieces(id: &str, pieces: &[String]) -> String {
+    let text: String = pieces.concat();
+    let message = serde_json::json!({
+        "type": "message", "id": format!("msg_{id}"), "status": "completed", "role": "assistant",
+        "content": [{"type": "output_text", "text": text, "annotations": []}],
+    });
+    let mut stream = String::new();
+    for piece in pieces {
+        let delta = serde_json::json!({"type": "response.output_text.delta",
+            "item_id": format!("msg_{id}"), "output_index": 0, "delta": piece});
+        stream.push_str(&format!("data: {delta}\n\n"));
+    }
+    for event in [
+        serde_json::json!({"type": "response.output_item.done", "output_index": 0, "item": message}),
+        serde_json::json!({"type": "response.completed", "response": {
+            "id": format!("resp_{id}"), "object": "response", "created_at": 0,
+            "status": "completed", "model": "gpt-6-luna", "output": [],
+            "usage": {"input_tokens": 10, "output_tokens": 5}, "metadata": {}}}),
+    ] {
+        stream.push_str(&format!("data: {event}\n\n"));
+    }
+    stream
+}
+
 pub fn complete(id: &str, report: &str) -> String {
     tool_call(
         id,

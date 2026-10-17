@@ -534,7 +534,7 @@ impl Harness {
             .watch(&workflow, &configs[0], self.settings.openai_auth);
         let (control, controls) = mpsc::unbounded_channel();
         let task = tokio::spawn(ui::print_events(
-            workflow.subscribe_events(),
+            workflow.subscribe_events_lossless(),
             controls,
             self.output.clone(),
             self.stats.clone(),

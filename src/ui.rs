@@ -32,7 +32,7 @@ use rustyline::hint::Hinter;
 use rustyline::validate::{ValidationContext, ValidationResult, Validator};
 #[cfg(feature = "tui")]
 use rustyline::{ExternalPrinter, Helper};
-use tokio::sync::{broadcast, mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot};
 use uuid::Uuid;
 
 use crate::agents::MAIN;
@@ -471,13 +471,15 @@ pub enum Control {
     Flush(oneshot::Sender<()>),
 }
 
-/// Prints a workflow's events until its channel closes. Native worker runs
-/// use their r1, r2, ... handles in the terminal and remote feed. With
-/// `text_replies` (the main agent ends its turns with a reply in plain
-/// text), its text is held until it proves to be progress or its reply.
+/// Prints a workflow's events until the workflow is gone, every one of them
+/// however far behind it falls (a burst of streamed text arrives joined in
+/// fewer pieces). Native worker runs use their r1, r2, ... handles in the
+/// terminal and remote feed. With `text_replies` (the main agent ends its
+/// turns with a reply in plain text), its text is held until it proves to
+/// be progress or its reply.
 #[allow(clippy::too_many_arguments)]
 pub async fn print_events(
-    mut events: broadcast::Receiver<WorkflowEvent>,
+    mut events: arko_workflows::EventReceiver,
     mut control: mpsc::UnboundedReceiver<Control>,
     output: Arc<Output>,
     stats: Arc<Mutex<Stats>>,
@@ -492,7 +494,7 @@ pub async fn print_events(
         tokio::select! {
             biased;
             event = events.recv() => match event {
-                Ok(event) => {
+                Some(event) => {
                     let label = if event.agent_name == MAIN {
                         None
                     } else {
@@ -517,13 +519,7 @@ pub async fn print_events(
                     }
                     printer.event(event);
                 }
-                Err(broadcast::error::RecvError::Lagged(missed)) => {
-                    printer.output.echo(&printer.output.dim(&format!("  ({missed} events not shown)")));
-                    if let Some(feed) = &feed {
-                        feed.missed(missed);
-                    }
-                }
-                Err(broadcast::error::RecvError::Closed) => break,
+                None => break,
             },
             request = control.recv() => match request {
                 Some(Control::Flush(done)) => {

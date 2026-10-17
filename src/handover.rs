@@ -31,7 +31,7 @@ use arko_agents::runtime::event::AgentEvent;
 use arko_agents::task::TaskState;
 use arko_agents::{HandoverThreshold, UserCommand};
 use arko_workflows::prelude::*;
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use crate::agents::{self, MAIN};
@@ -382,14 +382,12 @@ impl Handover {
         );
         self.compacts
             .store(agents::compacts(main), Ordering::SeqCst);
-        let mut events = workflow.subscribe_events();
+        let mut events = workflow.subscribe_events_lossless();
         let handover = Arc::downgrade(self);
         let task = tokio::spawn(async move {
             loop {
-                let event = match events.recv().await {
-                    Ok(event) => event,
-                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
-                    Err(broadcast::error::RecvError::Closed) => break,
+                let Some(event) = events.recv().await else {
+                    break;
                 };
                 let Some(handover) = handover.upgrade() else {
                     break;

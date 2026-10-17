@@ -1000,6 +1000,54 @@ mod tests {
     /// time (a process has one such session).
     static ALONE_TESTS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
+    /// A reply streamed in a burst (more pieces than the workflow's
+    /// broadcast of events holds) reaches the feed whole: none of it is
+    /// lost however far behind the feed falls.
+    #[tokio::test]
+    async fn a_burst_of_streamed_text_reaches_the_feed_whole() {
+        let temp = tempfile::tempdir().unwrap();
+        let pieces: Vec<String> = (0..20_000).map(|n| format!("{} ", n % 10)).collect();
+        let whole: String = pieces.concat();
+        let server = ModelServer::start(Arc::new({
+            let pieces = pieces.clone();
+            move |_, _body: String| {
+                let stream = crate::mock_model::reply_in_pieces("burst", &pieces);
+                Box::pin(async move { stream })
+            }
+        }))
+        .await;
+        let (root, project) = (temp.path().join("arko"), temp.path().join("project"));
+        let (seam, ended) = open_app(&root, &project, &server, SessionChoice::New).await;
+        seam.input
+            .send(Input::Message(app_message("Count.")))
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(60), async {
+            while !seam
+                .feed
+                .subscribe()
+                .0
+                .items
+                .iter()
+                .any(|item| item.kind == Kind::Reply)
+            {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap();
+        idle(&seam).await;
+        let items = seam.feed.subscribe().0.items;
+        let reply = items.iter().find(|item| item.kind == Kind::Reply).unwrap();
+        assert_eq!(reply.text.trim(), whole.trim());
+        assert!(
+            !items
+                .iter()
+                .any(|item| item.text.contains("events not shown")),
+            "nothing missed"
+        );
+        quit(seam, ended).await;
+    }
+
     /// A new session's workers can hand over at a size of their own, which
     /// the session keeps and a resume sets again.
     #[tokio::test]
