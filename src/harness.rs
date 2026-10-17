@@ -1244,14 +1244,15 @@ impl Harness {
         if self.shows_page_links {
             // The page's clients read the transcript too: where it serves,
             // without the key.
-            let mut lines = vec![format!(
-                "The web page is served. Its links, with the session's key, are in {}:",
-                self.app_name
-            )];
+            let mut lines = vec!["The web page is served at these addresses.".to_string()];
             lines.extend(links.iter().map(|link| {
                 let address = link.url.split('#').next().unwrap_or_default();
                 format!("  {address}")
             }));
+            lines.push(format!(
+                "Its links, with the session's key, are in {}.",
+                self.app_name
+            ));
             out.line(&lines.join("\n"));
             return;
         }
@@ -1309,6 +1310,15 @@ impl Harness {
             out.line("The web page isn't on. /remote starts it.");
             return;
         };
+        // The page's clients read the transcript too, and the link and its
+        // code hold the key.
+        if self.shows_page_links {
+            out.line(&format!(
+                "The web page's links and QR codes are in {}.",
+                self.app_name
+            ));
+            return;
+        }
         let key = match self.remote_key(false) {
             Ok(key) => key,
             Err(error) => {

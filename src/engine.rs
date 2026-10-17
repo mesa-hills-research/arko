@@ -1165,18 +1165,52 @@ mod tests {
             page.links[0].url.contains("#key="),
             "the app gets the links"
         );
-        let said: Vec<String> = seam
-            .feed
-            .subscribe()
-            .0
-            .items
-            .into_iter()
-            .map(|item| item.text)
-            .collect();
-        assert!(said.iter().all(|text| !text.contains("#key=")), "{said:?}");
+        let said = || -> Vec<String> {
+            seam.feed
+                .subscribe()
+                .0
+                .items
+                .into_iter()
+                .map(|item| item.text)
+                .collect()
+        };
         assert!(
-            said.iter().any(|text| text.contains("are in Notes")),
-            "{said:?}"
+            said().iter().all(|text| !text.contains("#key=")),
+            "{:?}",
+            said()
+        );
+        assert!(
+            said().iter().any(|text| text.contains("are in Notes")),
+            "{:?}",
+            said()
+        );
+        // Nor do the commands that show the links and their codes, typed
+        // in the app.
+        for command in ["/remote", "/remote qr", "/remote qr lo", "/remote new-key"] {
+            let before = said().len();
+            seam.input
+                .send(Input::Message(app_message(command)))
+                .unwrap();
+            tokio::time::timeout(Duration::from_secs(10), async {
+                while said().len() <= before {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .unwrap();
+            idle(&seam).await;
+            assert!(
+                said().iter().all(|text| !text.contains("#key=")),
+                "{command}: {:?}",
+                said()
+            );
+        }
+        assert!(
+            said()
+                .iter()
+                .any(|text| text == "The web page's links and QR codes are in Notes."),
+            "{:?}",
+            said()
         );
         quit(seam, running.ended).await;
     }
