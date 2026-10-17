@@ -65,11 +65,6 @@ node --test src/remote/page-tests/core.test.js
 
 The tests run against a mock model server, so they need no API keys.
 
-## Docs
-
-- [What Arko needs from arko_framework](docs/arko-framework-gaps.md) lists where Arko works around
-  the framework, and the changes that would remove each workaround.
-
 ## License
 
 Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or
