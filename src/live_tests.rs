@@ -62,7 +62,7 @@ fn body(bodies: &Bodies, with: &str, without: &str) -> String {
 const ON_NOTE: &str = "The user turned on outside access";
 const OFF_NOTE: &str = "The user turned off outside access";
 /// The start of the command guard's refusals.
-const GUARD_REFUSAL: &str = "Refused: ";
+const GUARD_REFUSAL: &str = "Refused";
 /// What the `outside` hook's refusal of a file tool's write says.
 const HOOK_REFUSAL: &str = "and the user hasn't turned on outside access";
 

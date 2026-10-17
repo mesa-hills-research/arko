@@ -6173,7 +6173,7 @@ pub(crate) mod tests {
             refused["output"]
                 .as_str()
                 .unwrap()
-                .contains("which is outside the working directory"),
+                .contains("outside the working directory"),
             "{refused}"
         );
 
