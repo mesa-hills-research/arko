@@ -518,29 +518,35 @@ pub fn whose(argument: &str) -> (Whose, &str) {
 pub fn parse_tokens(text: &str) -> Result<usize, String> {
     let text = text.trim();
     let invalid = || format!("`{text}` isn't a number of tokens, such as 200000, 200k or 1.2M.");
-    let digits: String = text.chars().filter(|c| !matches!(c, ',' | '_')).collect();
-    let (digits, scale): (&str, u128) = match digits.strip_suffix(['k', 'K']) {
-        Some(digits) => (digits, 1_000),
-        None => match digits.strip_suffix(['m', 'M']) {
-            Some(digits) => (digits, 1_000_000),
-            None => (digits.as_str(), 1),
+    let (number, places): (&str, usize) = match text.strip_suffix(['k', 'K']) {
+        Some(number) => (number, 3),
+        None => match text.strip_suffix(['m', 'M']) {
+            Some(number) => (number, 6),
+            None => (text, 0),
         },
     };
-    let (whole, fraction) = digits.split_once('.').unwrap_or((digits, ""));
-    let all_digits = |part: &str| part.chars().all(|c| c.is_ascii_digit());
-    if whole.is_empty() || !all_digits(whole) || !all_digits(fraction) || fraction.len() > 9 {
+    let (whole, fraction) = number.split_once('.').unwrap_or((number, ""));
+    let digits = |part: &str| !part.is_empty() && part.chars().all(|c| c.is_ascii_digit());
+    // `,` and `_` only between groups of three digits of the whole part.
+    let groups: Vec<&str> = whole.split([',', '_']).collect();
+    if !groups.iter().all(|group| digits(group)) || !(fraction.is_empty() || digits(fraction)) {
         return Err(invalid());
     }
+    if groups.len() > 1 && (groups[0].len() > 3 || groups[1..].iter().any(|group| group.len() != 3))
+    {
+        return Err(format!(
+            "`{text}` isn't a number of tokens. Use , or _ only between groups of three digits, and a point for decimals, as in 1.2M."
+        ));
+    }
     // In whole tokens: `1.2M` is 1,200,000, `1.2345k` isn't whole.
-    let places = 10u128.pow(fraction.len() as u32);
-    let number = format!("{whole}{fraction}")
-        .parse::<u128>()
-        .map_err(|_| invalid())?;
-    let scaled = number.checked_mul(scale).ok_or_else(invalid)?;
-    if scaled % places != 0 {
+    let fraction = fraction.trim_end_matches('0');
+    if fraction.len() > places {
         return Err(format!("`{text}` isn't a whole number of tokens."));
     }
-    let tokens = usize::try_from(scaled / places).map_err(|_| invalid())?;
+    let number = format!("{}{fraction:0<places$}", groups.concat())
+        .parse::<u128>()
+        .map_err(|_| invalid())?;
+    let tokens = usize::try_from(number).map_err(|_| invalid())?;
     if tokens < MIN_TOKENS {
         return Err(format!(
             "{tokens} tokens is too small, because an agent's fresh conversation would start near it. Give at least {MIN_TOKENS}."
@@ -600,6 +606,28 @@ mod tests {
                 .contains("whole number")
         );
         assert!(parse_tokens("1.5").unwrap_err().contains("whole number"));
+        assert!(
+            parse_tokens("1.0000000001M")
+                .unwrap_err()
+                .contains("whole number")
+        );
+        assert_eq!(parse_tokens("1.0000000000M"), Ok(1_000_000));
+        assert_eq!(parse_tokens("20000.0"), Ok(20_000));
+        assert_eq!(parse_tokens("1.M"), Ok(1_000_000));
+        // Separators only between groups of three digits.
+        for text in ["1,2M", "1_2M", "9,50k", "1,0000k"] {
+            assert!(
+                parse_tokens(text)
+                    .unwrap_err()
+                    .contains("a point for decimals"),
+                "{text}"
+            );
+        }
+        for text in [",950k", "950k,", "1,,000,000", "1.2,5M", "950 k"] {
+            assert!(parse_tokens(text).is_err(), "{text}");
+        }
+        assert_eq!(parse_tokens("1_000_000"), Ok(1_000_000));
+        assert_eq!(parse_tokens("1,234.5k"), Ok(1_234_500));
         assert!(parse_tokens(".5M").is_err());
         assert!(parse_tokens("1.2.3M").is_err());
         assert!(parse_tokens("M").is_err());
