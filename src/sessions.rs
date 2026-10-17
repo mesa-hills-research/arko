@@ -19,9 +19,9 @@ pub use crate::session::{Holder, Mode, data_root};
 pub struct SessionEntry {
     pub id: String,
     pub dir: PathBuf,
-    /// Its name: the one the user gave it, else its current conversation's
-    /// (the first line of its first message), else "New session" (or "New
-    /// chat").
+    /// Its name. That's the one the user gave it, else a branch's ("Branch
+    /// of …"), else its current conversation's (the first line of its first
+    /// message), else "New session" (or "New chat").
     pub title: String,
     pub mode: Mode,
     /// Where its agents work, or `None` for a chat.
@@ -80,10 +80,10 @@ pub fn list(root: &Path) -> Vec<SessionEntry> {
     entries
 }
 
-/// The name of `session`, with its `conversations` and `settings`: the one
-/// the user gave it, else its current conversation's (the first line of
-/// its first message), else the one its settings keep, else "New session"
-/// (or "New chat").
+/// The name of `session`, with its `conversations` and `settings`. That's
+/// the one the user gave it, else a branch's ("Branch of …"), else its
+/// current conversation's (the first line of its first message), else the
+/// one its settings keep, else "New session" (or "New chat").
 pub(crate) fn title(
     session: &Session,
     conversations: &Conversations,
@@ -91,6 +91,12 @@ pub(crate) fn title(
 ) -> String {
     session
         .renamed()
+        .or_else(|| {
+            settings
+                .title
+                .clone()
+                .filter(|_| settings.branched_from.is_some())
+        })
         .or_else(|| {
             conversations
                 .current

@@ -2639,6 +2639,14 @@ mod tests {
                 .exists()
         );
 
+        // Opened, it keeps its name.
+        let entry = |id: &str| {
+            crate::sessions::list(&root)
+                .into_iter()
+                .find(|entry| entry.id == id)
+                .unwrap()
+        };
+        assert_eq!(entry(&branch).title, "Branch of One.");
         // Opened again, it goes on from its own conversation.
         let (seam, ended) = open_branch().await;
         seam.input
@@ -3027,6 +3035,7 @@ mod tests {
         .await
         .unwrap();
         quit(seam, running.ended).await;
+        let branch_id = branch.clone();
         let running = spawn(
             Options {
                 root: Some(temp.path().join("arko")),
@@ -3066,6 +3075,19 @@ mod tests {
         );
         assert!(!again.contains("Branched.\n"));
         quit(seam, running.ended).await;
+        // The conversation is named by its new first message, and the
+        // branch by its own name.
+        let entry = crate::sessions::list(&temp.path().join("arko"))
+            .into_iter()
+            .find(|entry| entry.id == branch_id)
+            .unwrap();
+        assert!(entry.title.starts_with("Branch of "), "{}", entry.title);
+        let current = entry
+            .conversations
+            .iter()
+            .find(|conversation| conversation.current)
+            .unwrap();
+        assert_eq!(current.title, "Branched again.");
     }
 
     /// At the handover size a chat writes a summary in text, and the fresh

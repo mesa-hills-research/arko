@@ -2836,6 +2836,10 @@ impl Harness {
             && matches!(&self.conversation, Conversation::Stopped(run) if run.restart != Restart::Recover);
         let news_turn = matches!(prompt, Prompt::News);
         let jobs_turn = matches!(prompt, Prompt::Jobs);
+        let words = match &prompt {
+            Prompt::User(text) => Some(text.clone()),
+            _ => None,
+        };
         // A branch made before its conversation's first message has none:
         // it starts from this message, as one cut back to its first does,
         // and goes on from the report its conversation began from.
@@ -2852,6 +2856,9 @@ impl Harness {
         }
         let mut message = self.compose(prompt);
         let cut = self.cut_back.take();
+        // A conversation cut back to its first message is named by the new
+        // one.
+        let retitle = words.filter(|_| cut == Some(0));
         // A conversation that began from a handover's report, cut back to
         // its first message: the new one goes on from the report too.
         if let Some(report) = self.cut_report.take()
@@ -3104,6 +3111,7 @@ impl Harness {
                     .find(|job| waits_with(&result.task, job));
                 self.conversation = Conversation::Answered(result);
                 self.track_conversations();
+                self.retitle(retitle);
                 TurnEnd::Answered
             }
             Err(WorkflowError::AgentStopped { .. } | WorkflowError::Cancelled) if stopping => {
@@ -3428,6 +3436,20 @@ impl Harness {
                 RunStopIntent::Relaunch,
             )
             .is_ok_and(|runs| !runs.is_empty())
+    }
+
+    /// The current conversation takes the name of `words`, the new first
+    /// message of a conversation cut back to its first.
+    fn retitle(&mut self, words: Option<String>) {
+        let Some(words) = words else {
+            return;
+        };
+        if let Some(record) = self.conversations.current_mut() {
+            record.title = conversations::title_of(&words);
+            self.save_conversations();
+            self.publish_conversations();
+            self.publish_title();
+        }
     }
 
     /// Keep the same workflow after a failed turn so its workers keep running.
