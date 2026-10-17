@@ -340,7 +340,8 @@ fn brief(tool: &str, output: &str) -> Outcome {
 
 /// A shell command's outcome: its tests' counts when it ran tests, else
 /// its time, or how it failed; with its first lines of output as a block
-/// (and its whole output, when there are more).
+/// (and its whole output, when the block leaves out any of it: lines, or
+/// the end of a long line).
 fn command_outcome(output: &str) -> Outcome {
     let mut lines = output.lines();
     let status = lines.next().unwrap_or_default();
@@ -372,15 +373,20 @@ fn command_outcome(output: &str) -> Outcome {
         }
     };
     let mut shown: Vec<String> = Vec::new();
+    let mut left_out = rest.len() > SHOWN_LINES;
     if !(rest.len() == 1 && rest[0] == "(no output)") {
-        shown.extend(rest.iter().take(SHOWN_LINES).map(|line| cut(line, 300)));
+        shown.extend(rest.iter().take(SHOWN_LINES).map(|line| {
+            let shown = cut(line, 300);
+            left_out |= shown != *line;
+            shown
+        }));
         if rest.len() > SHOWN_LINES {
             shown.push(format!("… {} more lines", rest.len() - SHOWN_LINES));
         }
     }
     let block = (!shown.is_empty()).then(|| {
         let mut block = Item::new(Kind::Result, status).detail(shown.join("\n"));
-        if rest.len() > SHOWN_LINES {
+        if left_out {
             block.whole = Some(rest.join("\n").into());
         }
         if ok { block } else { block.level(Level::Warn) }
@@ -579,6 +585,46 @@ mod tests {
         assert_eq!(failed.text.as_deref(), Some("boom"));
         assert_eq!(failed.block.unwrap().text, "boom\nat line 3");
         assert!(Outcome::failed("short").block.is_none());
+    }
+
+    /// A command's block keeps its whole output when it shows less of it:
+    /// fewer lines, or a long line's start only.
+    #[test]
+    fn a_commands_whole_output_is_kept_when_any_of_it_is_left_out() {
+        let whole = |output: &str| {
+            outcome(SHELL_TOOL_NAME, output)
+                .block
+                .and_then(|block| block.whole)
+                .map(|whole| whole.to_string())
+        };
+        assert_eq!(
+            whole(
+                "exit code 0, 0.1 s
+short
+lines"
+            ),
+            None
+        );
+        let long = "x".repeat(500);
+        assert_eq!(
+            whole(&format!(
+                "exit code 0, 0.1 s
+short
+{long}"
+            )),
+            Some(format!("short\n{long}"))
+        );
+        assert_eq!(
+            whole(
+                "exit code 0, 0.1 s
+1
+2
+3
+4
+5"
+            ),
+            Some("1\n2\n3\n4\n5".into())
+        );
     }
 
     /// A command moved to the background shows as such, with its output so
