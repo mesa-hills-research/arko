@@ -286,9 +286,7 @@ impl Session {
                 _ => Ok(()),
             };
         }
-        let temporary = self.dir.join(format!("{TITLE_FILE}.tmp"));
-        std::fs::write(&temporary, title)
-            .and_then(|()| std::fs::rename(&temporary, &path))
+        write_whole(&path, title.as_bytes())
             .map_err(|error| format!("could not rename the session: {error}"))
     }
 
@@ -302,10 +300,27 @@ impl Session {
 
     pub fn save_settings(&self, settings: &Settings) -> std::io::Result<()> {
         let text = serde_json::to_string_pretty(settings)?;
-        let temporary = self.dir.join(format!("{SETTINGS_FILE}.tmp"));
-        std::fs::write(&temporary, text)?;
-        std::fs::rename(temporary, self.dir.join(SETTINGS_FILE))
+        write_whole(&self.dir.join(SETTINGS_FILE), text.as_bytes())
     }
+}
+
+/// Writes `bytes` to `path` whole: through a temporary file of its own
+/// beside it (two writers at once don't share one), renamed into place, so
+/// a reader finds the old text or the new.
+pub(crate) fn write_whole(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    static COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let count = COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let temporary = path.with_file_name(format!(".{name}.{}.{count}.tmp", std::process::id()));
+    let written =
+        std::fs::write(&temporary, bytes).and_then(|()| std::fs::rename(&temporary, path));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    written
 }
 
 /// The checkpoint `latest-checkpoint` names in a workflow's run directory.
@@ -396,6 +411,9 @@ pub(crate) fn move_fin_folder_in(data_directory: &Path) -> Option<String> {
 pub(crate) const LOCK_FILE: &str = "lock";
 /// Who holds the lock, as they wrote it once they had it.
 pub(crate) const HOLDER_FILE: &str = "holder.json";
+/// How many more times a lock that is held is tried, and how long apart.
+const LOCK_TRIES: u32 = 3;
+const LOCK_WAIT: std::time::Duration = std::time::Duration::from_millis(20);
 
 /// The lock the session's terminal holds while an Arko has it open: all
 /// that an Arko from before session locks holds.
@@ -500,13 +518,17 @@ pub enum LockError {
 /// An open session's lock: it is released when this is dropped.
 #[derive(Debug)]
 pub struct SessionLock {
-    _file: std::fs::File,
-    holder: PathBuf,
+    /// `None` in a folder where the lock can't be made: the terminal's
+    /// lock is all that holds the session, as before session locks.
+    _file: Option<std::fs::File>,
+    holder: Option<PathBuf>,
 }
 
 impl Drop for SessionLock {
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.holder);
+        if let Some(holder) = &self.holder {
+            let _ = std::fs::remove_file(holder);
+        }
     }
 }
 
@@ -516,26 +538,69 @@ impl Session {
     /// open in another Arko, also in this process, can't be taken: who has
     /// it, if they said.
     pub fn lock(&self, app: &str) -> Result<SessionLock, LockError> {
-        let file = std::fs::OpenOptions::new()
+        let path = self.dir.join(LOCK_FILE);
+        let opened = std::fs::OpenOptions::new()
             .create(true)
             .truncate(false)
             .read(true)
             .write(true)
-            .open(self.dir.join(LOCK_FILE))
-            .map_err(LockError::Io)?;
-        match file.try_lock() {
-            Ok(()) => {}
-            Err(std::fs::TryLockError::WouldBlock) => {
-                return Err(LockError::Held(read_holder(&self.dir)));
+            .open(&path)
+            // (A lock works on a file only read too: one in a folder only
+            // read, or left by another user.)
+            .or_else(|error| match error.kind() {
+                std::io::ErrorKind::PermissionDenied => {
+                    std::fs::File::open(&path).map_err(|_| error)
+                }
+                _ => Err(error),
+            });
+        let file = match opened {
+            Ok(file) => file,
+            // A folder the lock can't be made in: the session opens as
+            // before session locks, which its terminal's lock guards.
+            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+                log::warn!(
+                    "session {}: no lock in its folder ({error}): its terminal's lock holds it",
+                    self.id
+                );
+                return Ok(SessionLock {
+                    _file: None,
+                    holder: None,
+                });
             }
-            Err(std::fs::TryLockError::Error(error)) => return Err(LockError::Io(error)),
+            Err(error) => return Err(LockError::Io(error)),
+        };
+        // Someone may be looking (the session list tries the lock for a
+        // moment): a few tries before it counts as held.
+        let mut tries = 0;
+        loop {
+            match file.try_lock() {
+                Ok(()) => break,
+                Err(std::fs::TryLockError::WouldBlock) if tries < LOCK_TRIES => {
+                    tries += 1;
+                    std::thread::sleep(LOCK_WAIT);
+                }
+                Err(std::fs::TryLockError::WouldBlock) => {
+                    return Err(LockError::Held(read_holder(&self.dir)));
+                }
+                Err(std::fs::TryLockError::Error(error)) => return Err(LockError::Io(error)),
+            }
         }
         let holder = self.dir.join(HOLDER_FILE);
         let text = serde_json::to_string_pretty(&Holder::now(app))
             .map_err(|error| LockError::Io(std::io::Error::other(error)))?;
-        std::fs::write(&holder, text).map_err(LockError::Io)?;
+        // (Who has it, whole: never half written for one who reads it.)
+        let holder = match write_whole(&holder, text.as_bytes()) {
+            Ok(()) => Some(holder),
+            Err(error) => {
+                log::warn!(
+                    "session {}: could not say who has it open: {error}",
+                    self.id
+                );
+                None
+            }
+        };
         Ok(SessionLock {
-            _file: file,
+            _file: Some(file),
             holder,
         })
     }
@@ -621,6 +686,80 @@ pub fn latest_in(root: &Path, workspace: &Path) -> Option<Session> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_session(root: &Path) -> Session {
+        let session = Session::create(root).unwrap();
+        let model = ModelSettings {
+            model: crate::agents::resolve_model("luna").unwrap().id,
+            effort: crate::agents::Effort::High,
+            fast: false,
+            cache_1h: false,
+            handover_at: None,
+        };
+        session
+            .save_settings(&Settings::for_test(root, &model))
+            .unwrap();
+        session
+    }
+
+    /// Two that rename a session at once (an app and the session itself)
+    /// both land, each whole: they don't share a temporary file.
+    #[test]
+    fn writes_at_once_each_land_whole() {
+        let temp = tempfile::tempdir().unwrap();
+        let session = test_session(temp.path());
+        std::thread::scope(|scope| {
+            for writer in 0..8 {
+                let session = &session;
+                scope.spawn(move || {
+                    for n in 0..50 {
+                        session.rename(&format!("Title {writer}-{n}")).unwrap();
+                    }
+                });
+            }
+        });
+        assert!(session.renamed().unwrap().starts_with("Title "));
+        let leftovers = std::fs::read_dir(&session.dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().ends_with(".tmp"))
+            .count();
+        assert_eq!(leftovers, 0);
+    }
+
+    /// A look at who has a session (the session list tries its lock for a
+    /// moment) doesn't fail an Arko opening it then.
+    #[test]
+    fn a_look_at_the_lock_doesnt_fail_an_open() {
+        let temp = tempfile::tempdir().unwrap();
+        let session = test_session(temp.path());
+        let look = std::fs::File::create(session.dir.join(LOCK_FILE)).unwrap();
+        look.try_lock().unwrap();
+        let looking = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(15));
+            drop(look);
+        });
+        let lock = session.lock("arko").unwrap();
+        looking.join().unwrap();
+        assert_eq!(holder(&session.dir).unwrap().app, "arko");
+        drop(lock);
+    }
+
+    /// A session in a folder that can only be read opens, as it did before
+    /// session locks: its terminal's lock holds it.
+    #[cfg(unix)]
+    #[test]
+    fn a_session_in_a_folder_only_read_opens() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::tempdir().unwrap();
+        let session = test_session(temp.path());
+        let mode = |mode| std::fs::Permissions::from_mode(mode);
+        std::fs::set_permissions(&session.dir, mode(0o555)).unwrap();
+        let locked = session.lock("arko");
+        std::fs::set_permissions(&session.dir, mode(0o755)).unwrap();
+        let lock = locked.unwrap();
+        drop(lock);
+    }
 
     /// One Arko has a session open at a time, also in one process: another
     /// is told who has it, until it is closed. A holder file left behind
