@@ -28,6 +28,7 @@ mod credentials;
 mod crew;
 pub mod details;
 mod engine;
+pub mod extensions;
 mod glyphs;
 mod handover;
 mod harness;

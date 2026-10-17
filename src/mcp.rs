@@ -72,6 +72,9 @@ impl Server {
 pub struct Parsed {
     pub servers: Vec<Server>,
     pub skipped: Vec<String>,
+    /// The entries not started, by name ("server 3" for one without a
+    /// name), with why: skipped, or disabled.
+    pub left_out: Vec<(String, String)>,
     /// The file's `mcpServers`, as written: what a project's approval is for.
     raw: Value,
 }
@@ -114,12 +117,20 @@ fn parse(
             parsed
                 .skipped
                 .push(format!("server {} has no name", index + 1));
+            parsed
+                .left_out
+                .push((format!("server {}", index + 1), "it has no name".into()));
             continue;
         };
         match server(&name, entry, file, lookup) {
             Ok(Some(server)) => parsed.servers.push(server),
-            Ok(None) => {}
-            Err(why) => parsed.skipped.push(format!("`{name}` {why}")),
+            Ok(None) => parsed
+                .left_out
+                .push((name, "it is disabled in its file".into())),
+            Err(why) => {
+                parsed.skipped.push(format!("`{name}` {why}"));
+                parsed.left_out.push((name, format!("it {why}")));
+            }
         }
     }
     parsed.raw = raw;
@@ -225,7 +236,7 @@ fn expand(text: &str, lookup: &dyn Fn(&str) -> Option<String>) -> Result<String,
     Ok(expanded)
 }
 
-fn environment(name: &str) -> Option<String> {
+pub(crate) fn environment(name: &str) -> Option<String> {
     std::env::var(name).ok()
 }
 
@@ -400,7 +411,7 @@ fn approvals(root: &Path) -> Approvals {
 
 /// The answer remembered for the project's servers, if any (for these
 /// servers: a change to them asks again).
-fn remembered(root: &Path, workspace: &Path, parsed: &Parsed) -> Option<bool> {
+pub(crate) fn remembered(root: &Path, workspace: &Path, parsed: &Parsed) -> Option<bool> {
     approvals(root)
         .projects
         .get(&workspace.display().to_string())
