@@ -316,6 +316,7 @@ impl Args {
             openai_auth: self.openai_auth,
             shell: self.shell,
             mcp_config: self.mcp_config.clone(),
+            mcp_config_required: true,
             remote: self.remote.as_deref().map(remote::parse_bind).transpose()?,
             one_shot,
             // At the full screen or the line prompt.

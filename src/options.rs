@@ -89,6 +89,10 @@ pub struct Options {
     pub shell: Option<WindowsShell>,
     /// MCP config files besides the project's and Arko's.
     pub mcp_config: Vec<PathBuf>,
+    /// A file of `mcp_config` that can't be read keeps the session from
+    /// opening (`--mcp-config`, given for one run). Else (an app's files,
+    /// kept as a setting) its servers aren't started, and a note says why.
+    pub mcp_config_required: bool,
     /// Serve the web page from the start, there.
     pub remote: Option<remote::Bind>,
     /// The session runs one message and ends (`-p`): the main agent ends its
@@ -180,6 +184,7 @@ impl Default for Options {
             openai_auth: None,
             shell: None,
             mcp_config: Vec::new(),
+            mcp_config_required: false,
             remote: None,
             one_shot: false,
             interactive: true,

@@ -550,7 +550,12 @@ impl Engine {
         let (mcp_servers, mcp_notes) = if bare {
             (Vec::new(), Vec::new())
         } else {
-            let mcp_plan = mcp::plan(&root, &settings.workspace, &options.mcp_config)?;
+            let mcp_plan = mcp::plan(
+                &root,
+                &settings.workspace,
+                &options.mcp_config,
+                options.mcp_config_required,
+            )?;
             let mcp_answer = match &mcp_plan.approval {
                 Some(approval) => prompter.approve_project_mcp(approval).await?,
                 None => None,
@@ -668,6 +673,12 @@ impl Engine {
         // opened later has the history.
         let feed = remote::Feed::new(MAIN);
         feed.hide_thinking(settings.hide_thinking);
+        // An app's user reads what was left out in its transcript.
+        if options.source == remote::Source::App {
+            for note in &mcp_notes {
+                feed.notice(Level::Warn, note);
+            }
+        }
         let keys = keys::Keys::new(
             client.clone(),
             keys::openai_way(&client).await,
@@ -1142,6 +1153,52 @@ mod tests {
         assert!(
             said.iter().any(|text| text.contains("are in Notes")),
             "{said:?}"
+        );
+        quit(seam, running.ended).await;
+    }
+
+    /// An MCP config file an app gives that can't be read doesn't keep the
+    /// session from opening: its servers aren't started, and the
+    /// transcript says why, naming it.
+    #[tokio::test]
+    async fn an_apps_mcp_config_that_cant_be_read_is_left_out() {
+        let temp = tempfile::tempdir().unwrap();
+        let (server, _bodies) = counting_server().await;
+        let project = temp.path().join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        let missing = temp.path().join("gone.json");
+        let running = spawn(
+            Options {
+                root: Some(temp.path().join("arko")),
+                workspace: Some(project),
+                model: Some("luna".into()),
+                openai_auth: Some(OpenAiAuth::ApiKey),
+                cache_1h: Some(false),
+                mcp_config: vec![missing.clone()],
+                client: Some(GivenClient(Arc::new(server.client()))),
+                ..Options::default()
+            },
+            Arc::new(NoPrompter),
+        );
+        let seam = tokio::time::timeout(Duration::from_secs(30), running.opened)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap_or_else(|error| panic!("{error}"));
+        let notices: Vec<String> = seam
+            .feed
+            .subscribe()
+            .0
+            .items
+            .into_iter()
+            .filter(|item| item.kind == Kind::Notice)
+            .map(|item| item.text)
+            .collect();
+        assert!(
+            notices
+                .iter()
+                .any(|text| text.contains("MCP servers not started") && text.contains("gone.json")),
+            "{notices:?}"
         );
         quit(seam, running.ended).await;
     }

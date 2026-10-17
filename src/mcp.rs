@@ -262,12 +262,19 @@ enum Step {
     Note(String),
 }
 
-/// The servers to start: those in `files` (from `--mcp-config`), in the
-/// project's `.mcp.json` when the user approves them, and in Arko's own
-/// `mcp.json`. A name set up twice is taken from the first of these. The
-/// user's answer about the project's servers, unless one is remembered for
-/// them, is for [`Plan::decide`].
-pub fn plan(root: &Path, workspace: &Path, files: &[PathBuf]) -> Result<Plan, String> {
+/// The servers to start: those in `files` (from `--mcp-config`, or an
+/// app's), in the project's `.mcp.json` when the user approves them, and in
+/// Arko's own `mcp.json`. A name set up twice is taken from the first of
+/// these. The user's answer about the project's servers, unless one is
+/// remembered for them, is for [`Plan::decide`]. A file of `files` that
+/// can't be read is an error when they are `required`, else a note (its
+/// servers aren't started), as the project's and Arko's are.
+pub fn plan(
+    root: &Path,
+    workspace: &Path,
+    files: &[PathBuf],
+    required: bool,
+) -> Result<Plan, String> {
     let mut steps = Vec::new();
     let mut approval = None;
     let mut read = HashSet::new();
@@ -275,7 +282,11 @@ pub fn plan(root: &Path, workspace: &Path, files: &[PathBuf]) -> Result<Plan, St
         let file = arko_agents::utils::normalize_path(
             &std::path::absolute(file).unwrap_or_else(|_| file.clone()),
         );
-        steps.push(Step::Add(parse_file(&file, &environment)?));
+        match parse_file(&file, &environment) {
+            Ok(parsed) => steps.push(Step::Add(parsed)),
+            Err(error) if required => return Err(error),
+            Err(error) => steps.push(Step::Note(format!("MCP servers not started: {error}"))),
+        }
         read.insert(file);
     }
     let project = workspace.join(PROJECT_FILE);
@@ -814,7 +825,21 @@ mod tests {
             ]
         );
         // A file --mcp-config names must be readable.
-        assert!(plan(&root, &workspace, &[temp.path().join("missing.json")]).is_err());
+        let missing = temp.path().join("missing.json");
+        assert!(plan(&root, &workspace, std::slice::from_ref(&missing), true).is_err());
+        // An app's: its servers aren't started, and a note names it; the
+        // others start.
+        let (servers, notes) = plan(&root, &workspace, std::slice::from_ref(&missing), false)
+            .unwrap()
+            .decide(None)
+            .unwrap();
+        assert_eq!(servers.len(), 2);
+        assert!(
+            notes
+                .iter()
+                .any(|note| note.contains(&missing.display().to_string())),
+            "{notes:?}"
+        );
     }
 
     /// The project's servers wait for the front end's answer: the plan
@@ -838,7 +863,7 @@ mod tests {
                 .map(|server| server.name.clone())
                 .collect::<Vec<_>>()
         };
-        let asked = plan(&root, &workspace, &[]).unwrap();
+        let asked = plan(&root, &workspace, &[], true).unwrap();
         let approval = asked.approval.clone().unwrap();
         assert_eq!(approval.file, workspace.join(PROJECT_FILE));
         assert_eq!(
@@ -853,14 +878,19 @@ mod tests {
             notes.iter().any(|note| note.contains("aren't started")),
             "{notes:?}"
         );
-        assert!(plan(&root, &workspace, &[]).unwrap().approval.is_some());
+        assert!(
+            plan(&root, &workspace, &[], true)
+                .unwrap()
+                .approval
+                .is_some()
+        );
         // Yes: they start, and the next session doesn't ask.
-        let (servers, _) = plan(&root, &workspace, &[])
+        let (servers, _) = plan(&root, &workspace, &[], true)
             .unwrap()
             .decide(Some(true))
             .unwrap();
         assert_eq!(names(&servers), ["proj"]);
-        let remembered = plan(&root, &workspace, &[]).unwrap();
+        let remembered = plan(&root, &workspace, &[], true).unwrap();
         assert!(remembered.approval.is_none());
         assert_eq!(names(&remembered.decide(None).unwrap().0), ["proj"]);
         // Changed, it asks again, and no is remembered too.
@@ -869,16 +899,19 @@ mod tests {
             r#"{"mcpServers": {"proj": {"command": "other-server"}}}"#,
         )
         .unwrap();
-        let changed = plan(&root, &workspace, &[]).unwrap();
+        let changed = plan(&root, &workspace, &[], true).unwrap();
         assert!(changed.approval.is_some());
         assert!(changed.decide(Some(false)).unwrap().0.is_empty());
-        let refused = plan(&root, &workspace, &[]).unwrap();
+        let refused = plan(&root, &workspace, &[], true).unwrap();
         assert!(refused.approval.is_none());
         assert!(refused.decide(None).unwrap().0.is_empty());
     }
 
     fn servers_of(root: &Path, workspace: &Path, files: &[PathBuf]) -> (Vec<String>, Vec<String>) {
-        let (servers, notes) = plan(root, workspace, files).unwrap().decide(None).unwrap();
+        let (servers, notes) = plan(root, workspace, files, true)
+            .unwrap()
+            .decide(None)
+            .unwrap();
         (
             servers
                 .into_iter()
