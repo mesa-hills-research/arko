@@ -102,6 +102,19 @@ fn models_for_new_session(root: &std::path::Path) -> NewSessionModels {
     }
 }
 
+/// Why an image of type `mime` can't go to the model `model` (an ID or
+/// alias as `/model` takes it, as a session's status names its model) with
+/// a message, or `None` when it can: a model that takes no images, a type
+/// it doesn't take. Checks nothing else, so it is cheap: a front end asks
+/// before it sends.
+pub fn image_refusal(model: &str, mime: &str) -> Option<String> {
+    let model = providers::resolve_model(model).ok()?;
+    model.image_refusal(&arko_ai::Image::Base64 {
+        data: String::new(),
+        mime_type: mime.to_string(),
+    })
+}
+
 /// A model's name as people say it ("Opus 5.5", "GPT-6.1 Sol", "Gemini
 /// 3.1 Pro Preview"), from an ID or alias as `/model` takes it. `cc:` and
 /// `openrouter:` say how a model is reached, not which it is: they are left
@@ -164,6 +177,16 @@ mod tests {
         );
         assert_eq!(display_name("luna"), "GPT-6 Luna");
         assert_eq!(display_name("cc:opus"), "Opus 5.5");
+    }
+
+    /// A front end learns before it sends which images a model can't take.
+    #[test]
+    fn images_a_model_cant_take_are_known_before_they_are_sent() {
+        assert_eq!(image_refusal("luna", "image/png"), None);
+        assert_eq!(image_refusal("opus", "image/jpeg"), None);
+        let gif = image_refusal("gemini", "image/gif").expect("Gemini takes no GIF");
+        assert!(gif.to_lowercase().contains("gif"), "{gif}");
+        assert_eq!(image_refusal("no such model", "image/png"), None);
     }
 
     /// A new session's models come grouped, before any session opens.
