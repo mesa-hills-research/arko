@@ -74,6 +74,32 @@ test('a result shows under its call, whatever came between', () => {
   assert.equal(core.unseen(core.layout(items, 'full'), 2), 2);
 });
 
+test("a note the agent hasn't read waits at the end of its conversation", () => {
+  next = 0;
+  const items = [
+    item('text'),
+    item('user', { delivery: 'note', pending: true }),
+    item('call', { status: 'ok' }),
+    item('result', { call: 3 }),
+    item('conversation'),
+    item('user', { delivery: 'note', pending: true }),
+    item('text'),
+  ];
+  const ids = (rows) => rows.map((row) => row.id);
+  assert.deepEqual(ids(core.layout(items, 'full')), [1, 3, 4, 2, 5, 7, 6]);
+  assert.deepEqual(ids(core.layout(items, 'quiet')), [1, 3, 4, 2, 5, 7, 6]);
+  assert.deepEqual(ids(core.layout(items, 'messages')), [1, 3, 2, 7, 6]);
+
+  // Once read, it comes again where the agent read it.
+  const store = new core.Store();
+  store.reset(items.slice(0, 4));
+  assert.ok(store.remove(2));
+  assert.ok(!store.remove(2));
+  store.add({ ...items[1], id: 8, pending: undefined });
+  assert.deepEqual(ids(core.layout(store.items, 'full')), [1, 3, 4, 8]);
+  assert.equal(store.counts.main, 4);
+});
+
 test('the reader keeps their place at the nearest row', () => {
   const rows = [{ id: 2 }, { id: 5 }, { id: 9 }];
   assert.equal(core.nearest(rows, 5).id, 5);

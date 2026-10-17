@@ -584,8 +584,13 @@ impl Stream {
                     .data(serde_json::to_string(&summary).unwrap_or_default()),
             ),
             Update::Activity => self.send_status(),
+            Update::Remove { id } => self.pending.push_back(
+                Event::default()
+                    .event("remove")
+                    .data(serde_json::json!({ "id": id }).to_string()),
+            ),
             // The page starts over from the history as it is now.
-            Update::Truncate { .. } | Update::Remove { .. } => self.reset(),
+            Update::Truncate { .. } => self.reset(),
         }
     }
 
@@ -1189,6 +1194,26 @@ mod tests {
         assert_eq!(events[2].1["worker"], "r1");
         assert_eq!(events[3].1["title"], "Count the files.");
         assert_eq!(events[3].1["state"], "running");
+
+        // A note waits, pending, and moves once the agent reads it. The
+        // page drops it and gets it again, with no new history.
+        feed.note("Also the docs.", super::super::Source::Web, 1, Vec::new());
+        feed.event(
+            &event(AgentEvent::ContextInjected {
+                ids: vec!["note:1".into()],
+                bytes: 20,
+            }),
+            None,
+        );
+        let events = read_until(&mut stream, &mut buffer, |name, data| {
+            name == "item" && data["kind"] == "user" && data.get("pending").is_none()
+        })
+        .await;
+        let names: Vec<&str> = events.iter().map(|(name, _)| name.as_str()).collect();
+        assert_eq!(names, ["item", "remove", "item"]);
+        assert_eq!(events[0].1["pending"], true);
+        assert_eq!(events[1].1["id"], events[0].1["id"]);
+        assert_eq!(events[2].1["text"], "Also the docs.");
     }
 
     /// The page's Model row names the model the session runs now, not the
