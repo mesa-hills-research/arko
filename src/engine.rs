@@ -213,6 +213,17 @@ pub enum Request {
     /// conversation), else with a short message and its reply in the
     /// conversation (the user's item has `Delivery::Refresh`).
     RefreshCache { reply: Reply<Refreshed> },
+    /// The current conversation as the session saved it, for an export, as
+    /// [`crate::sessions::conversation`] reads it. It's read in turn with
+    /// what changes the conversation, once nothing can still add to it. No
+    /// turn runs, nothing the user typed or the workers sent waits to reach
+    /// the agent, and no input waits to be read. Otherwise `Err` says when
+    /// to export instead, so an export never leaves out what the
+    /// transcript shows. The errors of reading what was saved come back as
+    /// they are.
+    ExportConversation {
+        reply: Reply<crate::sessions::SavedConversation>,
+    },
 }
 
 /// How the prompt cache was kept warm ([`Request::RefreshCache`]).
@@ -3003,6 +3014,177 @@ mod tests {
             Some("The session has no conversation 2.")
         );
         assert!(crate::sessions::conversation(&root, "20990101-000000-none", None).is_err());
+    }
+
+    /// An app exports the conversation it has open through the session,
+    /// which answers only once nothing can still add to it: not during a
+    /// turn, nor with a note typed during it on its way to the agent, nor
+    /// with input waiting to be read. Then the export has all of it, the
+    /// notes typed during turns and a message the stopped turn went on
+    /// with too, as the transcript shows them, also once reopened.
+    #[tokio::test]
+    async fn an_export_waits_until_nothing_can_still_add_to_the_conversation() {
+        use crate::remote::Delivery;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let temp = tempfile::tempdir().unwrap();
+        let (root, project) = (temp.path().join("arko"), temp.path().join("project"));
+        let bodies: Arc<Mutex<Vec<String>>> = Arc::default();
+        let release = Arc::new(AtomicBool::new(false));
+        let server = ModelServer::start(Arc::new({
+            let (bodies, release) = (bodies.clone(), release.clone());
+            move |_, body: String| {
+                let count = {
+                    let mut bodies = bodies.lock().unwrap();
+                    bodies.push(body);
+                    bodies.len()
+                };
+                let release = release.clone();
+                Box::pin(async move {
+                    // The second reply waits until the test lets it go, and
+                    // the fourth until its turn is stopped.
+                    let started = std::time::Instant::now();
+                    while (count == 2 && !release.load(Ordering::SeqCst) || count == 4)
+                        && started.elapsed() < Duration::from_secs(30)
+                    {
+                        tokio::time::sleep(Duration::from_millis(20)).await;
+                    }
+                    reply("a", &format!("Reply {count}."))
+                })
+            }
+        }))
+        .await;
+        let (seam, ended) = open_app(&root, &project, &server, SessionChoice::New).await;
+        let id = seam.session.id.clone();
+        let export = |seam: &Seam| {
+            let (reply_to, answer) = oneshot::channel();
+            seam.requests
+                .send(Request::ExportConversation { reply: reply_to })
+                .unwrap();
+            async move {
+                tokio::time::timeout(Duration::from_secs(30), answer)
+                    .await
+                    .unwrap()
+                    .unwrap()
+            }
+        };
+        let users = |items: &[crate::remote::Item]| -> Vec<(String, Option<Delivery>)> {
+            items
+                .iter()
+                .filter(|item| matches!(item.kind, Kind::User | Kind::Reply))
+                .map(|item| (item.text.clone(), item.delivery))
+                .collect()
+        };
+        let texts = |saved: crate::sessions::SavedConversation| users(&saved.items);
+        let until = |what: &'static str, done: Box<dyn Fn() -> bool + Send>| async move {
+            tokio::time::timeout(Duration::from_secs(30), async {
+                while !done() {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .unwrap_or_else(|_| panic!("timed out waiting for {what}"));
+        };
+        let in_feed = |seam: &Seam, text: &'static str| {
+            let feed = seam.feed.clone();
+            Box::new(move || {
+                feed.subscribe()
+                    .0
+                    .items
+                    .iter()
+                    .any(|item| item.text == text)
+            }) as Box<dyn Fn() -> bool + Send>
+        };
+        let requests = |count: usize| {
+            let bodies = bodies.clone();
+            Box::new(move || bodies.lock().unwrap().len() == count) as Box<dyn Fn() -> bool + Send>
+        };
+        let after_the_reply = Err("Export after the reply finishes.".to_string());
+        let (turn, note, reply) = (Some(Delivery::Turn), Some(Delivery::Note), None);
+        let said = |text: &str, delivery: Option<Delivery>| (text.to_string(), delivery);
+
+        seam.input
+            .send(Input::Message(app_message("First question.")))
+            .unwrap();
+        answered(&seam, &bodies, 1).await;
+        assert_eq!(
+            texts(export(&seam).await.unwrap()),
+            [said("First question.", turn), said("Reply 1.", reply)]
+        );
+
+        // During a turn, and with a note typed during it.
+        seam.input
+            .send(Input::Message(app_message(
+                "Second question still working.",
+            )))
+            .unwrap();
+        until("the second request", requests(2)).await;
+        assert_eq!(export(&seam).await.map(texts), after_the_reply);
+        seam.input
+            .send(Input::Message(app_message("Also please count cherries.")))
+            .unwrap();
+        until("the note", in_feed(&seam, "Also please count cherries.")).await;
+        assert_eq!(export(&seam).await.map(texts), after_the_reply);
+        // The agent replied before it read the note, which then goes to it
+        // in a turn of its own.
+        release.store(true, Ordering::SeqCst);
+        answered(&seam, &bodies, 3).await;
+        let mut exchanged = vec![
+            said("First question.", turn),
+            said("Reply 1.", reply),
+            said("Second question still working.", turn),
+            said("Reply 2.", reply),
+            said("Also please count cherries.", note),
+            said("Reply 3.", reply),
+        ];
+        assert_eq!(texts(export(&seam).await.unwrap()), exchanged);
+
+        // Stopped before the agent read a note: the note goes with the next
+        // message, and until then an export would leave it out.
+        seam.input
+            .send(Input::Message(app_message("Fourth question.")))
+            .unwrap();
+        until("the fourth request", requests(4)).await;
+        seam.input
+            .send(Input::Message(app_message("And the figs.")))
+            .unwrap();
+        until("the second note", in_feed(&seam, "And the figs.")).await;
+        seam.input.send(Input::Interrupt).unwrap();
+        until("the turn to stop", {
+            let feed = seam.feed.clone();
+            Box::new(move || !feed.activity().working)
+        })
+        .await;
+        assert_eq!(
+            export(&seam).await.map(texts),
+            Err("What you typed during the last reply hasn't reached the agent yet. Export after your next message.".to_string())
+        );
+        seam.input
+            .send(Input::Message(app_message("Fifth.")))
+            .unwrap();
+        answered(&seam, &bodies, 5).await;
+        exchanged.extend([
+            said("Fourth question.", turn),
+            said("And the figs.", note),
+            said("Fifth.", turn),
+            said("Reply 5.", reply),
+        ]);
+        assert_eq!(texts(export(&seam).await.unwrap()), exchanged);
+
+        // A message sent just before is input waiting, or a turn already.
+        seam.input
+            .send(Input::Message(app_message("Sixth.")))
+            .unwrap();
+        assert_eq!(export(&seam).await.map(texts), after_the_reply);
+        answered(&seam, &bodies, 6).await;
+        exchanged.extend([said("Sixth.", turn), said("Reply 6.", reply)]);
+        assert_eq!(texts(export(&seam).await.unwrap()), exchanged);
+        quit(seam, ended).await;
+
+        // Reopened, the transcript shows the same.
+        let (seam, ended) = open_app(&root, &project, &server, SessionChoice::Resume(id)).await;
+        resumed(&seam).await;
+        assert_eq!(users(&seam.feed.subscribe().0.items), exchanged);
+        quit(seam, ended).await;
     }
 
     #[tokio::test]

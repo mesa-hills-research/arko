@@ -878,7 +878,7 @@ impl Harness {
                     continue;
                 }
                 Event::Request(request) => {
-                    Box::pin(self.request(request)).await;
+                    Box::pin(self.request(request, input.waiting())).await;
                     // It switched between Chat and Agent: it opens again.
                     if self.reopen {
                         break;
@@ -1463,8 +1463,9 @@ impl Harness {
         true
     }
 
-    /// Does what the front end asks, and answers it.
-    pub(crate) async fn request(&mut self, request: crate::engine::Request) {
+    /// Does what the front end asks, and answers it. `waiting` is whether
+    /// input waits to be read ([`Inputs::waiting`]).
+    pub(crate) async fn request(&mut self, request: crate::engine::Request, waiting: bool) {
         use crate::engine::Request;
         // While a turn runs, the agent's configuration stays as it is. While
         // Arko only waits for the workers (no terminal), nothing starts.
@@ -1501,6 +1502,9 @@ impl Harness {
             }
             Request::RefreshCache { reply } => {
                 let _ = reply.send(self.refresh_cache().await);
+            }
+            Request::ExportConversation { reply } => {
+                let _ = reply.send(self.export_conversation(working || waiting).await);
             }
             // (The web page doesn't change the agent: also during a turn.)
             Request::ShareWebPage { bind, reply } => {
@@ -1872,6 +1876,34 @@ impl Harness {
         self.start_new_workers();
         self.publish_conversations();
         Ok(())
+    }
+
+    /// The current conversation as the session saved it, for an export
+    /// ([`crate::engine::Request::ExportConversation`]). Refused while
+    /// something can still add to it: a turn, or input waiting (`busy`),
+    /// what the user typed during the last turn, or the workers' news.
+    /// Between turns the run's result is saved before the turn ends, so
+    /// what was saved is all of it.
+    async fn export_conversation(
+        &self,
+        busy: bool,
+    ) -> Result<crate::sessions::SavedConversation, String> {
+        if busy {
+            return Err("Export after the reply finishes.".into());
+        }
+        if !self.unread.is_empty() {
+            return Err(
+                "What you typed during the last reply hasn't reached the agent yet. Export after your next message."
+                    .into(),
+            );
+        }
+        if self.crew.as_ref().is_some_and(|crew| crew.has_mail()) {
+            return Err("Export after the agent replies to the workers' news.".into());
+        }
+        let session = self.session.clone();
+        tokio::task::spawn_blocking(move || crate::sessions::conversation_of(&session, None))
+            .await
+            .map_err(|error| format!("The saved conversation can't be read ({error})."))?
     }
 
     /// Makes the session a chat or an agent's (`to`), working in
@@ -2976,7 +3008,7 @@ impl Harness {
                 event = input.next_event(false) => {
                     let (line, source) = match event {
                         Event::Request(request) => {
-                            Box::pin(self.request(request)).await;
+                            Box::pin(self.request(request, input.waiting())).await;
                             continue;
                         }
                         Event::Question(question) => {
@@ -3329,7 +3361,7 @@ impl Harness {
                 Event::Question(question) => drop(question),
                 Event::Request(request) => {
                     self.only_workers = true;
-                    Box::pin(self.request(request)).await;
+                    Box::pin(self.request(request, input.waiting())).await;
                     self.only_workers = false;
                 }
                 Event::Input(Some(Input::Line(_))) => {}
@@ -4687,8 +4719,8 @@ pub(crate) mod tests {
     }
 
     /// What a front end asks waits while Arko only waits for the workers
-    /// (no terminal), and a switch between Chat and Agent waits for what the
-    /// user typed to reach the agent: each says so.
+    /// (no terminal), and a switch between Chat and Agent or an export waits
+    /// for what the user typed to reach the agent. Each says so.
     #[tokio::test]
     async fn requests_say_what_they_wait_for() {
         let temp = tempfile::tempdir().unwrap();
@@ -4697,21 +4729,49 @@ pub(crate) mod tests {
         harness.only_workers = true;
         let (reply, answer) = oneshot::channel();
         harness
-            .request(crate::engine::Request::RefreshCache { reply })
+            .request(crate::engine::Request::RefreshCache { reply }, false)
             .await;
         assert_eq!(
             answer.await.unwrap(),
             Err("Arko is only waiting for the workers now.".to_string())
         );
+        // An export waits for anything that can still add to the
+        // conversation: the workers' news, input waiting to be read, or
+        // what was typed during the last turn.
+        async fn export(harness: &mut Harness, waiting: bool) -> Result<(), String> {
+            let (reply, answer) = oneshot::channel();
+            harness
+                .request(
+                    crate::engine::Request::ExportConversation { reply },
+                    waiting,
+                )
+                .await;
+            answer.await.unwrap().map(|_| ())
+        }
+        let after_the_reply = Err("Export after the reply finishes.".to_string());
+        assert_eq!(export(&mut harness, false).await, after_the_reply);
         harness.only_workers = false;
+        assert_eq!(export(&mut harness, true).await, after_the_reply);
+        // With nothing to wait for, what the session saved is read (nothing
+        // here).
+        let read = export(&mut harness, false).await.unwrap_err();
+        assert!(read.contains("session.json"), "{read}");
         harness.unread = vec!["also the tests".into()];
+        let refused = export(&mut harness, false).await.unwrap_err();
+        assert!(
+            refused.contains("hasn't reached the agent yet"),
+            "{refused}"
+        );
         let (reply, answer) = oneshot::channel();
         harness
-            .request(crate::engine::Request::SwitchMode {
-                to: Mode::Chat,
-                workspace: None,
-                reply,
-            })
+            .request(
+                crate::engine::Request::SwitchMode {
+                    to: Mode::Chat,
+                    workspace: None,
+                    reply,
+                },
+                false,
+            )
             .await;
         let refused = answer.await.unwrap().unwrap_err();
         assert!(refused.contains("typed during the last turn"), "{refused}");
@@ -4748,10 +4808,13 @@ pub(crate) mod tests {
         async fn rename(harness: &mut Harness, name: &str) -> Result<(), String> {
             let (reply, answer) = oneshot::channel();
             harness
-                .request(crate::engine::Request::Rename {
-                    title: name.into(),
-                    reply,
-                })
+                .request(
+                    crate::engine::Request::Rename {
+                        title: name.into(),
+                        reply,
+                    },
+                    false,
+                )
                 .await;
             answer.await.unwrap()
         }

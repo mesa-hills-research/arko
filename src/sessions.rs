@@ -279,10 +279,26 @@ pub struct SavedConversation {
     pub reports: Vec<String>,
 }
 
+// By hand, since its images aren't `Debug`. It shows what it holds, without
+// the images.
+impl std::fmt::Debug for SavedConversation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SavedConversation")
+            .field("number", &self.number)
+            .field("title", &self.title)
+            .field("items", &self.items)
+            .field("reports", &self.reports)
+            .finish_non_exhaustive()
+    }
+}
+
 /// The conversation `number` of the session `id` (as `/resume` numbers
 /// them, or `None` for its current one), read whole from what the session
 /// saved, for an export. It doesn't hold the session, so a session open
-/// now gives what it saved last. After `/new`, `None` returns an error until
+/// now gives what it saved last, and a turn running may already have more.
+/// A front end exporting a session it has open asks the session instead
+/// ([`crate::engine::Request::ExportConversation`]), which answers once
+/// nothing can still add to it. After `/new`, `None` returns an error until
 /// the new conversation has messages. An explicit number still reads an
 /// earlier conversation. Missing saved data returns an error.
 /// It reads every run the session saved, so call it off a UI thread.
@@ -291,10 +307,17 @@ pub fn conversation(
     id: &str,
     number: Option<usize>,
 ) -> Result<SavedConversation, String> {
-    let session = Session::open(root, id)?;
+    conversation_of(&Session::open(root, id)?, number)
+}
+
+/// The conversation `number` of `session`, as [`conversation`] reads it.
+pub(crate) fn conversation_of(
+    session: &Session,
+    number: Option<usize>,
+) -> Result<SavedConversation, String> {
     let settings = session.load_settings()?;
     let unreadable = |error| format!("The saved conversation can't be read ({error}).");
-    let saved = saved_runs(&session).map_err(&unreadable)?;
+    let saved = saved_runs(session).map_err(&unreadable)?;
     let images = crate::images::Images::default();
     let mut found = SavedConversation {
         number: 1,

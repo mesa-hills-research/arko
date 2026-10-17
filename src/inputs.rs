@@ -71,6 +71,19 @@ impl Inputs {
         }
     }
 
+    /// Whether input waits to be read: what the user typed or the web page
+    /// sent, or a finished job's update the agent hasn't had.
+    pub(crate) fn waiting(&self) -> bool {
+        self.pending.is_some()
+            || self.late.is_some()
+            || !self.receiver.is_empty()
+            || !self.remote.is_empty()
+            || self
+                .finished
+                .as_ref()
+                .is_some_and(|finished| !finished.is_empty())
+    }
+
     /// Forgets the wake-ups so far: what they were for is being seen to.
     pub(crate) fn drain_woken(&mut self) {
         if let Some(woken) = &mut self.woken {
