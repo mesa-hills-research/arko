@@ -170,14 +170,32 @@ pub fn delete_plan(root: &Path, id: &str) -> Result<DeletePlan, DeleteError> {
 /// left alone. A session open anywhere isn't deleted.
 pub fn delete(root: &Path, id: &str) -> Result<Deleted, DeleteError> {
     let session = Session::open(root, id).map_err(DeleteError::Io)?;
+    // A link to a folder elsewhere isn't the session's own folder: what is
+    // there stays.
+    let linked = std::fs::symlink_metadata(&session.dir)
+        .map_err(|error| DeleteError::Io(error.to_string()))?
+        .file_type()
+        .is_symlink();
+    if linked {
+        return Err(DeleteError::Io(format!(
+            "{} is a link to a folder elsewhere: Arko deletes only a session's own folder.",
+            session.dir.display()
+        )));
+    }
     let locked = |error| match error {
         session::LockError::Held(holder) => DeleteError::Locked { holder },
         session::LockError::Io(error) => DeleteError::Io(error.to_string()),
     };
     // Held while its files go: no Arko opens it meanwhile. An Arko from
-    // before session locks holds only its terminal's.
+    // before session locks holds only its terminal's, which is tried first
+    // (its session gets no lock file of Arko's then).
+    let terminal = session.lock_terminal().map_err(|error| match error {
+        session::LockError::Held(_) => DeleteError::Locked {
+            holder: session::holder(&session.dir).filter(|holder| !holder.app.is_empty()),
+        },
+        session::LockError::Io(error) => DeleteError::Io(error.to_string()),
+    })?;
     let lock = session.lock("arko-studio").map_err(locked)?;
-    let terminal = session.lock_terminal().map_err(locked)?;
     let mut kept = Vec::new();
     for worktree in worktrees(&session.dir) {
         if !(is_clean(&worktree) && remove_worktree(&worktree)) {
@@ -429,10 +447,65 @@ mod tests {
             session.dir.join(session::SETTINGS_FILE).exists(),
             "nothing deleted"
         );
+        assert!(
+            !session.dir.join(session::LOCK_FILE).exists(),
+            "no lock file of Arko's left in its session"
+        );
         drop(terminal);
         assert_eq!(holder(&root, &session.id), None);
         assert_eq!(delete(&root, &session.id), Ok(Deleted::default()));
         assert!(!session.dir.exists());
+    }
+
+    /// A session held through a lock file that can only be read (another
+    /// user's) is listed as open, and isn't deleted.
+    #[cfg(unix)]
+    #[test]
+    fn a_lock_file_that_can_only_be_read_still_holds_the_session() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("arko");
+        let session = Session::create(&root).unwrap();
+        session.save_settings(&settings(temp.path())).unwrap();
+        std::fs::create_dir_all(session.jobs_dir()).unwrap();
+        let only_read = std::fs::Permissions::from_mode(0o444);
+        for name in [session::LOCK_FILE, session::TERMINAL_LOCK] {
+            let path = session.dir.join(name);
+            let file = std::fs::File::create(&path).unwrap();
+            std::fs::set_permissions(&path, only_read.clone()).unwrap();
+            file.try_lock().unwrap();
+            assert!(holder(&root, &session.id).is_some(), "{name}");
+            assert!(list(&root)[0].holder.is_some(), "{name}");
+            assert!(
+                matches!(delete(&root, &session.id), Err(DeleteError::Locked { .. })),
+                "{name}"
+            );
+            assert!(session.dir.join(session::SETTINGS_FILE).exists());
+            drop(file);
+            std::fs::remove_file(&path).unwrap();
+        }
+    }
+
+    /// A session's folder that is a link to a folder elsewhere isn't
+    /// deleted, nor is anything there.
+    #[cfg(unix)]
+    #[test]
+    fn a_session_folder_that_is_a_link_isnt_deleted() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("arko");
+        let elsewhere = temp.path().join("elsewhere");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        std::fs::write(elsewhere.join(session::SETTINGS_FILE), "{}").unwrap();
+        std::fs::write(elsewhere.join("main.rs"), "fn main() {}").unwrap();
+        std::fs::create_dir_all(root.join("sessions")).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, root.join("sessions").join("linked")).unwrap();
+        let refused = delete(&root, "linked");
+        assert!(
+            matches!(&refused, Err(DeleteError::Io(why)) if why.contains("link")),
+            "{refused:?}"
+        );
+        assert!(elsewhere.join("main.rs").exists());
+        assert!(root.join("sessions").join("linked").exists());
     }
 
     /// A session's ID is a folder's name in `sessions/`, never a path: a

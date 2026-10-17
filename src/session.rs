@@ -609,11 +609,7 @@ impl Session {
     /// delete it, as an Arko from before session locks holds only that one
     /// while it has the session open (`Held(None)`).
     pub(crate) fn lock_terminal(&self) -> Result<Option<std::fs::File>, LockError> {
-        let file = match std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(self.dir.join(TERMINAL_LOCK))
-        {
+        let file = match open_lock(&self.dir.join(TERMINAL_LOCK)) {
             Ok(file) => file,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(error) => return Err(LockError::Io(error)),
@@ -637,16 +633,26 @@ pub fn holder(dir: &Path) -> Option<Holder> {
     held(&dir.join(TERMINAL_LOCK)).then(Holder::unknown)
 }
 
-/// Whether the lock file at `path` is held.
+/// Whether the lock file at `path` is held (also one that can only be
+/// read).
 fn held(path: &Path) -> bool {
-    let Ok(file) = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(path)
-    else {
+    let Ok(file) = open_lock(path) else {
         return false;
     };
     matches!(file.try_lock(), Err(std::fs::TryLockError::WouldBlock))
+}
+
+/// The lock file at `path`, as it is: to write, else (another user's, or
+/// in a folder only read) to read, which a lock works on too.
+fn open_lock(path: &Path) -> std::io::Result<std::fs::File> {
+    std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .or_else(|error| match error.kind() {
+            std::io::ErrorKind::PermissionDenied => std::fs::File::open(path).map_err(|_| error),
+            _ => Err(error),
+        })
 }
 
 fn read_holder(dir: &Path) -> Option<Holder> {
