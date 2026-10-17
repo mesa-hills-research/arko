@@ -310,10 +310,27 @@ pub fn spawn(options: Options, prompter: Arc<dyn Prompter>) -> Running {
     Running { opened, ended }
 }
 
+/// Whether a session is open in this process without a context of its own
+/// (opened with [`Engine::open`], not [`spawn`]): it reads the process's
+/// settings and keys, so it is the only one.
+static ALONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The session open without a context of its own: another can open once
+/// it is dropped.
+struct Alone;
+
+impl Drop for Alone {
+    fn drop(&mut self) {
+        ALONE.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
 /// An open session.
 pub struct Engine {
     /// Held while the session is open; released after shutdown.
     _lock: SessionLock,
+    /// The process's one session without a context of its own, if it is.
+    _alone: Option<Alone>,
     /// Sends the status as it changes.
     publisher: tokio::task::JoinHandle<()>,
     harness: Harness,
@@ -330,10 +347,24 @@ impl Engine {
     /// credentials it needs (asked for through `prompter`), its agents, MCP
     /// servers (approved through `prompter`), skills and search indexes,
     /// the feed, and the workflow, resumed where it was.
+    ///
+    /// On a front end's own runtime, a process opens one session this way:
+    /// it reads the process's settings and keys, and its log lines carry no
+    /// session's ID. Several sessions in one process each run with
+    /// [`spawn`], which gives each its own; a second is refused here.
     pub async fn open(
         options: Options,
         prompter: Arc<dyn Prompter>,
     ) -> Result<(Engine, Seam), OpenError> {
+        let alone = match crate::context::handle() {
+            Some(_) => None,
+            None if ALONE.swap(true, std::sync::atomic::Ordering::SeqCst) => {
+                return Err(OpenError::Failed(
+                    "A session is open in this process without arko::spawn: open each with arko::spawn, which gives it its own settings and keys.".into(),
+                ));
+            }
+            None => Some(Alone),
+        };
         let root = match &options.root {
             Some(root) => root.clone(),
             None => session::data_root()?,
@@ -371,9 +402,10 @@ impl Engine {
             Some(session) => {
                 let mut settings = session.load_settings()?;
                 // Its settings and keys, as its own folder has them.
-                credentials::use_env(credentials::Env::for_folder(
+                credentials::use_env(credentials::Env::for_folder_in(
                     Some(&settings.workspace),
                     true,
+                    Some(&root),
                 ));
                 if options.model.is_some()
                     || options.worker_model.is_some()
@@ -437,9 +469,10 @@ impl Engine {
                 (Some(session), settings, false)
             }
             None => {
-                credentials::use_env(credentials::Env::for_folder(
+                credentials::use_env(credentials::Env::for_folder_in(
                     Some(&workspace(&options)?),
                     true,
+                    Some(&root),
                 ));
                 if options.model.is_none() && default_model(&options).is_none() {
                     prompter.need_credentials(&Need::Any).await?;
@@ -834,6 +867,7 @@ impl Engine {
         let publisher = harness.gauges.publish(&harness.feed);
         let engine = Engine {
             _lock: lock,
+            _alone: alone,
             publisher,
             harness,
             inputs,
@@ -955,6 +989,99 @@ mod tests {
     use crate::remote::{Kind, Source};
     use crate::session::Settings;
     use crate::shell::WindowsShell;
+
+    /// The tests that open a session without a context of its own, one at a
+    /// time (a process has one such session).
+    static ALONE_TESTS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    /// A process opens one session without `spawn`: it reads the process's
+    /// settings and keys, so a second is refused, until the first closes.
+    #[tokio::test]
+    async fn a_second_session_without_spawn_is_refused() {
+        let _alone = ALONE_TESTS.lock().await;
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("arko");
+        let workspace = temp.path().join("work");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let luna = ModelSettings {
+            model: resolve_model("luna").unwrap().id,
+            effort: Effort::High,
+            fast: false,
+            cache_1h: false,
+            handover_at: None,
+        };
+        let options = || {
+            let session = Session::create(&root).unwrap();
+            session
+                .save_settings(&Settings::for_test(&workspace, &luna))
+                .unwrap();
+            Options {
+                root: Some(root.clone()),
+                session: SessionChoice::Resume(session.id),
+                interactive: false,
+                ..Options::default()
+            }
+        };
+        let (first, _seam) = Engine::open(options(), Arc::new(NoPrompter)).await.unwrap();
+        match Engine::open(options(), Arc::new(NoPrompter)).await {
+            Err(OpenError::Failed(why)) => assert!(why.contains("arko::spawn"), "{why}"),
+            Err(error) => panic!("{error}"),
+            Ok(_) => panic!("a second opened"),
+        }
+        first.shutdown().await;
+        let (again, _seam) = Engine::open(options(), Arc::new(NoPrompter)).await.unwrap();
+        again.shutdown().await;
+    }
+
+    /// A front end adds and removes a session's keys from any thread: they
+    /// are saved in the session's Arko folder, and read as the session reads
+    /// them (a resumed session: its workspace's `.env`, not the current
+    /// directory's).
+    #[tokio::test]
+    async fn a_sessions_keys_are_its_own_from_any_thread() {
+        if std::env::var_os(credentials::OPENROUTER_KEY).is_some() {
+            return; // (Set in this process: it comes first.)
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let (server, _bodies) = counting_server().await;
+        let (root, project) = (temp.path().join("arko"), temp.path().join("project"));
+        std::fs::create_dir_all(&project).unwrap();
+        let id = {
+            let (seam, ended) = open_app(&root, &project, &server, SessionChoice::New).await;
+            let id = seam.session.id.clone();
+            quit(seam, ended).await;
+            id
+        };
+        let theirs = "sk-or-v1-fedcba9876543210fedcba9876543210";
+        std::fs::write(
+            project.join(".env"),
+            format!("OPENROUTER_API_KEY={theirs}\n"),
+        )
+        .unwrap();
+        let (seam, ended) = open_app(&root, &project, &server, SessionChoice::Resume(id)).await;
+        let key: &'static credentials::Key = credentials::KEYS
+            .into_iter()
+            .find(|key| key.name == credentials::OPENROUTER_KEY)
+            .unwrap();
+        // (This thread isn't the session's.)
+        let added = seam.keys.add(
+            key,
+            keys::Secret::new("sk-or-v1-0123456789abcdef0123456789abcdef"),
+        );
+        assert!(matches!(added, keys::Outcome::Done { .. }), "{added:?}");
+        let saved = std::fs::read_to_string(root.join(".env")).unwrap();
+        assert!(
+            saved.contains("OPENROUTER_API_KEY="),
+            "in the session's Arko folder"
+        );
+        let removed = seam.keys.remove(key);
+        let keys::Outcome::Done { said, .. } = removed else {
+            panic!("{removed:?}");
+        };
+        let workspace_env = project.join(".env").display().to_string();
+        assert!(said.contains(&workspace_env), "{said}");
+        quit(seam, ended).await;
+    }
 
     /// The engine, its seam and its futures can go to any thread: a front
     /// end can run a session on a runtime of its own or on a shared one.
@@ -1153,6 +1280,7 @@ mod tests {
     /// once per change: not again while the session is idle.
     #[tokio::test]
     async fn the_status_changes_when_a_request_reports_usage() {
+        let _alone = ALONE_TESTS.lock().await;
         let temp = tempfile::tempdir().unwrap();
         let server = ModelServer::start(Arc::new(|_, _| {
             Box::pin(async { with_input(complete("a1", "Done."), 12_345) })
@@ -2285,6 +2413,7 @@ mod tests {
     /// who has it.
     #[tokio::test]
     async fn a_session_open_elsewhere_isnt_opened() {
+        let _alone = ALONE_TESTS.lock().await;
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("arko");
         let workspace = temp.path().join("work");
@@ -2324,6 +2453,7 @@ mod tests {
     /// is saved.
     #[tokio::test]
     async fn an_engine_answers_a_turn_without_a_terminal() {
+        let _alone = ALONE_TESTS.lock().await;
         let temp = tempfile::tempdir().unwrap();
         let bodies: Arc<Mutex<Vec<String>>> = Arc::default();
         let server = ModelServer::start(Arc::new({

@@ -76,7 +76,7 @@ pub fn for_new_session(
     let folder = workspace
         .map(std::path::Path::to_path_buf)
         .or_else(|| std::env::current_dir().ok());
-    let env = crate::credentials::Env::for_folder(folder.as_deref(), true);
+    let env = crate::credentials::Env::for_folder_in(folder.as_deref(), true, Some(root));
     crate::context::with_env(env, || models_for_new_session(root))
 }
 

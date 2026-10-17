@@ -83,6 +83,9 @@ pub struct Keys {
     client: Arc<LLMClient>,
     indexes: Option<Arc<index::Indexes>>,
     feed: Option<remote::Feed>,
+    /// The session's context: its settings and keys are read and saved as
+    /// the session's, whatever thread calls (an app's).
+    context: Option<Arc<crate::context::SessionContext>>,
     /// Where the providers are reached: their own addresses, or (tests) a
     /// local server for all of them.
     local: std::sync::OnceLock<String>,
@@ -97,10 +100,15 @@ struct State {
 }
 
 /// Adds `key` (or replaces it) with `value` without a session (an app's
-/// accounts): saved in Arko's `.env` as the keys menu saves it, and used at
-/// once by the sessions open on Arko's folder `root` in this process, and
-/// by those that start.
+/// accounts): saved in the `.env` of Arko's folder `root` as the keys menu
+/// saves it, and used at once by the sessions open on `root` in this
+/// process, and by those that start.
 pub fn add(root: &std::path::Path, key: &'static Key, value: Secret) -> Outcome {
+    let env = credentials::Env::for_folder_in(None, true, Some(root));
+    crate::context::with_env(env, || add_in(root, key, value))
+}
+
+fn add_in(root: &std::path::Path, key: &'static Key, value: Secret) -> Outcome {
     let value = value.reveal().trim();
     if let Err(problem) = credentials::check_pasted(value, key) {
         return Outcome::Failed(problem);
@@ -120,9 +128,14 @@ pub fn add(root: &std::path::Path, key: &'static Key, value: Secret) -> Outcome 
 }
 
 /// Removes `key` without a session, when Arko saved the one in use: from
-/// Arko's `.env`, and from the sessions open on Arko's folder `root` (each
-/// goes by the next it reads, if any).
+/// the `.env` of Arko's folder `root`, and from the sessions open on `root`
+/// (each goes by the next it reads, if any).
 pub fn remove(root: &std::path::Path, key: &'static Key) -> Outcome {
+    let env = credentials::Env::for_folder_in(None, true, Some(root));
+    crate::context::with_env(env, || remove_in(root, key))
+}
+
+fn remove_in(root: &std::path::Path, key: &'static Key) -> Outcome {
     let after = match credentials::remove_key(key) {
         Ok(after) => after,
         Err(error) => return Outcome::Failed(capitalized(&error)),
@@ -171,6 +184,7 @@ impl Keys {
             client,
             indexes,
             feed,
+            context: crate::context::handle(),
             local: std::sync::OnceLock::new(),
             state: Mutex::new(State {
                 openai,
@@ -294,6 +308,10 @@ impl Keys {
     /// Adds `key` (or replaces it) with `value`: saved in Arko's `.env`, and
     /// used at once.
     pub fn add(&self, key: &'static Key, value: Secret) -> Outcome {
+        crate::context::within(self.context.clone(), || self.add_here(key, value))
+    }
+
+    fn add_here(&self, key: &'static Key, value: Secret) -> Outcome {
         let value = value.reveal().trim();
         if let Err(problem) = credentials::check_pasted(value, key) {
             return Outcome::Failed(problem);
@@ -319,6 +337,10 @@ impl Keys {
     /// for what starts from now on. A key another source sets takes its
     /// place.
     pub fn remove(&self, key: &'static Key) -> Outcome {
+        crate::context::within(self.context.clone(), || self.remove_here(key))
+    }
+
+    fn remove_here(&self, key: &'static Key) -> Outcome {
         let after = match credentials::remove_key(key) {
             Ok(after) => after,
             Err(error) => return Outcome::Failed(capitalized(&error)),
@@ -643,6 +665,50 @@ mod tests {
             "another Arko folder"
         );
         assert!(notices(&feed_c).is_empty());
+    }
+
+    /// An app's accounts save keys and the ChatGPT login in the `.env` of
+    /// the Arko folder they are given, and touch no other.
+    #[test]
+    fn accounts_save_in_the_arko_folder_they_are_given() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("arko");
+        std::fs::create_dir_all(&root).unwrap();
+        // (The user's own Arko folder is only looked at, never read.)
+        let own = credentials::Env::for_folder(None, false).arko_dotenv().ok();
+        let stamp = || {
+            own.as_ref()
+                .and_then(|path| std::fs::metadata(path).ok())
+                .map(|meta| (meta.len(), meta.modified().ok()))
+        };
+        let before = stamp();
+        let saved = || std::fs::read_to_string(root.join(".env")).unwrap_or_default();
+        let key: &'static Key = credentials::KEYS
+            .into_iter()
+            .find(|key| key.name == credentials::OPENROUTER_KEY)
+            .unwrap();
+        let outcome = add(
+            &root,
+            key,
+            Secret::new("sk-or-v1-0123456789abcdef0123456789abcdef"),
+        );
+        assert!(matches!(outcome, Outcome::Done { .. }), "{outcome:?}");
+        assert!(saved().contains("OPENROUTER_API_KEY="));
+        if std::env::var_os(credentials::OPENROUTER_KEY).is_none() {
+            let outcome = remove(&root, key);
+            assert!(matches!(outcome, Outcome::Done { .. }), "{outcome:?}");
+            assert!(!saved().contains("OPENROUTER_API_KEY="));
+        }
+        let auth = temp.path().join("auth.json");
+        std::fs::write(
+            &auth,
+            r#"{"tokens": {"access_token": "access-1", "account_id": "account-1"}}"#,
+        )
+        .unwrap();
+        let login = credentials::set_chatgpt_login(&root, &auth).unwrap();
+        assert_eq!(login.path.as_deref(), Some(auth.as_path()));
+        assert!(saved().contains("ARKO_CODEX_AUTH="));
+        assert_eq!(stamp(), before, "the user's own .env is untouched");
     }
 
     #[test]

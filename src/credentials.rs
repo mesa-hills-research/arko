@@ -83,13 +83,14 @@ const DOTENV_KEYS: [&str; 13] = [
     crate::remote::HOST_VARIABLE,
 ];
 
-/// What was entered on the setup screen or in the keys menu in this run: it
-/// comes before every other source.
-static ENTERED: Mutex<Vec<(&str, String)>> = Mutex::new(Vec::new());
+/// What was entered on the setup screen, in the keys menu or in an app's
+/// accounts in this run, by the Arko `.env` it was saved in: it comes
+/// before every other source for the sessions of that Arko folder.
+static ENTERED: Mutex<Vec<(PathBuf, &str, String)>> = Mutex::new(Vec::new());
 
-/// The settings removed from Arko's own `.env` in this run: what it held as
-/// Arko started is no longer read.
-static FORGOTTEN: Mutex<Vec<&str>> = Mutex::new(Vec::new());
+/// The settings removed from an Arko `.env` in this run (with that file):
+/// what it held as Arko started is no longer read.
+static FORGOTTEN: Mutex<Vec<(PathBuf, &str)>> = Mutex::new(Vec::new());
 
 /// Where a setting comes from.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -111,31 +112,52 @@ fn lookup(name: &str) -> Option<(String, Source)> {
 }
 
 /// Where a session's settings and keys are looked up, in this order: what
-/// was entered in this process (the setup screen, the keys menu, an app's
-/// accounts), the process's environment, the nearest `.env` in the
-/// session's folder or a parent, the `.env` beside Arko's program, and the
-/// one in Arko's folder. The files are read once, as the `Env` is made.
+/// was entered in this process for its Arko folder (the setup screen, the
+/// keys menu, an app's accounts), the process's environment, the nearest
+/// `.env` in the session's folder or a parent, the `.env` beside Arko's
+/// program, and the one in Arko's folder, where keys are saved. The files
+/// are read once, as the `Env` is made.
 #[derive(Debug, Clone, Default)]
 pub struct Env {
     /// The settings in the files, each with the first file that sets it.
     files: Arc<HashMap<&'static str, (String, PathBuf)>>,
+    /// The `.env` in Arko's folder: where keys are saved, and what was
+    /// entered and removed in this run goes by. `None` when Arko's folder
+    /// isn't known.
+    arko: Option<PathBuf>,
 }
 
 impl Env {
     /// The `.env` files for `folder` (a session's workspace, else the
     /// current directory's), with the one beside Arko's program when
-    /// `beside_binary`, and Arko's own.
+    /// `beside_binary`, and the one in Arko's folder (ARKO_HOME, else the
+    /// user's data folder).
     pub fn for_folder(folder: Option<&Path>, beside_binary: bool) -> Env {
-        let beside = beside_binary
+        let root = session::data_root().ok();
+        Env::for_folder_in(folder, beside_binary, root.as_deref())
+    }
+
+    /// As [`for_folder`](Self::for_folder), with Arko's folder `root` (an
+    /// app's, or [`Options::root`](crate::Options::root)): its `.env` is
+    /// read last, and keys are saved there.
+    pub fn for_folder_in(folder: Option<&Path>, beside_binary: bool, root: Option<&Path>) -> Env {
+        let program = beside_binary
             .then(|| std::env::current_exe().ok())
-            .flatten()
-            .and_then(|program| program.parent().map(|folder| folder.join(".env")));
-        Env::read(&dotenv_paths(folder, beside, arko_dotenv().ok()))
+            .flatten();
+        Env::for_program(folder, program.as_deref(), root)
+    }
+
+    /// As [`for_folder_in`](Self::for_folder_in), with the `.env` beside
+    /// `program` (Arko's program, when it is read).
+    fn for_program(folder: Option<&Path>, program: Option<&Path>, root: Option<&Path>) -> Env {
+        let beside = program.and_then(|program| program.parent().map(|folder| folder.join(".env")));
+        let arko = root.map(|root| root.join(".env"));
+        Env::read(&dotenv_paths(folder, beside, arko.clone()), arko)
     }
 
     /// The settings in the files at `paths`, in order: the first that sets
-    /// one is read.
-    fn read(paths: &[PathBuf]) -> Env {
+    /// one is read. `arko` is Arko's own `.env`.
+    fn read(paths: &[PathBuf], arko: Option<PathBuf>) -> Env {
         let mut values = HashMap::new();
         for path in paths {
             for (key, value) in read_dotenv(path) {
@@ -144,6 +166,59 @@ impl Env {
         }
         Env {
             files: Arc::new(values),
+            arko,
+        }
+    }
+
+    /// The `.env` in Arko's folder, where keys are saved.
+    pub fn arko_dotenv(&self) -> Result<PathBuf, String> {
+        self.arko
+            .clone()
+            .ok_or_else(|| "Arko's folder isn't known: set ARKO_HOME".to_string())
+    }
+
+    /// What was entered as `name` in this run, for Arko's folder.
+    fn entered(&self, name: &str) -> Option<String> {
+        let arko = self.arko.as_ref()?;
+        ENTERED
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|(file, key, _)| file == arko && *key == name)
+            .map(|(_, _, value)| value.clone())
+    }
+
+    /// `value` was entered as `name` (and saved in Arko's `.env`): it comes
+    /// first for this Arko folder's sessions from now on.
+    fn enter(&self, name: &'static str, value: String) {
+        let Some(arko) = &self.arko else {
+            return;
+        };
+        let mut entered = ENTERED.lock().unwrap();
+        entered.retain(|(file, key, _)| !(file == arko && *key == name));
+        entered.push((arko.clone(), name, value));
+        FORGOTTEN
+            .lock()
+            .unwrap()
+            .retain(|(file, key)| !(file == arko && *key == name));
+    }
+
+    /// `name` was removed from Arko's `.env`: what it held, and what was
+    /// entered as it, are no longer read.
+    fn forget(&self, name: &'static str) {
+        let Some(arko) = &self.arko else {
+            return;
+        };
+        ENTERED
+            .lock()
+            .unwrap()
+            .retain(|(file, key, _)| !(file == arko && *key == name));
+        let mut forgotten = FORGOTTEN.lock().unwrap();
+        if !forgotten
+            .iter()
+            .any(|(file, key)| file == arko && *key == name)
+        {
+            forgotten.push((arko.clone(), name));
         }
     }
 
@@ -154,12 +229,12 @@ impl Env {
 
     /// A setting and where it comes from.
     pub fn lookup(&self, name: &str) -> Option<(String, Source)> {
-        if let Some(value) = entered(name) {
+        if let Some(value) = self.entered(name) {
             return Some((value, Source::Entered));
         }
         // A Gemini key entered in this run comes before the older name too,
         // which arko reads first.
-        if name == GOOGLE_KEY && entered(GEMINI_KEY).is_some() {
+        if name == GOOGLE_KEY && self.entered(GEMINI_KEY).is_some() {
             return None;
         }
         if let Some(value) = std::env::var(name)
@@ -176,8 +251,12 @@ impl Env {
     /// removed from Arko's own `.env` in this run.
     fn file_entry(&self, name: &str) -> Option<(String, PathBuf)> {
         let (value, path) = self.files.get(name)?;
-        let forgotten = FORGOTTEN.lock().unwrap().contains(&name);
-        if forgotten && arko_dotenv().is_ok_and(|arko| arko == *path) {
+        let forgotten = FORGOTTEN
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(file, key)| file == path && *key == name);
+        if forgotten && self.arko.as_ref() == Some(path) {
             return None;
         }
         Some((value.clone(), path.clone()))
@@ -274,23 +353,17 @@ pub fn announce(change: KeyChange) {
 }
 
 fn entered(name: &str) -> Option<String> {
-    let entered = ENTERED.lock().unwrap();
-    entered
-        .iter()
-        .find(|(key, _)| *key == name)
-        .map(|(_, value)| value.clone())
+    current().entered(name)
 }
 
 fn enter(name: &'static str, value: String) {
-    let mut entered = ENTERED.lock().unwrap();
-    entered.retain(|(key, _)| *key != name);
-    entered.push((name, value));
+    current().enter(name, value);
 }
 
-/// Arko's own `.env`, in its folder: where the setup screen and the keys
-/// menu save.
+/// Arko's own `.env`, in the session's Arko folder: where the setup screen
+/// and the keys menu save.
 pub fn arko_dotenv() -> Result<PathBuf, String> {
-    Ok(session::data_root()?.join(".env"))
+    current().arko_dotenv()
 }
 
 /// The settings Arko reads in the `.env` file at `path`. A relative
@@ -434,15 +507,17 @@ pub fn chatgpt_login(flag: Option<&Path>) -> ChatGptLogin {
 }
 
 /// Uses the Codex auth.json at `path` as the ChatGPT login from now on,
-/// in this process and (saved as ARKO_CODEX_AUTH in Arko's .env) in later
-/// ones, when it holds a login; else why not.
-pub fn set_chatgpt_login(path: &Path) -> Result<ChatGptLogin, String> {
+/// for the sessions of Arko's folder `root`: in this process, and (saved as
+/// ARKO_CODEX_AUTH in its .env) in later ones, when it holds a login; else
+/// why not.
+pub fn set_chatgpt_login(root: &Path, path: &Path) -> Result<ChatGptLogin, String> {
+    let env = Env::for_folder_in(None, true, Some(root));
     let path = std::path::absolute(path).map_err(|error| error.to_string())?;
     check_login(&path).map_err(|why| format!("Could not use {}: {why}.", path.display()))?;
     let text = path.to_string_lossy().into_owned();
-    save(&arko_dotenv()?, CODEX_AUTH, &text)?;
-    enter(CODEX_AUTH, text);
-    Ok(chatgpt_login(None))
+    save(&env.arko_dotenv()?, CODEX_AUTH, &text)?;
+    env.enter(CODEX_AUTH, text);
+    Ok(crate::context::with_env(env, || chatgpt_login(None)))
 }
 
 /// Credentials a session can't start without.
@@ -710,10 +785,10 @@ pub struct Saved {
 /// Saves `value` as `key` in Arko's `.env` and uses it in this run, as the
 /// setup screen does.
 pub fn save_key(key: &'static Key, value: &str) -> Result<Saved, String> {
-    let dotenv = arko_dotenv()?;
+    let env = current();
+    let dotenv = env.arko_dotenv()?;
     save(&dotenv, key.name, value)?;
-    FORGOTTEN.lock().unwrap().retain(|name| *name != key.name);
-    enter(key.name, value.to_string());
+    env.enter(key.name, value.to_string());
     Ok(saved_text(&dotenv, key.name))
 }
 
@@ -732,15 +807,7 @@ pub fn remove_key(key: &'static Key) -> Result<KeyState, String> {
         });
     };
     unset(path, state.variable)?;
-    ENTERED
-        .lock()
-        .unwrap()
-        .retain(|(name, _)| *name != state.variable);
-    let mut forgotten = FORGOTTEN.lock().unwrap();
-    if !forgotten.contains(&state.variable) {
-        forgotten.push(state.variable);
-    }
-    drop(forgotten);
+    current().forget(state.variable);
     Ok(key_state(key))
 }
 
@@ -1392,6 +1459,44 @@ mod tests {
         assert_eq!(login.state, LoginState::Ready);
     }
 
+    /// A session reads the `.env` beside Arko's program, after its folder's,
+    /// and keys go to the `.env` of the Arko folder it is given.
+    #[test]
+    fn a_env_beside_the_program_is_read() {
+        if std::env::var_os(crate::remote::HOST_VARIABLE).is_some() {
+            return; // (Set in this process: it comes first.)
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let program = temp.path().join("bin").join("arko");
+        std::fs::create_dir_all(program.parent().unwrap()).unwrap();
+        std::fs::write(
+            program.with_file_name(".env"),
+            format!("{}=beside\n", crate::remote::HOST_VARIABLE),
+        )
+        .unwrap();
+        let work = temp.path().join("work");
+        std::fs::create_dir_all(&work).unwrap();
+        let root = temp.path().join("arko");
+        let env = Env::for_program(Some(&work), Some(&program), Some(&root));
+        assert_eq!(
+            env.var(crate::remote::HOST_VARIABLE).as_deref(),
+            Some("beside")
+        );
+        assert_eq!(env.arko_dotenv(), Ok(root.join(".env")));
+        std::fs::write(
+            work.join(".env"),
+            format!("{}=work\n", crate::remote::HOST_VARIABLE),
+        )
+        .unwrap();
+        let env = Env::for_program(Some(&work), Some(&program), Some(&root));
+        assert_eq!(
+            env.var(crate::remote::HOST_VARIABLE).as_deref(),
+            Some("work")
+        );
+        let without = Env::for_program(Some(&temp.path().join("elsewhere")), None, Some(&root));
+        assert_eq!(without.var(crate::remote::HOST_VARIABLE), None);
+    }
+
     /// A session reads the nearest `.env` in its folder or a parent first,
     /// then the one beside Arko's program, then Arko's own, each once: a
     /// setting comes from the first that sets it. Another folder reads its
@@ -1425,7 +1530,7 @@ mod tests {
 
         let paths = dotenv_paths(Some(&nested), Some(beside.clone()), Some(arko.clone()));
         assert_eq!(paths, [project.join(".env"), beside.clone(), arko.clone()]);
-        let env = Env::read(&paths);
+        let env = Env::read(&paths, Some(arko.clone()));
         let entry = |env: &Env, name: &str| env.file_entry(name);
         assert_eq!(
             entry(&env, SHELL),
@@ -1444,7 +1549,10 @@ mod tests {
             Some(("api-key".into(), arko.clone()))
         );
 
-        let other = Env::read(&dotenv_paths(Some(&other), None, Some(arko.clone())));
+        let other = Env::read(
+            &dotenv_paths(Some(&other), None, Some(arko.clone())),
+            Some(arko.clone()),
+        );
         assert_eq!(
             entry(&other, SHELL).map(|(value, _)| value).as_deref(),
             Some("cmd")
