@@ -69,6 +69,19 @@ pub struct Setup {
 /// See [`Setup::refuse`].
 pub type Refuse = Arc<dyn Fn(&arko_ai::Model) -> Option<String> + Send + Sync>;
 
+/// How long each worker of the session ran, by its handle (milliseconds),
+/// in its folder.
+const RUN_TIMES_FILE: &str = "worker-times.json";
+
+/// How long each worker of the session in `dir` ran, as last kept (none:
+/// a session from before they were kept).
+fn load_run_times(dir: &std::path::Path) -> BTreeMap<String, u64> {
+    std::fs::read_to_string(dir.join(RUN_TIMES_FILE))
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default()
+}
+
 /// A worker, as `/workers` tells it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct WorkerFacts {
@@ -409,7 +422,9 @@ impl Crew {
         }
         let mut events = workflow.subscribe_subagents();
         if let Some(feed) = &self.setup.feed {
-            // The workers of a resumed session, for the clients' lists.
+            // The workers of a resumed session, for the clients' lists, with
+            // how long they ran before.
+            let ran = load_run_times(&self.setup.session_dir);
             for run in workflow.subagents() {
                 let state = match run.state {
                     SubagentState::Queued => remote::WorkerState::Queued,
@@ -428,6 +443,7 @@ impl Crew {
                     state,
                     run.report.as_deref(),
                     run.since.timestamp_millis(),
+                    ran.get(&run.handle).copied().unwrap_or(0),
                 );
             }
         }
@@ -508,7 +524,33 @@ impl Crew {
             })
             .map(|record| record.task)
             .unwrap_or_default();
+        let ended = matches!(
+            change,
+            WorkerChange::Finished { .. }
+                | WorkerChange::Failed { .. }
+                | WorkerChange::Stopped { .. }
+        );
         feed.worker(handle, &task, change);
+        if ended {
+            self.save_run_times();
+        }
+    }
+
+    /// Keeps how long each worker ran with the session, to go on from when
+    /// it opens again.
+    fn save_run_times(&self) {
+        let Some(feed) = &self.setup.feed else {
+            return;
+        };
+        let times: BTreeMap<String, u64> = feed.worker_run_times().into_iter().collect();
+        let written = serde_json::to_vec_pretty(&times)
+            .map_err(std::io::Error::other)
+            .and_then(|text| {
+                crate::session::write_whole(&self.setup.session_dir.join(RUN_TIMES_FILE), &text)
+            });
+        if let Err(error) = written {
+            log::warn!("could not keep how long the workers ran: {error}");
+        }
     }
 
     fn workflow(&self) -> Option<Arc<Workflow>> {
@@ -708,6 +750,8 @@ impl Crew {
                 }
             })
             .await;
+            // How long they ran, the runs just stopped too.
+            self.save_run_times();
             // Mail publication schedules its own checkpoint. Await one here so
             // exiting immediately after a report preserves that report on resume.
             if let Err(error) = workflow.checkpoint().await {

@@ -2203,6 +2203,8 @@ pub(super) mod tests {
                 ended_at: None,
                 last: None,
                 report: None,
+                ran_ms: 0,
+                running_since: None,
             }),
             Activity::default,
         );
@@ -2265,6 +2267,8 @@ pub(super) mod tests {
             ended_at: (!state.is_active()).then_some(now),
             last: None,
             report: None,
+            ran_ms: 0,
+            running_since: None,
         }
     }
 

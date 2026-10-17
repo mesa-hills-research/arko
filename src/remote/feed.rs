@@ -369,6 +369,30 @@ pub struct WorkerSummary {
     pub last: Option<String>,
     /// Its report, once it finished.
     pub report: Option<String>,
+    /// How long its runs that ended ran, in milliseconds: the time it
+    /// worked (not the time it waited), in all its runs, also those before
+    /// the session was opened again.
+    pub ran_ms: u64,
+    /// While it runs: when its current run started (Unix milliseconds), to
+    /// add to `ran_ms` ([`run_time_ms`](Self::run_time_ms)).
+    pub running_since: Option<i64>,
+}
+
+impl WorkerSummary {
+    /// How long it has run in all its runs at `now` (Unix milliseconds):
+    /// the runs that ended, and the current one so far.
+    pub fn run_time_ms(&self, now: i64) -> u64 {
+        let current = self
+            .running_since
+            .map_or(0, |since| u64::try_from(now - since).unwrap_or(0));
+        self.ran_ms + current
+    }
+
+    /// Its current run, if it runs, ends at `now`: its time joins `ran_ms`.
+    fn stop_counting(&mut self, now: i64) {
+        self.ran_ms = self.run_time_ms(now);
+        self.running_since = None;
+    }
 }
 
 /// What became of a worker: what the workflow says of its runs.
@@ -795,6 +819,17 @@ impl Feed {
 
     pub fn activity(&self) -> Activity {
         self.lock().activity.clone()
+    }
+
+    /// How long each worker has run, by its ID, now: to keep with the
+    /// session, so that the time goes on from there when it opens again.
+    pub(crate) fn worker_run_times(&self) -> Vec<(String, u64)> {
+        let now = now_ms();
+        self.lock()
+            .workers
+            .iter()
+            .map(|worker| (worker.summary.id.clone(), worker.summary.run_time_ms(now)))
+            .collect()
     }
 
     /// The workers, in the order they started.
@@ -1465,17 +1500,21 @@ impl Feed {
         let mut ended = None;
         match change {
             WorkerChange::Queued => {
+                summary.stop_counting(now);
                 summary.state = WorkerState::Queued;
                 summary.started_at = None;
                 summary.ended_at = None;
             }
             WorkerChange::Started => {
+                summary.stop_counting(now);
                 summary.state = WorkerState::Running;
                 summary.started_at = Some(now);
+                summary.running_since = Some(now);
                 summary.ended_at = None;
                 summary.report = None;
             }
             WorkerChange::Finished { report } => {
+                summary.stop_counting(now);
                 summary.state = WorkerState::Finished;
                 summary.ended_at = Some(now);
                 let report = report.trim();
@@ -1486,6 +1525,7 @@ impl Feed {
                     .map(|report| Item::new(Kind::Reply, report));
             }
             WorkerChange::Failed { error } => {
+                summary.stop_counting(now);
                 summary.state = WorkerState::Failed;
                 summary.ended_at = Some(now);
                 summary.last = Some(render::cut(error, 160));
@@ -1495,6 +1535,7 @@ impl Feed {
                 );
             }
             WorkerChange::Stopped { reason } => {
+                summary.stop_counting(now);
                 summary.state = WorkerState::Stopped;
                 summary.ended_at = Some(now);
                 let reason = reason.trim();
@@ -1525,7 +1566,9 @@ impl Feed {
     }
 
     /// A worker of the session from before Arko started (a resumed
-    /// session): its summary, without a place in the transcript.
+    /// session): its summary, without a place in the transcript, with how
+    /// long it ran before (`ran_ms`). A run it goes on with counts from
+    /// when it starts again.
     pub fn worker_restored(
         &self,
         id: &str,
@@ -1533,6 +1576,7 @@ impl Feed {
         was: WorkerState,
         report: Option<&str>,
         since: i64,
+        ran_ms: u64,
     ) {
         let mut state = self.lock();
         if state.worker(id).is_some() {
@@ -1550,6 +1594,8 @@ impl Feed {
                 .map(str::trim)
                 .filter(|report| !report.is_empty())
                 .map(str::to_string),
+            ran_ms,
+            running_since: None,
         };
         state.workers.push(Worker {
             summary,
@@ -1575,6 +1621,8 @@ impl Feed {
                 ended_at: None,
                 last: None,
                 report: None,
+                ran_ms: 0,
+                running_since: Some(now_ms()),
             },
             placed: None,
             sent: None,
@@ -1779,6 +1827,8 @@ mod tests {
             ended_at: None,
             last: None,
             report: None,
+            ran_ms: 0,
+            running_since: None,
         };
         let mut changed = Item::new(Kind::Text, "0x").agent("main");
         changed.id = id;
@@ -2306,13 +2356,55 @@ mod tests {
         assert_eq!(feed.workers()[0].last.as_deref(), Some("the model failed"));
     }
 
+    /// A worker's run time is the time its runs ran, not the time it
+    /// waited between them, and a running one counts its current run so
+    /// far. One restored with a session goes on from what it ran before.
+    #[test]
+    fn a_workers_run_time_counts_its_runs() {
+        let pause = |ms| std::thread::sleep(Duration::from_millis(ms));
+        let feed = Feed::new("main");
+        let begun = now_ms();
+        feed.worker("r1", "Count", WorkerChange::Started);
+        pause(40);
+        feed.worker("r1", "Count", WorkerChange::Finished { report: "3." });
+        let first = feed.workers()[0].ran_ms;
+        assert!(first >= 40, "{first}");
+        assert_eq!(feed.workers()[0].running_since, None);
+        pause(200);
+        feed.worker("r1", "Count", WorkerChange::Started);
+        pause(40);
+        let running = feed.workers()[0].clone();
+        assert_eq!(running.ran_ms, first);
+        assert!(running.run_time_ms(now_ms()) >= first + 40);
+        feed.worker("r1", "Count", WorkerChange::Stopped { reason: "" });
+        let total = feed.workers()[0].ran_ms;
+        assert!(total >= first + 40);
+        let wall = u64::try_from(now_ms() - begun).unwrap();
+        assert!(
+            total + 200 <= wall,
+            "the wait doesn't count: {total} of {wall}"
+        );
+        assert_eq!(feed.worker_run_times(), [("r1".to_string(), total)]);
+        let resumed = Feed::new("main");
+        resumed.worker_restored("r1", "Count", WorkerState::Stopped, None, 0, total);
+        assert_eq!(resumed.workers()[0].ran_ms, total);
+        assert_eq!(resumed.workers()[0].run_time_ms(now_ms()), total);
+    }
+
     /// The workers of a resumed session are listed, without a place in the
     /// transcript; a worker heard of first by its own events runs.
     #[test]
     fn workers_are_known_from_a_saved_session_or_their_events() {
         let feed = Feed::new("main");
-        feed.worker_restored("r1", "Review", WorkerState::Finished, Some("All good."), 5);
-        feed.worker_restored("r1", "Again", WorkerState::Running, None, 6);
+        feed.worker_restored(
+            "r1",
+            "Review",
+            WorkerState::Finished,
+            Some("All good."),
+            5,
+            0,
+        );
+        feed.worker_restored("r1", "Again", WorkerState::Running, None, 6, 0);
         assert_eq!(feed.workers().len(), 1);
         assert_eq!(feed.workers()[0].ended_at, Some(5));
         assert!(items(&feed).is_empty());

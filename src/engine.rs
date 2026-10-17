@@ -1009,6 +1009,80 @@ mod tests {
     /// time (a process has one such session).
     static ALONE_TESTS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
+    /// How long a worker ran is kept with the session: when it opens again,
+    /// the worker's time goes on from there.
+    #[tokio::test]
+    async fn a_workers_run_time_is_kept_with_the_session() {
+        let temp = tempfile::tempdir().unwrap();
+        let bodies: Arc<Mutex<Vec<String>>> = Arc::default();
+        let server = ModelServer::start(Arc::new({
+            let bodies = bodies.clone();
+            move |_, body: String| {
+                bodies.lock().unwrap().push(body.clone());
+                Box::pin(async move {
+                    if body.contains("You are agent run r1") {
+                        tokio::time::sleep(Duration::from_millis(150)).await;
+                        complete("w1", "Counted three.")
+                    } else if body.contains("Counted three.") {
+                        reply("m3", "Noted.")
+                    } else if body.contains("call_m1") {
+                        reply("m2", "Started it.")
+                    } else {
+                        tool_call(
+                            "m1",
+                            crate::crew::START_AGENT,
+                            serde_json::json!({"agent": crate::agents::WORKER, "task": "Count."}),
+                        )
+                    }
+                })
+            }
+        }))
+        .await;
+        let (root, project) = (temp.path().join("arko"), temp.path().join("project"));
+        let (seam, ended) = open_app(&root, &project, &server, SessionChoice::New).await;
+        let id = seam.session.id.clone();
+        seam.input
+            .send(Input::Message(app_message("Start a worker.")))
+            .unwrap();
+        let finished = || {
+            seam.feed.subscribe().0.workers.into_iter().find(|worker| {
+                worker.id == "r1" && worker.state == crate::remote::WorkerState::Finished
+            })
+        };
+        tokio::time::timeout(Duration::from_secs(30), async {
+            while finished().is_none() {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap();
+        idle(&seam).await;
+        let ran = finished().unwrap().ran_ms;
+        assert!(ran >= 150, "{ran}");
+        quit(seam, ended).await;
+        let kept = std::fs::read_to_string(
+            Session::open(&root, &id)
+                .unwrap()
+                .dir
+                .join("worker-times.json"),
+        )
+        .unwrap();
+        assert!(kept.contains(&format!("\"r1\": {ran}")), "{kept}");
+
+        let (seam, ended) = open_app(&root, &project, &server, SessionChoice::Resume(id)).await;
+        let restored = seam
+            .feed
+            .subscribe()
+            .0
+            .workers
+            .into_iter()
+            .find(|worker| worker.id == "r1")
+            .unwrap();
+        assert_eq!(restored.ran_ms, ran);
+        assert_eq!(restored.running_since, None);
+        quit(seam, ended).await;
+    }
+
     /// A front end hears when the session's workflow starts loading, after
     /// its questions: a terminal takes Ctrl-C for the session from then on.
     #[tokio::test]

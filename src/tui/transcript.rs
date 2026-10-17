@@ -2321,6 +2321,8 @@ mod tests {
             ended_at: None,
             last: Some("cargo test".into()),
             report: None,
+            ran_ms: 0,
+            running_since: None,
         }));
         let mut reply = item(7, Kind::Reply, "Done.");
         reply.turn = Some(1);
