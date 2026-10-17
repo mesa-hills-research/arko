@@ -78,6 +78,16 @@ pub fn config(folders: &[PathBuf]) -> Option<SkillsConfig> {
     })
 }
 
+/// The skill files and folders in `folders` now, each with what loading
+/// makes of it: the name the agents load it under, or why it is skipped.
+/// Read as `list` reads them, by the same code.
+pub fn scan(folders: &[PathBuf], workspace: &Path) -> Vec<arko_agents::skill::SkillScan> {
+    match config(folders) {
+        None => Vec::new(),
+        Some(config) => arko_agents::skill::scan(&config, workspace),
+    }
+}
+
 /// The skills in `folders` now: those loaded on demand, and those always
 /// in the instructions.
 pub fn list(folders: &[PathBuf], workspace: &Path) -> Result<SkillPromptContext, String> {

@@ -23,16 +23,25 @@ pub struct McpServerEntry {
     pub skipped: Option<String>,
 }
 
-/// A skill the agents get.
+/// A skill the agents get, or a skill file or folder they don't get and
+/// why.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SkillEntry {
-    /// Its name, as the agents load it (a name an earlier folder has is
-    /// renamed: `name-2`).
+    /// Where it is: a skill's folder, or its file (a `.md`, or a `.skill`
+    /// bundle).
+    pub path: PathBuf,
+    /// Its name, as the agents load it (a name an earlier skill has is
+    /// renamed: `name-2`). One that can't be read goes by its folder's or
+    /// file's name.
     pub name: String,
-    /// Its description (empty for one always in the instructions).
+    /// Its description (empty for one that can't be read).
     pub description: String,
     /// It is always in the agents' instructions, not loaded on demand.
     pub auto_load: bool,
+    /// Why the agents don't get it, when they don't: why it can't be read
+    /// (such as its front matter), or a skill with the same content
+    /// before it.
+    pub skipped: Option<String>,
 }
 
 /// What an agent session would get.
@@ -41,7 +50,8 @@ pub struct Extensions {
     /// The MCP servers, in the order a session reads their files: the
     /// files given, the project's `.mcp.json`, Arko's `mcp.json`.
     pub servers: Vec<McpServerEntry>,
-    /// The skills, those always in the instructions first.
+    /// The skills, in the order the agents get them: the folders' (see
+    /// `skills`) in order, each's by name.
     pub skills: Vec<SkillEntry>,
     /// What can't be read: a file, a skill folder.
     pub notes: Vec<String>,
@@ -121,24 +131,24 @@ pub fn list(root: &Path, workspace: &Path, mcp_config: &[PathBuf]) -> Extensions
         }
     }
     let folders = skills::folders(workspace, root);
-    match skills::list(&folders, workspace) {
-        Ok(found) => {
-            extensions
-                .skills
-                .extend(found.auto_loaded_skills.iter().map(|skill| SkillEntry {
-                    name: skill.name.clone(),
-                    description: String::new(),
-                    auto_load: true,
-                }));
-            extensions
-                .skills
-                .extend(found.on_demand_skills.iter().map(|skill| SkillEntry {
-                    name: skill.name.clone(),
-                    description: skill.description.clone(),
-                    auto_load: false,
-                }));
-        }
-        Err(error) => extensions.notes.push(format!("skills not read: {error}")),
+    extensions.skills = skills::scan(&folders, workspace)
+        .into_iter()
+        .map(|skill| SkillEntry {
+            path: skill.path,
+            name: skill.name,
+            description: skill.description,
+            auto_load: skill.auto_load,
+            skipped: skill.skipped,
+        })
+        .collect();
+    // A file that can't be read keeps the session from loading any.
+    if extensions
+        .skills
+        .iter()
+        .any(|skill| skill.skipped.is_some())
+        && let Err(error) = skills::list(&folders, workspace)
+    {
+        extensions.notes.push(format!("skills not read: {error}"));
     }
     extensions
 }
@@ -148,8 +158,8 @@ mod tests {
     use super::*;
 
     /// The servers a session would start, and those it leaves out with
-    /// why; the skills the agents get, and not the files that aren't
-    /// skills.
+    /// why. The skills, with where each is, and those the agents don't
+    /// get with why, but not the files that aren't skills.
     #[test]
     fn what_a_session_would_get_is_listed_with_what_it_leaves_out() {
         let temp = tempfile::tempdir().unwrap();
@@ -177,7 +187,10 @@ mod tests {
         let missing = temp.path().join("gone.json");
         let skills = workspace.join(".agents/skills");
         for (folder, text) in [
-            ("ok", "---\nname: ok\ndescription: A skill.\n---\nDo the ok thing.\n"),
+            (
+                "ok",
+                "---\nname: ok\ndescription: A skill.\n---\nDo the ok thing.\n",
+            ),
             (".hidden", "---\nname: .hidden\ndescription: d\n---\nx\n"),
             ("notes", "No front matter.\n"),
         ] {
@@ -231,25 +244,29 @@ mod tests {
         assert!(listed.notes.iter().any(|note| note.contains("gone.json")));
 
         // (The user's own skill folders may add theirs.)
-        let names: Vec<&str> = listed
+        let ours: Vec<(&str, Option<&str>)> = listed
             .skills
             .iter()
-            .map(|skill| skill.name.as_str())
+            .filter(|skill| skill.path.starts_with(&skills))
+            .map(|skill| (skill.name.as_str(), skill.skipped.as_deref()))
             .collect();
+        assert_eq!(ours.len(), 3, "{ours:?}");
+        assert_eq!(ours[0], ("flat", None));
+        assert_eq!(ours[1].0, "notes");
         assert!(
-            names.contains(&"flat") && names.contains(&"ok"),
-            "{names:?}"
+            ours[1].1.is_some_and(|why| why.contains("frontmatter")),
+            "{ours:?}"
         );
-        assert!(
-            !names
-                .iter()
-                .any(|name| *name == ".hidden" || *name == "notes")
-        );
+        assert_eq!(ours[2], ("ok", None));
         let ok = listed
             .skills
             .iter()
             .find(|skill| skill.name == "ok")
             .unwrap();
         assert_eq!((ok.description.as_str(), ok.auto_load), ("A skill.", false));
+        assert_eq!(ok.path, skills.join("ok"));
+        assert_eq!(listed.skills[0].path, skills.join("flat.md"));
+        // A skill that can't be read isn't a note: the others load.
+        assert!(!listed.notes.iter().any(|note| note.contains("skills")));
     }
 }
