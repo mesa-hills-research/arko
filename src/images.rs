@@ -48,6 +48,17 @@ struct Store {
     /// IDs, oldest first.
     order: VecDeque<u64>,
     bytes: usize,
+    /// The images by their bytes' hash: the same image (one restored again
+    /// with its conversation) is kept once.
+    by_hash: HashMap<u64, Vec<u64>>,
+}
+
+fn hash_of(bytes: &[u8], mime: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    mime.hash(&mut hasher);
+    bytes.hash(&mut hasher);
+    hasher.finish()
 }
 
 impl Images {
@@ -58,7 +69,27 @@ impl Images {
 
     /// Keeps `bytes`, an image of type `mime`, and names it.
     pub(crate) fn add(&self, bytes: Arc<[u8]>, mime: &str, label: &str) -> ImageRef {
+        let hash = hash_of(&bytes, mime);
         let mut store = lock(&self.inner);
+        // The same image again: the one kept, as the latest.
+        let same = store.by_hash.get(&hash).and_then(|ids| {
+            ids.iter().copied().find(|id| {
+                store
+                    .images
+                    .get(id)
+                    .is_some_and(|kept| kept.mime == mime && kept.bytes[..] == bytes[..])
+            })
+        });
+        if let Some(id) = same {
+            store.order.retain(|kept| *kept != id);
+            store.order.push_back(id);
+            return ImageRef {
+                id,
+                mime: mime.to_string(),
+                label: label.to_string(),
+                bytes: bytes.len(),
+            };
+        }
         store.next += 1;
         let id = store.next;
         let shown = ImageRef {
@@ -67,6 +98,7 @@ impl Images {
             label: label.to_string(),
             bytes: bytes.len(),
         };
+        store.by_hash.entry(hash).or_default().push(id);
         store.bytes += bytes.len();
         store.images.insert(
             id,
@@ -83,6 +115,13 @@ impl Images {
                 && let Some(image) = store.images.remove(&old)
             {
                 store.bytes -= image.bytes.len();
+                let hash = hash_of(&image.bytes, &image.mime);
+                if let Some(ids) = store.by_hash.get_mut(&hash) {
+                    ids.retain(|kept| *kept != old);
+                    if ids.is_empty() {
+                        store.by_hash.remove(&hash);
+                    }
+                }
             }
         }
         shown
@@ -136,12 +175,13 @@ mod tests {
     #[test]
     fn the_latest_images_are_kept() {
         let images = Images::default();
-        let quarter: Arc<[u8]> = vec![0u8; BUDGET / 4].into();
-        let first = images.add(quarter.clone(), "image/png", "a.png");
+        // (Each image its own: the same one is kept once.)
+        let quarter = |n: u8| -> Arc<[u8]> { vec![n; BUDGET / 4].into() };
+        let first = images.add(quarter(0), "image/png", "a.png");
         assert_eq!(first.bytes, BUDGET / 4);
         assert_eq!(images.get(first.id).unwrap().label, "a.png");
-        let later: Vec<ImageRef> = (0..4)
-            .map(|_| images.add(quarter.clone(), "image/png", "b.png"))
+        let later: Vec<ImageRef> = (1..=4)
+            .map(|n| images.add(quarter(n), "image/png", "b.png"))
             .collect();
         assert!(images.get(first.id).is_none());
         assert!(later.iter().all(|image| images.get(image.id).is_some()));
@@ -156,5 +196,21 @@ mod tests {
                 .add_image(&arko_ai::Image::new_url("https://x/y.png"), "y")
                 .is_none()
         );
+    }
+
+    /// The same image added again (a conversation restored again) is kept
+    /// once, under its first ID, as the latest.
+    #[test]
+    fn the_same_image_is_kept_once() {
+        let images = Images::default();
+        let first = images.add(Arc::from(&b"pixels"[..]), "image/png", "a.png");
+        let other = images.add(Arc::from(&b"other"[..]), "image/png", "b.png");
+        let again = images.add(Arc::from(&b"pixels"[..]), "image/png", "a again.png");
+        assert_eq!(again.id, first.id);
+        assert_eq!(again.label, "a again.png");
+        assert_ne!(other.id, first.id);
+        let as_jpeg = images.add(Arc::from(&b"pixels"[..]), "image/jpeg", "a.jpg");
+        assert_ne!(as_jpeg.id, first.id, "another type is another image");
+        assert_eq!(lock(&images.inner).bytes, 6 + 5 + 6);
     }
 }
