@@ -19,14 +19,15 @@ required-features = ["tui"]
 
 [features]
 default = ["tui", "remote"]
-# The command line and the terminal's front ends: the full-screen view, the
-# line prompt, the setup screen. An app that drives sessions builds without it.
+# The command line and the terminal's front ends (the full-screen view, the
+# line prompt, the setup screen). An app that drives sessions builds without it.
 tui = ["dep:arboard", "dep:clap", "dep:crossterm", "dep:ratatui", "dep:rustyline", "dep:windows-sys"]
-# The web page's server (--remote, /remote): without it, the session says
+# The web page's server (--remote, /remote). Without it, a session says
 # this build has no web page.
 remote = ["dep:axum", "dep:if-addrs", "dep:qrcodegen"]
-# For tests only, also an app's built on the library: `arko::testing` (a local model
-# server and the client for it, `Options::client`). Not for builds that ship.
+# `arko::testing` (a local model server and the client for it,
+# `Options::client`), for tests only, also those of an app built on the
+# library. Not for builds that ship.
 testing = []
 
 [dependencies]
@@ -36,16 +37,16 @@ arko_workflows = { path = "../arko_framework/arko_workflows" }
 arko_index = { path = "../arko_framework/arko_index" }
 
 async-trait = "0.1.79"
-# The system clipboard, for the full-screen view's copies: X11 (and
-# XWayland), Wayland where the compositor has data-control, macOS, Windows.
+# The system clipboard, for the full-screen view's copies (X11 and XWayland,
+# Wayland where the compositor has data-control, macOS, Windows).
 arboard = { version = "3.6.1", default-features = false, features = ["wayland-data-control"], optional = true }
-# The remote web page's server (--remote): HTTP/1.1, JSON and SSE only.
+# The remote web page's server (--remote), with HTTP/1.1, JSON and SSE only.
 axum = { version = "0.8.9", default-features = false, features = ["http1", "json", "tokio"], optional = true }
 base64 = "0.22.1"
 chrono = { version = "0.4.38", features = ["serde"] }
 clap = { version = "4.5", features = ["derive"], optional = true }
-# The full-screen view (the default front end): terminal events as a
-# stream, and copying through the terminal (OSC 52).
+# The full-screen view (the default front end), with terminal events as a
+# stream and copying through the terminal (OSC 52).
 crossterm = { version = "0.29.0", features = ["event-stream", "osc52"], optional = true }
 dotenvy = "0.15.7"
 env_logger = "0.10"
