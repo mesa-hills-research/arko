@@ -509,12 +509,12 @@ pub fn whose(argument: &str) -> (Whose, &str) {
     }
 }
 
-/// Reads a handover size, a number of tokens, as `/handover-at` takes it:
-/// `200000`, `200,000`, `200_000`, `200k`, `950k`, `1.2M` or `1M` (`k` and
-/// `M` in either case, with a decimal point before them). The size is kept
-/// as given, to the token: a part of a token is refused. It is at least
-/// [`MIN_TOKENS`] (20,000). There is no largest here: where a size is set,
-/// it is held under what the agent's model leaves room for.
+/// Reads a handover size, a number of tokens, as `/handover-at` takes it,
+/// such as `200000`, `200,000`, `200_000`, `200k`, `950k`, `1.2M` or `1M`
+/// (`k` and `M` in either case, with a decimal point before them). The
+/// size is kept as given, to the token, and a part of a token is refused.
+/// It is at least [`MIN_TOKENS`] (20,000). There is no largest here, as a
+/// size that is set is held under what the agent's model leaves room for.
 pub fn parse_tokens(text: &str) -> Result<usize, String> {
     let text = text.trim();
     let invalid = || format!("`{text}` isn't a number of tokens, such as 200000, 200k or 1.2M.");

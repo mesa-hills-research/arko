@@ -1,6 +1,7 @@
-//! The sessions in Arko's folder, as an app lists them: their names, what
-//! they are and where they work, when they were last used, their
-//! conversations and who has them open, and renaming and deleting them.
+//! The sessions in Arko's folder, as an app lists them, with their names,
+//! what they are and where they work, when they were last used, their
+//! conversations and who has them open, and renaming, branching and
+//! deleting them.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -107,8 +108,8 @@ pub(crate) fn title(
 /// Why a session wasn't branched.
 #[derive(Debug, Clone, PartialEq)]
 pub enum BranchError {
-    /// It is open (who has it, if they said): its own requests branch it
-    /// there (`Request::Branch`).
+    /// It is open (with who has it, if they said), and its own requests
+    /// branch it there (`Request::Branch`).
     Locked {
         holder: Option<Holder>,
     },
@@ -136,11 +137,12 @@ impl std::fmt::Display for BranchError {
 /// Why a session without a conversation isn't branched.
 pub(crate) const NO_CONVERSATION: &str = "Send a message first, then branch from it.";
 
-/// Branches the session `id`, closed, from what it saved: a new session
-/// with all of its main agent's current conversation and its settings, as
-/// the session's own `Request::Branch` with no message makes one. Replies
-/// the new session's ID. The session is held while it is read, so no one
-/// opens it meanwhile: an open one is refused (`Locked`).
+/// Branches the session `id`, closed, from what it saved. That's a new
+/// session with all of its main agent's current conversation and its
+/// settings, as the session's own `Request::Branch` with no message makes
+/// one. Replies the new session's ID. The session is held while it is
+/// read, so no one opens it meanwhile, and an open one is refused
+/// (`Locked`).
 pub fn branch(root: &Path, id: &str) -> Result<String, BranchError> {
     let session = Session::open(root, id).map_err(BranchError::Io)?;
     let locked = |error| match error {

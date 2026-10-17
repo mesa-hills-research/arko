@@ -369,18 +369,18 @@ pub struct WorkerSummary {
     pub last: Option<String>,
     /// Its report, once it finished.
     pub report: Option<String>,
-    /// How long its runs that ended ran, in milliseconds: the time it
+    /// How long its runs that ended ran, in milliseconds. That's the time it
     /// worked (not the time it waited), in all its runs, also those before
     /// the session was opened again.
     pub ran_ms: u64,
-    /// While it runs: when its current run started (Unix milliseconds), to
+    /// While it runs, when its current run started (Unix milliseconds), to
     /// add to `ran_ms` ([`run_time_ms`](Self::run_time_ms)).
     pub running_since: Option<i64>,
 }
 
 impl WorkerSummary {
-    /// How long it has run in all its runs at `now` (Unix milliseconds):
-    /// the runs that ended, and the current one so far.
+    /// How long it has run in all its runs at `now` (Unix milliseconds),
+    /// the runs that ended and the current one so far.
     pub fn run_time_ms(&self, now: i64) -> u64 {
         let current = self
             .running_since
