@@ -74,6 +74,16 @@
       return true;
     }
 
+    /** Takes the item `id` out, or returns false if it isn't kept. */
+    remove(id) {
+      const item = this.byId.get(id);
+      if (!item) return false;
+      this.items.splice(this.items.indexOf(item), 1);
+      this.byId.delete(id);
+      this.counts[item.agent === MAIN ? 'main' : 'workers'] -= 1;
+      return true;
+    }
+
     /** The item with this one's ID is now this one. */
     change(item) {
       const old = this.byId.get(item.id);
@@ -116,7 +126,8 @@
    * tool activity folded into one line (Messages). `worker` picks a
    * worker's own transcript instead of the main one.
    */
-  function layout(items, view, worker) {
+  function layout(all, view, worker) {
+    const items = pendingLast(all);
     const rows = [];
     // A result shows under its call, which other items may have followed
     // by the time it came.
@@ -180,6 +191,25 @@
       if (item.status === 'running') row.count.running += 1;
     }
     return rows;
+  }
+
+  /** `items` with each note the agent hasn't read yet at the end of its
+   * conversation, below the agent's output, which goes on above it. */
+  function pendingLast(items) {
+    const out = [];
+    let waiting = [];
+    for (const item of items) {
+      if (item.pending) {
+        waiting.push(item);
+        continue;
+      }
+      if (item.kind === 'conversation') {
+        out.push(...waiting);
+        waiting = [];
+      }
+      out.push(item);
+    }
+    return out.concat(waiting);
   }
 
   /** The first line of an agent's thinking, for its folded row: the first

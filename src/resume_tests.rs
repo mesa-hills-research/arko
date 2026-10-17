@@ -167,6 +167,12 @@ async fn resume_goes_back_to_the_conversation_new_left() {
     assert_eq!(second.matches("Use the metric system.").count(), 1, "{second}");
     assert_eq!(harness.conversations.current, Some(1));
     assert_eq!(summary(&harness), "Green.");
+    // The line waited, pending, until that message took it, and shows just
+    // before it.
+    let items = harness.feed.subscribe().0.items;
+    let at = |text: &str| items.iter().position(|item| item.text == text).unwrap();
+    assert!(!items[at("Use the metric system.")].pending);
+    assert_eq!(at("Use the metric system.") + 1, at("And the colour?"));
 }
 
 /// A line typed during a turn that ends before the agent reads it starts

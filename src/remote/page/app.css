@@ -393,6 +393,8 @@ kbd {
   white-space: pre-wrap;
 }
 .tag { font-size: 12px; color: var(--muted); margin-top: 3px; }
+/* A note the agent hasn't read yet. */
+.row.user.pending .bubble { color: var(--muted); }
 
 .row.reply { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 10px 14px; }
 .row.reply.report { border-left: 3px solid var(--success); }

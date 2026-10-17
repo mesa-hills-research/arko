@@ -57,6 +57,8 @@ const WORKER_BUDGET: Budget = Budget {
 const CALL_ITEMS: usize = 512;
 /// The images kept for calls whose items haven't come yet.
 const EARLY_IMAGES: usize = 64;
+/// The notes the main agent read before their items came that are kept.
+const EARLY_READS: usize = 64;
 /// Updates a client's stream may fall behind by before it starts over.
 const BACKLOG: usize = 2048;
 /// A worker's summary goes out at most this often while it works (four
@@ -128,7 +130,8 @@ pub enum Source {
 pub enum Delivery {
     /// It started a turn.
     Turn,
-    /// It reached the working agent as a note.
+    /// It went to the working agent as a note, `pending` until the agent
+    /// reads it.
     Note,
     /// It answered the agent's question.
     Answer,
@@ -231,6 +234,13 @@ pub struct Item {
     /// other items may have followed by the time the result came.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub call: Option<u64>,
+    /// A note of the user's that the main agent hasn't read yet. Clients
+    /// show it muted, after the other items of its conversation, because
+    /// the agent's output goes on above it. Once the agent reads it, the
+    /// item goes ([`Update::Remove`]) and comes again where the agent read
+    /// it ([`Update::Item`]), with a new `id` and this unset.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub pending: bool,
 }
 
 impl Item {
@@ -258,6 +268,7 @@ impl Item {
             worker: None,
             from: None,
             call: None,
+            pending: false,
         }
     }
 
@@ -281,6 +292,22 @@ impl Item {
     /// Whether it is the main transcript's (or a worker's).
     pub fn is_main(&self) -> bool {
         self.agent == MAIN_AGENT
+    }
+
+    /// Whether it goes beside the agent's output rather than after it. That
+    /// is what the user typed while the agent worked (a note it hasn't
+    /// read, a command, a line waiting for a turn of its own) and Arko's
+    /// output. The agent's text goes on in the item it was in, above it.
+    fn is_aside(&self) -> bool {
+        match self.kind {
+            Kind::Output => true,
+            Kind::User => match self.delivery {
+                Some(Delivery::Note) => self.pending,
+                Some(Delivery::Command | Delivery::Queued) => true,
+                _ => false,
+            },
+            _ => false,
+        }
     }
 
     fn size(&self) -> usize {
@@ -651,11 +678,24 @@ impl Lane {
         }
     }
 
+    /// Where the item `id` is, while it is kept.
+    fn index(&self, id: u64) -> Option<usize> {
+        // IDs grow as items are pushed.
+        self.items.binary_search_by_key(&id, |item| item.id).ok()
+    }
+
     /// The item `id`, while it is kept.
     fn find(&mut self, id: u64) -> Option<&mut Item> {
-        // IDs grow as items are pushed.
-        let index = self.items.binary_search_by_key(&id, |item| item.id).ok()?;
+        let index = self.index(id)?;
         self.items.get_mut(index)
+    }
+
+    /// Takes the item `id` out, while it is kept.
+    fn remove(&mut self, id: u64) -> Option<Item> {
+        let item = self.items.remove(self.index(id)?)?;
+        self.bytes = self.bytes.saturating_sub(item.size());
+        self.wholes -= item.kept_size();
+        Some(item)
     }
 
     /// Adds `text` to the item `id`; false when it isn't kept.
@@ -728,6 +768,12 @@ struct State {
     /// Images that came before their call's item, by call.
     early_images: VecDeque<(Uuid, Vec<crate::images::ImageRef>)>,
     workers: Vec<Worker>,
+    /// The user's notes the main agent hasn't read, by their numbers on the
+    /// workflow's note board, with their items.
+    unread_notes: Vec<(u64, u64)>,
+    /// The latest notes the main agent read before their items came, by
+    /// number, since an item may come just after.
+    early_reads: VecDeque<u64>,
 }
 
 impl State {
@@ -872,8 +918,10 @@ impl Feed {
                     .open_text
                     .insert(item.agent.clone(), (item.kind, item.id));
             }
-            // A worker's placeholder doesn't break the main agent's text.
+            // A worker's placeholder doesn't break the main agent's text,
+            // nor does what goes beside it, so the next chunks still join it.
             Kind::WorkerLine => {}
+            _ if item.is_aside() => {}
             _ => {
                 state.open_text.remove(&item.agent);
             }
@@ -1163,6 +1211,15 @@ impl Feed {
                     self.discard(&mut state, &agent, streamed);
                 }
             }
+            // The update names the notes it gave the agent (`note:7`).
+            AgentEvent::ContextInjected { ids, .. } if main => {
+                let notes = ids
+                    .iter()
+                    .filter_map(|id| id.strip_prefix("note:")?.parse::<u64>().ok());
+                for seq in notes {
+                    self.note_read(&mut state, seq);
+                }
+            }
             AgentEvent::RetryScheduled {
                 attempt,
                 delay_ms,
@@ -1249,6 +1306,82 @@ impl Feed {
             state.turn_opened = true;
         }
         self.push(&mut state, item)
+    }
+
+    /// The user's text, with the images it sends, that went to the working
+    /// main agent as the note `seq` (its number on the workflow's note
+    /// board). It waits below the agent's output, pending, until the agent
+    /// reads it.
+    pub fn note(
+        &self,
+        text: &str,
+        source: Source,
+        seq: u64,
+        images: Vec<crate::images::ImageRef>,
+    ) -> u64 {
+        let mut item = Item::new(Kind::User, text.trim());
+        item.source = Some(source);
+        item.delivery = Some(Delivery::Note);
+        item.images = images;
+        let mut state = self.lock();
+        // (The agent may have read it before it came here.)
+        item.pending = match state.early_reads.iter().position(|read| *read == seq) {
+            Some(at) => {
+                state.early_reads.remove(at);
+                false
+            }
+            None => true,
+        };
+        let pending = item.pending;
+        let id = self.push(&mut state, item);
+        if pending {
+            state.unread_notes.push((seq, id));
+        }
+        id
+    }
+
+    /// The main agent read the note `seq`.
+    fn note_read(&self, state: &mut State, seq: u64) {
+        match state.unread_notes.iter().position(|(read, _)| *read == seq) {
+            Some(at) => {
+                let (_, id) = state.unread_notes.remove(at);
+                self.move_read(state, id);
+            }
+            None => {
+                state.early_reads.push_back(seq);
+                if state.early_reads.len() > EARLY_READS {
+                    state.early_reads.pop_front();
+                }
+            }
+        }
+    }
+
+    /// What the user typed that the main agent didn't read (`texts`) went
+    /// with a message to it, so those notes are read now.
+    pub fn notes_sent(&self, texts: &[String]) {
+        let mut state = self.lock();
+        for text in texts {
+            let lane = &state.main;
+            let at = state.unread_notes.iter().position(|(_, id)| {
+                lane.index(*id)
+                    .is_some_and(|index| lane.items[index].text == text.trim())
+            });
+            if let Some(at) = at {
+                let (_, id) = state.unread_notes.remove(at);
+                self.move_read(&mut state, id);
+            }
+        }
+    }
+
+    /// The note `id` was read, so it moves to here, where the agent read
+    /// it, as a new item that isn't pending.
+    fn move_read(&self, state: &mut State, id: u64) {
+        let Some(mut item) = state.main.remove(id) else {
+            return;
+        };
+        self.send(Update::Remove { id });
+        item.pending = false;
+        self.push(state, item);
     }
 
     /// The main transcript's item `id`, while it is kept.
@@ -1363,6 +1496,7 @@ impl Feed {
         lane.bytes = lane.items.iter().map(Item::size).sum();
         lane.wholes = lane.items.iter().map(Item::kept_size).sum();
         state.open_text.remove(MAIN_AGENT);
+        state.unread_notes.retain(|(_, id)| *id < from);
         self.send(Update::Truncate { from });
     }
 
@@ -1412,12 +1546,12 @@ impl Feed {
 
     /// The main agent's text item of its last response when it is `reply`:
     /// the latest of its items but for notices (an output limit reached,
-    /// say) and the workers' places.
+    /// say), the workers' places and what went beside its text.
     fn streamed_reply(state: &mut State, reply: &str) -> Option<u64> {
-        let last =
-            state.main.items.iter().rev().find(|item| {
-                !matches!(item.kind, Kind::Notice | Kind::WorkerLine | Kind::Thinking)
-            })?;
+        let last = state.main.items.iter().rev().find(|item| {
+            !matches!(item.kind, Kind::Notice | Kind::WorkerLine | Kind::Thinking)
+                && !item.is_aside()
+        })?;
         (last.kind == Kind::Text && last.is_main() && last.text.trim() == reply).then_some(last.id)
     }
 
@@ -2079,6 +2213,124 @@ mod tests {
             texts,
             ["Here are the questions:", "I sent you the questions."]
         );
+    }
+
+    fn read(seqs: &[u64]) -> AgentEvent {
+        AgentEvent::ContextInjected {
+            ids: seqs.iter().map(|seq| format!("note:{seq}")).collect(),
+            bytes: 100,
+        }
+    }
+
+    /// A note typed while the agent's reply streams waits below it, pending.
+    /// The reply's later chunks join its text, and so does what the reply
+    /// went on with before the agent read the note (a call). Once the agent
+    /// reads it, it moves to where the agent read it, no longer pending,
+    /// and what the agent says next comes after it.
+    #[test]
+    fn a_note_typed_mid_reply_waits_below_it_until_the_agent_reads_it() {
+        let feed = Feed::new("main");
+        let (_, mut receiver) = feed.subscribe();
+        feed.event(&event("main", chunk("It turned out to be a kit f")), None);
+        let note = feed.note("Keep the old name.", Source::Terminal, 4, Vec::new());
+        feed.event(&event("main", chunk("ix, so that went to the kit.")), None);
+        let call = Uuid::new_v4();
+        feed.event(&event("main", shell(call, "cargo test")), None);
+        feed.event(&event("main", result(call, "exit code 0, 1.0 s")), None);
+        let shown = |feed: &Feed| -> Vec<(Kind, String, bool)> {
+            items(feed)
+                .into_iter()
+                .map(|item| (item.kind, item.text, item.pending))
+                .collect()
+        };
+        let reply = "It turned out to be a kit fix, so that went to the kit.";
+        let entry = |kind, text: &str, pending| (kind, text.to_string(), pending);
+        assert_eq!(
+            shown(&feed),
+            [
+                entry(Kind::Text, reply, false),
+                entry(Kind::User, "Keep the old name.", true),
+                entry(Kind::Call, "$ cargo test", false),
+            ]
+        );
+        assert!(matches!(
+            &updates(&mut receiver)[2],
+            Update::Append { text, .. } if text == "ix, so that went to the kit."
+        ));
+
+        // Another agent's update, and a note the agent hasn't got, change
+        // nothing.
+        feed.event(&event("worker", read(&[4])), Some("r1"));
+        feed.event(&event("main", read(&[3])), None);
+        assert!(items(&feed)[1].pending);
+
+        feed.event(&event("main", read(&[4])), None);
+        feed.event(&event("main", chunk("Renamed it back.")), None);
+        assert_eq!(
+            shown(&feed),
+            [
+                entry(Kind::Text, reply, false),
+                entry(Kind::Call, "$ cargo test", false),
+                entry(Kind::User, "Keep the old name.", false),
+                entry(Kind::Text, "Renamed it back.", false),
+            ]
+        );
+        let updates = updates(&mut receiver);
+        assert!(matches!(updates[0], Update::Remove { id } if id == note));
+        assert!(matches!(&updates[1], Update::Item(item)
+            if item.text == "Keep the old name." && !item.pending && item.id > note));
+        let json = |item: &Item| serde_json::to_value(item).unwrap();
+        assert_eq!(json(&items(&feed)[2]).get("pending"), None);
+        let mut pending = Item::new(Kind::User, "Wait.");
+        pending.pending = true;
+        assert_eq!(json(&pending)["pending"], true);
+    }
+
+    /// The reply the agent's text was takes it over with a note still
+    /// waiting below it, and the note's item comes as read when the agent
+    /// read it before the item came. A note that went with a message is
+    /// read, and a cut drops the notes it cuts.
+    #[test]
+    fn notes_are_read_however_they_reach_the_agent() {
+        let feed = Feed::new("main");
+        feed.event(&event("main", chunk("All done.")), None);
+        feed.note("And the docs?", Source::Web, 1, Vec::new());
+        feed.reply("All done.");
+        feed.turn_ended("2 s", None);
+        let shown = |feed: &Feed| -> Vec<(Kind, String, bool)> {
+            items(feed)
+                .into_iter()
+                .map(|item| (item.kind, item.text, item.pending))
+                .collect()
+        };
+        let entry = |kind, text: &str, pending| (kind, text.to_string(), pending);
+        assert_eq!(
+            shown(&feed),
+            [
+                entry(Kind::Reply, "All done.", false),
+                entry(Kind::User, "And the docs?", true),
+                entry(Kind::Turn, "2 s", false),
+            ]
+        );
+        // The next turn's message took it.
+        feed.notes_sent(&["And the docs?".to_string()]);
+        assert_eq!(
+            shown(&feed)[1..],
+            [
+                entry(Kind::Turn, "2 s", false),
+                entry(Kind::User, "And the docs?", false),
+            ]
+        );
+
+        feed.event(&event("main", read(&[2])), None);
+        feed.note("Use tabs.", Source::Terminal, 2, Vec::new());
+        assert!(!items(&feed).last().unwrap().pending);
+
+        let cut = feed.note("Use spaces.", Source::Terminal, 3, Vec::new());
+        feed.truncate(cut);
+        feed.notes_sent(&["Use spaces.".to_string()]);
+        feed.event(&event("main", read(&[3])), None);
+        assert_eq!(items(&feed).last().unwrap().text, "Use tabs.");
     }
 
     /// A call that fails or is refused says so on its line; one still

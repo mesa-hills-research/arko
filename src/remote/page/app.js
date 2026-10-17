@@ -275,7 +275,7 @@
       return box;
     }
     const item = row.item;
-    const box = element('div', 'row ' + item.kind + (item.level ? ' level-' + item.level : ''));
+    const box = element('div', 'row ' + item.kind + (item.level ? ' level-' + item.level : '') + (item.pending ? ' pending' : ''));
     box.dataset.id = item.id;
     box.title = new Date(item.at).toLocaleTimeString();
     switch (item.kind) {
@@ -626,6 +626,15 @@
     stale.add('i' + item.id);
     // A call's status moves a Messages count.
     if (view === 'messages') relayout = true;
+    draw();
+  }
+
+  /** The item `id` is gone. It held text a failed response streamed, or
+   * it was a note the agent read, which comes again where the agent read
+   * it. */
+  function onRemove(data) {
+    if (!store.remove(data.id)) return;
+    relayout = true;
     draw();
   }
 
@@ -1321,6 +1330,7 @@
     stream.addEventListener('item', (event) => onItem(JSON.parse(event.data)));
     stream.addEventListener('append', (event) => onAppend(JSON.parse(event.data)));
     stream.addEventListener('change', (event) => onChange(JSON.parse(event.data)));
+    stream.addEventListener('remove', (event) => onRemove(JSON.parse(event.data)));
     stream.addEventListener('worker', (event) => onWorker(JSON.parse(event.data)));
     stream.addEventListener('status', (event) => onStatus(JSON.parse(event.data)));
     stream.onerror = () => {

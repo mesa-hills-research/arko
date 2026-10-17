@@ -573,7 +573,8 @@ impl Transcript {
 
     /// The entries in the order they are drawn: by ID, except that a
     /// result's block comes right under its call (other items, such as a
-    /// worker's, may have come between them).
+    /// worker's, may have come between them), and a note the agent hasn't
+    /// read waits at the end of its conversation, below the agent's output.
     fn order(&self) -> Vec<usize> {
         let mut under: HashMap<u64, Vec<usize>> = HashMap::new();
         for (index, entry) in self.entries.iter().enumerate() {
@@ -585,6 +586,7 @@ impl Transcript {
             }
         }
         let mut order = Vec::with_capacity(self.entries.len());
+        let mut waiting = Vec::new();
         for (index, entry) in self.entries.iter().enumerate() {
             let placed = entry.item.kind == Kind::Result
                 && entry
@@ -594,11 +596,19 @@ impl Transcript {
             if placed {
                 continue;
             }
+            if entry.item.pending {
+                waiting.push(index);
+                continue;
+            }
+            if entry.item.kind == Kind::Conversation {
+                order.append(&mut waiting);
+            }
             order.push(index);
             if let Some(results) = under.get(&entry.item.id) {
                 order.extend(results);
             }
         }
+        order.append(&mut waiting);
         order
     }
 
@@ -1304,7 +1314,13 @@ fn entry_lines(
     };
     match item.kind {
         Kind::User => {
-            let mut lines = plain(&item.text, theme.text(), inner);
+            // A note the agent hasn't read yet is muted.
+            let (style, bar) = if item.pending {
+                (theme.dim(), theme.dim())
+            } else {
+                (theme.text(), theme.accent())
+            };
+            let mut lines = plain(&item.text, style, inner);
             if let Some(tag) = user_tag(item, own) {
                 // (Not the user's text: a copy leaves it out.)
                 let tag = Span::styled(format!("  {tag}"), theme.dim());
@@ -1321,7 +1337,7 @@ fn entry_lines(
                     }
                 }
             }
-            wrap::prefixed(lines, mark("▎", theme.accent()), mark("▎", theme.accent()))
+            wrap::prefixed(lines, mark("▎", bar), mark("▎", bar))
         }
         Kind::Text | Kind::Reply | Kind::Output => {
             // A command's warning or error keeps its colour.
@@ -2108,6 +2124,109 @@ mod tests {
         }
         // The message wraps, and every line of it is on the band.
         assert_eq!(user_rows, 2);
+    }
+
+    /// A note typed while the agent's reply streams stays below the reply,
+    /// muted, and the reply's later chunks join its text, mid-word too.
+    /// Once the agent reads the note, it is in the user's colours where it
+    /// was, and what the agent says next comes below it. A note left
+    /// waiting in a conversation the session went from stays at the end of
+    /// that one.
+    #[test]
+    fn a_note_waits_muted_below_the_streaming_reply() {
+        use crate::tui::theme::{Catalog, DEFAULT, Depth};
+        use arko_agents::AgentEvent;
+        let theme = Catalog::load(None).theme(DEFAULT, Depth::Rgb);
+        let feed = crate::remote::Feed::new(MAIN_AGENT);
+        let (snapshot, mut updates) = feed.subscribe();
+        let mut t = Transcript::new();
+        t.reset(snapshot);
+        let event = |event: AgentEvent| arko_workflows::WorkflowEvent {
+            timestamp: chrono::Utc::now(),
+            workflow_run_id: uuid::Uuid::nil(),
+            agent_name: MAIN_AGENT.into(),
+            agent_run_id: uuid::Uuid::nil(),
+            event,
+        };
+        let chunk = |text: &str| event(AgentEvent::AssistantResponseChunk(text.into()));
+        let (width, height) = (60, 5);
+        let mut draw = |t: &mut Transcript| {
+            while let Ok(update) = updates.try_recv() {
+                t.apply(update);
+            }
+            let area = Rect::new(0, 0, width, height);
+            let mut buffer = Buffer::empty(area);
+            t.draw(&mut buffer, area, &full(), &theme);
+            let rows: Vec<String> = (0..height)
+                .map(|y| {
+                    let row: String = (0..width).map(|x| buffer[(x, y)].symbol()).collect();
+                    row.trim_end().to_string()
+                })
+                .collect();
+            // The colours of the note's bar and text.
+            let note = rows
+                .iter()
+                .position(|row| row.contains("Keep the old name."));
+            let colours = note.map(|y| (buffer[(0, y as u16)].fg, buffer[(2, y as u16)].fg));
+            (rows, colours)
+        };
+
+        feed.event(&chunk("It turned out to be a kit f"), None);
+        feed.note("Keep the old name.", Source::Terminal, 1, Vec::new());
+        feed.event(&chunk("ix, so that went to the kit."), None);
+        let (drawn, colours) = draw(&mut t);
+        assert_eq!(
+            drawn[..3],
+            [
+                "  It turned out to be a kit fix, so that went to the kit.",
+                "",
+                "▎ Keep the old name.  added to the task",
+            ]
+        );
+        assert_eq!(colours, Some((theme.dim, theme.dim)));
+
+        feed.event(
+            &event(AgentEvent::ContextInjected {
+                ids: vec!["note:1".into()],
+                bytes: 100,
+            }),
+            None,
+        );
+        feed.event(&chunk("Renamed it back."), None);
+        let (drawn, colours) = draw(&mut t);
+        assert_eq!(
+            drawn,
+            [
+                "  It turned out to be a kit fix, so that went to the kit.",
+                "",
+                "▎ Keep the old name.  added to the task",
+                "",
+                "  Renamed it back.",
+            ]
+        );
+        assert_eq!(colours, Some((theme.accent, theme.text)));
+
+        // A note left waiting in the conversation the session went from
+        // stays at the end of that one.
+        let mut waiting = item(10, Kind::User, "Use tabs.");
+        waiting.delivery = Some(Delivery::Note);
+        waiting.pending = true;
+        let mut t = Transcript::new();
+        t.apply(Update::Item(item(9, Kind::Text, "Indenting.")));
+        t.apply(Update::Item(waiting));
+        t.apply(Update::Item(item(11, Kind::Text, "Still indenting.")));
+        t.apply(Update::Item(item(
+            12,
+            Kind::Conversation,
+            "New conversation",
+        )));
+        t.apply(Update::Item(item(13, Kind::Text, "Hello.")));
+        let shown = rows(&mut t, &full(), 40, 9);
+        let at = |text: &str| shown.iter().position(|row| row.contains(text));
+        assert!(
+            at("Still indenting.") < at("Use tabs.") && at("Use tabs.") < at("New conversation"),
+            "{shown:?}"
+        );
     }
 
     /// Scrolled up, the screen stays put as items come, and the marker

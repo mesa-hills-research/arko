@@ -1002,6 +1002,9 @@ impl Harness {
                 continue;
             }
             let shown = std::mem::take(&mut self.pending_refs);
+            // What the user typed that the agent didn't read goes first, as
+            // the message carries it.
+            self.feed.notes_sent(&self.unread);
             self.feed.user_with(text, source, Delivery::Turn, shown);
             if let TurnEnd::Exit = self.turn(Prompt::User(text.to_string()), input).await {
                 break;
@@ -3101,7 +3104,7 @@ impl Harness {
                                 self.output.echo(&self.output.dim(
                                     "  ✎ added to the task, and the agent reads it at its next step",
                                 ));
-                                self.feed.user_with(&text, source, Delivery::Note, shown);
+                                self.feed.note(&text, source, seq.seq, shown);
                                 notes.push((seq.seq, text));
                             }
                             Err(error) => self.say(
@@ -3382,6 +3385,7 @@ impl Harness {
             if let Some(run) = continued {
                 self.workflow().skip_one_time_notes(run);
             }
+            self.feed.notes_sent(&unread);
             parts.push(format!(
                 "# What I typed during your last turn, which you didn't get to read\n\n{}",
                 unread
@@ -5576,6 +5580,13 @@ pub(crate) mod tests {
                 .send(Input::Line("Also count the directories.".into()))
                 .unwrap();
             until(|| has(&feed, "user", "Also count the directories.", "note")).await;
+            let items = feed.subscribe().0.items;
+            assert!(
+                items
+                    .iter()
+                    .any(|item| item.text == "Also count the directories." && item.pending),
+                "{items:#?}"
+            );
             release.notify_one();
             sender
         });
@@ -5616,6 +5627,15 @@ pub(crate) mod tests {
             .map(|(_, text, _)| text.as_str())
             .collect();
         assert_eq!(replies, ["3 files.", "And 2 directories."]);
+        // The line waited, pending, until the turn that took it began, and
+        // shows there.
+        let items = harness.feed.subscribe().0.items;
+        let at = |text: &str| items.iter().position(|item| item.text == text).unwrap();
+        let note = &items[at("Also count the directories.")];
+        assert!(!note.pending && note.delivery == Some(Delivery::Note));
+        assert!(at("3 files.") < at("Also count the directories."));
+        assert!(at("Also count the directories.") < at("And 2 directories."));
+        assert_eq!(note.turn, items[at("And 2 directories.")].turn);
     }
 
     #[test]
