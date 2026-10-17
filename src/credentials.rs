@@ -1250,73 +1250,114 @@ fn dotenv_get(name: &str) -> Option<PathBuf> {
 /// Sets `name` to `value` in the `.env` file at `path`, keeping its other
 /// lines; the file is created readable only by the user.
 fn save(path: &Path, name: &str, value: &str) -> Result<(), String> {
-    let failed = |error: std::io::Error| format!("could not save {}: {error}", path.display());
-    let text = match std::fs::read_to_string(path) {
-        Ok(text) => text,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
-        Err(error) => return Err(failed(error)),
-    };
     let line = format!("{name}={}", quote(value));
-    let mut lines = Vec::new();
-    let mut replaced = false;
-    for existing in text.lines() {
-        if sets(existing, name) {
-            if !replaced {
-                lines.push(line.clone());
-                replaced = true;
+    change_dotenv(path, |text| {
+        let mut lines = Vec::new();
+        let mut replaced = false;
+        for existing in text.unwrap_or_default().lines() {
+            if sets(existing, name) {
+                if !replaced {
+                    lines.push(line.clone());
+                    replaced = true;
+                }
+            } else {
+                lines.push(existing.to_string());
             }
-        } else {
-            lines.push(existing.to_string());
         }
-    }
-    if !replaced {
-        lines.push(line);
-    }
-    let mut text = lines.join("\n");
-    text.push('\n');
-    if let Some(folder) = path.parent() {
-        std::fs::create_dir_all(folder).map_err(failed)?;
-    }
-    write_private(path, &text).map_err(failed)
+        if !replaced {
+            lines.push(line);
+        }
+        let mut text = lines.join("\n");
+        text.push('\n');
+        Some(text)
+    })
+    .map_err(|error| format!("could not save {}: {error}", path.display()))
 }
 
 /// Removes the lines that set `name` from the `.env` file at `path`,
 /// keeping its other lines. A file without one is left alone.
 fn unset(path: &Path, name: &str) -> Result<(), String> {
-    let failed = |error: std::io::Error| format!("could not change {}: {error}", path.display());
-    let text = match std::fs::read_to_string(path) {
-        Ok(text) => text,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(failed(error)),
-    };
-    if !text.lines().any(|line| sets(line, name)) {
+    if !path.exists() {
         return Ok(());
     }
-    let mut kept: String = text
-        .lines()
-        .filter(|line| !sets(line, name))
-        .collect::<Vec<_>>()
-        .join("\n");
-    if !kept.is_empty() {
-        kept.push('\n');
-    }
-    write_private(path, &kept).map_err(failed)
+    change_dotenv(path, |text| {
+        let text = text?;
+        if !text.lines().any(|line| sets(line, name)) {
+            return None;
+        }
+        let mut kept: String = text
+            .lines()
+            .filter(|line| !sets(line, name))
+            .collect::<Vec<_>>()
+            .join("\n");
+        if !kept.is_empty() {
+            kept.push('\n');
+        }
+        Some(kept)
+    })
+    .map_err(|error| format!("could not change {}: {error}", path.display()))
 }
 
-/// Writes `text` to `path` through a temporary file, readable only by the
-/// user.
-fn write_private(path: &Path, text: &str) -> std::io::Result<()> {
-    let temporary = path.with_file_name(".env.tmp");
+/// Changes the `.env` file at `path`: `change` gets its text (`None`
+/// when there is no file) and gives the new one, or `None` to leave it
+/// alone. It runs under a lock on the file `.env.lock` beside it, held
+/// from the reading to the writing, so programs that change the file at
+/// once (an app and Arko in a terminal, or two sessions) each read what
+/// the other wrote, and none loses a setting.
+fn change_dotenv(
+    path: &Path,
+    change: impl FnOnce(Option<String>) -> Option<String>,
+) -> std::io::Result<()> {
+    if let Some(folder) = path.parent() {
+        std::fs::create_dir_all(folder)?;
+    }
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
     let mut options = std::fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
+    options.read(true).write(true).create(true).truncate(false);
     #[cfg(unix)]
     std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-    {
-        use std::io::Write;
-        let mut file = options.open(&temporary)?;
-        file.write_all(text.as_bytes())?;
+    let lock = options.open(path.with_file_name(format!("{name}.lock")))?;
+    // (Released when `lock` is dropped, at the end.)
+    lock.lock()?;
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => Some(text),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error),
+    };
+    match change(text) {
+        Some(text) => write_private(path, &text),
+        None => Ok(()),
     }
-    std::fs::rename(&temporary, path)
+}
+
+/// Writes `text` to `path` through a temporary file of its own beside it,
+/// readable only by the user, renamed into place.
+fn write_private(path: &Path, text: &str) -> std::io::Result<()> {
+    static COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let count = COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let temporary = path.with_file_name(format!("{name}.{}.{count}.tmp", std::process::id()));
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    let written = options
+        .open(&temporary)
+        .and_then(|mut file| {
+            use std::io::Write;
+            file.write_all(text.as_bytes())
+        })
+        .and_then(|()| std::fs::rename(&temporary, path));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    written
 }
 
 /// Whether a `.env` line sets `name`.
@@ -1616,6 +1657,43 @@ mod tests {
             let mode = std::fs::metadata(&path).unwrap().permissions().mode();
             assert_eq!(mode & 0o777, 0o600);
         }
+    }
+
+    /// Writers at once, each saving and removing its own settings, lose
+    /// none of the others': each reads the file under the lock, and each
+    /// writes through a temporary file of its own.
+    #[test]
+    fn writers_at_once_keep_each_others_settings() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("arko").join(".env");
+        std::thread::scope(|scope| {
+            for writer in 0..8 {
+                let path = &path;
+                scope.spawn(move || {
+                    for n in 0..25 {
+                        save(path, &format!("KEEP_{writer}_{n}"), "kept").unwrap();
+                        save(path, &format!("GONE_{writer}"), "for now").unwrap();
+                        unset(path, &format!("GONE_{writer}")).unwrap();
+                    }
+                });
+            }
+        });
+        let text = std::fs::read_to_string(&path).unwrap();
+        for writer in 0..8 {
+            for n in 0..25 {
+                assert!(
+                    text.contains(&format!("KEEP_{writer}_{n}=")),
+                    "{writer} {n}"
+                );
+            }
+            assert!(!text.contains(&format!("GONE_{writer}=")), "{writer}");
+        }
+        let mut left: Vec<String> = std::fs::read_dir(temp.path().join("arko"))
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        left.sort();
+        assert_eq!(left, [".env", ".env.lock"]);
     }
 
     #[test]
