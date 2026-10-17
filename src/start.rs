@@ -153,9 +153,9 @@ pub(crate) fn new_settings(
     // On the ChatGPT login, OpenAI models hand over below its backend's
     // input limit. A size given is held under what the model leaves room
     // for, as /handover-at holds it.
-    let handover_at = |id: &str| {
+    let handover_for = |id: &str, given: Option<usize>| {
         let model = resolve_model(id).ok();
-        match options.handover_at {
+        match given {
             Some(tokens) => Some(
                 model
                     .as_ref()
@@ -165,6 +165,9 @@ pub(crate) fn new_settings(
             None => model.map(|model| agents::default_handover(&model, openai_auth)),
         }
     };
+    let handover_at = |id: &str| handover_for(id, options.handover_at);
+    // The workers' size, when it is their own.
+    let workers_given = options.workers_handover_at.or(options.handover_at);
     let main = ModelSettings {
         cache_1h: cache_1h(&main_model),
         handover_at: handover_at(&main_model),
@@ -178,33 +181,36 @@ pub(crate) fn new_settings(
     let worker = match worker_model {
         Some(model) => ModelSettings {
             cache_1h: cache_1h(&model),
-            handover_at: handover_at(&model),
+            handover_at: handover_for(&model, workers_given),
             model,
             effort: options.worker_effort.unwrap_or(options.effort),
             fast: options.worker_fast,
         },
         None => ModelSettings {
             effort: options.worker_effort.unwrap_or(main.effort),
+            handover_at: match options.workers_handover_at {
+                Some(_) => handover_for(&main.model, workers_given),
+                None => main.handover_at,
+            },
             ..main.clone()
         },
     };
     // A size given that a model holds lower is said.
-    if let Some(tokens) = options.handover_at {
-        let mut said = Vec::new();
-        for model in [&main, &worker] {
-            if let Some(at) = model.handover_at.filter(|at| *at < tokens)
-                && !said.contains(&model.model)
-            {
-                prompter.note(
-                    Level::Info,
-                    &format!(
-                        "{} hands over at {}, the largest size Arko allows for its model",
-                        model.model,
-                        handover::shown(at)
-                    ),
-                );
-                said.push(model.model.clone());
-            }
+    let mut said = Vec::new();
+    for (model, given) in [(&main, options.handover_at), (&worker, workers_given)] {
+        if let Some(tokens) = given
+            && let Some(at) = model.handover_at.filter(|at| *at < tokens)
+            && !said.contains(&model.model)
+        {
+            prompter.note(
+                Level::Info,
+                &format!(
+                    "{} hands over at {}, the largest size Arko allows for its model",
+                    model.model,
+                    handover::shown(at)
+                ),
+            );
+            said.push(model.model.clone());
         }
     }
     // What sessions read before the handover was set per model.
@@ -227,7 +233,7 @@ pub(crate) fn new_settings(
         max_workers: options.workers.unwrap_or(NO_LIMIT),
         handover_at: session_handover,
         main_handover_at: None,
-        workers_handover_at: None,
+        workers_handover_at: options.workers_handover_at,
         allow_outside_workspace: options.allow_outside_workspace,
         show_thinking: options.show_thinking,
         hide_thinking: options.hide_thinking,

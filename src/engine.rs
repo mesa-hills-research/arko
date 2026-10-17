@@ -823,6 +823,9 @@ impl Engine {
         if !new && let Some(tokens) = options.handover_at {
             harness.handover_at_start(tokens);
         }
+        if !new && let Some(tokens) = options.workers_handover_at {
+            harness.workers_handover_at_start(tokens);
+        }
         if one_shot && let Some(note) = &harness.unoffered {
             output.line(&output.warn(&format!("arko: {note}")));
         }
@@ -993,6 +996,54 @@ mod tests {
     /// The tests that open a session without a context of its own, one at a
     /// time (a process has one such session).
     static ALONE_TESTS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    /// A new session's workers can hand over at a size of their own, which
+    /// the session keeps and a resume sets again.
+    #[tokio::test]
+    async fn the_workers_hand_over_at_a_size_of_their_own() {
+        let temp = tempfile::tempdir().unwrap();
+        let (server, _bodies) = counting_server().await;
+        let (root, project) = (temp.path().join("arko"), temp.path().join("project"));
+        std::fs::create_dir_all(&project).unwrap();
+        let open = |session: SessionChoice, workers: usize| {
+            let running = spawn(
+                Options {
+                    root: Some(root.clone()),
+                    session,
+                    workspace: Some(project.clone()),
+                    model: Some("luna".into()),
+                    openai_auth: Some(OpenAiAuth::ApiKey),
+                    cache_1h: Some(false),
+                    handover_at: Some(600_000),
+                    workers_handover_at: Some(workers),
+                    client: Some(GivenClient(Arc::new(server.client()))),
+                    ..Options::default()
+                },
+                Arc::new(NoPrompter),
+            );
+            async move {
+                let seam = tokio::time::timeout(Duration::from_secs(30), running.opened)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .unwrap();
+                (seam, running.ended)
+            }
+        };
+        let (seam, ended) = open(SessionChoice::New, 300_000).await;
+        let id = seam.session.id.clone();
+        let settings = Session::open(&root, &id).unwrap().load_settings().unwrap();
+        assert_eq!(settings.main.handover_at, Some(600_000));
+        assert_eq!(settings.worker.handover_at, Some(300_000));
+        assert_eq!(settings.workers_handover_at, Some(300_000));
+        assert_eq!(seam.meter.read().settings.workers_handover_at, 300_000);
+        quit(seam, ended).await;
+        let (seam, ended) = open(SessionChoice::Resume(id.clone()), 250_000).await;
+        let settings = Session::open(&root, &id).unwrap().load_settings().unwrap();
+        assert_eq!(settings.workers_handover_at, Some(250_000));
+        assert_eq!(seam.meter.read().settings.workers_handover_at, 250_000);
+        quit(seam, ended).await;
+    }
 
     /// A process opens one session without `spawn`: it reads the process's
     /// settings and keys, so a second is refused, until the first closes.

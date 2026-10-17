@@ -307,6 +307,7 @@ impl Args {
             ),
             workers: self.workers,
             handover_at: self.handover_at,
+            workers_handover_at: None,
             allow_outside_workspace: self.allow_outside_workspace,
             background_after: self.background_after,
             show_thinking: self.show_thinking,

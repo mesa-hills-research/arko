@@ -2175,6 +2175,15 @@ impl Harness {
         }
     }
 
+    /// The workers' handover size when resuming (`Options::workers_handover_at`).
+    pub(crate) fn workers_handover_at_start(&mut self, tokens: usize) {
+        if self.has_workers() {
+            self.set_workers_handover_at(tokens);
+            let line = self.workers_handover_text(Some(tokens));
+            self.say(Level::Info, &line);
+        }
+    }
+
     /// Sets the size the workers hand over at, larger or smaller, each up
     /// to what its own model leaves room for, and keeps it in the session.
     pub(crate) fn set_workers_handover_at(&mut self, tokens: usize) {

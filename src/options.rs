@@ -68,6 +68,10 @@ pub struct Options {
     /// its model leaves room for); when resuming, the size set for the main
     /// agent and the workers, as `/handover-at` sets it.
     pub handover_at: Option<usize>,
+    /// The workers' handover size: for a new session, each worker's (held
+    /// under what its model leaves room for); when resuming, the size set
+    /// for the workers. `None`: as `handover_at`.
+    pub workers_handover_at: Option<usize>,
     /// Outside access on from the start (also when resuming).
     pub allow_outside_workspace: bool,
     /// After how many seconds shell commands move to the background (0:
@@ -159,6 +163,7 @@ impl Default for Options {
             worker_project_instructions: None,
             workers: None,
             handover_at: None,
+            workers_handover_at: None,
             allow_outside_workspace: false,
             background_after: None,
             show_thinking: false,
