@@ -556,6 +556,9 @@ struct EventPrinter {
     /// The lengths of `text` and `thinking` as the main agent's latest
     /// request went out: what its response adds goes if it fails.
     request_start: (usize, usize),
+    /// Lines of text, and of thinking, were printed since that request went
+    /// out: they can't be taken back.
+    printed_since_request: (bool, bool),
 }
 
 impl EventPrinter {
@@ -577,6 +580,7 @@ impl EventPrinter {
             commands: HashMap::new(),
             thinking_refused: false,
             request_start: (0, 0),
+            printed_since_request: (false, false),
         }
     }
 
@@ -597,11 +601,13 @@ impl EventPrinter {
         while let Some(end) = self.text.find('\n').filter(|_| !self.hold_text) {
             let line: String = self.text.drain(..=end).collect();
             self.output.echo(line.trim_end_matches(['\n', '\r']));
+            self.printed_since_request.0 = true;
         }
         while let Some(end) = self.thinking.find('\n') {
             let line: String = self.thinking.drain(..=end).collect();
             let line = line.trim_end_matches(['\n', '\r']);
             self.output.echo(&self.output.dim(&format!("  {line}")));
+            self.printed_since_request.1 = true;
         }
     }
 
@@ -701,19 +707,28 @@ impl EventPrinter {
             // its retry streams it again.
             AgentEvent::StreamedOutputDiscarded { .. } if main => {
                 let (text, thinking) = self.request_start;
-                // Held text is all there (`hold_text`); printed lines can't
-                // be taken back.
-                let printed = self.text.len() < text || !self.hold_text;
-                self.text.truncate(text.min(self.text.len()));
-                self.thinking.truncate(thinking.min(self.thinking.len()));
-                if printed {
+                let (printed_text, printed_thinking) = self.printed_since_request;
+                // What it added that wasn't printed goes, and what came
+                // before stays. Once lines of it were printed, what is left
+                // is all its own, and the user is told.
+                if printed_text {
                     self.text.clear();
+                } else {
+                    self.text.truncate(text.min(self.text.len()));
+                }
+                if printed_thinking {
+                    self.thinking.clear();
+                } else {
+                    self.thinking.truncate(thinking.min(self.thinking.len()));
+                }
+                if printed_text || printed_thinking {
                     self.output.echo(
                         &self
                             .output
                             .dim("  (the response broke off: what it said is said again)"),
                     );
                 }
+                self.printed_since_request = (false, false);
             }
             AgentEvent::RetryScheduled {
                 attempt,
@@ -797,6 +812,7 @@ impl EventPrinter {
                 bytes_per_token,
             } if main => {
                 self.request_start = (self.text.len(), self.thinking.len());
+                self.printed_since_request = (false, false);
                 self.stats.lock().unwrap().last_request = Some(remote::LastRequest {
                     at,
                     model,
@@ -845,6 +861,7 @@ impl EventPrinter {
             for line in rest.trim_end().lines() {
                 self.output.echo(&self.output.dim(&format!("  {line}")));
             }
+            self.printed_since_request.1 = true;
         }
         self.thinking.clear();
     }
@@ -1506,6 +1523,53 @@ mod tests {
                 .extend(text.lines().map(str::to_string));
             Ok(())
         }
+    }
+
+    /// A response that fails after it streamed takes back what it added
+    /// and wasn't printed, and keeps the text from before it. Once lines of
+    /// it were printed, the user is told it is said again.
+    #[tokio::test]
+    async fn a_failed_responses_text_is_taken_back_and_earlier_text_kept() {
+        let printed = Printed::default();
+        let output = Arc::new(Output::new(Some(Box::new(printed.clone())), false));
+        let mut printer = EventPrinter::new(output, Arc::default(), false, None);
+        let event = |event: AgentEvent| WorkflowEvent {
+            timestamp: chrono::Utc::now(),
+            workflow_run_id: Uuid::nil(),
+            agent_name: MAIN.into(),
+            agent_run_id: Uuid::nil(),
+            event,
+        };
+        let started = || AgentEvent::ModelRequestStarted {
+            model: "claude-opus-5-5".into(),
+            subagent: None,
+            sizes: None,
+            bytes_per_token: 3.0,
+        };
+        let discarded = || AgentEvent::StreamedOutputDiscarded {
+            text_bytes: 6,
+            reasoning_bytes: 0,
+        };
+        let chunk = |text: &str| AgentEvent::AssistantResponseChunk(text.into());
+        printer.event(event(started()));
+        printer.event(event(chunk("Before.")));
+        printer.event(event(started()));
+        printer.event(event(chunk(" Broken")));
+        printer.event(event(discarded()));
+        assert_eq!(printer.text, "Before.");
+        printer.event(event(started()));
+        printer.event(event(chunk(" Fixed.")));
+        printer.flush();
+        assert_eq!(*printed.0.lock().unwrap(), ["Before. Fixed."]);
+        // A line of it printed: what is left of it goes, and it is said.
+        printed.0.lock().unwrap().clear();
+        printer.event(event(started()));
+        printer.event(event(chunk("Half a line,\nand more")));
+        printer.event(event(discarded()));
+        assert_eq!(printer.text, "");
+        let shown = printed.0.lock().unwrap().clone();
+        assert_eq!(shown[0], "Half a line,");
+        assert!(shown[1].contains("the response broke off"), "{shown:?}");
     }
 
     /// With text replies, the main agent's text is held: printed as
