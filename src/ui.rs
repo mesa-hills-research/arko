@@ -359,6 +359,9 @@ pub fn spawn_input(
             };
             editor.set_helper(Some(InputHelper));
             let _ = editor.load_history(&history);
+            // Saved as every front end saves it: with the others' entries,
+            // whole.
+            let mut shared = crate::history::History::load(Some(history.clone()));
             let printer = editor
                 .create_external_printer()
                 .ok()
@@ -366,6 +369,7 @@ pub fn spawn_input(
             let _ = printer_sender.send(printer);
             let prompt = glyphs::render(PROMPT).into_owned();
             while !CLOSING.load(Ordering::SeqCst) {
+                let mut entry = None;
                 let input = match editor.readline(prompt.as_str()) {
                     Ok(line) => {
                         if let Some(keys) = &keys
@@ -374,7 +378,9 @@ pub fn spawn_input(
                             crate::keys::add_at_prompt(keys, key);
                             continue;
                         }
-                        Input::Line(joined(&line))
+                        let input = Input::Line(joined(&line));
+                        entry = Some(line);
+                        input
                     }
                     Err(ReadlineError::Interrupted) => Input::Interrupt,
                     // Ctrl+D is /exit, which warns of what quitting stops.
@@ -385,10 +391,9 @@ pub fn spawn_input(
                 if sender.send(input).is_err() || eof {
                     break;
                 }
-                if let Some(parent) = history.parent() {
-                    let _ = std::fs::create_dir_all(parent);
+                if let Some(entry) = entry {
+                    shared.add(&entry);
                 }
-                let _ = editor.save_history(&history);
             }
         });
         printer_receiver.recv().ok().flatten()

@@ -34,43 +34,80 @@ impl History {
         &self.entries
     }
 
-    /// Adds `entry` (not a repeat of the last), and saves the history.
+    /// Adds `entry` (not a repeat of the last), and saves the history: with
+    /// what other front ends added since it was read, the latest 1,000.
     pub fn add(&mut self, entry: &str) {
         if entry.trim().is_empty() || self.entries.last().is_some_and(|last| last == entry) {
             return;
         }
-        self.entries.push(entry.to_string());
-        let extra = self.entries.len().saturating_sub(HISTORY_SIZE);
-        self.entries.drain(..extra);
-        self.save();
-    }
-
-    /// Saves it as the line editor does (rustyline's version 2 format:
-    /// line breaks and backslashes escaped), readable by the user only.
-    fn save(&self) {
-        let Some(path) = &self.path else {
+        let Some(path) = self.path.clone() else {
+            self.entries.push(entry.to_string());
+            self.keep_latest();
             return;
         };
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        let mut text = String::from("#V2\n");
-        for entry in &self.entries {
-            text.push_str(&entry.replace('\\', "\\\\").replace('\n', "\\n"));
-            text.push('\n');
+        // One front end at a time reads and writes the file.
+        let lock = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(path.with_extension("txt.lock"));
+        let _held = lock.as_ref().ok().filter(|lock| lock.lock().is_ok());
+        if let Ok(text) = std::fs::read_to_string(&path) {
+            self.entries = parse(&text);
         }
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create(true).truncate(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
+        if self.entries.last().is_none_or(|last| last != entry) {
+            self.entries.push(entry.to_string());
         }
-        if let Ok(mut file) = options.open(path) {
-            use std::io::Write;
-            let _ = file.write_all(text.as_bytes());
+        self.keep_latest();
+        if let Err(error) = save(&path, &self.entries) {
+            log::warn!("could not save the input history: {error}");
         }
     }
+
+    fn keep_latest(&mut self) {
+        let extra = self.entries.len().saturating_sub(HISTORY_SIZE);
+        self.entries.drain(..extra);
+    }
+}
+
+/// Saves `entries` at `path` as the line editor does (rustyline's version
+/// 2 format: line breaks and backslashes escaped), whole: a new file, with
+/// the old one's permissions (else readable by the user only), renamed
+/// into its place, so a crash leaves the old history or the new.
+fn save(path: &Path, entries: &[String]) -> std::io::Result<()> {
+    let mut text = String::from("#V2\n");
+    for entry in entries {
+        text.push_str(&entry.replace('\\', "\\\\").replace('\n', "\\n"));
+        text.push('\n');
+    }
+    let temporary = path.with_file_name(format!(".history.txt.{}.tmp", std::process::id()));
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        let mode = std::fs::metadata(path).map_or(0o600, |meta| meta.permissions().mode() & 0o777);
+        options.mode(mode);
+    }
+    let written = options.open(&temporary).and_then(|mut file| {
+        use std::io::Write;
+        file.write_all(text.as_bytes())?;
+        file.sync_all()?;
+        // (The mode asked for is masked by the umask: set it again.)
+        #[cfg(unix)]
+        if let Ok(meta) = std::fs::metadata(path) {
+            file.set_permissions(meta.permissions())?;
+        }
+        Ok(())
+    });
+    let written = written.and_then(|()| std::fs::rename(&temporary, path));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    written
 }
 
 /// The entries of a history file: version 2 (escaped) or the older plain
@@ -130,5 +167,50 @@ mod tests {
                 "Two lines:\nthe second, with a \\ backslash."
             ]
         );
+    }
+    /// Two front ends that keep the history (the terminal, an app) each
+    /// keep the other's entries when they add theirs.
+    #[test]
+    fn front_ends_keep_each_others_entries() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = path_in(temp.path());
+        let mut terminal = History::load(Some(path.clone()));
+        let mut app = History::load(Some(path.clone()));
+        terminal.add("one");
+        app.add("two");
+        terminal.add("three");
+        assert_eq!(terminal.entries(), ["one", "two", "three"]);
+        assert_eq!(History::load(Some(path)).entries(), ["one", "two", "three"]);
+    }
+
+    /// The history file is replaced whole (a new file renamed into place,
+    /// none left behind), with the permissions it had.
+    #[cfg(unix)]
+    #[test]
+    fn the_history_is_replaced_whole_with_its_permissions() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let temp = tempfile::tempdir().unwrap();
+        let path = path_in(temp.path());
+        let mut history = History::load(Some(path.clone()));
+        history.add("first");
+        let mode = |path: &Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&path), 0o600, "the user's only, at first");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
+        let before = std::fs::metadata(&path).unwrap().ino();
+        history.add("second");
+        assert_ne!(
+            std::fs::metadata(&path).unwrap().ino(),
+            before,
+            "a new file"
+        );
+        assert_eq!(mode(&path), 0o640);
+        let leftovers: Vec<String> = std::fs::read_dir(temp.path())
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.ends_with(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "{leftovers:?}");
+        assert_eq!(History::load(Some(path)).entries(), ["first", "second"]);
     }
 }
