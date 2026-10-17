@@ -1077,6 +1077,7 @@ mod tests {
                 reachable: vec!["openai".into()],
                 openai_auth: Some("OpenAI API key".into()),
                 has_workers: true,
+                main_fast: false,
                 ..Default::default()
             },
             ..Default::default()

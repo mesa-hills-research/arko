@@ -1391,9 +1391,72 @@ pub fn openrouter_url() -> &'static str {
     arko_ai::providers::openrouter::OPENROUTER_BASE_URL
 }
 
+/// What writing the conversation's `tokens` to the prompt cache, and reading
+/// them from it, cost on `model` now, per million tokens: at the prices in
+/// effect today, the long-context rates above their threshold, the fast
+/// mode's price when `fast`, and the 1-hour write price when `one_hour`.
+/// Writes cost input where the provider charges nothing extra for them.
+pub fn cache_prices(model: &Model, tokens: usize, fast: bool, one_hour: bool) -> (f64, f64) {
+    let pricing = model.pricing.at(std::time::SystemTime::now());
+    let long = pricing
+        .large_input_threshold
+        .is_some_and(|threshold| tokens > threshold);
+    let rate = |base: Option<f64>, large: Option<f64>| if long { large.or(base) } else { base };
+    let input = rate(
+        Some(pricing.input_cost_per_million),
+        pricing.large_input_cost_per_million,
+    )
+    .unwrap_or(pricing.input_cost_per_million);
+    let write = one_hour
+        .then(|| {
+            rate(
+                pricing.cache_write_1h_cost_per_million,
+                pricing.large_cache_write_1h_cost_per_million,
+            )
+        })
+        .flatten()
+        .or(rate(
+            pricing.cache_write_cost_per_million,
+            pricing.large_cache_write_cost_per_million,
+        ))
+        .unwrap_or(input);
+    let read = rate(
+        pricing.cached_input_cost_per_million,
+        pricing.large_cached_input_cost_per_million,
+    )
+    .unwrap_or(input);
+    let tier = fast.then_some(arko_ai::ServiceTier::Fast);
+    let times = pricing.tier_multiplier(tier.as_ref(), long);
+    (write * times, read * times)
+}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The cache's prices are those in effect now: the fast mode's at its
+    /// price, and the long-context rates above their threshold.
+    #[test]
+    fn the_cache_is_priced_as_the_request_would_be() {
+        let sol = resolve_model("sol").unwrap();
+        let pricing = sol.pricing.at(std::time::SystemTime::now()).clone();
+        let read = pricing
+            .cached_input_cost_per_million
+            .unwrap_or(pricing.input_cost_per_million);
+        let (_, short) = cache_prices(&sol, 100_000, false, false);
+        assert!((short - read).abs() < 1e-9);
+        let (_, fast) = cache_prices(&sol, 100_000, true, false);
+        assert!(
+            (fast - 2.0 * read).abs() < 1e-9,
+            "the fast mode costs twice"
+        );
+        let threshold = pricing.large_input_threshold.unwrap();
+        let long_read = pricing
+            .large_cached_input_cost_per_million
+            .or(pricing.cached_input_cost_per_million)
+            .unwrap();
+        let (_, long) = cache_prices(&sol, threshold + 1, false, false);
+        assert!((long - long_read).abs() < 1e-9);
+    }
     use crate::agents::ModelSettings;
 
     fn catalog(json: &str) -> OpenRouterCatalog {

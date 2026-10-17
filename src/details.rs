@@ -414,17 +414,9 @@ fn switch_cost(settings: &Settings, tokens: usize) -> SwitchCost {
         _ => None,
     };
     let dollars = model.filter(|_| plan.is_none()).map(|model| {
-        let pricing = &model.pricing;
-        let one_hour = settings
-            .main
-            .cache_1h
-            .then_some(pricing.cache_write_1h_cost_per_million)
-            .flatten();
-        // Where writes cost nothing extra (OpenAI, Gemini), they cost input.
-        let per_million = one_hour
-            .or(pricing.cache_write_cost_per_million)
-            .unwrap_or(pricing.input_cost_per_million);
-        tokens as f64 * per_million / 1e6
+        let (write, _) =
+            providers::cache_prices(&model, tokens, settings.main.fast, settings.main.cache_1h);
+        tokens as f64 * write / 1e6
     });
     SwitchCost {
         tokens,

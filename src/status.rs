@@ -338,19 +338,9 @@ fn cache_status(stats: &crate::ui::Stats, models: &remote::Models) -> remote::Ca
     let tokens = stats.context_tokens;
     let (miss_cost, refresh_cost) = match (&model, tokens) {
         (Some(model), Some(tokens)) if on_plan.is_none() => {
-            let pricing = &model.pricing;
             let hour = stats.cache_lifetime
                 == Some(arko_ai::prompt_cache::ANTHROPIC_EXTENDED_PROMPT_CACHE_LIFETIME);
-            // Where writes cost nothing extra (OpenAI, Gemini), they cost
-            // input.
-            let write = hour
-                .then_some(pricing.cache_write_1h_cost_per_million)
-                .flatten()
-                .or(pricing.cache_write_cost_per_million)
-                .unwrap_or(pricing.input_cost_per_million);
-            let read = pricing
-                .cached_input_cost_per_million
-                .unwrap_or(pricing.input_cost_per_million);
+            let (write, read) = providers::cache_prices(model, tokens, models.main_fast, hour);
             let cost = |per_million: f64| Some(tokens as f64 * per_million / 1e6);
             (cost(write), cost(read))
         }

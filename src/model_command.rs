@@ -675,6 +675,7 @@ impl Harness {
             workers_effort: self.settings.worker.effort.to_string(),
             workers_follow: self.settings.workers_follow_main(),
             started: self.conversation_started(),
+            main_fast: self.settings.main.fast,
             banner_model: self.settings.describe(&self.settings.main),
             banner_workers: self.workers_summary(),
             reachable: self.keys.reachable(),

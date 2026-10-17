@@ -291,6 +291,9 @@ pub struct Models {
     pub openai_auth: Option<String>,
     /// The session has workers (not `--workers 0`).
     pub has_workers: bool,
+    /// The main agent's model runs in its fast mode, at its price.
+    #[serde(skip)]
+    pub main_fast: bool,
 }
 
 /// The session's settings that can change while it runs.
