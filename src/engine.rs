@@ -183,10 +183,17 @@ pub enum Request {
         reply: Reply<String>,
     },
     /// Serves the session's web page on `bind` (an address, a port, or
-    /// both, as `--remote` takes them; `None`: this computer only, on
-    /// 127.0.0.1), in place of the one served: its links, with the
-    /// session's key. `Err` with why it isn't served (an address that
-    /// isn't this computer's, a port in use).
+    /// both, as `--remote` takes them), in place of the one served: its
+    /// links, with the session's key, the local network's first. `None`
+    /// serves it to the network, whatever it was served on before: on every
+    /// address of this computer (0.0.0.0), on the port the page had if it
+    /// was served before and the port is free, else 8765, else any free
+    /// one. Then any device on the computer's networks that has a link can
+    /// open the page, and the page is served without TLS: what it shows and
+    /// what is typed in it cross the network unencrypted. Say so where the
+    /// page is shared, and offer `127.0.0.1` for this computer only (Arko in
+    /// a terminal serves there by default). `Err` with why it isn't served
+    /// (an address that isn't this computer's, a port in use).
     ShareWebPage {
         bind: Option<String>,
         reply: Reply<remote::Page>,
@@ -1041,10 +1048,10 @@ mod tests {
     static ALONE_TESTS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
     /// An app serves the session's web page, stops it and gives it a new
-    /// key with requests that answer: served on this computer only when it
-    /// gives no address (whatever the page was served on before), with what
-    /// went wrong when it can't be served, and its clients told it was done
-    /// in the app.
+    /// key with requests that answer: served to the network when it gives
+    /// no address (whatever the page was served on before), with what went
+    /// wrong when it can't be served, and its clients told it was done in
+    /// the app.
     #[tokio::test]
     async fn an_app_shares_the_web_page_with_requests() {
         let temp = tempfile::tempdir().unwrap();
@@ -1055,9 +1062,23 @@ mod tests {
             let bind = bind.map(str::to_string);
             ask_for(&seam, move |reply| Request::ShareWebPage { bind, reply })
         };
-        let everywhere = share(Some("0.0.0.0:0")).await.unwrap();
-        assert!(everywhere.addr.ip().is_unspecified());
-        let here = share(None).await.unwrap();
+        let here = share(Some("127.0.0.1:0")).await.unwrap();
+        assert!(here.addr.ip().is_loopback(), "{:?}", here.addr);
+        let everywhere = share(None).await.unwrap();
+        assert!(
+            everywhere.addr.ip().is_unspecified(),
+            "{:?}",
+            everywhere.addr
+        );
+        // On the port the page had, which was free again.
+        assert_eq!(everywhere.addr.port(), here.addr.port());
+        // The local network's links first, this computer's last.
+        assert!(
+            everywhere.links.last().is_some_and(|link| link.loopback),
+            "{:?}",
+            everywhere.links
+        );
+        let here = share(Some("127.0.0.1")).await.unwrap();
         assert!(here.addr.ip().is_loopback(), "{:?}", here.addr);
         let key_of = |page: &crate::remote::Page| {
             page.links[0].url.split("#key=").nth(1).unwrap().to_string()

@@ -1422,8 +1422,8 @@ impl Harness {
             // (The web page doesn't change the agent: also during a turn.)
             Request::ShareWebPage { bind, reply } => {
                 let served = match bind.as_deref().map(str::trim) {
-                    // This computer only, never where it was served before.
-                    None | Some("") => Ok(remote::Bind::default()),
+                    // The network, never where it was served before.
+                    None | Some("") => Ok(remote::Bind::network()),
                     Some(bind) => remote::parse_bind(bind),
                 };
                 let served = match served {

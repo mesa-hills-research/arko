@@ -403,6 +403,17 @@ impl Default for Bind {
     }
 }
 
+impl Bind {
+    /// Every address of this computer (0.0.0.0), for the devices on its
+    /// networks, on [`DEFAULT_PORT`], else any free one.
+    pub fn network() -> Self {
+        Self {
+            ip: IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+            port: None,
+        }
+    }
+}
+
 /// Reads `--remote`'s value: nothing (127.0.0.1), a port, an address or a
 /// host name, or an address (or name) and a port.
 pub fn parse_bind(text: &str) -> Result<Bind, String> {
