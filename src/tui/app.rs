@@ -96,8 +96,9 @@ pub struct Menu {
     pub choice: Option<String>,
 }
 
-/// The agent list shows this many workers at most, and a row under them
-/// says how many more there are.
+/// The agent list shows this many workers at most, with a row above them
+/// counting the workers above them and one under them counting those
+/// below, when there are.
 pub const LIST_WORKERS: usize = 5;
 
 /// A row of the agent list.
@@ -105,25 +106,51 @@ pub const LIST_WORKERS: usize = 5;
 pub enum ListRow {
     /// The agent at this index of [`App::list`].
     Agent(usize),
-    /// "… N more": the workers the list has no room for.
+    /// "… N above": the workers above those shown.
+    Above(usize),
+    /// "… N more": the workers below those shown.
     More(usize),
 }
 
+/// The agent list as drawn: its rows, and how far it is scrolled.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ListWindow {
+    pub rows: Vec<ListRow>,
+    /// How many workers are above those shown.
+    pub scroll: usize,
+    /// The farthest it scrolls: the last worker is shown.
+    pub most: usize,
+}
+
 /// The rows of a list of `count` agents (the main agent, then the workers)
-/// in `height` rows at most: the main agent, the workers around the one
-/// `focus` is on, at most [`LIST_WORKERS`] of them, and a row counting the
-/// others.
-pub fn list_rows(count: usize, focus: Option<usize>, height: usize) -> Vec<ListRow> {
+/// in `height` rows at most: the main agent, then at most
+/// [`LIST_WORKERS`] workers from the `scroll`th on, with a row counting
+/// those above them and one counting those below, when there are. With
+/// `follow`, the workers shown move to the agent `focus` is on. A list too
+/// short for both counts shows the count below only, and one too short for
+/// a worker beside the main agent and a count shows the agent the focus is
+/// on and counts the others.
+pub fn list_rows(
+    count: usize,
+    scroll: usize,
+    focus: Option<usize>,
+    follow: bool,
+    height: usize,
+) -> ListWindow {
     if count == 0 || height == 0 {
-        return Vec::new();
+        return ListWindow::default();
     }
     let workers = count - 1;
     if workers <= LIST_WORKERS && count <= height {
-        return (0..count).map(ListRow::Agent).collect();
+        return ListWindow {
+            rows: (0..count).map(ListRow::Agent).collect(),
+            ..ListWindow::default()
+        };
     }
     let focus = focus.map(|row| row.min(count - 1));
-    let shown = LIST_WORKERS.min(height.saturating_sub(2));
-    if shown == 0 {
+    // The rows under the main agent's.
+    let room = (height - 1).min(LIST_WORKERS + 1);
+    if room < 2 {
         // No room for a worker beside the main agent and the count: the
         // agent the focus is on.
         let agent = focus.unwrap_or(0);
@@ -131,17 +158,45 @@ pub fn list_rows(count: usize, focus: Option<usize>, height: usize) -> Vec<ListR
         if height > 1 {
             rows.push(ListRow::More(workers - usize::from(agent > 0)));
         }
-        return rows;
+        return ListWindow {
+            rows,
+            ..ListWindow::default()
+        };
     }
-    // The workers shown follow the focus down the list.
-    let first = match focus {
-        Some(row) if row > shown => row - shown,
-        _ => 0,
+    // Scrolled past `scroll` workers: whether the count above is shown, how
+    // many workers are, and how many are below them.
+    let layout = |scroll: usize| {
+        let rest = workers - scroll;
+        // The rest fit, under the count above when there are workers above.
+        if rest + usize::from(scroll > 0) <= room && rest <= LIST_WORKERS {
+            return (scroll > 0, rest, 0);
+        }
+        // The count below, and the count above where a worker fits besides.
+        let above = scroll > 0 && room >= 3;
+        let shown = (room - 1 - usize::from(above)).min(LIST_WORKERS);
+        (above, shown, rest - shown)
     };
-    std::iter::once(ListRow::Agent(0))
-        .chain((first + 1..=first + shown).map(ListRow::Agent))
-        .chain(std::iter::once(ListRow::More(workers - shown)))
-        .collect()
+    let most = (0..workers)
+        .find(|scroll| layout(*scroll).2 == 0)
+        .unwrap_or(workers);
+    let mut scroll = scroll.min(most);
+    if follow && let Some(row) = focus.filter(|row| *row > 0) {
+        let worker = row - 1;
+        scroll = scroll.min(worker);
+        while scroll < most && worker >= scroll + layout(scroll).1 {
+            scroll += 1;
+        }
+    }
+    let (above, shown, below) = layout(scroll);
+    let mut rows = vec![ListRow::Agent(0)];
+    if above {
+        rows.push(ListRow::Above(scroll));
+    }
+    rows.extend((scroll + 1..=scroll + shown).map(ListRow::Agent));
+    if below > 0 {
+        rows.push(ListRow::More(below));
+    }
+    ListWindow { rows, scroll, most }
 }
 
 /// The view's state.
@@ -193,6 +248,11 @@ pub struct App {
     folded: Option<u64>,
     /// Where the agent list was drawn, and its rows: for the mouse.
     pub list_drawn: (ratatui::layout::Rect, Vec<ListRow>),
+    /// How many workers the agent list is scrolled past, and the farthest
+    /// it scrolls, as last drawn.
+    list_scroll: (usize, usize),
+    /// The agent the list's rows last moved to show (see `list_focus`).
+    list_followed: Option<usize>,
     /// What a model needs that the session doesn't have, for `/model`'s
     /// picker (from the providers the session reaches, and Claude Code's
     /// login).
@@ -270,6 +330,8 @@ impl App {
             answered: None,
             list_focus: None,
             list_drawn: Default::default(),
+            list_scroll: (0, 0),
+            list_followed: None,
             press: None,
             last_click: None,
             folded: None,
@@ -957,9 +1019,20 @@ impl App {
         std::iter::once(None).chain(workers).collect()
     }
 
-    /// The agent list's rows in `height` rows at most.
-    pub fn list_rows(&self, height: usize) -> Vec<ListRow> {
-        list_rows(self.list().len(), self.list_focus, height)
+    /// The agent list's rows in `height` rows at most, scrolled as the
+    /// wheel left it, or to show the agent the focus moved to.
+    pub fn list_rows(&mut self, height: usize) -> Vec<ListRow> {
+        let follow = self.list_focus != self.list_followed;
+        self.list_followed = self.list_focus;
+        let window = list_rows(
+            self.list().len(),
+            self.list_scroll.0,
+            self.list_focus,
+            follow,
+            height,
+        );
+        self.list_scroll = (window.scroll, window.most);
+        window.rows
     }
 
     /// Ctrl+T: the focus goes to the agent list, on the agent shown.
@@ -1670,6 +1743,17 @@ impl App {
                     };
                 }
             }
+            // Over the agent list, the wheel scrolls it, a worker at a time.
+            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+                if self.overlay.is_none() && self.list_drawn.0.contains(at) =>
+            {
+                let (scroll, most) = self.list_scroll;
+                self.list_scroll.0 = if event.kind == MouseEventKind::ScrollUp {
+                    scroll.saturating_sub(1)
+                } else {
+                    (scroll + 1).min(most)
+                };
+            }
             // (While a drag selects, the text under the mouse is read again
             // once the screen is drawn: the selection grows as it scrolls.)
             MouseEventKind::ScrollUp => self.transcript.scroll(-WHEEL),
@@ -1818,15 +1902,16 @@ impl App {
         let (list, rows) = &self.list_drawn;
         if list.contains(at) {
             let row = rows.get((at.y - list.y) as usize).copied();
-            // (The last agent shown, for the count of the others.)
-            let last = rows
-                .iter()
-                .filter_map(|row| match row {
+            // (The first and the last worker shown, for the counts of the
+            // others.)
+            let shown = || {
+                rows.iter().filter_map(|row| match row {
                     ListRow::Agent(index) => Some(*index),
-                    ListRow::More(_) => None,
+                    _ => None,
                 })
-                .max()
-                .unwrap_or(0);
+            };
+            let first = shown().filter(|index| *index > 0).min().unwrap_or(1);
+            let last = shown().max().unwrap_or(0);
             match row {
                 Some(ListRow::Agent(row)) => {
                     if let Some(agent) = self.list().get(row) {
@@ -1834,11 +1919,16 @@ impl App {
                         self.watch(id);
                     }
                 }
-                // The count of the workers not shown: the list moves on to
-                // the next of them (after the last, back to the first).
+                // The count of the workers below: the list moves on to the
+                // next of them (after the last, back to the first).
                 Some(ListRow::More(_)) => {
                     let count = self.list().len();
                     self.list_focus = Some(if last + 1 < count { last + 1 } else { 1 });
+                }
+                // The count of those above: the list moves back to the one
+                // before the first shown.
+                Some(ListRow::Above(_)) => {
+                    self.list_focus = Some(first.saturating_sub(1).max(1));
                 }
                 None => {}
             }
@@ -2272,64 +2362,87 @@ pub(super) mod tests {
         }
     }
 
-    /// The list's rows: the main agent and up to five workers, then a
-    /// count of the others. The workers shown follow the focus, and a
-    /// short screen shows fewer.
+    /// The list's rows: the main agent and up to five workers, with a count
+    /// of the workers above them and one of those below, when there are.
+    /// The workers shown follow the focus, and a short screen shows fewer.
     #[test]
-    fn the_list_shows_five_workers_and_counts_the_others() {
-        use ListRow::{Agent, More};
-        assert!(list_rows(0, None, 7).is_empty());
-        assert_eq!(
-            list_rows(4, None, 7),
-            [Agent(0), Agent(1), Agent(2), Agent(3)]
-        );
-        assert_eq!(list_rows(6, None, 7), (0..6).map(Agent).collect::<Vec<_>>());
+    fn the_list_shows_five_workers_and_counts_those_above_and_below() {
+        use ListRow::{Above, Agent, More};
+        let rows = |count, focus, height| list_rows(count, 0, focus, true, height).rows;
+        assert!(rows(0, None, 7).is_empty());
+        assert_eq!(rows(4, None, 7), [Agent(0), Agent(1), Agent(2), Agent(3)]);
+        assert_eq!(rows(6, None, 7), (0..6).map(Agent).collect::<Vec<_>>());
         // Seven workers: five, and "… 2 more".
+        let top = [
+            Agent(0),
+            Agent(1),
+            Agent(2),
+            Agent(3),
+            Agent(4),
+            Agent(5),
+            More(2),
+        ];
+        assert_eq!(rows(8, None, 7), top);
+        assert_eq!(rows(8, Some(5), 7), top);
+        // At the bottom, nothing is below: "… 2 above".
+        let bottom = [
+            Agent(0),
+            Above(2),
+            Agent(3),
+            Agent(4),
+            Agent(5),
+            Agent(6),
+            Agent(7),
+        ];
+        assert_eq!(rows(8, Some(6), 7), bottom);
+        assert_eq!(rows(8, Some(7), 7), bottom);
+        // In between, both.
         assert_eq!(
-            list_rows(8, None, 7),
+            list_rows(8, 1, None, false, 7),
+            ListWindow {
+                rows: vec![
+                    Agent(0),
+                    Above(1),
+                    Agent(2),
+                    Agent(3),
+                    Agent(4),
+                    Agent(5),
+                    More(2)
+                ],
+                scroll: 1,
+                most: 2,
+            }
+        );
+        // One more worker than fits: at the bottom, none is below.
+        assert_eq!(
+            rows(7, Some(6), 7),
             [
                 Agent(0),
-                Agent(1),
+                Above(1),
                 Agent(2),
                 Agent(3),
                 Agent(4),
                 Agent(5),
-                More(2)
+                Agent(6)
             ]
         );
-        assert_eq!(list_rows(8, Some(5), 7), list_rows(8, None, 7));
+        // Back up, the workers shown follow the focus to the top.
+        let window = list_rows(8, 2, Some(2), true, 7);
         assert_eq!(
-            list_rows(8, Some(6), 7),
-            [
-                Agent(0),
-                Agent(2),
-                Agent(3),
-                Agent(4),
-                Agent(5),
-                Agent(6),
-                More(2)
-            ]
+            (window.scroll, &window.rows[1..3]),
+            (1, &[Above(1), Agent(2)][..])
         );
-        assert_eq!(
-            list_rows(8, Some(7), 7),
-            [
-                Agent(0),
-                Agent(3),
-                Agent(4),
-                Agent(5),
-                Agent(6),
-                Agent(7),
-                More(2)
-            ]
-        );
-        // On a short screen: fewer workers, and the count of the rest.
-        assert_eq!(
-            list_rows(8, None, 4),
-            [Agent(0), Agent(1), Agent(2), More(5)]
-        );
-        assert_eq!(list_rows(4, Some(3), 3), [Agent(0), Agent(3), More(2)]);
-        assert_eq!(list_rows(3, None, 2), [Agent(0), More(2)]);
-        assert_eq!(list_rows(3, Some(2), 1), [Agent(2)]);
+        assert_eq!(list_rows(8, 2, Some(1), true, 7).rows, top);
+        // Scrolled past the end, it stops at the bottom.
+        assert_eq!(list_rows(8, 9, None, false, 7).rows, bottom);
+        // On a short screen: fewer workers, and the counts.
+        assert_eq!(rows(8, None, 4), [Agent(0), Agent(1), Agent(2), More(5)]);
+        assert_eq!(rows(8, Some(4), 4), [Agent(0), Above(3), Agent(4), More(3)]);
+        // Too short for both counts: the count below, else the one above.
+        assert_eq!(rows(4, Some(2), 3), [Agent(0), Agent(2), More(1)]);
+        assert_eq!(rows(4, Some(3), 3), [Agent(0), Above(2), Agent(3)]);
+        assert_eq!(rows(3, None, 2), [Agent(0), More(2)]);
+        assert_eq!(rows(3, Some(2), 1), [Agent(2)]);
     }
 
     /// The list has the workers running or waiting, not those that ended
@@ -2358,7 +2471,7 @@ pub(super) mod tests {
             ids(&app),
             ["main", "r1", "r3", "r5", "r6", "r8", "r9", "r10"]
         );
-        use ListRow::{Agent, More};
+        use ListRow::{Above, Agent, More};
         assert_eq!(
             app.list_rows(7),
             [
@@ -2376,30 +2489,73 @@ pub(super) mod tests {
         assert_eq!(ids(&app)[..3], ["main", "r1", "r2"]);
         app.watch(None);
         assert!(!ids(&app).contains(&"r2".to_string()));
-        // ↓ past the fifth worker brings the next into the list.
+        // ↓ past the fifth worker brings the next into the list, under the
+        // count of those above it.
         press(&mut app, KeyCode::Char('t'), KeyModifiers::CONTROL);
         for _ in 0..6 {
             press(&mut app, KeyCode::Down, KeyModifiers::NONE);
         }
         assert_eq!(app.list_focus, Some(6));
+        let bottom = [
+            Agent(0),
+            Above(2),
+            Agent(3),
+            Agent(4),
+            Agent(5),
+            Agent(6),
+            Agent(7),
+        ];
+        assert_eq!(app.list_rows(7), bottom);
+        // A click on the count above moves back to the worker before those
+        // shown, and one on the count below on to the next after them.
+        let area = ratatui::layout::Rect::new(0, 30, 80, 7);
+        app.list_drawn = (area, app.list_rows(7));
+        click(&mut app, 5, 31);
+        assert_eq!(app.list_focus, Some(2));
         assert_eq!(
             app.list_rows(7),
             [
                 Agent(0),
+                Above(1),
                 Agent(2),
                 Agent(3),
                 Agent(4),
                 Agent(5),
-                Agent(6),
                 More(2)
             ]
         );
-        // A click on the count moves the list on to the next worker.
-        app.list_focus = None;
-        app.list_drawn = (ratatui::layout::Rect::new(0, 30, 80, 7), app.list_rows(7));
+        app.list_drawn = (area, app.list_rows(7));
         click(&mut app, 5, 36);
         assert_eq!(app.list_focus, Some(6));
         assert_eq!(app.watching, None);
+        assert_eq!(app.list_rows(7), bottom);
+        // The wheel over the list scrolls it, as far as it goes.
+        let wheel = |app: &mut App, kind| {
+            app.mouse(MouseEvent {
+                kind,
+                column: 5,
+                row: 32,
+                modifiers: KeyModifiers::NONE,
+            })
+        };
+        app.list_drawn = (area, app.list_rows(7));
+        for _ in 0..3 {
+            wheel(&mut app, MouseEventKind::ScrollUp);
+        }
+        let top = [
+            Agent(0),
+            Agent(1),
+            Agent(2),
+            Agent(3),
+            Agent(4),
+            Agent(5),
+            More(2),
+        ];
+        assert_eq!(app.list_rows(7), top);
+        for _ in 0..5 {
+            wheel(&mut app, MouseEventKind::ScrollDown);
+        }
+        assert_eq!(app.list_rows(7), bottom);
         // A worker that ends leaves the list.
         app.update(Update::Worker(worker("r1", Finished)), Activity::default);
         assert_eq!(ids(&app), ["main", "r3", "r5", "r6", "r8", "r9", "r10"]);

@@ -176,9 +176,10 @@ fn draw_input(
 }
 
 /// The agent list, below the input: `● main` and a row for each worker
-/// running, the one shown marked, up to five workers and then a count of
-/// the others. ↓ from the box moves into it, and Enter shows a worker's
-/// own transcript.
+/// running, the one shown marked, up to five workers, with a count of the
+/// workers above them and one of those below when there are. ↓ from the
+/// box moves into it, Enter shows a worker's own transcript, and the wheel
+/// scrolls it.
 fn draw_list(frame: &mut Frame, app: &mut App, area: Rect, rows: Vec<ListRow>) {
     let count = app.list().len();
     let focus = app.list_focus.map(|row| row.min(count - 1));
@@ -194,8 +195,13 @@ fn draw_list(frame: &mut Frame, app: &mut App, area: Rect, rows: Vec<ListRow>) {
         let y = area.y + line as u16;
         let index = match *row {
             ListRow::Agent(index) => index,
-            ListRow::More(more) => {
-                let text = format!("   {} {more} more", glyphs::render("…"));
+            ListRow::Above(count) | ListRow::More(count) => {
+                let place = if matches!(row, ListRow::Above(_)) {
+                    "above"
+                } else {
+                    "more"
+                };
+                let text = format!("   {} {count} {place}", glyphs::render("…"));
                 frame.buffer_mut().set_line(
                     area.x,
                     y,
@@ -651,6 +657,51 @@ mod tests {
         assert_eq!(row(10), "   Methodology");
         let cursor = terminal.get_cursor_position().unwrap();
         assert_eq!((cursor.x, cursor.y), (14, 10));
+    }
+
+    /// A list taller than its area counts what it hides above and below
+    /// the workers it shows, as the focus moves and as workers come and go.
+    #[test]
+    fn the_agent_list_counts_the_workers_above_and_below_it() {
+        use crate::remote::WorkerState::{Finished, Running};
+        use crate::tui::app::tests::worker;
+        let mut app = app();
+        for n in 1..=6 {
+            let summary = worker(&format!("r{n}"), Running);
+            app.update(Update::Worker(summary), Activity::default);
+        }
+        let list = |app: &mut App| {
+            let rows = screen(app, 80, 40);
+            rows[rows.len() - 7..].to_vec()
+        };
+        let name = |row: &String| {
+            row.split_whitespace()
+                .nth(1)
+                .unwrap_or_default()
+                .to_string()
+        };
+        // One more worker than fits: the last is below.
+        let shown = list(&mut app);
+        assert_eq!(shown[6], "   … 1 more", "{shown:#?}");
+        assert!(!shown.iter().any(|row| row.contains("above")));
+        // At the bottom, it is shown, and the first is above.
+        app.list_focus = Some(6);
+        let shown = list(&mut app);
+        assert_eq!(shown[1], "   … 1 above", "{shown:#?}");
+        assert_eq!(
+            shown.iter().map(name).collect::<Vec<_>>(),
+            ["main", "1", "r2", "r3", "r4", "r5", "r6"]
+        );
+        assert!(!shown.iter().any(|row| row.contains("more")));
+        // A worker ends: the others fit, and nothing is counted.
+        app.update(Update::Worker(worker("r1", Finished)), Activity::default);
+        let rows = screen(&mut app, 80, 40);
+        assert!(
+            !rows
+                .iter()
+                .any(|row| row.ends_with(" more") || row.ends_with(" above")),
+            "{rows:#?}"
+        );
     }
 
     /// The agent list under the input: the main agent, five of the workers
