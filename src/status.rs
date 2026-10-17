@@ -121,6 +121,11 @@ impl Gauges {
                 }
                 drop(this);
                 tokio::time::sleep(GATHER).await;
+                // One reading for all the updates so far: once nothing more
+                // changes, it waits.
+                if !drain(&mut updates) {
+                    break;
+                }
                 let Some(this) = gauges.upgrade() else {
                     break;
                 };
@@ -308,6 +313,18 @@ impl remote::Meter for Gauges {
     }
 }
 
+/// Takes the feed's updates waiting in `updates`, also those it fell behind
+/// on: false once the feed is gone.
+fn drain(updates: &mut broadcast::Receiver<remote::Update>) -> bool {
+    loop {
+        match updates.try_recv() {
+            Ok(_) | Err(broadcast::error::TryRecvError::Lagged(_)) => {}
+            Err(broadcast::error::TryRecvError::Empty) => return true,
+            Err(broadcast::error::TryRecvError::Closed) => return false,
+        }
+    }
+}
+
 /// The main agent's prompt cache, from what its latest request said, priced
 /// for its model.
 fn cache_status(stats: &crate::ui::Stats, models: &remote::Models) -> remote::CacheStatus {
@@ -358,6 +375,25 @@ fn cache_status(stats: &crate::ui::Stats, models: &remote::Models) -> remote::Ca
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The status is read once for all the feed's updates that came while it
+    /// gathered them, also more than it keeps: after a long streamed reply,
+    /// it doesn't go on reading them one at a time.
+    #[test]
+    fn the_status_takes_the_feeds_updates_at_once() {
+        let feed = remote::Feed::new("main");
+        let (_, mut updates) = feed.subscribe();
+        for n in 0..5_000 {
+            feed.notice(remote::Level::Info, &format!("note {n}"));
+        }
+        assert!(drain(&mut updates));
+        assert!(matches!(
+            updates.try_recv(),
+            Err(broadcast::error::TryRecvError::Empty)
+        ));
+        drop(feed);
+        assert!(!drain(&mut updates), "the feed is gone");
+    }
 
     /// The cache's costs follow the model's prices and its lifetime: a miss
     /// writes the conversation again, keeping it warm reads it. A plan pays
