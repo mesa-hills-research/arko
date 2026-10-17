@@ -115,6 +115,14 @@ pub fn image_refusal(model: &str, mime: &str) -> Option<String> {
     })
 }
 
+/// Whether a session's 1-hour prompt cache ([`Options::cache_1h`](crate::Options::cache_1h))
+/// applies to the model `model` (as `/model` takes it). It does to Claude
+/// models on an API key or on OpenRouter. Claude Code chooses its own (an
+/// hour on a Claude plan), and the other providers have none to choose.
+pub fn takes_cache_1h(model: &str) -> bool {
+    providers::resolve_model(model).is_ok_and(|model| providers::takes_cache_ttl(&model))
+}
+
 /// A model's name as people say it ("Opus 5.5", "GPT-6.1 Sol", "Gemini
 /// 3.1 Pro Preview"), from an ID or alias as `/model` takes it. `cc:` and
 /// `openrouter:` say how a model is reached, not which it is: they are left
@@ -155,6 +163,29 @@ pub fn display_name(model: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The 1-hour cache applies to Claude models on an API key or on
+    /// OpenRouter, and to no other.
+    #[test]
+    fn the_1_hour_cache_applies_to_claude_by_api_key_or_openrouter() {
+        for model in [
+            "opus",
+            "sonnet",
+            "claude-opus-5-5",
+            "openrouter:anthropic/claude-opus-5.5",
+        ] {
+            assert!(takes_cache_1h(model), "{model}");
+        }
+        for model in [
+            "cc:opus",
+            "sol",
+            "gemini",
+            "openrouter:meta/small-model",
+            "no such model",
+        ] {
+            assert!(!takes_cache_1h(model), "{model}");
+        }
+    }
 
     /// Models go by the names people say, also by their aliases and on any
     /// way to reach them.
