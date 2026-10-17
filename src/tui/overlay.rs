@@ -506,7 +506,7 @@ fn settings(frame: &mut Frame, app: &App, area: Rect, selected: usize) {
                 "Main agent",
                 vec![
                     Span::styled(format!("{} ", glyphs::render("←")), theme.dim()),
-                    Span::styled(format!(" {}k ", app.handover_at() / 1000), theme.chosen()),
+                    Span::styled(format!(" {} ", crate::handover::shown(app.handover_at())), theme.chosen()),
                     Span::styled(format!(" {}", glyphs::render("→")), theme.dim()),
                 ],
                 if app.cc_compact() {
@@ -522,7 +522,7 @@ fn settings(frame: &mut Frame, app: &App, area: Rect, selected: usize) {
                 vec![
                     Span::styled(format!("{} ", glyphs::render("←")), theme.dim()),
                     Span::styled(
-                        format!(" {}k ", app.workers_handover_at() / 1000),
+                        format!(" {} ", crate::handover::shown(app.workers_handover_at())),
                         theme.chosen(),
                     ),
                     Span::styled(format!(" {}", glyphs::render("→")), theme.dim()),

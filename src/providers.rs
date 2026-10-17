@@ -1072,15 +1072,16 @@ fn apply_catalog(
                 notes.push(text);
             }
         };
-        let handover =
-            |model: &ModelSettings| model.handover_at.unwrap_or(UNKNOWN_LIMIT_HANDOVER) / 1000;
+        let handover = |model: &ModelSettings| {
+            crate::handover::shown(model.handover_at.unwrap_or(UNKNOWN_LIMIT_HANDOVER))
+        };
         let catalog = match catalog {
             Ok(catalog) => catalog,
             Err(error) => {
                 note(
                     &mut notes,
                     format!(
-                        "Could not read OpenRouter's model catalog ({error}), so Arko can't check {name} or tell its context size: it hands over at {}k tokens (--handover-at sets it).",
+                        "Could not read OpenRouter's model catalog ({error}), so Arko can't check {name} or tell its context size: it hands over at {} tokens (--handover-at sets it).",
                         handover(model)
                     ),
                 );
@@ -1091,7 +1092,7 @@ fn apply_catalog(
             note(
                 &mut notes,
                 format!(
-                    "Arko can't tell the context size of the preset {name}: it hands over at {}k tokens (--handover-at sets it).",
+                    "Arko can't tell the context size of the preset {name}: it hands over at {} tokens (--handover-at sets it).",
                     handover(model)
                 ),
             );
@@ -1754,7 +1755,7 @@ mod tests {
         assert_eq!(
             notes,
             [
-                "openrouter:meta/small-model hands over at 121k tokens, the largest size Arko allows for its model."
+                "openrouter:meta/small-model hands over at 121,600 tokens, the largest size Arko allows for its model."
             ]
         );
 

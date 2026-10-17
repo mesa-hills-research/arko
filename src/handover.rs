@@ -113,12 +113,12 @@ pub fn compacted_text(input_tokens: usize, compacted_tokens: Option<usize>) -> S
     match compacted_tokens {
         Some(after) => format!(
             "Claude Code compacted the conversation: {} → {} tokens",
-            shown(input_tokens),
-            shown(after)
+            about(input_tokens),
+            about(after)
         ),
         None => format!(
             "Claude Code compacted the conversation at {} tokens",
-            shown(input_tokens)
+            about(input_tokens)
         ),
     }
 }
@@ -509,20 +509,38 @@ pub fn whose(argument: &str) -> (Whose, &str) {
     }
 }
 
-/// Reads a number of tokens as `/handover-at` takes it: `200000`,
-/// `200,000`, `200_000` or `200k`.
+/// Reads a handover size, a number of tokens, as `/handover-at` takes it:
+/// `200000`, `200,000`, `200_000`, `200k`, `950k`, `1.2M` or `1M` (`k` and
+/// `M` in either case, with a decimal point before them). The size is kept
+/// as given, to the token: a part of a token is refused. It is at least
+/// [`MIN_TOKENS`] (20,000). There is no largest here: where a size is set,
+/// it is held under what the agent's model leaves room for.
 pub fn parse_tokens(text: &str) -> Result<usize, String> {
     let text = text.trim();
+    let invalid = || format!("`{text}` isn't a number of tokens, such as 200000, 200k or 1.2M.");
     let digits: String = text.chars().filter(|c| !matches!(c, ',' | '_')).collect();
-    let (digits, scale) = match digits.strip_suffix(['k', 'K']) {
-        Some(digits) => (digits, 1000),
-        None => (digits.as_str(), 1),
+    let (digits, scale): (&str, u128) = match digits.strip_suffix(['k', 'K']) {
+        Some(digits) => (digits, 1_000),
+        None => match digits.strip_suffix(['m', 'M']) {
+            Some(digits) => (digits, 1_000_000),
+            None => (digits.as_str(), 1),
+        },
     };
-    let tokens = digits
-        .parse::<usize>()
-        .ok()
-        .and_then(|tokens| tokens.checked_mul(scale))
-        .ok_or_else(|| format!("`{text}` isn't a number of tokens, such as 200000 or 200k."))?;
+    let (whole, fraction) = digits.split_once('.').unwrap_or((digits, ""));
+    let all_digits = |part: &str| part.chars().all(|c| c.is_ascii_digit());
+    if whole.is_empty() || !all_digits(whole) || !all_digits(fraction) || fraction.len() > 9 {
+        return Err(invalid());
+    }
+    // In whole tokens: `1.2M` is 1,200,000, `1.2345k` isn't whole.
+    let places = 10u128.pow(fraction.len() as u32);
+    let number = format!("{whole}{fraction}")
+        .parse::<u128>()
+        .map_err(|_| invalid())?;
+    let scaled = number.checked_mul(scale).ok_or_else(invalid)?;
+    if scaled % places != 0 {
+        return Err(format!("`{text}` isn't a whole number of tokens."));
+    }
+    let tokens = usize::try_from(scaled / places).map_err(|_| invalid())?;
     if tokens < MIN_TOKENS {
         return Err(format!(
             "{tokens} tokens is too small: an agent's fresh conversation would start near it. Give at least {MIN_TOKENS}."
@@ -531,8 +549,26 @@ pub fn parse_tokens(text: &str) -> Result<usize, String> {
     Ok(tokens)
 }
 
-/// `tokens` as the user reads it: `250k`.
+/// A handover size as the user reads it: `250k` for whole thousands, else
+/// all of it (`250,500`), never rounded.
 pub fn shown(tokens: usize) -> String {
+    if tokens.is_multiple_of(1000) {
+        return format!("{}k", tokens / 1000);
+    }
+    let digits = tokens.to_string();
+    let mut grouped = String::new();
+    for (index, digit) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index).is_multiple_of(3) {
+            grouped.push(',');
+        }
+        grouped.push(digit);
+    }
+    grouped
+}
+
+/// A measured size, such as a request's input, in whole thousands:
+/// `642k` for 642,400.
+pub fn about(tokens: usize) -> String {
     format!("{}k", tokens / 1000)
 }
 
@@ -551,6 +587,26 @@ mod tests {
         assert!(parse_tokens("-5").is_err());
         assert!(parse_tokens("5k").unwrap_err().contains("too small"));
         assert!(parse_tokens("99999999999999999999999k").is_err());
+        // Millions, and a decimal point before k or M.
+        assert_eq!(parse_tokens("1M"), Ok(1_000_000));
+        assert_eq!(parse_tokens("1m"), Ok(1_000_000));
+        assert_eq!(parse_tokens("1.2M"), Ok(1_200_000));
+        assert_eq!(parse_tokens("950k"), Ok(950_000));
+        assert_eq!(parse_tokens("1,000,000"), Ok(1_000_000));
+        assert_eq!(parse_tokens("250.5k"), Ok(250_500));
+        assert!(
+            parse_tokens("1.2345k")
+                .unwrap_err()
+                .contains("whole number")
+        );
+        assert!(parse_tokens("1.5").unwrap_err().contains("whole number"));
+        assert!(parse_tokens(".5M").is_err());
+        assert!(parse_tokens("1.2.3M").is_err());
+        assert!(parse_tokens("M").is_err());
+        // Shown as it is, never rounded.
+        assert_eq!(shown(250_000), "250k");
+        assert_eq!(shown(250_500), "250,500");
+        assert_eq!(shown(1_234_567), "1,234,567");
     }
 
     #[test]

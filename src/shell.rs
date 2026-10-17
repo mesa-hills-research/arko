@@ -311,7 +311,9 @@ impl Drop for Held<'_> {
 }
 
 /// `text` as a time after which commands move to the background, in
-/// seconds: `90s`, `10m`, `1h`, or `off` (0).
+/// seconds, as `/background-after` takes it: a whole number of seconds,
+/// minutes or hours (`90s`, `10m`, `1h`), from 1 second to
+/// [`MAX_TIMEOUT_SECONDS`] (an hour), or `off` (0: never), in either case.
 pub fn parse_background_after(text: &str) -> Result<u64, String> {
     let text = text.trim().to_ascii_lowercase();
     if text == "off" {

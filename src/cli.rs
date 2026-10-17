@@ -152,12 +152,13 @@ pub(crate) struct Args {
     /// conversation. On cc: models, Claude Code compacts the conversation at
     /// that size instead, and the agent goes on in the same conversation
     /// (--no-cc-compact has them hand over too). It takes what /handover-at
-    /// takes: 950k, 950K, 950000, 950,000 or 950_000, at least 20k, and each
-    /// agent goes by at most 95% of what its model accepts. Default: 500k
-    /// on Claude models, 250k for OpenAI models on the ChatGPT login (whose
-    /// backend accepts 272k), and 200k on others, at most 80% of what the
-    /// model accepts (100k when OpenRouter's catalog can't say). When
-    /// resuming, it sets both sizes as /handover-at does, larger or smaller.
+    /// takes: 950k, 950K, 950000, 950,000, 950_000, 1M or 1.2M, at least
+    /// 20k, and each agent goes by at most 95% of what its model accepts.
+    /// Default: 500k on Claude models, 250k for OpenAI models on the ChatGPT
+    /// login (whose backend accepts 272k), and 200k on others, at most 80%
+    /// of what the model accepts (100k when OpenRouter's catalog can't say).
+    /// When resuming, it sets both sizes as /handover-at does, larger or
+    /// smaller.
     #[arg(long, value_name = "SIZE", value_parser = handover::parse_tokens)]
     pub(crate) handover_at: Option<usize>,
 

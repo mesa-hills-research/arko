@@ -1,6 +1,13 @@
 //! The commands typed at the prompt (`/name`), in one registry: what is a
 //! command, the line prompt's `/help`, and the full-screen view's command
-//! menu and help all read it.
+//! menu and help all read it. With the readers of the values some commands
+//! take, for a front end that checks them as they are typed.
+
+/// A handover size (`/handover-at`): see its rules there.
+pub use crate::handover::{MIN_TOKENS as MIN_HANDOVER_SIZE, parse_tokens as parse_handover_size};
+/// When commands move to the background (`/background-after`): see its
+/// rules there.
+pub use crate::shell::{MAX_TIMEOUT_SECONDS as MAX_BACKGROUND_AFTER, parse_background_after};
 
 /// Who runs a command.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

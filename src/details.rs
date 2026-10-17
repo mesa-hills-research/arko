@@ -20,14 +20,14 @@ use crate::{index, lock, mcp, project, providers, remote, skills};
 pub fn handover_text(facts: &HandoverFacts, workers: bool) -> String {
     let what = |compacts: bool| if compacts { "compaction" } else { "handover" };
     let main = format!(
-        "{} at {}k tokens",
+        "{} at {} tokens",
         what(facts.main_compacts),
-        facts.main_at / 1000
+        crate::handover::shown(facts.main_at)
     );
     let worker = format!(
-        "{} at {}k tokens",
+        "{} at {} tokens",
         what(facts.workers_compact),
-        facts.workers_at / 1000
+        crate::handover::shown(facts.workers_at)
     );
     if !workers || main == worker {
         format!("{main} of input")

@@ -809,9 +809,9 @@ async fn handover_sizes_are_checked_kept_and_acted_on() {
     assert_eq!(
         output(&mut harness, "/handover-at 2000k"),
         format!(
-            "The main agent now hands over at {}k tokens of input, the largest size Arko allows for its model.\nWorkers now hand over at {}k tokens of input, the largest size Arko allows for their model.",
-            most / 1000,
-            most / 1000
+            "The main agent now hands over at {} tokens of input, the largest size Arko allows for its model.\nWorkers now hand over at {} tokens of input, the largest size Arko allows for their model.",
+            handover::shown(most),
+            handover::shown(most)
         )
     );
     assert_eq!(harness.handover.at(), most);

@@ -2141,7 +2141,7 @@ impl Harness {
             if let Some(input) = self.handover.input() {
                 text.push_str(&format!(
                     " (its latest request: {})",
-                    handover::shown(input)
+                    handover::about(input)
                 ));
             }
             parts.push(format!("{text}."));
@@ -2338,7 +2338,7 @@ impl Harness {
         {
             lines.push(format!(
                 "Its context ({}) is over that already. {}",
-                handover::shown(input),
+                handover::about(input),
                 handover_text(asked, compacts)
             ));
         }
@@ -3688,16 +3688,19 @@ pub(crate) mod tests {
     }
 
     /// `--handover-at` takes what `/handover-at` takes (950k, 950K, 950000,
-    /// 950,000, 950_000) and refuses what it refuses, and a new session's
-    /// agents, the main one and the workers, start with it.
+    /// 950,000, 950_000, 0.95M) and refuses what it refuses, and a new
+    /// session's agents, the main one and the workers, start with it.
     #[test]
     fn the_handover_flag_takes_what_the_command_takes() {
         let parse = |size: &str| Args::try_parse_from(["arko", "--handover-at", size]);
-        for size in ["950k", "950K", "950000", "950,000", "950_000"] {
+        for size in [
+            "950k", "950K", "950000", "950,000", "950_000", "0.95M", "0.95m",
+        ] {
             assert_eq!(parse(size).unwrap().handover_at, Some(950_000), "{size}");
         }
+        assert_eq!(parse("1.2M").unwrap().handover_at, Some(1_200_000));
         assert!(parse("5k").unwrap_err().to_string().contains("too small"));
-        for size in ["950 k", "0.95m", "lots"] {
+        for size in ["950 k", "0.95x", "lots"] {
             let error = parse(size).unwrap_err().to_string();
             assert!(
                 error.contains("isn't a number of tokens"),
