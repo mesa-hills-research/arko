@@ -155,9 +155,7 @@ async fn extra_rules_change_before_the_conversation_starts_only() {
         "From the web page. Extra rules for small models are set to small already, so only agents on small models (Haiku, luna) get them. The main agent and the workers get them."
     ));
 
-    let end = harness
-        .turn(Prompt::User("Hi.".into()), &mut inputs)
-        .await;
+    let end = harness.turn(Prompt::User("Hi.".into()), &mut inputs).await;
     assert!(matches!(end, TurnEnd::Answered));
     // The model got the rules.
     let first = bodies.lock().unwrap()[0].clone();

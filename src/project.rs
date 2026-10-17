@@ -190,6 +190,10 @@ impl crate::Harness {
     /// time: the conversations and workers that start after it get the
     /// change.
     pub(crate) fn project_command(&mut self, argument: &str, source: Source) {
+        let before = (
+            self.settings.project_instructions,
+            self.settings.worker_project_instructions,
+        );
         let words: Vec<&str> = argument.split_whitespace().collect();
         let result = match words.as_slice() {
             [] | ["workers"] => Ok(self.project_line()),
@@ -201,18 +205,12 @@ impl crate::Harness {
             },
             _ => Err(USAGE.to_string()),
         };
-        match result {
-            Ok(text) => {
-                if source == Source::Web && !argument.is_empty() {
-                    self.say(Level::Info, &format!("Changed from the web page. {text}"));
-                } else {
-                    self.mirrored(|harness| harness.output.line(&text));
-                }
-            }
-            Err(error) => {
-                self.mirrored(|harness| harness.output.line(&harness.output.error(&error)))
-            }
-        }
+        let changed = before
+            != (
+                self.settings.project_instructions,
+                self.settings.worker_project_instructions,
+            );
+        self.setting_reply(result, source, changed);
     }
 
     /// The project's instructions new workers get in their first message,

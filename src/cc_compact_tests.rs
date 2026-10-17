@@ -82,9 +82,10 @@ async fn cc_compact_changes_before_the_conversation_starts_only() {
     assert!(answered(&harness, not_in_claude_code));
     assert!(!harness.settings.cc_handover);
     harness.cc_compact_command("off", Source::Web);
-    assert!(texts(&harness.feed, "notice").contains(&format!(
-        "From the web page. {not_in_claude_code}"
-    )));
+    assert!(
+        texts(&harness.feed, "notice")
+            .contains(&format!("From the web page. {not_in_claude_code}"))
+    );
 
     // The main agent on luna (the mock model), and the workers on cc:opus.
     let luna = harness.settings.main.clone();

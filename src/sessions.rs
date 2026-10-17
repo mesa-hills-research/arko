@@ -696,8 +696,13 @@ mod tests {
         conversations.save(&session.dir).unwrap();
         let check = || {
             for number in [None, Some(1)] {
-                let error = conversation(temp.path(), &session.id, number).err().unwrap();
-                assert!(error.starts_with("The saved conversation can't be read"), "{error}");
+                let error = conversation(temp.path(), &session.id, number)
+                    .err()
+                    .unwrap();
+                assert!(
+                    error.starts_with("The saved conversation can't be read"),
+                    "{error}"
+                );
             }
         };
         check();

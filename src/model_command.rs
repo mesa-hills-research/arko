@@ -114,7 +114,12 @@ impl Harness {
         )
     }
 
-    fn setting_reply(&mut self, result: Result<String, String>, source: Source, changed: bool) {
+    pub(crate) fn setting_reply(
+        &mut self,
+        result: Result<String, String>,
+        source: Source,
+        changed: bool,
+    ) {
         match result {
             Ok(text) => {
                 if source == Source::Web {

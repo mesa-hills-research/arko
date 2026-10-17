@@ -273,6 +273,16 @@ async fn the_command_says_and_changes_the_choices() {
             .contains(&"Project instructions for workers are on already.".to_string())
     );
 
+    harness.project_command("workers on", Source::Web);
+    assert!(texts(&harness.feed, "notice").contains(
+        &"From the web page. Project instructions for workers are on already.".to_string()
+    ));
+    harness.project_command("workers", Source::Web);
+    assert!(
+        texts(&harness.feed, "notice")
+            .iter()
+            .any(|text| text.starts_with("From the web page. Project instructions are set to one"))
+    );
     harness.project_command("both", Source::Web);
     assert!(texts(&harness.feed, "notice").contains(
         &"Changed from the web page. Project instructions are set to both, so the agents get AGENTS.md and CLAUDE.md, each under its own name. Here the agents get AGENTS.md. The main agent gets it once per conversation, in its first message, and each worker once, in its first message."
