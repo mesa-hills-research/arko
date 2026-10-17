@@ -165,6 +165,16 @@ pub enum Request {
     /// The user's latest message sent again, for a new reply: an edit of it
     /// with its own words.
     Regenerate { reply: Reply<()> },
+    /// A new session with the current conversation up to the user's
+    /// message `before` (a `Kind::User` item with a `message_index`; the
+    /// message itself is left out), or all of it (`None`), to go on apart
+    /// from this one. Replies the new session's ID: open it
+    /// ([`SessionChoice::Resume`]) to go on there. Its settings are this
+    /// one's. Workers stay with this session. Between turns.
+    Branch {
+        before: Option<u64>,
+        reply: Reply<String>,
+    },
 }
 
 /// Where a request's answer goes.
@@ -748,6 +758,7 @@ impl Engine {
         // Before the workflow opens: it may restart a worker that hadn't started.
         harness.give_workers_project();
         harness.open(!new)?;
+        harness.import_seed().await?;
         harness.start_new_workers();
         harness.publish_models();
         harness.outside_at_start(new, options.allow_outside_workspace);
@@ -1433,14 +1444,9 @@ mod tests {
         );
     }
 
-    /// An app edits the user's message, or sends the latest again: the
-    /// conversation is cut back to just before it and goes on from the new
-    /// message, in the model's requests and in the feed. Only the user's
-    /// messages can be edited, also those restored when the session opens
-    /// again.
-    #[tokio::test]
-    async fn an_app_edits_and_regenerates_messages() {
-        let temp = tempfile::tempdir().unwrap();
+    /// A model server that replies "Reply N." to its Nth request, and the
+    /// requests' bodies.
+    async fn counting_server() -> (ModelServer, Arc<Mutex<Vec<String>>>) {
         let bodies: Arc<Mutex<Vec<String>>> = Arc::default();
         let server = ModelServer::start(Arc::new({
             let bodies = bodies.clone();
@@ -1454,118 +1460,154 @@ mod tests {
             }
         }))
         .await;
-        let root = temp.path().join("arko");
-        let project = temp.path().join("project");
-        std::fs::create_dir_all(&project).unwrap();
-        let wait = Duration::from_secs(30);
-        let open = |session: SessionChoice| {
-            let running = spawn(
-                Options {
-                    root: Some(root.clone()),
-                    session,
-                    workspace: Some(project.clone()),
-                    model: Some("luna".into()),
-                    openai_auth: Some(OpenAiAuth::ApiKey),
-                    cache_1h: Some(false),
-                    text_replies: Some(true),
-                    client: Some(GivenClient(Arc::new(server.client()))),
-                    ..Options::default()
-                },
-                Arc::new(NoPrompter),
-            );
-            async move {
-                let seam = tokio::time::timeout(wait, running.opened)
-                    .await
-                    .unwrap()
-                    .unwrap()
-                    .unwrap();
-                (seam, running.ended)
+        (server, bodies)
+    }
+
+    /// An app's session on `server` in `root`, working in `project`.
+    async fn open_app(
+        root: &std::path::Path,
+        project: &std::path::Path,
+        server: &ModelServer,
+        session: SessionChoice,
+    ) -> (Seam, oneshot::Receiver<RunEnd>) {
+        std::fs::create_dir_all(project).unwrap();
+        let running = spawn(
+            Options {
+                root: Some(root.to_path_buf()),
+                session,
+                workspace: Some(project.to_path_buf()),
+                model: Some("luna".into()),
+                openai_auth: Some(OpenAiAuth::ApiKey),
+                cache_1h: Some(false),
+                text_replies: Some(true),
+                client: Some(GivenClient(Arc::new(server.client()))),
+                ..Options::default()
+            },
+            Arc::new(NoPrompter),
+        );
+        let seam = tokio::time::timeout(Duration::from_secs(30), running.opened)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        (seam, running.ended)
+    }
+
+    /// Waits for the turn of the `count`th request, and gives its body.
+    async fn answered(seam: &Seam, bodies: &Mutex<Vec<String>>, count: usize) -> String {
+        tokio::time::timeout(Duration::from_secs(30), async {
+            while bodies.lock().unwrap().len() < count || seam.feed.activity().working {
+                tokio::time::sleep(Duration::from_millis(20)).await;
             }
-        };
-        // Waits for the turn of the `count`th request, and gives its body.
-        let answered = |seam: &Seam, count: usize| {
-            let feed = seam.feed.clone();
-            let bodies = bodies.clone();
-            async move {
-                tokio::time::timeout(wait, async {
-                    while bodies.lock().unwrap().len() < count || feed.activity().working {
-                        tokio::time::sleep(Duration::from_millis(20)).await;
-                    }
-                })
-                .await
-                .unwrap();
-                bodies.lock().unwrap()[count - 1].clone()
-            }
-        };
-        let message = |text: &str| crate::ui::Message {
+        })
+        .await
+        .unwrap();
+        bodies.lock().unwrap()[count - 1].clone()
+    }
+
+    fn app_message(text: &str) -> crate::ui::Message {
+        crate::ui::Message {
             text: text.into(),
             images: Vec::new(),
-        };
-        let edit = |seam: &Seam, item: u64, text: &str| {
-            let (reply_to, answer) = tokio::sync::oneshot::channel();
-            seam.requests
-                .send(Request::Edit {
-                    item,
-                    message: message(text),
-                    reply: reply_to,
-                })
-                .unwrap();
-            async move { answer.await.unwrap() }
-        };
-        let texts = |seam: &Seam| -> Vec<String> {
-            seam.feed
-                .subscribe()
-                .0
-                .items
-                .into_iter()
-                .filter(|item| matches!(item.kind, Kind::User | Kind::Reply))
-                .map(|item| item.text)
-                .collect()
-        };
-        let user = |seam: &Seam, text: &str| {
-            seam.feed
-                .subscribe()
-                .0
-                .items
-                .into_iter()
-                .find(|item| item.kind == Kind::User && item.text == text)
-                .unwrap()
-        };
+        }
+    }
 
-        let (seam, ended) = open(SessionChoice::New).await;
+    /// The user's messages and the replies in the feed.
+    fn exchanged(seam: &Seam) -> Vec<String> {
+        seam.feed
+            .subscribe()
+            .0
+            .items
+            .into_iter()
+            .filter(|item| matches!(item.kind, Kind::User | Kind::Reply))
+            .map(|item| item.text)
+            .collect()
+    }
+
+    /// The feed's user's message `text`.
+    fn user_item(seam: &Seam, text: &str) -> crate::remote::Item {
+        seam.feed
+            .subscribe()
+            .0
+            .items
+            .into_iter()
+            .find(|item| item.kind == Kind::User && item.text == text)
+            .unwrap()
+    }
+
+    /// Sends `request` (made with the reply's sender) and gives its answer.
+    async fn ask_for<T>(
+        seam: &Seam,
+        request: impl FnOnce(Reply<T>) -> Request,
+    ) -> Result<T, String> {
+        let (reply_to, answer) = oneshot::channel();
+        seam.requests.send(request(reply_to)).unwrap();
+        answer.await.unwrap()
+    }
+
+    /// Edits the user's message `item` to `text`.
+    async fn edit(seam: &Seam, item: u64, text: &str) -> Result<(), String> {
+        let message = app_message(text);
+        ask_for(seam, move |reply| Request::Edit {
+            item,
+            message,
+            reply,
+        })
+        .await
+    }
+
+    async fn quit(seam: Seam, ended: oneshot::Receiver<RunEnd>) {
+        seam.input.send(Input::Quit(Some(Vec::new()))).unwrap();
+        let end = tokio::time::timeout(Duration::from_secs(30), ended).await;
+        assert_eq!(end.unwrap().unwrap(), RunEnd::Quit);
+    }
+
+    /// An app edits the user's message, or sends the latest again: the
+    /// conversation is cut back to just before it and goes on from the new
+    /// message, in the model's requests and in the feed. Only the user's
+    /// messages can be edited, also those restored when the session opens
+    /// again.
+    #[tokio::test]
+    async fn an_app_edits_and_regenerates_messages() {
+        let temp = tempfile::tempdir().unwrap();
+        let (server, bodies) = counting_server().await;
+        let (root, project) = (temp.path().join("arko"), temp.path().join("project"));
+        let (seam, ended) = open_app(&root, &project, &server, SessionChoice::New).await;
         let id = seam.session.id.clone();
-        seam.input.send(Input::Message(message("One."))).unwrap();
-        answered(&seam, 1).await;
-        seam.input.send(Input::Message(message("Two."))).unwrap();
-        answered(&seam, 2).await;
-        assert_eq!(user(&seam, "One.").message_index, Some(0));
-        let two = user(&seam, "Two.");
+        seam.input
+            .send(Input::Message(app_message("One.")))
+            .unwrap();
+        answered(&seam, &bodies, 1).await;
+        seam.input
+            .send(Input::Message(app_message("Two.")))
+            .unwrap();
+        answered(&seam, &bodies, 2).await;
+        assert_eq!(user_item(&seam, "One.").message_index, Some(0));
+        let two = user_item(&seam, "Two.");
         assert!(two.message_index.is_some());
 
         // An edit: the conversation goes on from it.
         assert_eq!(edit(&seam, two.id, "Deux.").await, Ok(()));
-        let third = answered(&seam, 3).await;
+        let third = answered(&seam, &bodies, 3).await;
         assert!(third.contains("One.") && third.contains("Reply 1.") && third.contains("Deux."));
         assert!(
             !third.contains("Two.") && !third.contains("Reply 2."),
             "{third}"
         );
-        assert_eq!(texts(&seam), ["One.", "Reply 1.", "Deux.", "Reply 3."]);
+        assert_eq!(exchanged(&seam), ["One.", "Reply 1.", "Deux.", "Reply 3."]);
         // Sent again: a new reply in place of the last.
-        let (reply_to, answer) = tokio::sync::oneshot::channel();
-        seam.requests
-            .send(Request::Regenerate { reply: reply_to })
-            .unwrap();
-        assert_eq!(answer.await.unwrap(), Ok(()));
-        let fourth = answered(&seam, 4).await;
+        let regenerated = ask_for(&seam, |reply| Request::Regenerate { reply }).await;
+        assert_eq!(regenerated, Ok(()));
+        let fourth = answered(&seam, &bodies, 4).await;
         assert_eq!(fourth.matches("Deux.").count(), 1, "{fourth}");
         assert!(!fourth.contains("Reply 3."));
-        assert_eq!(texts(&seam), ["One.", "Reply 1.", "Deux.", "Reply 4."]);
+        assert_eq!(exchanged(&seam), ["One.", "Reply 1.", "Deux.", "Reply 4."]);
         // The first message: the conversation starts over.
-        assert_eq!(edit(&seam, user(&seam, "One.").id, "Uno.").await, Ok(()));
-        let fifth = answered(&seam, 5).await;
+        let one = user_item(&seam, "One.").id;
+        assert_eq!(edit(&seam, one, "Uno.").await, Ok(()));
+        let fifth = answered(&seam, &bodies, 5).await;
         assert!(fifth.contains("Uno.") && !fifth.contains("One.") && !fifth.contains("Deux."));
-        assert_eq!(texts(&seam), ["Uno.", "Reply 5."]);
+        assert_eq!(exchanged(&seam), ["Uno.", "Reply 5."]);
         // Only the user's messages.
         let reply = seam
             .feed
@@ -1579,27 +1621,98 @@ mod tests {
             edit(&seam, reply.id, "No.").await,
             Err("This message can't be edited.".to_string())
         );
-        seam.input.send(Input::Quit(Some(Vec::new()))).unwrap();
-        assert_eq!(
-            tokio::time::timeout(wait, ended).await.unwrap().unwrap(),
-            RunEnd::Quit
-        );
+        quit(seam, ended).await;
 
         // Opened again, its restored messages can be edited.
-        let (seam, ended) = open(SessionChoice::Resume(id)).await;
-        let uno = user(&seam, "Uno.");
+        let (seam, ended) = open_app(&root, &project, &server, SessionChoice::Resume(id)).await;
+        let uno = user_item(&seam, "Uno.");
         assert_eq!(uno.message_index, Some(0));
         assert_eq!(edit(&seam, uno.id, "Eins.").await, Ok(()));
-        let sixth = answered(&seam, 6).await;
+        let sixth = answered(&seam, &bodies, 6).await;
         assert!(
             sixth.contains("Eins.") && !sixth.contains("Uno."),
             "{sixth}"
         );
-        seam.input.send(Input::Quit(Some(Vec::new()))).unwrap();
-        assert_eq!(
-            tokio::time::timeout(wait, ended).await.unwrap().unwrap(),
-            RunEnd::Quit
+        quit(seam, ended).await;
+    }
+
+    /// A branch is a new session with the conversation up to a message of
+    /// the user's: it goes on apart from the session it came from, also
+    /// once it opens again. A branch keeps at least the first message.
+    #[tokio::test]
+    async fn a_branch_goes_on_apart_from_its_session() {
+        let temp = tempfile::tempdir().unwrap();
+        let (server, bodies) = counting_server().await;
+        let (root, project) = (temp.path().join("arko"), temp.path().join("project"));
+        let (seam, ended) = open_app(&root, &project, &server, SessionChoice::New).await;
+        let id = seam.session.id.clone();
+        seam.input
+            .send(Input::Message(app_message("One.")))
+            .unwrap();
+        answered(&seam, &bodies, 1).await;
+        seam.input
+            .send(Input::Message(app_message("Two.")))
+            .unwrap();
+        answered(&seam, &bodies, 2).await;
+        let one = user_item(&seam, "One.").id;
+        let refused = ask_for(&seam, |reply| Request::Branch {
+            before: Some(one),
+            reply,
+        })
+        .await;
+        assert!(refused.unwrap_err().contains("start a new session"));
+        let two = user_item(&seam, "Two.").id;
+        let branch = ask_for(&seam, |reply| Request::Branch {
+            before: Some(two),
+            reply,
+        })
+        .await
+        .unwrap();
+        // The session goes on as it was.
+        assert_eq!(exchanged(&seam), ["One.", "Reply 1.", "Two.", "Reply 2."]);
+        quit(seam, ended).await;
+        let settings = Session::open(&root, &branch)
+            .unwrap()
+            .load_settings()
+            .unwrap();
+        assert_eq!(settings.branched_from.as_deref(), Some(id.as_str()));
+        assert_eq!(settings.title.as_deref(), Some("Branch of One."));
+
+        let open_branch = || {
+            open_app(
+                &root,
+                &project,
+                &server,
+                SessionChoice::Resume(branch.clone()),
+            )
+        };
+        let (seam, ended) = open_branch().await;
+        assert_eq!(exchanged(&seam), ["One.", "Reply 1."]);
+        seam.input
+            .send(Input::Message(app_message("Deux.")))
+            .unwrap();
+        let third = answered(&seam, &bodies, 3).await;
+        assert!(third.contains("One.") && third.contains("Reply 1.") && third.contains("Deux."));
+        assert!(!third.contains("Two."), "{third}");
+        quit(seam, ended).await;
+        assert!(
+            !Session::open(&root, &branch)
+                .unwrap()
+                .dir
+                .join(crate::session::SEED_FILE)
+                .exists()
         );
+
+        // Opened again, it goes on from its own conversation.
+        let (seam, ended) = open_branch().await;
+        seam.input
+            .send(Input::Message(app_message("Trois.")))
+            .unwrap();
+        let fourth = answered(&seam, &bodies, 4).await;
+        assert!(
+            fourth.contains("Deux.") && fourth.contains("Reply 3.") && !fourth.contains("Two.")
+        );
+        quit(seam, ended).await;
     }
 
     /// A session switches between Agent and Chat between turns: it opens

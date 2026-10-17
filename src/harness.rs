@@ -1302,6 +1302,12 @@ impl Harness {
             {
                 let _ = reply.send(Err(WAIT.into()));
             }
+            Request::Branch { reply, .. } if working => {
+                let _ = reply.send(Err(WAIT.into()));
+            }
+            Request::Branch { before, reply } => {
+                let _ = reply.send(self.branch(before));
+            }
             Request::Edit {
                 item,
                 message,
@@ -1395,32 +1401,115 @@ impl Harness {
                 "{worker} is running: wait for the workers or stop them first."
             ));
         }
-        let gone = "The agent's conversation no longer has this message (it was handed over since, or it is another conversation's): edit a later message, or start a new conversation.";
+        let index = self.message_at(item, "edited")?;
+        self.feed.truncate(item);
+        // What the user typed during the turns cut goes with them.
+        self.unread.clear();
+        self.edited = Some((index, text));
+        Ok(())
+    }
+
+    /// Where the user's message `item` is in the agent's conversation now
+    /// (else why it isn't, for a message to be `done`: "edited").
+    fn message_at(&self, item: u64, done: &str) -> Result<usize, String> {
         let index = self
             .feed
             .main_item(item)
             .filter(|item| item.kind == remote::Kind::User)
             .and_then(|item| item.message_index.map(|index| (index, item.text)));
         let Some((index, words)) = index else {
-            return Err("This message can't be edited.".into());
+            return Err(format!("This message can't be {done}."));
         };
-        let task = match &self.conversation {
-            Conversation::New => return Err(gone.into()),
-            Conversation::Answered(result) => &result.task,
-            Conversation::Stopped(run) => &run.result.task,
-        };
-        let there = task.user_turns().into_iter().any(|turn| {
-            turn.index == index
-                && turn.kind != arko_agents::UserTurnKind::ContextUpdate
-                && turn.text.contains(words.trim())
+        let there = self.conversation_task().is_some_and(|task| {
+            task.user_turns().into_iter().any(|turn| {
+                turn.index == index
+                    && turn.kind != arko_agents::UserTurnKind::ContextUpdate
+                    && turn.text.contains(words.trim())
+            })
         });
-        if !there {
-            return Err(gone.into());
+        if there {
+            Ok(index)
+        } else {
+            Err("The agent's conversation no longer has this message (it was handed over since, or it is another conversation's): choose a later message, or start a new conversation.".into())
         }
-        self.feed.truncate(item);
-        // What the user typed during the turns cut goes with them.
-        self.unread.clear();
-        self.edited = Some((index, text));
+    }
+
+    /// The task of the conversation the session is in, once it started.
+    fn conversation_task(&self) -> Option<&arko_agents::Task> {
+        match &self.conversation {
+            Conversation::New => None,
+            Conversation::Answered(result) => Some(&result.task),
+            Conversation::Stopped(run) => Some(&run.result.task),
+        }
+    }
+
+    /// A new session holding the conversation up to just before the user's
+    /// message `before`, or all of it: its ID. It takes this session's
+    /// settings, and its conversation from its seed when it opens (see
+    /// `import_seed`).
+    fn branch(&self, before: Option<u64>) -> Result<String, String> {
+        let task = self
+            .conversation_task()
+            .ok_or("A branch starts from a conversation: send a message first.")?;
+        let index = match before {
+            Some(item) => self.message_at(item, "branched from")?,
+            None => task.conversation.messages.len(),
+        };
+        if index == 0 {
+            return Err("A branch keeps the conversation up to a message, and this is its first: start a new session instead.".into());
+        }
+        let branch = task.branch(index).map_err(|error| error.to_string())?;
+        let seed = serde_json::to_string(&branch)
+            .map_err(|error| format!("could not write the branch's conversation: {error}"))?;
+        let session = Session::create(&self.root)
+            .map_err(|error| format!("could not create a session: {error}"))?;
+        let mut settings = self.settings.clone();
+        settings.created = chrono::Utc::now();
+        settings.branched_from = Some(self.session.id.clone());
+        let title = lock(&self.gauges.title).clone();
+        settings.title = Some(format!("Branch of {title}"));
+        // A chat works in its own folder.
+        if settings.workspace == self.session.dir {
+            settings.workspace = session.dir.clone();
+        }
+        let written = session
+            .save_settings(&settings)
+            .and_then(|()| std::fs::write(session.dir.join(crate::session::SEED_FILE), seed));
+        if let Err(error) = written {
+            let _ = std::fs::remove_dir_all(&session.dir);
+            return Err(format!("could not save the branch: {error}"));
+        }
+        Ok(session.id)
+    }
+
+    /// A branch's first opening: its conversation, from its seed, becomes
+    /// its main agent's run, saved in a checkpoint (then the seed goes).
+    pub(crate) async fn import_seed(&mut self) -> Result<(), String> {
+        let seed = self.session.dir.join(crate::session::SEED_FILE);
+        if !seed.exists() {
+            return Ok(());
+        }
+        if self.session.latest_checkpoint().is_some() {
+            // Saved already: the checkpoint has it.
+            let _ = std::fs::remove_file(&seed);
+            return Ok(());
+        }
+        let unreadable =
+            |error: String| format!("could not read the branch's conversation: {error}");
+        let text = std::fs::read_to_string(&seed).map_err(|error| unreadable(error.to_string()))?;
+        let task: arko_agents::Task =
+            serde_json::from_str(&text).map_err(|error| unreadable(error.to_string()))?;
+        let workflow = self.workflow().clone();
+        let result = workflow
+            .import_agent_run(MAIN, task)
+            .map_err(|error| error.to_string())?;
+        workflow
+            .checkpoint()
+            .await
+            .map_err(|error| format!("could not save the branch: {error}"))?;
+        let _ = std::fs::remove_file(&seed);
+        self.conversation = Conversation::Answered(result);
+        self.track_conversations();
         Ok(())
     }
 
@@ -1438,7 +1527,9 @@ impl Harness {
     /// (whose instructions change between conversations), and a session's
     /// that switched between Chat and Agent.
     pub(crate) fn keeps_run_configs(&self) -> bool {
-        self.settings.mode == Mode::Chat || self.settings.switched_mode
+        self.settings.mode == Mode::Chat
+            || self.settings.switched_mode
+            || self.settings.branched_from.is_some()
     }
 
     /// The chat's instructions from the user: from its first message, or

@@ -237,6 +237,7 @@ pub(crate) fn new_settings(
         mode: options.mode,
         chat_instructions: options.chat_instructions.clone(),
         switched_mode: false,
+        branched_from: None,
         openai_auth,
         own_worker_model,
         background_after: background_after_for(options, shell::DEFAULT_BACKGROUND_AFTER),

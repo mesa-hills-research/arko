@@ -36,6 +36,10 @@ impl Mode {
 #[cfg(feature = "tui")]
 pub const LOG_FILE: &str = "arko.log";
 
+/// A branch's conversation, in its new session's folder until the session
+/// first opens and saves it (`Request::Branch`).
+pub const SEED_FILE: &str = "seed.json";
+
 /// What a session was started with.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Settings {
@@ -86,6 +90,9 @@ pub struct Settings {
     /// message, which goes on in the session's mode.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub switched_mode: bool,
+    /// The session this one branched from, at one of its messages.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branched_from: Option<String>,
     /// The shell commands run in on Windows. `None` in sessions saved
     /// before it could be chosen, which ran PowerShell.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -160,6 +167,7 @@ impl Settings {
             mode: Mode::Agent,
             chat_instructions: None,
             switched_mode: false,
+            branched_from: None,
             windows_shell: None,
             openai_auth: None,
             own_worker_model: false,
