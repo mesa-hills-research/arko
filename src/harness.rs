@@ -349,6 +349,9 @@ pub(crate) struct Harness {
     pub(crate) input_source: Source,
     /// The app the session is open in, as people read its name.
     pub(crate) app_name: &'static str,
+    /// The front end shows the web page's links itself: the transcript
+    /// says where it serves without the key.
+    pub(crate) shows_page_links: bool,
     /// The user was told that the workers' news waits for their message.
     pub(crate) news_hint_shown: bool,
     /// What the remote page shows: the workflows' events, and what Arko
@@ -1240,6 +1243,20 @@ impl Harness {
     pub(crate) fn announce_remote(&self, addr: std::net::SocketAddr, key: &str) {
         let out = &self.output;
         let (links, note) = remote::links(addr, key);
+        if self.shows_page_links {
+            // The page's clients read the transcript too: where it serves,
+            // without the key.
+            let mut lines = vec![format!(
+                "The web page is served. Its links, with the session's key, are in {}:",
+                self.app_name
+            )];
+            lines.extend(links.iter().map(|link| {
+                let address = link.url.split('#').next().unwrap_or_default();
+                format!("  {address}")
+            }));
+            out.line(&lines.join("\n"));
+            return;
+        }
         let mut lines = Vec::new();
         for (n, link) in links.iter().enumerate() {
             let interface = link
@@ -4292,6 +4309,7 @@ pub(crate) mod tests {
             ask_about_workers: false,
             input_source: Source::Terminal,
             app_name: "Arko in a terminal",
+            shows_page_links: false,
             details,
             settings,
             providers: providers::Setup::new(None),

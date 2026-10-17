@@ -323,6 +323,7 @@ impl Args {
             title: self.prompt.as_deref().map(|prompt| ui::cut(prompt, 80)),
             app: "arko",
             app_name: "Arko in a terminal",
+            shows_page_links: false,
             source: remote::Source::Terminal,
             mode: crate::session::Mode::Agent,
             chat_instructions: None,

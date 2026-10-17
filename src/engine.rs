@@ -786,6 +786,7 @@ impl Engine {
             ask_about_workers: false,
             input_source: options.source,
             app_name: options.app_name,
+            shows_page_links: options.shows_page_links,
             details,
             settings,
             providers: provider_setup.clone(),
@@ -1092,6 +1093,57 @@ mod tests {
         );
         assert!(share(Some("nowhere at all")).await.is_err());
         quit(seam, ended).await;
+    }
+
+    /// A front end that shows the web page's links itself keeps the
+    /// session's key out of the transcript, which the page's clients get
+    /// too.
+    #[tokio::test]
+    async fn the_transcript_says_where_the_page_is_without_its_key() {
+        let temp = tempfile::tempdir().unwrap();
+        let (server, _bodies) = counting_server().await;
+        let project = temp.path().join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        let running = spawn(
+            Options {
+                root: Some(temp.path().join("arko")),
+                workspace: Some(project),
+                model: Some("luna".into()),
+                openai_auth: Some(OpenAiAuth::ApiKey),
+                cache_1h: Some(false),
+                shows_page_links: true,
+                app_name: "Notes",
+                client: Some(GivenClient(Arc::new(server.client()))),
+                ..Options::default()
+            },
+            Arc::new(NoPrompter),
+        );
+        let seam = tokio::time::timeout(Duration::from_secs(30), running.opened)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let page = ask_for(&seam, |reply| Request::ShareWebPage { bind: None, reply })
+            .await
+            .unwrap();
+        assert!(
+            page.links[0].url.contains("#key="),
+            "the app gets the links"
+        );
+        let said: Vec<String> = seam
+            .feed
+            .subscribe()
+            .0
+            .items
+            .into_iter()
+            .map(|item| item.text)
+            .collect();
+        assert!(said.iter().all(|text| !text.contains("#key=")), "{said:?}");
+        assert!(
+            said.iter().any(|text| text.contains("are in Notes")),
+            "{said:?}"
+        );
+        quit(seam, running.ended).await;
     }
 
     /// How long a worker ran is kept with the session: when it opens again,

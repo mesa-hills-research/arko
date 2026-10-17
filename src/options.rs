@@ -109,6 +109,10 @@ pub struct Options {
     /// are told it has it open there, and the web page tags what the user
     /// typed in it ("typed in …").
     pub app_name: &'static str,
+    /// The front end shows the web page's links itself: the transcript
+    /// (which the page's clients get too) says where it serves without the
+    /// session's key, and where the links are.
+    pub shows_page_links: bool,
     /// Where the user's input comes from, as the feed tags it: the
     /// terminal, or an app.
     pub source: remote::Source,
@@ -182,6 +186,7 @@ impl Default for Options {
             title: None,
             app: "app",
             app_name: "an app",
+            shows_page_links: false,
             source: remote::Source::App,
             mode: crate::session::Mode::Agent,
             chat_instructions: None,
