@@ -282,8 +282,10 @@ pub struct SavedConversation {
 /// The conversation `number` of the session `id` (as `/resume` numbers
 /// them, or `None` for its current one), read whole from what the session
 /// saved, for an export. It doesn't hold the session, so a session open
-/// now gives what it saved last. It reads every run the session saved, so
-/// call it off a UI thread.
+/// now gives what it saved last. After `/new`, `None` returns an error until
+/// the new conversation has messages. An explicit number still reads an
+/// earlier conversation. Missing saved data returns an error.
+/// It reads every run the session saved, so call it off a UI thread.
 pub fn conversation(
     root: &Path,
     id: &str,
@@ -335,11 +337,11 @@ pub fn conversation(
             .checked_sub(1)
             .filter(|index| *index < list.len())
             .ok_or_else(|| format!("The session has no conversation {number}."))?,
-        None => saved
-            .conversations
-            .current
-            .or_else(|| list.len().checked_sub(1))
-            .ok_or("The session has no conversation yet.")?,
+        None => saved.conversations.current.ok_or(if list.is_empty() {
+            "The session has no conversation yet."
+        } else {
+            "The session's new conversation has no messages yet."
+        })?,
     };
     let record = &list[index];
     found.number = index + 1;

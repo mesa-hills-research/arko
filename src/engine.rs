@@ -2907,6 +2907,21 @@ mod tests {
             ]
         );
         assert!(open.reports.is_empty());
+        seam.input.send(Input::Line("/new".into())).unwrap();
+        tokio::time::timeout(Duration::from_secs(30), async {
+            while crate::conversations::Conversations::load(&seam.session.dir)
+                .is_none_or(|conversations| conversations.current.is_some())
+            {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            read(None).err().as_deref(),
+            Some("The session's new conversation has no messages yet.")
+        );
+        assert_eq!(shown(&read(Some(1)).unwrap()), shown(&open));
         quit(seam, ended).await;
         assert_eq!(shown(&read(Some(1)).unwrap()), shown(&open));
         assert_eq!(
