@@ -2851,6 +2851,95 @@ mod tests {
         );
     }
 
+    /// A session that stopped while a call ran (a crash: its folder as it
+    /// was then) is branched from what it saved, and the branch's next
+    /// request answers that call, as providers require.
+    #[tokio::test]
+    async fn a_branch_of_a_session_stopped_mid_call_answers_the_call() {
+        let temp = tempfile::tempdir().unwrap();
+        let (root, project) = (temp.path().join("arko"), temp.path().join("project"));
+        let crashed = temp.path().join("crashed");
+        let bodies: Arc<Mutex<Vec<String>>> = Arc::default();
+        let server = ModelServer::start(Arc::new({
+            let bodies = bodies.clone();
+            move |index, body: String| {
+                bodies.lock().unwrap().push(body.clone());
+                Box::pin(async move {
+                    if body.contains("Run the slow thing.")
+                        && !body.contains("function_call_output")
+                    {
+                        tool_call(
+                            "slow",
+                            crate::shell::SHELL_TOOL_NAME,
+                            serde_json::json!({"command": "sleep 20; echo slept"}),
+                        )
+                    } else {
+                        reply(&format!("r{index}"), &format!("Reply {index}."))
+                    }
+                })
+            }
+        }))
+        .await;
+        let (seam, ended) = open_app(&root, &project, &server, SessionChoice::New).await;
+        let id = seam.session.id.clone();
+        seam.input
+            .send(Input::Message(app_message("Run the slow thing.")))
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(30), async {
+            while !seam
+                .feed
+                .subscribe()
+                .0
+                .items
+                .iter()
+                .any(|item| item.kind == Kind::Call)
+            {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap();
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        // The crash: the session's folder as it is now.
+        fn copy(from: &std::path::Path, to: &std::path::Path) {
+            std::fs::create_dir_all(to).unwrap();
+            for entry in std::fs::read_dir(from).unwrap().flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    copy(&path, &to.join(entry.file_name()));
+                } else {
+                    let _ = std::fs::copy(&path, to.join(entry.file_name()));
+                }
+            }
+        }
+        copy(&seam.session.dir, &crashed.join("sessions").join(&id));
+        quit(seam, ended).await;
+
+        let branch = crate::sessions::branch(&crashed, &id).unwrap();
+        let (seam, ended) =
+            open_app(&crashed, &project, &server, SessionChoice::Resume(branch)).await;
+        resumed(&seam).await;
+        let before = bodies.lock().unwrap().len();
+        seam.input
+            .send(Input::Message(app_message("Go on.")))
+            .unwrap();
+        let body = answered(&seam, &bodies, before + 1).await;
+        let input: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let ids = |kind: &str| -> Vec<String> {
+            input["input"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|item| item["type"] == kind)
+                .map(|item| item["call_id"].as_str().unwrap_or_default().to_string())
+                .collect()
+        };
+        assert_eq!(ids("function_call"), ["call_slow"]);
+        assert_eq!(ids("function_call_output"), ["call_slow"]);
+        assert!(body.contains("Go on."));
+        quit(seam, ended).await;
+    }
+
     /// The message whose turn handed a chat's conversation over goes on
     /// from the handover's summary when it is sent again or edited: the
     /// summary stays in what the model gets.
