@@ -144,7 +144,16 @@ async fn extra_rules_change_before_the_conversation_starts_only() {
     harness.extra_rules_command("off", Source::Terminal);
     assert!(!harness.main_config.instructions.contains(RULES));
     assert!(!harness.worker_config.instructions.contains(RULES));
-    harness.extra_rules_command("small", Source::Terminal);
+    harness.extra_rules_command("small", Source::Web);
+    assert!(says(
+        &harness.feed,
+        "Changed from the web page. Extra rules for small models are now set to small, so only agents on small models (Haiku, luna) get them. The main agent and the workers get them."
+    ));
+    harness.extra_rules_command("small", Source::Web);
+    assert!(says(
+        &harness.feed,
+        "From the web page. Extra rules for small models are set to small already, so only agents on small models (Haiku, luna) get them. The main agent and the workers get them."
+    ));
 
     let end = harness
         .turn(Prompt::User("Hi.".into()), &mut inputs)
@@ -157,7 +166,7 @@ async fn extra_rules_change_before_the_conversation_starts_only() {
     harness.extra_rules_command("off", Source::Web);
     assert!(says(
         &harness.feed,
-        "Changed from the web page. The session keeps its extra rules, so only agents on small models (Haiku, luna) get them. A new session takes --extra-rules or --no-extra-rules."
+        "From the web page. The session keeps its extra rules, so only agents on small models (Haiku, luna) get them. A new session takes --extra-rules or --no-extra-rules."
     ));
     assert_eq!(harness.settings.extra_rules, ExtraRules::Small);
     assert!(harness.main_config.instructions.contains(RULES));

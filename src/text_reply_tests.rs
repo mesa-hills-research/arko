@@ -383,6 +383,17 @@ async fn text_replies_change_before_the_conversation_starts_only() {
     let now = reading(&harness);
     assert!(now.settings.text_replies);
     assert!(!now.models.started);
+    harness.text_replies_command("on", Source::Web);
+    assert!(says(
+        &harness.feed,
+        "From the web page. Text replies are on already, so the agent ends its turn with a plain reply."
+    ));
+    harness.text_replies_command("off", Source::Web);
+    assert!(says(
+        &harness.feed,
+        "Changed from the web page. Text replies are off, so the agent ends its turn by calling complete_task."
+    ));
+    harness.text_replies_command("on", Source::Terminal);
     harness.text_replies_command("sometimes", Source::Terminal);
     assert!(
         texts(&harness.feed, "output")
@@ -397,7 +408,7 @@ async fn text_replies_change_before_the_conversation_starts_only() {
     harness.text_replies_command("off", Source::Web);
     assert!(says(
         &harness.feed,
-        "Changed from the web page. The main agent keeps text replies on for this session, so the agent ends its turn with a plain reply. A new session takes --text-replies or --no-text-replies."
+        "From the web page. The main agent keeps text replies on for this session, so the agent ends its turn with a plain reply. A new session takes --text-replies or --no-text-replies."
     ));
     assert!(harness.settings.text_replies);
     assert!(harness.session.load_settings().unwrap().text_replies);

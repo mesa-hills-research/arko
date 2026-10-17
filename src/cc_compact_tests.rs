@@ -81,6 +81,10 @@ async fn cc_compact_changes_before_the_conversation_starts_only() {
     harness.cc_compact_command("off", Source::Terminal);
     assert!(answered(&harness, not_in_claude_code));
     assert!(!harness.settings.cc_handover);
+    harness.cc_compact_command("off", Source::Web);
+    assert!(texts(&harness.feed, "notice").contains(&format!(
+        "From the web page. {not_in_claude_code}"
+    )));
 
     // The main agent on luna (the mock model), and the workers on cc:opus.
     let luna = harness.settings.main.clone();
@@ -112,6 +116,15 @@ async fn cc_compact_changes_before_the_conversation_starts_only() {
         &harness,
         "Agents in Claude Code hand over at the handover size already. The agent writes a report and goes on from it in a fresh conversation."
     ));
+    harness.cc_compact_command("off", Source::Web);
+    assert!(texts(&harness.feed, "notice").contains(
+        &"From the web page. Agents in Claude Code hand over at the handover size already. The agent writes a report and goes on from it in a fresh conversation.".to_string()
+    ));
+    harness.cc_compact_command("on", Source::Web);
+    assert!(texts(&harness.feed, "notice").contains(
+        &"Changed from the web page. Agents in Claude Code now compact at the handover size. Claude Code compacts the conversation, and the agent goes on in it.".to_string()
+    ));
+    harness.cc_compact_command("off", Source::Terminal);
     harness.cc_compact_command("sometimes", Source::Terminal);
     assert!(answered(
         &harness,
@@ -124,7 +137,7 @@ async fn cc_compact_changes_before_the_conversation_starts_only() {
     assert!(matches!(end, TurnEnd::Answered));
     harness.cc_compact_command("on", Source::Web);
     assert!(texts(&harness.feed, "notice").contains(
-        &"Changed from the web page. This session keeps what its agents in Claude Code do at the handover size. The agent writes a report and goes on from it in a fresh conversation. A new session takes --cc-compact or --no-cc-compact."
+        &"From the web page. This session keeps what its agents in Claude Code do at the handover size. The agent writes a report and goes on from it in a fresh conversation. A new session takes --cc-compact or --no-cc-compact."
             .to_string()
     ));
     assert!(harness.settings.cc_handover);

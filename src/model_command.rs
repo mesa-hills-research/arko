@@ -91,11 +91,39 @@ impl Harness {
     /// `/model`, typed at the prompt or sent from the page: says or changes
     /// an agent's model, in a plain line.
     pub(crate) fn model_command(&mut self, argument: &str, source: Source) {
+        let before = (
+            self.settings.main.clone(),
+            self.settings.worker.clone(),
+            self.settings.own_worker_model,
+        );
         let result = parse(argument).and_then(|request| self.model_request(request));
+        let changed = before
+            != (
+                self.settings.main.clone(),
+                self.settings.worker.clone(),
+                self.settings.own_worker_model,
+            );
+        self.setting_reply(result, source, changed);
+    }
+
+    fn reply_settings(&self) -> (bool, bool, ExtraRules) {
+        (
+            self.settings.text_replies,
+            self.settings.cc_handover,
+            self.settings.extra_rules,
+        )
+    }
+
+    fn setting_reply(&mut self, result: Result<String, String>, source: Source, changed: bool) {
         match result {
             Ok(text) => {
-                if source == Source::Web && !argument.trim().is_empty() {
-                    self.say(Level::Info, &format!("Changed from the web page. {text}"));
+                if source == Source::Web {
+                    let origin = if changed {
+                        "Changed from the web page."
+                    } else {
+                        "From the web page."
+                    };
+                    self.say(Level::Info, &format!("{origin} {text}"));
                 } else {
                     self.mirrored(|harness| harness.output.line(&text));
                 }
@@ -171,24 +199,15 @@ impl Harness {
     /// are built again). Once it has started, the main agent keeps it for
     /// the session, as it keeps its model.
     pub(crate) fn text_replies_command(&mut self, argument: &str, source: Source) {
+        let before = self.reply_settings();
         let result = match argument {
             "" => Ok(self.text_replies_line()),
             "on" => self.set_text_replies(true),
             "off" => self.set_text_replies(false),
             _ => Err("/text-replies takes on or off (/text-replies off).".to_string()),
         };
-        match result {
-            Ok(text) => {
-                if source == Source::Web && !argument.is_empty() {
-                    self.say(Level::Info, &format!("Changed from the web page. {text}"));
-                } else {
-                    self.mirrored(|harness| harness.output.line(&text));
-                }
-            }
-            Err(error) => {
-                self.mirrored(|harness| harness.output.line(&harness.output.error(&error)))
-            }
-        }
+        let changed = before != self.reply_settings();
+        self.setting_reply(result, source, changed);
     }
 
     /// How the main agent ends its turns, as `/text-replies` says it.
@@ -233,24 +252,15 @@ impl Harness {
     /// has started, the session keeps it: it is part of the agents' saved
     /// configurations.
     pub(crate) fn cc_compact_command(&mut self, argument: &str, source: Source) {
+        let before = self.reply_settings();
         let result = match argument {
             "" => Ok(self.cc_compact_line()),
             "on" => self.set_cc_compact(true),
             "off" => self.set_cc_compact(false),
             _ => Err("/cc-compact takes on or off (/cc-compact off).".to_string()),
         };
-        match result {
-            Ok(text) => {
-                if source == Source::Web && !argument.is_empty() {
-                    self.say(Level::Info, &format!("Changed from the web page. {text}"));
-                } else {
-                    self.mirrored(|harness| harness.output.line(&text));
-                }
-            }
-            Err(error) => {
-                self.mirrored(|harness| harness.output.line(&harness.output.error(&error)))
-            }
-        }
+        let changed = before != self.reply_settings();
+        self.setting_reply(result, source, changed);
     }
 
     /// Whether an agent of the session runs in Claude Code: the main agent,
@@ -317,6 +327,7 @@ impl Harness {
     /// starts (the agents are built again). Once it has started, the
     /// session keeps it, as it keeps the main agent's model.
     pub(crate) fn extra_rules_command(&mut self, argument: &str, source: Source) {
+        let before = self.reply_settings();
         let result = match argument {
             "" => Ok(self.extra_rules_line()),
             other => match ExtraRules::parse(other) {
@@ -324,18 +335,8 @@ impl Harness {
                 None => Err("/extra-rules takes small, all or off (/extra-rules off).".to_string()),
             },
         };
-        match result {
-            Ok(text) => {
-                if source == Source::Web && !argument.is_empty() {
-                    self.say(Level::Info, &format!("Changed from the web page. {text}"));
-                } else {
-                    self.mirrored(|harness| harness.output.line(&text));
-                }
-            }
-            Err(error) => {
-                self.mirrored(|harness| harness.output.line(&harness.output.error(&error)))
-            }
-        }
+        let changed = before != self.reply_settings();
+        self.setting_reply(result, source, changed);
     }
 
     /// Who gets the extra rules, as `/extra-rules` says it.
