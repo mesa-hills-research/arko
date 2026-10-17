@@ -2874,6 +2874,48 @@ mod tests {
         );
     }
 
+    /// A session's conversation is read whole from what it saved, also
+    /// while it is open, for an export.
+    #[tokio::test]
+    async fn a_sessions_conversation_is_read_whole_from_what_it_saved() {
+        let temp = tempfile::tempdir().unwrap();
+        let (server, bodies) = counting_server().await;
+        let (root, project) = (temp.path().join("arko"), temp.path().join("project"));
+        let (seam, ended) = open_app(&root, &project, &server, SessionChoice::New).await;
+        let id = seam.session.id.clone();
+        for (text, count) in [("One.", 1), ("Two.", 2)] {
+            seam.input.send(Input::Message(app_message(text))).unwrap();
+            answered(&seam, &bodies, count).await;
+        }
+        let read = |number| crate::sessions::conversation(&root, &id, number);
+        let shown = |saved: &crate::sessions::SavedConversation| -> Vec<(String, Option<u64>)> {
+            saved
+                .items
+                .iter()
+                .map(|item| (item.text.clone(), item.turn))
+                .collect()
+        };
+        let open = read(None).unwrap();
+        assert_eq!((open.number, open.title.as_str()), (1, "One."));
+        assert_eq!(
+            shown(&open),
+            [
+                ("One.".to_string(), Some(1)),
+                ("Reply 1.".to_string(), Some(1)),
+                ("Two.".to_string(), Some(2)),
+                ("Reply 2.".to_string(), Some(2)),
+            ]
+        );
+        assert!(open.reports.is_empty());
+        quit(seam, ended).await;
+        assert_eq!(shown(&read(Some(1)).unwrap()), shown(&open));
+        assert_eq!(
+            read(Some(2)).err().as_deref(),
+            Some("The session has no conversation 2.")
+        );
+        assert!(crate::sessions::conversation(&root, "20990101-000000-none", None).is_err());
+    }
+
     /// A session that stopped while a call ran (a crash: its folder as it
     /// was then) is branched from what it saved, and the branch's next
     /// request answers that call, as providers require.

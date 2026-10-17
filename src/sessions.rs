@@ -10,6 +10,7 @@ use std::time::SystemTime;
 use chrono::{DateTime, Utc};
 
 use crate::conversations::Conversations;
+use crate::remote;
 pub use crate::remote::ConversationEntry;
 use crate::session::{self, Session};
 pub use crate::session::{Holder, Mode, data_root};
@@ -175,17 +176,45 @@ pub fn branch(root: &Path, id: &str) -> Result<String, BranchError> {
 }
 
 /// The task of the main agent's current conversation in what `session`
-/// saved (as the session finds it when it opens: a run that answered, or
+/// saved (as the session finds it when it opens, a run that answered, or
 /// one stopped or interrupted that goes on), if it has one, and its
 /// conversations.
 fn saved_conversation(
     session: &Session,
 ) -> Result<(Option<arko_agents::Task>, Conversations), String> {
+    let saved = saved_runs(session)?;
+    if let Some(seed) = saved.seed {
+        return Ok((Some(seed), saved.conversations));
+    }
+    let task = saved.conversations.current_run().and_then(|run| {
+        saved
+            .results
+            .into_iter()
+            .find(|result| result.agent_run_id == run)
+            .filter(goes_on)
+            .map(|result| result.task)
+    });
+    Ok((task, saved.conversations))
+}
+
+/// What a session saved of its agents' runs.
+struct SavedRuns {
+    /// Every agent run, none before the first checkpoint.
+    results: Vec<arko_workflows::prelude::AgentResult>,
+    /// The main agent's conversations, worked out from its runs for a
+    /// session saved before they were recorded.
+    conversations: Conversations,
+    /// The conversation of a branch not opened yet, from its seed.
+    seed: Option<arko_agents::Task>,
+}
+
+/// What `session` saved of its agents' runs, read without opening it.
+fn saved_runs(session: &Session) -> Result<SavedRuns, String> {
     let Some(checkpoint) = session.latest_checkpoint() else {
         // A branch not opened yet holds its conversation in its seed.
         let unreadable =
             |error: String| format!("could not read the branch's conversation ({error})");
-        let task = match std::fs::read_to_string(session.dir.join(session::SEED_FILE)) {
+        let seed = match std::fs::read_to_string(session.dir.join(session::SEED_FILE)) {
             Ok(text) => Some(
                 serde_json::from_str::<arko_agents::Task>(&text)
                     .map_err(|error| unreadable(error.to_string()))?,
@@ -193,7 +222,11 @@ fn saved_conversation(
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
             Err(error) => return Err(unreadable(error.to_string())),
         };
-        return Ok((task, Conversations::load(&session.dir).unwrap_or_default()));
+        return Ok(SavedRuns {
+            results: Vec::new(),
+            conversations: Conversations::load(&session.dir).unwrap_or_default(),
+            seed,
+        });
     };
     let unreadable = |error: String| {
         format!(
@@ -212,14 +245,108 @@ fn saved_conversation(
     let mut conversations =
         Conversations::load(&session.dir).unwrap_or_else(|| Conversations::derive(&runs));
     conversations.take_in(&runs);
-    let task = conversations.current_run().and_then(|run| {
-        results
-            .into_iter()
-            .find(|result| result.agent_run_id == run)
-            .filter(goes_on)
-            .map(|result| result.task)
-    });
-    Ok((task, conversations))
+    Ok(SavedRuns {
+        results,
+        conversations,
+        seed: None,
+    })
+}
+
+/// A conversation of a session as the session saved it, whole
+/// ([`conversation`]).
+#[derive(Clone)]
+pub struct SavedConversation {
+    /// Its number, as `/resume` takes it (1 for the session's first).
+    pub number: usize,
+    /// Its name, the first line of its first message.
+    pub title: String,
+    /// All its items, as a reopened session's transcript shows them, from
+    /// its first message on (or its latest handover's), numbered from 1 with
+    /// their turns. When a failed turn left a run that can't go on, the
+    /// items of the run that went on after it follow.
+    pub items: Vec<remote::Item>,
+    /// The images its items show (by [`remote::Item::images`]), the latest
+    /// within 128 MB.
+    pub images: crate::images::Images,
+    /// The reports of its handovers, oldest first. The messages before a
+    /// handover aren't kept, and its report stands for them.
+    pub reports: Vec<String>,
+}
+
+/// The conversation `number` of the session `id` (as `/resume` numbers
+/// them, or `None` for its current one), read whole from what the session
+/// saved, for an export. It doesn't hold the session, so a session open
+/// now gives what it saved last. It reads every run the session saved, so
+/// call it off a UI thread.
+pub fn conversation(
+    root: &Path,
+    id: &str,
+    number: Option<usize>,
+) -> Result<SavedConversation, String> {
+    let session = Session::open(root, id)?;
+    let settings = session.load_settings()?;
+    let saved = saved_runs(&session)?;
+    let images = crate::images::Images::default();
+    let mut found = SavedConversation {
+        number: 1,
+        title: String::new(),
+        items: Vec::new(),
+        images: images.clone(),
+        reports: Vec::new(),
+    };
+    let add = |found: &mut SavedConversation, task: &arko_agents::Task| {
+        let items = remote::all_items(&task.conversation.messages, settings.text_replies, &images);
+        let base = found.items.len() as u64;
+        let turns = found
+            .items
+            .iter()
+            .filter_map(|item| item.turn)
+            .max()
+            .unwrap_or(0);
+        found.items.extend(items.into_iter().map(|mut item| {
+            item.id += base;
+            item.call = item.call.map(|call| call + base);
+            item.turn = item.turn.map(|turn| turn + turns);
+            item
+        }));
+        found.reports.extend(
+            task.handovers
+                .iter()
+                .map(|handover| handover.report.clone()),
+        );
+    };
+    if let Some(seed) = &saved.seed
+        && number.is_none_or(|number| number == 1)
+    {
+        found.title = crate::conversations::title_of(&seed.initial_task_prompt);
+        add(&mut found, seed);
+        return Ok(found);
+    }
+    let list = &saved.conversations.list;
+    let index = match number {
+        Some(number) => number
+            .checked_sub(1)
+            .filter(|index| *index < list.len())
+            .ok_or_else(|| format!("The session has no conversation {number}."))?,
+        None => saved
+            .conversations
+            .current
+            .or_else(|| list.len().checked_sub(1))
+            .ok_or("The session has no conversation yet.")?,
+    };
+    let record = &list[index];
+    found.number = index + 1;
+    found.title = record.title.clone();
+    for run in &record.runs {
+        if let Some(result) = saved
+            .results
+            .iter()
+            .find(|result| result.agent_run_id == *run)
+        {
+            add(&mut found, &result.task);
+        }
+    }
+    Ok(found)
 }
 
 /// Whether the main agent's saved run `result` goes on when its session

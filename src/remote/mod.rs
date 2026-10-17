@@ -40,6 +40,7 @@ pub use feed::{
     Activity, Batches, CallStatus, Delivery, Feed, Item, Kind, Level, MAIN_AGENT, Question,
     REFRESH_MESSAGE, Snapshot, Source, Update, WorkerChange, WorkerState, WorkerSummary,
 };
+pub(crate) use history::all_items;
 pub use history::items as history;
 pub(crate) use history::own_words;
 #[cfg(any(test, feature = "remote"))]

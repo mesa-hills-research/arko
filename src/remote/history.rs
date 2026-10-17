@@ -35,8 +35,26 @@ const NEWS_NOTICE: &str = "the workers' news went to the agent";
 /// The images of the user's messages and of tool results go to `images`,
 /// and their items show them.
 pub fn items(messages: &[Message], text_replies: bool, images: &Images) -> Vec<Item> {
-    // The index of the first message read, in the conversation.
-    let first = messages.len().saturating_sub(MESSAGES);
+    items_from(
+        messages,
+        messages.len().saturating_sub(MESSAGES),
+        text_replies,
+        images,
+    )
+}
+
+/// The [`items`] of every message of `messages`, however many.
+pub(crate) fn all_items(messages: &[Message], text_replies: bool, images: &Images) -> Vec<Item> {
+    items_from(messages, 0, text_replies, images)
+}
+
+/// The [`items`] of `messages` from the `first`th on.
+fn items_from(
+    messages: &[Message],
+    first: usize,
+    text_replies: bool,
+    images: &Images,
+) -> Vec<Item> {
     let messages = &messages[first..];
     let mut items: Vec<Item> = Vec::new();
     // The calls waiting for their results: their items, by call ID.
@@ -324,6 +342,25 @@ mod tests {
         );
         assert_eq!(items[2].outcome.as_deref(), Some("12 passed"));
         assert_eq!(items[3].call, Some(items[2].id));
+    }
+
+    /// Every message reads as items when asked, however many.
+    #[test]
+    fn a_long_conversation_reads_whole_when_asked() {
+        let messages: Vec<Message> = (0..400)
+            .flat_map(|n| {
+                [
+                    Message::new_user(&format!("Question {n}.")),
+                    Message::new_assistant(&format!("Answer {n}.")),
+                ]
+            })
+            .collect();
+        let images = Images::default();
+        assert_eq!(items(&messages, true, &images).len(), MESSAGES);
+        let all = all_items(&messages, true, &images);
+        assert_eq!(all.len(), 800);
+        assert_eq!(all[0].text, "Question 0.");
+        assert_eq!(all[799].turn, Some(400));
     }
 
     /// What the user typed during a turn, which Arko sends in a turn of its
