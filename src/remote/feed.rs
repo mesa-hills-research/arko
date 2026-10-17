@@ -1144,6 +1144,7 @@ impl Feed {
                 self.push(&mut state, notice(text, Level::Info));
             }
             AgentEvent::ConversationHandedOver { .. } if main => {
+                self.forget_messages(&mut state);
                 let text =
                     "handed over: the agent continues in a fresh conversation from its report";
                 self.push(&mut state, notice(text.into(), Level::Info));
@@ -1152,6 +1153,7 @@ impl Feed {
                 input_tokens,
                 compacted_tokens,
             } if main => {
+                self.forget_messages(&mut state);
                 let text = crate::handover::compacted_text(*input_tokens, *compacted_tokens);
                 self.push(&mut state, notice(text, Level::Info));
             }
@@ -1279,7 +1281,21 @@ impl Feed {
     /// The conversation changes here: `text` says to what ("New
     /// conversation", "Conversation 2 · ...").
     pub fn conversation(&self, text: &str) {
-        self.add(Item::new(Kind::Conversation, text));
+        let mut state = self.lock();
+        self.forget_messages(&mut state);
+        self.push(&mut state, Item::new(Kind::Conversation, text));
+    }
+
+    /// The main agent's conversation is no longer the one the user's
+    /// messages so far are in (it was handed over or compacted, or the
+    /// session went to another conversation): they can't be edited, and
+    /// the clients get the change.
+    fn forget_messages(&self, state: &mut State) {
+        for item in state.main.items.iter_mut() {
+            if item.message_index.take().is_some() {
+                self.send(Update::Change(item.clone()));
+            }
+        }
     }
 
     /// Drops the main agent's items from `from` on (an edited message and

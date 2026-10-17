@@ -1417,20 +1417,27 @@ impl Harness {
     }
 
     /// The user's message `item` started the turn just made, at message
-    /// `at` of the conversation or after it: it can be edited at the index
-    /// the task gives it.
+    /// `at` of the conversation or after it (or, when the conversation was
+    /// handed over during the turn, as the fresh one's latest with its
+    /// words): it can be edited at the index the task gives it.
     fn mark_message(&self, item: u64, at: usize) {
-        let task = match &self.conversation {
-            Conversation::New => return,
-            Conversation::Answered(result) => &result.task,
-            Conversation::Stopped(run) => &run.result.task,
+        let (Some(task), Some(item)) = (self.conversation_task(), self.feed.main_item(item)) else {
+            return;
         };
-        if let Some(turn) = task
+        let words = item.text.trim();
+        let turns: Vec<arko_agents::UserTurn> = task
             .user_turns()
             .into_iter()
-            .find(|turn| turn.index >= at && turn.kind != arko_agents::UserTurnKind::ContextUpdate)
-        {
-            self.feed.mark_message(item, turn.index);
+            .filter(|turn| {
+                turn.kind != arko_agents::UserTurnKind::ContextUpdate && turn.text.contains(words)
+            })
+            .collect();
+        let turn = turns
+            .iter()
+            .find(|turn| turn.index >= at)
+            .or_else(|| turns.last());
+        if let Some(turn) = turn {
+            self.feed.mark_message(item.id, turn.index);
         }
     }
 
@@ -1465,13 +1472,19 @@ impl Harness {
     /// Where the user's message `item` is in the agent's conversation now
     /// (else why it isn't, for a message to be `done`: "edited").
     fn message_at(&self, item: u64, done: &str) -> Result<usize, String> {
-        let index = self
+        let gone = "The agent's conversation no longer has this message (it was handed over or compacted since, or it is another conversation's): choose a later message, or start a new conversation.";
+        let Some(item) = self
             .feed
             .main_item(item)
             .filter(|item| item.kind == remote::Kind::User)
-            .and_then(|item| item.message_index.map(|index| (index, item.text)));
-        let Some((index, words)) = index else {
+        else {
             return Err(format!("This message can't be {done}."));
+        };
+        let (index, words) = match item.message_index {
+            Some(index) => (index, item.text),
+            // A message that started a turn of an earlier conversation.
+            None if item.delivery == Some(Delivery::Turn) => return Err(gone.into()),
+            None => return Err(format!("This message can't be {done}.")),
         };
         let there = self.conversation_task().is_some_and(|task| {
             task.user_turns().into_iter().any(|turn| {
@@ -1480,11 +1493,7 @@ impl Harness {
                     && turn.text.contains(words.trim())
             })
         });
-        if there {
-            Ok(index)
-        } else {
-            Err("The agent's conversation no longer has this message (it was handed over since, or it is another conversation's): choose a later message, or start a new conversation.".into())
-        }
+        if there { Ok(index) } else { Err(gone.into()) }
     }
 
     /// The task of the conversation the session is in, once it started.

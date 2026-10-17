@@ -1364,6 +1364,7 @@ mod tests {
             })
             .await
             .unwrap();
+            idle(seam).await;
         }
         let instructions = |text: &str| {
             let (reply_to, answer) = tokio::sync::oneshot::channel();
@@ -1553,6 +1554,17 @@ mod tests {
             .filter(|item| matches!(item.kind, Kind::User | Kind::Reply))
             .map(|item| item.text)
             .collect()
+    }
+
+    /// Waits until the session's turn ended.
+    async fn idle(seam: &Seam) {
+        tokio::time::timeout(Duration::from_secs(30), async {
+            while seam.feed.activity().working {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap();
     }
 
     /// Waits until a resumed session's feed has its conversation (it comes
@@ -2146,7 +2158,8 @@ mod tests {
     }
 
     /// At the handover size a chat writes a summary in text, and the fresh
-    /// conversation answers the message it was asked before.
+    /// conversation answers the message it was asked before. The messages
+    /// from before the handover can't be edited any more.
     #[tokio::test]
     async fn a_chat_hands_over_with_a_summary_and_answers() {
         let temp = tempfile::tempdir().unwrap();
@@ -2214,6 +2227,7 @@ mod tests {
             })
             .await
             .unwrap_or_else(|_| panic!("{:?}", texts()));
+            idle(&seam).await;
         }
         assert!(
             texts()
@@ -2221,6 +2235,41 @@ mod tests {
                 .any(|said| said.contains("fresh conversation")),
             "{:?}",
             texts()
+        );
+        // A message of the fresh conversation with an earlier one's words.
+        seam.input
+            .send(Input::Message(crate::ui::Message {
+                text: "Hello again. And more.".into(),
+                images: Vec::new(),
+            }))
+            .unwrap();
+        tokio::time::timeout(wait, async {
+            while texts()
+                .iter()
+                .filter(|said| *said == "Answered from the summary.")
+                .count()
+                < 2
+            {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap();
+        idle(&seam).await;
+        // The messages before the handover aren't in the agent's
+        // conversation any more: they can't be edited, even where the fresh
+        // conversation has a message with their words at their place.
+        let hello_again = user_item(&seam, "Hello again.");
+        assert_eq!(hello_again.message_index, None);
+        let refused = edit(&seam, hello_again.id, "Edited.").await.unwrap_err();
+        assert!(refused.contains("handed over"), "{refused}");
+        // The message the fresh conversation answered can.
+        let once_more = user_item(&seam, "And once more.");
+        assert!(once_more.message_index.is_some(), "{once_more:?}");
+        assert!(
+            user_item(&seam, "Hello again. And more.")
+                .message_index
+                .is_some()
         );
         seam.input.send(Input::Quit(Some(Vec::new()))).unwrap();
         assert_eq!(
