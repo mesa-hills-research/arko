@@ -1306,18 +1306,22 @@ impl Feed {
     }
 
     /// Items from before Arko started (a resumed session's conversation,
-    /// from [`history`](super::history)), numbered from 1: they join the
-    /// history as they are, numbered after the feed's own (a result keeps
-    /// its call).
+    /// from [`history`](super::history)), numbered from 1, with their turns
+    /// from 1: they join the history as they are, numbered after the
+    /// feed's own items and turns (a result keeps its call), and the next
+    /// turn comes after theirs.
     pub fn restore(&self, items: Vec<Item>) {
         let mut state = self.lock();
         let base = state.next_id;
+        let turns = state.turn.unwrap_or(0);
         let at = now_ms();
         for mut item in items {
             item.id += base;
             item.call = item.call.map(|call| call + base);
+            item.turn = item.turn.map(|turn| turn + turns);
             item.at = at;
             state.next_id = state.next_id.max(item.id);
+            state.turn = state.turn.max(item.turn);
             let (lane, budget) = state.lane(&item.agent);
             lane.push(item.clone(), budget);
             self.send(Update::Item(item));
@@ -2242,6 +2246,47 @@ mod tests {
                 (Kind::Turn, Some(1)),
                 (Kind::Reply, Some(2)),
                 (Kind::Turn, Some(2)),
+            ]
+        );
+    }
+
+    /// Restored items keep their turns, after the feed's own, and the next
+    /// turn comes after theirs.
+    #[test]
+    fn restored_items_keep_their_turns() {
+        let feed = Feed::new("main");
+        feed.notice(Level::Info, "Resumed.");
+        let restored = |text: &str, turn: u64| {
+            let mut item = Item::new(Kind::User, text);
+            item.delivery = Some(Delivery::Turn);
+            item.turn = Some(turn);
+            item
+        };
+        let mut reply = Item::new(Kind::Reply, "Hi.");
+        reply.turn = Some(1);
+        let mut first = restored("Hello.", 1);
+        first.id = 1;
+        reply.id = 2;
+        let mut second = restored("Bye.", 2);
+        second.id = 3;
+        feed.restore(vec![first.clone(), reply.clone(), second.clone()]);
+        feed.user("Again.", Source::Web, Delivery::Turn);
+        // Another conversation's, restored later: after the turns so far.
+        feed.restore(vec![first]);
+        let items = items(&feed);
+        let turns: Vec<(&str, Option<u64>)> = items
+            .iter()
+            .map(|item| (item.text.as_str(), item.turn))
+            .collect();
+        assert_eq!(
+            turns,
+            [
+                ("Resumed.", None),
+                ("Hello.", Some(1)),
+                ("Hi.", Some(1)),
+                ("Bye.", Some(2)),
+                ("Again.", Some(3)),
+                ("Hello.", Some(4)),
             ]
         );
     }

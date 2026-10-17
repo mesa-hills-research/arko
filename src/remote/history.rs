@@ -15,8 +15,15 @@ use crate::images::Images;
 /// The messages read back at most (the feed keeps fewer items anyway).
 const MESSAGES: usize = 600;
 
+/// What the restored transcript says where the workers' news started a
+/// turn.
+const NEWS_NOTICE: &str = "the workers' news went to the agent";
+
 /// The items of `messages` (a conversation of the main agent), numbered
-/// from 1 (a result's `call` names its call by that number). With
+/// from 1 (a result's `call` names its call by that number), each with
+/// the turn it came in, from 1: the user's messages that started turns
+/// (and those that kept the cache warm, and the workers' news) begin one.
+/// With
 /// `text_replies` (the agent ends its turns with a reply in plain text), a
 /// response of text alone is a reply, unless the user's answer to a
 /// question follows it (Claude Code ends its turn after `ask_user`).
@@ -152,6 +159,18 @@ pub fn items(messages: &[Message], text_replies: bool, images: &Images) -> Vec<I
             }
         }
     }
+    let mut turn: Option<u64> = None;
+    for item in &mut items {
+        let starts = match item.kind {
+            Kind::User => matches!(item.delivery, Some(Delivery::Turn | Delivery::Refresh)),
+            Kind::Notice => item.text == NEWS_NOTICE,
+            _ => false,
+        };
+        if starts {
+            turn = Some(turn.map_or(1, |turn| turn + 1));
+        }
+        item.turn = turn;
+    }
     items
 }
 
@@ -204,10 +223,7 @@ fn user_item(text: &str) -> Option<Item> {
         return Some(item);
     }
     if text.starts_with("Your workers sent you news") {
-        return Some(
-            Item::new(Kind::Notice, "the workers' news went to the agent")
-                .level(super::Level::Info),
-        );
+        return Some(Item::new(Kind::Notice, NEWS_NOTICE).level(super::Level::Info));
     }
     let mine = match text.split_once("# My message\n\n") {
         Some((_, mine)) => mine,
@@ -330,5 +346,23 @@ mod tests {
             ]
         );
         assert!(shown(false).iter().all(|(kind, _)| *kind == Kind::Text));
+        // Each with its turn: the answer to the question is in the first.
+        let turns: Vec<(Kind, Option<u64>)> = items(&messages, true, &Images::default())
+            .into_iter()
+            .map(|item| (item.kind, item.turn))
+            .collect();
+        assert_eq!(
+            turns,
+            [
+                (Kind::User, Some(1)),
+                (Kind::Text, Some(1)),
+                (Kind::Call, Some(1)),
+                (Kind::Text, Some(1)),
+                (Kind::User, Some(1)),
+                (Kind::Reply, Some(1)),
+                (Kind::User, Some(2)),
+                (Kind::Reply, Some(2)),
+            ]
+        );
     }
 }
