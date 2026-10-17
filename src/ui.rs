@@ -456,6 +456,8 @@ pub struct Stats {
     /// What the main agent's latest request read from the cache and wrote
     /// to it, in tokens.
     pub cache_use: Option<(usize, usize)>,
+    /// When the cache was last kept warm out of band (Unix milliseconds).
+    pub cache_refreshed_at: Option<i64>,
 }
 
 /// A request to the event printer.

@@ -175,6 +175,25 @@ pub enum Request {
         before: Option<u64>,
         reply: Reply<String>,
     },
+    /// Keeps the main agent's prompt cache warm, between turns: out of
+    /// band where the provider allows (nothing joins the conversation),
+    /// else with a short message and its reply in the conversation (the
+    /// user's item has `Delivery::Refresh`).
+    RefreshCache { reply: Reply<Refreshed> },
+}
+
+/// How the prompt cache was kept warm ([`Request::RefreshCache`]).
+#[derive(Debug, Clone, PartialEq)]
+pub enum Refreshed {
+    /// Out of band: the request read `read` tokens from the cache and
+    /// wrote `written`, for `cost` dollars.
+    OutOfBand {
+        read: usize,
+        written: usize,
+        cost: f64,
+    },
+    /// With a message and its reply, which follow in the feed.
+    Message,
 }
 
 /// Where a request's answer goes.
@@ -735,6 +754,7 @@ impl Engine {
             reopen: false,
             edited: None,
             cut_back: None,
+            refresh_turn: false,
             crew,
             asker,
             one_shot,
@@ -1456,11 +1476,23 @@ mod tests {
                     bodies.push(body);
                     bodies.len()
                 };
-                Box::pin(async move { reply("a", &format!("Reply {count}.")) })
+                // (A request that keeps the cache warm isn't streamed.)
+                let streamed = body_streams(&bodies.lock().unwrap()[count - 1]);
+                Box::pin(async move {
+                    if streamed {
+                        reply("a", &format!("Reply {count}."))
+                    } else {
+                        crate::mock_model::whole_reply("a", &format!("Reply {count}."), 900)
+                    }
+                })
             }
         }))
         .await;
         (server, bodies)
+    }
+
+    fn body_streams(body: &str) -> bool {
+        body.contains("\"stream\":true")
     }
 
     /// An app's session on `server` in `root`, working in `project`.
@@ -1470,17 +1502,29 @@ mod tests {
         server: &ModelServer,
         session: SessionChoice,
     ) -> (Seam, oneshot::Receiver<RunEnd>) {
+        open_with(root, project, server.client(), "luna", session).await
+    }
+
+    /// An app's session in `root` on `model` through `client`, working in
+    /// `project`.
+    async fn open_with(
+        root: &std::path::Path,
+        project: &std::path::Path,
+        client: arko_ai::LLMClient,
+        model: &str,
+        session: SessionChoice,
+    ) -> (Seam, oneshot::Receiver<RunEnd>) {
         std::fs::create_dir_all(project).unwrap();
         let running = spawn(
             Options {
                 root: Some(root.to_path_buf()),
                 session,
                 workspace: Some(project.to_path_buf()),
-                model: Some("luna".into()),
+                model: Some(model.into()),
                 openai_auth: Some(OpenAiAuth::ApiKey),
                 cache_1h: Some(false),
                 text_replies: Some(true),
-                client: Some(GivenClient(Arc::new(server.client()))),
+                client: Some(GivenClient(Arc::new(client))),
                 ..Options::default()
             },
             Arc::new(NoPrompter),
@@ -1662,6 +1706,102 @@ mod tests {
         assert_eq!(reading.cache.refreshed_at, Some(request.at));
         assert_eq!(reading.cache.tokens, reading.context_tokens);
         assert_eq!(reading.cache.on_plan, None);
+        quit(seam, ended).await;
+    }
+
+    /// The prompt cache is kept warm out of band where the provider allows:
+    /// the conversation's request with a ping after it, its output capped,
+    /// and nothing joins the conversation or the feed.
+    #[tokio::test]
+    async fn the_cache_is_kept_warm_out_of_band() {
+        let temp = tempfile::tempdir().unwrap();
+        let (server, bodies) = counting_server().await;
+        let (root, project) = (temp.path().join("arko"), temp.path().join("project"));
+        let (seam, ended) = open_app(&root, &project, &server, SessionChoice::New).await;
+        let refresh = || ask_for(&seam, |reply| Request::RefreshCache { reply });
+        assert_eq!(
+            refresh().await,
+            Err("There is no conversation to keep warm yet.".to_string())
+        );
+        seam.input
+            .send(Input::Message(app_message("One.")))
+            .unwrap();
+        answered(&seam, &bodies, 1).await;
+        let before = chrono::Utc::now().timestamp_millis();
+        let refreshed = refresh().await.unwrap();
+        assert!(matches!(
+            refreshed,
+            crate::engine::Refreshed::OutOfBand { .. }
+        ));
+        let ping = bodies.lock().unwrap()[1].clone();
+        assert!(ping.contains("One.") && ping.contains("Reply 1."), "{ping}");
+        assert!(ping.contains("\"max_output_tokens\":16"), "{ping}");
+        assert_eq!(exchanged(&seam), ["One.", "Reply 1."]);
+        assert!(seam.meter.read().cache.refreshed_at >= Some(before));
+        // The conversation goes on without the ping.
+        seam.input
+            .send(Input::Message(app_message("Two.")))
+            .unwrap();
+        let third = answered(&seam, &bodies, 3).await;
+        assert!(!third.contains("Reply 2."), "{third}");
+        quit(seam, ended).await;
+    }
+
+    /// Where the provider takes no refresh out of band (Gemini), a short
+    /// message and its reply keep the cache warm, marked as such in the
+    /// feed.
+    #[tokio::test]
+    async fn a_cache_without_refresh_is_kept_warm_with_a_message() {
+        let temp = tempfile::tempdir().unwrap();
+        let bodies: Arc<Mutex<Vec<String>>> = Arc::default();
+        let server = ModelServer::start(Arc::new({
+            let bodies = bodies.clone();
+            move |_, body: String| {
+                let acknowledged = body.contains("only keeps the prompt cache warm");
+                bodies.lock().unwrap().push(body);
+                Box::pin(async move {
+                    crate::mock_model::gemini_reply(
+                        "g",
+                        if acknowledged {
+                            "Acknowledged"
+                        } else {
+                            "Hello."
+                        },
+                    )
+                })
+            }
+        }))
+        .await;
+        let (root, project) = (temp.path().join("arko"), temp.path().join("project"));
+        let (seam, ended) = open_with(
+            &root,
+            &project,
+            server.gemini_client(),
+            "gemini",
+            SessionChoice::New,
+        )
+        .await;
+        seam.input.send(Input::Message(app_message("Hi."))).unwrap();
+        answered(&seam, &bodies, 1).await;
+        let refreshed = ask_for(&seam, |reply| Request::RefreshCache { reply }).await;
+        assert_eq!(refreshed, Ok(crate::engine::Refreshed::Message));
+        answered(&seam, &bodies, 2).await;
+        let items = seam.feed.subscribe().0.items;
+        let refresh = items
+            .iter()
+            .find(|item| item.delivery == Some(crate::remote::Delivery::Refresh))
+            .unwrap();
+        assert_eq!(refresh.text, crate::remote::REFRESH_MESSAGE);
+        assert_eq!(refresh.message_index, None);
+        assert_eq!(
+            exchanged(&seam),
+            [
+                "Hi.",
+                "Hello.",
+                crate::remote::REFRESH_MESSAGE,
+                "Acknowledged"
+            ]
+        );
         quit(seam, ended).await;
     }
 

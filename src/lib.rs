@@ -91,7 +91,8 @@ pub mod accounts {
     pub use crate::keys::{Outcome, Secret, add, remove};
 }
 pub use crate::engine::{
-    Engine, FrontEnd, OpenError, Reply, Request, RunEnd, Running, Seam, SessionInfo, spawn,
+    Engine, FrontEnd, OpenError, Refreshed, Reply, Request, RunEnd, Running, Seam, SessionInfo,
+    spawn,
 };
 pub(crate) use crate::harness::{Conversation, Harness, conversation_of};
 #[cfg(test)]

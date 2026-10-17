@@ -182,7 +182,11 @@ fn user_item(text: &str) -> Option<Item> {
     };
     let mut item = Item::new(Kind::User, mine.trim());
     item.source = Some(Source::Terminal);
-    item.delivery = Some(Delivery::Turn);
+    item.delivery = Some(if item.text == super::feed::REFRESH_MESSAGE {
+        Delivery::Refresh
+    } else {
+        Delivery::Turn
+    });
     Some(item)
 }
 

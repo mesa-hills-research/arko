@@ -18,7 +18,7 @@ use tokio::sync::{mpsc, oneshot};
 use crate::agents::{MAIN, NO_LIMIT, WORKER};
 use crate::crew::Crew;
 use crate::inputs::{Asker, Event, Inputs, unread_notes, waits_with};
-use crate::remote::{Action, Delivery, Level, Source};
+use crate::remote::{Action, Delivery, Level, REFRESH_MESSAGE, Source};
 use crate::session::{Mode, Session, Settings};
 use crate::shell::{Shell, ShellTool};
 use crate::status::Gauges;
@@ -312,6 +312,9 @@ pub(crate) struct Harness {
     pub(crate) edited: Option<(usize, String)>,
     /// The next turn cuts the conversation back to this message first.
     pub(crate) cut_back: Option<usize>,
+    /// The prompt cache is kept warm with a message (`REFRESH_MESSAGE`):
+    /// the provider takes no refresh out of band.
+    pub(crate) refresh_turn: bool,
     /// Native workers. None when disabled or when resuming a legacy session.
     pub(crate) crew: Option<Arc<Crew>>,
     /// Puts the main agent's questions to the user.
@@ -847,10 +850,20 @@ impl Harness {
                     continue;
                 }
                 Event::Request(request) => {
-                    self.request(request);
+                    Box::pin(self.request(request)).await;
                     // It switched between Chat and Agent: it opens again.
                     if self.reopen {
                         break;
+                    }
+                    // The cache is kept warm with a message.
+                    if std::mem::take(&mut self.refresh_turn) {
+                        self.feed
+                            .user(REFRESH_MESSAGE, Source::App, Delivery::Refresh);
+                        let refresh = Prompt::User(REFRESH_MESSAGE.into());
+                        if let TurnEnd::Exit = self.turn(refresh, input).await {
+                            break;
+                        }
+                        continue;
                     }
                     // An edited message, or one sent again.
                     let Some((index, text)) = self.edited.take() else {
@@ -1295,7 +1308,7 @@ impl Harness {
     }
 
     /// Does what the front end asks, and answers it.
-    pub(crate) fn request(&mut self, request: crate::engine::Request) {
+    pub(crate) async fn request(&mut self, request: crate::engine::Request) {
         use crate::engine::Request;
         // While a turn runs, the agent's configuration stays as it is.
         const WAIT: &str = "Wait for the turn to end.";
@@ -1318,6 +1331,12 @@ impl Harness {
             }
             Request::Branch { reply, .. } if working => {
                 let _ = reply.send(Err(WAIT.into()));
+            }
+            Request::RefreshCache { reply } if working => {
+                let _ = reply.send(Err(WAIT.into()));
+            }
+            Request::RefreshCache { reply } => {
+                let _ = reply.send(self.refresh_cache().await);
             }
             Request::Branch { before, reply } => {
                 let _ = reply.send(self.branch(before));
@@ -1525,6 +1544,48 @@ impl Harness {
         self.conversation = Conversation::Answered(result);
         self.track_conversations();
         Ok(())
+    }
+
+    /// Keeps the main agent's prompt cache warm: out of band where the
+    /// provider allows, else with a short message and its reply (in
+    /// `repl`).
+    async fn refresh_cache(&mut self) -> Result<crate::engine::Refreshed, String> {
+        let result = match &self.conversation {
+            Conversation::New => {
+                return Err("There is no conversation to keep warm yet.".into());
+            }
+            Conversation::Answered(result) => result.clone(),
+            Conversation::Stopped(run) => run.result.clone(),
+        };
+        let workflow = self.workflow().clone();
+        // (Boxed: the session's loop would hold it on its stack.)
+        match Box::pin(workflow.refresh_prompt_cache(&result)).await {
+            Ok(refresh) => {
+                let usage = refresh.usage;
+                let (read, written) = (
+                    usage.cached_tokens.unwrap_or(0),
+                    usage.cache_write_tokens.unwrap_or(0),
+                );
+                {
+                    let mut stats = lock(&self.stats);
+                    stats.cache_refreshed_at = Some(chrono::Utc::now().timestamp_millis());
+                    stats.cache_use = Some((read, written));
+                }
+                self.gauges.touch();
+                Ok(crate::engine::Refreshed::OutOfBand {
+                    read,
+                    written,
+                    cost: usage.billed_cost.unwrap_or(usage.total_cost),
+                })
+            }
+            Err(WorkflowError::Agent(arko_agents::ArkoAgentsError::LLM(
+                arko_ai::Error::UnsupportedFeature(_),
+            ))) => {
+                self.refresh_turn = true;
+                Ok(crate::engine::Refreshed::Message)
+            }
+            Err(error) => Err(format!("The cache wasn't refreshed: {error}")),
+        }
     }
 
     /// The user's latest message sent again: its turn's reply and what
@@ -2557,7 +2618,11 @@ impl Harness {
         // The user's message that starts it, which can be edited once the
         // turn says where it is in the conversation.
         let user_item = match &prompt {
-            Prompt::User(_) => self.feed.last_turn_message().map(|item| item.id),
+            Prompt::User(text) => self
+                .feed
+                .last_turn_message()
+                .filter(|item| item.text == text.trim())
+                .map(|item| item.id),
             _ => None,
         };
         self.feed.turn_started();
@@ -2635,7 +2700,7 @@ impl Harness {
                 event = input.next_event(false) => {
                     let (line, source) = match event {
                         Event::Request(request) => {
-                            self.request(request);
+                            Box::pin(self.request(request)).await;
                             continue;
                         }
                         Event::Question(question) => {
@@ -2978,7 +3043,7 @@ impl Harness {
                     }
                 }
                 Event::Question(question) => drop(question),
-                Event::Request(request) => self.request(request),
+                Event::Request(request) => Box::pin(self.request(request)).await,
                 Event::Input(Some(Input::Line(_))) => {}
                 Event::Input(Some(Input::Background(agent))) => self.move_to_background(&agent),
                 Event::Remote(Action::Message(_) | Action::Answer { .. })
@@ -4063,6 +4128,7 @@ pub(crate) mod tests {
             reopen: false,
             edited: None,
             cut_back: None,
+            refresh_turn: false,
             crew: Some(crew),
             asker: Arc::new(Asker {
                 questions: interactive.then_some(questions_sender),
@@ -4332,17 +4398,19 @@ pub(crate) mod tests {
             harness.session.load_settings().unwrap().title.as_deref(),
             Some("Count the pears in the basket.")
         );
-        let rename = |harness: &mut Harness, name: &str| {
+        async fn rename(harness: &mut Harness, name: &str) -> Result<(), String> {
             let (reply, answer) = oneshot::channel();
-            harness.request(crate::engine::Request::Rename {
-                title: name.into(),
-                reply,
-            });
-            answer
-        };
-        assert_eq!(rename(&mut harness, "Pears").await.unwrap(), Ok(()));
+            harness
+                .request(crate::engine::Request::Rename {
+                    title: name.into(),
+                    reply,
+                })
+                .await;
+            answer.await.unwrap()
+        }
+        assert_eq!(rename(&mut harness, "Pears").await, Ok(()));
         assert_eq!(title(&harness), "Pears");
-        assert_eq!(rename(&mut harness, "").await.unwrap(), Ok(()));
+        assert_eq!(rename(&mut harness, "").await, Ok(()));
         assert_eq!(title(&harness), "Count the pears in the basket.");
         harness.crew.as_ref().unwrap().shutdown().await;
     }

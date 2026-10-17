@@ -341,7 +341,11 @@ fn cache_status(stats: &crate::ui::Stats, models: &remote::Models) -> remote::Ca
     };
     remote::CacheStatus {
         lifetime: stats.cache_lifetime,
-        refreshed_at: stats.last_request.as_ref().map(|request| request.at),
+        refreshed_at: stats
+            .last_request
+            .as_ref()
+            .map(|request| request.at)
+            .max(stats.cache_refreshed_at),
         tokens,
         read: stats.cache_use.map(|(read, _)| read),
         written: stats.cache_use.map(|(_, written)| written),

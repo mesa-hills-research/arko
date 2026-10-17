@@ -131,7 +131,15 @@ pub enum Delivery {
     Command,
     /// It waits for a turn of its own.
     Queued,
+    /// Arko sent it for the user, to keep the prompt cache warm
+    /// ([`REFRESH_MESSAGE`]): an app shows it and its reply as one muted
+    /// row.
+    Refresh,
 }
+
+/// The message that keeps the prompt cache warm where the provider takes
+/// no refresh out of band.
+pub const REFRESH_MESSAGE: &str = "(Arko: this message only keeps the prompt cache warm. Reply with \"Acknowledged\" and nothing else.)";
 
 /// How a tool call is doing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

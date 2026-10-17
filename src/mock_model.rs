@@ -243,6 +243,42 @@ pub fn openrouter_tool_call(id: &str, name: &str, arguments: Value, cost: f64) -
     stream
 }
 
+/// A whole OpenAI Responses reply with `text`, not streamed (as a request
+/// that keeps the prompt cache warm gets it), which read `cached` tokens
+/// from the cache.
+pub fn whole_reply(id: &str, text: &str, cached: usize) -> String {
+    let body = serde_json::json!({
+        "id": format!("resp_{id}"), "object": "response", "created_at": 0, "status": "completed",
+        "model": "gpt-6-luna", "output": [{"type": "message", "id": format!("msg_{id}"),
+        "status": "completed", "role": "assistant",
+        "content": [{"type": "output_text", "text": text, "annotations": []}]}],
+        "usage": {"input_tokens": cached + 100, "input_tokens_details": {"cached_tokens": cached},
+            "output_tokens": 1, "output_tokens_details": {"reasoning_tokens": 0},
+            "total_tokens": cached + 101},
+    })
+    .to_string();
+    format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    )
+}
+
+/// A Gemini (Interactions API) stream answering with `text`.
+pub fn gemini_reply(id: &str, text: &str) -> String {
+    [
+        serde_json::json!({"event_type": "step.start", "index": 0, "step": {"type": "model_output"}}),
+        serde_json::json!({"event_type": "step.delta", "index": 0,
+            "delta": {"type": "text", "text": text}}),
+        serde_json::json!({"event_type": "step.stop", "index": 0}),
+        serde_json::json!({"event_type": "interaction.completed", "interaction": {
+            "id": format!("int_{id}"), "status": "completed",
+            "usage": {"total_input_tokens": 1000, "total_output_tokens": 20}}}),
+    ]
+    .iter()
+    .map(|event| format!("data: {event}\n\n"))
+    .collect()
+}
+
 /// A Gemini (Interactions API) stream calling the tool `name`.
 pub fn gemini_tool_call(id: &str, name: &str, arguments: Value) -> String {
     [
