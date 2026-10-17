@@ -130,35 +130,35 @@ pub struct Seam {
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum Request {
-    /// Gives the session this name (empty: back to its conversation's),
-    /// also during a turn.
+    /// Gives the session this name, also during a turn. An empty name gives
+    /// it back its conversation's.
     Rename { title: String, reply: Reply<()> },
-    /// A chat's instructions from the user (`None`: none), for its next
-    /// conversations: from its first message, or else from its next new
-    /// conversation (the one it is in keeps its own). A new chat takes them
-    /// in `Options::chat_instructions`.
+    /// A chat's instructions from the user (`None` for none), for its next
+    /// conversations. They apply from the chat's first message, or else
+    /// from its next new conversation, as the one it is in keeps its own. A
+    /// new chat takes them in `Options::chat_instructions`.
     ChatInstructions {
         text: Option<String>,
         reply: Reply<()>,
     },
-    /// Makes the session a chat or an agent's, from its next message: the
-    /// conversation goes on in the new mode. `workspace` is the folder an
-    /// agent works in (`None`: the one it worked in before, which a chat
-    /// that never was an agent's doesn't have). Refused while workers run,
-    /// while their news or what the user typed hasn't reached the agent,
-    /// and (to Chat) while background jobs run: the session closes, and
-    /// [`Engine::run`] ends with [`RunEnd::Reopen`], for the front end to
-    /// open it again. Its web page stops with it: open it again with
-    /// `Options::remote` to serve the page.
+    /// Makes the session a chat or an agent's from its next message, and
+    /// the conversation goes on in the new mode. `workspace` is the folder
+    /// an agent works in (`None` for the one it worked in before, which a
+    /// chat that never was an agent's doesn't have). It's refused while
+    /// workers run, while their news or what the user typed hasn't reached
+    /// the agent, and (to Chat) while background jobs run. The session then
+    /// closes, and [`Engine::run`] ends with [`RunEnd::Reopen`], for the
+    /// front end to open it again. Its web page stops with it, and
+    /// `Options::remote` serves it again.
     SwitchMode {
         to: crate::session::Mode,
         workspace: Option<PathBuf>,
         reply: Reply<()>,
     },
-    /// The user's message `item` (a `Kind::User` item with a
-    /// `message_index`) edited: the conversation is cut back to just before
-    /// it, and `message` goes in its place, starting a turn (the feed drops
-    /// the items from `item` on). Between turns, with no worker running, for
+    /// Edits the user's message `item` (a `Kind::User` item with a
+    /// `message_index`). The conversation is cut back to just before it,
+    /// and `message` goes in its place, starting a turn (the feed drops the
+    /// items from `item` on). Between turns, with no worker running, for
     /// a message the conversation still has (not one before a handover).
     /// Changes the agent made to files stay.
     Edit {
@@ -166,14 +166,14 @@ pub enum Request {
         message: crate::ui::Message,
         reply: Reply<()>,
     },
-    /// The user's latest message sent again, for a new reply: an edit of it
-    /// with its own words.
+    /// Sends the user's latest message again for a new reply, as an edit of
+    /// it with its own words.
     Regenerate { reply: Reply<()> },
     /// A new session with the current conversation up to the user's
     /// message `before` (a `Kind::User` item with a `message_index`, the
     /// message itself left out), or all of it (`None`), to go on apart
-    /// from this one. Replies the new session's ID: open it
-    /// ([`SessionChoice::Resume`]) to go on there. Its settings are this
+    /// from this one. Replies the new session's ID, which
+    /// [`SessionChoice::Resume`] opens to go on there. Its settings are this
     /// one's. Before the conversation's first message, the branch has none
     /// of it, but goes on from the report the conversation began from, if
     /// it was handed over. Workers stay with this session. Between turns.
@@ -183,39 +183,41 @@ pub enum Request {
         reply: Reply<String>,
     },
     /// Serves the session's web page on `bind` (an address, a port, or
-    /// both, as `--remote` takes them), in place of the one served: its
-    /// links, with the session's key, the local network's first. `None`
-    /// serves it to the network, whatever it was served on before: on every
-    /// address of this computer (0.0.0.0), on the port the page had if it
-    /// was served before and the port is free, else 8765, else any free
-    /// one. Then any device on the computer's networks that has a link can
-    /// open the page, and the page is served without TLS: what it shows and
-    /// what is typed in it cross the network unencrypted. Say so where the
-    /// page is shared, and offer `127.0.0.1` for this computer only (Arko in
-    /// a terminal serves there by default). `Err` with why it isn't served
-    /// (an address that isn't this computer's, a port in use).
+    /// both, as `--remote` takes them), in place of the one served, and
+    /// replies its links, with the session's key, the local network's
+    /// first. `None` serves it to the network, whatever it was served on
+    /// before. It listens on every address of this computer (0.0.0.0), on
+    /// the port the page had if it was served before and the port is free,
+    /// else 8765, else any free one. Any device on the computer's networks
+    /// that has a link can then open the page, and it's served without TLS,
+    /// so what it shows and what is typed in it cross the network
+    /// unencrypted. Say so where the page is shared, and offer `127.0.0.1`
+    /// for this computer only (Arko in a terminal serves there by default).
+    /// A blank address is taken as `None`. `Err` says why it isn't served
+    /// (an address that isn't this computer's, a port in use), and the page
+    /// served before goes on as it was.
     ShareWebPage {
         bind: Option<String>,
         reply: Reply<remote::Page>,
     },
-    /// Stops the session's web page: its links and the sessions of its
+    /// Stops the session's web page, so its links and the sessions of its
     /// clients no longer work. Its clients are told it was done in the app.
     StopWebPage { reply: Reply<()> },
     /// Gives the session's web page a new key, so that the old links no
-    /// longer work. The page, when it is served, goes on with it on its
-    /// port: its new links (`None` when it isn't served).
+    /// longer work. A page that is served goes on with the new key on its
+    /// port, and the reply has its new links (`None` when it isn't served).
     NewWebPageKey { reply: Reply<Option<remote::Page>> },
-    /// Keeps the main agent's prompt cache warm, between turns: out of
-    /// band where the provider allows (nothing joins the conversation),
-    /// else with a short message and its reply in the conversation (the
-    /// user's item has `Delivery::Refresh`).
+    /// Keeps the main agent's prompt cache warm between turns. Where the
+    /// provider allows, it does so out of band (nothing joins the
+    /// conversation), else with a short message and its reply in the
+    /// conversation (the user's item has `Delivery::Refresh`).
     RefreshCache { reply: Reply<Refreshed> },
 }
 
 /// How the prompt cache was kept warm ([`Request::RefreshCache`]).
 #[derive(Debug, Clone, PartialEq)]
 pub enum Refreshed {
-    /// Out of band: the request read `read` tokens from the cache and
+    /// Out of band, by a request that read `read` tokens from the cache and
     /// wrote `written`, for `cost` dollars.
     OutOfBand {
         read: usize,
@@ -1127,6 +1129,20 @@ mod tests {
             "{refused}"
         );
         assert!(share(Some("nowhere at all")).await.is_err());
+
+        // A share that can't be served leaves the page served as it was:
+        // on another port, and on its own port at an address not here.
+        let served = share(Some("127.0.0.1:0")).await.unwrap();
+        let serves = |addr: std::net::SocketAddr| {
+            std::net::TcpStream::connect_timeout(&addr, Duration::from_secs(2)).is_ok()
+                && crate::remote::Meter::read(seam.meter.as_ref())
+                    .page
+                    .is_some_and(|page| page.addr == addr)
+        };
+        assert!(share(Some(&format!("127.0.0.1:{port}"))).await.is_err());
+        assert!(serves(served.addr));
+        assert!(share(Some("192.0.2.1")).await.is_err());
+        assert!(serves(served.addr));
         quit(seam, ended).await;
     }
 

@@ -1186,45 +1186,86 @@ impl Harness {
     }
 
     /// Serves the web page where `bind` says, in place of the one running,
-    /// and prints its links: the page, or why it isn't served.
+    /// and prints its links: the page, or why it isn't served. A page that
+    /// can't be served where `bind` says leaves the one running as it was.
+    /// On another port, the new page starts before the old one stops. On
+    /// the old one's port, the old one stops first, and starts again where
+    /// it was when the new one can't (its clients log in again with the key
+    /// they hold).
     pub(crate) async fn serve_page(&mut self, bind: remote::Bind) -> Result<remote::Page, String> {
-        self.stop_remote().await;
         let key = self.remote_key(false)?;
-        let info = remote::Info {
-            model: self.settings.describe(&self.settings.main),
-            workspace: self.settings.workspace.display().to_string(),
-            session: self.session.id.clone(),
-            app: self.app_name.to_string(),
-        };
         // A page served before is served on its port again, if it is free.
         let earlier = self.remote_bind.map(|(_, port)| port);
-        match remote::start(
-            bind,
-            earlier,
-            key.clone(),
-            info,
-            self.feed.clone(),
-            self.remote_actions.clone(),
-            self.gauges.clone(),
-        ) {
-            Ok(server) => {
-                self.remote_bind = Some((bind, server.addr().port()));
-                let (links, note) = remote::links(server.addr(), &key);
-                // In the status before the links are said: a view that waits
-                // for the page finds it as they come.
-                let page = remote::Page {
-                    addr: server.addr(),
-                    links,
-                    note,
-                };
-                *lock(&self.gauges.page) = Some(page.clone());
-                self.gauges.touch();
-                self.announce_remote(server.addr(), &key);
-                self.remote = Some(server);
-                Ok(page)
+        let served = self.remote.as_ref().map(remote::Server::addr);
+        let same_port = served.is_some_and(|addr| match bind.port {
+            Some(port) if port != 0 => port == addr.port(),
+            _ => earlier == Some(addr.port()),
+        });
+        let start = |harness: &Self, bind: remote::Bind, earlier: Option<u16>| {
+            remote::start(
+                bind,
+                earlier,
+                key.clone(),
+                remote::Info {
+                    model: harness.settings.describe(&harness.settings.main),
+                    workspace: harness.settings.workspace.display().to_string(),
+                    session: harness.session.id.clone(),
+                    app: harness.app_name.to_string(),
+                },
+                harness.feed.clone(),
+                harness.remote_actions.clone(),
+                harness.gauges.clone(),
+            )
+        };
+        let server = match served {
+            Some(old) if same_port => {
+                self.stop_remote().await;
+                match start(self, bind, earlier) {
+                    Ok(server) => server,
+                    Err(error) => {
+                        let again = remote::Bind {
+                            ip: old.ip(),
+                            port: Some(old.port()),
+                        };
+                        match start(self, again, None) {
+                            Ok(server) => {
+                                self.show_page(&server, &key);
+                                self.remote = Some(server);
+                            }
+                            Err(_) => {
+                                let text = "The web page was turned off, as it couldn't be served again where it was.";
+                                self.feed.notice(Level::Warn, text);
+                            }
+                        }
+                        return Err(error);
+                    }
+                }
             }
-            Err(error) => Err(error),
-        }
+            _ => {
+                let server = start(self, bind, earlier)?;
+                self.stop_remote().await;
+                server
+            }
+        };
+        self.remote_bind = Some((bind, server.addr().port()));
+        let page = self.show_page(&server, &key);
+        self.announce_remote(server.addr(), &key);
+        self.remote = Some(server);
+        Ok(page)
+    }
+
+    /// The page `server` serves with `key`, in the status (before its links
+    /// are said: a view that waits for the page finds it as they come).
+    fn show_page(&self, server: &remote::Server, key: &str) -> remote::Page {
+        let (links, note) = remote::links(server.addr(), key);
+        let page = remote::Page {
+            addr: server.addr(),
+            links,
+            note,
+        };
+        *lock(&self.gauges.page) = Some(page.clone());
+        self.gauges.touch();
+        page
     }
 
     /// Stops the web page: its streams end, and its sessions with them.
