@@ -522,6 +522,30 @@ pub fn set_chatgpt_login(root: &Path, path: &Path) -> Result<ChatGptLogin, Strin
     Ok(crate::context::with_env(env, || chatgpt_login(None)))
 }
 
+/// Goes back to Codex's own ChatGPT login (the auth.json `codex login`
+/// writes) for the sessions of Arko's folder `root`. The login chosen
+/// with [`set_chatgpt_login`] is removed, from this process and from the
+/// folder's `.env` (ARKO_CODEX_AUTH), under the lock every change to that
+/// file takes. ARKO_CODEX_AUTH set elsewhere, in the environment or
+/// another `.env` Arko reads, still comes first. Replies the login used
+/// from now on.
+pub fn clear_chatgpt_login(root: &Path) -> Result<ChatGptLogin, String> {
+    let env = Env::for_folder_in(None, true, Some(root));
+    unset(&env.arko_dotenv()?, CODEX_AUTH)?;
+    env.forget(CODEX_AUTH);
+    Ok(chatgpt_login_in(root))
+}
+
+/// The ChatGPT login the sessions of Arko's folder `root` use, read from
+/// the environment and the `.env` files as they are now (as
+/// [`chatgpt_login`] reads it without a `--codex-auth` file). What this
+/// process reads otherwise ([`use_env`]) stays as it is.
+pub fn chatgpt_login_in(root: &Path) -> ChatGptLogin {
+    crate::context::with_env(Env::for_folder_in(None, true, Some(root)), || {
+        chatgpt_login(None)
+    })
+}
+
 /// Credentials a session can't start without.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Need {
@@ -698,6 +722,14 @@ impl KeyState {
 /// Every API key's state, in the keys menu's order.
 pub fn key_states() -> Vec<KeyState> {
     KEYS.into_iter().map(key_state).collect()
+}
+
+/// The API keys for the sessions of Arko's folder `root`, as
+/// [`key_states`] gives them, read from the environment and the `.env`
+/// files as they are now. What this process reads otherwise
+/// ([`use_env`]) stays as it is.
+pub fn key_states_in(root: &Path) -> Vec<KeyState> {
+    crate::context::with_env(Env::for_folder_in(None, true, Some(root)), key_states)
 }
 
 /// `key`'s state now.

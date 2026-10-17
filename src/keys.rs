@@ -708,6 +708,38 @@ mod tests {
         let login = credentials::set_chatgpt_login(&root, &auth).unwrap();
         assert_eq!(login.path.as_deref(), Some(auth.as_path()));
         assert!(saved().contains("ARKO_CODEX_AUTH="));
+        assert_eq!(
+            credentials::chatgpt_login_in(&root).path.as_deref(),
+            Some(auth.as_path())
+        );
+        // Back to Codex's own login, unless the environment names one.
+        if std::env::var_os(credentials::CODEX_AUTH).is_none() {
+            let login = credentials::clear_chatgpt_login(&root).unwrap();
+            assert_eq!(login.source, credentials::LoginSource::Default);
+            assert!(!saved().contains("ARKO_CODEX_AUTH="));
+            assert_eq!(
+                credentials::chatgpt_login_in(&root).source,
+                credentials::LoginSource::Default
+            );
+        }
+        // The keys of this Arko folder, read without changing what the
+        // process reads.
+        std::fs::write(
+            root.join(".env"),
+            "VOYAGE_API_KEY=pa-0123456789abcdef0123\n",
+        )
+        .unwrap();
+        if std::env::var_os(credentials::VOYAGE_KEY).is_none() {
+            let voyage = credentials::key_states_in(&root)
+                .into_iter()
+                .find(|state| state.variable == credentials::VOYAGE_KEY)
+                .unwrap();
+            assert_eq!(voyage.source, Some(KeySource::Arko(root.join(".env"))));
+            assert_ne!(
+                credentials::current().arko_dotenv().ok(),
+                Some(root.join(".env"))
+            );
+        }
         assert_eq!(stamp(), before, "the user's own .env is untouched");
     }
 

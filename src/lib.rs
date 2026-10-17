@@ -88,7 +88,8 @@ pub mod accounts {
     };
     pub use crate::credentials::{
         ChatGptLogin, KEYS, Key, KeySource, KeyState, LoginSource, LoginState, chatgpt_login,
-        key_states, set_chatgpt_login, use_env,
+        chatgpt_login_in, clear_chatgpt_login, key_states, key_states_in, set_chatgpt_login,
+        use_env,
     };
     pub use crate::keys::{Outcome, Secret, add, remove};
 }
