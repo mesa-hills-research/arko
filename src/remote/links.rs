@@ -19,14 +19,15 @@ pub const HOST_VARIABLE: &str = "ARKO_REMOTE_HOST";
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Kind {
-    /// A private address on a physical interface: the local network.
+    /// A private address on a physical interface, on the local network.
     Lan,
     /// Tailscale's network (100.64.0.0/10, `tailscale0`).
     Tailscale,
-    /// Anything else: a public address, a virtual bridge (Docker, VMs).
+    /// Anything else, such as a public address or a virtual bridge (Docker,
+    /// VMs).
     Other,
-    /// A VPN tunnel (`wg*`, `tun*`, `utun*`, Mullvad): rarely reachable
-    /// from the other devices.
+    /// A VPN tunnel (`wg*`, `tun*`, `utun*`, Mullvad), which the other
+    /// devices can rarely reach.
     Vpn,
     /// This machine only.
     Loopback,
@@ -50,7 +51,7 @@ impl Kind {
 pub struct Interface {
     pub name: String,
     pub ip: IpAddr,
-    /// Whether it is a physical device; `None` where that isn't known
+    /// Whether it is a physical device, or `None` where that isn't known
     /// (Linux tells, in `/sys/class/net/<name>/device`).
     pub physical: Option<bool>,
 }
@@ -170,8 +171,8 @@ impl Link {
 }
 
 /// The links to a server on `addr`, with `key` in their fragments, best
-/// first: on every interface's address (of `interfaces`) when it listens on
-/// all of them, ranked by [`Kind`], this machine's last.
+/// first. When it listens on every interface, there is a link for each
+/// address in `interfaces`, ranked by [`Kind`], with this machine's last.
 pub fn links(addr: SocketAddr, key: &str, interfaces: Vec<Interface>) -> Vec<Link> {
     if !addr.ip().is_unspecified() {
         let kind = if addr.ip().is_loopback() {

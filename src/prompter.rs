@@ -17,31 +17,32 @@ use crate::remote::Level;
 pub trait Prompter: Send + Sync {
     /// The session can't open without `need` (a key, a login). The front
     /// end lets the user add it, then returns `Ok` for Arko to check again,
-    /// or why the session doesn't open: the user cancelled, or no one can be
-    /// asked.
+    /// or `Err` with why the session doesn't open, such as the user
+    /// cancelling or no one being there to ask.
     async fn need_credentials(&self, need: &Need) -> Result<(), String>;
 
-    /// Whether to start the project's MCP servers `approval` lists: the
-    /// user's answer, which Arko remembers until the file's servers change,
-    /// `None` when no one can answer (they don't start, and a note says
-    /// so), or `Err` with why the session doesn't open (the user cancelled).
+    /// Whether to start the project's MCP servers `approval` lists. The
+    /// answer is the user's, which Arko remembers until the file's servers
+    /// change, or `None` when no one can answer (the servers don't start,
+    /// and a note says so), or `Err` with why the session doesn't open
+    /// (the user cancelled).
     async fn approve_project_mcp(&self, approval: &McpApproval) -> Result<Option<bool>, String>;
 
     /// What Arko tells the user as the session opens, before its feed
-    /// exists: a flag a resumed session ignores, a model it chose.
+    /// exists, such as a flag a resumed session ignores or a model it chose.
     fn note(&self, level: Level, text: &str);
 
     /// The session's folder is known, before its agents, MCP servers and
-    /// workflow start: the front end can start logging there.
+    /// workflow start, so the front end can start logging there.
     fn session_found(&self, _dir: &Path) {}
 
-    /// The session's workflow loads now (the questions are over): what the
-    /// user does from now on, until the session takes the front end's
-    /// input, is for the session (a terminal's Ctrl-C waits for it).
+    /// The session's workflow loads now, after the questions. Until the
+    /// session takes the front end's input, what the user does is for the
+    /// session (a terminal's Ctrl-C waits for it).
     fn opening(&self) {}
 }
 
-/// A front end with no one to ask: missing credentials keep the session
+/// A front end with no one to ask. Missing credentials keep the session
 /// from opening (with what they are), a project's MCP servers don't start,
 /// and the notes go to the log.
 pub struct NoPrompter;

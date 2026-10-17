@@ -35,11 +35,12 @@ use crate::{
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum OpenError {
-    /// The session is open in another Arko (this process's too): who, when
-    /// it said so (an Arko from before sessions said doesn't).
+    /// The session is open in another Arko, which may be in this process.
+    /// `holder` says who has it, when that Arko said so (older versions
+    /// don't).
     Locked { holder: Option<Holder> },
-    /// What went wrong, as the user reads it: credentials missing, the
-    /// user cancelled, a session that isn't there.
+    /// What went wrong, as the user reads it, such as missing credentials,
+    /// the user cancelling or a session that isn't there.
     Failed(String),
 }
 
@@ -114,8 +115,8 @@ pub struct Seam {
     pub requests: mpsc::UnboundedSender<Request>,
     /// The API keys, which the front end can add and remove.
     pub keys: Arc<keys::Keys>,
-    /// The background jobs quitting would stop, to ask the user about
-    /// (when the front end asks before quitting: [`FrontEnd::asks_to_quit`]).
+    /// The background jobs quitting would stop, to ask the user about when
+    /// the front end asks before quitting ([`FrontEnd::asks_to_quit`]).
     pub quit_asks: mpsc::UnboundedReceiver<crate::ui::QuitAsk>,
     /// The session's facts for a banner.
     pub banner: crate::ui::Banner,
@@ -125,8 +126,8 @@ pub struct Seam {
     pub show_thinking: bool,
 }
 
-/// What a front end asks of an open session, with where the answer goes:
-/// `Err` with the sentence to show when it can't be done.
+/// What a front end asks of an open session, with where the answer goes.
+/// The answer is `Err` with the sentence to show when it can't be done.
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum Request {
@@ -234,8 +235,8 @@ pub type Reply<T> = oneshot::Sender<Result<T, String>>;
 /// How the front end shows the session, which changes what Arko prints.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct FrontEnd {
-    /// The front end draws the banner itself, boxed (the full-screen view):
-    /// Arko prints only its last lines.
+    /// The front end draws the banner itself in a box, as the full-screen
+    /// view does, and Arko prints only its last lines.
     pub boxed_banner: bool,
     /// Quitting with background jobs running asks the front end
     /// ([`Seam::quit_asks`]), which answers with `Input::Quit`. Else the
@@ -258,31 +259,31 @@ pub enum RunEnd {
     /// The user quit.
     Quit,
     /// The session switched between Chat and Agent ([`Request::SwitchMode`])
-    /// and closed: open it again ([`SessionChoice::Resume`]) to go on in its
+    /// and closed. Open it again ([`SessionChoice::Resume`]) to go on in its
     /// new mode, with `Options::remote` for its web page.
     Reopen,
 }
 
-/// A session running on threads of its own: see [`spawn`].
+/// A session running on threads of its own, as [`spawn`] starts it.
 pub struct Running {
     /// The session opened (its seam, to show it and send it input), or why
     /// it didn't.
     pub opened: oneshot::Receiver<Result<Seam, OpenError>>,
-    /// How it ended, once it has shut down: its lock is released and its
-    /// runtime stopped, and its threads end within 2 s (a thread still
+    /// How it ended, once it has shut down. By then its lock is released and
+    /// its runtime stopped, and its threads end within 2 s (a thread still
     /// blocked then is left to end on its own). It fails when the session
     /// didn't open.
     pub ended: oneshot::Receiver<RunEnd>,
 }
 
 /// Opens the session `options` choose and runs it until the user quits
-/// (`Input::Quit`), on a thread and a runtime of its own: several sessions
-/// run side by side in one process, each with its own settings (its
-/// folder's `.env`) and its log lines tagged with its ID
+/// (`Input::Quit`), on a thread and a runtime of its own. Several sessions
+/// run side by side in one process this way, each with its own settings
+/// (its folder's `.env`) and its log lines tagged with its ID
 /// ([`ProcessLog`](crate::logging::ProcessLog)), and nothing it started
-/// outlives it. The front end is an app's: it draws the banner itself, asks
-/// before quitting with jobs running ([`Seam::quit_asks`]), and shows
-/// Arko's lines from the feed.
+/// outlives it. The front end is taken to be an app's, which draws the
+/// banner itself, asks before quitting with jobs running
+/// ([`Seam::quit_asks`]), and shows Arko's lines from the feed.
 pub fn spawn(options: Options, prompter: Arc<dyn Prompter>) -> Running {
     static SESSIONS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
     let number = SESSIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -375,15 +376,16 @@ pub struct Engine {
 }
 
 impl Engine {
-    /// Opens the session `options` choose, or creates it: its settings, the
-    /// credentials it needs (asked for through `prompter`), its agents, MCP
-    /// servers (approved through `prompter`), skills and search indexes,
-    /// the feed, and the workflow, resumed where it was.
+    /// Opens the session `options` choose, or creates it. That sets up its
+    /// settings, the credentials it needs (asked for through `prompter`),
+    /// its agents, MCP servers (approved through `prompter`), skills and
+    /// search indexes, the feed, and the workflow, resumed where it was.
     ///
-    /// On a front end's own runtime, a process opens one session this way:
-    /// it reads the process's settings and keys, and its log lines carry no
-    /// session's ID. Several sessions in one process each run with
-    /// [`spawn`], which gives each its own. A second is refused here.
+    /// A process opens one session this way, on the front end's own
+    /// runtime. The session reads the process's settings and keys, and its
+    /// log lines carry no session's ID. A second session opened this way is
+    /// refused. Several sessions in one process each run with [`spawn`],
+    /// which gives each its own settings, keys and log tag.
     pub async fn open(
         options: Options,
         prompter: Arc<dyn Prompter>,
@@ -952,9 +954,9 @@ impl Engine {
         };
     }
 
-    /// Runs the session until the user quits: the banner, the web page if
-    /// asked for, the turns a resumed session left unfinished, then the
-    /// user's messages and commands.
+    /// Runs the session until the user quits. It shows the banner, serves
+    /// the web page if asked for, finishes the turns a resumed session left
+    /// unfinished, then takes the user's messages and commands.
     pub async fn run(&mut self) -> RunEnd {
         let harness = &mut self.harness;
         harness.banner(self.new, self.boxed_banner);
@@ -997,10 +999,10 @@ impl Engine {
         }
     }
 
-    /// Stops what the session started: the web page (whose users are told),
-    /// the workers (said, as they can be continued), the MCP servers, the
-    /// index watchers and the terminal's jobs. The session is saved as it
-    /// goes.
+    /// Stops what the session started, which is the web page (whose users
+    /// are told), the workers (with a line saying that resuming the session
+    /// continues them), the MCP servers, the index watchers and the
+    /// terminal's jobs. The session is saved as it goes.
     pub async fn shutdown(self) {
         self.publisher.abort();
         let mut harness = self.harness;

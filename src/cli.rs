@@ -346,8 +346,8 @@ fn flag(on: bool, off: bool) -> Option<bool> {
     }
 }
 
-/// The `arko` command: reads the command line, runs what it asks for, and
-/// says how it ended.
+/// The `arko` command. It reads the command line, runs what it asks for,
+/// and says how it ended.
 pub fn cli_main() -> ExitCode {
     let args = Args::parse();
     let runtime = match tokio::runtime::Builder::new_multi_thread()

@@ -320,13 +320,13 @@ fn reasoning_effort(effort: Effort) -> ReasoningEffort {
     }
 }
 
-/// How a session reaches OpenAI models: one way for all of them, since
-/// arko's client holds one OpenAI client.
+/// How a session reaches OpenAI models. It's one way for all of them,
+/// since Arko's model client holds one OpenAI client.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "tui", derive(clap::ValueEnum))]
 pub enum OpenAiAuth {
-    /// The ChatGPT login (a Codex auth.json): usage counts against the
-    /// ChatGPT plan.
+    /// The ChatGPT login (a Codex auth.json), whose usage counts against
+    /// the ChatGPT plan.
     #[serde(rename = "chatgpt")]
     #[cfg_attr(feature = "tui", value(name = "chatgpt"))]
     ChatGpt,
@@ -711,15 +711,16 @@ pub fn efforts_text(model: &Model) -> String {
     }
 }
 
-/// A group of the models `/model` offers: one way to reach them, and what
-/// it needs when that isn't there.
+/// A group of the models `/model` offers, with one way to reach them and
+/// what it needs when that isn't there.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelGroup {
-    /// The way, as the picker heads it: "Claude Code, on your Claude plan".
+    /// The way, as the picker heads it ("Claude Code, on your Claude plan").
     pub name: String,
-    /// What the way needs that isn't there; its models can't be chosen.
+    /// What the way needs that isn't there, which keeps its models from
+    /// being chosen.
     pub needs: Option<String>,
-    /// Each model: its name as `/model` takes it, and its alias.
+    /// Each model's name as `/model` takes it, with its alias.
     pub models: Vec<(String, &'static str)>,
 }
 

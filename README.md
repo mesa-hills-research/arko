@@ -15,8 +15,7 @@ models, and on your Claude plan through an installed Claude Code.
 - MCP servers in Claude Code's `.mcp.json` format, and skills from `.agents/skills` or
   `.claude/skills`
 - Themes for the full-screen view, and your own in GPUI Kit's format
-- A library for other front ends, which open and drive sessions with `arko::Engine`, or several
-  side by side in one process with `arko::spawn`
+- A library for apps with front ends of their own
 
 ## Install
 
@@ -49,6 +48,13 @@ search is by keywords.
 
 In a session, `/help` lists the keys and commands, and `/settings` holds the view, the theme, the
 web page and the API keys. `arko --help` describes every option and setting.
+
+## Library
+
+An app opens a session and drives it with `arko::Engine`, or runs several side by side in one
+process with `arko::spawn`. The app shows the session's feed of items and sends the session the
+user's input. Apps build Arko with `default-features = false`, which leaves out the terminal's
+front ends, and add the `remote` feature for the web page. `cargo doc --open` builds the API docs.
 
 ## Tests
 

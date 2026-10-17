@@ -8,7 +8,7 @@ python3 -m tally report --month 2026-09
 python3 -m tally budget --month 2026-09
 ```
 
-The settings are in `config/settings.toml`: the currency, the budgets, and the rules that give payees their categories. The ledger (`ledger.json` by default) holds every transaction imported.
+The settings in `config/settings.toml` set the currency, the budgets, and the rules that give payees their categories. The ledger (`ledger.json` by default) holds every transaction imported.
 
 ## Tests
 

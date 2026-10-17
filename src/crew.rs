@@ -85,9 +85,9 @@ fn load_run_times(dir: &std::path::Path) -> BTreeMap<String, u64> {
 /// A worker, as `/workers` tells it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct WorkerFacts {
-    /// Its handle: r1, r2, ...
+    /// Its ID, such as r1 or r2.
     pub id: String,
-    /// Its run's state: running, finished, failed, stopped, ...
+    /// Its run's state, such as running, finished, failed or stopped.
     pub state: String,
     pub task: String,
     /// The model it started on, when new workers start on another.

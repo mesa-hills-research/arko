@@ -1,6 +1,7 @@
-//! The models a session can switch to, as the model picker offers them:
-//! grouped by how they are reached, with what each group needs that isn't
-//! there. For any front end (the full-screen view's picker, an app's).
+//! The models a session can switch to, as the model picker offers them.
+//! They are grouped by how they are reached, with what each group needs
+//! that isn't there, for any front end (the full-screen view's picker, an
+//! app's).
 
 use crate::providers;
 pub use crate::providers::ModelGroup;
@@ -17,8 +18,8 @@ pub fn menu(models: &Models, needs: impl Fn(&str) -> Option<String>) -> Vec<prov
     providers::model_menu(needs, auth, &current)
 }
 
-/// The models the picker lets you choose, as `/model` takes them: each
-/// one's alias, then its name. What the input box completes.
+/// The models the picker lets you choose, as `/model` takes them, with
+/// each one's alias, then its name. The input box completes these.
 pub fn names(models: &Models, needs: impl Fn(&str) -> Option<String>) -> Vec<String> {
     menu(models, needs)
         .into_iter()
@@ -29,9 +30,9 @@ pub fn names(models: &Models, needs: impl Fn(&str) -> Option<String>) -> Vec<Str
         .collect()
 }
 
-/// What the model `name` needs that the session doesn't have: Claude Code
-/// installed and signed in, or a provider the session's client reaches
-/// (`reachable`, as the session publishes it).
+/// What the model `name` needs that the session doesn't have. That is
+/// Claude Code installed and signed in, or a provider the session's client
+/// reaches (`reachable`, as the session publishes it).
 pub fn needs(reachable: &[String], name: &str) -> Option<String> {
     let model = providers::resolve_model(name).ok()?;
     match &model.provider {
@@ -47,9 +48,9 @@ pub fn needs(reachable: &[String], name: &str) -> Option<String> {
     }
 }
 
-/// The models a new session can start on, before it opens: grouped as the
-/// picker groups them, each group with what it needs that isn't there, and
-/// the models a new session takes by default.
+/// The models a new session can start on, before it opens. They are
+/// grouped as the picker groups them, each group with what it needs that
+/// isn't there, with the models a new session takes by default.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewSessionModels {
     pub groups: Vec<ModelGroup>,
@@ -59,16 +60,16 @@ pub struct NewSessionModels {
     pub main: Option<String>,
     /// The workers' model by default, when it isn't the main agent's.
     pub worker: Option<String>,
-    /// Why the default isn't the last session's models as they were: a
-    /// credential one of them needs is gone.
+    /// Why the default isn't the last session's models as they were, when
+    /// a credential one of them needs is gone.
     pub note: Option<String>,
 }
 
 /// The models a new session in Arko's folder `root` can start on, checked
-/// as opening one checks them: the keys (also those in the `.env` files of
-/// `workspace`, the session's folder, else the current directory), the
-/// ChatGPT login, Claude Code. It may run `claude auth status`: call it off
-/// a UI thread.
+/// as opening one checks them. That covers the keys (also those in the
+/// `.env` files of `workspace`, the session's folder, else the current
+/// directory), the ChatGPT login and Claude Code. It may run
+/// `claude auth status`, so call it off a UI thread.
 pub fn for_new_session(
     root: &std::path::Path,
     workspace: Option<&std::path::Path>,
@@ -104,8 +105,8 @@ fn models_for_new_session(root: &std::path::Path) -> NewSessionModels {
 
 /// Why an image of type `mime` can't go to the model `model` (an ID or
 /// alias as `/model` takes it, as a session's status names its model) with
-/// a message, or `None` when it can: a model that takes no images, a type
-/// it doesn't take. Checks nothing else, so it is cheap: a front end asks
+/// a message, or `None` when it can. The model may take no images, or not
+/// this type. It checks nothing else, so it is cheap, and a front end asks
 /// before it sends.
 pub fn image_refusal(model: &str, mime: &str) -> Option<String> {
     let model = providers::resolve_model(model).ok()?;
@@ -125,8 +126,8 @@ pub fn takes_cache_1h(model: &str) -> bool {
 
 /// A model's name as people say it ("Opus 5.5", "GPT-6.1 Sol", "Gemini
 /// 3.1 Pro Preview"), from an ID or alias as `/model` takes it. `cc:` and
-/// `openrouter:` say how a model is reached, not which it is: they are left
-/// out, as is an OpenRouter slug's maker.
+/// `openrouter:` say how a model is reached rather than which it is, so
+/// they are left out, as is an OpenRouter slug's maker.
 pub fn display_name(model: &str) -> String {
     let id =
         providers::resolve_model(model).map_or_else(|_| model.trim().to_string(), |model| model.id);

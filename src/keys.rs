@@ -21,7 +21,7 @@ use crate::index;
 use crate::providers::{self, OpenAiAuth};
 use crate::remote::{self, Level, Source};
 
-/// A key's value. It is never shown: `Debug` writes `Secret(…)`.
+/// A key's value, which is never shown. `Debug` writes `Secret(…)`.
 #[derive(Clone, Default, PartialEq, Eq)]
 pub struct Secret(String);
 
@@ -66,14 +66,14 @@ impl std::fmt::Debug for Secret {
 /// What adding or removing a key did, for the user.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
-    /// Saved or removed: what was done, and what to warn about.
+    /// Saved or removed, with what was done and what to warn about.
     Done { said: String, warnings: Vec<String> },
-    /// Another provider's key, or not saved: nothing changed.
+    /// Another provider's key, or not saved, so nothing changed.
     Failed(String),
 }
 
-/// The session's API keys: what the model client and the search indexes use,
-/// and which providers the session reaches.
+/// The session's API keys, which the model client and the search indexes
+/// use, and the providers the session reaches with them.
 pub struct Keys {
     /// These keys, as the changes they announce say ([`share`](Self::share)).
     id: u64,
@@ -99,10 +99,10 @@ struct State {
     withdrawn: Vec<Provider>,
 }
 
-/// Adds `key` (or replaces it) with `value` without a session (an app's
-/// accounts): saved in the `.env` of Arko's folder `root` as the keys menu
-/// saves it, and used at once by the sessions open on `root` in this
-/// process, and by those that start.
+/// Adds `key` (or replaces it) with `value` without a session, as an app's
+/// accounts page does. It is saved in the `.env` of Arko's folder `root` as
+/// the keys menu saves it, and used at once by the sessions open on `root`
+/// in this process, and by those that start.
 pub fn add(root: &std::path::Path, key: &'static Key, value: Secret) -> Outcome {
     let env = credentials::Env::for_folder_in(None, true, Some(root));
     crate::context::with_env(env, || add_in(root, key, value))
@@ -127,9 +127,9 @@ fn add_in(root: &std::path::Path, key: &'static Key, value: Secret) -> Outcome {
     }
 }
 
-/// Removes `key` without a session, when Arko saved the one in use: from
-/// the `.env` of Arko's folder `root`, and from the sessions open on `root`
-/// (each goes by the next it reads, if any).
+/// Removes `key` without a session, when Arko saved the one in use. It goes
+/// from the `.env` of Arko's folder `root`, and from the sessions open on
+/// `root` (each goes by the next it reads, if any).
 pub fn remove(root: &std::path::Path, key: &'static Key) -> Outcome {
     let env = credentials::Env::for_folder_in(None, true, Some(root));
     crate::context::with_env(env, || remove_in(root, key))
@@ -169,8 +169,8 @@ fn share(root: &std::path::Path, key: &'static Key, value: Option<&str>) {
 
 impl Keys {
     /// The keys of a session whose model client is `client` (which reaches
-    /// OpenAI models as `openai` says: see [`openai_way`]) and search indexes
-    /// `indexes`. `feed` gets a notice of each change.
+    /// OpenAI models the way `openai` says) and search indexes `indexes`.
+    /// `feed` gets a notice of each change.
     pub fn new(
         client: Arc<LLMClient>,
         openai: Option<OpenAiAuth>,
@@ -194,7 +194,7 @@ impl Keys {
     }
 
     /// Shares the keys added and removed with the other sessions open on
-    /// Arko's folder `root` in this process, both ways: a key added in one
+    /// Arko's folder `root` in this process, both ways. A key added in one
     /// is used by all of them at once, as if added in each.
     pub fn share(self: &Arc<Self>, root: std::path::PathBuf) {
         if self.shared.set(root.clone()).is_err() {
@@ -287,8 +287,8 @@ impl Keys {
             .filter(|_| !state.withdrawn.contains(&Provider::OpenAI))
     }
 
-    /// Why a new worker can't start on `model`: its provider's key was
-    /// removed while Arko runs. (Said to the main agent.)
+    /// Why a new worker can't start on `model`, when its provider's key was
+    /// removed while Arko runs. The text is written for the main agent.
     pub fn refusal(&self, model: &Model) -> Option<String> {
         if !self.state().withdrawn.contains(&model.provider) {
             return None;
@@ -305,7 +305,7 @@ impl Keys {
         ))
     }
 
-    /// Adds `key` (or replaces it) with `value`: saved in Arko's `.env`, and
+    /// Adds `key` (or replaces it) with `value`, saved in Arko's `.env` and
     /// used at once.
     pub fn add(&self, key: &'static Key, value: Secret) -> Outcome {
         crate::context::within(self.context.clone(), || self.add_here(key, value))
@@ -333,7 +333,7 @@ impl Keys {
         Outcome::Done { said, warnings }
     }
 
-    /// Removes `key`, when Arko saved the one in use: from Arko's `.env`, and
+    /// Removes `key`, when Arko saved the one in use, from Arko's `.env` and
     /// for what starts from now on. A key another source sets takes its
     /// place.
     pub fn remove(&self, key: &'static Key) -> Outcome {

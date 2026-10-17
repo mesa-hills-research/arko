@@ -9,9 +9,9 @@ Every run gets a folder, <out>/<batch>/<task>/<model>-<n>/, with:
   where the run started (with the task's setup applied).
 - home/: the run's ARKO_HOME. It starts as a copy of --template-home, which
   holds a .env with VOYAGE_API_KEY and an index of an unrelated project, so
-  the agent sees an index list as the owner does. Tasks marked `index` also
-  get an index of work/. The session is saved here too, apart from the
-  owner's own sessions and indexes.
+  the agent sees an index list as it would on a user's machine. Tasks marked
+  `index` also get an index of work/. The session is saved here too, apart
+  from your own sessions and indexes.
 - stdout.txt, stderr.txt and run.json (the command, wall time, exit code).
 
 A run whose run.json exists is skipped, so an interrupted batch can be run

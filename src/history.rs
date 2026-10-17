@@ -1,5 +1,5 @@
-//! The input history: what the user sent before, oldest first, shared by
-//! every front end (the line prompt, the full-screen view, an app) in
+//! The input history holds what the user sent before, oldest first. Every
+//! front end (the line prompt, the full-screen view, an app) shares it in
 //! Arko's `history.txt`, in the line editor's format.
 
 use std::path::{Path, PathBuf};
@@ -34,8 +34,8 @@ impl History {
         &self.entries
     }
 
-    /// Adds `entry` (not a repeat of the last), and saves the history: with
-    /// what other front ends added since it was read, the latest 1,000.
+    /// Adds `entry` (not a repeat of the last), and saves the latest 1,000
+    /// entries, with what other front ends added since it was read.
     pub fn add(&mut self, entry: &str) {
         if entry.trim().is_empty() || self.entries.last().is_some_and(|last| last == entry) {
             return;

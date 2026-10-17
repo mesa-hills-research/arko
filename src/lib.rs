@@ -1,20 +1,30 @@
-//! Arko: a general-purpose agent for the terminal.
+//! Arko is a general-purpose agent for the terminal, and a library for apps
+//! that run its sessions.
 //!
-//! The user talks with one agent (`main`), which works with a shell,
-//! background terminal jobs and file tools in the working directory, and
-//! can start workers that run while it goes on (`crew`), each in the
-//! working directory or a git worktree of its own. Each message is a turn of one
-//! conversation: the first runs the agent, later ones continue it. Ctrl-C
-//! stops only the lead. The next message reopens its conversation. Lines
-//! typed while the agent works reach it as notes, and its `ask_user` questions are answered
-//! at the prompt. The workers' reports reach it as notes while it works,
-//! and start a turn when it is idle. Every session is saved and can be
-//! resumed.
+//! In a session the user talks with one agent, which works with a shell,
+//! background terminal jobs and file tools in the working directory. It can
+//! start workers that run while it goes on, each in the working directory or
+//! in a git worktree of its own. A message sent while the agent is idle
+//! starts a turn of one conversation, and lines typed while it works reach it
+//! as notes. The workers' reports reach it as notes too, and start a turn
+//! when it is idle. Ctrl-C stops only the main agent, and the next message
+//! reopens its conversation. Every session is saved and can be resumed.
 //!
-//! Besides the shell, the agents get the tools of the MCP servers set up
-//! (`mcp`), the skills in the skill folders (`skills`), and semantic search
-//! over indexes of codebases and docs that Arko keeps current (`index`, also
-//! run from the command line as `arko index ...`).
+//! Besides the shell, the agents get the tools of the MCP servers set up, the
+//! skills in the skill folders, and semantic search over indexes of code and
+//! docs that Arko keeps current (also run from the command line as
+//! `arko index`).
+//!
+//! An app opens a session with [`Engine::open`] and runs it with
+//! [`Engine::run`], or runs several side by side in one process with
+//! [`spawn`]. The session's [`Seam`] holds the feed of items the app shows
+//! and the channels it sends the user's [`Input`] and its [`Request`]s on.
+//! [`accounts`] adds and removes API keys and logins without a session, and
+//! [`sessions`] lists, renames, branches and deletes saved sessions.
+//!
+//! The `tui` feature builds the command line and the terminal's front ends,
+//! and `remote` the web page's server. Both are on by default. An app builds
+//! Arko with `default-features = false` and adds `remote` for the web page.
 
 mod agents;
 mod chat;

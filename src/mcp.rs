@@ -270,8 +270,8 @@ pub(crate) fn environment(name: &str) -> Option<String> {
     std::env::var(name).ok()
 }
 
-/// A project's servers that wait for the user's answer before they start:
-/// what a front end shows when it asks.
+/// A project's servers that wait for the user's answer before they start,
+/// as a front end shows them when it asks.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct McpApproval {
     /// The project's `.mcp.json`.

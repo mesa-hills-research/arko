@@ -39,7 +39,7 @@ use crate::providers::OpenAiAuth;
 use crate::remote::{self, Level};
 use crate::ui::Output;
 
-/// The smallest handover size `/handover-at` takes: a fresh conversation
+/// The smallest handover size `/handover-at` takes. A fresh conversation
 /// (the instructions, the tools, the task and the report) starts at about
 /// a tenth of it, so a smaller size would hand over again and again.
 pub const MIN_TOKENS: usize = 20_000;
