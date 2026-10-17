@@ -210,7 +210,13 @@ struct SavedRuns {
 
 /// What `session` saved of its agents' runs, read without opening it.
 fn saved_runs(session: &Session) -> Result<SavedRuns, String> {
-    let Some(checkpoint) = session.latest_checkpoint() else {
+    let marker = session.run_dir().join("latest-checkpoint");
+    let checkpoint = match std::fs::read_to_string(&marker) {
+        Ok(name) => Some(session.run_dir().join(name.trim())),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(format!("could not read {} ({error})", marker.display())),
+    };
+    let Some(checkpoint) = checkpoint else {
         // A branch not opened yet holds its conversation in its seed.
         let unreadable =
             |error: String| format!("could not read the branch's conversation ({error})");
@@ -285,7 +291,8 @@ pub fn conversation(
 ) -> Result<SavedConversation, String> {
     let session = Session::open(root, id)?;
     let settings = session.load_settings()?;
-    let saved = saved_runs(&session)?;
+    let unreadable = |error| format!("The saved conversation can't be read ({error}).");
+    let saved = saved_runs(&session).map_err(&unreadable)?;
     let images = crate::images::Images::default();
     let mut found = SavedConversation {
         number: 1,
@@ -338,13 +345,12 @@ pub fn conversation(
     found.number = index + 1;
     found.title = record.title.clone();
     for run in &record.runs {
-        if let Some(result) = saved
+        let result = saved
             .results
             .iter()
             .find(|result| result.agent_run_id == *run)
-        {
-            add(&mut found, &result.task);
-        }
+            .ok_or_else(|| unreadable(format!("run {run} is missing")))?;
+        add(&mut found, &result.task);
     }
     Ok(found)
 }
@@ -670,6 +676,32 @@ mod tests {
             handover_at: None,
         };
         Settings::for_test(workspace, &luna)
+    }
+
+    #[test]
+    fn export_refuses_missing_saved_runs_and_checkpoints() {
+        let temp = tempfile::tempdir().unwrap();
+        let session = Session::create(temp.path()).unwrap();
+        session.save_settings(&settings(temp.path())).unwrap();
+        let conversations = Conversations {
+            list: vec![crate::conversations::Record {
+                runs: vec![uuid::Uuid::new_v4()],
+                title: "Saved words".into(),
+                unread: Vec::new(),
+            }],
+            current: Some(0),
+        };
+        conversations.save(&session.dir).unwrap();
+        let check = || {
+            for number in [None, Some(1)] {
+                let error = conversation(temp.path(), &session.id, number).err().unwrap();
+                assert!(error.starts_with("The saved conversation can't be read"), "{error}");
+            }
+        };
+        check();
+        std::fs::create_dir_all(session.run_dir()).unwrap();
+        std::fs::write(session.run_dir().join("latest-checkpoint"), "gone.json").unwrap();
+        check();
     }
 
     /// The list names each session (as the user renamed it, else as its
