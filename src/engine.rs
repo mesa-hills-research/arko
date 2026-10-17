@@ -396,7 +396,7 @@ impl Engine {
         // A session open elsewhere is left alone.
         let mut lock = resumed
             .as_ref()
-            .map(|session| session.lock(options.app))
+            .map(|session| session.lock(options.app, options.app_name))
             .transpose()
             .map_err(OpenError::from_lock)?;
         if let Some(session) = &resumed {
@@ -547,7 +547,11 @@ impl Engine {
             None => {
                 let session = Session::create(&root)
                     .map_err(|error| format!("could not create a session: {error}"))?;
-                lock = Some(session.lock(options.app).map_err(OpenError::from_lock)?);
+                lock = Some(
+                    session
+                        .lock(options.app, options.app_name)
+                        .map_err(OpenError::from_lock)?,
+                );
                 crate::context::name_session(&session.id);
                 session
             }
@@ -765,6 +769,7 @@ impl Engine {
         let mut harness = Harness {
             ask_about_workers: false,
             input_source: options.source,
+            app_name: options.app_name,
             details,
             settings,
             providers: provider_setup.clone(),
@@ -1263,7 +1268,7 @@ mod tests {
     async fn two_sessions_run_turns_at_once() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("arko");
-        let log = temp.path().join("logs").join("arko-studio.log");
+        let log = temp.path().join("logs").join("arko.log");
         let logging = crate::logging::ProcessLog::install(&log);
         let server = ModelServer::start(Arc::new(|_, body: String| {
             Box::pin(async move {
@@ -1335,10 +1340,12 @@ mod tests {
             Err(OpenError::Locked {
                 holder: Some(holder),
             }) => {
+                // (Opened with the default identity.)
                 assert_eq!(
                     (holder.app.as_str(), holder.pid),
-                    ("arko-studio", std::process::id())
+                    ("app", std::process::id())
                 );
+                assert!(holder.describe().starts_with("an app (process "));
             }
             Err(error) => panic!("{error}"),
             Ok(_) => panic!("opened twice"),
@@ -2659,7 +2666,7 @@ mod tests {
         session
             .save_settings(&Settings::for_test(&workspace, &luna))
             .unwrap();
-        let _held = session.lock("arko").unwrap();
+        let _held = session.lock("arko", "Arko in a terminal").unwrap();
         let options = Options {
             root: Some(root.clone()),
             session: SessionChoice::Resume(session.id.clone()),

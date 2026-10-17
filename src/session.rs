@@ -433,18 +433,24 @@ pub fn is_session_id(id: &str) -> bool {
 /// Who has a session open: the app, its process and machine, and since when.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Holder {
-    /// `arko` (the command line) or `arko-studio`.
+    /// The app's identity: `arko` (the command line), or the one an app
+    /// gave ([`Options::app`](crate::Options::app)).
     pub app: String,
+    /// The app's name, as people read it ("Arko in a terminal"). `None` in
+    /// holder files written before Arko kept it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     pub pid: u32,
     pub host: String,
     pub since: DateTime<Utc>,
 }
 
 impl Holder {
-    /// This process, as `app`, from now.
-    fn now(app: &str) -> Holder {
+    /// This process, as the app `app` named `name`, from now.
+    fn now(app: &str, name: &str) -> Holder {
         Holder {
             app: app.to_string(),
+            name: Some(name.to_string()),
             pid: std::process::id(),
             host: host_name(),
             since: Utc::now(),
@@ -456,6 +462,7 @@ impl Holder {
     fn unknown() -> Holder {
         Holder {
             app: String::new(),
+            name: None,
             pid: 0,
             host: String::new(),
             since: Utc::now(),
@@ -465,11 +472,13 @@ impl Holder {
     /// As the user reads it: "Arko in a terminal (process 41233), since
     /// 14:02".
     pub fn describe(&self) -> String {
-        let app = match self.app.as_str() {
-            "" => return "another Arko".to_string(),
-            "arko" => "Arko in a terminal".to_string(),
-            "arko-studio" => "Arko Studio".to_string(),
-            other => other.to_string(),
+        // (Holder files written before the name was kept have the app's
+        // identity alone.)
+        let app = match (self.name.as_deref(), self.app.as_str()) {
+            (Some(name), _) if !name.trim().is_empty() => name.to_string(),
+            (_, "") => return "another Arko".to_string(),
+            (_, "arko") => "Arko in a terminal".to_string(),
+            (_, other) => other.to_string(),
         };
         let host = if self.host.is_empty() || self.host == host_name() {
             String::new()
@@ -533,11 +542,11 @@ impl Drop for SessionLock {
 }
 
 impl Session {
-    /// Takes the session for `app` (`arko` or `arko-studio`) in this
-    /// process, until the lock is dropped, and says who has it. A session
-    /// open in another Arko, also in this process, can't be taken: who has
-    /// it, if they said.
-    pub fn lock(&self, app: &str) -> Result<SessionLock, LockError> {
+    /// Takes the session for the app `app` (its identity: `arko` for the
+    /// command line) named `name` (as people read it) in this process, until
+    /// the lock is dropped, and says who has it. A session open in another
+    /// Arko, also in this process, can't be taken: who has it, if they said.
+    pub fn lock(&self, app: &str, name: &str) -> Result<SessionLock, LockError> {
         let path = self.dir.join(LOCK_FILE);
         let opened = std::fs::OpenOptions::new()
             .create(true)
@@ -586,7 +595,7 @@ impl Session {
             }
         }
         let holder = self.dir.join(HOLDER_FILE);
-        let text = serde_json::to_string_pretty(&Holder::now(app))
+        let text = serde_json::to_string_pretty(&Holder::now(app, name))
             .map_err(|error| LockError::Io(std::io::Error::other(error)))?;
         // (Who has it, whole: never half written for one who reads it.)
         let holder = match write_whole(&holder, text.as_bytes()) {
@@ -745,7 +754,7 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(15));
             drop(look);
         });
-        let lock = session.lock("arko").unwrap();
+        let lock = session.lock("arko", "Arko in a terminal").unwrap();
         looking.join().unwrap();
         assert_eq!(holder(&session.dir).unwrap().app, "arko");
         drop(lock);
@@ -761,7 +770,7 @@ mod tests {
         let session = test_session(temp.path());
         let mode = |mode| std::fs::Permissions::from_mode(mode);
         std::fs::set_permissions(&session.dir, mode(0o555)).unwrap();
-        let locked = session.lock("arko");
+        let locked = session.lock("arko", "Arko in a terminal");
         std::fs::set_permissions(&session.dir, mode(0o755)).unwrap();
         let lock = locked.unwrap();
         drop(lock);
@@ -776,10 +785,10 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let session = Session::create(root.path()).unwrap();
         assert_eq!(holder(&session.dir), None);
-        let lock = session.lock("arko").unwrap();
+        let lock = session.lock("arko", "Arko in a terminal").unwrap();
         let held = holder(&session.dir).unwrap();
         assert_eq!((held.app.as_str(), held.pid), ("arko", std::process::id()));
-        match session.lock("arko-studio") {
+        match session.lock("notes", "Notes") {
             Err(LockError::Held(Some(by))) => assert_eq!(by, held),
             other => panic!("{other:?}"),
         }
@@ -791,9 +800,10 @@ mod tests {
         assert_eq!(holder(&session.dir), None);
         assert!(!session.dir.join(HOLDER_FILE).exists());
 
-        // A holder file without its lock.
+        // A holder file without its lock, as an app named itself.
         let stale = Holder {
-            app: "arko-studio".into(),
+            app: "notes".into(),
+            name: Some("Notes".into()),
             pid: 1,
             host: "elsewhere".into(),
             since: Utc::now(),
@@ -801,17 +811,24 @@ mod tests {
         assert_eq!(
             stale.describe(),
             format!(
-                "Arko Studio (process 1 on elsewhere), since {}",
+                "Notes (process 1 on elsewhere), since {}",
                 Local::now().format("%H:%M")
             )
         );
+        // One written before names were kept: the identity.
+        let older: Holder = serde_json::from_str(
+            r#"{"app": "notes", "pid": 1, "host": "", "since": "2026-10-16T12:00:00Z"}"#,
+        )
+        .unwrap();
+        assert_eq!(older.name, None);
+        assert!(older.describe().starts_with("notes (process 1), since "));
         std::fs::write(
             session.dir.join(HOLDER_FILE),
             serde_json::to_string(&stale).unwrap(),
         )
         .unwrap();
         assert_eq!(holder(&session.dir), None);
-        let _lock = session.lock("arko-studio").unwrap();
+        let _lock = session.lock("notes", "Notes").unwrap();
         assert_eq!(holder(&session.dir).unwrap().pid, std::process::id());
         assert_eq!(Holder::unknown().describe(), "another Arko");
     }

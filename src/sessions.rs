@@ -195,7 +195,7 @@ pub fn delete(root: &Path, id: &str) -> Result<Deleted, DeleteError> {
         },
         session::LockError::Io(error) => DeleteError::Io(error.to_string()),
     })?;
-    let lock = session.lock("arko-studio").map_err(locked)?;
+    let lock = session.lock("arko", "Arko, deleting it").map_err(locked)?;
     let mut kept = Vec::new();
     for worktree in worktrees(&session.dir) {
         if !(is_clean(&worktree) && remove_worktree(&worktree)) {
@@ -395,7 +395,7 @@ mod tests {
         assert_eq!(listed[1].workspace.as_deref(), Some(workspace.as_path()));
         assert!(listed.iter().all(|entry| entry.holder.is_none()));
 
-        let lock = first.lock("arko").unwrap();
+        let lock = first.lock("arko", "Arko in a terminal").unwrap();
         rename(&root, &first.id, "  Pears  ").unwrap();
         let listed = list(&root);
         let entry = listed.iter().find(|entry| entry.id == first.id).unwrap();
@@ -540,7 +540,7 @@ mod tests {
         std::fs::create_dir_all(session.jobs_dir().join("job-1")).unwrap();
         std::fs::create_dir_all(session.run_dir()).unwrap();
         std::fs::File::create(session.dir.join(session::TERMINAL_LOCK)).unwrap();
-        let lock = session.lock("arko-studio").unwrap();
+        let lock = session.lock("arko", "Arko, deleting it").unwrap();
         let terminal = session.lock_terminal().unwrap();
         let locks = [
             session.dir.join(session::LOCK_FILE),

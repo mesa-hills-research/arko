@@ -347,6 +347,8 @@ pub(crate) struct Harness {
     pub(crate) ask_about_workers: bool,
     /// Where the user's lines come from: the terminal, or an app.
     pub(crate) input_source: Source,
+    /// The app the session is open in, as people read its name.
+    pub(crate) app_name: &'static str,
     /// The user was told that the workers' news waits for their message.
     pub(crate) news_hint_shown: bool,
     /// What the remote page shows: the workflows' events, and what Arko
@@ -1162,6 +1164,7 @@ impl Harness {
             model: self.settings.describe(&self.settings.main),
             workspace: self.settings.workspace.display().to_string(),
             session: self.session.id.clone(),
+            app: self.app_name.to_string(),
         };
         // A page served before is served on its port again, if it is free.
         let earlier = self.remote_bind.map(|(_, port)| port);
@@ -4241,6 +4244,7 @@ pub(crate) mod tests {
         let mut harness = Harness {
             ask_about_workers: false,
             input_source: Source::Terminal,
+            app_name: "Arko in a terminal",
             details,
             settings,
             providers: providers::Setup::new(None),

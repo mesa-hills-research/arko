@@ -102,9 +102,13 @@ pub struct Options {
     pub interactive: bool,
     /// A new session's title. `None`: none until it has one.
     pub title: Option<String>,
-    /// Who opens the session, as others trying to open it are told:
-    /// `arko` (the command line) or `arko-studio`.
+    /// Who opens the session: the app's identity, kept in the session while
+    /// it is open (`arko` for the command line).
     pub app: &'static str,
+    /// The app's name, as people read it: others trying to open the session
+    /// are told it has it open there, and the web page tags what the user
+    /// typed in it ("typed in …").
+    pub app_name: &'static str,
     /// Where the user's input comes from, as the feed tags it: the
     /// terminal, or an app.
     pub source: remote::Source,
@@ -176,7 +180,8 @@ impl Default for Options {
             one_shot: false,
             interactive: true,
             title: None,
-            app: "arko-studio",
+            app: "app",
+            app_name: "an app",
             source: remote::Source::App,
             mode: crate::session::Mode::Agent,
             chat_instructions: None,

@@ -15,6 +15,8 @@ models, and on your Claude plan through an installed Claude Code.
 - MCP servers in Claude Code's `.mcp.json` format, and skills from `.agents/skills` or
   `.claude/skills`
 - Themes for the full-screen view, and your own in GPUI Kit's format
+- A library too: other front ends open and drive sessions with `arko::Engine`, or several side by
+  side in one process with `arko::spawn`
 
 ## Install
 

@@ -56,6 +56,9 @@ pub struct Info {
     pub model: String,
     pub workspace: String,
     pub session: String,
+    /// The app in this process the user also types in, as the page names
+    /// it ("typed in …").
+    pub app: String,
 }
 
 /// The port served on when none is given; another free one when it is

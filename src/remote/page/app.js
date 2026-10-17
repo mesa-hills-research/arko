@@ -286,7 +286,10 @@
         // Out of its worker's own view, a message to a worker says to which.
         if (item.agent !== C.MAIN && !worker) tags.push('to ' + item.agent);
         if (item.source === 'terminal') tags.push('typed in the terminal');
-        if (item.source === 'app') tags.push('typed in Arko Studio');
+        if (item.source === 'app') {
+          const app = (status && status.info && status.info.app) || 'an app';
+          tags.push('typed in ' + app);
+        }
         if (tags.length) box.append(element('div', 'tag', tags.join(' · ')));
         break;
       }
