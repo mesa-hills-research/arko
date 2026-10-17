@@ -99,6 +99,10 @@ pub struct Options {
     pub mcp_config_required: bool,
     /// Serve the web page from the start, there.
     pub remote: Option<remote::Bind>,
+    /// When `remote` names a port that is in use, serve on any free port.
+    /// The page status and its links report the port actually bound. Other
+    /// bind errors still fail. Explicit sharing requests keep exact ports.
+    pub remote_port_fallback: bool,
     /// The session runs one message and ends (`-p`). The main agent ends its
     /// turns with `complete_task`, commands stay in the foreground, and the
     /// next session's default models stay as they are.
@@ -191,6 +195,7 @@ impl Default for Options {
             mcp_config: Vec::new(),
             mcp_config_required: false,
             remote: None,
+            remote_port_fallback: false,
             one_shot: false,
             interactive: true,
             title: None,

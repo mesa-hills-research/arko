@@ -1183,10 +1183,26 @@ impl Harness {
     }
 
     /// Serves the web page where `bind` says, in place of the one running,
-    /// and prints its links; what goes wrong is printed too.
+    /// and prints its links. What goes wrong is printed too.
     pub(crate) async fn start_remote(&mut self, bind: remote::Bind) {
-        if let Err(error) = self.serve_page(bind).await {
-            self.output.line(&self.output.error(&ui::sentence(&error)));
+        self.start_remote_with_fallback(bind, false).await;
+    }
+
+    pub(crate) async fn start_remote_with_fallback(&mut self, bind: remote::Bind, fallback: bool) {
+        match self.serve_page_with_fallback(bind, fallback).await {
+            Ok(page)
+                if fallback
+                    && bind
+                        .port
+                        .is_some_and(|port| port != 0 && port != page.addr.port()) =>
+            {
+                self.feed.notice(Level::Info, &format!(
+                    "The preferred web page port {} is in use. The page is served on port {} instead.",
+                    bind.port.unwrap(), page.addr.port()
+                ));
+            }
+            Ok(_) => {}
+            Err(error) => self.output.line(&self.output.error(&ui::sentence(&error))),
         }
     }
 
@@ -1198,6 +1214,14 @@ impl Harness {
     /// it was when the new one can't (its clients log in again with the key
     /// they hold).
     pub(crate) async fn serve_page(&mut self, bind: remote::Bind) -> Result<remote::Page, String> {
+        self.serve_page_with_fallback(bind, false).await
+    }
+
+    async fn serve_page_with_fallback(
+        &mut self,
+        bind: remote::Bind,
+        fallback: bool,
+    ) -> Result<remote::Page, String> {
         let key = self.remote_key(false)?;
         // A page served before is served on its port again, if it is free.
         let earlier = self.remote_bind.map(|(_, port)| port);
@@ -1207,7 +1231,12 @@ impl Harness {
             _ => earlier == Some(addr.port()),
         });
         let start = |harness: &Self, bind: remote::Bind, earlier: Option<u16>| {
-            remote::start(
+            let start = if fallback {
+                remote::start_preferred
+            } else {
+                remote::start
+            };
+            start(
                 bind,
                 earlier,
                 key.clone(),

@@ -370,6 +370,7 @@ pub struct Engine {
     inputs: Inputs,
     managers: Managers,
     remote_bind: Option<remote::Bind>,
+    remote_port_fallback: bool,
     new: bool,
     boxed_banner: bool,
     quit_popup: Option<mpsc::UnboundedSender<crate::ui::QuitAsk>>,
@@ -930,6 +931,7 @@ impl Engine {
             inputs,
             managers,
             remote_bind,
+            remote_port_fallback: options.remote_port_fallback,
             new,
             boxed_banner: false,
             quit_popup: Some(quit_popup),
@@ -961,7 +963,9 @@ impl Engine {
         let harness = &mut self.harness;
         harness.banner(self.new, self.boxed_banner);
         if let Some(bind) = self.remote_bind {
-            harness.start_remote(bind).await;
+            harness
+                .start_remote_with_fallback(bind, self.remote_port_fallback)
+                .await;
         }
         if !self.new {
             harness.restart_unfinished(&mut self.inputs).await;
@@ -1050,6 +1054,76 @@ mod tests {
     /// The tests that open a session without a context of its own, one at a
     /// time (a process has one such session).
     static ALONE_TESTS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    #[tokio::test]
+    async fn concurrent_sessions_keep_their_preferred_port_or_bind_a_free_one() {
+        let temp = tempfile::tempdir().unwrap();
+        let (server, _bodies) = counting_server().await;
+        let reserved = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = reserved.local_addr().unwrap().port();
+        let options = |name: &str| Options {
+            root: Some(temp.path().join(name)),
+            mode: crate::session::Mode::Chat,
+            model: Some("luna".into()),
+            openai_auth: Some(OpenAiAuth::ApiKey),
+            cache_1h: Some(false),
+            client: Some(GivenClient(Arc::new(server.client()))),
+            remote: Some(remote::Bind {
+                ip: std::net::Ipv4Addr::LOCALHOST.into(),
+                port: Some(port),
+            }),
+            remote_port_fallback: true,
+            ..Options::default()
+        };
+        // Both engines have their options before either can bind.
+        let first = options("one");
+        let second = options("two");
+        drop(reserved);
+        let first = spawn(first, Arc::new(NoPrompter));
+        let second = spawn(second, Arc::new(NoPrompter));
+        let mut one = first.opened.await.unwrap().unwrap();
+        let mut two = second.opened.await.unwrap().unwrap();
+        let page = |seam: &mut Seam| {
+            let mut status = seam.status.clone();
+            async move {
+                tokio::time::timeout(Duration::from_secs(10), async {
+                    loop {
+                        if let Some(page) = status.borrow().page.clone() {
+                            break page;
+                        }
+                        status.changed().await.unwrap();
+                    }
+                })
+                .await
+                .unwrap()
+            }
+        };
+        let (one_page, two_page) = tokio::join!(page(&mut one), page(&mut two));
+        assert_ne!(one_page.addr.port(), two_page.addr.port());
+        assert!(one_page.addr.port() == port || two_page.addr.port() == port);
+        for addr in [one_page.addr, two_page.addr] {
+            assert!(std::net::TcpStream::connect(addr).is_ok());
+        }
+        let fallback = if one_page.addr.port() != port {
+            &one
+        } else {
+            &two
+        };
+        assert!(fallback.feed.subscribe().0.items.iter().any(|item| {
+            item.text.contains("preferred web page port") && item.text.contains("instead")
+        }));
+        // Explicit requests still require their exact port, even in a
+        // session whose startup page was allowed to fall back.
+        let taken = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let bind = Some(taken.local_addr().unwrap().to_string());
+        assert!(
+            ask_for(&one, |reply| Request::ShareWebPage { bind, reply })
+                .await
+                .is_err()
+        );
+        quit(one, first.ended).await;
+        quit(two, second.ended).await;
+    }
 
     /// An app serves the session's web page, stops it and gives it a new
     /// key with requests that answer: served to the network when it gives

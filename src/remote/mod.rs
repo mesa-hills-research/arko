@@ -471,6 +471,32 @@ pub fn start(
     actions: mpsc::UnboundedSender<Action>,
     meter: Arc<dyn Meter>,
 ) -> Result<Server, String> {
+    start_with((bind, false), earlier, key, info, feed, actions, meter)
+}
+
+/// Binds the preferred port, falling back to any free port only when it
+/// is in use. The returned server owns the listener throughout.
+pub(crate) fn start_preferred(
+    bind: Bind,
+    earlier: Option<u16>,
+    key: String,
+    info: Info,
+    feed: Feed,
+    actions: mpsc::UnboundedSender<Action>,
+    meter: Arc<dyn Meter>,
+) -> Result<Server, String> {
+    start_with((bind, true), earlier, key, info, feed, actions, meter)
+}
+
+fn start_with(
+    (bind, fallback): (Bind, bool),
+    earlier: Option<u16>,
+    key: String,
+    info: Info,
+    feed: Feed,
+    actions: mpsc::UnboundedSender<Action>,
+    meter: Arc<dyn Meter>,
+) -> Result<Server, String> {
     let start = |port: u16| {
         Server::start(
             SocketAddr::new(bind.ip, port),
@@ -495,7 +521,13 @@ pub fn start(
             Some(port) => start(port),
             None => any_port(),
         }),
-        (Some(port), _) => start(port),
+        (Some(port), _) => start(port).or_else(|error| {
+            if fallback && error.kind() == std::io::ErrorKind::AddrInUse {
+                start(0)
+            } else {
+                Err(error)
+            }
+        }),
         (None, None) => any_port(),
     };
     result.map_err(|error| {

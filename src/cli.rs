@@ -319,6 +319,7 @@ impl Args {
             mcp_config: self.mcp_config.clone(),
             mcp_config_required: true,
             remote: self.remote.as_deref().map(remote::parse_bind).transpose()?,
+            remote_port_fallback: false,
             one_shot,
             // At the full screen or the line prompt.
             interactive: !one_shot && terminal,
