@@ -3071,6 +3071,12 @@ mod tests {
             "{branched}"
         );
         assert!(!branched.contains("Something else.") && !branched.contains("First answer."));
+        assert_eq!(
+            branched
+                .matches("SUMMARY: the user greeted Arko twice.")
+                .count(),
+            1
+        );
         let first = user_item(&seam, "Branched.");
         assert_eq!(first.message_index, Some(0));
         assert_eq!(edit(&seam, first.id, "Branched again.").await, Ok(()));
