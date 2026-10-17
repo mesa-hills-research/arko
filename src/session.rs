@@ -797,6 +797,14 @@ mod tests {
             std::process::id()
         )));
         drop(lock);
+        // (A process another test forks may hold the lock's file for a
+        // moment, until it runs its program.)
+        let released = std::time::Instant::now();
+        while holder(&session.dir).is_some()
+            && released.elapsed() < std::time::Duration::from_secs(2)
+        {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
         assert_eq!(holder(&session.dir), None);
         assert!(!session.dir.join(HOLDER_FILE).exists());
 
