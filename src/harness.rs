@@ -1788,18 +1788,8 @@ impl Harness {
             if !folder.is_dir() {
                 return Err(format!("{} is not a folder.", folder.display()));
             }
-            // Claude Code finds a conversation only from the folder it
-            // started in.
-            let moves = folder != settings.workspace;
-            let claude_code = providers::resolve_model(&settings.main.model)
-                .is_ok_and(|model| model.provider == arko_ai::Provider::ClaudeCode);
-            if moves && self.conversation_started() && claude_code {
-                return Err(format!(
-                    "Claude Code keeps a conversation in the folder it started in ({}): start a new session in {} instead.",
-                    settings.workspace.display(),
-                    folder.display()
-                ));
-            }
+            // (A Claude Code conversation moves too: Claude Code resumes it
+            // in the folder it started in, with this one added.)
             settings.workspace = folder;
             if settings.max_workers == 0 {
                 settings.max_workers = crate::agents::NO_LIMIT;

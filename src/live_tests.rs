@@ -1598,6 +1598,127 @@ async fn resuming_a_session_restarts_its_workers_in_claude_code() {
     managers.shutdown().await;
 }
 
+/// A chat in Claude Code becomes an agent's session working in a folder:
+/// its conversation goes on in the same Claude Code session, which resumes
+/// in the folder it started in with the new one added, and Arko's tools work
+/// in the new folder.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_claude_code_chat_moves_to_a_folder_as_it_becomes_an_agent() {
+    let temp = tempfile::tempdir().unwrap();
+    let fake = temp.path().join("fake");
+    let project = temp.path().join("project");
+    std::fs::create_dir_all(&fake).unwrap();
+    std::fs::create_dir_all(&project).unwrap();
+    let script = serde_json::json!([
+        [{"text": "Hello."}],
+        [
+            {"tool": "mcp__arko__shell", "input": {"command": "touch made-here.txt && pwd"}},
+            {"text": "Made it."},
+        ],
+    ]);
+    std::fs::write(fake.join("script.json"), script.to_string()).unwrap();
+    let (mut harness, mut inputs, _sender) = harness(temp.path(), LLMClient::new(), true);
+    let cc = ModelSettings {
+        model: "cc:claude-opus-5-5".into(),
+        effort: Effort::High,
+        fast: false,
+        cache_1h: false,
+        handover_at: None,
+    };
+    let setup = fake_claude_code(&fake);
+    // A new chat: in its session's folder, without tools or workers.
+    harness.crew = None;
+    harness.providers = setup.clone();
+    harness.settings.mode = Mode::Chat;
+    harness.settings.workspace = harness.session.dir.clone();
+    harness.settings.max_workers = 0;
+    harness.settings.text_replies = true;
+    harness.settings.main = cc.clone();
+    harness.settings.worker = cc.clone();
+    let configs = |harness: &Harness| {
+        harness
+            .agent_configs(&harness.settings.clone(), &setup)
+            .unwrap()
+    };
+    (harness.main_config, harness.worker_config) = configs(&harness);
+    harness.open(false).unwrap();
+    let end = tokio::time::timeout(
+        Duration::from_secs(30),
+        harness.turn(Prompt::User("Hi.".into()), &mut inputs),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(end, TurnEnd::Answered));
+    assert_eq!(summary(&harness), "Hello.");
+
+    // To Agent, in the project: the session opens again, equipped.
+    harness
+        .switch_mode(Mode::Agent, Some(project.clone()))
+        .unwrap();
+    assert_eq!(harness.settings.workspace, project);
+    harness.reopen = false;
+    harness.settings.max_workers = 0;
+    let shell = Shell::detect(WindowsShell::Cmd);
+    let managers = Managers::open(&harness.session, &shell).unwrap();
+    harness.tools = managers.tools(&shell, harness.handover.runs());
+    harness.background = managers.background.clone();
+    harness.outside = Arc::new(outside::Outside::new(
+        false,
+        managers.list(),
+        project.clone(),
+    ));
+    (harness.main_config, harness.worker_config) = configs(&harness);
+    harness.open(true).unwrap();
+    let end = tokio::time::timeout(
+        Duration::from_secs(30),
+        harness.turn(Prompt::User("Make a file.".into()), &mut inputs),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(end, TurnEnd::Answered));
+    assert_eq!(summary(&harness), "Made it.");
+    assert!(
+        project.join("made-here.txt").is_file(),
+        "Arko's shell works there"
+    );
+
+    // Claude Code resumed its session where it started, with the folder.
+    let (log, _) = fake_log(&fake);
+    let launches: Vec<(Vec<String>, String)> = log
+        .iter()
+        .filter(|entry| entry["event"] == "argv")
+        .map(|entry| {
+            (
+                serde_json::from_value(entry["argv"].clone()).unwrap(),
+                entry["cwd"].as_str().unwrap_or_default().to_string(),
+            )
+        })
+        .collect();
+    assert_eq!(launches.len(), 2, "{launches:?}");
+    let (argv, cwd) = &launches[1];
+    let started = std::fs::canonicalize(&harness.session.dir).unwrap();
+    assert_eq!(std::fs::canonicalize(cwd).unwrap(), started);
+    assert!(
+        argv.iter().any(|arg| arg.starts_with("--resume")),
+        "{argv:?}"
+    );
+    let added = argv
+        .iter()
+        .position(|arg| arg == "--add-dir")
+        .map(|at| argv[at + 1].clone())
+        .or_else(|| {
+            argv.iter()
+                .find_map(|arg| arg.strip_prefix("--add-dir=").map(str::to_string))
+        })
+        .expect("--add-dir");
+    assert_eq!(
+        std::fs::canonicalize(added).unwrap(),
+        std::fs::canonicalize(&project).unwrap()
+    );
+    managers.shutdown().await;
+}
+
 /// What the user sent worker r1 directly, as the feed has it: its items
 /// for r1 that are the user's.
 fn to_r1(feed: &remote::Feed) -> Vec<(String, Option<remote::Source>)> {
