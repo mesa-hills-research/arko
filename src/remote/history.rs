@@ -10,6 +10,7 @@ use arko_ai::{Content, Message, Role};
 
 use super::feed::{Delivery, Item, Kind, Source};
 use super::render;
+use crate::images::Images;
 
 /// The messages read back at most (the feed keeps fewer items anyway).
 const MESSAGES: usize = 600;
@@ -19,7 +20,10 @@ const MESSAGES: usize = 600;
 /// `text_replies` (the agent ends its turns with a reply in plain text), a
 /// response of text alone is a reply, unless the user's answer to a
 /// question follows it (Claude Code ends its turn after `ask_user`).
-pub fn items(messages: &[Message], text_replies: bool) -> Vec<Item> {
+///
+/// The images of the user's messages and of tool results go to `images`,
+/// and their items show them.
+pub fn items(messages: &[Message], text_replies: bool, images: &Images) -> Vec<Item> {
     // The index of the first message read, in the conversation.
     let first = messages.len().saturating_sub(MESSAGES);
     let messages = &messages[first..];
@@ -35,6 +39,8 @@ pub fn items(messages: &[Message], text_replies: bool) -> Vec<Item> {
         match message.role {
             Role::System => {}
             Role::User => {
+                // The user's item of this message, which its images join.
+                let mut mine: Option<usize> = None;
                 for content in &message.content {
                     match content {
                         Content::ToolResult(result) => {
@@ -56,6 +62,11 @@ pub fn items(messages: &[Message], text_replies: bool) -> Vec<Item> {
                             call.status = Some(outcome.status);
                             call.outcome = outcome.text;
                             call.output = outcome.output;
+                            call.images.extend(
+                                result.images.iter().filter_map(|image| {
+                                    images.add_image(&image.image, &image.label)
+                                }),
+                            );
                             let call_id = call.id;
                             if let Some(mut block) = outcome.block {
                                 block.call = Some(call_id);
@@ -69,10 +80,16 @@ pub fn items(messages: &[Message], text_replies: bool) -> Vec<Item> {
                                 if item.delivery == Some(Delivery::Turn) {
                                     item.message_index = Some(first + index);
                                 }
-                                push(&mut items, item);
+                                mine = Some(push(&mut items, item));
                             }
                         }
-                        Content::Image(_) => {}
+                        Content::Image(image) => {
+                            if let Some(at) = mine
+                                && let Some(shown) = images.add_image(image, "image")
+                            {
+                                items[at].images.push(shown);
+                            }
+                        }
                     }
                 }
             }
@@ -234,7 +251,7 @@ mod tests {
             ),
             done,
         ];
-        let items = items(&messages, false);
+        let items = items(&messages, false, &Images::default());
         let shown: Vec<(Kind, &str)> = items.iter().map(|i| (i.kind, i.text.as_str())).collect();
         assert_eq!(
             shown,
@@ -279,7 +296,7 @@ mod tests {
             Message::new_assistant("You're welcome."),
         ];
         let shown = |text_replies| {
-            items(&messages, text_replies)
+            items(&messages, text_replies, &Images::default())
                 .into_iter()
                 .filter(|item| matches!(item.kind, Kind::Text | Kind::Reply))
                 .map(|item| (item.kind, item.text))

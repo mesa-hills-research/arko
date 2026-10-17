@@ -32,6 +32,7 @@ mod glyphs;
 mod handover;
 mod harness;
 pub mod history;
+pub mod images;
 mod index;
 mod inputs;
 mod keys;

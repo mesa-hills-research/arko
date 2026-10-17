@@ -508,6 +508,7 @@ impl Harness {
             self.feed.restore(remote::history(
                 &latest.task.conversation.messages,
                 latest.task.agent_config.tool_config.ends_task_with_text(),
+                &self.images,
             ));
         }
         let next = match &self.conversation {

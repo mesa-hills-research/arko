@@ -98,6 +98,8 @@ pub struct Seam {
     pub session: SessionInfo,
     /// What happens in the session, as items, for the front end to show.
     pub feed: remote::Feed,
+    /// The images the items show (`Item::images`), by ID.
+    pub images: crate::images::Images,
     /// The session's figures (cost, context, settings, workers), read on
     /// demand.
     pub meter: Arc<dyn remote::Meter>,
@@ -755,6 +757,9 @@ impl Engine {
             edited: None,
             cut_back: None,
             refresh_turn: false,
+            images: Default::default(),
+            pending_images: Vec::new(),
+            pending_refs: Vec::new(),
             crew,
             asker,
             one_shot,
@@ -809,6 +814,7 @@ impl Engine {
                 new,
             },
             feed: harness.feed.clone(),
+            images: harness.images.clone(),
             meter: harness.gauges.clone(),
             status: harness.gauges.watch(),
             details: harness.details.clone(),
@@ -1194,8 +1200,7 @@ mod tests {
     }
 
     /// An app's messages are tagged as its own, the turn says when it
-    /// started, the agent's question is answered with `Input::Answer`, and a
-    /// message with images is refused for now.
+    /// started, and the agent's question is answered with `Input::Answer`.
     #[tokio::test]
     async fn an_app_sends_messages_and_answers() {
         use arko_agents::builtins::ASK_USER_TOOL_NAME;
@@ -1234,17 +1239,6 @@ mod tests {
             .await
             .unwrap()
             .unwrap()
-            .unwrap();
-        let image = crate::ui::Attachment {
-            bytes: Arc::from(&b"\x89PNG"[..]),
-            mime: "image/png".into(),
-            name: None,
-        };
-        seam.input
-            .send(Input::Message(crate::ui::Message {
-                text: "Look at this.".into(),
-                images: vec![image],
-            }))
             .unwrap();
         seam.input
             .send(Input::Message(crate::ui::Message {
@@ -1292,13 +1286,6 @@ mod tests {
             .find(|item| item.text == "Two spaces.")
             .unwrap();
         assert_eq!(answer.source, Some(Source::App));
-        assert!(
-            items
-                .iter()
-                .any(|item| item.text.contains("can't send images yet")),
-            "{items:?}"
-        );
-        assert!(!items.iter().any(|item| item.text == "Look at this."));
         tokio::time::timeout(wait, async {
             while seam.feed.activity().working {
                 tokio::time::sleep(Duration::from_millis(20)).await;
@@ -1822,6 +1809,111 @@ mod tests {
                 "Acknowledged"
             ]
         );
+        quit(seam, ended).await;
+    }
+
+    /// The smallest PNG: one pixel.
+    const PIXEL: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+
+    fn pixel() -> Vec<u8> {
+        use base64::Engine as _;
+        base64::engine::general_purpose::STANDARD
+            .decode(PIXEL)
+            .unwrap()
+    }
+
+    /// The user's images go to the model with their message, and the
+    /// transcript shows them; so does an image a tool returns, on its
+    /// call. Both are kept in the session's images, and come back with the
+    /// conversation when the session opens again.
+    #[tokio::test]
+    async fn images_go_with_messages_and_come_back_from_tools() {
+        let temp = tempfile::tempdir().unwrap();
+        let bodies: Arc<Mutex<Vec<String>>> = Arc::default();
+        let server = ModelServer::start(Arc::new({
+            let bodies = bodies.clone();
+            move |_, body: String| {
+                let count = {
+                    let mut bodies = bodies.lock().unwrap();
+                    bodies.push(body.clone());
+                    bodies.len()
+                };
+                Box::pin(async move {
+                    if body.contains("Read it.") && count == 2 {
+                        tool_call(
+                            "r",
+                            arko_agents::builtins::READ_FILE_TOOL_NAME,
+                            serde_json::json!({"path": "pixel.png"}),
+                        )
+                    } else {
+                        reply("a", &format!("Reply {count}."))
+                    }
+                })
+            }
+        }))
+        .await;
+        let (root, project) = (temp.path().join("arko"), temp.path().join("project"));
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(project.join("pixel.png"), pixel()).unwrap();
+        let (seam, ended) = open_app(&root, &project, &server, SessionChoice::New).await;
+        let attachment = crate::ui::Attachment {
+            bytes: pixel().into(),
+            mime: "image/png".into(),
+            name: Some("dot.png".into()),
+        };
+        seam.input
+            .send(Input::Message(crate::ui::Message {
+                text: "Look at this.".into(),
+                images: vec![attachment],
+            }))
+            .unwrap();
+        let first = answered(&seam, &bodies, 1).await;
+        assert!(first.contains(PIXEL), "the image goes with the message");
+        let look = user_item(&seam, "Look at this.");
+        assert_eq!(look.images.len(), 1);
+        assert_eq!(look.images[0].label, "dot.png");
+        let stored = seam.images.get(look.images[0].id).unwrap();
+        assert_eq!(&*stored.bytes, &pixel()[..]);
+        // A tool's image shows on its call.
+        seam.input
+            .send(Input::Message(app_message("Read it.")))
+            .unwrap();
+        answered(&seam, &bodies, 3).await;
+        let items = seam.feed.subscribe().0.items;
+        let call = items
+            .iter()
+            .find(|item| item.tool.as_deref() == Some(arko_agents::builtins::READ_FILE_TOOL_NAME))
+            .unwrap();
+        assert_eq!(call.images.len(), 1, "{call:?}");
+        assert_eq!(
+            &*seam.images.get(call.images[0].id).unwrap().bytes,
+            &pixel()[..]
+        );
+        quit(seam, ended).await;
+
+        // Opened again, the conversation's images are there.
+        let id = std::fs::read_dir(root.join("sessions"))
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .into_owned();
+        let (seam, ended) = open_app(&root, &project, &server, SessionChoice::Resume(id)).await;
+        resumed(&seam).await;
+        let look = user_item(&seam, "Look at this.");
+        assert_eq!(look.images.len(), 1);
+        assert_eq!(
+            &*seam.images.get(look.images[0].id).unwrap().bytes,
+            &pixel()[..]
+        );
+        let items = seam.feed.subscribe().0.items;
+        let call = items
+            .iter()
+            .find(|item| item.tool.as_deref() == Some(arko_agents::builtins::READ_FILE_TOOL_NAME))
+            .unwrap();
+        assert_eq!(call.images.len(), 1);
         quit(seam, ended).await;
     }
 

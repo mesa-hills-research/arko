@@ -315,6 +315,12 @@ pub(crate) struct Harness {
     /// The prompt cache is kept warm with a message (`REFRESH_MESSAGE`):
     /// the provider takes no refresh out of band.
     pub(crate) refresh_turn: bool,
+    /// The images the transcript shows.
+    pub(crate) images: crate::images::Images,
+    /// The images the user's next message (or note) sends, and as the
+    /// transcript shows them.
+    pub(crate) pending_images: Vec<arko_ai::Image>,
+    pub(crate) pending_refs: Vec<crate::images::ImageRef>,
     /// Native workers. None when disabled or when resuming a legacy session.
     pub(crate) crew: Option<Arc<Crew>>,
     /// Puts the main agent's questions to the user.
@@ -503,6 +509,11 @@ impl Harness {
         }
         // After the crew's hook: a call it refuses doesn't act.
         builder = builder.hook(HookPoint::PreToolExecution, self.outside.hook());
+        // The images the tools return, for the transcript.
+        builder = builder.tool_image_sink(Arc::new(crate::images::ToolImages {
+            feed: self.feed.clone(),
+            images: self.images.clone(),
+        }));
         if let Some(checkpoint) = checkpoint {
             builder = builder.resume_from(checkpoint);
             // The saved workers' runs are checked as the workflow is built.
@@ -716,6 +727,7 @@ impl Harness {
             self.feed.restore(remote::history(
                 &run.task.conversation.messages,
                 run.task.agent_config.tool_config.ends_task_with_text(),
+                &self.images,
             ));
         }
         if let Conversation::Answered(result) = &self.conversation {
@@ -870,7 +882,9 @@ impl Harness {
                         continue;
                     };
                     self.cut_back = Some(index);
-                    self.feed.user(&text, Source::App, Delivery::Turn);
+                    let shown = std::mem::take(&mut self.pending_refs);
+                    self.feed
+                        .user_with(&text, Source::App, Delivery::Turn, shown);
                     if let TurnEnd::Exit = self.turn(Prompt::User(text), input).await {
                         break;
                     }
@@ -933,10 +947,13 @@ impl Harness {
                 }
             };
             let text = line.trim();
-            if text.is_empty() {
+            if text.is_empty() && self.pending_images.is_empty() {
                 continue;
             }
             if let Some(command) = command(text) {
+                // (Images go with messages only.)
+                self.pending_images.clear();
+                self.pending_refs.clear();
                 if self.refused(command, source) {
                     continue;
                 }
@@ -968,7 +985,8 @@ impl Harness {
                 }
                 continue;
             }
-            self.feed.user(text, source, Delivery::Turn);
+            let shown = std::mem::take(&mut self.pending_refs);
+            self.feed.user_with(text, source, Delivery::Turn, shown);
             if let TurnEnd::Exit = self.turn(Prompt::User(text.to_string()), input).await {
                 break;
             }
@@ -1346,11 +1364,13 @@ impl Harness {
                 message,
                 reply,
             } => {
-                let edited = if message.images.is_empty() {
-                    self.edit(item, message.text)
-                } else {
-                    Err("This version of Arko can't send images yet: send the message without them.".into())
-                };
+                let edited = self
+                    .attach(message.images)
+                    .and_then(|()| self.edit(item, message.text));
+                if edited.is_err() {
+                    self.pending_images.clear();
+                    self.pending_refs.clear();
+                }
                 let _ = reply.send(edited);
             }
             Request::Regenerate { reply } => {
@@ -1594,7 +1614,24 @@ impl Harness {
         let Some(item) = self.feed.last_turn_message() else {
             return Err("There is no message to send again.".into());
         };
-        self.edit(item.id, item.text)
+        let index = self.message_at(item.id, "sent again")?;
+        // Its images go again, as the conversation has them.
+        let images: Vec<arko_ai::Image> = self
+            .conversation_task()
+            .and_then(|task| task.conversation.messages.get(index))
+            .map(|message| {
+                message
+                    .content
+                    .iter()
+                    .filter_map(arko_ai::Content::as_image)
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default();
+        self.edit(item.id, item.text)?;
+        self.pending_images = images;
+        self.pending_refs = item.images;
+        Ok(())
     }
 
     /// Whether the main agent's saved conversations each resume with their
@@ -1809,17 +1846,41 @@ impl Harness {
         }
     }
 
-    /// The text of an app's message, or `None` when it can't be sent (the
-    /// user is told why).
-    pub(crate) fn message_text(&self, message: ui::Message) -> Option<String> {
-        if !message.images.is_empty() {
-            self.say(
-                Level::Error,
-                "This version of Arko can't send images yet: send the message without them.",
-            );
-            return None;
+    /// The text of an app's message, with its images kept to go with it,
+    /// or `None` when it can't be sent (the user is told why).
+    pub(crate) fn message_text(&mut self, message: ui::Message) -> Option<String> {
+        match self.attach(message.images) {
+            Ok(()) => Some(message.text),
+            Err(why) => {
+                self.say(Level::Error, &why);
+                None
+            }
         }
-        Some(message.text)
+    }
+
+    /// The images a message sends: checked for the main agent's model,
+    /// kept for the transcript, and pending for the message's turn or note.
+    fn attach(&mut self, attachments: Vec<ui::Attachment>) -> Result<(), String> {
+        self.pending_images.clear();
+        self.pending_refs.clear();
+        let model = &self.main_config.llm_config.model;
+        let mut images = Vec::new();
+        for attachment in &attachments {
+            let image = arko_ai::Image::from_bytes(&attachment.bytes, &attachment.mime);
+            if let Some(why) = model.image_refusal(&image) {
+                return Err(format!(
+                    "The message wasn't sent: {why}. Send it without images, or switch to a model that takes them."
+                ));
+            }
+            images.push(image);
+        }
+        for attachment in attachments {
+            let label = attachment.name.as_deref().unwrap_or("image");
+            let shown = self.images.add(attachment.bytes, &attachment.mime, label);
+            self.pending_refs.push(shown);
+        }
+        self.pending_images = images;
+        Ok(())
     }
 
     /// `/message WORKER TEXT`: the user's message goes to the worker as its
@@ -2664,11 +2725,19 @@ impl Harness {
         if let Some(index) = cut {
             options = options.cut_back_to(index);
         }
+        // The images the user's message sends.
+        let images = std::mem::take(&mut self.pending_images);
+        if !images.is_empty() {
+            options = options.images(images.clone());
+        }
         let call = {
             let workflow = workflow.clone();
             tokio::spawn(async move {
                 match conversation {
-                    Conversation::New => workflow.run_agent(MAIN, &message).await,
+                    Conversation::New => {
+                        let options = RunOptions::new().images(images);
+                        workflow.run_agent_with(MAIN, &message, options).await
+                    }
                     Conversation::Answered(previous) => {
                         workflow
                             .continue_agent_with(&previous, &message, options)
@@ -2767,8 +2836,11 @@ impl Harness {
                             continue;
                         }
                     };
+                    // The images an app's message sends go with its note.
+                    let images = std::mem::take(&mut self.pending_images);
+                    let shown = std::mem::take(&mut self.pending_refs);
                     let text = line.trim().to_string();
-                    if text.is_empty() {
+                    if text.is_empty() && images.is_empty() {
                         continue;
                     }
                     if let Some(command) = command(&text) {
@@ -2816,12 +2888,13 @@ impl Harness {
                         self.feed.user(&text, source, Delivery::Queued);
                         queued.push(text);
                     } else {
-                        match workflow.post_note(Note::new(text.clone()).to([MAIN]).once()) {
+                        let note = Note::new(text.clone()).to([MAIN]).once().images(images);
+                        match workflow.post_note(note) {
                             Ok(seq) => {
                                 self.output.echo(&self.output.dim(
                                     "  ✎ added to the task: the agent reads it at its next step",
                                 ));
-                                self.feed.user(&text, source, Delivery::Note);
+                                self.feed.user_with(&text, source, Delivery::Note, shown);
                                 notes.push((seq.seq, text));
                             }
                             Err(error) => self.say(
@@ -4129,6 +4202,9 @@ pub(crate) mod tests {
             edited: None,
             cut_back: None,
             refresh_turn: false,
+            images: Default::default(),
+            pending_images: Vec::new(),
+            pending_refs: Vec::new(),
             crew: Some(crew),
             asker: Arc::new(Asker {
                 questions: interactive.then_some(questions_sender),

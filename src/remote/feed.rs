@@ -53,6 +53,10 @@ const WORKER_BUDGET: Budget = Budget {
     bytes: 2 * 1024 * 1024,
     wholes: 4 * 1024 * 1024,
 };
+/// The latest calls whose items the images their tools return find.
+const CALL_ITEMS: usize = 512;
+/// The images kept for calls whose items haven't come yet.
+const EARLY_IMAGES: usize = 64;
 /// Updates a client's stream may fall behind by before it starts over.
 const BACKLOG: usize = 2048;
 /// A worker's summary goes out at most this often while it works (four
@@ -210,6 +214,11 @@ pub struct Item {
     /// it.
     #[serde(skip)]
     pub message_index: Option<usize>,
+    /// The images it shows: those the user sent with a message, those a
+    /// call's tool returned. Their bytes are in the session's
+    /// [`Images`](crate::images::Images).
+    #[serde(skip)]
+    pub images: Vec<crate::images::ImageRef>,
     /// The worker a `worker_line` stands for.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub worker: Option<String>,
@@ -244,6 +253,7 @@ impl Item {
             parameters: None,
             output: None,
             message_index: None,
+            images: Vec::new(),
             worker: None,
             from: None,
             call: None,
@@ -671,6 +681,11 @@ struct State {
     /// Where each agent's output stood as its latest model request went
     /// out: what its response streams goes if the response fails.
     requests: HashMap<String, Streamed>,
+    /// The latest calls' items, by call: the images their tools return
+    /// come apart from the events, maybe after the call's result.
+    call_items: VecDeque<(Uuid, String, u64)>,
+    /// Images that came before their call's item, by call.
+    early_images: VecDeque<(Uuid, Vec<crate::images::ImageRef>)>,
     workers: Vec<Worker>,
 }
 
@@ -994,8 +1009,23 @@ impl Feed {
                 if call {
                     item.status = Some(CallStatus::Running);
                 }
+                // Images its tool returned before its event came.
+                if let Some(at) = state
+                    .early_images
+                    .iter()
+                    .position(|(id, _)| id == tool_call_id)
+                    && let Some((_, images)) = state.early_images.remove(at)
+                {
+                    item.images = images;
+                }
                 let line = item.text.clone();
                 let id = self.push(&mut state, item.agent(agent.clone()));
+                state
+                    .call_items
+                    .push_back((*tool_call_id, agent.clone(), id));
+                if state.call_items.len() > CALL_ITEMS {
+                    state.call_items.pop_front();
+                }
                 if call {
                     state.calls.insert(
                         *tool_call_id,
@@ -1144,9 +1174,21 @@ impl Feed {
     /// The user's text, and what became of it. Text that starts a turn
     /// counts in that turn.
     pub fn user(&self, text: &str, source: Source, delivery: Delivery) -> u64 {
+        self.user_with(text, source, delivery, Vec::new())
+    }
+
+    /// The user's text with the images it sends, and what became of it.
+    pub fn user_with(
+        &self,
+        text: &str,
+        source: Source,
+        delivery: Delivery,
+        images: Vec<crate::images::ImageRef>,
+    ) -> u64 {
         let mut item = Item::new(Kind::User, text.trim());
         item.source = Some(source);
         item.delivery = Some(delivery);
+        item.images = images;
         let mut state = self.lock();
         if delivery == Delivery::Turn {
             state.turn = Some(state.turn.map_or(1, |turn| turn + 1));
@@ -1170,6 +1212,30 @@ impl Feed {
             .rev()
             .find(|item| item.kind == Kind::User && item.delivery == Some(Delivery::Turn));
         item.cloned()
+    }
+
+    /// The call `call`'s tool returned `images`: its item shows them (the
+    /// clients get the change), or will once it comes.
+    pub(crate) fn call_images(&self, call: Uuid, images: Vec<crate::images::ImageRef>) {
+        let mut state = self.lock();
+        let Some((_, agent, id)) = state
+            .call_items
+            .iter()
+            .find(|(id, ..)| *id == call)
+            .cloned()
+        else {
+            state.early_images.push_back((call, images));
+            if state.early_images.len() > EARLY_IMAGES {
+                state.early_images.pop_front();
+            }
+            return;
+        };
+        let (lane, _) = state.lane(&agent);
+        if let Some(item) = lane.find(id) {
+            item.images.extend(images);
+            let item = item.clone();
+            self.send(Update::Change(item));
+        }
     }
 
     /// The user's message `id` is the main agent's message `index`: it can
