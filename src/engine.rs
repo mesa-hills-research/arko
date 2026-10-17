@@ -1162,15 +1162,20 @@ mod tests {
             cache_1h: false,
             handover_at: None,
         };
+        // (A test client and an API key: no login of the machine's.)
         let options = || {
             let session = Session::create(&root).unwrap();
             session
-                .save_settings(&Settings::for_test(&workspace, &luna))
+                .save_settings(&Settings {
+                    openai_auth: Some(OpenAiAuth::ApiKey),
+                    ..Settings::for_test(&workspace, &luna)
+                })
                 .unwrap();
             Options {
                 root: Some(root.clone()),
                 session: SessionChoice::Resume(session.id),
                 interactive: false,
+                client: Some(GivenClient(Arc::new(arko_ai::LLMClient::new()))),
                 ..Options::default()
             }
         };
