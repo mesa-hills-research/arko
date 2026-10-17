@@ -20,12 +20,12 @@ required-features = ["tui"]
 [features]
 default = ["tui", "remote"]
 # The command line and the terminal's front ends: the full-screen view, the
-# line prompt, the setup screen. Arko Studio builds without it.
+# line prompt, the setup screen. An app that drives sessions builds without it.
 tui = ["dep:arboard", "dep:clap", "dep:crossterm", "dep:ratatui", "dep:rustyline", "dep:windows-sys"]
 # The web page's server (--remote, /remote): without it, the session says
 # this build has no web page.
 remote = ["dep:axum", "dep:if-addrs", "dep:qrcodegen"]
-# For tests only, Arko Studio's among them: `arko::testing` (a local model
+# For tests only, also an app's built on the library: `arko::testing` (a local model
 # server and the client for it, `Options::client`). Not for builds that ship.
 testing = []
 

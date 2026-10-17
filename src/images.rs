@@ -109,7 +109,7 @@ impl Images {
             }),
         );
         store.order.push_back(id);
-        // The oldest go first; the newest stays, however large.
+        // The oldest go first, and the newest stays, however large.
         while store.bytes > BUDGET && store.order.len() > 1 {
             if let Some(old) = store.order.pop_front()
                 && let Some(image) = store.images.remove(&old)
@@ -127,8 +127,8 @@ impl Images {
         shown
     }
 
-    /// Keeps `image` (an image sent as data; one sent by URL has no bytes
-    /// here), and names it.
+    /// Keeps `image` (an image sent as data, as one sent by URL has no
+    /// bytes here), and names it.
     pub(crate) fn add_image(&self, image: &arko_ai::Image, label: &str) -> Option<ImageRef> {
         let arko_ai::Image::Base64 { data, mime_type } = image else {
             return None;

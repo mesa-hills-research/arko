@@ -668,7 +668,7 @@ impl Crew {
             .collect()
     }
 
-    /// Stops the worker `id` (r1, r2, ...), when it is running; else says
+    /// Stops the worker `id` (r1, r2, ...), when it is running, else says
     /// why not.
     pub fn stop(&self, id: &str, reason: &str) -> Result<(), String> {
         let workflow = self

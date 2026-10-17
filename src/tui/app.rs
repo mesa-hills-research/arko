@@ -96,8 +96,8 @@ pub struct Menu {
     pub choice: Option<String>,
 }
 
-/// The agent list shows this many workers at most; a row under them says
-/// how many more there are.
+/// The agent list shows this many workers at most, and a row under them
+/// says how many more there are.
 pub const LIST_WORKERS: usize = 5;
 
 /// A row of the agent list.
@@ -2269,7 +2269,7 @@ pub(super) mod tests {
     }
 
     /// The list's rows: the main agent and up to five workers, then a
-    /// count of the others; the workers shown follow the focus, and a
+    /// count of the others. The workers shown follow the focus, and a
     /// short screen shows fewer.
     #[test]
     fn the_list_shows_five_workers_and_counts_the_others() {
@@ -2329,7 +2329,7 @@ pub(super) mod tests {
     }
 
     /// The list has the workers running or waiting, not those that ended
-    /// (unless one is shown); past five, ↓ and a click on the count reach
+    /// (unless one is shown). Past five, ↓ and a click on the count reach
     /// the others.
     #[test]
     fn the_list_drops_ended_workers_and_reaches_the_others() {

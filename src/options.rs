@@ -1,6 +1,6 @@
 //! What a front end asks of a session as it opens it: which session, and,
 //! for a new one, its models and settings. The command line's flags become
-//! [`Options`] (`cli`); Arko Studio fills them in itself.
+//! [`Options`] (`cli`), and an app fills them in itself.
 
 use std::path::PathBuf;
 
@@ -23,59 +23,59 @@ pub enum SessionChoice {
 }
 
 /// What a session opens with. A resumed session keeps its models and the
-/// settings it was started with; the options it can change as it resumes
+/// settings it was started with. The options it can change as it resumes
 /// are the project instructions, when commands move to the background,
 /// outside access, the handover size and the MCP config files.
 #[derive(Debug, Clone)]
 pub struct Options {
-    /// Arko's folder; `None`: `ARKO_HOME`, else `arko` in the data
+    /// Arko's folder. `None`: `ARKO_HOME`, else `arko` in the data
     /// directory.
     pub root: Option<PathBuf>,
     pub session: SessionChoice,
     /// The working directory of a new session (also where `ContinueLatest`
-    /// looks); `None`: the current directory.
+    /// looks). `None`: the current directory.
     pub workspace: Option<PathBuf>,
-    /// The main agent's model; `None`: the last session's, else one the
+    /// The main agent's model. `None`: the last session's, else one the
     /// credentials allow.
     pub model: Option<String>,
     pub effort: Effort,
     pub fast: bool,
-    /// The workers' model; `None`: the main agent's (or the last
+    /// The workers' model. `None`: the main agent's (or the last
     /// session's workers').
     pub worker_model: Option<String>,
     /// `None`: the main agent's effort.
     pub worker_effort: Option<Effort>,
     pub worker_fast: bool,
-    /// The 1-hour prompt cache; `None`: as `ARKO_CACHE_1H` says.
+    /// The 1-hour prompt cache. `None`: as `ARKO_CACHE_1H` says.
     pub cache_1h: Option<bool>,
-    /// The main agent ends its turns with a plain reply; `None`: when
+    /// The main agent ends its turns with a plain reply. `None`: when
     /// someone takes part in the session as it runs (it is
     /// [`interactive`](Self::interactive), or the web page serves it) and it
     /// isn't one-shot.
     pub text_replies: Option<bool>,
     /// Agents on `cc:` models compact at the handover size (`Some(false)`:
-    /// they hand over); `None`: they compact.
+    /// they hand over). `None`: they compact.
     pub cc_compact: Option<bool>,
     /// `None`: the agents on small models get them.
     pub extra_rules: Option<ExtraRules>,
     /// `None`: a new session's default, or a resumed session's own.
     pub project_instructions: Option<project::Files>,
-    /// Whether workers get the project instructions; `None`: as above.
+    /// Whether workers get the project instructions. `None`: as above.
     pub worker_project_instructions: Option<bool>,
-    /// How many workers may run at once; `None`: no limit.
+    /// How many workers may run at once. `None`: no limit.
     pub workers: Option<u32>,
     /// The handover size: for a new session, each agent's (held under what
-    /// its model leaves room for); when resuming, the size set for the main
+    /// its model leaves room for), or, when resuming, the size set for the main
     /// agent and the workers, as `/handover-at` sets it.
     pub handover_at: Option<usize>,
     /// The workers' handover size: for a new session, each worker's (held
-    /// under what its model leaves room for); when resuming, the size set
-    /// for the workers. `None`: as `handover_at`.
+    /// under what its model leaves room for), or, when resuming, the size
+    /// set for the workers. `None`: as `handover_at`.
     pub workers_handover_at: Option<usize>,
     /// Outside access on from the start (also when resuming).
     pub allow_outside_workspace: bool,
     /// After how many seconds shell commands move to the background (0:
-    /// never); `None`: the session's own, or never when one-shot.
+    /// never). `None`: the session's own, or never when one-shot.
     pub background_after: Option<u64>,
     /// Show the agents' thinking whole from the start (a new session).
     pub show_thinking: bool,
@@ -85,7 +85,7 @@ pub struct Options {
     /// The Codex auth file of the ChatGPT login.
     pub codex_auth: Option<PathBuf>,
     pub openai_auth: Option<OpenAiAuth>,
-    /// The shell on Windows; `None`: `ARKO_SHELL`, else cmd.exe.
+    /// The shell on Windows. `None`: `ARKO_SHELL`, else cmd.exe.
     pub shell: Option<WindowsShell>,
     /// MCP config files besides the project's and Arko's.
     pub mcp_config: Vec<PathBuf>,
@@ -100,7 +100,7 @@ pub struct Options {
     /// they type while it works reaches it as notes. Else the agent is told
     /// no one can answer, and each line is a turn of its own.
     pub interactive: bool,
-    /// A new session's title; `None`: none until it has one.
+    /// A new session's title. `None`: none until it has one.
     pub title: Option<String>,
     /// Who opens the session, as others trying to open it are told:
     /// `arko` (the command line) or `arko-studio`.

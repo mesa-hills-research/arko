@@ -415,7 +415,7 @@ pub(crate) async fn run(args: Args) -> Result<ExitCode, String> {
         });
     }
     // The full-screen view is the front end with a terminal (not with
-    // --repl); it reads the input itself. Else the line prompt reads it.
+    // --repl), and it reads the input itself. Else the line prompt reads it.
     let full_screen = !one_shot && !args.repl && tui::available();
     let mut prompt_shown = false;
     if !one_shot {

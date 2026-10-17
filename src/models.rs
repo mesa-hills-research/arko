@@ -54,7 +54,7 @@ pub fn needs(reachable: &[String], name: &str) -> Option<String> {
 pub struct NewSessionModels {
     pub groups: Vec<ModelGroup>,
     /// The main agent's model a new session takes by default (the last
-    /// session's, else one the credentials allow); `None` without any
+    /// session's, else one the credentials allow), or `None` without any
     /// credential.
     pub main: Option<String>,
     /// The workers' model by default, when it isn't the main agent's.

@@ -863,7 +863,7 @@ mod tests {
         let remembered = plan(&root, &workspace, &[]).unwrap();
         assert!(remembered.approval.is_none());
         assert_eq!(names(&remembered.decide(None).unwrap().0), ["proj"]);
-        // Changed, it asks again; no is remembered too.
+        // Changed, it asks again, and no is remembered too.
         std::fs::write(
             workspace.join(PROJECT_FILE),
             r#"{"mcpServers": {"proj": {"command": "other-server"}}}"#,

@@ -1987,7 +1987,7 @@ mod tests {
         );
     }
 
-    /// Where the conversation changes, a rule names it, in every view; the
+    /// Where the conversation changes, a rule names it, in every view. The
     /// main agent's items cut from the conversation go, a worker's stay.
     #[test]
     fn a_conversation_is_a_rule_and_a_cut_drops_its_items() {

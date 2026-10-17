@@ -563,7 +563,7 @@ impl Harness {
                 && self.settings.openai_auth == Some(providers::OpenAiAuth::ChatGpt);
             let mut stats = lock(&self.stats);
             stats.context_window = arko_ai::input_limit::effective_max_input_tokens(model, chatgpt);
-            // How long its prompt cache lasts, as the provider says; Claude
+            // How long its prompt cache lasts, as the provider says. Claude
             // Code's shows in its cache writes.
             let lifetime = arko_ai::prompt_cache::prompt_cache_lifetime(
                 model,
@@ -1336,7 +1336,7 @@ impl Harness {
     /// Does what the front end asks, and answers it.
     pub(crate) async fn request(&mut self, request: crate::engine::Request) {
         use crate::engine::Request;
-        // While a turn runs, the agent's configuration stays as it is; while
+        // While a turn runs, the agent's configuration stays as it is. While
         // Arko only waits for the workers (no terminal), nothing starts.
         let busy = if self.feed.activity().working {
             Some("Wait for the turn to end.")
@@ -1741,7 +1741,7 @@ impl Harness {
     /// Makes the session a chat or an agent's (`to`), working in
     /// `workspace`: refused, saying why, while workers run or their news
     /// waits, and (to Chat) while jobs run. The session then closes, to be
-    /// opened again in its new mode; its next message reconfigures the
+    /// opened again in its new mode, and its next message reconfigures the
     /// conversation (see `turn`).
     fn switch_mode(&mut self, to: Mode, workspace: Option<PathBuf>) -> Result<(), String> {
         if to == self.settings.mode {
@@ -3745,7 +3745,7 @@ pub(crate) mod tests {
     }
 
     /// A missing credential is asked for through the prompter, and the
-    /// client is made again after each answer; the prompter's refusal, or
+    /// client is made again after each answer. The prompter's refusal, or
     /// no one to ask, keeps the session from opening and says why.
     #[tokio::test]
     async fn a_missing_key_asks_the_prompter_and_retries() {
@@ -4347,7 +4347,7 @@ pub(crate) mod tests {
         assert!((remote::Meter::read(harness.gauges.as_ref()).cost - 1.0).abs() < 1e-6);
     }
 
-    /// `/stop-workers WORKER` stops that one; a worker not running, or none
+    /// `/stop-workers WORKER` stops that one. A worker not running, or none
     /// by that name, is said.
     #[tokio::test]
     async fn one_worker_is_stopped_by_name() {
@@ -4556,7 +4556,7 @@ pub(crate) mod tests {
     }
 
     /// A session is named by its first message's start until the user
-    /// renames it (also during a turn); an empty name goes back.
+    /// renames it (also during a turn), and an empty name goes back.
     #[tokio::test]
     async fn the_session_is_named_by_its_first_message_or_by_the_user() {
         use crate::mock_model::{ModelServer, complete};

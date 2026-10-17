@@ -1,6 +1,6 @@
 //! The sessions in Arko's folder, as an app lists them: their names, what
 //! they are and where they work, when they were last used, their
-//! conversations and who has them open; renaming and deleting them.
+//! conversations and who has them open, and renaming and deleting them.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -23,12 +23,12 @@ pub struct SessionEntry {
     /// chat").
     pub title: String,
     pub mode: Mode,
-    /// Where its agents work; `None` for a chat.
+    /// Where its agents work, or `None` for a chat.
     pub workspace: Option<PathBuf>,
     /// The main agent's model, as `/session` says it.
     pub model: String,
     pub created: DateTime<Utc>,
-    /// When it was last worked in; `None` before its first message.
+    /// When it was last worked in, or `None` before its first message.
     pub last_active: Option<SystemTime>,
     /// Its conversations, the first first.
     pub conversations: Vec<ConversationEntry>,
@@ -108,7 +108,7 @@ pub fn holder(root: &Path, id: &str) -> Option<Holder> {
 }
 
 /// What deleting a session leaves: its workers' worktrees with changes
-/// that aren't committed stay (with their branches); the clean ones go.
+/// that aren't committed stay (with their branches), and the clean ones go.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct DeletePlan {
     pub worktrees_clean: Vec<PathBuf>,
@@ -358,7 +358,7 @@ mod tests {
 
     /// The list names each session (as the user renamed it, else as its
     /// first message), says what it is and where it works, and who has it
-    /// open; an open session is renamed but not deleted.
+    /// open. An open session is renamed but not deleted.
     #[test]
     fn sessions_are_listed_renamed_and_deleted() {
         let temp = tempfile::tempdir().unwrap();
@@ -577,8 +577,8 @@ mod tests {
         found
     }
 
-    /// A deleted session's clean worker worktrees go as git removes them;
-    /// one with uncommitted changes stays in place, and every branch stays.
+    /// A deleted session's clean worker worktrees go as git removes them.
+    /// One with uncommitted changes stays in place, and every branch stays.
     #[test]
     fn a_dirty_worker_worktree_is_kept_on_delete() {
         let temp = tempfile::tempdir().unwrap();

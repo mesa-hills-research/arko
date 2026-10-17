@@ -13,7 +13,7 @@ use crate::remote::Level;
 use crate::ui::Output;
 
 /// Asks at the terminal, when standard input and output are one
-/// (`can_ask`); else nothing is asked, as with [`NoPrompter`](crate::prompter::NoPrompter),
+/// (`can_ask`). Else nothing is asked, as with [`NoPrompter`](crate::prompter::NoPrompter),
 /// and the notes still go to standard error.
 pub(crate) struct TerminalPrompter {
     can_ask: bool,

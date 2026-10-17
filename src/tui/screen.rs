@@ -177,8 +177,8 @@ fn draw_input(
 
 /// The agent list, below the input: `● main` and a row for each worker
 /// running, the one shown marked, up to five workers and then a count of
-/// the others; ↓ from the box moves into it, Enter shows a worker's own
-/// transcript.
+/// the others. ↓ from the box moves into it, and Enter shows a worker's
+/// own transcript.
 fn draw_list(frame: &mut Frame, app: &mut App, area: Rect, rows: Vec<ListRow>) {
     let count = app.list().len();
     let focus = app.list_focus.map(|row| row.min(count - 1));
@@ -654,7 +654,7 @@ mod tests {
     }
 
     /// The agent list under the input: the main agent, five of the workers
-    /// running and how many more; a worker that ended isn't in it.
+    /// running and how many more. A worker that ended isn't in it.
     #[test]
     fn the_agent_list_shows_five_workers_running_and_counts_the_rest() {
         use crate::remote::WorkerState::{Finished, Running};

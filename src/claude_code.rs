@@ -316,7 +316,7 @@ pub fn add_to_path() -> Option<PathBuf> {
 pub struct ClaudeCodeStatus {
     /// Where `claude` is, if it is installed.
     pub path: Option<PathBuf>,
-    /// It is on the PATH (sessions start it from there; see
+    /// It is on the PATH (sessions start it from there, see
     /// [`add_to_path`]).
     pub on_path: bool,
     /// What `claude --version` says.

@@ -617,7 +617,7 @@ mod tests {
     }
 
     /// A key added in one session is used at once by the others open on the
-    /// same Arko folder (not by those on another), and they say so; the one
+    /// same Arko folder (not by those on another), and they say so. The one
     /// that added it has it already.
     #[tokio::test]
     async fn a_key_added_reaches_every_open_session() {

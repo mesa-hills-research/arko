@@ -176,7 +176,7 @@ pub struct Outcome {
     /// A block to show under the call: a command's first lines of output.
     pub block: Option<Item>,
     /// The call's whole result (or why it failed), for an app's view of it
-    /// (the call item's `output`); a command's is its block's `whole`.
+    /// (the call item's `output`). A command's is its block's `whole`.
     pub output: Option<Arc<str>>,
 }
 

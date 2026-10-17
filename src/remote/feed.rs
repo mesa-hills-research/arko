@@ -98,8 +98,8 @@ pub enum Kind {
     WorkerLine,
     /// Where the conversation changes (`/new`, `/resume`): what follows is
     /// another conversation's. A client that shows one conversation at a
-    /// time shows what follows the last of these; one that keeps the whole
-    /// session draws it as a separator.
+    /// time shows what follows the last of these, and one that keeps the
+    /// whole session draws it as a separator.
     Conversation,
 }
 
@@ -117,7 +117,7 @@ pub enum Level {
 pub enum Source {
     Terminal,
     Web,
-    /// An app in this process (Arko Studio).
+    /// An app in this process.
     App,
 }
 
@@ -199,12 +199,12 @@ pub struct Item {
     pub tool: Option<String>,
     /// A `call`'s parameters, as pretty JSON with its names in order, for
     /// an app's view of it (an edit's diff, a file written). Neither the
-    /// web page nor the terminal gets them; the latest are kept.
+    /// web page nor the terminal gets them. The latest are kept.
     #[serde(skip)]
     pub parameters: Option<Arc<str>>,
     /// A `call`'s whole result, once it came (a [`Update::Change`] of the
-    /// call), for an app's view of it; a command's output is its block's
-    /// `whole` instead. Neither the web page nor the terminal gets it; the
+    /// call), for an app's view of it. A command's output is its block's
+    /// `whole` instead. Neither the web page nor the terminal gets it. The
     /// latest are kept.
     #[serde(skip)]
     pub output: Option<Arc<str>>,
@@ -1671,7 +1671,7 @@ mod tests {
     use super::*;
 
     /// A cut drops the main agent's items from where it is, for the
-    /// history and the clients; a worker's stay, and a batch forgets what
+    /// history and the clients. A worker's stay, and a batch forgets what
     /// it had of the items cut.
     #[test]
     fn a_cut_drops_the_main_agents_items_from_there() {
@@ -2545,7 +2545,7 @@ mod tests {
     }
 
     /// A call names its tool and keeps its parameters and whole result for
-    /// an app's view of it, out of what the web page gets; the latest
+    /// an app's view of it, out of what the web page gets. The latest
     /// calls keep theirs.
     #[test]
     fn calls_keep_their_parameters_and_results_for_apps() {

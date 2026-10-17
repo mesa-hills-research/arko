@@ -610,7 +610,7 @@ mod tests {
 
     /// The box wraps at spaces: a word that crosses the edge moves whole
     /// to the next row as it is typed, comes back as it is deleted, and
-    /// the cursor stays where it was in the text; only a word longer than
+    /// the cursor stays where it was in the text. Only a word longer than
     /// a row breaks inside.
     #[test]
     fn the_box_wraps_whole_words_and_the_cursor_follows() {
@@ -645,7 +645,7 @@ mod tests {
         assert_eq!(e.position(14), (0, 7));
         assert!(e.vertical(false, 14));
         assert_eq!(e.position(14), (1, 7));
-        // A word longer than a row breaks inside; spaces at the edge stay
+        // A word longer than a row breaks inside. Spaces at the edge stay
         // on their row, and the next row starts with the word.
         let mut e = editor();
         typed(&mut e, "a abcdefghijklmn");
@@ -656,7 +656,7 @@ mod tests {
         e.left();
         e.left();
         assert_eq!(e.position(5), (1, 0));
-        // A line break starts a row; a word is wrapped within its line.
+        // A line break starts a row, and a word is wrapped within its line.
         let mut e = editor();
         typed(&mut e, "one\nMethodology here");
         assert_eq!(rows(&e, 12), ["one\n", "Methodology ", "here"]);

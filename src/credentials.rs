@@ -318,7 +318,7 @@ pub struct KeyChange {
     /// Arko's folder, whose sessions it is for.
     pub root: PathBuf,
     pub key: &'static Key,
-    /// The key added; `None`: removed, and each session goes by the next
+    /// The key added. `None`: removed, and each session goes by the next
     /// one it reads, if any.
     pub value: Option<String>,
     /// Who changed it (one session's keys), which has it already.
@@ -437,7 +437,7 @@ pub fn codex_auth(flag: Option<&Path>) -> Option<PathBuf> {
         .or_else(|| var(CODEX_AUTH).map(|path| expand_home(&path)))
 }
 
-/// Whether the Codex auth.json at `path` holds a ChatGPT login; else why
+/// Whether the Codex auth.json at `path` holds a ChatGPT login, else why
 /// not.
 fn check_login(path: &Path) -> Result<(), String> {
     arko_ai::CodexAuthFile::load(path)
@@ -510,7 +510,7 @@ pub fn chatgpt_login(flag: Option<&Path>) -> ChatGptLogin {
 
 /// Uses the Codex auth.json at `path` as the ChatGPT login from now on,
 /// for the sessions of Arko's folder `root`: in this process, and (saved as
-/// ARKO_CODEX_AUTH in its .env) in later ones, when it holds a login; else
+/// ARKO_CODEX_AUTH in its .env) in later ones, when it holds a login, else
 /// why not.
 pub fn set_chatgpt_login(root: &Path, path: &Path) -> Result<ChatGptLogin, String> {
     let env = Env::for_folder_in(None, true, Some(root));

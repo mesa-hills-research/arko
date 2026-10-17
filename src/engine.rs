@@ -1,6 +1,6 @@
 //! A session as a front end drives it: [`Engine::open`] opens (or creates)
 //! it and gives the front end its [`Seam`], what it shows the session with
-//! and sends the user's input through; [`Engine::run`] runs it until the
+//! and sends the user's input through. [`Engine::run`] runs it until the
 //! user quits, and [`Engine::shutdown`] stops what it started. The command
 //! line (`cli`) is one such front end: the full-screen view or the line
 //! prompt, or -p's one message ([`Engine::run_prompt`]).
@@ -170,8 +170,8 @@ pub enum Request {
     /// with its own words.
     Regenerate { reply: Reply<()> },
     /// A new session with the current conversation up to the user's
-    /// message `before` (a `Kind::User` item with a `message_index`; the
-    /// message itself is left out), or all of it (`None`), to go on apart
+    /// message `before` (a `Kind::User` item with a `message_index`, the
+    /// message itself left out), or all of it (`None`), to go on apart
     /// from this one. Replies the new session's ID: open it
     /// ([`SessionChoice::Resume`]) to go on there. Its settings are this
     /// one's. Workers stay with this session. Between turns.
@@ -210,11 +210,11 @@ pub struct FrontEnd {
     /// Arko prints only its last lines.
     pub boxed_banner: bool,
     /// Quitting with background jobs running asks the front end
-    /// ([`Seam::quit_asks`]), which answers with `Input::Quit`; else the
-    /// line prompt's warning.
+    /// ([`Seam::quit_asks`]), which answers with `Input::Quit`. Else the
+    /// line prompt warns.
     pub asks_to_quit: bool,
-    /// It asks with workers running too, not only with jobs (an app; the
-    /// full-screen view warns about them in a line).
+    /// It asks with workers running too, not only with jobs (an app, where
+    /// the full-screen view warns about them in a line).
     pub asks_about_workers: bool,
 }
 
@@ -331,7 +331,7 @@ impl Drop for Alone {
 
 /// An open session.
 pub struct Engine {
-    /// Held while the session is open; released after shutdown.
+    /// Held while the session is open, and released after shutdown.
     _lock: SessionLock,
     /// The process's one session without a context of its own, if it is.
     _alone: Option<Alone>,
@@ -355,7 +355,7 @@ impl Engine {
     /// On a front end's own runtime, a process opens one session this way:
     /// it reads the process's settings and keys, and its log lines carry no
     /// session's ID. Several sessions in one process each run with
-    /// [`spawn`], which gives each its own; a second is refused here.
+    /// [`spawn`], which gives each its own. A second is refused here.
     pub async fn open(
         options: Options,
         prompter: Arc<dyn Prompter>,
@@ -896,7 +896,7 @@ impl Engine {
         self.harness.output.clone()
     }
 
-    /// Says how the front end shows the session; before [`run`](Self::run).
+    /// Says how the front end shows the session, before [`run`](Self::run).
     pub fn front_end(&mut self, front: FrontEnd) {
         self.boxed_banner = front.boxed_banner;
         self.harness.ask_about_workers = front.asks_about_workers;
@@ -1258,7 +1258,7 @@ mod tests {
     /// Two sessions run side by side in one process, each on its own
     /// runtime: each reads its own folder's settings, answers its messages
     /// in its own feed, holds its own lock and tags its log lines with its
-    /// ID; once closed, its threads are gone.
+    /// ID. Once closed, its threads are gone.
     #[tokio::test]
     async fn two_sessions_run_turns_at_once() {
         let temp = tempfile::tempdir().unwrap();
@@ -1687,7 +1687,7 @@ mod tests {
             Some("Answer like a pirate.")
         );
         assert!(!first.contains("Answer briefly."));
-        // After it, the conversation keeps its own; the next takes them.
+        // After it, the conversation keeps its own, and the next takes them.
         assert_eq!(instructions("Be brief.").await.unwrap(), Ok(()));
         ask(&seam, "Again.", 2).await;
         let second = bodies.lock().unwrap()[1].clone();
@@ -2120,7 +2120,7 @@ mod tests {
     }
 
     /// The user's images go to the model with their message, and the
-    /// transcript shows them; so does an image a tool returns, on its
+    /// transcript shows them, as it shows an image a tool returns, on its
     /// call. Both are kept in the session's images, and come back with the
     /// conversation when the session opens again.
     #[tokio::test]

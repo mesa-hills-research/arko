@@ -34,7 +34,7 @@ fn current() -> Option<Arc<SessionContext>> {
 }
 
 /// The ID of the session this thread works for: `Some("")` while the
-/// session opens and has none yet; `None` outside a session's runtime.
+/// session opens and has none yet, `None` outside a session's runtime.
 pub(crate) fn session_id() -> Option<String> {
     current().map(|context| context.id.get().cloned().unwrap_or_default())
 }

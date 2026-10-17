@@ -133,7 +133,7 @@ pub struct SessionFacts {
     /// The agents on `cc:` models compact instead of handing over.
     pub cc_compact: bool,
     pub project_files: project::Files,
-    /// Whether workers get the project instructions; `None` without
+    /// Whether workers get the project instructions, or `None` without
     /// workers.
     pub project_workers: Option<bool>,
     pub outside: bool,
@@ -396,7 +396,7 @@ pub struct SwitchCost {
     /// The conversation's input at its last request, which the next one
     /// writes to the cache again.
     pub tokens: usize,
-    /// What writing them costs at the model's price; `None` on a plan.
+    /// What writing them costs at the model's price, or `None` on a plan.
     pub dollars: Option<f64>,
     /// The plan that pays instead ("your Claude plan").
     pub plan: Option<&'static str>,

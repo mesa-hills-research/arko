@@ -1,8 +1,8 @@
 //! What a session asks its front end as it opens: the credentials it lacks,
 //! and whether to start a project's MCP servers. The front end also hears
 //! what Arko has to tell the user before the session's feed exists. The
-//! command line asks at the terminal (`terminal::TerminalPrompter`); Arko
-//! Studio asks in its own sheets.
+//! command line asks at the terminal (`terminal::TerminalPrompter`), and an
+//! app asks in its own way.
 
 use std::path::Path;
 
@@ -22,9 +22,9 @@ pub trait Prompter: Send + Sync {
     async fn need_credentials(&self, need: &Need) -> Result<(), String>;
 
     /// Whether to start the project's MCP servers `approval` lists: the
-    /// user's answer, which Arko remembers until the file's servers change;
+    /// user's answer, which Arko remembers until the file's servers change,
     /// `None` when no one can answer (they don't start, and a note says
-    /// so); `Err` with why the session doesn't open (the user cancelled).
+    /// so), or `Err` with why the session doesn't open (the user cancelled).
     async fn approve_project_mcp(&self, approval: &McpApproval) -> Result<Option<bool>, String>;
 
     /// What Arko tells the user as the session opens, before its feed
