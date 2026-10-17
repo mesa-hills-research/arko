@@ -723,7 +723,7 @@ mod tests {
     /// macOS Classic Dark takes its link blue as the accent, and its
     /// primary blue with white text as the fill.
     #[test]
-    fn the_default_theme_maps_as_the_owner_chose() {
+    fn the_default_theme_takes_its_blues_for_the_accent_and_the_fill() {
         let catalog = Catalog::load(None);
         let roles = Roles::of(catalog.find("macos classic dark").unwrap());
         assert_eq!(roles.background, Rgb(0x13, 0x13, 0x13));
