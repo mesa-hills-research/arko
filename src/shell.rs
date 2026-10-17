@@ -326,11 +326,11 @@ pub fn parse_background_after(text: &str) -> Result<u64, String> {
             MAX_TIMEOUT_SECONDS / 60
         )
     };
-    let (number, unit) = text.split_at(text.len().saturating_sub(1));
-    let scale = match unit {
-        "s" => 1,
-        "m" => 60,
-        "h" => 3_600,
+    // (The unit is the last character, which may be any character typed.)
+    let (number, scale) = match text.chars().last() {
+        Some('s') => (&text[..text.len() - 1], 1),
+        Some('m') => (&text[..text.len() - 1], 60),
+        Some('h') => (&text[..text.len() - 1], 3_600),
         _ => return Err(invalid()),
     };
     let seconds = number
@@ -1178,6 +1178,10 @@ mod tests {
         assert_eq!(parse_background_after(" 90S "), Ok(90));
         assert_eq!(parse_background_after("1h"), Ok(3600));
         assert_eq!(parse_background_after("off"), Ok(0));
+        // A last character of more than one byte is refused, not a panic.
+        for text in ["10м", "10ｍ", "5é", "м"] {
+            assert!(parse_background_after(text).is_err(), "{text}");
+        }
         for wrong in ["", "10", "0m", "61m", "2h", "m", "soon", "-5s"] {
             assert!(parse_background_after(wrong).is_err(), "{wrong}");
         }
