@@ -279,6 +279,12 @@ impl App {
         }
     }
 
+    /// The web page's overlay waits for the page to start (its links come
+    /// with the status).
+    pub fn waits_for_page(&self) -> bool {
+        matches!(self.overlay, Some(Overlay::Remote { .. })) && self.reading.page.is_none()
+    }
+
     /// The session's figures now: the banner follows its models.
     pub fn set_reading(&mut self, reading: Reading) {
         if let Some(banner) = &mut self.transcript.banner
@@ -2759,6 +2765,27 @@ pub(super) mod tests {
         });
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         assert_eq!(sent(&mut app), ["/project-instructions workers off"]);
+    }
+
+    /// The web page's overlay waits for the page until its status has it:
+    /// the view reads the status again as the page's links come in the feed.
+    #[test]
+    fn the_page_overlay_waits_for_the_page() {
+        let mut app = app();
+        assert!(!app.waits_for_page(), "no overlay");
+        app.overlay = Some(Overlay::Remote {
+            link: 0,
+            since: Instant::now(),
+        });
+        assert!(app.waits_for_page());
+        let mut reading = app.reading.clone();
+        reading.page = Some(crate::remote::Page {
+            addr: "127.0.0.1:8080".parse().unwrap(),
+            links: Vec::new(),
+            note: None,
+        });
+        app.set_reading(reading);
+        assert!(!app.waits_for_page());
     }
 
     /// The keys menu opens from the settings and goes back there, and from

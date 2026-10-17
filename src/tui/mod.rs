@@ -366,6 +366,11 @@ async fn run(
                         while let Ok(update) = updates.try_recv() {
                             bell |= app.update(update, || setup.feed.activity());
                         }
+                        // The web page just started says so in the feed:
+                        // its links show at once.
+                        if app.waits_for_page() {
+                            app.set_reading(setup.meter.read());
+                        }
                     }
                     Err(broadcast::error::RecvError::Lagged(_)) => {
                         let (snapshot, fresh) = setup.feed.subscribe();

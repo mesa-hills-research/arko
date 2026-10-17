@@ -1172,15 +1172,17 @@ impl Harness {
             self.gauges.clone(),
         ) {
             Ok(server) => {
-                self.announce_remote(server.addr(), &key);
                 self.remote_bind = Some((bind, server.addr().port()));
                 let (links, note) = remote::links(server.addr(), &key);
+                // In the status before the links are said: a view that waits
+                // for the page finds it as they come.
                 *lock(&self.gauges.page) = Some(remote::Page {
                     addr: server.addr(),
                     links,
                     note,
                 });
                 self.gauges.touch();
+                self.announce_remote(server.addr(), &key);
                 self.remote = Some(server);
             }
             Err(error) => self.output.line(
