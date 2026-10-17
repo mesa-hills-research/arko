@@ -101,6 +101,9 @@ pub fn rename(root: &Path, id: &str, title: &str) -> Result<(), String> {
 
 /// Who has the session `id` open, if anyone.
 pub fn holder(root: &Path, id: &str) -> Option<Holder> {
+    if !session::is_session_id(id) {
+        return None;
+    }
     session::holder(&root.join("sessions").join(id))
 }
 
@@ -167,42 +170,79 @@ pub fn delete_plan(root: &Path, id: &str) -> Result<DeletePlan, DeleteError> {
 /// left alone. A session open anywhere isn't deleted.
 pub fn delete(root: &Path, id: &str) -> Result<Deleted, DeleteError> {
     let session = Session::open(root, id).map_err(DeleteError::Io)?;
-    // Held while deleting: no Arko opens it meanwhile.
-    let lock = session.lock("arko-studio").map_err(|error| match error {
+    let locked = |error| match error {
         session::LockError::Held(holder) => DeleteError::Locked { holder },
         session::LockError::Io(error) => DeleteError::Io(error.to_string()),
-    })?;
+    };
+    // Held while its files go: no Arko opens it meanwhile. An Arko from
+    // before session locks holds only its terminal's.
+    let lock = session.lock("arko-studio").map_err(locked)?;
+    let terminal = session.lock_terminal().map_err(locked)?;
     let mut kept = Vec::new();
     for worktree in worktrees(&session.dir) {
         if !(is_clean(&worktree) && remove_worktree(&worktree)) {
             kept.push(worktree);
         }
     }
+    let io = |error: std::io::Error| DeleteError::Io(error.to_string());
+    let locks = [
+        session.dir.join(session::LOCK_FILE),
+        session.dir.join(session::HOLDER_FILE),
+        session.dir.join(session::TERMINAL_LOCK),
+    ];
+    clear(&session.dir, &kept, &locks).map_err(io)?;
+    // Then the locks themselves (a held file can't be removed everywhere).
+    drop(terminal);
     drop(lock);
-    let worktrees = session.dir.join(WORKTREES);
-    for entry in std::fs::read_dir(&session.dir)
-        .map_err(|error| DeleteError::Io(error.to_string()))?
-        .filter_map(Result::ok)
+    for path in &locks {
+        match std::fs::remove_file(path) {
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(io(error)),
+            _ => {}
+        }
+    }
+    if let Some(jobs) = locks[2].parent()
+        && jobs.exists()
     {
+        std::fs::remove_dir(jobs).map_err(io)?;
+    }
+    if kept.is_empty() {
+        std::fs::remove_dir(&session.dir).map_err(io)?;
+    }
+    Ok(Deleted {
+        kept_worktrees: kept,
+    })
+}
+
+/// Deletes what the session's folder `dir` holds, but its worktrees `kept`
+/// and its lock files `locks` (and the folders they are in).
+fn clear(dir: &Path, kept: &[PathBuf], locks: &[PathBuf]) -> std::io::Result<()> {
+    let worktrees = dir.join(WORKTREES);
+    for entry in std::fs::read_dir(dir)?.filter_map(Result::ok) {
         let path = entry.path();
-        let result = if path == worktrees {
-            // The kept worktrees stay; the rest of the folder goes.
-            remove_all_but(&path, &kept)
+        if locks.contains(&path) {
+            continue;
+        }
+        let keep: Vec<PathBuf> = if path == worktrees {
+            kept.to_vec()
+        } else {
+            locks
+                .iter()
+                .filter(|lock| lock.starts_with(&path))
+                .cloned()
+                .collect()
+        };
+        let result = if !keep.is_empty() || path == worktrees {
+            remove_all_but(&path, &keep)
         } else if path.is_dir() {
             std::fs::remove_dir_all(&path)
         } else {
             std::fs::remove_file(&path)
         };
         result.map_err(|error| {
-            DeleteError::Io(format!("could not delete {}: {error}", path.display()))
+            std::io::Error::other(format!("could not delete {}: {error}", path.display()))
         })?;
     }
-    if kept.is_empty() {
-        std::fs::remove_dir(&session.dir).map_err(|error| DeleteError::Io(error.to_string()))?;
-    }
-    Ok(Deleted {
-        kept_worktrees: kept,
-    })
+    Ok(())
 }
 
 /// The folder in a session's folder that holds its workers' worktrees.
@@ -364,6 +404,104 @@ mod tests {
         assert!(!first.dir.exists());
         assert_eq!(list(&root).len(), 1);
         assert!(workspace.is_dir(), "the workspace stays");
+    }
+
+    /// An Arko from before session locks holds only its terminal's: the
+    /// session is listed as open, by someone who didn't say, and isn't
+    /// deleted until it lets go.
+    #[test]
+    fn an_older_arko_holding_a_session_keeps_it() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("arko");
+        let session = Session::create(&root).unwrap();
+        session.save_settings(&settings(temp.path())).unwrap();
+        std::fs::create_dir_all(session.jobs_dir()).unwrap();
+        let terminal = std::fs::File::create(session.dir.join(session::TERMINAL_LOCK)).unwrap();
+        terminal.try_lock().unwrap();
+        let someone = holder(&root, &session.id).unwrap();
+        assert_eq!(someone.app, "", "someone who didn't say");
+        assert!(list(&root)[0].holder.is_some());
+        assert_eq!(
+            delete(&root, &session.id),
+            Err(DeleteError::Locked { holder: None })
+        );
+        assert!(
+            session.dir.join(session::SETTINGS_FILE).exists(),
+            "nothing deleted"
+        );
+        drop(terminal);
+        assert_eq!(holder(&root, &session.id), None);
+        assert_eq!(delete(&root, &session.id), Ok(Deleted::default()));
+        assert!(!session.dir.exists());
+    }
+
+    /// A session's ID is a folder's name in `sessions/`, never a path: a
+    /// path given for one names no session, and nothing there is deleted.
+    #[test]
+    fn a_session_id_is_never_a_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("arko");
+        let project = temp.path().join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(project.join(session::SETTINGS_FILE), "{}").unwrap();
+        std::fs::write(project.join("main.rs"), "fn main() {}").unwrap();
+        let outside = project.to_string_lossy().into_owned();
+        assert!(matches!(delete(&root, &outside), Err(DeleteError::Io(_))));
+        assert!(project.join("main.rs").exists());
+        for id in ["", ".", "..", "../project", "a/b", "a\\b", outside.as_str()] {
+            assert!(!session::is_session_id(id), "{id}");
+            assert!(Session::open(&root, id).is_err(), "{id}");
+            assert_eq!(holder(&root, id), None, "{id}");
+        }
+        assert!(session::is_session_id("20261016-170000-ab12"));
+    }
+
+    /// A deleted session's files go while its locks are still held (so no
+    /// Arko opens it half deleted), then the locks.
+    #[test]
+    fn a_session_is_deleted_while_it_is_held() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("arko");
+        let session = Session::create(&root).unwrap();
+        session.save_settings(&settings(temp.path())).unwrap();
+        std::fs::create_dir_all(session.jobs_dir().join("job-1")).unwrap();
+        std::fs::create_dir_all(session.run_dir()).unwrap();
+        std::fs::File::create(session.dir.join(session::TERMINAL_LOCK)).unwrap();
+        let lock = session.lock("arko-studio").unwrap();
+        let terminal = session.lock_terminal().unwrap();
+        let locks = [
+            session.dir.join(session::LOCK_FILE),
+            session.dir.join(session::HOLDER_FILE),
+            session.dir.join(session::TERMINAL_LOCK),
+        ];
+        clear(&session.dir, &[], &locks).unwrap();
+        let mut left: Vec<String> = walk(&session.dir);
+        left.sort();
+        assert_eq!(left, ["holder.json", "jobs", "jobs/.lock", "lock"]);
+        assert!(session::holder(&session.dir).is_some(), "still held");
+        drop((terminal, lock));
+    }
+
+    /// The paths under `dir`, relative to it.
+    fn walk(dir: &Path) -> Vec<String> {
+        let mut found = Vec::new();
+        for entry in std::fs::read_dir(dir).unwrap().filter_map(Result::ok) {
+            let path = entry.path();
+            let name = path
+                .strip_prefix(dir)
+                .unwrap()
+                .to_string_lossy()
+                .replace('\\', "/");
+            if path.is_dir() {
+                found.extend(
+                    walk(&path)
+                        .into_iter()
+                        .map(|inner| format!("{name}/{inner}")),
+                );
+            }
+            found.push(name);
+        }
+        found
     }
 
     /// A deleted session's clean worker worktrees go as git removes them;

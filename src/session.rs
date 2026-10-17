@@ -12,7 +12,7 @@ use crate::project;
 use crate::providers::OpenAiAuth;
 use crate::shell::WindowsShell;
 
-const SETTINGS_FILE: &str = "session.json";
+pub(crate) const SETTINGS_FILE: &str = "session.json";
 /// The name the user gave the session, when they renamed it: apart from
 /// its settings, which the session rewrites while it runs.
 const TITLE_FILE: &str = "title";
@@ -223,6 +223,9 @@ impl Session {
     }
 
     pub fn open(root: &Path, id: &str) -> Result<Self, String> {
+        if !is_session_id(id) {
+            return Err(format!("`{id}` isn't a session's ID"));
+        }
         let dir = root.join("sessions").join(id);
         if !dir.join(SETTINGS_FILE).is_file() {
             return Err(format!(
@@ -390,9 +393,24 @@ pub(crate) fn move_fin_folder_in(data_directory: &Path) -> Option<String> {
 
 /// The file an open session holds locked: one Arko (in any process) has a
 /// session open at a time.
-const LOCK_FILE: &str = "lock";
+pub(crate) const LOCK_FILE: &str = "lock";
 /// Who holds the lock, as they wrote it once they had it.
-const HOLDER_FILE: &str = "holder.json";
+pub(crate) const HOLDER_FILE: &str = "holder.json";
+
+/// The lock the session's terminal holds while an Arko has it open: all
+/// that an Arko from before session locks holds.
+pub(crate) const TERMINAL_LOCK: &str = "jobs/.lock";
+
+/// Whether `id` can name a session: a folder's name in `sessions/`, never
+/// a path (no separators, not `.` or `..`).
+pub fn is_session_id(id: &str) -> bool {
+    let mut parts = Path::new(id).components();
+    !id.contains(['/', '\\'])
+        && matches!(
+            (parts.next(), parts.next()),
+            (Some(std::path::Component::Normal(name)), None) if name == id
+        )
+}
 
 /// Who has a session open: the app, its process and machine, and since when.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -521,22 +539,49 @@ impl Session {
             holder,
         })
     }
+
+    /// Takes the session's terminal's lock, when it has a terminal: to
+    /// delete it, as an Arko from before session locks holds only that one
+    /// while it has the session open (`Held(None)`).
+    pub(crate) fn lock_terminal(&self) -> Result<Option<std::fs::File>, LockError> {
+        let file = match std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(self.dir.join(TERMINAL_LOCK))
+        {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(LockError::Io(error)),
+        };
+        match file.try_lock() {
+            Ok(()) => Ok(Some(file)),
+            Err(std::fs::TryLockError::WouldBlock) => Err(LockError::Held(None)),
+            Err(std::fs::TryLockError::Error(error)) => Err(LockError::Io(error)),
+        }
+    }
 }
 
-/// Who has the session in `dir` open, if anyone does: its lock is held. (A
-/// holder file left without the lock, by an Arko that ended without
-/// removing it, says nothing.)
-#[cfg_attr(not(test), allow(dead_code))] // (The session list's, to come.)
+/// Who has the session in `dir` open, if anyone does: its lock is held,
+/// or (an Arko from before session locks, which doesn't say who it is) its
+/// terminal's. (A holder file left without the lock, by an Arko that ended
+/// without removing it, says nothing.)
 pub fn holder(dir: &Path) -> Option<Holder> {
-    let file = std::fs::OpenOptions::new()
+    if held(&dir.join(LOCK_FILE)) {
+        return Some(read_holder(dir).unwrap_or_else(Holder::unknown));
+    }
+    held(&dir.join(TERMINAL_LOCK)).then(Holder::unknown)
+}
+
+/// Whether the lock file at `path` is held.
+fn held(path: &Path) -> bool {
+    let Ok(file) = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
-        .open(dir.join(LOCK_FILE))
-        .ok()?;
-    match file.try_lock() {
-        Ok(()) => None,
-        Err(_) => Some(read_holder(dir).unwrap_or_else(Holder::unknown)),
-    }
+        .open(path)
+    else {
+        return false;
+    };
+    matches!(file.try_lock(), Err(std::fs::TryLockError::WouldBlock))
 }
 
 fn read_holder(dir: &Path) -> Option<Holder> {
