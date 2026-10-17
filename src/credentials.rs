@@ -356,6 +356,8 @@ fn entered(name: &str) -> Option<String> {
     current().entered(name)
 }
 
+/// (The setup screen's: it enters what the user typed.)
+#[cfg(feature = "tui")]
 fn enter(name: &'static str, value: String) {
     current().enter(name, value);
 }
