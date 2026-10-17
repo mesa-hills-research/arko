@@ -193,23 +193,24 @@ fn draw_list(frame: &mut Frame, app: &mut App, area: Rect, rows: Vec<ListRow>) {
         .unwrap_or(4);
     for (line, row) in rows.iter().enumerate() {
         let y = area.y + line as u16;
-        let index = match *row {
-            ListRow::Agent(index) => index,
-            ListRow::Above(count) | ListRow::More(count) => {
-                let place = if matches!(row, ListRow::Above(_)) {
-                    "above"
-                } else {
-                    "more"
-                };
-                let text = format!("   {} {count} {place}", glyphs::render("…"));
-                frame.buffer_mut().set_line(
-                    area.x,
-                    y,
-                    &Line::from(Span::styled(text, theme.dim())),
-                    area.width,
-                );
-                continue;
-            }
+        let counted = match *row {
+            ListRow::Agent(_) => None,
+            ListRow::Above(count) => Some(format!("{count} above")),
+            ListRow::More(count) => Some(format!("{count} more")),
+            ListRow::Both(above, below) => Some(format!("{above} above, {below} more")),
+        };
+        if let Some(counted) = counted {
+            let text = format!("   {} {counted}", glyphs::render("…"));
+            frame.buffer_mut().set_line(
+                area.x,
+                y,
+                &Line::from(Span::styled(text, theme.dim())),
+                area.width,
+            );
+            continue;
+        }
+        let ListRow::Agent(index) = *row else {
+            continue;
         };
         let row = list[index];
         let shown = row.map(|w| w.id.as_str()) == app.watching.as_deref();

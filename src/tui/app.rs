@@ -110,6 +110,8 @@ pub enum ListRow {
     Above(usize),
     /// "… N more": the workers below those shown.
     More(usize),
+    /// "… N above, M more": both, in a list with room for one count.
+    Both(usize, usize),
 }
 
 /// The agent list as drawn: its rows, and how far it is scrolled.
@@ -127,8 +129,8 @@ pub struct ListWindow {
 /// [`LIST_WORKERS`] workers from the `scroll`th on, with a row counting
 /// those above them and one counting those below, when there are. With
 /// `follow`, the workers shown move to the agent `focus` is on. A list too
-/// short for both counts shows the count below only, and one too short for
-/// a worker beside the main agent and a count shows the agent the focus is
+/// short for both counts counts both on one row, and one too short for a
+/// worker beside the main agent and a count shows the agent the focus is
 /// on and counts the others.
 pub fn list_rows(
     count: usize,
@@ -193,8 +195,11 @@ pub fn list_rows(
         rows.push(ListRow::Above(scroll));
     }
     rows.extend((scroll + 1..=scroll + shown).map(ListRow::Agent));
-    if below > 0 {
-        rows.push(ListRow::More(below));
+    match below {
+        0 => {}
+        // (No room for the count above: one row counts both.)
+        below if scroll > 0 && !above => rows.push(ListRow::Both(scroll, below)),
+        below => rows.push(ListRow::More(below)),
     }
     ListWindow { rows, scroll, most }
 }
@@ -253,6 +258,9 @@ pub struct App {
     list_scroll: (usize, usize),
     /// The agent the list's rows last moved to show (see `list_focus`).
     list_followed: Option<usize>,
+    /// The wheel scrolled the list since the focus last moved, so its rows
+    /// stay where the wheel left them.
+    list_wheeled: bool,
     /// What a model needs that the session doesn't have, for `/model`'s
     /// picker (from the providers the session reaches, and Claude Code's
     /// login).
@@ -332,6 +340,7 @@ impl App {
             list_drawn: Default::default(),
             list_scroll: (0, 0),
             list_followed: None,
+            list_wheeled: false,
             press: None,
             last_click: None,
             folded: None,
@@ -1019,10 +1028,14 @@ impl App {
         std::iter::once(None).chain(workers).collect()
     }
 
-    /// The agent list's rows in `height` rows at most, scrolled as the
-    /// wheel left it, or to show the agent the focus moved to.
+    /// The agent list's rows in `height` rows at most. They show the agent
+    /// the focus is on, as workers come and go and the area changes, unless
+    /// the wheel scrolled the list since the focus last moved.
     pub fn list_rows(&mut self, height: usize) -> Vec<ListRow> {
-        let follow = self.list_focus != self.list_followed;
+        if self.list_focus != self.list_followed {
+            self.list_wheeled = false;
+        }
+        let follow = !self.list_wheeled;
         self.list_followed = self.list_focus;
         let window = list_rows(
             self.list().len(),
@@ -1743,10 +1756,14 @@ impl App {
                     };
                 }
             }
-            // Over the agent list, the wheel scrolls it, a worker at a time.
+            // Over the agent list, the wheel scrolls it, a worker at a time,
+            // when it has workers to scroll to.
             MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
-                if self.overlay.is_none() && self.list_drawn.0.contains(at) =>
+                if self.overlay.is_none()
+                    && self.list_drawn.0.contains(at)
+                    && self.list_scroll.1 > 0 =>
             {
+                self.list_wheeled = true;
                 let (scroll, most) = self.list_scroll;
                 self.list_scroll.0 = if event.kind == MouseEventKind::ScrollUp {
                     scroll.saturating_sub(1)
@@ -1921,7 +1938,7 @@ impl App {
                 }
                 // The count of the workers below: the list moves on to the
                 // next of them (after the last, back to the first).
-                Some(ListRow::More(_)) => {
+                Some(ListRow::More(_) | ListRow::Both(..)) => {
                     let count = self.list().len();
                     self.list_focus = Some(if last + 1 < count { last + 1 } else { 1 });
                 }
@@ -2367,7 +2384,7 @@ pub(super) mod tests {
     /// The workers shown follow the focus, and a short screen shows fewer.
     #[test]
     fn the_list_shows_five_workers_and_counts_those_above_and_below() {
-        use ListRow::{Above, Agent, More};
+        use ListRow::{Above, Agent, Both, More};
         let rows = |count, focus, height| list_rows(count, 0, focus, true, height).rows;
         assert!(rows(0, None, 7).is_empty());
         assert_eq!(rows(4, None, 7), [Agent(0), Agent(1), Agent(2), Agent(3)]);
@@ -2438,11 +2455,54 @@ pub(super) mod tests {
         // On a short screen: fewer workers, and the counts.
         assert_eq!(rows(8, None, 4), [Agent(0), Agent(1), Agent(2), More(5)]);
         assert_eq!(rows(8, Some(4), 4), [Agent(0), Above(3), Agent(4), More(3)]);
-        // Too short for both counts: the count below, else the one above.
-        assert_eq!(rows(4, Some(2), 3), [Agent(0), Agent(2), More(1)]);
+        // Too short for both counts: both on one row.
+        assert_eq!(rows(4, Some(2), 3), [Agent(0), Agent(2), Both(1, 1)]);
         assert_eq!(rows(4, Some(3), 3), [Agent(0), Above(2), Agent(3)]);
+        assert_eq!(rows(11, Some(9), 3), [Agent(0), Agent(9), Both(8, 1)]);
         assert_eq!(rows(3, None, 2), [Agent(0), More(2)]);
         assert_eq!(rows(3, Some(2), 1), [Agent(2)]);
+    }
+
+    /// The worker selected stays in the list as workers arrive and the area
+    /// shrinks, unless the wheel moved the list since.
+    #[test]
+    fn the_list_keeps_the_selected_worker_in_view() {
+        use crate::remote::WorkerState::Running;
+        let mut app = app();
+        let add = |app: &mut App, n: usize| {
+            app.update(
+                Update::Worker(worker(&format!("r{n}"), Running)),
+                Activity::default,
+            )
+        };
+        for n in 1..=6 {
+            add(&mut app, n);
+        }
+        app.list_focus = Some(6);
+        assert!(app.list_rows(7).contains(&ListRow::Agent(6)));
+        // A worker arrives: the selected one stays.
+        add(&mut app, 7);
+        assert!(app.list_rows(7).contains(&ListRow::Agent(6)));
+        // The area shrinks: it stays too.
+        assert!(app.list_rows(4).contains(&ListRow::Agent(6)));
+        assert!(app.list_rows(3).contains(&ListRow::Agent(6)));
+        // The wheel moves the list away from it, and it stays where the
+        // wheel left it, until the selection moves.
+        let rows = app.list_rows(7);
+        app.list_drawn = (ratatui::layout::Rect::new(0, 30, 80, 7), rows);
+        for _ in 0..5 {
+            app.mouse(MouseEvent {
+                kind: MouseEventKind::ScrollUp,
+                column: 5,
+                row: 32,
+                modifiers: KeyModifiers::NONE,
+            });
+        }
+        assert!(!app.list_rows(7).contains(&ListRow::Agent(6)));
+        add(&mut app, 8);
+        assert!(!app.list_rows(7).contains(&ListRow::Agent(6)));
+        app.list_focus = Some(7);
+        assert!(app.list_rows(7).contains(&ListRow::Agent(7)));
     }
 
     /// The list has the workers running or waiting, not those that ended
