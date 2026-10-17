@@ -937,7 +937,7 @@ impl App {
     fn interrupt(&mut self) {
         if self.activity.working {
             if self.stopping {
-                self.say("Stopping: the agents get up to 10 s to end");
+                self.say("Stopping (the agents get up to 10 s to end)");
             } else {
                 self.stopping = true;
             }
@@ -1207,7 +1207,7 @@ impl App {
                     self.set_view(view);
                 }
                 None if rest.is_empty() => self.cycle_view(),
-                None => self.say("Views: full, quiet, messages"),
+                None => self.say("The views are full, quiet and messages"),
             },
             "/watch" => match rest {
                 "" => self.focus_list(),
@@ -1490,7 +1490,7 @@ impl App {
                 }
                 SettingsRow::Theme => {
                     if self.depth == Depth::Ansi16 {
-                        self.say("This terminal shows 16 colours: themes need more");
+                        self.say("This terminal shows 16 colours, and themes need more");
                     } else {
                         let names = self.catalog.names();
                         let selected = names

@@ -1357,7 +1357,7 @@ fn entry_lines(
         }
         Kind::Question => {
             let mut lines = vec![Wrapped::line(vec![Span::styled(
-                "The agent asks:".to_string(),
+                "The agent asks".to_string(),
                 theme.accent().add_modifier(Modifier::BOLD),
             )])];
             lines.extend(markdown::render(&item.text, theme.text(), theme, inner));

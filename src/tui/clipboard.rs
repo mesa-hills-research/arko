@@ -49,13 +49,16 @@ pub fn copy(text: &str) -> Copied {
         }
         if set("WAYLAND_DISPLAY") {
             return Copied::Failed(
-                "Couldn't copy: this desktop's clipboard needs wl-clipboard (install it)".into(),
+                "Couldn't copy, because this desktop's clipboard needs wl-clipboard (install it)"
+                    .into(),
             );
         }
-        Copied::Failed("Couldn't copy: this desktop's clipboard needs xclip (install it)".into())
+        Copied::Failed(
+            "Couldn't copy, because this desktop's clipboard needs xclip (install it)".into(),
+        )
     }
     #[cfg(not(all(unix, not(target_os = "macos"))))]
-    Copied::Failed(format!("Couldn't copy to the clipboard: {error}"))
+    Copied::Failed(format!("Couldn't copy to the clipboard ({error})"))
 }
 
 /// Copies through arboard, with the clipboard kept for the run.

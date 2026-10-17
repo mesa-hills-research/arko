@@ -309,8 +309,11 @@ pub const KEYS: &[(&str, &str)] = &[
         "Ctrl+B",
         "move the agent's running shell command to the background, else back a character",
     ),
-    ("Ctrl+O", "next view: full, quiet, messages"),
-    ("Ctrl+T", "the agent list: Enter shows a worker's own work"),
+    ("Ctrl+O", "the next view (full, quiet, messages)"),
+    (
+        "Ctrl+T",
+        "the agent list, where Enter shows a worker's own work",
+    ),
     ("Esc", "close, go back, or put the agent's question off"),
     ("Ctrl+C", "stop the turn, else clear the box"),
     ("Ctrl+D", "quit, when the box is empty (as /exit)"),
@@ -457,7 +460,7 @@ fn settings(frame: &mut Frame, app: &App, area: Rect, selected: usize) {
                     Span::styled(glyphs::render("›").into_owned(), theme.dim()),
                 ],
                 if app.depth == Depth::Ansi16 {
-                    "This terminal shows 16 colours: its own are used.".to_string()
+                    "This terminal shows 16 colours, so its own are used.".to_string()
                 } else if app.previews() {
                     "Enter opens the themes, and resting on one previews it.".to_string()
                 } else {
@@ -510,9 +513,9 @@ fn settings(frame: &mut Frame, app: &App, area: Rect, selected: usize) {
                     Span::styled(format!(" {}", glyphs::render("→")), theme.dim()),
                 ],
                 if app.cc_compact() {
-                    "The input size the main agent hands over at: it writes a report of its work and goes on from it, fresh. On cc: models, Claude Code compacts the conversation at that size instead. /handover does it now."
+                    "The input size at which the main agent writes a report of its work and goes on from it, fresh. On cc: models, Claude Code compacts the conversation at that size instead. /handover does it now."
                 } else {
-                    "The input size the main agent hands over at: it writes a report of its work and goes on from it, fresh. /handover does it now."
+                    "The input size at which the main agent writes a report of its work and goes on from it, fresh. /handover does it now."
                 }
                 .to_string(),
             ),
@@ -849,7 +852,7 @@ fn page(frame: &mut Frame, app: &App, area: Rect, link: usize, since: Instant) {
     let mut lines: Vec<Line<'static>> = Vec::new();
     let links = page_links(app);
     let warning = Line::from(Span::styled(
-        "The link holds the session's key. No TLS: on a network you don't trust, use an SSH tunnel or Tailscale.",
+        "The link holds the session's key. The page isn't encrypted, so on a network you don't trust, use an SSH tunnel or Tailscale.",
         theme.warning(),
     ));
     match links {
@@ -857,7 +860,7 @@ fn page(frame: &mut Frame, app: &App, area: Rect, link: usize, since: Instant) {
             let text = if since.elapsed().as_secs() < 5 {
                 "Starting the web page…"
             } else {
-                "The web page is off: /remote starts it (what went wrong is in the transcript)."
+                "The web page is off. /remote starts it (what went wrong is in the transcript)."
             };
             lines.push(Line::from(Span::styled(
                 glyphs::render(text).into_owned(),

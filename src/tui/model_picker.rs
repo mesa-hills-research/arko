@@ -408,7 +408,7 @@ pub fn draw(frame: &mut Frame, theme: &Theme, area: Rect, picker: &ModelPicker) 
                     Row::FollowMain { model } => {
                         let mut spans = vec![
                             marker(chosen),
-                            Span::styled(format!("Same as the main agent: {model}  "), style),
+                            Span::styled(format!("Same as the main agent ({model})  "), style),
                         ];
                         if picker.follows {
                             spans.push(Span::styled("now", theme.accent()));

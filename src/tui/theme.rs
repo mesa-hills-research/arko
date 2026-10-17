@@ -255,7 +255,7 @@ impl Catalog {
                 Ok(family) => catalog.families.push(family),
                 Err(error) => catalog
                     .warnings
-                    .push(format!("the bundled theme {file} is broken: {error}")),
+                    .push(format!("the bundled theme {file} is broken ({error})")),
             }
         }
         let Some(folder) = folder else {
@@ -289,7 +289,7 @@ impl Catalog {
                     catalog.families.push(family);
                 }
                 Err(error) => catalog.warnings.push(format!(
-                    "The theme file {} was left out: {error}",
+                    "The theme file {} was left out ({error}).",
                     path.display()
                 )),
             }
