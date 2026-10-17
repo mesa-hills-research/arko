@@ -485,10 +485,16 @@ pub fn start(
         (None, None) => any_port(),
     };
     result.map_err(|error| {
-        format!(
-            "could not serve on {}: {error}",
-            SocketAddr::new(bind.ip, bind.port.unwrap_or(DEFAULT_PORT))
-        )
+        let addr = SocketAddr::new(bind.ip, bind.port.unwrap_or(DEFAULT_PORT));
+        // A port given that another page or program has: what to change.
+        if error.kind() == std::io::ErrorKind::AddrInUse && bind.port.is_some_and(|port| port != 0)
+        {
+            format!(
+                "could not serve on {addr}: the port is in use (by another session's web page, or another program). Choose another port, or none for any free one"
+            )
+        } else {
+            format!("could not serve on {addr}: {error}")
+        }
     })
 }
 

@@ -179,6 +179,22 @@ pub enum Request {
         before: Option<u64>,
         reply: Reply<String>,
     },
+    /// Serves the session's web page on `bind` (an address, a port, or
+    /// both, as `--remote` takes them; `None`: this computer only, on
+    /// 127.0.0.1), in place of the one served: its links, with the
+    /// session's key. `Err` with why it isn't served (an address that
+    /// isn't this computer's, a port in use).
+    ShareWebPage {
+        bind: Option<String>,
+        reply: Reply<remote::Page>,
+    },
+    /// Stops the session's web page: its links and the sessions of its
+    /// clients no longer work. Its clients are told it was done in the app.
+    StopWebPage { reply: Reply<()> },
+    /// Gives the session's web page a new key, so that the old links no
+    /// longer work. The page, when it is served, goes on with it on its
+    /// port: its new links (`None` when it isn't served).
+    NewWebPageKey { reply: Reply<Option<remote::Page>> },
     /// Keeps the main agent's prompt cache warm, between turns: out of
     /// band where the provider allows (nothing joins the conversation),
     /// else with a short message and its reply in the conversation (the
@@ -1008,6 +1024,75 @@ mod tests {
     /// The tests that open a session without a context of its own, one at a
     /// time (a process has one such session).
     static ALONE_TESTS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    /// An app serves the session's web page, stops it and gives it a new
+    /// key with requests that answer: served on this computer only when it
+    /// gives no address (whatever the page was served on before), with what
+    /// went wrong when it can't be served, and its clients told it was done
+    /// in the app.
+    #[tokio::test]
+    async fn an_app_shares_the_web_page_with_requests() {
+        let temp = tempfile::tempdir().unwrap();
+        let (server, _bodies) = counting_server().await;
+        let (root, project) = (temp.path().join("arko"), temp.path().join("project"));
+        let (seam, ended) = open_app(&root, &project, &server, SessionChoice::New).await;
+        let share = |bind: Option<&str>| {
+            let bind = bind.map(str::to_string);
+            ask_for(&seam, move |reply| Request::ShareWebPage { bind, reply })
+        };
+        let everywhere = share(Some("0.0.0.0:0")).await.unwrap();
+        assert!(everywhere.addr.ip().is_unspecified());
+        let here = share(None).await.unwrap();
+        assert!(here.addr.ip().is_loopback(), "{:?}", here.addr);
+        let key_of = |page: &crate::remote::Page| {
+            page.links[0].url.split("#key=").nth(1).unwrap().to_string()
+        };
+        let old_key = key_of(&here);
+        let renewed = ask_for(&seam, |reply| Request::NewWebPageKey { reply })
+            .await
+            .unwrap();
+        let renewed = renewed.expect("served with the new key");
+        assert_ne!(key_of(&renewed), old_key);
+        assert_eq!(
+            ask_for(&seam, |reply| Request::StopWebPage { reply }).await,
+            Ok(())
+        );
+        let notices: Vec<String> = seam
+            .feed
+            .subscribe()
+            .0
+            .items
+            .into_iter()
+            .filter(|item| item.kind == Kind::Notice)
+            .map(|item| item.text)
+            .collect();
+        assert!(
+            notices
+                .iter()
+                .any(|text| text == "The web page was turned off in an app."),
+            "{notices:?}"
+        );
+        assert!(
+            notices
+                .iter()
+                .any(|text| text.starts_with("The session's key was changed in an app"))
+        );
+        assert!(!notices.iter().any(|text| text.contains("at the terminal")));
+        assert_eq!(
+            ask_for(&seam, |reply| Request::NewWebPageKey { reply }).await,
+            Ok(None)
+        );
+        // A port in use: what to change.
+        let taken = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = taken.local_addr().unwrap().port();
+        let refused = share(Some(&format!("127.0.0.1:{port}"))).await.unwrap_err();
+        assert!(
+            refused.contains("in use") && refused.contains("Choose another port"),
+            "{refused}"
+        );
+        assert!(share(Some("nowhere at all")).await.is_err());
+        quit(seam, ended).await;
+    }
 
     /// How long a worker ran is kept with the session: when it opens again,
     /// the worker's time goes on from there.

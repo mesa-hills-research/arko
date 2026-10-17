@@ -966,7 +966,7 @@ impl Harness {
                     continue;
                 }
                 if is_remote_command(command) {
-                    self.remote_command(command).await;
+                    self.remote_command(command, source).await;
                     continue;
                 }
                 if self.live_command(command, source) {
@@ -1079,7 +1079,7 @@ impl Harness {
     /// last, else 127.0.0.1), or shows its links again; `/remote off` stops
     /// it, and `/remote new-key` makes a new key, which ends the page's
     /// sessions.
-    pub(crate) async fn remote_command(&mut self, command: &str) {
+    pub(crate) async fn remote_command(&mut self, command: &str, source: Source) {
         let argument = command.strip_prefix("/remote").unwrap_or_default().trim();
         match argument {
             "" if self.remote.is_some() => {
@@ -1097,9 +1097,7 @@ impl Harness {
             qr if qr == "qr" || qr.starts_with("qr ") => self.remote_qr(qr[2..].trim()),
             "off" => {
                 if self.remote.is_some() {
-                    self.feed
-                        .notice(Level::Warn, "The web page was turned off at the terminal.");
-                    self.stop_remote().await;
+                    self.stop_page(source).await;
                     self.output.line(&self.output.dim(
                         "The web page is off: its links and sessions no longer work. /remote starts it again.",
                     ));
@@ -1107,25 +1105,13 @@ impl Harness {
                     self.output.line("The web page isn't on.");
                 }
             }
-            "new-key" => {
-                if let Err(error) = self.remote_key(true) {
-                    self.say(Level::Error, &format!("arko: {error}"));
-                    return;
-                }
-                match self.remote_bind.filter(|_| self.remote.is_some()) {
-                    // On the same port: the old links are dead.
-                    Some((bind, _)) => {
-                        self.feed.notice(
-                            Level::Warn,
-                            "The session's key was changed at the terminal.",
-                        );
-                        self.start_remote(bind).await;
-                    }
-                    None => self
-                        .output
-                        .line("The session has a new key. /remote starts the web page with it."),
-                }
-            }
+            "new-key" => match self.new_page_key(source).await {
+                Err(error) => self.say(Level::Error, &format!("arko: {error}")),
+                Ok(None) => self
+                    .output
+                    .line("The session has a new key. /remote starts the web page with it."),
+                Ok(Some(_)) => {}
+            },
             other => match remote::parse_bind(other) {
                 Ok(bind) => self.start_remote(bind).await,
                 Err(error) => self.output.line(&self.output.error(&format!(
@@ -1145,21 +1131,64 @@ impl Harness {
         }
     }
 
-    /// Serves the web page where `bind` says, in place of the one running,
-    /// and prints its links.
-    pub(crate) async fn start_remote(&mut self, bind: remote::Bind) {
-        self.stop_remote().await;
-        let key = match self.remote_key(false) {
-            Ok(key) => key,
-            Err(error) => {
-                self.output.line(
-                    &self
-                        .output
-                        .error(&format!("arko: the web page is off: {error}")),
+    /// Where the user acted, as a notice says it: "at the terminal", "in
+    /// <the app>".
+    fn acted_in(&self, source: Source) -> String {
+        match source {
+            Source::Terminal => "at the terminal".to_string(),
+            Source::App => format!("in {}", self.app_name),
+            Source::Web => "on the web page".to_string(),
+        }
+    }
+
+    /// Stops the web page, telling its clients where the user did it.
+    pub(crate) async fn stop_page(&mut self, source: Source) {
+        if self.remote.is_some() {
+            let text = format!("The web page was turned off {}.", self.acted_in(source));
+            self.feed.notice(Level::Warn, &text);
+            self.stop_remote().await;
+        }
+    }
+
+    /// Gives the session's web page a new key, so that the old links no
+    /// longer work: a page served goes on with it on its port (its links),
+    /// telling its clients where the user did it.
+    pub(crate) async fn new_page_key(
+        &mut self,
+        source: Source,
+    ) -> Result<Option<remote::Page>, String> {
+        self.remote_key(true)?;
+        match self.remote_bind.filter(|_| self.remote.is_some()) {
+            // On the same port: the old links are dead.
+            Some((bind, _)) => {
+                let text = format!(
+                    "The session's key was changed {}: the old links no longer work.",
+                    self.acted_in(source)
                 );
-                return;
+                self.feed.notice(Level::Warn, &text);
+                self.serve_page(bind).await.map(Some)
             }
-        };
+            None => Ok(None),
+        }
+    }
+
+    /// Serves the web page where `bind` says, in place of the one running,
+    /// and prints its links; what goes wrong is printed too.
+    pub(crate) async fn start_remote(&mut self, bind: remote::Bind) {
+        if let Err(error) = self.serve_page(bind).await {
+            self.output.line(
+                &self
+                    .output
+                    .error(&format!("arko: the web page is off: {error}")),
+            );
+        }
+    }
+
+    /// Serves the web page where `bind` says, in place of the one running,
+    /// and prints its links: the page, or why it isn't served.
+    pub(crate) async fn serve_page(&mut self, bind: remote::Bind) -> Result<remote::Page, String> {
+        self.stop_remote().await;
+        let key = self.remote_key(false)?;
         let info = remote::Info {
             model: self.settings.describe(&self.settings.main),
             workspace: self.settings.workspace.display().to_string(),
@@ -1182,20 +1211,18 @@ impl Harness {
                 let (links, note) = remote::links(server.addr(), &key);
                 // In the status before the links are said: a view that waits
                 // for the page finds it as they come.
-                *lock(&self.gauges.page) = Some(remote::Page {
+                let page = remote::Page {
                     addr: server.addr(),
                     links,
                     note,
-                });
+                };
+                *lock(&self.gauges.page) = Some(page.clone());
                 self.gauges.touch();
                 self.announce_remote(server.addr(), &key);
                 self.remote = Some(server);
+                Ok(page)
             }
-            Err(error) => self.output.line(
-                &self
-                    .output
-                    .error(&format!("arko: the web page is off: {error}")),
-            ),
+            Err(error) => Err(error),
         }
     }
 
@@ -1374,6 +1401,26 @@ impl Harness {
             }
             Request::RefreshCache { reply } => {
                 let _ = reply.send(self.refresh_cache().await);
+            }
+            // (The web page doesn't change the agent: also during a turn.)
+            Request::ShareWebPage { bind, reply } => {
+                let served = match bind.as_deref().map(str::trim) {
+                    // This computer only, never where it was served before.
+                    None | Some("") => Ok(remote::Bind::default()),
+                    Some(bind) => remote::parse_bind(bind),
+                };
+                let served = match served {
+                    Ok(bind) => Box::pin(self.serve_page(bind)).await,
+                    Err(error) => Err(error),
+                };
+                let _ = reply.send(served);
+            }
+            Request::StopWebPage { reply } => {
+                Box::pin(self.stop_page(Source::App)).await;
+                let _ = reply.send(Ok(()));
+            }
+            Request::NewWebPageKey { reply } => {
+                let _ = reply.send(Box::pin(self.new_page_key(Source::App)).await);
             }
             Request::Branch { before, reply } => {
                 let _ = reply.send(self.branch(before));
@@ -2915,7 +2962,7 @@ impl Harness {
                             continue;
                         }
                         if is_remote_command(command) {
-                            self.remote_command(command).await;
+                            self.remote_command(command, source).await;
                             continue;
                         }
                         if self.live_command(command, source) {
