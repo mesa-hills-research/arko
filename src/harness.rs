@@ -95,7 +95,7 @@ pub(crate) struct SavedSetup {
 pub(crate) fn saved_setup(checkpoint: &Path, run_dir: &Path) -> Result<SavedSetup, String> {
     let unreadable = |error: String| {
         format!(
-            "could not read the session's checkpoint {}: {error}",
+            "could not read the session's checkpoint {} ({error})",
             checkpoint.display()
         )
     };
@@ -622,7 +622,7 @@ impl Harness {
                 }
             }
             Err(error) => notes.push((
-                format!("The skills couldn't be read: {error}"),
+                format!("The skills couldn't be read ({error})."),
                 Some(Level::Warn),
             )),
         }
@@ -640,7 +640,7 @@ impl Harness {
         }
         if self.outside.is_on() {
             notes.push((
-                "Outside access is on: the agents may change files outside the working directory. /outside off turns it off."
+                "Outside access is on, so the agents may change files outside the working directory. /outside off turns it off."
                     .to_string(),
                 Some(Level::Warn),
             ));
@@ -697,7 +697,7 @@ impl Harness {
                     ));
                 }
             }
-            Err(error) => out.line(&out.warn(&format!("The skills couldn't be read: {error}"))),
+            Err(error) => out.line(&out.warn(&format!("The skills couldn't be read ({error})."))),
         }
         extras.extend(self.indexes.as_ref().and_then(|indexes| indexes.summary()));
         if !extras.is_empty() {
@@ -707,7 +707,7 @@ impl Harness {
             && !crew.is_empty()
         {
             out.line(&out.dim(
-                "The session's workers are kept: /workers lists them, and the agent can continue them.",
+                "The session's workers are kept. /workers lists them, and the agent can continue them.",
             ));
         }
         if let Some(note) = &self.unoffered {
@@ -742,7 +742,7 @@ impl Harness {
             ));
         }
         if let Conversation::Answered(result) = &self.conversation {
-            out.echo(&out.dim("Resumed. The last reply:"));
+            out.echo(&out.dim("Resumed. The last reply is below."));
             out.echo(&result.summary);
             self.feed.notice(Level::Info, "Resumed.");
         } else if self.conversations.current.is_none() && self.conversations.has_earlier() {
@@ -1089,7 +1089,7 @@ impl Harness {
                 if let Some(addr) = self.remote.as_ref().map(remote::Server::addr) {
                     match self.remote_key(false) {
                         Ok(key) => self.announce_remote(addr, &key),
-                        Err(error) => self.say(Level::Error, &format!("arko: {error}")),
+                        Err(error) => self.say(Level::Error, &ui::sentence(&error)),
                     }
                 }
             }
@@ -1102,14 +1102,14 @@ impl Harness {
                 if self.remote.is_some() {
                     self.stop_page(source).await;
                     self.output.line(&self.output.dim(
-                        "The web page is off: its links and sessions no longer work. /remote starts it again.",
+                        "The web page is off, and its links and sessions no longer work. /remote starts it again.",
                     ));
                 } else {
                     self.output.line("The web page isn't on.");
                 }
             }
             "new-key" => match self.new_page_key(source).await {
-                Err(error) => self.say(Level::Error, &format!("arko: {error}")),
+                Err(error) => self.say(Level::Error, &ui::sentence(&error)),
                 Ok(None) => self
                     .output
                     .line("The session has a new key. /remote starts the web page with it."),
@@ -1117,9 +1117,11 @@ impl Harness {
             },
             other => match remote::parse_bind(other) {
                 Ok(bind) => self.start_remote(bind).await,
-                Err(error) => self.output.line(&self.output.error(&format!(
-                    "{error}. Or: /remote qr, /remote off, /remote new-key"
-                ))),
+                Err(error) => self.output.line(
+                    &self
+                        .output
+                        .error(&format!("{error}. /remote also takes qr, off or new-key.")),
+                ),
             },
         }
     }
@@ -1165,7 +1167,7 @@ impl Harness {
             // On the same port: the old links are dead.
             Some((bind, _)) => {
                 let text = format!(
-                    "The session's key was changed {}: the old links no longer work.",
+                    "The session's key was changed {}, so the old links no longer work.",
                     self.acted_in(source)
                 );
                 self.feed.notice(Level::Warn, &text);
@@ -1179,11 +1181,7 @@ impl Harness {
     /// and prints its links; what goes wrong is printed too.
     pub(crate) async fn start_remote(&mut self, bind: remote::Bind) {
         if let Err(error) = self.serve_page(bind).await {
-            self.output.line(
-                &self
-                    .output
-                    .error(&format!("arko: the web page is off: {error}")),
-            );
+            self.output.line(&self.output.error(&ui::sentence(&error)));
         }
     }
 
@@ -1267,9 +1265,9 @@ impl Harness {
             lines.push(format!(
                 "{} {}{interface}",
                 if n == 0 {
-                    out.bold("Web page:")
+                    out.bold("Web page")
                 } else {
-                    " ".repeat("Web page:".len())
+                    " ".repeat("Web page".len())
                 },
                 link.url
             ));
@@ -1280,11 +1278,11 @@ impl Harness {
         }
         if links.iter().all(|link| link.loopback) {
             out.line(&out.dim(
-                "Only this machine can open it: for a phone, /remote 0.0.0.0 (the network's devices, Tailscale's too), or an SSH tunnel.",
+                "Only this machine can open it. For a phone, use /remote 0.0.0.0 (the network's devices, Tailscale's too) or an SSH tunnel.",
             ));
         }
         out.line(&out.warn(
-            "The link holds the session's key: whoever has it can follow this session and act in it. No TLS: on a network you don't trust, use an SSH tunnel or Tailscale. /remote off stops the page.",
+            "The link holds the session's key, so whoever has it can follow this session and act in it. The page isn't encrypted, so on a network you don't trust, use an SSH tunnel or Tailscale. /remote off stops the page.",
         ));
         let others = links.iter().filter(|link| !link.loopback).count();
         if glyphs::symbols() != glyphs::Symbols::Ascii
@@ -1308,13 +1306,13 @@ impl Harness {
     pub(crate) fn remote_qr(&self, interface: &str) {
         let out = &self.output;
         let Some(addr) = self.remote.as_ref().map(remote::Server::addr) else {
-            out.line("The web page isn't on: /remote starts it.");
+            out.line("The web page isn't on. /remote starts it.");
             return;
         };
         let key = match self.remote_key(false) {
             Ok(key) => key,
             Err(error) => {
-                out.line(&out.error(&format!("arko: {error}")));
+                out.line(&out.error(&ui::sentence(&error)));
                 return;
             }
         };
@@ -1333,7 +1331,7 @@ impl Harness {
         };
         if glyphs::symbols() == glyphs::Symbols::Ascii {
             out.line(&format!(
-                "With ARKO_SYMBOLS=ascii the terminal shows no QR code. The link{}: {}",
+                "With ARKO_SYMBOLS=ascii the terminal shows no QR code. The link{} is {}",
                 place(link),
                 link.url
             ));
@@ -1544,7 +1542,7 @@ impl Harness {
             && let Some(worker) = crew.running().first()
         {
             return Err(format!(
-                "{worker} is running: wait for the workers or stop them first."
+                "{worker} is running. Wait for the workers or stop them first."
             ));
         }
         let index = self.message_at(item, "edited")?;
@@ -1565,7 +1563,7 @@ impl Harness {
     /// Where the user's message `item` is in the agent's conversation now
     /// (else why it isn't, for a message to be `done`: "edited").
     fn message_at(&self, item: u64, done: &str) -> Result<usize, String> {
-        let gone = "The agent's conversation no longer has this message (it was handed over or compacted since, or it is another conversation's): choose a later message, or start a new conversation.";
+        let gone = "The agent's conversation no longer has this message (it was handed over or compacted since, or it is another conversation's). Choose a later message, or start a new conversation.";
         let Some(item) = self
             .feed
             .main_item(item)
@@ -1611,7 +1609,7 @@ impl Harness {
             && let Some(worker) = crew.running().first()
         {
             return Err(format!(
-                "{worker} is running: wait for the workers or stop them first."
+                "{worker} is running. Wait for the workers or stop them first."
             ));
         }
         let task = self
@@ -1645,7 +1643,7 @@ impl Harness {
             return Ok(());
         }
         let unreadable =
-            |error: String| format!("could not read the branch's conversation: {error}");
+            |error: String| format!("could not read the branch's conversation ({error})");
         let text = std::fs::read_to_string(&seed).map_err(|error| unreadable(error.to_string()))?;
         let task: arko_agents::Task =
             serde_json::from_str(&text).map_err(|error| unreadable(error.to_string()))?;
@@ -1656,7 +1654,7 @@ impl Harness {
         workflow
             .checkpoint()
             .await
-            .map_err(|error| format!("could not save the branch: {error}"))?;
+            .map_err(|error| format!("could not save the branch ({error})"))?;
         let _ = std::fs::remove_file(&seed);
         self.conversation = Conversation::Answered(result);
         self.track_conversations();
@@ -1703,7 +1701,7 @@ impl Harness {
                 self.refresh_turn = true;
                 Ok(crate::engine::Refreshed::Message)
             }
-            Err(error) => Err(format!("The cache wasn't refreshed: {error}")),
+            Err(error) => Err(format!("The cache wasn't refreshed ({error})")),
         }
     }
 
@@ -1769,7 +1767,7 @@ impl Harness {
         self.publish_details();
         self.say(
             Level::Info,
-            "The chat's instructions changed: its next new conversation takes them (/new).",
+            "The chat's instructions changed. Its next new conversation takes them (/new).",
         );
         Ok(())
     }
@@ -1804,7 +1802,7 @@ impl Harness {
         // wouldn't know of.)
         if !self.unread.is_empty() {
             return Err(
-                "What you typed during the last turn hasn't reached the agent yet: send a message first."
+                "What you typed during the last turn hasn't reached the agent yet. Send a message first."
                     .into(),
             );
         }
@@ -1813,25 +1811,25 @@ impl Harness {
             match running.as_slice() {
                 [] => {}
                 [one] => {
-                    return Err(format!("{one} is running: wait for it or stop it first."));
+                    return Err(format!("{one} is running. Wait for it or stop it first."));
                 }
                 many => {
                     return Err(format!(
-                        "{} workers are running: wait for them or stop them first.",
+                        "{} workers are running. Wait for them or stop them first.",
                         many.len()
                     ));
                 }
             }
             if crew.has_mail() {
                 return Err(
-                    "The workers' news hasn't reached the agent yet: send a message first.".into(),
+                    "The workers' news hasn't reached the agent yet. Send a message first.".into(),
                 );
             }
         }
         let jobs = self.background.jobs();
         if to == Mode::Chat && !jobs.is_empty() {
             return Err(format!(
-                "{} running in the background: wait for {} or stop {} first.",
+                "{} running in the background. Wait for {} or stop {} first.",
                 if jobs.len() == 1 {
                     "A job is".to_string()
                 } else {
@@ -1870,16 +1868,16 @@ impl Harness {
         self.agent_configs(&settings, &setup)?;
         self.session
             .save_settings(&settings)
-            .map_err(|error| format!("could not save the session: {error}"))?;
+            .map_err(|error| format!("could not save the session ({error})"))?;
         self.settings = settings;
         self.say(
             Level::Info,
             &match to {
                 Mode::Chat => {
-                    "Switched to Chat: from the next message, the agent has no tools.".to_string()
+                    "Switched to Chat. From the next message, the agent has no tools.".to_string()
                 }
                 Mode::Agent => format!(
-                    "Switched to Agent in {}: from the next message, the agent has its tools.",
+                    "Switched to Agent in {}. From the next message, the agent has its tools.",
                     self.settings.workspace.display()
                 ),
             },
@@ -1952,7 +1950,7 @@ impl Harness {
             let image = arko_ai::Image::from_bytes(&attachment.bytes, &attachment.mime);
             if let Some(why) = model.image_refusal(&image) {
                 return Err(format!(
-                    "The message wasn't sent: {why}. Send it without images, or switch to a model that takes them."
+                    "The message wasn't sent ({why}). Send it without images, or switch to a model that takes them."
                 ));
             }
             images.push(image);
@@ -1993,7 +1991,7 @@ impl Harness {
             Err(why) => self.say(
                 Level::Warn,
                 &format!(
-                    "The message didn't reach {to}: {}. It said: {text}",
+                    "The message didn't reach {to} ({}). It said “{text}”.",
                     why.split("; ").next().unwrap_or_default()
                 ),
             ),
@@ -2015,9 +2013,9 @@ impl Harness {
         let compacts = self.handover.compacts();
         let Some(asked) = self.ask_handover() else {
             let text = if compacts {
-                "There is no conversation to compact: your next message starts a new one."
+                "There is no conversation to compact. Your next message starts a new one."
             } else {
-                "There is no conversation to hand over: your next message starts a new one."
+                "There is no conversation to hand over. Your next message starts a new one."
             };
             self.mirrored(|harness| harness.output.line(text));
             return;
@@ -2112,7 +2110,7 @@ impl Harness {
             };
             if let Some(input) = self.handover.input() {
                 text.push_str(&format!(
-                    " (its latest request: {})",
+                    " (its latest request was {})",
                     handover::about(input)
                 ));
             }
@@ -2266,7 +2264,7 @@ impl Harness {
         if let Err(error) = self.session.save_settings(&self.settings) {
             self.say(
                 Level::Error,
-                &format!("arko: could not save the session's settings: {error}"),
+                &format!("Couldn't save the session's settings ({error})."),
             );
         }
     }
@@ -2280,7 +2278,7 @@ impl Harness {
         if let Err(error) = self.session.save_settings(&self.settings) {
             self.say(
                 Level::Error,
-                &format!("arko: could not save the session's settings: {error}"),
+                &format!("Couldn't save the session's settings ({error})."),
             );
         }
         set
@@ -2378,7 +2376,7 @@ impl Harness {
         if let Err(error) = self.session.save_settings(&self.settings) {
             self.say(
                 Level::Error,
-                &format!("arko: could not save the session's settings: {error}"),
+                &format!("Couldn't save the session's settings ({error})."),
             );
         }
         self.tell_agents(&self.outside.note());
@@ -2395,7 +2393,7 @@ impl Harness {
         {
             self.say(
                 Level::Error,
-                &format!("arko: could not tell the agents: {error}"),
+                &format!("Couldn't tell the agents ({error})."),
             );
         }
     }
@@ -2422,7 +2420,7 @@ impl Harness {
             }
         };
         if after == now {
-            let text = format!("No change: {}", background_after_text(after));
+            let text = format!("No change. {}", background_after_text(after));
             self.mirrored(|harness| harness.output.line(&text));
             return;
         }
@@ -2449,7 +2447,7 @@ impl Harness {
         if let Err(error) = self.session.save_settings(&self.settings) {
             self.say(
                 Level::Error,
-                &format!("arko: could not save the session's settings: {error}"),
+                &format!("Couldn't save the session's settings ({error})."),
             );
         }
         let note = match after {
@@ -2509,18 +2507,18 @@ impl Harness {
         let s = |count: usize| if count == 1 { "" } else { "s" };
         let text = match (workers, jobs) {
             (_, 0) => format!(
-                "{workers} worker{} running: /exit again stops {} and quits (resuming the session lets the agent continue {}).",
+                "{workers} worker{} running. /exit again stops {} and quits (resuming the session lets the agent continue {}).",
                 if workers == 1 { " is" } else { "s are" },
                 them(workers),
                 them(workers),
             ),
             (0, _) => format!(
-                "{jobs} background job{} running: /exit again stops {} and quits.",
+                "{jobs} background job{} running. /exit again stops {} and quits.",
                 if jobs == 1 { " is" } else { "s are" },
                 them(jobs),
             ),
             _ => format!(
-                "{workers} worker{} and {jobs} background job{} are running: /exit again stops them and quits (resuming the session lets the agent continue the worker{}).",
+                "{workers} worker{} and {jobs} background job{} are running. /exit again stops them and quits (resuming the session lets the agent continue the worker{}).",
                 s(workers),
                 s(jobs),
                 s(workers),
@@ -2561,7 +2559,7 @@ impl Harness {
                         out.line(line);
                     }
                 }
-                Some(_) => out.line("No workers yet: the agent starts them as it needs them."),
+                Some(_) => out.line("No workers yet. The agent starts them as it needs them."),
                 None if self.settings.max_workers == 0 => {
                     out.line("Workers are off in this session (--workers 0).");
                 }
@@ -2579,7 +2577,7 @@ impl Harness {
                 };
                 match stopped {
                     Ok(()) => out.line(&out.warn(&format!(
-                        "Stopping {worker}: a message from the agent resumes it."
+                        "Stopping {worker}. A message from the agent resumes it."
                     ))),
                     Err(why) => out.line(&why),
                 }
@@ -2593,7 +2591,7 @@ impl Harness {
                     out.line("No worker is running.");
                 } else {
                     out.line(&out.warn(&format!(
-                        "Stopping {stopped} worker{}: a message from the agent resumes {}.",
+                        "Stopping {stopped} worker{}. A message from the agent resumes {}.",
                         if stopped == 1 { "" } else { "s" },
                         if stopped == 1 { "it" } else { "them" }
                     )));
@@ -2607,12 +2605,12 @@ impl Harness {
                 out.line(&format!("session {}", facts.id));
                 out.line(&out.dim(&format!("{}", facts.dir.display())));
                 out.line(&out.dim(&format!(
-                    "main: {} · {}",
+                    "main agent on {} · {}",
                     facts.main.shown,
                     match &facts.workers {
                         None => "no workers".to_string(),
                         Some(workers) => format!(
-                            "workers: {} ({})",
+                            "workers on {} ({})",
                             workers.model.shown,
                             match workers.max_running {
                                 None => "no limit".to_string(),
@@ -2626,12 +2624,12 @@ impl Harness {
                     facts.workers.is_some(),
                 )));
                 out.line(&out.dim(&format!(
-                    "text replies {}: {}",
+                    "text replies {} ({})",
                     if facts.text_replies { "on" } else { "off" },
                     agents::replies_text(facts.text_replies)
                 )));
                 out.line(&out.dim(&format!(
-                    "extra rules {}: {}",
+                    "extra rules {} ({})",
                     facts.extra_rules.name(),
                     facts.extra_rules.describe()
                 )));
@@ -2688,7 +2686,7 @@ impl Harness {
             match &server.tools {
                 Ok(tools) if tools.is_empty() => out.line(&out.dim("  no tools")),
                 Ok(tools) => out.line(&format!("  {}", tools.join(", "))),
-                Err(error) => out.line(&out.error(&format!("  didn't start: {error}"))),
+                Err(error) => out.line(&out.error(&format!("  didn't start ({error})"))),
             }
         }
         for note in &facts.notes {
@@ -2705,7 +2703,7 @@ impl Harness {
         let skills = match self.details.skills() {
             Ok(skills) => skills,
             Err(error) => {
-                out.line(&out.error(&format!("The skills couldn't be read: {error}")));
+                out.line(&out.error(&format!("The skills couldn't be read ({error}).")));
                 return;
             }
         };
@@ -2820,13 +2818,13 @@ impl Harness {
         if jobs_turn {
             self.say(
                 Level::Info,
-                "  ⇠ a background job finished: its update goes to the agent",
+                "  ⇠ a background job finished, and its update goes to the agent",
             );
         }
         if resumes {
             self.say(
                 Level::Info,
-                "  ✎ added to the stopped task: the agent resumes it where it stopped",
+                "  ✎ added to the stopped task, which the agent resumes where it stopped",
             );
         }
         let spent_before = self.spent();
@@ -2894,7 +2892,7 @@ impl Harness {
                                 continue;
                             }
                             self.flush_printer().await;
-                            self.output.echo(&self.output.bold("  ? The agent asks:"));
+                            self.output.echo(&self.output.bold("  ? The agent asks"));
                             for line in question.text.trim().lines() {
                                 self.output.echo(&format!("    {line}"));
                             }
@@ -2934,7 +2932,7 @@ impl Harness {
                         }
                         Event::Input(Some(Input::Interrupt)) | Event::Remote(Action::Stop) => {
                             if stopping {
-                                self.output.line(&self.output.dim("  (stopping: the agents get up to 10 s to end)"));
+                                self.output.line(&self.output.dim("  (the agents are stopping, in up to 10 s)"));
                             } else {
                                 stopping = self.stop(&workflow);
                             }
@@ -3009,14 +3007,14 @@ impl Harness {
                         match workflow.post_note(note) {
                             Ok(seq) => {
                                 self.output.echo(&self.output.dim(
-                                    "  ✎ added to the task: the agent reads it at its next step",
+                                    "  ✎ added to the task, and the agent reads it at its next step",
                                 ));
                                 self.feed.user_with(&text, source, Delivery::Note, shown);
                                 notes.push((seq.seq, text));
                             }
                             Err(error) => self.say(
                                 Level::Error,
-                                &format!("  could not pass that on: {error}"),
+                                &format!("  could not pass that on ({error})"),
                             ),
                         }
                     }
@@ -3029,7 +3027,7 @@ impl Harness {
         let finished = input.drain_finished();
         let outcome = outcome.unwrap_or_else(|error| {
             Err(WorkflowError::Channel(format!(
-                "the turn's task failed: {error}"
+                "the turn's task failed ({error})"
             )))
         });
         if let Some((id, _)) = answering.take() {
@@ -3065,7 +3063,10 @@ impl Harness {
                 TurnEnd::Stopped
             }
             Err(error) => {
-                self.say(Level::Error, &format!("The turn failed: {error}"));
+                self.say(
+                    Level::Error,
+                    &format!("The turn failed. {}", ui::sentence(&error.to_string())),
+                );
                 self.keep_unread(unread_notes(&notes, &workflow), false);
                 self.recover_after_error(&workflow);
                 TurnEnd::Failed
@@ -3116,7 +3117,7 @@ impl Harness {
                     self.news_hint_shown = true;
                     self.say(
                         Level::Info,
-                        "  (the workers have news for the agent: it goes with your next message)",
+                        "  (the workers have news for the agent, which goes with your next message)",
                     );
                 }
                 return News::Waiting;
@@ -3150,7 +3151,7 @@ impl Harness {
         if !matches!(self.conversation, Conversation::Answered(_)) {
             self.say(
                 Level::Info,
-                "  (a background job finished: its update goes with your next message)",
+                "  (a background job finished, and its update goes with your next message)",
             );
             return News::Waiting;
         }
@@ -3364,7 +3365,7 @@ impl Harness {
                 "  Stopping the turn…".to_string()
             } else {
                 format!(
-                    "  Stopping the turn… (the workers go on: /stop-workers stops {})",
+                    "  Stopping the turn… (the workers go on, and /stop-workers stops {})",
                     if running == 1 { "it" } else { "them" }
                 )
             },
@@ -3484,11 +3485,11 @@ pub(crate) fn qr_link<'a>(
     link.ok_or_else(|| {
         if links.iter().all(|link| link.loopback) {
             format!(
-                "Only this machine can open the page (it listens on {addr}), so there is no QR code: /remote 0.0.0.0 serves it to the network's devices."
+                "Only this machine can open the page (it listens on {addr}), so there is no QR code. /remote 0.0.0.0 serves it to the network's devices."
             )
         } else {
             format!(
-                "The page has no link on `{interface}`: its links are on {}.",
+                "The page has no link on `{interface}`. Its links are on {}.",
                 remote::link_names(links)
             )
         }
@@ -3541,10 +3542,10 @@ pub(crate) fn background_after_text(after: u64) -> String {
 pub(crate) fn handover_text(asked: handover::Asked, compacts: bool) -> &'static str {
     match (asked, compacts) {
         (handover::Asked::Now, false) => {
-            "The main agent hands over at its next step: it writes a report of its work, then goes on from the report in a fresh conversation."
+            "The main agent hands over at its next step. It writes a report of its work, then goes on from the report in a fresh conversation."
         }
         (handover::Asked::Next, false) => {
-            "The main agent hands over when your next message starts its turn: it writes a report of its work first, then goes on from the report in a fresh conversation."
+            "The main agent hands over when your next message starts its turn. It writes a report of its work first, then goes on from the report in a fresh conversation."
         }
         (handover::Asked::Already, false) => "A handover is under way already.",
         (handover::Asked::Now, true) => {
@@ -4469,7 +4470,7 @@ pub(crate) mod tests {
         );
         assert_eq!(
             said("/stop-workers r1", &harness),
-            "Stopping r1: a message from the agent resumes it."
+            "Stopping r1. A message from the agent resumes it."
         );
         tokio::time::timeout(Duration::from_secs(10), async {
             while !crew.running().is_empty() {
@@ -4815,7 +4816,7 @@ pub(crate) mod tests {
         assert!(has(
             &harness.feed,
             "call",
-            "message lead: Which branch should I check?",
+            "message lead “Which branch should I check?”",
             ""
         ));
         // The worker's own transcript, its place in the lead's, and its
@@ -5807,7 +5808,7 @@ pub(crate) mod tests {
         assert!(has(
             &harness.feed,
             "output",
-            "No workers yet: the agent starts them as it needs them.",
+            "No workers yet. The agent starts them as it needs them.",
             ""
         ));
     }
@@ -6120,7 +6121,7 @@ pub(crate) mod tests {
                 .collect::<Vec<_>>(),
             [
                 "$0.00 billed in this session · 1k input and 0k output tokens",
-                &format!("≈ ${api_price:.2} at API prices: the Claude plan covers it"),
+                &format!("≈ ${api_price:.2} at API prices, which the Claude plan covers"),
                 "Claude plan 5 h 12%, 7 d 3%",
             ]
         );
@@ -6240,7 +6241,7 @@ pub(crate) mod tests {
         );
         assert_eq!(
             lines[1].text,
-            format!("≈ ${api_price:.2} at API prices: the ChatGPT plan covers it")
+            format!("≈ ${api_price:.2} at API prices, which the ChatGPT plan covers")
         );
         harness.crew.as_ref().unwrap().shutdown().await;
     }
@@ -6309,12 +6310,12 @@ pub(crate) mod tests {
         assert_eq!(texts.len(), 3, "{texts:?}");
         assert!(texts[0].contains("billed in this session"), "{texts:?}");
         assert!(
-            texts[1].starts_with("main agent: ≈ $")
+            texts[1].starts_with("main agent ≈ $")
                 && texts[1].contains("at API prices, on the Claude plan"),
             "{texts:?}"
         );
         assert!(
-            texts[2].starts_with("workers: $") && texts[2].contains("billed per token"),
+            texts[2].starts_with("workers $") && texts[2].contains("billed per token"),
             "{texts:?}"
         );
         assert!(lines[1].detail && lines[2].detail);

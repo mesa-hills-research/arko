@@ -45,7 +45,7 @@ pub fn project_text(files: project::Files, workers: Option<bool>) -> String {
         Some(false) => ", workers off",
     };
     format!(
-        "project instructions {}{workers}: {}",
+        "project instructions {}{workers} ({})",
         files.name(),
         files.describe()
     )

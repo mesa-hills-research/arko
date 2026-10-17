@@ -161,7 +161,7 @@ pub fn cost(model: &str, tokens: u64) -> f64 {
 
 fn voyage_details(model: &str) -> Result<EmbeddingModelDetails, String> {
     EmbeddingModelDetails::get(EmbeddingProviderIdentifier::Voyage, model)
-        .map_err(|error| format!("unknown embedding model {model:?}: {error}"))
+        .map_err(|error| format!("unknown embedding model {model:?} ({error})"))
 }
 
 /// Voyage's total tokens per request where arko_ai's model table has none:
@@ -246,7 +246,9 @@ impl VoyageEmbedder {
         let counter = self
             .handle
             .block_on(EmbeddingClient::new().token_counter(&config))
-            .map_err(|error| format!("loading the {} tokenizer: {error}", self.details.id))?;
+            .map_err(|error| {
+                format!("could not load the {} tokenizer ({error})", self.details.id)
+            })?;
         *slot = Some(counter.clone());
         Ok(counter)
     }
@@ -317,7 +319,7 @@ impl Embedder for VoyageEmbedder {
                         wait.as_secs_f64()
                     );
                     if self.pause(wait) {
-                        return Err(format!("stopped while retrying: {error}").into());
+                        return Err(format!("stopped while retrying ({error})").into());
                     }
                 }
                 Err(error) => return Err(error.into()),

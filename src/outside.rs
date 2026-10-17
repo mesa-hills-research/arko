@@ -188,10 +188,10 @@ impl Outside {
     /// What the user is told of outside access as it is now.
     pub fn describe(&self) -> String {
         if !self.is_on() {
-            return "Outside access is off: the agents can't delete, move or overwrite paths outside the working directory. /outside on allows it.".to_string();
+            return "Outside access is off, so the agents can't delete, move or overwrite paths outside the working directory. /outside on allows it.".to_string();
         }
         let mut text = String::from(
-            "Outside access is on: the agents may delete, move and overwrite paths outside the working directory (protected paths, such as the home directory itself, stay refused). /outside off turns it off.",
+            "Outside access is on, so the agents may delete, move and overwrite paths outside the working directory (protected paths, such as the home directory itself, stay refused). /outside off turns it off.",
         );
         if !self.files_follow() {
             text.push_str(FILES_FIXED);
@@ -212,7 +212,7 @@ impl Outside {
 
 /// What the user is told in a session whose file tools don't follow the
 /// switch.
-pub const FILES_FIXED: &str = " In this session it reaches commands only: its agents were saved before outside access could change, so their file tools still write only inside the working directory. A new session has both.";
+pub const FILES_FIXED: &str = " In this session it reaches commands only. Its agents were saved before outside access could change, so their file tools still write only inside the working directory. A new session has both.";
 
 /// Whether an agent configuration lets the file tools' writes follow the
 /// switch: it doesn't refuse writes outside the working directory itself.

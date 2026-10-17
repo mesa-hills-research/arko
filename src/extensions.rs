@@ -86,9 +86,10 @@ pub fn list(root: &Path, workspace: &Path, mcp_config: &[PathBuf]) -> Extensions
         let parsed = match mcp::parse_file(file, &mcp::environment) {
             Ok(parsed) => parsed,
             Err(error) => {
-                extensions
-                    .notes
-                    .push(format!("MCP servers not started: {error}"));
+                extensions.notes.push(format!(
+                    "MCP servers not started. {}",
+                    crate::ui::sentence(&error)
+                ));
                 continue;
             }
         };
@@ -148,7 +149,9 @@ pub fn list(root: &Path, workspace: &Path, mcp_config: &[PathBuf]) -> Extensions
         .any(|skill| skill.skipped.is_some())
         && let Err(error) = skills::list(&folders, workspace)
     {
-        extensions.notes.push(format!("skills not read: {error}"));
+        extensions
+            .notes
+            .push(format!("The skills couldn't be read ({error})."));
     }
     extensions
 }

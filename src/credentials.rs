@@ -174,7 +174,7 @@ impl Env {
     pub fn arko_dotenv(&self) -> Result<PathBuf, String> {
         self.arko
             .clone()
-            .ok_or_else(|| "Arko's folder isn't known: set ARKO_HOME".to_string())
+            .ok_or_else(|| "Arko's folder isn't known. Set ARKO_HOME".to_string())
     }
 
     /// What was entered as `name` in this run, for Arko's folder.
@@ -515,7 +515,7 @@ pub fn chatgpt_login(flag: Option<&Path>) -> ChatGptLogin {
 pub fn set_chatgpt_login(root: &Path, path: &Path) -> Result<ChatGptLogin, String> {
     let env = Env::for_folder_in(None, true, Some(root));
     let path = std::path::absolute(path).map_err(|error| error.to_string())?;
-    check_login(&path).map_err(|why| format!("Could not use {}: {why}.", path.display()))?;
+    check_login(&path).map_err(|why| format!("Could not use {} ({why}).", path.display()))?;
     let text = path.to_string_lossy().into_owned();
     save(&env.arko_dotenv()?, CODEX_AUTH, &text)?;
     env.enter(CODEX_AUTH, text);
@@ -550,31 +550,32 @@ impl Need {
     pub fn message(&self) -> String {
         let setup = "run `arko --setup` in a terminal to enter it";
         let key = |model: &str, name: &str| {
-            format!("{model} needs {name}: set it in the environment or a .env file, or {setup}")
+            format!("{model} needs {name}. Set it in the environment or a .env file, or {setup}")
         };
         match self {
             Need::Any => format!(
-                "no credentials: set ANTHROPIC_API_KEY (Claude models), OPENAI_API_KEY (OpenAI models), GEMINI_API_KEY (Gemini models) or OPENROUTER_API_KEY (any model on OpenRouter) in the environment or a .env file, sign in to ChatGPT with `codex login`, install Claude Code for Claude models on your Claude plan, or {setup}"
+                "there are no credentials. Set ANTHROPIC_API_KEY (Claude models), OPENAI_API_KEY (OpenAI models), GEMINI_API_KEY (Gemini models) or OPENROUTER_API_KEY (any model on OpenRouter) in the environment or a .env file, sign in to ChatGPT with `codex login`, install Claude Code for Claude models on your Claude plan, or {setup}"
             ),
             Need::AnthropicKey { model } => key(model, ANTHROPIC_KEY),
             Need::OpenAiKey { model } => key(model, OPENAI_KEY),
             Need::GeminiKey { model } => key(model, "GEMINI_API_KEY (or GOOGLE_API_KEY)"),
             Need::OpenRouterKey { model } => key(model, OPENROUTER_KEY),
             Need::ChatGptLogin { model, problem } => format!(
-                "{model} needs a ChatGPT login (`codex login`): {problem}. Or {setup}. A new session can use OPENAI_API_KEY instead: --openai-auth api-key"
+                "{model} needs a ChatGPT login (`codex login`). {}. Or {setup}. With --openai-auth api-key, a new session uses OPENAI_API_KEY instead",
+                crate::ui::sentence(problem)
             ),
             Need::ClaudeCode {
                 model,
                 problem: claude_code::Problem::Missing,
             } => format!(
-                "{model} runs in Claude Code, and there is no `claude` on the PATH: {}",
-                claude_code::INSTALL
+                "{model} runs in Claude Code, and there is no `claude` on the PATH. {}",
+                crate::ui::sentence(claude_code::INSTALL)
             ),
             Need::ClaudeCode {
                 model,
                 problem: claude_code::Problem::SignedOut(path),
             } => format!(
-                "{model} runs in Claude Code ({}), which isn't signed in: sign in with `claude auth login`",
+                "{model} runs in Claude Code ({}), which isn't signed in. Sign in with `claude auth login`",
                 path.display()
             ),
         }
@@ -876,7 +877,7 @@ pub fn setup(need: Option<&Need>) -> Result<(), String> {
     out.line(&out.bold("Arko setup"));
     match need {
         None => {
-            out.line(&out.dim("Credentials now:"));
+            out.line(&out.dim("Credentials now"));
             let key = |name: &str| match lookup(name) {
                 None => "not set".to_string(),
                 Some((_, source)) => format!("set ({})", describe(&source)),
@@ -908,24 +909,27 @@ pub fn setup(need: Option<&Need>) -> Result<(), String> {
             out.line(&format!("  Voyage API key      {voyage}"));
         }
         Some(Need::Any) => out.line(
-            "No credentials found: no API key is set (in the environment or a .env file), there is no ChatGPT login, and Claude Code isn't installed.",
+            "No credentials found. No API key is set (in the environment or a .env file), there is no ChatGPT login, and Claude Code isn't installed.",
         ),
         Some(Need::AnthropicKey { model }) => out.line(&format!(
-            "{model} needs an Anthropic API key: ANTHROPIC_API_KEY isn't set in the environment or a .env file."
+            "{model} needs an Anthropic API key, and ANTHROPIC_API_KEY isn't set in the environment or a .env file."
         )),
         Some(Need::OpenAiKey { model }) => out.line(&format!(
-            "{model} needs an OpenAI API key (this session reaches OpenAI models with one): OPENAI_API_KEY isn't set in the environment or a .env file."
+            "{model} needs an OpenAI API key (this session reaches OpenAI models with one), and OPENAI_API_KEY isn't set in the environment or a .env file."
         )),
         Some(Need::GeminiKey { model }) => out.line(&format!(
-            "{model} needs a Gemini API key: neither GEMINI_API_KEY nor GOOGLE_API_KEY is set in the environment or a .env file."
+            "{model} needs a Gemini API key, and neither GEMINI_API_KEY nor GOOGLE_API_KEY is set in the environment or a .env file."
         )),
         Some(Need::OpenRouterKey { model }) => out.line(&format!(
-            "{model} needs an OpenRouter API key: OPENROUTER_API_KEY isn't set in the environment or a .env file."
+            "{model} needs an OpenRouter API key, and OPENROUTER_API_KEY isn't set in the environment or a .env file."
         )),
         Some(Need::ChatGptLogin { model, problem }) => {
-            out.line(&format!("{model} needs a ChatGPT login: {problem}"));
+            out.line(&format!(
+                "{model} needs a ChatGPT login. {}",
+                crate::ui::sentence(problem)
+            ));
             out.line(&out.dim(
-                "(A new session can reach OpenAI models with an API key instead: arko --openai-auth api-key.)",
+                "(A new session started with arko --openai-auth api-key reaches OpenAI models with an API key instead.)",
             ));
         }
         Some(Need::ClaudeCode { model, problem }) => out.line(&match problem {
@@ -963,7 +967,7 @@ pub fn setup(need: Option<&Need>) -> Result<(), String> {
                 out.line(&format!("  {}  {text}", number + 1));
             }
             out.line("  q  Quit");
-            let prompt = format!("Choose 1-{offered} or q: ");
+            let prompt = format!("Which one (1-{offered}, or q to quit)? ");
             loop {
                 let line = read(&mut editor, &prompt, "", false)?;
                 match line.trim() {
@@ -1041,7 +1045,7 @@ fn ask_value(out: &Output, editor: &mut Editor, key: &Key) -> Result<String, Str
 pub fn prefix_note(value: &str, key: &Key) -> Option<String> {
     (!value.starts_with(key.prefix)).then(|| {
         format!(
-            "Note: {}s start with {}. This one doesn't, so requests may be refused.",
+            "{}s start with {}, and this one doesn't, so requests may be refused.",
             capitalized(without_article(key.what)),
             key.prefix
         )
@@ -1113,7 +1117,7 @@ fn ask_claude_code(
             match &problem {
                 claude_code::Problem::Missing => {
                     if !said {
-                        out.line("Claude Code isn't installed: there is no `claude` on the PATH.");
+                        out.line("Claude Code isn't installed (there is no `claude` on the PATH).");
                     }
                     out.line(&format!("In another terminal, {}.", claude_code::INSTALL));
                     out.line(&out.dim(
@@ -1137,7 +1141,7 @@ fn ask_claude_code(
         }
         let line = read(
             editor,
-            "Press Enter to check again, or q to quit: ",
+            "Press Enter to check again, or q to quit. ",
             "",
             false,
         )?;
@@ -1147,8 +1151,8 @@ fn ask_claude_code(
         match claude_code::check() {
             Ok(ready) => return claude_code_ready(out, &ready),
             Err(still) if still == problem => out.line(&out.warn(match still {
-                claude_code::Problem::Missing => "Not yet: there is still no `claude` on the PATH.",
-                claude_code::Problem::SignedOut(_) => "Not yet: Claude Code still isn't signed in.",
+                claude_code::Problem::Missing => "Not yet. There is still no `claude` on the PATH.",
+                claude_code::Problem::SignedOut(_) => "Not yet. Claude Code still isn't signed in.",
             })),
             Err(other) => problem = other,
         }
@@ -1158,7 +1162,7 @@ fn ask_claude_code(
 #[cfg(feature = "tui")]
 fn claude_code_ready(out: &Output, ready: &claude_code::Ready) -> Result<(), String> {
     out.line(&format!(
-        "Claude Code ({}) is ready: {}. Arko runs Claude models in it with -m cc:opus or -m cc:fable.",
+        "Claude Code ({}) is ready and {}. Arko runs Claude models in it with -m cc:opus or -m cc:fable.",
         ready.path.display(),
         ready.describe()
     ));
@@ -1179,7 +1183,7 @@ fn ask_login(out: &Output, editor: &mut Editor, dotenv: &Path) -> Result<(), Str
         .map(|path| path.display().to_string())
         .unwrap_or_default();
     let path = loop {
-        let line = read(editor, "auth.json: ", &initial, false)?;
+        let line = read(editor, "auth.json path › ", &initial, false)?;
         let line = line.trim();
         if line.is_empty() {
             return Err(cancelled());
@@ -1188,7 +1192,7 @@ fn ask_login(out: &Output, editor: &mut Editor, dotenv: &Path) -> Result<(), Str
         match check_login(&path) {
             Ok(()) => break path,
             Err(error) => out.line(&out.warn(&format!(
-                "Could not use {}: {error}. Try another path.",
+                "Could not use {} ({error}). Try another path.",
                 path.display()
             ))),
         }
@@ -1238,7 +1242,7 @@ fn saved_text(dotenv: &Path, name: &str) -> Saved {
             dotenv.display()
         ),
         note: before.map(|before| {
-            format!("Note: {before} comes first in later runs. This run uses what you entered.")
+            format!("{before} comes first in later runs, but this run uses what you entered.")
         }),
     }
 }
@@ -1271,7 +1275,7 @@ fn save(path: &Path, name: &str, value: &str) -> Result<(), String> {
         text.push('\n');
         Some(text)
     })
-    .map_err(|error| format!("could not save {}: {error}", path.display()))
+    .map_err(|error| format!("could not save {} ({error})", path.display()))
 }
 
 /// Removes the lines that set `name` from the `.env` file at `path`,
@@ -1295,7 +1299,7 @@ fn unset(path: &Path, name: &str) -> Result<(), String> {
         }
         Some(kept)
     })
-    .map_err(|error| format!("could not change {}: {error}", path.display()))
+    .map_err(|error| format!("could not change {} ({error})", path.display()))
 }
 
 /// Changes the `.env` file at `path`: `change` gets its text (`None`
@@ -1424,7 +1428,7 @@ fn read(editor: &mut Editor, prompt: &str, initial: &str, hidden: bool) -> Resul
     match line {
         Ok(line) => Ok(line),
         Err(ReadlineError::Interrupted | ReadlineError::Eof) => Err(cancelled()),
-        Err(error) => Err(format!("could not read the terminal: {error}")),
+        Err(error) => Err(format!("could not read the terminal ({error})")),
     }
 }
 

@@ -21,7 +21,7 @@ use crate::session::Settings;
 use crate::{Conversation, Harness, index, lock};
 
 /// What `/cc-compact` says in a session with no agent in Claude Code.
-const CC_NOT_IN_CLAUDE_CODE: &str = "The agents hand over at the handover size: they aren't in Claude Code, so /cc-compact changes nothing in this session.";
+const CC_NOT_IN_CLAUDE_CODE: &str = "The agents aren't in Claude Code, so they hand over at the handover size and /cc-compact changes nothing in this session.";
 
 /// Whose model `/model` changes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -95,7 +95,7 @@ impl Harness {
         match result {
             Ok(text) => {
                 if source == Source::Web && !argument.trim().is_empty() {
-                    self.say(Level::Info, &format!("From the web page: {text}"));
+                    self.say(Level::Info, &format!("Changed from the web page. {text}"));
                 } else {
                     self.mirrored(|harness| harness.output.line(&text));
                 }
@@ -180,7 +180,7 @@ impl Harness {
         match result {
             Ok(text) => {
                 if source == Source::Web && !argument.is_empty() {
-                    self.say(Level::Info, &format!("From the web page: {text}"));
+                    self.say(Level::Info, &format!("Changed from the web page. {text}"));
                 } else {
                     self.mirrored(|harness| harness.output.line(&text));
                 }
@@ -197,10 +197,10 @@ impl Harness {
         let (state, other) = if on { ("on", "off") } else { ("off", "on") };
         let mode = agents::replies_text(on);
         if self.conversation_started() {
-            format!("Text replies are {state}: {mode}. It keeps this for the session.")
+            format!("Text replies are {state}, so {mode}. It keeps this for the session.")
         } else {
             format!(
-                "Text replies are {state}: {mode}. /text-replies {other} changes that before the conversation starts."
+                "Text replies are {state}, so {mode}. /text-replies {other} changes that before the conversation starts."
             )
         }
     }
@@ -211,19 +211,19 @@ impl Harness {
         let state = if on { "on" } else { "off" };
         let mode = agents::replies_text(on);
         if self.settings.text_replies == on {
-            return Ok(format!("Text replies are {state} already: {mode}."));
+            return Ok(format!("Text replies are {state} already, so {mode}."));
         }
         if self.conversation_started() {
             let kept = if on { "off" } else { "on" };
             return Ok(format!(
-                "The main agent keeps text replies {kept} for this session: {}. A new session takes --text-replies or --no-text-replies.",
+                "The main agent keeps text replies {kept} for this session, so {}. A new session takes --text-replies or --no-text-replies.",
                 agents::replies_text(!on)
             ));
         }
         let mut settings = self.settings.clone();
         settings.text_replies = on;
         self.rebuild_agents(settings)?;
-        Ok(format!("Text replies are {state}: {mode}."))
+        Ok(format!("Text replies are {state}, so {mode}."))
     }
 
     /// `/cc-compact`, typed at the prompt, sent from the page or chosen in
@@ -242,7 +242,7 @@ impl Harness {
         match result {
             Ok(text) => {
                 if source == Source::Web && !argument.is_empty() {
-                    self.say(Level::Info, &format!("From the web page: {text}"));
+                    self.say(Level::Info, &format!("Changed from the web page. {text}"));
                 } else {
                     self.mirrored(|harness| harness.output.line(&text));
                 }
@@ -271,14 +271,14 @@ impl Harness {
         } else {
             ("hand over", "on")
         };
-        let text = agents::cc_text(on);
+        let text = crate::ui::sentence(agents::cc_text(on));
         if self.conversation_started() {
             format!(
-                "Agents in Claude Code {what} at the handover size: {text}. The session keeps this."
+                "Agents in Claude Code {what} at the handover size. {text}. The session keeps this."
             )
         } else {
             format!(
-                "Agents in Claude Code {what} at the handover size: {text}. /cc-compact {other} changes that before the conversation starts."
+                "Agents in Claude Code {what} at the handover size. {text}. /cc-compact {other} changes that before the conversation starts."
             )
         }
     }
@@ -292,22 +292,22 @@ impl Harness {
         let what = if on { "compact" } else { "hand over" };
         if self.settings.cc_handover != on {
             return Ok(format!(
-                "Agents in Claude Code {what} at the handover size already: {}.",
-                agents::cc_text(on)
+                "Agents in Claude Code {what} at the handover size already. {}.",
+                crate::ui::sentence(agents::cc_text(on))
             ));
         }
         if self.conversation_started() {
             return Ok(format!(
-                "This session keeps what its agents in Claude Code do at the handover size: {}. A new session takes --cc-compact or --no-cc-compact.",
-                agents::cc_text(!on)
+                "This session keeps what its agents in Claude Code do at the handover size. {}. A new session takes --cc-compact or --no-cc-compact.",
+                crate::ui::sentence(agents::cc_text(!on))
             ));
         }
         let mut settings = self.settings.clone();
         settings.cc_handover = !on;
         self.rebuild_agents(settings)?;
         Ok(format!(
-            "Agents in Claude Code now {what} at the handover size: {}.",
-            agents::cc_text(on)
+            "Agents in Claude Code now {what} at the handover size. {}.",
+            crate::ui::sentence(agents::cc_text(on))
         ))
     }
 
@@ -327,7 +327,7 @@ impl Harness {
         match result {
             Ok(text) => {
                 if source == Source::Web && !argument.is_empty() {
-                    self.say(Level::Info, &format!("From the web page: {text}"));
+                    self.say(Level::Info, &format!("Changed from the web page. {text}"));
                 } else {
                     self.mirrored(|harness| harness.output.line(&text));
                 }
@@ -342,9 +342,9 @@ impl Harness {
     fn extra_rules_line(&self) -> String {
         let rules = self.settings.extra_rules;
         let text = format!(
-            "Extra rules for small models: {} ({}). {}",
-            rules.describe(),
+            "Extra rules for small models are set to {}, so {}. {}",
             rules.name(),
+            rules.describe(),
             self.extra_rules_here()
         );
         if self.conversation_started() {
@@ -383,14 +383,15 @@ impl Harness {
     fn set_extra_rules(&mut self, rules: ExtraRules) -> Result<String, String> {
         if self.settings.extra_rules == rules {
             return Ok(format!(
-                "Extra rules for small models: {} already. {}",
+                "Extra rules for small models are set to {} already, so {}. {}",
+                rules.name(),
                 rules.describe(),
                 self.extra_rules_here()
             ));
         }
         if self.conversation_started() {
             return Ok(format!(
-                "The session keeps its extra rules: {}. A new session takes --extra-rules or --no-extra-rules.",
+                "The session keeps its extra rules, so {}. A new session takes --extra-rules or --no-extra-rules.",
                 self.settings.extra_rules.describe()
             ));
         }
@@ -398,7 +399,8 @@ impl Harness {
         settings.extra_rules = rules;
         self.rebuild_agents(settings)?;
         Ok(format!(
-            "Extra rules for small models: {}. {}",
+            "Extra rules for small models are now set to {}, so {}. {}",
+            rules.name(),
             rules.describe(),
             self.extra_rules_here()
         ))
@@ -645,7 +647,7 @@ impl Harness {
         if let Err(error) = self.session.save_settings(&self.settings) {
             self.say(
                 Level::Error,
-                &format!("arko: could not save the session's settings: {error}"),
+                &format!("Couldn't save the session's settings ({error})."),
             );
         }
     }

@@ -217,7 +217,7 @@ pub fn prefer(links: &mut [Link], host: &str) -> Result<(), String> {
             Ok(())
         }
         None => Err(format!(
-            "{HOST_VARIABLE} is `{host}`, which none of the page's links has ({}): the links are in their usual order.",
+            "{HOST_VARIABLE} is `{host}`, which none of the page's links has ({}), so the links are in their usual order.",
             names(links)
         )),
     }
@@ -352,7 +352,7 @@ mod tests {
         let error = prefer(&mut ranked, "wlan9").unwrap_err();
         assert_eq!(
             error,
-            "ARKO_REMOTE_HOST is `wlan9`, which none of the page's links has (wg0-mullvad, tailscale0, ens33): the links are in their usual order."
+            "ARKO_REMOTE_HOST is `wlan9`, which none of the page's links has (wg0-mullvad, tailscale0, ens33), so the links are in their usual order."
         );
         assert_eq!(ranked, before);
     }

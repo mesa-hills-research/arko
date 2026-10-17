@@ -263,7 +263,7 @@ impl IntoResponse for Refusal {
             Refusal::Wait(wait) => (
                 StatusCode::TOO_MANY_REQUESTS,
                 [(header::RETRY_AFTER, wait.as_secs().max(1).to_string())],
-                error_body("too many wrong keys: wait, then try again"),
+                error_body("too many wrong keys. Wait, then try again"),
             )
                 .into_response(),
             Refusal::CrossSite => (

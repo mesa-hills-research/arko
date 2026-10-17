@@ -321,7 +321,7 @@ pub fn parse_background_after(text: &str) -> Result<u64, String> {
     }
     let invalid = || {
         format!(
-            "`{text}` isn't a time: give one such as 90s, 10m or 1h (at most {}m), or off",
+            "`{text}` isn't a time. Give one such as 90s, 10m or 1h (at most {}m), or off",
             MAX_TIMEOUT_SECONDS / 60
         )
     };

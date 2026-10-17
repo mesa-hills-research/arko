@@ -204,7 +204,7 @@ impl crate::Harness {
         match result {
             Ok(text) => {
                 if source == Source::Web && !argument.is_empty() {
-                    self.say(Level::Info, &format!("From the web page: {text}"));
+                    self.say(Level::Info, &format!("Changed from the web page. {text}"));
                 } else {
                     self.mirrored(|harness| harness.output.line(&text));
                 }
@@ -252,7 +252,7 @@ impl crate::Harness {
     fn project_setting(&self) -> String {
         let files = self.settings.project_instructions;
         let mut text = format!(
-            "Project instructions ({}): {}.",
+            "Project instructions are set to {}, so the agents get {}.",
             files.name(),
             files.describe()
         );
@@ -283,7 +283,7 @@ impl crate::Harness {
     /// conversation under way keeps what it got.
     fn set_project_files(&mut self, files: Files) -> String {
         if self.settings.project_instructions == files {
-            return format!("Project instructions: {} already.", files.describe());
+            return format!("The agents get {} already.", files.describe());
         }
         self.settings.project_instructions = files;
         self.project_changed();
@@ -322,7 +322,7 @@ impl crate::Harness {
         if let Err(error) = self.session.save_settings(&self.settings) {
             self.say(
                 Level::Error,
-                &format!("arko: could not save the session's settings: {error}"),
+                &format!("Couldn't save the session's settings ({error})."),
             );
         }
         self.give_workers_project();

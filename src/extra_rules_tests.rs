@@ -120,12 +120,12 @@ async fn extra_rules_change_before_the_conversation_starts_only() {
 
     harness.extra_rules_command("", Source::Terminal);
     assert!(texts(&harness.feed, "output").contains(
-        &"Extra rules for small models: no agent gets them (off). Neither the main agent nor the workers get them. /extra-rules small, all or off changes that before the conversation starts."
+        &"Extra rules for small models are set to off, so no agent gets them. Neither the main agent nor the workers get them. /extra-rules small, all or off changes that before the conversation starts."
             .to_string()
     ));
     harness.extra_rules_command("small", Source::Terminal);
     assert!(texts(&harness.feed, "output").contains(
-        &"Extra rules for small models: only agents on small models (Haiku, luna) get them. The main agent and the workers get them."
+        &"Extra rules for small models are now set to small, so only agents on small models (Haiku, luna) get them. The main agent and the workers get them."
             .to_string()
     ));
     assert_eq!(harness.settings.extra_rules, ExtraRules::Small);
@@ -157,13 +157,13 @@ async fn extra_rules_change_before_the_conversation_starts_only() {
     harness.extra_rules_command("off", Source::Web);
     assert!(says(
         &harness.feed,
-        "From the web page: The session keeps its extra rules: only agents on small models (Haiku, luna) get them. A new session takes --extra-rules or --no-extra-rules."
+        "Changed from the web page. The session keeps its extra rules, so only agents on small models (Haiku, luna) get them. A new session takes --extra-rules or --no-extra-rules."
     ));
     assert_eq!(harness.settings.extra_rules, ExtraRules::Small);
     assert!(harness.main_config.instructions.contains(RULES));
     harness.extra_rules_command("", Source::Terminal);
     assert!(texts(&harness.feed, "output").contains(
-        &"Extra rules for small models: only agents on small models (Haiku, luna) get them (small). The main agent and the workers get them. The session keeps this."
+        &"Extra rules for small models are set to small, so only agents on small models (Haiku, luna) get them. The main agent and the workers get them. The session keeps this."
             .to_string()
     ));
 }

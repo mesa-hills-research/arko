@@ -15,6 +15,9 @@ use crate::images::Images;
 /// The messages read back at most (the feed keeps fewer items anyway).
 const MESSAGES: usize = 600;
 
+/// The message that kept the prompt cache warm, as Arko worded it before.
+const EARLIER_REFRESH_MESSAGE: &str = "(Arko: this message only keeps the prompt cache warm. Reply with \"Acknowledged\" and nothing else.)";
+
 /// What the restored transcript says where the workers' news started a
 /// turn.
 const NEWS_NOTICE: &str = "the workers' news went to the agent";
@@ -233,7 +236,9 @@ fn user_item(text: &str) -> Option<Item> {
     };
     let mut item = Item::new(Kind::User, mine.trim());
     item.source = Some(Source::Terminal);
-    item.delivery = Some(if item.text == super::feed::REFRESH_MESSAGE {
+    // (Sessions saved before it was reworded have the earlier text.)
+    let refresh = [super::feed::REFRESH_MESSAGE, EARLIER_REFRESH_MESSAGE];
+    item.delivery = Some(if refresh.contains(&item.text.as_str()) {
         Delivery::Refresh
     } else {
         Delivery::Turn

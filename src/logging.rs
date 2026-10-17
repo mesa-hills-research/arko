@@ -22,7 +22,7 @@ impl ProcessLog {
             .create(true)
             .append(true)
             .open(path)
-            .map_err(|error| format!("could not open {}: {error}", path.display()))?;
+            .map_err(|error| format!("could not open {} ({error})", path.display()))?;
         env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
             .target(env_logger::Target::Pipe(Box::new(file)))
             .format(|buf, record| {

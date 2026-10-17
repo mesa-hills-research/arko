@@ -281,21 +281,21 @@ impl Session {
         if title.is_empty() {
             return match std::fs::remove_file(&path) {
                 Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
-                    Err(format!("could not rename the session: {error}"))
+                    Err(format!("could not rename the session ({error})"))
                 }
                 _ => Ok(()),
             };
         }
         write_whole(&path, title.as_bytes())
-            .map_err(|error| format!("could not rename the session: {error}"))
+            .map_err(|error| format!("could not rename the session ({error})"))
     }
 
     pub fn load_settings(&self) -> Result<Settings, String> {
         let path = self.dir.join(SETTINGS_FILE);
         let text = std::fs::read_to_string(&path)
-            .map_err(|error| format!("could not read {}: {error}", path.display()))?;
+            .map_err(|error| format!("could not read {} ({error})", path.display()))?;
         serde_json::from_str(&text)
-            .map_err(|error| format!("could not read {}: {error}", path.display()))
+            .map_err(|error| format!("could not read {} ({error})", path.display()))
     }
 
     pub fn save_settings(&self, settings: &Settings) -> std::io::Result<()> {
@@ -379,7 +379,7 @@ pub(crate) fn move_fin_folder_in(data_directory: &Path) -> Option<String> {
     if !arko.exists() {
         let error = std::fs::rename(&fin, &arko).err()?;
         return Some(format!(
-            "could not move fin's data folder {} to {}: {error}. Arko goes on without it",
+            "could not move fin's data folder {} to {} ({error}). Arko goes on without it",
             fin.display(),
             arko.display()
         ));
@@ -399,10 +399,10 @@ pub(crate) fn move_fin_folder_in(data_directory: &Path) -> Option<String> {
         return None;
     }
     Some(format!(
-        "some of fin's data stayed in {} when the rest moved to {}: {}",
+        "in {}, {} stayed when the rest of fin's data moved to {}",
         fin.display(),
-        arko.display(),
-        stayed.join(", ")
+        stayed.join(", "),
+        arko.display()
     ))
 }
 
@@ -1014,7 +1014,7 @@ mod tests {
         assert_eq!(
             note,
             format!(
-                "some of fin's data stayed in {} when the rest moved to {}: sessions (Arko's folder has one)",
+                "in {}, sessions (Arko's folder has one) stayed when the rest of fin's data moved to {}",
                 fin.display(),
                 arko.display()
             )
@@ -1043,7 +1043,7 @@ mod tests {
         let note = note.unwrap();
         assert!(
             note.starts_with(&format!(
-                "could not move fin's data folder {} to {}: ",
+                "could not move fin's data folder {} to {} (",
                 data.path().join("fin").display(),
                 data.path().join("arko").display()
             )),

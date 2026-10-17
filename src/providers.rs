@@ -70,7 +70,7 @@ pub fn resolve_model(name: &str) -> Result<Model, String> {
     if let Some(slug) = strip_prefix(name, OPENROUTER) {
         if slug.is_empty() || slug.chars().any(char::is_whitespace) {
             return Err(format!(
-                "`{name}` names no OpenRouter model: give its slug, such as openrouter:anthropic/claude-opus-5.5"
+                "`{name}` names no OpenRouter model. Give its slug, such as openrouter:anthropic/claude-opus-5.5"
             ));
         }
         return Ok(Model::openrouter(slug));
@@ -80,7 +80,7 @@ pub fn resolve_model(name: &str) -> Result<Model, String> {
     {
         let model = registered(rest).map_err(|_| {
             format!(
-                "`{name}` names no Claude model: Claude Code runs Claude models, such as cc:opus (claude-opus-5-5) or cc:fable (claude-fable-5-1){}",
+                "`{name}` names no Claude model. Claude Code runs Claude models, such as cc:opus (claude-opus-5-5) or cc:fable (claude-fable-5-1){}",
                 suggestion(rest).map(|close| format!(". Did you mean cc:{close}?")).unwrap_or_default()
             )
         })?;
@@ -110,7 +110,7 @@ fn unknown(name: &str) -> String {
     let mut text = format!("`{name}` isn't a model Arko knows.");
     if name.contains('/') {
         text.push_str(&format!(
-            " Models on OpenRouter take its prefix: openrouter:{name}."
+            " Models on OpenRouter take its prefix, as in openrouter:{name}."
         ));
     } else if let Some(close) = suggestion(name) {
         text.push_str(&format!(" Did you mean {close}?"));
@@ -238,7 +238,7 @@ pub fn generation(
         Provider::Anthropic | Provider::ClaudeCode => {
             if fast && !model.supports_anthropic_fast_mode() {
                 return Err(format!(
-                    "{} has no fast mode: Anthropic offers it on Claude Opus 5.5, Opus 5 and Opus 4.8",
+                    "{} has no fast mode. Anthropic offers it on Claude Opus 5.5, Opus 5 and Opus 4.8",
                     model_name(model)
                 ));
             }
@@ -266,7 +266,7 @@ pub fn generation(
         Provider::Google => {
             if fast {
                 return Err(format!(
-                    "{} has no fast mode: Gemini models have none",
+                    "{} has no fast mode (Gemini models have none)",
                     model.id
                 ));
             }
@@ -280,7 +280,7 @@ pub fn generation(
         Provider::OpenRouter => {
             if fast {
                 return Err(format!(
-                    "{} has no fast mode: OpenRouter has none (a :nitro slug, such as {}:nitro, prefers its fastest providers)",
+                    "{} has no fast mode on OpenRouter (a :nitro slug, such as {}:nitro, prefers its fastest providers)",
                     model_name(model),
                     model_name(model)
                 ));
@@ -874,7 +874,7 @@ pub fn check_openai_choices(settings: &Settings) -> Result<(), String> {
             && !resolved.pricing.offers_tier(&ServiceTier::Fast)
         {
             return Err(format!(
-                "{} has no Fast mode with an API key: OpenAI doesn't offer it for this model",
+                "{} has no Fast mode with an API key, because OpenAI doesn't offer it for this model",
                 resolved.id
             ));
         }
@@ -1081,7 +1081,7 @@ fn apply_catalog(
                 note(
                     &mut notes,
                     format!(
-                        "Could not read OpenRouter's model catalog ({error}), so Arko can't check {name} or tell its context size: it hands over at {} tokens (--handover-at sets it).",
+                        "Could not read OpenRouter's model catalog ({error}), so Arko can't check {name} or tell its context size. It hands over at {} tokens (--handover-at sets it).",
                         handover(model)
                     ),
                 );
@@ -1092,7 +1092,7 @@ fn apply_catalog(
             note(
                 &mut notes,
                 format!(
-                    "Arko can't tell the context size of the preset {name}: it hands over at {} tokens (--handover-at sets it).",
+                    "Arko can't tell the context size of the preset {name}, so it hands over at {} tokens (--handover-at sets it).",
                     handover(model)
                 ),
             );
@@ -1323,19 +1323,19 @@ pub fn cost_lines(
         let plan = parts.iter().find_map(|part| part.plan);
         if let Some(plan) = plan {
             lines.push(line(format!(
-                "≈ ${:.2} at API prices: the {plan} covers it",
+                "≈ ${:.2} at API prices, which the {plan} covers",
                 main.api + workers.api
             )));
         }
         if used(workers) {
             lines.push(detail(match plan {
                 Some(_) => format!(
-                    "of which the workers: ≈ ${:.2} at API prices · {}",
+                    "the workers' share ≈ ${:.2} at API prices · {}",
                     workers.api,
                     workers.tokens()
                 ),
                 None => format!(
-                    "of which the workers: ${:.2} · {}",
+                    "the workers' share is ${:.2} · {}",
                     workers.billed,
                     workers.tokens()
                 ),
@@ -1345,12 +1345,12 @@ pub fn cost_lines(
         for (name, part) in [("main agent", main), ("workers", workers)] {
             lines.push(detail(match part.plan {
                 Some(plan) => format!(
-                    "{name}: ≈ ${:.2} at API prices, on the {plan} · {}",
+                    "{name} ≈ ${:.2} at API prices, on the {plan} · {}",
                     part.api,
                     part.tokens()
                 ),
                 None => format!(
-                    "{name}: ${:.2} billed per token · {}",
+                    "{name} ${:.2}, billed per token · {}",
                     part.billed,
                     part.tokens()
                 ),
@@ -2194,11 +2194,11 @@ mod tests {
                 ),
                 (
                     false,
-                    "≈ $3.40 at API prices: the Claude plan covers it".to_string()
+                    "≈ $3.40 at API prices, which the Claude plan covers".to_string()
                 ),
                 (
                     true,
-                    "of which the workers: ≈ $0.40 at API prices · 30k input and 2k output tokens"
+                    "the workers' share ≈ $0.40 at API prices · 30k input and 2k output tokens"
                         .to_string()
                 ),
                 (false, "Claude plan 5 h 12%, 7 d 3%".to_string()),
@@ -2211,7 +2211,7 @@ mod tests {
         let lines = report(&sol, vec![call(MAIN, 50_000, 1_000, 0.9, 0.0)]);
         assert_eq!(
             lines[1].1,
-            "≈ $0.90 at API prices: the ChatGPT plan covers it"
+            "≈ $0.90 at API prices, which the ChatGPT plan covers"
         );
         assert_eq!(lines[2].1, "ChatGPT plan 7 d 40%");
 
@@ -2230,7 +2230,7 @@ mod tests {
                 ),
                 (
                     true,
-                    "of which the workers: $0.20 · 30k input and 2k output tokens".to_string()
+                    "the workers' share is $0.20 · 30k input and 2k output tokens".to_string()
                 ),
             ]
         );
@@ -2252,8 +2252,8 @@ mod tests {
             ),
             [
                 (false, "$0.50 billed in this session · 150k input and 10k output tokens".to_string()),
-                (true, "main agent: ≈ $3.00 at API prices, on the Claude plan · 120k input and 8k output tokens".to_string()),
-                (true, "workers: $0.50 billed per token · 30k input and 2k output tokens".to_string()),
+                (true, "main agent ≈ $3.00 at API prices, on the Claude plan · 120k input and 8k output tokens".to_string()),
+                (true, "workers $0.50, billed per token · 30k input and 2k output tokens".to_string()),
                 (false, "Claude plan 5 h 12%, 7 d 3%".to_string()),
             ]
         );

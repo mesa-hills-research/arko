@@ -400,7 +400,7 @@ fn roots_that_are_refused() {
     let error = check(&store::indexes_dir(&data).join("x")).unwrap_err();
     assert!(error.contains("index folder"), "{error}");
     let error = check(&project.join("main.rs")).unwrap_err();
-    assert!(error.contains("not a directory"), "{error}");
+    assert!(error.contains("isn't a directory"), "{error}");
     assert!(check(&project.join("missing")).is_err());
 
     assert_eq!(check(Path::new(".")).unwrap(), project);
@@ -1737,11 +1737,11 @@ fn indexes_of_other_directories_are_found_by_any_path_in_them() {
         assert_eq!(found.manifest.root, root, "{name}");
     }
     let error = indexes.resolve("..", &work).unwrap_err();
-    assert!(error.contains("no index named"), "{error}");
+    assert!(error.contains("no index is named"), "{error}");
     let error = indexes
         .manage_blocking("../proj/src", &Action::Remove, &work)
         .unwrap_err();
-    assert!(error.contains("no index named"), "{error}");
+    assert!(error.contains("no index is named"), "{error}");
     let reports = indexes.status_blocking(Some("../proj/src"), &work).unwrap();
     assert_eq!(reports[0].id, outcome.layout.id());
 

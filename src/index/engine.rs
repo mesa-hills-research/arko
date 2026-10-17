@@ -120,7 +120,7 @@ impl WatchState {
             WatchState::Watching { polling: false } => "watching (inotify)".into(),
             WatchState::Watching { polling: true } => "watching (polling)".into(),
             WatchState::Elsewhere => "watched by another Arko process".into(),
-            WatchState::Failed(error) => format!("watcher failed: {error}"),
+            WatchState::Failed(error) => format!("watcher failed ({error})"),
         }
     }
     pub fn active(&self) -> bool {
@@ -759,7 +759,7 @@ impl Indexes {
                         .map(|found| found.manifest.name.as_str())
                         .collect();
                     return Err(format!(
-                        "{} has several indexes ({}): name one",
+                        "{} has several indexes ({}), so name one",
                         many[0].manifest.root.display(),
                         names.join(", ")
                     ));
@@ -771,10 +771,10 @@ impl Indexes {
             .map(|found| found.manifest.name.as_str())
             .collect();
         Err(if names.is_empty() {
-            format!("no index named {name:?}: there are no indexes yet (create one)")
+            format!("no index is named {name:?}, and there are no indexes yet (create one)")
         } else {
             format!(
-                "no index named {name:?}: the indexes are {}",
+                "no index is named {name:?}. The indexes are {}",
                 names.join(", ")
             )
         })
@@ -900,7 +900,7 @@ impl Indexes {
             }
             Err(error) => {
                 self.update_manifest(&entry.layout, |m| {
-                    m.last_error = Some(format!("build failed: {error}"));
+                    m.last_error = Some(format!("build failed ({error})"));
                 });
             }
         }
@@ -1039,7 +1039,7 @@ impl Indexes {
                             m.last_error = None;
                         }
                     }
-                    Err(error) => m.last_error = Some(format!("embedding failed: {error}")),
+                    Err(error) => m.last_error = Some(format!("embedding failed ({error})")),
                 }
             });
         }
@@ -1140,9 +1140,9 @@ impl Indexes {
             };
             let mut superseded = false;
             let line = match store::load_manifest(&entry.layout.dir) {
-                Err(error) => format!("embedding skipped: {error}"),
+                Err(error) => format!("embedding skipped ({error})"),
                 Ok(manifest) if manifest.cap_reached && !explicit => format!(
-                    "{}: embedding paused: the last run stopped at its cap",
+                    "Embedding {} is paused, because the last run stopped at its cap",
                     manifest.name
                 ),
                 Ok(manifest) => {
@@ -1150,14 +1150,14 @@ impl Indexes {
                     match self.run_embed(entry, cap, true, None, None) {
                         Ok(summary) => {
                             superseded = summary.superseded;
-                            let line = format!("{}: {}", manifest.name, summary.line());
+                            let line = format!("{} {}", manifest.name, summary.line());
                             if summary.new > 0 || summary.cap_reached {
                                 self.event(&line);
                             }
                             line
                         }
                         Err(error) => {
-                            let line = format!("{}: embedding failed: {error}", manifest.name);
+                            let line = format!("Embedding {} failed ({error})", manifest.name);
                             self.event(&line);
                             line
                         }
@@ -1238,7 +1238,7 @@ impl Indexes {
                 Ok(manifest) => manifest,
                 Err(error) => {
                     lock(&entry.live).watch = WatchState::Failed(error.clone());
-                    self.event(&format!("{name}: stopped watching: {error}"));
+                    self.event(&format!("Stopped watching {name} ({error})"));
                     return;
                 }
             };
@@ -1275,7 +1275,7 @@ impl Indexes {
                         changes = Some(opened);
                         busy_reported = false;
                         self.event(&format!(
-                            "{name}: watching {} ({})",
+                            "Watching {name} at {} ({})",
                             manifest.root.display(),
                             if polling { "polling" } else { "inotify" }
                         ));
@@ -1291,14 +1291,14 @@ impl Indexes {
                         if !busy_reported {
                             busy_reported = true;
                             self.event(&format!(
-                                "{name}: another Arko process is watching it, and this one takes over when it stops"
+                                "Another Arko process is watching {name}, and this one takes over when it stops"
                             ));
                         }
                         reopen_at = Instant::now() + self.timing.busy_retry;
                         continue;
                     }
                     Err(OpenError::Failed(error)) => {
-                        self.event(&format!("{name}: watcher failed: {error}"));
+                        self.event(&format!("The watcher of {name} failed ({error})"));
                         lock(&entry.live).watch = WatchState::Failed(error);
                         reopen_at = Instant::now() + Duration::from_secs(30);
                         continue;
@@ -1331,7 +1331,9 @@ impl Indexes {
                     }
                     Ok(None) => {}
                     Err(error) => {
-                        self.event(&format!("{name}: watcher failed ({error}), reopening"));
+                        self.event(&format!(
+                            "The watcher of {name} failed ({error}), so it reopens"
+                        ));
                         lock(&entry.live).watch = WatchState::Failed(error);
                         changes = None;
                         reopen_at = Instant::now() + Duration::from_secs(5);
@@ -1360,7 +1362,7 @@ impl Indexes {
                 match self.build(entry, &manifest, Caller::Background) {
                     Ok(record) => {
                         self.event(&format!(
-                            "{name}: rebuilt: {} chunks in {} files ({:.1} s)",
+                            "Rebuilt {name}, {} chunks in {} files ({:.1} s)",
                             fmt_count(record.chunks),
                             fmt_count(record.files),
                             record.seconds
@@ -1369,7 +1371,7 @@ impl Indexes {
                             self.request_embed(entry, None, false);
                         }
                     }
-                    Err(error) => self.event(&format!("{name}: rebuild failed: {error}")),
+                    Err(error) => self.event(&format!("Rebuilding {name} failed ({error})")),
                 }
             }
             let covered = lock(&entry.live).covered;
@@ -1471,7 +1473,7 @@ impl Indexes {
                     Ok(_) => {
                         self.request_embed(entry, None, false);
                     }
-                    Err(error) => notes.push(format!("{name}: rebuild failed: {error}")),
+                    Err(error) => notes.push(format!("Rebuilding {name} failed ({error})")),
                 }
             }
             return;
@@ -1479,7 +1481,7 @@ impl Indexes {
         match self.reconcile(entry, manifest) {
             Ok(Some(record)) => {
                 notes.push(format!(
-                    "{name}: files changed since it was last built: rebuilt before searching ({:.1} s)",
+                    "{name} was rebuilt before searching, as files changed since it was last built ({:.1} s)",
                     record.seconds
                 ));
                 if self.monitor {
@@ -1491,19 +1493,19 @@ impl Indexes {
                 {
                     match self.run_embed(entry, FRESHEN_EMBED_TOKENS, false, None, None) {
                         Ok(summary) if summary.cap_reached => notes.push(format!(
-                            "{name}: {}/{} chunks have vectors, and the rest are found by keywords until an interactive Arko monitors it (or `arko index embed`)",
+                            "{name} has vectors for {}/{} chunks, and the rest are found by keywords until an interactive Arko monitors it (or `arko index embed`)",
                             fmt_count(summary.embedded),
                             fmt_count(summary.docs)
                         )),
                         Ok(_) => {}
                         Err(error) => {
-                            notes.push(format!("{name}: embedding the changes failed: {error}"))
+                            notes.push(format!("Embedding the changes of {name} failed ({error})"))
                         }
                     }
                 }
             }
             Ok(None) => {}
-            Err(error) => notes.push(format!("{name}: couldn't check for changes: {error}")),
+            Err(error) => notes.push(format!("Couldn't check {name} for changes ({error})")),
         }
         // A monitored index outside the workspace has no watcher yet: once
         // searched, it is kept current too.
@@ -1637,7 +1639,7 @@ impl Indexes {
             Ok(status) => status,
             Err(error) => {
                 output.notes.push(format!(
-                    "{name}: not built yet ({error}), and index_manage action=rebuild builds it"
+                    "{name} isn't built yet ({error}), and index_manage action=rebuild builds it"
                 ));
                 return Ok(Vec::new());
             }
@@ -1670,7 +1672,9 @@ impl Indexes {
                 Some(_) => None,
             };
             if let Some(reason) = reason {
-                output.notes.push(format!("{reason}: searched by keywords"));
+                output
+                    .notes
+                    .push(format!("{reason}, so it searched by keywords"));
             }
             let usable = vectors > 0
                 && info
@@ -1692,7 +1696,7 @@ impl Indexes {
                 "the rest are queued"
             };
             output.notes.push(format!(
-                "{name}: {}/{} chunks have vectors ({why}). The others are found by keywords only",
+                "{name} has vectors for {}/{} chunks ({why}). The others are found by keywords only",
                 fmt_count(vectors),
                 fmt_count(info.docs)
             ));
@@ -1701,7 +1705,7 @@ impl Indexes {
             let live = lock(&entry.live);
             if live.dirty && live.changes > 0 {
                 output.notes.push(format!(
-                    "{name}: files changed since the last build, so a rebuild is pending ({})",
+                    "Files of {name} changed since the last build, so a rebuild is pending ({})",
                     live.watch.describe()
                 ));
             }
@@ -1722,7 +1726,7 @@ impl Indexes {
             Ok(results) => results,
             Err(error) if mode != Mode::Lexical => {
                 output.notes.push(format!(
-                    "{name}: semantic search failed ({error}), so it searched by keywords"
+                    "Semantic search in {name} failed ({error}), so it searched by keywords"
                 ));
                 mode = Mode::Lexical;
                 let request = SearchRequest::new(query.text)
@@ -1731,7 +1735,7 @@ impl Indexes {
                     .with_filter(query.filter.clone());
                 hybrid::search(&state, &request, None).map_err(|error| error.to_string())?
             }
-            Err(error) => return Err(format!("{name}: {error}")),
+            Err(error) => return Err(format!("{name} couldn't be searched ({error})")),
         };
         if results.query_tokens > 0 {
             output.query_tokens += results.query_tokens;
@@ -1959,10 +1963,12 @@ impl Indexes {
                     match (&last, &built) {
                         (Ok(Some(sequence)), Ok(_)) => {
                             if let Err(error) = changes.ack(*sequence) {
-                                notes.push(format!("watcher state: {error}"));
+                                notes.push(format!("the watcher's state failed ({error})"));
                             }
                         }
-                        (Err(error), _) => notes.push(format!("watcher state: {error}")),
+                        (Err(error), _) => {
+                            notes.push(format!("the watcher's state failed ({error})"))
+                        }
                         _ => {}
                     }
                     built
@@ -1973,7 +1979,7 @@ impl Indexes {
                     self.build_locked(&entry, &manifest, Caller::Interactive)
                 }
                 Err(OpenError::Failed(error)) => {
-                    notes.push(format!("the watcher failed: {error}"));
+                    notes.push(format!("the watcher failed ({error})"));
                     self.build_locked(&entry, &manifest, Caller::Interactive)
                 }
             }
@@ -1985,7 +1991,7 @@ impl Indexes {
                     let _ = std::fs::remove_dir_all(&layout.dir);
                     lock(&self.entries).remove(&id);
                 }
-                return Err(format!("building the index failed: {error}"));
+                return Err(format!("building the index failed ({error})"));
             }
         };
         let manifest = store::load_manifest(&layout.dir).unwrap_or(manifest);
@@ -2046,7 +2052,7 @@ impl Indexes {
             Action::Rebuild => {
                 let record = self.build(&entry, &found.manifest, Caller::Interactive)?;
                 let mut text = format!(
-                    "Rebuilt {name}: {} chunks ({:.1} s). {}.",
+                    "Rebuilt {name} with {} chunks ({:.1} s). {}.",
                     fmt_count(record.chunks),
                     record.seconds,
                     record.summary
@@ -2058,7 +2064,7 @@ impl Indexes {
             }
             Action::Estimate => {
                 let estimate = self.estimate(&entry)?;
-                Ok(format!("{name}: {}", estimate.line()))
+                Ok(format!("For {name}, {}", estimate.line()))
             }
             Action::Embed { max_tokens, wait } => {
                 if !self.backend().has_key() {
@@ -2076,13 +2082,15 @@ impl Indexes {
                     ));
                 }
                 match self.estimate(&entry) {
-                    Ok(estimate) => lines.push(format!("Estimate: {}.", estimate.line())),
-                    Err(error) => lines.push(format!("Estimate: {error}.")),
+                    Ok(estimate) => {
+                        lines.push(format!("{}.", crate::ui::sentence(&estimate.line())))
+                    }
+                    Err(error) => lines.push(format!("No estimate ({error}).")),
                 }
                 let cap = max_tokens.unwrap_or(manifest.max_embed_tokens);
                 if *wait {
                     let summary = self.run_embed(&entry, cap, true, None, None)?;
-                    lines.push(format!("{name}: {}.", summary.line()));
+                    lines.push(format!("{name} {}.", summary.line()));
                 } else if self.request_embed(&entry, Some(cap), true) {
                     lines.push(format!(
                         "Embedding {name} in the background (cap {} tokens); index_status shows progress.",
@@ -2105,7 +2113,7 @@ impl Indexes {
                 if self.monitor {
                     self.start_watch(&entry);
                     Ok(format!(
-                        "{name} is monitored: this Arko watches it now, as will interactive Arko sessions in its directory."
+                        "{name} is monitored, so this Arko watches it now, as will interactive Arko sessions in its directory."
                     ))
                 } else {
                     Ok(format!(
@@ -2115,8 +2123,9 @@ impl Indexes {
             }
             Action::Remove => {
                 self.remove_entry(&entry);
-                std::fs::remove_dir_all(&found.layout.dir)
-                    .map_err(|error| format!("{}: {error}", found.layout.dir.display()))?;
+                std::fs::remove_dir_all(&found.layout.dir).map_err(|error| {
+                    format!("could not remove {} ({error})", found.layout.dir.display())
+                })?;
                 Ok(format!(
                     "Removed the index {name} of {}. The indexed files are untouched.",
                     found.manifest.root.display()
@@ -2263,7 +2272,7 @@ impl EmbedSummary {
         );
         if self.cap_reached {
             line.push_str(&format!(
-                ". The run stopped at the cap of {} tokens (~{} tokens left: embed again with a higher max_tokens to continue)",
+                ". The run stopped at the cap of {} tokens (~{} tokens are left, and embedding again with a higher max_tokens continues)",
                 fmt_count(self.cap),
                 fmt_count(self.not_embedded_tokens)
             ));
@@ -2284,7 +2293,7 @@ impl Estimate {
     pub fn line(&self) -> String {
         if self.tokens == 0 {
             return format!(
-                "nothing to embed: {}/{} chunks have vectors",
+                "nothing to embed, as {}/{} chunks have vectors",
                 fmt_count(self.embedded),
                 fmt_count(self.docs)
             );

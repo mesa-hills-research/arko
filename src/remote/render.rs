@@ -83,12 +83,12 @@ fn line(tool: &str, parameters: &Parameters) -> Option<Item> {
                 format!(" ({})", notes.join(", "))
             };
             let task = text(parameters, "task").trim();
-            call(format!("start worker{notes}: {}", cut(task, 160))).detail(long(task, 160))
+            call(format!("start worker{notes} “{}”", cut(task, 160))).detail(long(task, 160))
         }
         crew::MESSAGE_AGENT => {
             let message = text(parameters, "message").trim();
             call(format!(
-                "message {}: {}",
+                "message {} “{}”",
                 text(parameters, "to").trim(),
                 cut(message, 160)
             ))
@@ -134,7 +134,7 @@ fn line(tool: &str, parameters: &Parameters) -> Option<Item> {
             } else {
                 " (resumed)"
             };
-            call(format!("worker{resumed}: {}", cut(prompt, 160))).detail(long(prompt, 160))
+            call(format!("worker{resumed} “{}”", cut(prompt, 160))).detail(long(prompt, 160))
         }
         other => call(ui::brief(other, parameters)),
     })
@@ -454,7 +454,7 @@ mod tests {
         .unwrap();
         assert!(
             item.text
-                .starts_with("start worker (worktree): Fix the parser.")
+                .starts_with("start worker (worktree) “Fix the parser. Fix")
         );
         assert_eq!(item.detail.as_deref(), Some(task.trim()));
         let item = call(
@@ -476,7 +476,7 @@ mod tests {
             &params(&[("to", "lead".into()), ("message", "Done?".into())]),
         )
         .unwrap();
-        assert_eq!(item.text, "message lead: Done?");
+        assert_eq!(item.text, "message lead “Done?”");
     }
 
     /// A result is told in a few words on its call's line; a command's

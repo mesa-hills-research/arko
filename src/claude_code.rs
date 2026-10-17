@@ -76,7 +76,7 @@ impl Ready {
         let method = self.method.as_deref()?;
         (method != "claude.ai").then(|| {
             format!(
-                "Claude Code signs in with `{method}` here, not a Claude plan: its calls may be billed per token, and Arko doesn't count their cost."
+                "Claude Code signs in with `{method}` here, not a Claude plan, so its calls may be billed per token, and Arko doesn't count their cost."
             )
         })
     }

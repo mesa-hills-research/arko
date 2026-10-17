@@ -124,7 +124,7 @@ impl Rules {
     pub fn validate(&self) -> Result<(), String> {
         self.file_rules()
             .validate()
-            .map_err(|error| format!("invalid include/exclude pattern: {error}"))
+            .map_err(|error| format!("invalid include/exclude pattern ({error})"))
     }
 }
 
@@ -279,25 +279,31 @@ fn fnv1a(bytes: &[u8]) -> u64 {
 /// a panic.
 pub fn load_manifest(dir: &Path) -> Result<Manifest, String> {
     let path = dir.join(MANIFEST_FILE);
-    let bytes = std::fs::read(&path).map_err(|error| format!("{}: {error}", path.display()))?;
-    let manifest: Manifest =
-        serde_json::from_slice(&bytes).map_err(|error| format!("{}: {error}", path.display()))?;
+    let bytes = std::fs::read(&path)
+        .map_err(|error| format!("could not read {} ({error})", path.display()))?;
+    let manifest: Manifest = serde_json::from_slice(&bytes)
+        .map_err(|error| format!("could not read {} ({error})", path.display()))?;
     if manifest.root.as_os_str().is_empty() {
-        return Err(format!("{}: no root", path.display()));
+        return Err(format!("{} names no root", path.display()));
     }
     Ok(manifest)
 }
 
 /// Replaces a manifest atomically (a temporary file renamed over it).
 pub fn save_manifest(dir: &Path, manifest: &Manifest) -> Result<(), String> {
-    std::fs::create_dir_all(dir).map_err(|error| format!("{}: {error}", dir.display()))?;
+    std::fs::create_dir_all(dir)
+        .map_err(|error| format!("could not create {} ({error})", dir.display()))?;
     let mut bytes = serde_json::to_vec_pretty(manifest).map_err(|error| error.to_string())?;
     bytes.push(b'\n');
     let tmp = dir.join(format!(".{MANIFEST_FILE}.{}.tmp", std::process::id()));
-    std::fs::write(&tmp, &bytes).map_err(|error| format!("{}: {error}", tmp.display()))?;
+    std::fs::write(&tmp, &bytes)
+        .map_err(|error| format!("could not write {} ({error})", tmp.display()))?;
     std::fs::rename(&tmp, dir.join(MANIFEST_FILE)).map_err(|error| {
         let _ = std::fs::remove_file(&tmp);
-        format!("{}: {error}", dir.join(MANIFEST_FILE).display())
+        format!(
+            "could not write {} ({error})",
+            dir.join(MANIFEST_FILE).display()
+        )
     })
 }
 
@@ -365,16 +371,16 @@ pub fn validate_root(
     let wanted = absolute(path, cwd);
     let root = wanted
         .canonicalize()
-        .map_err(|error| format!("cannot index {}: {error}", wanted.display()))?;
+        .map_err(|error| format!("cannot index {} ({error})", wanted.display()))?;
     if !root.is_dir() {
         return Err(format!(
-            "cannot index {}: not a directory (index the folder that holds it)",
+            "cannot index {}, which isn't a directory (index the folder that holds it)",
             root.display()
         ));
     }
     if root.parent().is_none() {
         return Err(format!(
-            "refusing to index the file system root {}: index a project folder",
+            "refusing to index the file system root {}. Index a project folder",
             root.display()
         ));
     }
@@ -382,13 +388,13 @@ pub fn validate_root(
         let home = home.canonicalize().unwrap_or_else(|_| home.to_path_buf());
         if root == home {
             return Err(format!(
-                "refusing to index the home directory {}: index a project folder in it",
+                "refusing to index the home directory {}. Index a project folder in it",
                 root.display()
             ));
         }
         if home.starts_with(&root) {
             return Err(format!(
-                "refusing to index {}, which contains the home directory: index a project folder",
+                "refusing to index {}, which contains the home directory. Index a project folder",
                 root.display()
             ));
         }
@@ -397,7 +403,7 @@ pub fn validate_root(
     let indexes = indexes.canonicalize().unwrap_or(indexes);
     if root.starts_with(&indexes) {
         return Err(format!(
-            "refusing to index {}: it is inside Arko's index folder",
+            "refusing to index {}, which is inside Arko's index folder",
             root.display()
         ));
     }
@@ -419,7 +425,7 @@ pub fn validate_name(name: &str) -> Result<String, String> {
         .any(|c| c == '/' || c == '\\' || c.is_control())
     {
         return Err(format!(
-            "invalid index name {name:?}: no slashes or control characters"
+            "invalid index name {name:?} (no slashes or control characters)"
         ));
     }
     Ok(name.to_string())

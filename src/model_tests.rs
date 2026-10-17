@@ -347,7 +347,7 @@ async fn before_the_start_model_worker_sets_the_workers_own_model() {
     assert!(harness.live_command("/model worker astra low", Source::Web));
     assert!(
         said(&harness.feed)
-            .contains("From the web page: Workers now start on gpt-6-astra (low effort).")
+            .contains("Changed from the web page. Workers now start on gpt-6-astra (low effort).")
     );
     assert_eq!(harness.settings.worker.effort, Effort::Low);
     harness.crew.as_ref().unwrap().shutdown().await;

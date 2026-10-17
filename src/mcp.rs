@@ -83,8 +83,9 @@ pub struct Parsed {
 /// `${VAR}`s.
 pub fn parse_file(path: &Path, lookup: &dyn Fn(&str) -> Option<String>) -> Result<Parsed, String> {
     let text = std::fs::read_to_string(path)
-        .map_err(|error| format!("could not read {}: {error}", path.display()))?;
-    parse(&text, path, lookup).map_err(|error| format!("{}: {error}", path.display()))
+        .map_err(|error| format!("could not read {} ({error})", path.display()))?;
+    parse(&text, path, lookup)
+        .map_err(|error| format!("could not read {} ({error})", path.display()))
 }
 
 fn parse(
@@ -296,7 +297,10 @@ pub fn plan(
         match parse_file(&file, &environment) {
             Ok(parsed) => steps.push(Step::Add(parsed)),
             Err(error) if required => return Err(error),
-            Err(error) => steps.push(Step::Note(format!("MCP servers not started: {error}"))),
+            Err(error) => steps.push(Step::Note(format!(
+                "MCP servers not started. {}",
+                crate::ui::sentence(&error)
+            ))),
         }
         read.insert(file);
     }
@@ -320,14 +324,20 @@ pub fn plan(
                     steps.push(Step::Ask(parsed));
                 }
             },
-            Err(error) => steps.push(Step::Note(format!("MCP servers not started: {error}"))),
+            Err(error) => steps.push(Step::Note(format!(
+                "MCP servers not started. {}",
+                crate::ui::sentence(&error)
+            ))),
         }
     }
     let user = root.join(USER_FILE);
     if user.is_file() && !read.contains(&user) {
         match parse_file(&user, &environment) {
             Ok(parsed) => steps.push(Step::Add(parsed)),
-            Err(error) => steps.push(Step::Note(format!("MCP servers not started: {error}"))),
+            Err(error) => steps.push(Step::Note(format!(
+                "MCP servers not started. {}",
+                crate::ui::sentence(&error)
+            ))),
         }
     }
     Ok(Plan {
@@ -375,7 +385,7 @@ impl Plan {
                         }
                     }
                     None => notes.push(format!(
-                        "the MCP servers in {} aren't started: Arko asks before starting a project's servers, and needs a terminal to ask",
+                        "the MCP servers in {} aren't started, because Arko asks before starting a project's servers and needs a terminal to ask",
                         self.workspace.join(PROJECT_FILE).display()
                     )),
                 },
@@ -435,7 +445,7 @@ fn remember(root: &Path, workspace: &Path, parsed: &Parsed, start: bool) -> Resu
     std::fs::create_dir_all(root)
         .and_then(|()| std::fs::write(&temporary, text))
         .and_then(|()| std::fs::rename(&temporary, &path))
-        .map_err(|error| format!("could not save {}: {error}", path.display()))
+        .map_err(|error| format!("could not save {} ({error})", path.display()))
 }
 
 /// The tool name of `server`'s tool `tool`: `mcp__<server>__<tool>`, with
@@ -627,7 +637,7 @@ impl Running {
                 Err(_) => format!("{} (failed)", started.server.name),
             })
             .collect::<Vec<_>>();
-        Some(format!("MCP: {}", servers.join(", ")))
+        Some(format!("MCP servers {}", servers.join(", ")))
     }
 
     /// Stops the servers: each gets three seconds to exit, then is killed.
@@ -969,7 +979,7 @@ mod tests {
         );
         assert_eq!(
             running.summary().unwrap(),
-            "MCP: stub server (2 tools), missing (failed)"
+            "MCP servers stub server (2 tools), missing (failed)"
         );
         let echo = running.tools()[0].clone();
         let definition = echo.definition();

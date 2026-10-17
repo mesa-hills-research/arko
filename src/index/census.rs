@@ -112,7 +112,7 @@ fn matcher(root: &Path, patterns: &[String]) -> Result<Option<Gitignore>, String
     for pattern in patterns {
         builder
             .add_line(None, pattern)
-            .map_err(|error| format!("invalid pattern {pattern:?}: {error}"))?;
+            .map_err(|error| format!("invalid pattern {pattern:?} ({error})"))?;
     }
     builder.build().map(Some).map_err(|error| error.to_string())
 }

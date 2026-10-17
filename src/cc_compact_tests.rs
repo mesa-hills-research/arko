@@ -77,7 +77,7 @@ async fn cc_compact_changes_before_the_conversation_starts_only() {
     let temp = tempfile::tempdir().unwrap();
     let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
     let reading = |harness: &Harness| remote::Meter::read(harness.gauges.as_ref());
-    let not_in_claude_code = "The agents hand over at the handover size: they aren't in Claude Code, so /cc-compact changes nothing in this session.";
+    let not_in_claude_code = "The agents aren't in Claude Code, so they hand over at the handover size and /cc-compact changes nothing in this session.";
     harness.cc_compact_command("off", Source::Terminal);
     assert!(answered(&harness, not_in_claude_code));
     assert!(!harness.settings.cc_handover);
@@ -95,12 +95,12 @@ async fn cc_compact_changes_before_the_conversation_starts_only() {
     harness.cc_compact_command("", Source::Terminal);
     assert!(answered(
         &harness,
-        "Agents in Claude Code compact at the handover size: Claude Code compacts the conversation, and the agent goes on in it. /cc-compact off changes that before the conversation starts."
+        "Agents in Claude Code compact at the handover size. Claude Code compacts the conversation, and the agent goes on in it. /cc-compact off changes that before the conversation starts."
     ));
     harness.cc_compact_command("off", Source::Terminal);
     assert!(answered(
         &harness,
-        "Agents in Claude Code now hand over at the handover size: the agent writes a report and goes on from it in a fresh conversation."
+        "Agents in Claude Code now hand over at the handover size. The agent writes a report and goes on from it in a fresh conversation."
     ));
     assert!(harness.settings.cc_handover);
     assert!(!agents::compacts(&harness.worker_config));
@@ -110,7 +110,7 @@ async fn cc_compact_changes_before_the_conversation_starts_only() {
     harness.cc_compact_command("off", Source::Terminal);
     assert!(answered(
         &harness,
-        "Agents in Claude Code hand over at the handover size already: the agent writes a report and goes on from it in a fresh conversation."
+        "Agents in Claude Code hand over at the handover size already. The agent writes a report and goes on from it in a fresh conversation."
     ));
     harness.cc_compact_command("sometimes", Source::Terminal);
     assert!(answered(
@@ -124,7 +124,7 @@ async fn cc_compact_changes_before_the_conversation_starts_only() {
     assert!(matches!(end, TurnEnd::Answered));
     harness.cc_compact_command("on", Source::Web);
     assert!(texts(&harness.feed, "notice").contains(
-        &"From the web page: This session keeps what its agents in Claude Code do at the handover size: the agent writes a report and goes on from it in a fresh conversation. A new session takes --cc-compact or --no-cc-compact."
+        &"Changed from the web page. This session keeps what its agents in Claude Code do at the handover size. The agent writes a report and goes on from it in a fresh conversation. A new session takes --cc-compact or --no-cc-compact."
             .to_string()
     ));
     assert!(harness.settings.cc_handover);

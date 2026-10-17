@@ -369,13 +369,13 @@ async fn text_replies_change_before_the_conversation_starts_only() {
 
     harness.text_replies_command("", Source::Terminal);
     assert!(texts(&harness.feed, "output").contains(
-        &"Text replies are off: the agent ends its turn by calling complete_task. /text-replies on changes that before the conversation starts."
+        &"Text replies are off, so the agent ends its turn by calling complete_task. /text-replies on changes that before the conversation starts."
             .to_string()
     ));
     harness.text_replies_command("on", Source::Terminal);
     assert!(
         texts(&harness.feed, "output")
-            .contains(&"Text replies are on: the agent ends its turn with a plain reply.".to_string())
+            .contains(&"Text replies are on, so the agent ends its turn with a plain reply.".to_string())
     );
     assert!(harness.settings.text_replies);
     assert!(harness.main_config.tool_config.ends_task_with_text());
@@ -397,13 +397,13 @@ async fn text_replies_change_before_the_conversation_starts_only() {
     harness.text_replies_command("off", Source::Web);
     assert!(says(
         &harness.feed,
-        "From the web page: The main agent keeps text replies on for this session: the agent ends its turn with a plain reply. A new session takes --text-replies or --no-text-replies."
+        "Changed from the web page. The main agent keeps text replies on for this session, so the agent ends its turn with a plain reply. A new session takes --text-replies or --no-text-replies."
     ));
     assert!(harness.settings.text_replies);
     assert!(harness.session.load_settings().unwrap().text_replies);
     harness.text_replies_command("", Source::Terminal);
     assert!(texts(&harness.feed, "output").contains(
-        &"Text replies are on: the agent ends its turn with a plain reply. It keeps this for the session."
+        &"Text replies are on, so the agent ends its turn with a plain reply. It keeps this for the session."
             .to_string()
     ));
     let now = reading(&harness);

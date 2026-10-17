@@ -197,7 +197,7 @@ impl WorkerModels {
     fn save(&self) -> Result<(), String> {
         let failed = |error: std::io::Error| {
             format!(
-                "Arko could not record the worker's model in {}: {error}",
+                "Arko could not record the worker's model in {} ({error})",
                 self.path.display()
             )
         };
@@ -469,15 +469,15 @@ impl Crew {
                     SubagentEventKind::Started => Some(format!("{} started", event.handle)),
                     SubagentEventKind::Resumed => Some(format!("{} resumed", event.handle)),
                     SubagentEventKind::Finished { summary } => Some(format!(
-                        "{} reported: {}",
+                        "{} reported. {}",
                         event.handle,
                         ui::cut(&summary, 180)
                     )),
                     SubagentEventKind::Failed { error } => {
-                        Some(format!("{} failed: {error}", event.handle))
+                        Some(format!("{} failed ({error})", event.handle))
                     }
                     SubagentEventKind::Stopped { reason, .. } => {
-                        Some(format!("{} stopped: {reason}", event.handle))
+                        Some(format!("{} stopped ({reason})", event.handle))
                     }
                     SubagentEventKind::WorkspaceRemoved => {
                         Some(format!("{} worktree removed", event.handle))
@@ -628,7 +628,7 @@ impl Crew {
                 }
                 if let Some(lifetime) = worker.cache_lifetime {
                     line.push_str(&format!(
-                        "\n  prompt cache: {} minutes",
+                        "\n  prompt cache of {} minutes",
                         lifetime.as_secs() / 60
                     ));
                 }
@@ -755,7 +755,7 @@ impl Crew {
             // Mail publication schedules its own checkpoint. Await one here so
             // exiting immediately after a report preserves that report on resume.
             if let Err(error) = workflow.checkpoint().await {
-                let text = format!("Could not save the final worker state: {error}");
+                let text = format!("Could not save the final worker state ({error})");
                 self.setup.output.echo(&self.setup.output.warn(&text));
                 if let Some(feed) = &self.setup.feed {
                     feed.notice(remote::Level::Warn, &text);

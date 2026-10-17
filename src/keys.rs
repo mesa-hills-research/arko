@@ -518,11 +518,11 @@ pub fn add_at_prompt(keys: &Keys, key: &'static Key) {
     let value = match credentials::read_key(&out, key) {
         Ok(Some(value)) => value,
         Ok(None) => return out.line(&out.dim("No key was added.")),
-        Err(error) => return out.line(&out.error(&format!("arko: {error}"))),
+        Err(error) => return out.line(&out.error(&crate::ui::sentence(&error))),
     };
     // Its start and last 4 characters: the key pasted is the one meant.
     out.line(&out.dim(&format!(
-        "{}: {}",
+        "{} {}",
         capitalized(without_article(key.what)),
         credentials::masked(&value, key.prefix)
     )));

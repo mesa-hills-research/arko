@@ -143,7 +143,7 @@ pub enum Delivery {
 
 /// The message that keeps the prompt cache warm where the provider takes
 /// no refresh out of band.
-pub const REFRESH_MESSAGE: &str = "(Arko: this message only keeps the prompt cache warm. Reply with \"Acknowledged\" and nothing else.)";
+pub const REFRESH_MESSAGE: &str = "(Arko sends this message only to keep the prompt cache warm. Reply with \"Acknowledged\" and nothing else.)";
 
 /// How a tool call is doing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -1122,7 +1122,7 @@ impl Feed {
                 } else if why.is_empty() {
                     "refused".to_string()
                 } else {
-                    format!("refused: {why}")
+                    format!("refused ({why})")
                 };
                 self.settle(&mut state, tool_call_id, Outcome::failed(&message));
             }
@@ -1171,7 +1171,7 @@ impl Feed {
                 self.push(&mut state, notice(text, Level::Warn));
             }
             AgentEvent::UsageLimitReached { error_message, .. } => {
-                let text = format!("usage limit reached: {}", render::cut(error_message, 300));
+                let text = format!("usage limit reached ({})", render::cut(error_message, 300));
                 self.push(&mut state, notice(text, Level::Warn));
             }
             AgentEvent::OutputTokenLimitReached { output_tokens, .. } if main => {
@@ -1192,7 +1192,7 @@ impl Feed {
             AgentEvent::ConversationHandedOver { .. } if main => {
                 self.forget_messages(&mut state);
                 let text =
-                    "handed over: the agent continues in a fresh conversation from its report";
+                    "handed over, and the agent continues in a fresh conversation from its report";
                 self.push(&mut state, notice(text.into(), Level::Info));
             }
             AgentEvent::ConversationCompacted {
@@ -1534,8 +1534,11 @@ impl Feed {
                 summary.ended_at = Some(now);
                 summary.last = Some(render::cut(error, 160));
                 ended = Some(
-                    Item::new(Kind::Notice, format!("failed: {}", render::cut(error, 600)))
-                        .level(Level::Error),
+                    Item::new(
+                        Kind::Notice,
+                        format!("failed ({})", render::cut(error, 600)),
+                    )
+                    .level(Level::Error),
                 );
             }
             WorkerChange::Stopped { reason } => {
@@ -1546,14 +1549,14 @@ impl Feed {
                 summary.last = Some(if reason.is_empty() {
                     "stopped".to_string()
                 } else {
-                    render::cut(&format!("stopped: {reason}"), 160)
+                    render::cut(&format!("stopped ({reason})"), 160)
                 });
                 ended = Some(Item::new(
                     Kind::Notice,
                     if reason.is_empty() {
                         "stopped".to_string()
                     } else {
-                        format!("stopped: {}", render::cut(reason, 300))
+                        format!("stopped ({})", render::cut(reason, 300))
                     },
                 ));
             }
@@ -2132,7 +2135,7 @@ mod tests {
                 (Some(CallStatus::Failed), Some("no such file".into())),
                 (
                     Some(CallStatus::Failed),
-                    Some("refused: outside the workspace".into())
+                    Some("refused (outside the workspace)".into())
                 ),
                 (Some(CallStatus::Failed), Some("interrupted".into())),
                 (Some(CallStatus::Failed), Some("stopped".into())),
@@ -2559,8 +2562,8 @@ mod tests {
                 (Kind::Reply, None, "Fixed."),
                 (Kind::Message, Some("main"), "Also the docs."),
                 (Kind::Text, None, "On it."),
-                (Kind::Call, None, "message r2: a.rs is done."),
-                (Kind::Call, None, "message lead: Halfway."),
+                (Kind::Call, None, "message r2 “a.rs is done.”"),
+                (Kind::Call, None, "message lead “Halfway.”"),
             ]
         );
         assert_eq!(of("r2"), [(Kind::Message, Some("r1"), "a.rs is done.")]);
@@ -2758,7 +2761,7 @@ mod tests {
         };
         feed.event(&event("main", rejection), None);
         let call = items(&feed).pop().unwrap();
-        assert_eq!(call.output.as_deref(), Some("refused: Not that."));
+        assert_eq!(call.output.as_deref(), Some("refused (Not that.)"));
         // About a quarter of the budget each: the oldest calls lose theirs.
         let long = "x".repeat(MAIN_BUDGET.wholes / 4);
         for _ in 0..6 {

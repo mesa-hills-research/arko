@@ -107,7 +107,7 @@ async fn a_long_command_moves_to_the_background_and_its_end_wakes_the_idle_agent
     assert!(woken.contains("built"), "{woken}");
     assert!(
         shown(&harness.feed).iter().any(|(kind, text, _)| kind == "notice"
-            && text.contains("a background job finished: its update goes to the agent")),
+            && text.contains("a background job finished, and its update goes to the agent")),
         "{:?}",
         shown(&harness.feed)
     );
@@ -304,7 +304,7 @@ async fn exit_with_a_background_job_warns_first_at_the_line_prompt() {
     assert!(!exit(&mut harness));
     assert_eq!(
         warnings(&harness),
-        ["1 background job is running: /exit again stops it and quits."]
+        ["1 background job is running. /exit again stops it and quits."]
     );
 
     let workspace = temp.path().to_path_buf();
@@ -319,7 +319,7 @@ async fn exit_with_a_background_job_warns_first_at_the_line_prompt() {
     assert!(!exit(&mut harness), "the second job wasn't warned of");
     assert_eq!(
         warnings(&harness)[1],
-        "2 background jobs are running: /exit again stops them and quits."
+        "2 background jobs are running. /exit again stops them and quits."
     );
 
     // The full-screen view asks in its popup, with the jobs running.

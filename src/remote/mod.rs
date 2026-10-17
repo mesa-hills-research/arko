@@ -368,7 +368,7 @@ pub fn new_key(path: &Path) -> Result<String, String> {
     let key = random_token(KEY_BYTES);
     let _ = std::fs::remove_file(path);
     write_private(path, &key)
-        .map_err(|error| format!("could not save the key in {}: {error}", path.display()))?;
+        .map_err(|error| format!("could not save the key in {} ({error})", path.display()))?;
     Ok(key)
 }
 
@@ -439,7 +439,7 @@ pub fn parse_bind(text: &str) -> Result<Bind, String> {
     }
     let invalid = || {
         format!(
-            "`{text}` is not an address to serve on: give a port (8765), an address (0.0.0.0), or both (0.0.0.0:8765)"
+            "`{text}` is not an address to serve on. Give a port (8765), an address (0.0.0.0) or both (0.0.0.0:8765)"
         )
     };
     let (host, port) = match text.rsplit_once(':') {
@@ -501,10 +501,10 @@ pub fn start(
         if error.kind() == std::io::ErrorKind::AddrInUse && bind.port.is_some_and(|port| port != 0)
         {
             format!(
-                "could not serve on {addr}: the port is in use (by another session's web page, or another program). Choose another port, or none for any free one"
+                "could not serve on {addr} because the port is in use (by another session's web page, or another program). Choose another port, or none for any free one"
             )
         } else {
-            format!("could not serve on {addr}: {error}")
+            format!("could not serve on {addr} ({error})")
         }
     })
 }

@@ -84,9 +84,9 @@ async fn remote_page_demo() {
                 return match step {
                     0 => turn("w10", "Looking at the parser's tests first.", Some(shell("sleep 1; echo 'running 40 tests'; echo 'test parser::tests::flaky ... FAILED'; exit 101"))),
                     1 => turn("w11", "", Some((READ_FILE_TOOL_NAME, serde_json::json!({"path": "src/parser.rs"})))),
-                    2 => turn("w12", "The setup races the clock; waiting on the fixture fixes it.", Some(shell("sleep 2; echo 'test result: ok. 40 passed; 0 failed'"))),
+                    2 => turn("w12", "The setup races the clock, and waiting on the fixture fixes it.", Some(shell("sleep 2; echo 'test result: ok. 40 passed; 0 failed'"))),
                     3 => turn("w13", "", Some(shell("sleep 2; for i in 1 2 3; do echo \"run $i: ok\"; done"))),
-                    _ => complete("w14", "Fixed: the parser test's setup raced the clock.\n\n- The fixture now signals when it is ready.\n- 40 passed, ten runs in a row."),
+                    _ => complete("w14", "Fixed. The parser test's setup raced the clock.\n\n- The fixture now signals when it is ready.\n- 40 passed, ten runs in a row."),
                 };
             }
             if body.contains("You are agent run r") {
@@ -119,14 +119,14 @@ async fn remote_page_demo() {
             if let Some(step) = after("Run the demo") {
                 return match step {
                     0 => turn("d0", "I'll look around first.", Some(shell("ls -la; echo 'running 12 tests'; echo 'test result: ok. 12 passed; 0 failed'"))),
-                    1 => turn("d1", "Two workers next: one fixes the flaky test, one checks the docs.", Some((crew::START_AGENT, serde_json::json!({"agent": WORKER, "task": "Fix the flaky test in src/parser.rs\n\nIt fails one run in ten; find why, fix it, and run it ten times."})))),
+                    1 => turn("d1", "Two workers next, one to fix the flaky test and one to check the docs.", Some((crew::START_AGENT, serde_json::json!({"agent": WORKER, "task": "Fix the flaky test in src/parser.rs\n\nIt fails one run in ten. Find why, fix it, and run it ten times."})))),
                     2 => turn("d2", "", Some((crew::START_AGENT, serde_json::json!({"agent": WORKER, "task": "Review the README for stale flags"})))),
-                    3 => turn("d3", "Meanwhile, the build:", Some(shell("sleep 2; echo 'error[E0425]: cannot find value `x` in this scope'; exit 3"))),
+                    3 => turn("d3", "Meanwhile, a build.", Some(shell("sleep 2; echo 'error[E0425]: cannot find value `x` in this scope'; exit 3"))),
                     4 => turn("d4", "", Some((ASK_USER_TOOL_NAME, serde_json::json!({"questions": "Should I also update the **CHANGELOG**? It has no entry for 0.4 yet."})))),
                     5 => turn("d5", "Waiting for the workers.", Some((crew::WAIT_FOR_AGENTS, serde_json::json!({"all": true, "timeout_seconds": 60})))),
                     _ => {
                         done();
-                        complete("d6", "## Done\n\nThe flaky test is fixed and the docs are checked.\n\n- **r1** found a race in the parser's setup: the fixture now signals when it's ready, and `cargo test` passed **40 of 40**, ten times.\n- **r2** found one stale note, on `--remote`'s port.\n\n```rust\nfixture.ready().await?;\nparse(&input)?;\n```\n\n| Check | Result |\n|---|---|\n| Tests | 40 passed |\n| Docs | 1 note |\n\nSee https://example.com/notes for the details.")
+                        complete("d6", "## Done\n\nThe flaky test is fixed and the docs are checked.\n\n- **r1** found a race in the parser's setup. The fixture now signals when it's ready, and `cargo test` passed **40 of 40**, ten times.\n- **r2** found one stale note, on `--remote`'s port.\n\n```rust\nfixture.ready().await?;\nparse(&input)?;\n```\n\n| Check | Result |\n|---|---|\n| Tests | 40 passed |\n| Docs | 1 note |\n\nSee https://example.com/notes for the details.")
                     }
                 };
             }

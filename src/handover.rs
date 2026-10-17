@@ -112,7 +112,7 @@ pub fn requested_text(run: Uuid, input_tokens: usize) -> String {
 pub fn compacted_text(input_tokens: usize, compacted_tokens: Option<usize>) -> String {
     match compacted_tokens {
         Some(after) => format!(
-            "Claude Code compacted the conversation: {} → {} tokens",
+            "Claude Code compacted the conversation from {} to {} tokens",
             about(input_tokens),
             about(after)
         ),
@@ -543,7 +543,7 @@ pub fn parse_tokens(text: &str) -> Result<usize, String> {
     let tokens = usize::try_from(scaled / places).map_err(|_| invalid())?;
     if tokens < MIN_TOKENS {
         return Err(format!(
-            "{tokens} tokens is too small: an agent's fresh conversation would start near it. Give at least {MIN_TOKENS}."
+            "{tokens} tokens is too small, because an agent's fresh conversation would start near it. Give at least {MIN_TOKENS}."
         ));
     }
     Ok(tokens)
@@ -805,7 +805,7 @@ mod tests {
     fn a_compaction_is_told_with_its_sizes() {
         assert_eq!(
             compacted_text(642_400, Some(38_100)),
-            "Claude Code compacted the conversation: 642k → 38k tokens"
+            "Claude Code compacted the conversation from 642k to 38k tokens"
         );
         assert_eq!(
             compacted_text(642_400, None),

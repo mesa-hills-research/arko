@@ -122,7 +122,7 @@ impl std::fmt::Display for BranchError {
         match self {
             BranchError::Locked { holder } => write!(
                 f,
-                "the session is open in {}: branch it there",
+                "the session is open in {}, so branch it there",
                 holder
                     .as_ref()
                     .map_or("another Arko".to_string(), Holder::describe)
@@ -134,8 +134,7 @@ impl std::fmt::Display for BranchError {
 }
 
 /// Why a session without a conversation isn't branched.
-pub(crate) const NO_CONVERSATION: &str =
-    "A branch starts from a conversation: send a message first.";
+pub(crate) const NO_CONVERSATION: &str = "Send a message first, then branch from it.";
 
 /// Branches the session `id`, closed, from what it saved: a new session
 /// with all of its main agent's current conversation and its settings, as
@@ -177,7 +176,7 @@ fn saved_conversation(
     };
     let unreadable = |error: String| {
         format!(
-            "could not read the session's checkpoint {}: {error}",
+            "could not read the session's checkpoint {} ({error})",
             checkpoint.display()
         )
     };
@@ -239,9 +238,9 @@ pub(crate) fn write_branch(
 ) -> Result<String, String> {
     let branch = task.branch(index).map_err(|error| error.to_string())?;
     let seed = serde_json::to_string(&branch)
-        .map_err(|error| format!("could not write the branch's conversation: {error}"))?;
+        .map_err(|error| format!("could not write the branch's conversation ({error})"))?;
     let session =
-        Session::create(root).map_err(|error| format!("could not create a session: {error}"))?;
+        Session::create(root).map_err(|error| format!("could not create a session ({error})"))?;
     let mut settings = settings.clone();
     settings.created = Utc::now();
     settings.branched_from = Some(from.id.clone());
@@ -255,7 +254,7 @@ pub(crate) fn write_branch(
         .and_then(|()| std::fs::write(session.dir.join(session::SEED_FILE), seed));
     if let Err(error) = written {
         let _ = std::fs::remove_dir_all(&session.dir);
-        return Err(format!("could not save the branch: {error}"));
+        return Err(format!("could not save the branch ({error})"));
     }
     Ok(session.id)
 }
@@ -306,7 +305,7 @@ impl std::fmt::Display for DeleteError {
         match self {
             DeleteError::Locked { holder } => write!(
                 f,
-                "the session is open in {}: close it there first",
+                "the session is open in {}, so close it there first",
                 holder
                     .as_ref()
                     .map_or("another Arko".to_string(), Holder::describe)
@@ -346,7 +345,7 @@ pub fn delete(root: &Path, id: &str) -> Result<Deleted, DeleteError> {
         .is_symlink();
     if linked {
         return Err(DeleteError::Io(format!(
-            "{} is a link to a folder elsewhere: Arko deletes only a session's own folder.",
+            "{} is a link to a folder elsewhere, and Arko deletes only a session's own folder.",
             session.dir.display()
         )));
     }
@@ -425,7 +424,7 @@ fn clear(dir: &Path, kept: &[PathBuf], locks: &[PathBuf]) -> std::io::Result<()>
             std::fs::remove_file(&path)
         };
         result.map_err(|error| {
-            std::io::Error::other(format!("could not delete {}: {error}", path.display()))
+            std::io::Error::other(format!("could not delete {} ({error})", path.display()))
         })?;
     }
     Ok(())

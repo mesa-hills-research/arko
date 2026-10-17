@@ -125,7 +125,7 @@ async fn outside_access_turned_on_and_off_mid_turn_reaches_the_shell_the_file_to
         async move {
             until(|| feed.activity().working).await;
             sender.send(Input::Line("/outside on".into())).unwrap();
-            until(|| says(&feed, "output", "Outside access is on:")).await;
+            until(|| says(&feed, "output", "Outside access is on,")).await;
             hold_on.notify_one();
             until(|| {
                 bodies
@@ -136,7 +136,7 @@ async fn outside_access_turned_on_and_off_mid_turn_reaches_the_shell_the_file_to
             })
             .await;
             sender.send(Input::Line("/outside off".into())).unwrap();
-            until(|| says(&feed, "output", "Outside access is off:")).await;
+            until(|| says(&feed, "output", "Outside access is off,")).await;
             hold_off.notify_one();
             sender
         }
@@ -236,11 +236,11 @@ async fn outside_access_changed_from_the_web_page_is_announced() {
     assert!(!outside.is_on());
     let outputs = texts(&harness.feed, "output");
     for expected in [
-        "Outside access is on: the agents may delete",
+        "Outside access is on, so the agents may delete",
         "Outside access is already on.",
         "`sideways`: use /outside on or /outside off.",
-        "Outside access is on: the agents may delete",
-        "Outside access is off: the agents can't",
+        "Outside access is on, so the agents may delete",
+        "Outside access is off, so the agents can't",
     ] {
         assert!(
             outputs.iter().any(|text| text.starts_with(expected)),
@@ -511,7 +511,7 @@ async fn workers_started_before_and_after_a_change_follow_it() {
             })
             .await;
             sender.send(Input::Line("/outside on".into())).unwrap();
-            until(|| says(&feed, "output", "Outside access is on:")).await;
+            until(|| says(&feed, "output", "Outside access is on,")).await;
             hold.notify_one();
             sender
         }
@@ -846,7 +846,7 @@ async fn handover_sizes_are_checked_kept_and_acted_on() {
         100_000
     );
     assert!(output(&mut harness, "/handover-at").starts_with(
-        "The main agent hands over at 100k tokens of input (its latest request: 260k)."
+        "The main agent hands over at 100k tokens of input (its latest request was 260k)."
     ));
     let end = tokio::time::timeout(
         Duration::from_secs(30),
@@ -1146,7 +1146,7 @@ fn the_qr_code_shows_the_first_link_or_the_one_named() {
         assert_eq!(
             qr_link(&several, name, any).unwrap_err(),
             format!(
-                "The page has no link on `{name}`: its links are on ens33, tailscale0, wg0-mullvad."
+                "The page has no link on `{name}`. Its links are on ens33, tailscale0, wg0-mullvad."
             )
         );
     }
@@ -1168,7 +1168,7 @@ async fn remote_qr_draws_the_code_or_says_why_not() {
     };
     assert_eq!(
         shown(&mut harness, ""),
-        "The web page isn't on: /remote starts it."
+        "The web page isn't on. /remote starts it."
     );
     harness
         .start_remote(remote::Bind {
@@ -1366,7 +1366,7 @@ async fn a_main_agent_in_claude_code_compacts_at_the_handover_size() {
     assert!(says(
         &harness.feed,
         "notice",
-        "Claude Code compacted the conversation: 642k → 38k tokens"
+        "Claude Code compacted the conversation from 642k to 38k tokens"
     ));
     assert!(!says(&harness.feed, "notice", "handed over"));
     let calls = call_outcomes(&harness.feed);
@@ -1438,7 +1438,7 @@ async fn handover_compacts_a_main_agent_in_claude_code() {
     assert!(says(
         &harness.feed,
         "notice",
-        "Claude Code compacted the conversation: 1k → 0k tokens"
+        "Claude Code compacted the conversation from 1k to 0k tokens"
     ));
     let sent = sent_to_claude_code(&fake);
     assert_eq!(sent.len(), 3, "{sent:#?}");
@@ -1867,7 +1867,7 @@ async fn a_message_to_a_finished_worker_continues_it_and_its_lead_hears_of_it() 
     assert!(says(
         &harness.feed,
         "notice",
-        "The message didn't reach r9: there is no worker r9. It said: Hello?"
+        "The message didn't reach r9 (there is no worker r9). It said “Hello?”."
     ));
     harness.live_command("/message r1", Source::Terminal);
     assert!(says(&harness.feed, "notice", "/message takes a worker"));

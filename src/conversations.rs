@@ -268,7 +268,7 @@ const LIST_TITLE: usize = 46;
 /// newest first, then how to go back to one. A row's time follows its
 /// title, without columns, so it reads well where it wraps (on a phone).
 fn list_lines(entries: &[ConversationEntry], now: DateTime<Local>) -> Vec<String> {
-    let mut lines = vec!["This session's conversations, newest first:".to_string()];
+    let mut lines = vec!["This session's conversations, newest first".to_string()];
     let digits = entries
         .iter()
         .map(|entry| entry.number.to_string().len())
@@ -348,7 +348,7 @@ impl Harness {
         if let Err(error) = self.conversations.save(&self.session.dir) {
             self.say(
                 Level::Error,
-                &format!("arko: could not save the session's conversations: {error}"),
+                &format!("Couldn't save the session's conversations ({error})."),
             );
         }
     }
@@ -516,7 +516,7 @@ impl Harness {
         }
         let next = match &self.conversation {
             Conversation::Answered(result) => {
-                out.echo(&out.dim("Its last reply:"));
+                out.echo(&out.dim("Its last reply is below."));
                 out.echo(result.summary.trim());
                 "Your next message continues it."
             }
@@ -691,7 +691,7 @@ mod tests {
         assert_eq!(
             lines,
             [
-                "This session's conversations, newest first:",
+                "This session's conversations, newest first",
                 "  2  Make the login page remember the user between…  (just now, current)",
                 "  1  Fix the build  (yesterday 13:30)",
                 "Go back to one with /resume and its number, such as /resume 1.",

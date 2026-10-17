@@ -64,7 +64,7 @@ impl OpenError {
         match error {
             LockError::Held(holder) => OpenError::Locked { holder },
             LockError::Io(error) => {
-                OpenError::Failed(format!("could not lock the session: {error}"))
+                OpenError::Failed(format!("could not lock the session ({error})"))
             }
         }
     }
@@ -390,7 +390,7 @@ impl Engine {
             Some(_) => None,
             None if ALONE.swap(true, std::sync::atomic::Ordering::SeqCst) => {
                 return Err(OpenError::Failed(
-                    "A session is open in this process without arko::spawn: open each with arko::spawn, which gives it its own settings and keys.".into(),
+                    "A session is open in this process without arko::spawn. Open each with arko::spawn, which gives it its own settings and keys.".into(),
                 ));
             }
             None => Some(Alone),
@@ -456,7 +456,7 @@ impl Engine {
                     prompter.note(
                         Level::Warn,
                         &format!(
-                            "a resumed session keeps how its main agent ends its turns: {}",
+                            "a resumed session keeps how its main agent ends its turns ({})",
                             agents::replies_text(settings.text_replies)
                         ),
                     );
@@ -465,7 +465,7 @@ impl Engine {
                     prompter.note(
                         Level::Warn,
                         &format!(
-                            "a resumed session keeps what its agents in Claude Code do at the handover size: {}",
+                            "a resumed session keeps what its agents in Claude Code do at the handover size ({})",
                             agents::cc_text(!settings.cc_handover)
                         ),
                     );
@@ -474,7 +474,7 @@ impl Engine {
                     prompter.note(
                         Level::Warn,
                         &format!(
-                            "a resumed session keeps its extra rules for small models: {}",
+                            "a resumed session keeps its extra rules for small models ({})",
                             settings.extra_rules.describe()
                         ),
                     );
@@ -494,7 +494,7 @@ impl Engine {
                 if project_from_options(&options, &mut settings) | background {
                     session
                         .save_settings(&settings)
-                        .map_err(|error| format!("could not save the session: {error}"))?;
+                        .map_err(|error| format!("could not save the session ({error})"))?;
                 }
                 (Some(session), settings, false)
             }
@@ -577,7 +577,7 @@ impl Engine {
             Some(session) => session,
             None => {
                 let session = Session::create(&root)
-                    .map_err(|error| format!("could not create a session: {error}"))?;
+                    .map_err(|error| format!("could not create a session ({error})"))?;
                 lock = Some(
                     session
                         .lock(options.app, options.app_name)
@@ -596,14 +596,14 @@ impl Engine {
         if new {
             session
                 .save_settings(&settings)
-                .map_err(|error| format!("could not save the session: {error}"))?;
+                .map_err(|error| format!("could not save the session ({error})"))?;
             // The next session's default; see `providers::LastModels::remember`.
             if !options.one_shot
                 && let Err(error) = providers::LastModels::remember(&root, &settings)
             {
                 prompter.note(
                     Level::Warn,
-                    &format!("could not keep this session's models for the next one: {error}"),
+                    &format!("could not keep this session's models for the next one ({error})"),
                 );
             }
         }
@@ -632,13 +632,13 @@ impl Engine {
         // said, and the session goes on without.
         let startup = Output::new(None, one_shot);
         for note in &mcp_notes {
-            startup.line(&startup.warn(&format!("arko: {note}")));
+            startup.line(&startup.warn(&crate::ui::sentence(note)));
         }
         let mcp = if mcp_servers.is_empty() {
             mcp::Running::default()
         } else {
             startup.line(&startup.dim(&format!(
-                "Starting MCP servers: {}…",
+                "Starting MCP servers {}…",
                 mcp_servers
                     .iter()
                     .map(|server| server.name.as_str())
@@ -650,7 +650,7 @@ impl Engine {
         for started in &mcp.servers {
             if let Err(error) = &started.result {
                 startup.line(&startup.warn(&format!(
-                    "arko: the MCP server `{}` (in {}) didn't start: {error}",
+                    "The MCP server `{}` (in {}) didn't start ({error}).",
                     started.server.name,
                     started.server.file.display()
                 )));
@@ -675,7 +675,7 @@ impl Engine {
         let indexes = match indexes {
             Ok(indexes) => indexes,
             Err(error) => {
-                startup.line(&startup.warn(&format!("arko: search indexes are off: {error}")));
+                startup.line(&startup.warn(&format!("Search indexes are off ({error}).")));
                 None
             }
         };
@@ -877,7 +877,7 @@ impl Engine {
             harness.workers_handover_at_start(tokens);
         }
         if one_shot && let Some(note) = &harness.unoffered {
-            output.line(&output.warn(&format!("arko: {note}")));
+            output.line(&output.warn(&crate::ui::sentence(note)));
         }
         let inputs = Inputs {
             receiver: input,
@@ -2360,7 +2360,7 @@ mod tests {
         let server = ModelServer::start(Arc::new({
             let bodies = bodies.clone();
             move |_, body: String| {
-                let acknowledged = body.contains("only keeps the prompt cache warm");
+                let acknowledged = body.contains("only to keep the prompt cache warm");
                 bodies.lock().unwrap().push(body);
                 Box::pin(async move {
                     crate::mock_model::gemini_reply(
@@ -2649,7 +2649,7 @@ mod tests {
         assert_eq!(refused, crate::sessions::BranchError::NoConversation);
         assert_eq!(
             refused.to_string(),
-            "A branch starts from a conversation: send a message first."
+            "Send a message first, then branch from it."
         );
     }
 

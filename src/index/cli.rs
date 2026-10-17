@@ -135,7 +135,8 @@ pub async fn run_command(
     data_root: &Path,
     voyage_key: Option<String>,
 ) -> Result<ExitCode, String> {
-    let cwd = std::env::current_dir().map_err(|error| format!("the current directory: {error}"))?;
+    let cwd = std::env::current_dir()
+        .map_err(|error| format!("could not read the current directory ({error})"))?;
     run_command_with(
         cmd,
         data_root,
@@ -185,7 +186,7 @@ async fn blocking<T: Send + 'static>(
 ) -> Result<T, String> {
     tokio::task::spawn_blocking(work)
         .await
-        .map_err(|error| format!("index work failed: {error}"))?
+        .map_err(|error| format!("index work failed ({error})"))?
 }
 
 /// The one index `index` names, or the current directory's.
@@ -197,7 +198,7 @@ fn one(indexes: &Indexes, index: Option<&str>, cwd: &Path) -> Result<Found, Stri
             .map(|found| found.manifest.name.as_str())
             .collect();
         return Err(format!(
-            "several indexes cover {} ({}): name one",
+            "several indexes cover {} ({}), so name one",
             cwd.display(),
             names.join(", ")
         ));
@@ -246,10 +247,14 @@ async fn run(indexes: &Arc<Indexes>, cmd: IndexCommand, cwd: &Path) -> Result<Ex
                 };
                 let summary =
                     embed_with_progress(indexes, &found, manifest.max_embed_tokens).await?;
-                println!("Embeddings ({}): {}.", manifest.model, summary.line());
+                println!(
+                    "Embeddings by {}. {}.",
+                    manifest.model,
+                    crate::ui::sentence(&summary.line())
+                );
             } else if manifest.embed && indexes.has_key() {
                 println!(
-                    "Embedding later: Arko embeds while it monitors the index, or run `arko index embed`."
+                    "Embedding comes later, while Arko monitors the index, or with `arko index embed`."
                 );
             }
             Ok(ExitCode::SUCCESS)
@@ -257,7 +262,7 @@ async fn run(indexes: &Arc<Indexes>, cmd: IndexCommand, cwd: &Path) -> Result<Ex
         IndexCommand::List => {
             let all = indexes.all();
             if all.is_empty() {
-                println!("No indexes yet: `arko index create PATH` makes one.");
+                println!("No indexes yet. `arko index create PATH` makes one.");
             }
             let reports = {
                 let worker = Arc::clone(indexes);
@@ -286,7 +291,7 @@ async fn run(indexes: &Arc<Indexes>, cmd: IndexCommand, cwd: &Path) -> Result<Ex
                             manifest.root.display()
                         );
                     }
-                    Err(error) => println!("{}\tunreadable: {error}", report.id),
+                    Err(error) => println!("{}\tunreadable ({error})", report.id),
                 }
             }
             Ok(ExitCode::SUCCESS)
@@ -301,7 +306,7 @@ async fn run(indexes: &Arc<Indexes>, cmd: IndexCommand, cwd: &Path) -> Result<Ex
             }
             if !indexes.has_key() {
                 println!(
-                    "({} is not set: semantic search is unavailable.)",
+                    "({} is not set, so semantic search is unavailable.)",
                     embed::KEY_NAME
                 );
             }
@@ -319,10 +324,9 @@ async fn run(indexes: &Arc<Indexes>, cmd: IndexCommand, cwd: &Path) -> Result<Ex
         } => {
             let mode = match mode.as_deref() {
                 None => None,
-                Some(text) => Some(
-                    ModeArg::parse(text)
-                        .ok_or_else(|| format!("{text:?}: use hybrid, semantic or lexical"))?,
-                ),
+                Some(text) => Some(ModeArg::parse(text).ok_or_else(|| {
+                    format!("{text:?} isn't a search mode (use hybrid, semantic or lexical)")
+                })?),
             };
             let args = SearchArgs {
                 query: query.join(" "),
@@ -361,7 +365,7 @@ async fn run(indexes: &Arc<Indexes>, cmd: IndexCommand, cwd: &Path) -> Result<Ex
             .await?;
             match built {
                 Some(record) => println!(
-                    "Rebuilt {}: {} chunks in {} files ({:.1} s). {}.",
+                    "Rebuilt {} with {} chunks in {} files ({:.1} s). {}.",
                     found.manifest.name,
                     fmt_count(record.chunks),
                     fmt_count(record.files),
@@ -374,7 +378,7 @@ async fn run(indexes: &Arc<Indexes>, cmd: IndexCommand, cwd: &Path) -> Result<Ex
                 let summary =
                     embed_with_progress(indexes, &found, found.manifest.max_embed_tokens).await?;
                 if summary.new > 0 || summary.embedded < summary.docs {
-                    println!("Embeddings: {}.", summary.line());
+                    println!("{}.", crate::ui::sentence(&summary.line()));
                 }
             }
             Ok(ExitCode::SUCCESS)
@@ -412,13 +416,13 @@ async fn run(indexes: &Arc<Indexes>, cmd: IndexCommand, cwd: &Path) -> Result<Ex
             let worker = Arc::clone(indexes);
             let target = found.clone();
             match blocking(move || worker.estimate_of(&target)).await {
-                Ok(estimate) => println!("Estimate: {}.", estimate.line()),
-                Err(error) => println!("Estimate unavailable: {error}."),
+                Ok(estimate) => println!("{}.", crate::ui::sentence(&estimate.line())),
+                Err(error) => println!("No estimate ({error})."),
             }
             if !estimate {
                 let cap = max_tokens.unwrap_or(found.manifest.max_embed_tokens);
                 let summary = embed_with_progress(indexes, &found, cap).await?;
-                println!("{}: {}.", found.manifest.name, summary.line());
+                println!("{} {}.", found.manifest.name, summary.line());
             }
             Ok(ExitCode::SUCCESS)
         }
@@ -445,7 +449,7 @@ async fn run(indexes: &Arc<Indexes>, cmd: IndexCommand, cwd: &Path) -> Result<Ex
                     .collect::<Result<_, _>>()?
             };
             if targets.is_empty() {
-                return Err("no monitored index to watch here: name one, or use --all".into());
+                return Err("no monitored index to watch here, so name one, or use --all".into());
             }
             for found in &targets {
                 indexes.watch_index(found);
@@ -457,12 +461,12 @@ async fn run(indexes: &Arc<Indexes>, cmd: IndexCommand, cwd: &Path) -> Result<Ex
             );
             tokio::signal::ctrl_c()
                 .await
-                .map_err(|error| format!("waiting for Ctrl-C: {error}"))?;
+                .map_err(|error| format!("could not wait for Ctrl-C ({error})"))?;
             eprintln!("{}", crate::glyphs::render("Stopping…"));
             let (tokens, dollars) = indexes.spent();
             if tokens > 0 {
                 eprintln!(
-                    "Embeddings this session: {} tokens ({}).",
+                    "This session embedded {} tokens ({}).",
                     fmt_count(tokens),
                     fmt_dollars(dollars)
                 );
@@ -515,7 +519,7 @@ async fn embed_with_progress(
     let result = blocking(move || {
         let progress = move |update: &EmbedProgress| {
             eprint!(
-                "\rembedding: {}/{} texts, {} tokens ({}), and {}/{} chunks have vectors   ",
+                "\rembedding {}/{} texts, {} tokens ({}), and {}/{} chunks have vectors   ",
                 fmt_count(update.texts),
                 fmt_count(update.total),
                 fmt_count(update.tokens),

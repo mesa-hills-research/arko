@@ -81,7 +81,7 @@ fn ask_to_start(approval: &McpApproval) -> Result<bool, String> {
     let out = Output::new(None, false);
     out.line("");
     out.line(&format!(
-        "{} sets up MCP servers. Arko would start these programs on your computer, and give the agents their tools:",
+        "{} sets up MCP servers. Arko would start these programs on your computer, and give the agents their tools.",
         approval.file.display()
     ));
     let width = approval
@@ -98,7 +98,7 @@ fn ask_to_start(approval: &McpApproval) -> Result<bool, String> {
         ));
     }
     for why in &approval.skipped {
-        out.line(&out.dim(&format!("  (skipped: {why})")));
+        out.line(&out.dim(&format!("  (skipped, because {why})")));
     }
     out.line(&out.dim(
         "Arko keeps your answer until the file's servers change. `--mcp-config .mcp.json` starts them whatever the answer.",

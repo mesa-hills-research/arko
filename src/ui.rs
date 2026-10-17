@@ -661,7 +661,7 @@ impl EventPrinter {
                     let worker = self.worker(event.agent_run_id);
                     let call = brief(&tool_name, &parameters);
                     self.output
-                        .echo(&self.output.dim(&format!("  ↳ {worker}: {call}")));
+                        .echo(&self.output.dim(&format!("  ↳ {worker} {call}")));
                 }
             }
             AgentEvent::ToolResult {
@@ -730,7 +730,7 @@ impl EventPrinter {
                     self.output.echo(
                         &self
                             .output
-                            .dim("  (the response broke off: what it said is said again)"),
+                            .dim("  (the response broke off, so what it said is said again)"),
                     );
                 }
                 self.printed_since_request = (false, false);
@@ -749,7 +749,7 @@ impl EventPrinter {
             }
             AgentEvent::UsageLimitReached { error_message, .. } => {
                 self.output.echo(&self.output.warn(&format!(
-                    "  … usage limit reached: {}",
+                    "  … usage limit reached ({})",
                     cut(&error_message, 300)
                 )));
             }
@@ -783,7 +783,7 @@ impl EventPrinter {
                 // The report's last line has no newline after it.
                 self.flush();
                 self.output.echo(&self.output.dim(
-                    "  ⟳ handed over: the agent continues in a fresh conversation from its report",
+                    "  ⟳ handed over, and the agent continues in a fresh conversation from its report",
                 ));
             }
             AgentEvent::ConversationCompacted {
@@ -922,7 +922,7 @@ impl EventPrinter {
                     notes.push(format!("{cache} cache"));
                 }
                 format!(
-                    "{bullet} {}{}: {}",
+                    "{bullet} {}{} “{}”",
                     self.output.bold("start worker"),
                     if notes.is_empty() {
                         String::new()
@@ -933,7 +933,7 @@ impl EventPrinter {
                 )
             }
             crew::MESSAGE_AGENT => format!(
-                "{bullet} {} {}: {}",
+                "{bullet} {} {} “{}”",
                 self.output.bold("message"),
                 worker(),
                 cut(text("message"), 160)
@@ -985,14 +985,14 @@ impl EventPrinter {
                     " (resumed)"
                 };
                 format!(
-                    "{bullet} {}{resumed}: {}",
+                    "{bullet} {}{resumed} “{}”",
                     self.output.bold("worker"),
                     cut(text("prompt"), 160)
                 )
             }
             "terminal_start" => format!(
                 "{bullet} {} {}",
-                self.output.bold("background:"),
+                self.output.bold("background"),
                 command_line(text("command"))
             ),
             "terminal_control" => format!("{bullet} terminal {}", text("action")),
@@ -1161,8 +1161,8 @@ fn file_call(
     }
 }
 
-/// A search index or MCP tool's call: its name as shown (`index search:`,
-/// `github: create_issue`), and what it is called with, briefly.
+/// A search index or MCP tool's call: its name as shown (`index search`,
+/// `create_issue (github)`), and what it is called with, briefly.
 fn labelled(tool: &str, parameters: &HashMap<String, serde_json::Value>) -> (String, String) {
     let text = |name: &str| {
         parameters
@@ -1180,10 +1180,13 @@ fn labelled(tool: &str, parameters: &HashMap<String, serde_json::Value>) -> (Str
         }
     };
     match tool {
-        "index_search" => ("index search:".into(), with(cut(&text("query"), 160))),
+        "index_search" => (
+            "index search".into(),
+            with(format!("“{}”", cut(&text("query"), 160))),
+        ),
         "index_status" => ("index status".into(), with(text("index"))),
         "index_create" => (
-            "index create:".into(),
+            "index create".into(),
             with(match text("path").as_str() {
                 "" => ".".into(),
                 path => cut(path, 160),
@@ -1202,9 +1205,19 @@ fn labelled(tool: &str, parameters: &HashMap<String, serde_json::Value>) -> (Str
                 let sorted: std::collections::BTreeMap<_, _> = parameters.iter().collect();
                 cut(&serde_json::to_string(&sorted).unwrap_or_default(), 120)
             };
-            (format!("{server}: {name}"), with(arguments))
+            (format!("{name} ({server})"), with(arguments))
         }
     }
+}
+
+/// `text` as a sentence of its own: its first letter in capitals (an
+/// error such as "could not read …", shown by itself).
+pub fn sentence(text: &str) -> String {
+    let mut chars = text.chars();
+    chars
+        .next()
+        .map(|first| first.to_uppercase().chain(chars).collect())
+        .unwrap_or_default()
 }
 
 /// `text` on one line, at most `limit` characters.
@@ -1240,9 +1253,9 @@ mod tests {
                 "index_search",
                 &params(&[("query", "where are retries handled?".into())])
             ),
-            "index search: where are retries handled?"
+            "index search “where are retries handled?”"
         );
-        assert_eq!(brief("index_create", &params(&[])), "index create: .");
+        assert_eq!(brief("index_create", &params(&[])), "index create .");
         assert_eq!(
             brief(
                 "index_manage",
@@ -1262,9 +1275,9 @@ mod tests {
                     ("labels", serde_json::json!(["a"]))
                 ])
             ),
-            r#"github: create_issue {"labels":["a"],"title":"Bug"}"#
+            r#"create_issue (github) {"labels":["a"],"title":"Bug"}"#
         );
-        assert_eq!(brief("mcp__db__ping", &params(&[])), "db: ping");
+        assert_eq!(brief("mcp__db__ping", &params(&[])), "ping (db)");
     }
 
     #[test]
@@ -1356,7 +1369,7 @@ mod tests {
                 ]
             )
             .unwrap(),
-            "● start worker (worktree): Fix the parser."
+            "● start worker (worktree) “Fix the parser.”"
         );
         assert_eq!(
             line(
@@ -1364,7 +1377,7 @@ mod tests {
                 &[("to", "w2".into()), ("message", "Use plan B.".into())]
             )
             .unwrap(),
-            "● message w2: Use plan B."
+            "● message w2 “Use plan B.”"
         );
         assert_eq!(
             line(crew::WAIT_FOR_AGENTS, &[]).unwrap(),
@@ -1410,7 +1423,7 @@ mod tests {
                 &[("task", "Look it up.".into()), ("cache", "5m".into())]
             )
             .unwrap(),
-            "● start worker (5m cache): Look it up."
+            "● start worker (5m cache) “Look it up.”"
         );
         // The agent's message to the user is shown whole.
         assert_eq!(
