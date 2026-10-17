@@ -47,7 +47,7 @@ const MAX_SESSIONS: usize = 64;
 /// How often a stream looks for changes in the status (cost, workers).
 const STATUS_EVERY: Duration = Duration::from_secs(2);
 
-/// A running server; dropping it stops it.
+/// A running server, which stops when it's dropped.
 pub struct Server {
     addr: SocketAddr,
     stop: watch::Sender<bool>,
@@ -55,7 +55,7 @@ pub struct Server {
 }
 
 impl Server {
-    /// Serves on `addr`, with `key`: the feed goes out, the actions come in
+    /// Serves on `addr`, with `key`. The feed goes out, the actions come in
     /// on `actions`, and `meter` tells the status.
     pub fn start(
         addr: SocketAddr,
@@ -108,7 +108,7 @@ impl Server {
     }
 
     /// Stops serving, and waits (a few seconds at most) until the port is
-    /// free: the streams end, and the session cookies with the server.
+    /// free. The streams end, and the session cookies end with the server.
     pub async fn stop(mut self) {
         let _ = self.stop.send(true);
         if let Some(mut task) = self.task.take()

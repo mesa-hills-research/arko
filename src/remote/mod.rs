@@ -1,17 +1,18 @@
-//! The remote: a web page Arko serves (`--remote`, `/remote`) for following
-//! a session and taking part in it from a browser, such as a phone's.
+//! The remote is a web page Arko serves (`--remote`, `/remote`) for
+//! following a session and taking part in it from a browser, such as a
+//! phone's.
 //!
 //! The page shows the main agent's work as the terminal does (its text,
 //! calls, results in brief, the workers' activity, handovers and errors)
 //! and the session's status, and it sends messages (with the meaning a
 //! line typed at the prompt has), answers to the agent's questions and
-//! stops. The interface is small: a [`Feed`] takes the workflows' events
+//! stops. The interface is small. A [`Feed`] takes the workflows' events
 //! (and what Arko says of the turns), and the [`Action`]s the page sends
 //! come out of a channel, which Arko reads as it reads the terminal.
 //!
-//! Access needs the session's key, which Arko shows only in its console: it
-//! goes in the link's fragment, which browsers don't send, and the page
-//! trades it for a session cookie. There is no TLS.
+//! Access needs the session's key, which Arko shows only in its console.
+//! The key goes in the link's fragment, which browsers don't send, and the
+//! page trades it for a session cookie. The page is served without TLS.
 
 mod feed;
 mod history;
@@ -61,7 +62,7 @@ pub struct Info {
     pub app: String,
 }
 
-/// The port served on when none is given; another free one when it is
+/// The port served on when none is given, or another free one when it is
 /// taken.
 pub const DEFAULT_PORT: u16 = 8765;
 
@@ -72,8 +73,9 @@ pub const KEY_FILE: &str = "remote.key";
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(not(feature = "remote"), allow(dead_code))]
 pub enum Action {
-    /// A message, as if typed at the prompt: a note while the agent works,
-    /// a new turn when it is idle, the answer to its question, a command.
+    /// A message, as if typed at the prompt. It's a note while the agent
+    /// works, a new turn when it is idle, the answer to its question, or a
+    /// command.
     Message(String),
     /// The answer to the question `question` (the ID the feed gave it).
     Answer { question: u64, text: String },
@@ -89,14 +91,14 @@ pub trait Meter: Send + Sync {
 /// The session's figures, for the page's status.
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct Reading {
-    /// What the session has cost, in dollars: what was billed.
+    /// What the session has cost, in dollars, as billed.
     pub cost: f64,
     /// What the whole session's usage (the main agent's and the workers')
-    /// would have cost at API list prices, in dollars: `cost` plus the
-    /// list-price estimate of the calls a plan covered (Claude Code, the
-    /// ChatGPT login), which bill nothing per call. Present only when some
-    /// of it ran on a plan; for a session entirely on keys, `cost` says it
-    /// all.
+    /// would have cost at API list prices, in dollars. That is `cost` plus
+    /// the list-price estimate of the calls a plan covered (Claude Code, the
+    /// ChatGPT login), which bill nothing per call. It's present only when
+    /// some of it ran on a plan. For a session entirely on keys, `cost`
+    /// says it all.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub api_price: Option<f64>,
     /// The main agent's part of the costs and the workers'.
@@ -113,10 +115,10 @@ pub struct Reading {
     /// The settings a client may change (with commands).
     pub settings: LiveSettings,
     /// The agents running a shell command now, which Ctrl+B moves to the
-    /// background: [`MAIN_AGENT`], or a worker's ID.
+    /// background, as [`MAIN_AGENT`] or a worker's ID.
     #[serde(skip)]
     pub commands: Vec<String>,
-    /// The jobs running in the background, which stop when Arko exits: the
+    /// The jobs running in the background, which stop when Arko exits. The
     /// full-screen view's quit popup shows them. (The page can't quit Arko.)
     #[serde(skip)]
     pub jobs: Vec<arko_agents::terminal::BackgroundJob>,
@@ -130,8 +132,8 @@ pub struct Reading {
     /// The web page, while it is served.
     #[serde(skip)]
     pub page: Option<Page>,
-    /// The session's name: the one the user gave it, else its current
-    /// conversation's, else its first message's start.
+    /// The session's name. That is the one the user gave it, else its
+    /// current conversation's, else its first message's start.
     #[serde(skip)]
     pub title: String,
     /// What the main agent's model accepts, in tokens (the ChatGPT login's
@@ -152,28 +154,28 @@ pub struct Reading {
     pub last_request: Option<LastRequest>,
 }
 
-/// The main agent's prompt cache, as its latest request left it: when it
-/// lapses, and what a miss and keeping it warm cost.
+/// The main agent's prompt cache, as its latest request left it, with when
+/// it lapses and what a miss and keeping it warm cost.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct CacheStatus {
     /// How long the cache keeps the conversation after a request. `None`
     /// where the provider doesn't say (Gemini, OpenRouter models other than
     /// Claude, Claude Code until it writes the cache) or nothing is cached.
     pub lifetime: Option<std::time::Duration>,
-    /// When the latest request went out (Unix milliseconds): the cache
+    /// When the latest request went out (Unix milliseconds). The cache
     /// lasts `lifetime` from then.
     pub refreshed_at: Option<i64>,
-    /// The conversation's input at its latest request, in tokens: what a
+    /// The conversation's input at its latest request, in tokens, which a
     /// miss writes to the cache again.
     pub tokens: Option<usize>,
     /// What the latest request read from the cache and wrote to it, in
     /// tokens.
     pub read: Option<usize>,
     pub written: Option<usize>,
-    /// What a miss costs: `tokens` written again at the model's price.
+    /// What a miss costs, with `tokens` written again at the model's price.
     /// `None` on a plan.
     pub miss_cost: Option<f64>,
-    /// What keeping it warm costs: `tokens` read from the cache at the
+    /// What keeping it warm costs, with `tokens` read from the cache at the
     /// model's price. `None` on a plan.
     pub refresh_cost: Option<f64>,
     /// The plan that pays instead ("your Claude plan").
@@ -201,7 +203,7 @@ pub struct CostSplit {
     pub workers: CostPart,
 }
 
-/// Some agents' model calls: what they billed and would cost at list
+/// Some agents' model calls, with what they billed and would cost at list
 /// prices (more, where a plan covered them), their tokens and how many.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct CostPart {
@@ -216,10 +218,10 @@ pub struct CostPart {
 /// A subscription plan's usage (the ChatGPT plan, the Claude plan).
 #[derive(Debug, Clone, PartialEq)]
 pub struct PlanStatus {
-    /// The plan, as `/cost` names it: "ChatGPT plan".
+    /// The plan, as `/cost` names it ("ChatGPT plan").
     pub plan: String,
     pub windows: Vec<PlanWindow>,
-    /// The windows in a line: "ChatGPT plan 5 h 12%, 7 d 40%".
+    /// The windows in a line ("ChatGPT plan 5 h 12%, 7 d 40%").
     pub text: String,
 }
 
@@ -237,7 +239,7 @@ pub struct PlanWindow {
 /// hands over (or Claude Code compacts) at.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AgentStatus {
-    /// Its handle: r1, r2, ...
+    /// Its ID, such as r1 or r2.
     pub id: String,
     pub context_tokens: Option<usize>,
     pub context_window: Option<usize>,
@@ -247,8 +249,8 @@ pub struct AgentStatus {
     pub compacts: bool,
 }
 
-/// The web page while it is served: where, and its links as they were when
-/// it started (best first), with what to tell the user about them.
+/// The web page while it is served, with its address, its links as they
+/// were when it started (best first), and what to tell the user about them.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Page {
     pub addr: SocketAddr,
@@ -259,7 +261,7 @@ pub struct Page {
 /// One of the session's conversations with the main agent.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ConversationEntry {
-    /// Its number, as `/resume` takes it: 1 for the session's first.
+    /// Its number, as `/resume` takes it, 1 for the session's first.
     pub number: usize,
     /// The first line of the user's first message.
     pub title: String,
@@ -281,14 +283,14 @@ pub struct Models {
     pub workers_effort: String,
     /// The workers follow the main agent's model.
     pub workers_follow: bool,
-    /// The conversation has started: the main agent keeps its model, and
+    /// The conversation has started, so the main agent keeps its model, and
     /// `/model worker` changes the workers started from now on.
     pub started: bool,
     /// The banner's rows for the main agent's model and the workers.
     pub banner_model: String,
     pub banner_workers: String,
     /// The providers the session's client reaches (`anthropic`, `openai`,
-    /// `gemini`, `openrouter`): `/model` offers their models.
+    /// `gemini`, `openrouter`), whose models `/model` offers.
     pub reachable: Vec<String>,
     /// How the session reaches OpenAI models (`ChatGPT login`, `OpenAI API
     /// key`), when it can.
@@ -305,7 +307,7 @@ pub struct Models {
 pub struct LiveSettings {
     /// The agents may work outside the workspace.
     pub outside: bool,
-    /// The main agent hands over at this many input tokens; 0 when it is
+    /// The main agent hands over at this many input tokens, or 0 when it is
     /// not known.
     pub handover_at: usize,
     /// New workers hand over at this many input tokens, on their model (the
@@ -329,7 +331,7 @@ pub struct LiveSettings {
     /// Workers started from now on get the project's instructions too.
     pub worker_project_instructions: bool,
     /// After how many seconds a shell command still running moves to the
-    /// background; 0: never.
+    /// background, or 0 for never.
     pub background_after: u64,
 }
 
@@ -386,11 +388,11 @@ fn write_private(path: &Path, text: &str) -> std::io::Result<()> {
     file.sync_all()
 }
 
-/// Where to serve: an address, with a port or not.
+/// Where to serve, an address with a port or without one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Bind {
     pub ip: IpAddr,
-    /// `None`: [`DEFAULT_PORT`], else any free one.
+    /// `None` for [`DEFAULT_PORT`], else any free one.
     pub port: Option<u16>,
 }
 
@@ -414,8 +416,8 @@ impl Bind {
     }
 }
 
-/// Reads `--remote`'s value: nothing (127.0.0.1), a port, an address or a
-/// host name, or an address (or name) and a port.
+/// Reads `--remote`'s value, which is nothing (127.0.0.1), a port, an
+/// address or a host name, or an address (or name) and a port.
 pub fn parse_bind(text: &str) -> Result<Bind, String> {
     let text = text.trim();
     if text.is_empty() {
@@ -455,8 +457,8 @@ pub fn parse_bind(text: &str) -> Result<Bind, String> {
     Ok(Bind { ip, port })
 }
 
-/// Starts serving where `bind` says: on [`DEFAULT_PORT`] when it names
-/// no port, or on another free one when that one is taken. `earlier`, the
+/// Starts serving where `bind` says, on [`DEFAULT_PORT`] when it names no
+/// port, or on another free one when that one is taken. `earlier`, the
 /// port of the page served before, is tried first when `bind` names no
 /// port, so that the pages open on it reconnect.
 pub fn start(
@@ -510,9 +512,10 @@ pub fn start(
 }
 
 /// The links to a server on `addr`, with `key` in their fragments, best
-/// first (see [`links`](self::links)): on every interface's address when
-/// it listens on all of them, the one `ARKO_REMOTE_HOST` names first. With
-/// what to tell the user when that names none of them.
+/// first. When it listens on every interface, there is a link for each
+/// interface's address, and the one `ARKO_REMOTE_HOST` names comes first.
+/// The second value is what to tell the user when that variable names none
+/// of them.
 pub fn links(addr: SocketAddr, key: &str) -> (Vec<Link>, Option<String>) {
     ranked_links(
         addr,
@@ -564,7 +567,8 @@ pub fn plain(text: &str) -> String {
 }
 
 /// `text` as a QR code, in lines of half blocks (two rows of modules a
-/// line), light modules drawn: for a terminal with a dark background.
+/// line), with the light modules drawn, for a terminal with a dark
+/// background.
 pub fn qr_lines(text: &str) -> Option<Vec<String>> {
     #[cfg(feature = "remote")]
     return qr::lines(text);

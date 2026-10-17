@@ -71,33 +71,34 @@ pub enum Kind {
     User,
     /// An agent's text, as it streams.
     Text,
-    /// An agent's thinking (its reasoning, or its summary), as it streams:
-    /// clients show it folded. The user reads the agent's text, not this.
+    /// An agent's thinking (its reasoning, or its summary), as it streams.
+    /// Clients show it folded. The user reads the agent's text, not this.
     Thinking,
     /// The main agent's message to the user while it works, or a message a
     /// worker got (`from` says whose).
     Message,
-    /// A tool call; its `status` and `outcome` follow as a [`Update::Change`].
+    /// A tool call, whose `status` and `outcome` follow as an
+    /// [`Update::Change`].
     Call,
-    /// A result that needs a block under its call: a command's output, a
-    /// long error.
+    /// A result that needs a block under its call, such as a command's
+    /// output or a long error.
     Result,
-    /// What Arko says: a stop, an error, a retry, a handover.
+    /// What Arko says, such as a stop, an error, a retry or a handover.
     Notice,
     /// A command's output.
     Output,
     /// The main agent's question.
     Question,
-    /// The main agent's reply, which ends its turn; or a worker's report,
+    /// The main agent's reply, which ends its turn, or a worker's report,
     /// which ends its run.
     Reply,
-    /// The end of a turn: its time and cost.
+    /// The end of a turn, with its time and cost.
     Turn,
-    /// Where a worker started, in the main transcript: clients draw the
+    /// Where a worker started, in the main transcript. Clients draw the
     /// worker's [`WorkerSummary`] there.
     WorkerLine,
-    /// Where the conversation changes (`/new`, `/resume`): what follows is
-    /// another conversation's. A client that shows one conversation at a
+    /// Where the conversation changes (`/new`, `/resume`), so what follows
+    /// is another conversation's. A client that shows one conversation at a
     /// time shows what follows the last of these, and one that keeps the
     /// whole session draws it as a separator.
     Conversation,
@@ -136,7 +137,7 @@ pub enum Delivery {
     /// It waits for a turn of its own.
     Queued,
     /// Arko sent it for the user, to keep the prompt cache warm
-    /// ([`REFRESH_MESSAGE`]): an app shows it and its reply as one muted
+    /// ([`REFRESH_MESSAGE`]). An app shows it and its reply as one muted
     /// row.
     Refresh,
 }
@@ -164,15 +165,15 @@ pub struct Item {
     /// When, in Unix milliseconds.
     pub at: i64,
     pub kind: Kind,
-    /// Whose it is: [`MAIN_AGENT`] (the main agent, or Arko), or a worker's
+    /// Whose it is, [`MAIN_AGENT`] (the main agent, or Arko) or a worker's
     /// ID (`r1`).
     pub agent: String,
-    /// The main agent's turn it came in: one more with each turn, `None`
+    /// The main agent's turn it came in, one more with each turn, or `None`
     /// before the first.
     pub turn: Option<u64>,
     pub text: String,
-    /// More, shown folded or under the text: a call's whole parameter, a
-    /// command's first lines of output.
+    /// More, shown folded or under the text, such as a call's whole
+    /// parameter or a command's first lines of output.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -188,8 +189,8 @@ pub struct Item {
     /// call's own line.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub outcome: Option<String>,
-    /// A command's whole output, when its `detail` shows the first lines:
-    /// the terminal's view opens it on a click. The web page doesn't get
+    /// A command's whole output, when its `detail` shows the first lines.
+    /// The terminal's view opens it on a click. The web page doesn't get
     /// it, and its clones share it.
     #[serde(skip)]
     pub whole: Option<Arc<str>>,
@@ -208,25 +209,25 @@ pub struct Item {
     /// latest are kept.
     #[serde(skip)]
     pub output: Option<Arc<str>>,
-    /// A user's message that started a turn: its index in the main agent's
-    /// conversation, which an app can edit it at or send it again from
+    /// For a user's message that started a turn, its index in the main
+    /// agent's conversation, where an app can edit it or send it again
     /// (`Request::Edit`, `Request::Regenerate`). The web page doesn't get
     /// it.
     #[serde(skip)]
     pub message_index: Option<usize>,
-    /// The images it shows: those the user sent with a message, those a
-    /// call's tool returned. Their bytes are in the session's
+    /// The images it shows, which the user sent with a message or a call's
+    /// tool returned. Their bytes are in the session's
     /// [`Images`](crate::images::Images).
     #[serde(skip)]
     pub images: Vec<crate::images::ImageRef>,
     /// The worker a `worker_line` stands for.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub worker: Option<String>,
-    /// Who sent a worker's `message`: [`MAIN_AGENT`] (its lead), or
-    /// another worker's ID.
+    /// Who sent a worker's `message`, [`MAIN_AGENT`] (its lead) or another
+    /// worker's ID.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub from: Option<String>,
-    /// The call a `result` is of: clients show it under that call, which
+    /// The call a `result` is of. Clients show it under that call, which
     /// other items may have followed by the time the result came.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub call: Option<u64>,
@@ -350,22 +351,24 @@ impl WorkerState {
     }
 }
 
-/// A worker, as a line: `r2 · Fix flaky test · 18 tool calls · 2m · running`.
+/// A worker, as a line such as
+/// `r2 · Fix flaky test · 18 tool calls · 2m · running`.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct WorkerSummary {
-    /// Its ID: `r1`, `r2`, ... (as `/workers` says).
+    /// Its ID, such as `r1` or `r2` (as `/workers` says).
     pub id: String,
     /// Its task's first line, in brief.
     pub title: String,
     pub state: WorkerState,
     /// The calls it made, in all its runs.
     pub tool_calls: u32,
-    /// When its latest run started (Unix milliseconds): a continued worker
+    /// When its latest run started (Unix milliseconds). A continued worker
     /// counts its time from there.
     pub started_at: Option<i64>,
     /// When its latest run ended.
     pub ended_at: Option<i64>,
-    /// What it did last, in a line: its latest call, or why it stopped.
+    /// What it did last, in a line, which is its latest call or why it
+    /// stopped.
     pub last: Option<String>,
     /// Its report, once it finished.
     pub report: Option<String>,
@@ -395,7 +398,7 @@ impl WorkerSummary {
     }
 }
 
-/// What became of a worker: what the workflow says of its runs.
+/// What became of a worker, as the workflow says of its runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkerChange<'a> {
     Queued,
@@ -426,22 +429,22 @@ pub enum Update {
     /// The activity changed.
     Activity,
     /// The main agent's items from `from` on are gone (the conversation was
-    /// cut back to an earlier message): clients drop them too.
+    /// cut back to an earlier message), and clients drop them too.
     Truncate { from: u64 },
-    /// The item `id` is gone: text a model's response streamed before it
-    /// failed, which its retry streams again.
+    /// The item `id` is gone. It held text a model's response streamed
+    /// before it failed, which its retry streams again.
     Remove { id: u64 },
 }
 
-/// A batched client's updates: see [`Feed::subscribe_batched`].
+/// A batched client's updates, from [`Feed::subscribe_batched`].
 pub struct Batches {
     updates: mpsc::UnboundedReceiver<Update>,
 }
 
 impl Batches {
-    /// The updates since the last batch, waiting for the first: merged, so
-    /// a client applies a burst at once ([`merged`]). `None` once the feed
-    /// is gone.
+    /// The updates since the last batch, after waiting for the first. They
+    /// are merged into fewer that leave the client where they all would, so
+    /// it applies a burst at once. `None` once the feed is gone.
     pub async fn next(&mut self) -> Option<Vec<Update>> {
         let mut batch = Vec::new();
         if self.updates.recv_many(&mut batch, 1024).await == 0 {
@@ -578,7 +581,8 @@ pub struct Snapshot {
     pub activity: Activity,
 }
 
-/// The session's feed. Cheap to clone; every clone feeds the same history.
+/// The session's feed. It's cheap to clone, and every clone feeds the same
+/// history.
 #[derive(Clone)]
 pub struct Feed {
     inner: Arc<Inner>,
@@ -783,8 +787,8 @@ impl Feed {
     }
 
     /// The history, the workers and the activity now, and from then on
-    /// every update, in batches: for a client in this process, which reads
-    /// them when it can (an app, once per frame). Unlike
+    /// every update, in batches. It's for a client in this process, which
+    /// reads them when it can (an app, once per frame). Unlike
     /// [`subscribe`](Self::subscribe), it never misses one, however far
     /// behind it falls.
     pub fn subscribe_batched(&self) -> (Snapshot, Batches) {
@@ -1001,7 +1005,7 @@ impl Feed {
         }
     }
 
-    /// A workflow's event: `label` names the worker whose run sent it (the
+    /// A workflow's event. `label` names the worker whose run sent it (the
     /// runs of other agents than the main one are workers too).
     pub fn event(&self, event: &WorkflowEvent, label: Option<&str>) {
         let mut state = self.lock();
@@ -1297,7 +1301,7 @@ impl Feed {
         }
     }
 
-    /// The user's message to `worker`, which went to it directly: the
+    /// The user's message to `worker`, which went to it directly. The
     /// worker's own transcript shows it, and the main one too.
     pub fn to_worker(&self, worker: &str, text: &str, source: Source) {
         let mut item = Item::new(Kind::User, text.trim()).agent(worker);
@@ -1307,9 +1311,9 @@ impl Feed {
 
     /// Items from before Arko started (a resumed session's conversation,
     /// from [`history`](super::history)), numbered from 1, with their turns
-    /// from 1: they join the history as they are, numbered after the
-    /// feed's own items and turns (a result keeps its call), and the next
-    /// turn comes after theirs.
+    /// from 1. They join the history as they are, numbered after the feed's
+    /// own items and turns (a result keeps its call), and the next turn
+    /// comes after theirs.
     pub fn restore(&self, items: Vec<Item>) {
         let mut state = self.lock();
         let base = state.next_id;
@@ -1328,7 +1332,7 @@ impl Feed {
         }
     }
 
-    /// The conversation changes here: `text` says to what ("New
+    /// The conversation changes here, and `text` says to what ("New
     /// conversation", "Conversation 2 · ...").
     pub fn conversation(&self, text: &str) {
         let mut state = self.lock();
@@ -1373,7 +1377,7 @@ impl Feed {
         self.output_at(text, None);
     }
 
-    /// A command's output at `level`: a warning (or an error) keeps its
+    /// A command's output at `level`. A warning (or an error) keeps its
     /// colour in the clients.
     pub fn output_at(&self, text: &str, level: Option<Level>) {
         if !text.trim().is_empty() {
@@ -1384,8 +1388,8 @@ impl Feed {
     }
 
     /// The main agent's reply. A reply in plain text has streamed as the
-    /// agent's text already: that item becomes the reply (an
-    /// [`Update::Change`]), so it shows once.
+    /// agent's text already, so that item becomes the reply (an
+    /// [`Update::Change`]) and it shows once.
     pub fn reply(&self, text: &str) {
         let text = text.trim();
         let mut state = self.lock();
@@ -1415,7 +1419,7 @@ impl Feed {
         (last.kind == Kind::Text && last.is_main() && last.text.trim() == reply).then_some(last.id)
     }
 
-    /// A turn of the main agent begins: the items from here on are its.
+    /// A turn of the main agent begins, and the items from here on are its.
     pub fn turn_started(&self) {
         {
             let mut state = self.lock();
@@ -1431,7 +1435,7 @@ impl Feed {
         });
     }
 
-    /// The turn ended; `summary` is what it took (time, cost, context).
+    /// The turn ended, and `summary` is what it took (time, cost, context).
     pub fn turn_ended(&self, summary: &str, plan_usage: Option<&str>) {
         {
             let mut state = self.lock();
@@ -1450,7 +1454,7 @@ impl Feed {
         });
     }
 
-    /// The main agent asks `text`; returns the question's ID, which an
+    /// The main agent asks `text`. Returns the question's ID, which an
     /// answer from the page names.
     pub fn question(&self, text: &str) -> u64 {
         let id = {
@@ -1487,7 +1491,7 @@ impl Feed {
     // ----- workers -----
 
     /// The worker `id` with `task` changed (from the workflow's subagent
-    /// events): its summary follows, the main transcript gets its
+    /// events). Its summary follows, the main transcript gets its
     /// placeholder when it starts in a new turn, and its own transcript
     /// ends with its report, error or stop.
     pub fn worker(&self, id: &str, task: &str, change: WorkerChange<'_>) {
@@ -1573,9 +1577,9 @@ impl Feed {
     }
 
     /// A worker of the session from before Arko started (a resumed
-    /// session): its summary, without a place in the transcript, with how
-    /// long it ran before (`ran_ms`). A run it goes on with counts from
-    /// when it starts again.
+    /// session). Its summary goes in without a place in the transcript,
+    /// with how long it ran before (`ran_ms`). A run it goes on with counts
+    /// from when it starts again.
     pub fn worker_restored(
         &self,
         id: &str,
