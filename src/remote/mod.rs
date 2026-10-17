@@ -40,6 +40,7 @@ pub use feed::{
     REFRESH_MESSAGE, Snapshot, Source, Update, WorkerChange, WorkerState, WorkerSummary,
 };
 pub use history::items as history;
+pub(crate) use history::own_words;
 #[cfg(any(test, feature = "remote"))]
 pub use links::Kind as LinkKind;
 pub use links::{HOST_VARIABLE, Interface, Link};

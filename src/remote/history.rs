@@ -167,11 +167,29 @@ fn is_answer(message: &Message) -> bool {
         })
 }
 
+/// The user's own words in a message Arko sent: before a handover's report
+/// (the first message of a conversation that was handed over holds the
+/// message it answers, then the report), and under "# My message" when Arko
+/// composed sections around them.
+pub(crate) fn own_words(text: &str) -> &str {
+    let heading = arko_agents::handover::REPORT_HEADING;
+    let text = text
+        .find(&format!("\n\n{heading}"))
+        .map_or(text, |at| &text[..at]);
+    text.split_once("# My message\n\n")
+        .map_or(text, |(_, mine)| mine)
+        .trim()
+}
+
 /// What the user wrote, from a message of theirs: Arko's composed message
 /// keeps it under "# My message"; context updates and the workers' news
-/// aren't the user's words.
+/// aren't the user's words, nor is a handover's report.
 fn user_item(text: &str) -> Option<Item> {
-    let text = text.trim();
+    let heading = arko_agents::handover::REPORT_HEADING;
+    let text = text
+        .find(&format!("\n\n{heading}"))
+        .map_or(text, |at| &text[..at])
+        .trim();
     if text.is_empty() || text.starts_with("# Workflow context update") {
         return None;
     }

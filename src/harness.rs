@@ -312,6 +312,9 @@ pub(crate) struct Harness {
     pub(crate) edited: Option<(usize, String)>,
     /// The next turn cuts the conversation back to this message first.
     pub(crate) cut_back: Option<usize>,
+    /// The handover report the conversation it cuts back to its first
+    /// message began from: the new first message keeps it.
+    pub(crate) cut_report: Option<String>,
     /// The prompt cache is kept warm with a message (`REFRESH_MESSAGE`):
     /// the provider takes no refresh out of band.
     pub(crate) refresh_turn: bool,
@@ -1438,11 +1441,14 @@ impl Harness {
             return;
         };
         let words = item.text.trim();
+        // A turn of the user's own words: not one that merely holds them (a
+        // handover's report that quotes them).
         let turns: Vec<arko_agents::UserTurn> = task
             .user_turns()
             .into_iter()
             .filter(|turn| {
-                turn.kind != arko_agents::UserTurnKind::ContextUpdate && turn.text.contains(words)
+                turn.kind != arko_agents::UserTurnKind::ContextUpdate
+                    && remote::own_words(&turn.text) == words
             })
             .collect();
         let turn = turns
@@ -1475,6 +1481,13 @@ impl Harness {
             ));
         }
         let index = self.message_at(item, "edited")?;
+        // The first message of a conversation that was handed over holds the
+        // report the agent goes on from: the edited one keeps it.
+        self.cut_report = (index == 0)
+            .then(|| self.conversation_task())
+            .flatten()
+            .and_then(|task| task.handovers.last())
+            .map(|handover| handover.report.clone());
         self.feed.truncate(item);
         // What the user typed during the turns cut goes with them.
         self.unread.clear();
@@ -1503,7 +1516,7 @@ impl Harness {
             task.user_turns().into_iter().any(|turn| {
                 turn.index == index
                     && turn.kind != arko_agents::UserTurnKind::ContextUpdate
-                    && turn.text.contains(words.trim())
+                    && remote::own_words(&turn.text) == words.trim()
             })
         });
         if there { Ok(index) } else { Err(gone.into()) }
@@ -2735,8 +2748,19 @@ impl Harness {
             && matches!(&self.conversation, Conversation::Stopped(run) if run.restart != Restart::Recover);
         let news_turn = matches!(prompt, Prompt::News);
         let jobs_turn = matches!(prompt, Prompt::Jobs);
-        let message = self.compose(prompt);
+        let mut message = self.compose(prompt);
         let cut = self.cut_back.take();
+        // A conversation that began from a handover's report, cut back to
+        // its first message: the new one goes on from the report too.
+        if let Some(report) = self.cut_report.take()
+            && cut == Some(0)
+        {
+            message = arko_agents::HandoverSeed {
+                task_prompt: message,
+                context: None,
+            }
+            .message(&report);
+        }
         if news_turn {
             self.say(Level::Info, "  ⇠ the workers' news goes to the agent");
         }
@@ -4245,6 +4269,7 @@ pub(crate) mod tests {
             reopen: false,
             edited: None,
             cut_back: None,
+            cut_report: None,
             refresh_turn: false,
             only_workers: false,
             images: Default::default(),

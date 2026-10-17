@@ -793,6 +793,7 @@ impl Engine {
             reopen: false,
             edited: None,
             cut_back: None,
+            cut_report: None,
             refresh_turn: false,
             only_workers: false,
             images: Default::default(),
@@ -2439,6 +2440,79 @@ mod tests {
             tokio::time::timeout(wait, ended).await.unwrap().unwrap(),
             RunEnd::Quit
         );
+    }
+
+    /// The message whose turn handed a chat's conversation over goes on
+    /// from the handover's summary when it is sent again or edited: the
+    /// summary stays in what the model gets.
+    #[tokio::test]
+    async fn a_message_after_a_handover_keeps_the_summary_when_edited() {
+        let temp = tempfile::tempdir().unwrap();
+        let bodies: Arc<Mutex<Vec<String>>> = Arc::default();
+        let server = ModelServer::start(Arc::new({
+            let bodies = bodies.clone();
+            move |_, body: String| {
+                bodies.lock().unwrap().push(body.clone());
+                Box::pin(async move {
+                    if body.contains(
+                        "This conversation is getting long, so it will continue in a fresh one",
+                    ) {
+                        reply("s", "SUMMARY: the user greeted Arko twice.")
+                    } else if body.contains("SUMMARY: the user greeted Arko twice.") {
+                        reply("b", "Answered from the summary.")
+                    } else if body.contains("Hello again.") {
+                        with_input(reply("a", "Second answer."), 40_000)
+                    } else {
+                        with_input(reply("a", "First answer."), 1_000)
+                    }
+                })
+            }
+        }))
+        .await;
+        let running = spawn(
+            Options {
+                root: Some(temp.path().join("arko")),
+                mode: crate::session::Mode::Chat,
+                model: Some("luna".into()),
+                openai_auth: Some(OpenAiAuth::ApiKey),
+                cache_1h: Some(false),
+                handover_at: Some(30_000),
+                client: Some(GivenClient(Arc::new(server.client()))),
+                ..Options::default()
+            },
+            Arc::new(NoPrompter),
+        );
+        let seam = tokio::time::timeout(Duration::from_secs(30), running.opened)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        for (text, count) in [("Hello.", 1), ("Hello again.", 2), ("And once more.", 4)] {
+            seam.input.send(Input::Message(app_message(text))).unwrap();
+            answered(&seam, &bodies, count).await;
+        }
+        assert!(user_item(&seam, "And once more.").message_index.is_some());
+        let last = |bodies: &Mutex<Vec<String>>| bodies.lock().unwrap().last().unwrap().clone();
+        // Sent again: from the summary, without the conversation before it.
+        let regenerated = ask_for(&seam, |reply| Request::Regenerate { reply }).await;
+        assert_eq!(regenerated, Ok(()));
+        let again = answered(&seam, &bodies, 5).await;
+        assert!(
+            again.contains("SUMMARY: the user greeted Arko twice."),
+            "{again}"
+        );
+        assert!(again.contains("And once more.") && !again.contains("First answer."));
+        // Edited: the same.
+        let once_more = user_item(&seam, "And once more.").id;
+        assert_eq!(edit(&seam, once_more, "Something else.").await, Ok(()));
+        let edited = answered(&seam, &bodies, 6).await;
+        assert!(
+            edited.contains("SUMMARY: the user greeted Arko twice."),
+            "{edited}"
+        );
+        assert!(edited.contains("Something else.") && !edited.contains("And once more."));
+        assert_eq!(last(&bodies), edited);
+        quit(seam, running.ended).await;
     }
 
     /// At the handover size a chat writes a summary in text, and the fresh
