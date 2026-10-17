@@ -1341,23 +1341,33 @@ fn change_dotenv(
 /// readable only by the user, renamed into place.
 fn write_private(path: &Path, text: &str) -> std::io::Result<()> {
     static COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let count = COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let name = path
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let temporary = path.with_file_name(format!("{name}.{}.{count}.tmp", std::process::id()));
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
     std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-    let written = options
-        .open(&temporary)
-        .and_then(|mut file| {
-            use std::io::Write;
-            file.write_all(text.as_bytes())
-        })
-        .and_then(|()| std::fs::rename(&temporary, path));
+    // A temporary file of the same name left by a process that ended (its
+    // ID used again) is passed over for the next name.
+    let mut count = COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let (temporary, file) = loop {
+        let temporary = path.with_file_name(format!("{name}.{}.{count}.tmp", std::process::id()));
+        match options.open(&temporary) {
+            Ok(file) => break (temporary, file),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                count = COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+            Err(error) => return Err(error),
+        }
+    };
+    let written = {
+        use std::io::Write;
+        let mut file = file;
+        file.write_all(text.as_bytes())
+    }
+    .and_then(|()| std::fs::rename(&temporary, path));
     if written.is_err() {
         let _ = std::fs::remove_file(&temporary);
     }
@@ -1698,6 +1708,27 @@ mod tests {
             .collect();
         left.sort();
         assert_eq!(left, [".env", ".env.lock"]);
+    }
+
+    /// A temporary file left by an earlier process with this one's ID is
+    /// passed over, and stays as it was.
+    #[test]
+    fn a_stale_temporary_file_doesnt_stop_a_save() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join(".env");
+        let stale = |count: u64| {
+            temp.path()
+                .join(format!(".env.{}.{count}.tmp", std::process::id()))
+        };
+        for count in 0..2000 {
+            std::fs::write(stale(count), "stale").unwrap();
+        }
+        save(&path, ANTHROPIC_KEY, "sk-ant-one").unwrap();
+        assert_eq!(
+            read_dotenv(&path),
+            vec![(ANTHROPIC_KEY, "sk-ant-one".to_string())]
+        );
+        assert_eq!(std::fs::read_to_string(stale(0)).unwrap(), "stale");
     }
 
     #[test]
