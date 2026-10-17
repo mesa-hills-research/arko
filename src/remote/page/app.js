@@ -221,6 +221,7 @@
     answer: 'answer',
     command: 'command',
     queued: 'waits for its turn',
+    refresh: 'kept the cache warm',
   };
 
   const CHEVRON = 'M8 5l5 5-5 5';

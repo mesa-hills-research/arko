@@ -564,6 +564,9 @@ struct EventPrinter {
     /// Lines of text, and of thinking, were printed since that request went
     /// out: they can't be taken back.
     printed_since_request: (bool, bool),
+    /// The main agent's latest request is one of Claude Code's subagents':
+    /// its usage isn't the conversation's.
+    subagent_request: bool,
 }
 
 impl EventPrinter {
@@ -586,6 +589,7 @@ impl EventPrinter {
             thinking_refused: false,
             request_start: (0, 0),
             printed_since_request: (false, false),
+            subagent_request: false,
         }
     }
 
@@ -818,6 +822,7 @@ impl EventPrinter {
             } if main => {
                 self.request_start = (self.text.len(), self.thinking.len());
                 self.printed_since_request = (false, false);
+                self.subagent_request = false;
                 self.stats.lock().unwrap().last_request = Some(remote::LastRequest {
                     at,
                     model,
@@ -825,7 +830,13 @@ impl EventPrinter {
                     bytes_per_token,
                 });
             }
-            AgentEvent::UsageReported(usage) if main => {
+            AgentEvent::ModelRequestStarted {
+                subagent: Some(_), ..
+            } if main => {
+                self.subagent_request = true;
+            }
+            // The conversation's own usage: its size and its cache.
+            AgentEvent::UsageReported(usage) if main && !self.subagent_request => {
                 let mut stats = self.stats.lock().unwrap();
                 let written = usage.cache_write_tokens.unwrap_or(0);
                 stats.cache_use = Some((usage.cached_tokens.unwrap_or(0), written));
@@ -838,7 +849,7 @@ impl EventPrinter {
                     });
                 }
             }
-            AgentEvent::ModelCallUsageReported(usage) if main => {
+            AgentEvent::ModelCallUsageReported(usage) if main && usage.subagent.is_none() => {
                 let mut stats = self.stats.lock().unwrap();
                 stats.context_tokens = Some(usage.input_tokens);
                 if usage.max_input_tokens.is_some() {
@@ -1528,6 +1539,52 @@ mod tests {
                 .extend(text.lines().map(str::to_string));
             Ok(())
         }
+    }
+
+    /// The requests Claude Code's subagents make aren't the conversation's:
+    /// their usage leaves the context's size and the cache as they were.
+    #[tokio::test]
+    async fn a_subagents_usage_isnt_the_conversations() {
+        let output = Arc::new(Output::new(None, true));
+        let stats: Arc<Mutex<Stats>> = Arc::default();
+        let mut printer = EventPrinter::new(output, stats.clone(), false, None);
+        let event = |event: AgentEvent| WorkflowEvent {
+            timestamp: chrono::Utc::now(),
+            workflow_run_id: Uuid::nil(),
+            agent_name: MAIN.into(),
+            agent_run_id: Uuid::nil(),
+            event,
+        };
+        let started = |subagent: Option<&str>| AgentEvent::ModelRequestStarted {
+            model: "claude-opus-5-5".into(),
+            subagent: subagent.map(str::to_string),
+            sizes: None,
+            bytes_per_token: 3.0,
+        };
+        let usage = |input: usize, subagent: Option<&str>| {
+            serde_json::from_value::<arko_ai::ModelCallUsage>(serde_json::json!({
+                "call_id": "c", "provider": "anthropic", "model": "claude-opus-5-5",
+                "input_tokens": input, "output_tokens": 1, "subagent": subagent,
+            }))
+            .unwrap()
+        };
+        let cached = |read: usize| arko_ai::UsageInfo {
+            input_tokens: read,
+            cached_tokens: Some(read),
+            ..arko_ai::UsageInfo::default()
+        };
+        printer.event(event(started(None)));
+        printer.event(event(AgentEvent::UsageReported(cached(500))));
+        printer.event(event(AgentEvent::ModelCallUsageReported(usage(500, None))));
+        printer.event(event(started(Some("call-1"))));
+        printer.event(event(AgentEvent::UsageReported(cached(9_000))));
+        printer.event(event(AgentEvent::ModelCallUsageReported(usage(
+            9_000,
+            Some("call-1"),
+        ))));
+        let stats = stats.lock().unwrap();
+        assert_eq!(stats.context_tokens, Some(500));
+        assert_eq!(stats.cache_use, Some((500, 0)));
     }
 
     /// A response that fails after it streamed takes back what it added

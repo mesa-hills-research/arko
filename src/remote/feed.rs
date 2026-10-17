@@ -502,21 +502,32 @@ pub fn merged(updates: Vec<Update>) -> Vec<Update> {
                 out.push(Some(Update::Activity));
             }
             Update::Truncate { from } => {
-                // What the batch had of the items cut goes with them.
-                for slot in out.iter_mut() {
-                    let cut = match slot {
-                        Some(Update::Item(item) | Update::Change(item)) => {
-                            item.id >= from && item.is_main()
+                // What the batch had of the main agent's items cut goes with
+                // them (a worker's stay: their appends too).
+                let cut: std::collections::HashSet<u64> = out
+                    .iter()
+                    .flatten()
+                    .filter_map(|update| match update {
+                        Update::Item(item) | Update::Change(item)
+                            if item.id >= from && item.is_main() =>
+                        {
+                            Some(item.id)
                         }
-                        Some(Update::Append { id, .. }) => *id >= from,
-                        _ => false,
+                        _ => None,
+                    })
+                    .collect();
+                for slot in out.iter_mut() {
+                    let id = match slot {
+                        Some(Update::Item(item) | Update::Change(item)) => item.id,
+                        Some(Update::Append { id, .. }) => *id,
+                        _ => continue,
                     };
-                    if cut {
+                    if cut.contains(&id) {
                         *slot = None;
                     }
                 }
-                whole.retain(|id, _| *id < from);
-                appended.retain(|id, _| *id < from);
+                whole.retain(|id, _| !cut.contains(id));
+                appended.retain(|id, _| !cut.contains(id));
                 out.push(Some(Update::Truncate { from }));
             }
             Update::Remove { id } => {
@@ -1690,6 +1701,33 @@ mod tests {
             .collect();
         assert_eq!(ids, [Some(kept), Some(worker), None]);
         assert!(matches!(batch.last(), Some(Update::Truncate { from }) if *from == cut));
+    }
+
+    /// A cut in a batch drops what the batch had of the main agent's items
+    /// from there, and keeps a worker's text added in the same batch.
+    #[test]
+    fn a_cut_keeps_a_workers_text_in_the_same_batch() {
+        let main = |id: u64| {
+            let mut item = Item::new(Kind::Text, "main");
+            item.id = id;
+            item
+        };
+        let merged = merged(vec![
+            Update::Append {
+                id: 2,
+                text: " more".into(),
+            },
+            Update::Item(main(3)),
+            Update::Append {
+                id: 3,
+                text: " cut".into(),
+            },
+            Update::Truncate { from: 2 },
+        ]);
+        assert!(matches!(
+            merged.as_slice(),
+            [Update::Append { id: 2, text }, Update::Truncate { from: 2 }] if text == " more"
+        ));
     }
 
     /// A batched client misses nothing however far behind it falls: 10,000
