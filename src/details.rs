@@ -374,4 +374,92 @@ impl Details {
             .map(|crew| crew.facts())
             .unwrap_or_default()
     }
+
+    /// What switching the session to `to` (`Request::SwitchMode`) costs:
+    /// its next request writes the whole conversation to the prompt cache
+    /// again, under the new mode's tools and instructions. `None` when the
+    /// session is in `to` already or its conversation hasn't started (then
+    /// it costs nothing).
+    pub fn switch_cost(&self, to: crate::session::Mode) -> Option<SwitchCost> {
+        let settings = lock(&self.session).as_ref()?.1.clone();
+        if settings.mode == to {
+            return None;
+        }
+        let tokens = lock(&self.gauges.stats).context_tokens?;
+        Some(switch_cost(&settings, tokens))
+    }
+}
+
+/// What a switch between Chat and Agent costs: see [`Details::switch_cost`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct SwitchCost {
+    /// The conversation's input at its last request, which the next one
+    /// writes to the cache again.
+    pub tokens: usize,
+    /// What writing them costs at the model's price; `None` on a plan.
+    pub dollars: Option<f64>,
+    /// The plan that pays instead ("your Claude plan").
+    pub plan: Option<&'static str>,
+}
+
+fn switch_cost(settings: &Settings, tokens: usize) -> SwitchCost {
+    let model = providers::resolve_model(&settings.main.model).ok();
+    let plan = match model.as_ref().map(|model| &model.provider) {
+        Some(arko_ai::Provider::ClaudeCode) => Some("your Claude plan"),
+        Some(arko_ai::Provider::OpenAI)
+            if settings.openai_auth == Some(providers::OpenAiAuth::ChatGpt) =>
+        {
+            Some("your ChatGPT plan")
+        }
+        _ => None,
+    };
+    let dollars = model.filter(|_| plan.is_none()).map(|model| {
+        let pricing = &model.pricing;
+        let one_hour = settings
+            .main
+            .cache_1h
+            .then_some(pricing.cache_write_1h_cost_per_million)
+            .flatten();
+        // Where writes cost nothing extra (OpenAI, Gemini), they cost input.
+        let per_million = one_hour
+            .or(pricing.cache_write_cost_per_million)
+            .unwrap_or(pricing.input_cost_per_million);
+        tokens as f64 * per_million / 1e6
+    });
+    SwitchCost {
+        tokens,
+        dollars,
+        plan,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A switch costs writing the conversation to the cache again: at the
+    /// model's write price, or nothing on a plan.
+    #[test]
+    fn a_switch_costs_writing_the_conversation_again() {
+        let model = crate::agents::ModelSettings {
+            model: "claude-opus-5-5".into(),
+            effort: Effort::High,
+            fast: false,
+            cache_1h: false,
+            handover_at: None,
+        };
+        let mut settings = Settings::for_test(std::path::Path::new("/work"), &model);
+        let opus = providers::resolve_model("opus").unwrap().pricing;
+        let cost = switch_cost(&settings, 100_000);
+        assert_eq!(cost.tokens, 100_000);
+        assert_eq!(cost.plan, None);
+        let expected = 0.1 * opus.cache_write_cost_per_million.unwrap();
+        assert!((cost.dollars.unwrap() - expected).abs() < 1e-9);
+        settings.main.cache_1h = true;
+        let expected = 0.1 * opus.cache_write_1h_cost_per_million.unwrap();
+        assert!((switch_cost(&settings, 100_000).dollars.unwrap() - expected).abs() < 1e-9);
+        settings.main.model = "cc:opus".into();
+        let cost = switch_cost(&settings, 100_000);
+        assert_eq!((cost.dollars, cost.plan), (None, Some("your Claude plan")));
+    }
 }
