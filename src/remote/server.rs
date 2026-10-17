@@ -585,7 +585,7 @@ impl Stream {
             ),
             Update::Activity => self.send_status(),
             // The page starts over from the history as it is now.
-            Update::Truncate { .. } => self.reset(),
+            Update::Truncate { .. } | Update::Remove { .. } => self.reset(),
         }
     }
 

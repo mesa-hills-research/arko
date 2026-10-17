@@ -394,6 +394,9 @@ pub enum Update {
     /// The main agent's items from `from` on are gone (the conversation was
     /// cut back to an earlier message): clients drop them too.
     Truncate { from: u64 },
+    /// The item `id` is gone: text a model's response streamed before it
+    /// failed, which its retry streams again.
+    Remove { id: u64 },
 }
 
 /// A batched client's updates: see [`Feed::subscribe_batched`].
@@ -506,6 +509,15 @@ pub fn merged(updates: Vec<Update>) -> Vec<Update> {
                 appended.retain(|id, _| *id < from);
                 out.push(Some(Update::Truncate { from }));
             }
+            Update::Remove { id } => {
+                for at in [whole.remove(&id), appended.remove(&id)]
+                    .into_iter()
+                    .flatten()
+                {
+                    out[at] = None;
+                }
+                out.push(Some(Update::Remove { id }));
+            }
         }
     }
     out.into_iter().flatten().collect()
@@ -614,6 +626,16 @@ struct Call {
     message: Option<String>,
 }
 
+/// Where an agent's output stood as its model request went out.
+struct Streamed {
+    /// The first item the response may start.
+    first: u64,
+    /// The item it may add to, and its text's length then.
+    open: Option<(u64, usize)>,
+    /// The agent's text then ([`State::open_text`]).
+    open_text: Option<(Kind, u64)>,
+}
+
 struct Worker {
     summary: WorkerSummary,
     /// The turn of its latest placeholder in the main transcript; `None`
@@ -646,6 +668,9 @@ struct State {
     runs: HashMap<Uuid, String>,
     /// Calls waiting for their results, by call.
     calls: HashMap<Uuid, Call>,
+    /// Where each agent's output stood as its latest model request went
+    /// out: what its response streams goes if the response fails.
+    requests: HashMap<String, Streamed>,
     workers: Vec<Worker>,
 }
 
@@ -844,6 +869,45 @@ impl Feed {
         }
     }
 
+    /// What `agent`'s failed response streamed since `streamed` goes: the
+    /// items it started, and what it added to the one before (the retry
+    /// streams it again).
+    fn discard(&self, state: &mut State, agent: &str, streamed: Streamed) {
+        let (lane, _) = state.lane(agent);
+        let gone: Vec<u64> = lane
+            .items
+            .iter()
+            .filter(|item| {
+                item.agent == agent
+                    && item.id >= streamed.first
+                    && matches!(item.kind, Kind::Text | Kind::Thinking)
+            })
+            .map(|item| item.id)
+            .collect();
+        if !gone.is_empty() {
+            lane.items.retain(|item| !gone.contains(&item.id));
+            lane.bytes = lane.items.iter().map(Item::size).sum();
+            lane.wholes = lane.items.iter().map(Item::kept_size).sum();
+        }
+        let shortened = streamed.open.and_then(|(id, length)| {
+            let item = lane.find(id)?;
+            (item.text.len() > length).then(|| {
+                item.text.truncate(length);
+                item.clone()
+            })
+        });
+        if let Some(item) = shortened {
+            self.send(Update::Change(item));
+        }
+        for id in gone {
+            self.send(Update::Remove { id });
+        }
+        match streamed.open_text {
+            Some(open) => state.open_text.insert(agent.to_string(), open),
+            None => state.open_text.remove(agent),
+        };
+    }
+
     /// `agent`'s calls still waiting for their results end without them
     /// (its turn or run ended): their lines stop saying they run.
     fn interrupt_calls(&self, state: &mut State, agent: &str) {
@@ -999,6 +1063,24 @@ impl Feed {
                     self.push(&mut state, item);
                 }
             },
+            // The conversation's own requests (not Claude Code's subagents').
+            AgentEvent::ModelRequestStarted { subagent: None, .. } => {
+                let open = state.open_text.get(&agent).copied().and_then(|(_, id)| {
+                    let (lane, _) = state.lane(&agent);
+                    lane.find(id).map(|item| (id, item.text.len()))
+                });
+                let streamed = Streamed {
+                    first: state.next_id + 1,
+                    open,
+                    open_text: state.open_text.get(&agent).copied(),
+                };
+                state.requests.insert(agent.clone(), streamed);
+            }
+            AgentEvent::StreamedOutputDiscarded { .. } => {
+                if let Some(streamed) = state.requests.remove(&agent) {
+                    self.discard(&mut state, &agent, streamed);
+                }
+            }
             AgentEvent::RetryScheduled {
                 attempt,
                 delay_ms,
@@ -2270,6 +2352,76 @@ mod tests {
         assert!(wholes.iter().sum::<usize>() <= MAIN_BUDGET.wholes);
         assert_eq!(wholes[0], 0);
         assert!(wholes[7] > 0);
+    }
+
+    /// A response that fails after it streamed takes back what it streamed:
+    /// the items it started go, and what it added to an item goes from it.
+    /// The retry streams anew, into the item the text was in.
+    #[test]
+    fn a_failed_responses_output_is_taken_back() {
+        let feed = Feed::new("main");
+        let (_, mut batches) = feed.subscribe_batched();
+        let started = || AgentEvent::ModelRequestStarted {
+            model: "gpt-6-luna".into(),
+            subagent: None,
+            sizes: None,
+            bytes_per_token: 3.0,
+        };
+        feed.event(&event("main", chunk("Before. ")), None);
+        let before = items(&feed)[0].id;
+        feed.event(&event("main", started()), None);
+        feed.event(&event("main", chunk("Broken")), None);
+        feed.event(
+            &event("main", AgentEvent::ReasoningChunk("Hmm".into())),
+            None,
+        );
+        let discarded = AgentEvent::StreamedOutputDiscarded {
+            text_bytes: 6,
+            reasoning_bytes: 3,
+        };
+        feed.event(&event("main", discarded), None);
+        assert_eq!(
+            items(&feed)
+                .iter()
+                .map(|item| item.text.as_str())
+                .collect::<Vec<_>>(),
+            ["Before. "]
+        );
+        feed.event(&event("main", started()), None);
+        feed.event(&event("main", chunk("Fixed.")), None);
+        let kept = items(&feed);
+        assert_eq!(kept.len(), 1);
+        assert_eq!(
+            (kept[0].id, kept[0].text.as_str()),
+            (before, "Before. Fixed.")
+        );
+        // A client in this process sees the same.
+        let batch = batches.try_next().unwrap();
+        let mut shown: Vec<Item> = Vec::new();
+        for update in batch {
+            match update {
+                Update::Item(item) => shown.push(item),
+                Update::Change(item) => {
+                    if let Some(old) = shown.iter_mut().find(|old| old.id == item.id) {
+                        *old = item;
+                    }
+                }
+                Update::Append { id, text } => {
+                    if let Some(old) = shown.iter_mut().find(|old| old.id == id) {
+                        old.text.push_str(&text);
+                    }
+                }
+                Update::Remove { id } => shown.retain(|old| old.id != id),
+                _ => {}
+            }
+        }
+        assert_eq!(
+            shown
+                .iter()
+                .map(|item| item.text.as_str())
+                .collect::<Vec<_>>(),
+            ["Before. Fixed."]
+        );
     }
 
     /// A call names its tool and keeps its parameters and whole result for

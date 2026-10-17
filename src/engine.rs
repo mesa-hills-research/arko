@@ -1568,6 +1568,25 @@ mod tests {
             .collect()
     }
 
+    /// Waits until a resumed session's feed has its conversation (it comes
+    /// as the session starts running, after it opened).
+    async fn resumed(seam: &Seam) {
+        tokio::time::timeout(Duration::from_secs(30), async {
+            while !seam
+                .feed
+                .subscribe()
+                .0
+                .items
+                .iter()
+                .any(|item| item.text == "Resumed.")
+            {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+
     /// The feed's user's message `text`.
     fn user_item(seam: &Seam, text: &str) -> crate::remote::Item {
         seam.feed
@@ -1669,6 +1688,7 @@ mod tests {
 
         // Opened again, its restored messages can be edited.
         let (seam, ended) = open_app(&root, &project, &server, SessionChoice::Resume(id)).await;
+        resumed(&seam).await;
         let uno = user_item(&seam, "Uno.");
         assert_eq!(uno.message_index, Some(0));
         assert_eq!(edit(&seam, uno.id, "Eins.").await, Ok(()));
@@ -1856,6 +1876,7 @@ mod tests {
             )
         };
         let (seam, ended) = open_branch().await;
+        resumed(&seam).await;
         assert_eq!(exchanged(&seam), ["One.", "Reply 1."]);
         seam.input
             .send(Input::Message(app_message("Deux.")))

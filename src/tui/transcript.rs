@@ -338,6 +338,10 @@ impl Transcript {
                     .retain(|entry| entry.item.id < from || !entry.item.is_main());
                 self.selection = None;
             }
+            Update::Remove { id } => {
+                self.changed(id);
+                self.entries.retain(|entry| entry.item.id != id);
+            }
         }
     }
 

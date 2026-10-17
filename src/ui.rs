@@ -553,6 +553,9 @@ struct EventPrinter {
     commands: HashMap<Uuid, String>,
     /// The provider's refusal of reasoning summaries was told.
     thinking_refused: bool,
+    /// The lengths of `text` and `thinking` as the main agent's latest
+    /// request went out: what its response adds goes if it fails.
+    request_start: (usize, usize),
 }
 
 impl EventPrinter {
@@ -573,6 +576,7 @@ impl EventPrinter {
             label,
             commands: HashMap::new(),
             thinking_refused: false,
+            request_start: (0, 0),
         }
     }
 
@@ -693,6 +697,24 @@ impl EventPrinter {
                 };
                 self.output.echo(&self.output.error(&line));
             }
+            // The response failed after it streamed: what it added goes, and
+            // its retry streams it again.
+            AgentEvent::StreamedOutputDiscarded { .. } if main => {
+                let (text, thinking) = self.request_start;
+                // Held text is all there (`hold_text`); printed lines can't
+                // be taken back.
+                let printed = self.text.len() < text || !self.hold_text;
+                self.text.truncate(text.min(self.text.len()));
+                self.thinking.truncate(thinking.min(self.thinking.len()));
+                if printed {
+                    self.text.clear();
+                    self.output.echo(
+                        &self
+                            .output
+                            .dim("  (the response broke off: what it said is said again)"),
+                    );
+                }
+            }
             AgentEvent::RetryScheduled {
                 attempt,
                 delay_ms,
@@ -774,6 +796,7 @@ impl EventPrinter {
                 sizes,
                 bytes_per_token,
             } if main => {
+                self.request_start = (self.text.len(), self.thinking.len());
                 self.stats.lock().unwrap().last_request = Some(remote::LastRequest {
                     at,
                     model,
