@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::SystemTime;
 
+use arko_ai::process::NoConsoleWindow;
 use chrono::{DateTime, Utc};
 
 use crate::conversations::Conversations;
@@ -632,6 +633,7 @@ fn git(dir: &Path, args: &[&str]) -> Option<String> {
         .arg("-C")
         .arg(dir)
         .args(args)
+        .no_console_window()
         .output()
         .ok()?;
     output
@@ -663,6 +665,7 @@ fn remove_worktree(dir: &Path) -> bool {
         .arg(&common)
         .args(["worktree", "remove"])
         .arg(dir)
+        .no_console_window()
         .output()
         .is_ok_and(|output| output.status.success())
 }

@@ -15,6 +15,7 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use arko_agents::ClaudeCodeSettings;
+use arko_ai::process::NoConsoleWindow;
 use arko_ai::providers::claude_code::NO_SELF_UPDATE;
 
 /// The variable Claude Code bills instead of the user's Claude plan when it
@@ -173,6 +174,7 @@ fn run(path: &Path, args: &[&str]) -> std::io::Result<String> {
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
+        .no_console_window()
         .spawn()?;
     let started = Instant::now();
     loop {
