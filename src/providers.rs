@@ -47,10 +47,12 @@ pub const CLAUDE_CODE: &str = "cc:";
 const CLAUDE_CODE_LONG: &str = "claude-code:";
 
 /// Short names for the models people use most.
-pub const ALIASES: [(&str, &str); 8] = [
+pub const ALIASES: [(&str, &str); 10] = [
     ("opus", "claude-opus-5-5"),
     ("fable", "claude-fable-5-1"),
     ("sonnet", "claude-sonnet-5-5"),
+    ("haiku", "claude-haiku-5-5"),
+    ("mythos", "claude-mythos-5-1"),
     ("sol", "gpt-6.1-sol"),
     ("astra", "gpt-6-astra"),
     ("luna", "gpt-6-luna"),
@@ -724,6 +726,34 @@ pub struct ModelGroup {
     pub models: Vec<(String, &'static str)>,
 }
 
+/// What the picker says beside Claude Mythos 5.1, on any route.
+pub const MYTHOS_ACCESS: &str = "Needs access through Anthropic's Cyber Verification Program";
+
+/// Claude Code's words when the API turns down the model it asked for,
+/// because it doesn't exist or the account may not use it (Claude Code
+/// 2.1.299: "There's an issue with the selected model (claude-mythos-5-1).
+/// It may not exist or you may not have access to it.").
+const CLAUDE_CODE_NO_ACCESS: &str = "you may not have access to it";
+
+/// What the model picker says beside the model `name` (as `/model` takes
+/// it), when there is something to know before choosing it. Claude Mythos
+/// 5.1 is open only to organizations Anthropic has verified.
+pub fn model_note(name: &str) -> Option<&'static str> {
+    let model = resolve_model(name).ok()?;
+    model.is_mythos_5_1().then_some(MYTHOS_ACCESS)
+}
+
+/// A failed request's error `message`, with why the model may be refused
+/// added where the message shows it: Claude Code turned down Claude Mythos
+/// 5.1, which needs access through Anthropic's Cyber Verification Program.
+pub fn explain_error(message: &str) -> std::borrow::Cow<'_, str> {
+    if message.contains("claude-mythos") && message.contains(CLAUDE_CODE_NO_ACCESS) {
+        format!("{message} Claude Mythos 5.1 needs access through Anthropic's Cyber Verification Program.").into()
+    } else {
+        message.into()
+    }
+}
+
 /// The models `/model` offers, by the way they are reached: Claude Code,
 /// the Anthropic API, OpenAI, Gemini and OpenRouter, the ways that can be
 /// used first. `needs` says what a model (a way's first) needs that isn't
@@ -747,6 +777,8 @@ pub fn model_menu(
                 ("cc:claude-opus-5-5", "cc:opus"),
                 ("cc:claude-fable-5-1", "cc:fable"),
                 ("cc:claude-sonnet-5-5", "cc:sonnet"),
+                ("cc:claude-haiku-5-5", "cc:haiku"),
+                ("cc:claude-mythos-5-1", "cc:mythos"),
             ],
         ),
         (
@@ -756,6 +788,8 @@ pub fn model_menu(
                 ("claude-opus-5-5", "opus"),
                 ("claude-fable-5-1", "fable"),
                 ("claude-sonnet-5-5", "sonnet"),
+                ("claude-haiku-5-5", "haiku"),
+                ("claude-mythos-5-1", "mythos"),
             ],
         ),
         (
@@ -1497,6 +1531,10 @@ mod tests {
             ),
             ("cc:opus", Provider::ClaudeCode, "cc:claude-opus-5-5"),
             ("cc:fable", Provider::ClaudeCode, "cc:claude-fable-5-1"),
+            ("haiku", Provider::Anthropic, "claude-haiku-5-5"),
+            ("mythos", Provider::Anthropic, "claude-mythos-5-1"),
+            ("cc:haiku", Provider::ClaudeCode, "cc:claude-haiku-5-5"),
+            ("cc:mythos", Provider::ClaudeCode, "cc:claude-mythos-5-1"),
             (
                 "claude-code:claude-opus-5-5",
                 Provider::ClaudeCode,
@@ -2334,6 +2372,64 @@ mod tests {
             for (name, _) in &group.models {
                 assert!(resolve_model(name).is_ok(), "{name}");
             }
+        }
+    }
+
+    /// Claude Code and the Anthropic API offer the same Claude models, Haiku
+    /// 5.5 and Mythos 5.1 among them, and only Mythos comes with a note,
+    /// since it needs access first.
+    #[test]
+    fn claude_code_and_the_api_offer_the_same_claude_models() {
+        let menu = model_menu(|_| None, None, &[]);
+        let models = |way: &str| {
+            menu.iter()
+                .find(|group| group.name.starts_with(way))
+                .unwrap()
+                .models
+                .clone()
+        };
+        let (cc, api) = (models("Claude Code"), models("Anthropic API"));
+        let on_cc: Vec<&str> = cc
+            .iter()
+            .map(|(name, _)| name.strip_prefix(CLAUDE_CODE).unwrap())
+            .collect();
+        let on_api: Vec<&str> = api.iter().map(|(name, _)| name.as_str()).collect();
+        assert_eq!(on_cc, on_api);
+        assert!(cc.contains(&("cc:claude-haiku-5-5".to_string(), "cc:haiku")));
+        assert!(cc.contains(&("cc:claude-mythos-5-1".to_string(), "cc:mythos")));
+        assert!(api.contains(&("claude-haiku-5-5".to_string(), "haiku")));
+        assert!(api.contains(&("claude-mythos-5-1".to_string(), "mythos")));
+        for (name, alias) in cc.iter().chain(&api) {
+            let note = model_note(name);
+            assert_eq!(note, model_note(alias), "{alias}");
+            assert_eq!(
+                note.is_some(),
+                name.ends_with("claude-mythos-5-1"),
+                "{name}"
+            );
+        }
+        assert_eq!(model_note("cc:mythos"), Some(MYTHOS_ACCESS));
+    }
+
+    /// Claude Code's refusal of Claude Mythos 5.1 says what access it needs.
+    /// Other errors, also the same refusal of another model, stay as they
+    /// are.
+    #[test]
+    fn a_refused_mythos_says_what_access_it_needs() {
+        let refused = "There's an issue with the selected model (claude-mythos-5-1). It may not exist or you may not have access to it. Run /model to pick a different model.";
+        let explained = explain_error(refused);
+        assert!(explained.starts_with(refused), "{explained}");
+        assert!(
+            explained.ends_with(
+                "Claude Mythos 5.1 needs access through Anthropic's Cyber Verification Program."
+            ),
+            "{explained}"
+        );
+        for other in [
+            "There's an issue with the selected model (claude-opus-5-5). It may not exist or you may not have access to it.",
+            "Claude Code's request failed (server_error, status 500). It retries (attempt 1 of 10).",
+        ] {
+            assert_eq!(explain_error(other), other);
         }
     }
 }

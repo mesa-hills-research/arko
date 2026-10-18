@@ -33,11 +33,12 @@ pub(crate) struct Args {
     #[arg(short = 'p', long)]
     pub(crate) prompt: Option<String>,
 
-    /// The model, as an ID or alias (opus, fable, sonnet, sol, astra, luna,
-    /// gemini, flash), openrouter:<slug> for a model on OpenRouter
-    /// (openrouter:anthropic/claude-opus-5.5), or cc:<model> for a Claude
-    /// model in your installed Claude Code, on your Claude plan (cc:opus,
-    /// cc:fable). By default, the model of the last session you started
+    /// The model, as an ID or alias (opus, fable, sonnet, haiku, mythos, sol,
+    /// astra, luna, gemini, flash), openrouter:<slug> for a model on
+    /// OpenRouter (openrouter:anthropic/claude-opus-5.5), or cc:<model> for
+    /// a Claude model in your installed Claude Code, on your Claude plan
+    /// (cc:opus, cc:fable, cc:haiku). Claude Mythos 5.1 (mythos) needs access
+    /// through Anthropic's Cyber Verification Program. By default, the model of the last session you started
     /// (with its workers' model, when that differed) while its credential
     /// is there, else one by the credentials there are, cc:opus with Claude
     /// Code signed in, else opus with ANTHROPIC_API_KEY, else sol with a

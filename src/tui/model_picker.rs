@@ -404,6 +404,18 @@ pub fn draw(frame: &mut Frame, theme: &Theme, area: Rect, picker: &ModelPicker) 
                             ));
                         }
                         lines.push(Line::from(spans));
+                        // What to know before choosing it, under its name.
+                        if let Some(note) = providers::model_note(name) {
+                            for line in wrap::wrap(
+                                &[Span::styled(note, theme.dim())],
+                                inner_width.saturating_sub(4),
+                                0,
+                            ) {
+                                let mut spans = vec![Span::raw("    ")];
+                                spans.extend(line);
+                                lines.push(Line::from(spans));
+                            }
+                        }
                     }
                     Row::FollowMain { model } => {
                         let mut spans = vec![
@@ -642,5 +654,36 @@ mod tests {
             column("OpenAI, on your ChatGPT plan")
         );
         assert_eq!(column("Type a model ID"), column("Another model"));
+    }
+
+    /// Claude Mythos 5.1 shows the access it needs on the row under its
+    /// name, and the models without a note follow one another.
+    #[test]
+    fn mythos_shows_the_access_it_needs_under_its_name() {
+        let models = Models {
+            main: "cc:claude-opus-5-5".into(),
+            main_effort: "high".into(),
+            workers: "cc:claude-opus-5-5".into(),
+            workers_effort: "high".into(),
+            ..Models::default()
+        };
+        let picker = ModelPicker::open(Target::Main, &models, |name| {
+            (!name.starts_with("cc:")).then(|| "a key".to_string())
+        });
+        let rows = screen(&picker);
+        let row = |text: &str| {
+            rows.iter()
+                .position(|row| row.contains(text))
+                .unwrap_or_else(|| panic!("no {text:?} in {rows:#?}"))
+        };
+        let mythos = row("cc:claude-mythos-5-1");
+        let note = &rows[mythos + 1];
+        assert!(note.contains(providers::MYTHOS_ACCESS), "{rows:#?}");
+        assert!(
+            note.find(providers::MYTHOS_ACCESS).unwrap()
+                > rows[mythos].find("cc:claude-mythos-5-1").unwrap(),
+            "{rows:#?}"
+        );
+        assert_eq!(row("cc:claude-haiku-5-5") + 1, mythos, "{rows:#?}");
     }
 }

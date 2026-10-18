@@ -30,6 +30,13 @@ pub fn names(models: &Models, needs: impl Fn(&str) -> Option<String>) -> Vec<Str
         .collect()
 }
 
+/// What the picker says beside the model `name` (as `/model` takes it),
+/// when there is something to know before choosing it, such as the access
+/// Claude Mythos 5.1 needs.
+pub fn note(name: &str) -> Option<&'static str> {
+    providers::model_note(name)
+}
+
 /// What the model `name` needs that the session doesn't have. That is
 /// Claude Code installed and signed in, or a provider the session's client
 /// reaches (`reachable`, as the session publishes it).

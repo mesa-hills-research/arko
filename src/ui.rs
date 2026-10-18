@@ -701,7 +701,11 @@ impl EventPrinter {
                 } else {
                     format!("{}: ", self.worker(event.agent_run_id))
                 };
-                let text = cut(&error_message, 400);
+                let text = if tool_call_id.is_some() {
+                    cut(&error_message, 400)
+                } else {
+                    cut(&crate::providers::explain_error(&error_message), 400)
+                };
                 let line = if tool_call_id.is_some() {
                     format!("  ✗ {who}{text}")
                 } else {

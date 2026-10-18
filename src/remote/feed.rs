@@ -1189,7 +1189,8 @@ impl Feed {
                     self.settle(&mut state, id, Outcome::failed(error_message));
                 }
                 _ => {
-                    let item = notice(render::cut(error_message, 600), Level::Error);
+                    let message = crate::providers::explain_error(error_message);
+                    let item = notice(render::cut(&message, 600), Level::Error);
                     self.push(&mut state, item);
                 }
             },
@@ -1673,10 +1674,11 @@ impl Feed {
                 summary.state = WorkerState::Failed;
                 summary.ended_at = Some(now);
                 summary.last = Some(render::cut(error, 160));
+                let error = crate::providers::explain_error(error);
                 ended = Some(
                     Item::new(
                         Kind::Notice,
-                        format!("failed ({})", render::cut(error, 600)),
+                        format!("failed ({})", render::cut(&error, 600)),
                     )
                     .level(Level::Error),
                 );
@@ -2414,6 +2416,26 @@ mod tests {
         );
         let last = items(&feed).pop().unwrap();
         assert_eq!((last.kind, last.level), (Kind::Notice, Some(Level::Error)));
+        // Claude Code turning down Claude Mythos 5.1 says what access it needs.
+        feed.event(
+            &event(
+                "main",
+                AgentEvent::ErrorEncountered {
+                    error_message: "There's an issue with the selected model (claude-mythos-5-1). It may not exist or you may not have access to it.".into(),
+                    requires_approval_to_retry: true,
+                    tool_call_id: None,
+                    error_kind: Some(arko_ai::ErrorKind::NotFound),
+                },
+            ),
+            None,
+        );
+        let last = items(&feed).pop().unwrap();
+        assert!(
+            last.text
+                .ends_with("needs access through Anthropic's Cyber Verification Program."),
+            "{}",
+            last.text
+        );
     }
 
     /// `turn` is null before the first turn, and grows with each; the

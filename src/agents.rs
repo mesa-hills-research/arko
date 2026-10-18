@@ -1307,7 +1307,9 @@ mod tests {
     fn small_models_are_haiku_and_luna_on_any_route() {
         for name in [
             "claude-haiku-5-5",
+            "haiku",
             "cc:claude-haiku-5-5",
+            "cc:haiku",
             "openrouter:anthropic/claude-haiku-5.5",
             "luna",
             "gpt-6-luna",
@@ -1319,6 +1321,8 @@ mod tests {
             "opus",
             "cc:opus",
             "fable",
+            "mythos",
+            "cc:mythos",
             "sonnet",
             "sol",
             "astra",
