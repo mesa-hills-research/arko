@@ -29,7 +29,7 @@ required-features = ["tui"]
 default = ["tui", "remote"]
 # The command line and the terminal's front ends (the full-screen view, the
 # line prompt, the setup screen). An app that drives sessions builds without it.
-tui = ["dep:arboard", "dep:clap", "dep:crossterm", "dep:ratatui", "dep:rustyline", "dep:windows-sys"]
+tui = ["dep:arboard", "dep:clap", "dep:crossterm", "dep:ratatui", "dep:rustyline", "dep:windows-sys", "dep:wl-clipboard-rs"]
 # The web page's server (--remote, /remote). Without it, a session says
 # this build has no web page.
 remote = ["dep:axum", "dep:if-addrs", "dep:qrcodegen"]
@@ -75,6 +75,12 @@ rustyline = { version = "18.0.1", default-features = false, features = ["with-fi
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2.182"
+
+# Whether a Wayland compositor has the data-control protocol, which decides
+# how the full-screen view copies (arboard's own check, and the version it
+# uses).
+[target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
+wl-clipboard-rs = { version = "0.9.4", optional = true }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_System_Console"], optional = true }
