@@ -19,9 +19,15 @@ models, and on your Claude plan through an installed Claude Code.
 
 ## Install
 
-Arko needs Rust 1.89 or later and a checkout of
-[arko_framework](https://github.com/mesa-hills-research/arko_framework) next to it, since it builds
-against that through path dependencies.
+Arko needs Rust 1.89 or later and a C compiler. Its package on crates.io is `arko-tui`, and the
+command it installs is `arko`.
+
+```bash
+cargo install arko-tui
+```
+
+To build from source, clone [arko_framework](https://github.com/mesa-hills-research/arko_framework)
+next to this repository, since a checkout builds against it through path dependencies.
 
 ```bash
 git clone https://github.com/mesa-hills-research/arko_framework.git
@@ -54,8 +60,15 @@ web page and the API keys. `arko --help` describes every option and setting.
 An app opens a session and drives it with `arko::Engine`, or runs several side by side in one
 process with `arko::spawn`. The app shows the session's feed of items and sends the session the
 user's input. Apps build Arko with `default-features = false`, which leaves out the terminal's
-front ends, and add the `remote` feature for the web page. `cargo doc --open` builds the API docs.
-See [listing extensions and managing project approvals](docs/extensions.md) for settings pages.
+front ends, and add the `remote` feature for the web page. The library's name is `arko`.
+
+```toml
+[dependencies]
+arko-tui = { version = "0.1.0", default-features = false, features = ["remote"] }
+```
+
+`cargo doc --open` builds the API docs. See
+[listing extensions and managing project approvals](docs/extensions.md) for settings pages.
 
 ## Tests
 

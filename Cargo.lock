@@ -145,7 +145,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "arko"
+name = "arko-tui"
 version = "0.1.0"
 dependencies = [
  "arboard",
