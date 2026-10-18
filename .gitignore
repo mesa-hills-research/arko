@@ -1,2 +1,4 @@
 /target
+# Local overrides, such as a local arko_framework (see CONTRIBUTING.md).
+/.cargo/config.toml
 __pycache__/

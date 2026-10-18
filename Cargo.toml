@@ -39,10 +39,12 @@ remote = ["dep:axum", "dep:if-addrs", "dep:qrcodegen"]
 testing = []
 
 [dependencies]
-arko_ai = { version = "0.1.0", path = "../arko_framework/arko_ai" }
-arko_agents = { version = "0.1.0", path = "../arko_framework/arko_agents" }
-arko_workflows = { version = "0.1.0", path = "../arko_framework/arko_workflows" }
-arko_index = { version = "0.3.0", path = "../arko_framework/arko_index" }
+# The framework, from crates.io. CONTRIBUTING.md shows how to build against
+# a local checkout of it.
+arko_ai = "0.1.0"
+arko_agents = "0.1.0"
+arko_workflows = "0.1.0"
+arko_index = "0.3.0"
 
 async-trait = "0.1.79"
 # The system clipboard, for the full-screen view's copies (X11 and XWayland,

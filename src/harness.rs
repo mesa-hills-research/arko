@@ -6037,7 +6037,8 @@ pub(crate) mod tests {
     }
 
     /// Claude Code settings that run arko's scripted stand-in for the
-    /// `claude` CLI, with its script, log and state in `fake`.
+    /// `claude` CLI (a copy of arko_agents' test fixture), with its script,
+    /// log and state in `fake`.
     fn fake_claude_code(fake: &Path) -> providers::Setup {
         let mut setup = providers::Setup::new(None);
         let python = std::env::var("ARKO_TEST_PYTHON")
@@ -6046,7 +6047,7 @@ pub(crate) mod tests {
         setup.claude_code.cli_args = vec![
             concat!(
                 env!("CARGO_MANIFEST_DIR"),
-                "/../arko_framework/arko_agents/tests/fixtures/fake_claude_agent.py"
+                "/tests/fixtures/fake_claude_agent.py"
             )
             .into(),
         ];

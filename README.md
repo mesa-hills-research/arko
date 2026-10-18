@@ -26,11 +26,9 @@ command it installs is `arko`.
 cargo install arko-tui
 ```
 
-To build from source, clone [arko_framework](https://github.com/mesa-hills-research/arko_framework)
-next to this repository, since a checkout builds against it through path dependencies.
+To build from source, clone the repository and install from the checkout.
 
 ```bash
-git clone https://github.com/mesa-hills-research/arko_framework.git
 git clone https://github.com/mesa-hills-research/arko.git
 cd arko
 cargo install --path .
@@ -78,6 +76,7 @@ node --test src/remote/page-tests/core.test.js
 ```
 
 The tests run against a mock model server, so they need no API keys.
+[CONTRIBUTING.md](CONTRIBUTING.md) shows how to build against a local checkout of arko_framework.
 
 ## License
 
