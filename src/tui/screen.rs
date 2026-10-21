@@ -1220,6 +1220,165 @@ mod tests {
         }
     }
 
+    /// Not a test: how long a frame of a long transcript takes while
+    /// Working… or the thinking that streams moves on it, and how much of a
+    /// core the frames take at ten a second. Run it with
+    /// `cargo test --lib animation_cost -- --ignored --nocapture`, and
+    /// with `--release` for a release build's numbers.
+    #[test]
+    #[ignore]
+    #[cfg(unix)]
+    fn animation_cost() {
+        use crate::remote::{CallStatus, Delivery, WorkerState};
+        use crate::tui::app::tests::worker;
+        use std::time::{Duration, Instant};
+        // The CPU time this thread has used.
+        let cpu = || {
+            let mut time = libc::timespec {
+                tv_sec: 0,
+                tv_nsec: 0,
+            };
+            // SAFETY: `time` is a valid timespec for the call to fill.
+            unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut time) };
+            Duration::new(time.tv_sec as u64, time.tv_nsec as u32)
+        };
+        let long = |n: usize, line: &str| vec![line; n].join("\n");
+        let mut items = Vec::new();
+        for turn in 0..300 {
+            let mut user = Item::new(Kind::User, format!("Turn {turn}: fix the parser's tests"));
+            user.delivery = Some(Delivery::Turn);
+            items.push(user);
+            items.push(Item::new(
+                Kind::Thinking,
+                "**Planning**\nRead the tests first.\nThen the parser.",
+            ));
+            items.push(Item::new(
+                Kind::Text,
+                "Reading the **parser** first, then `cargo test`:\n\n```rust\nfn main() {}\n```",
+            ));
+            let mut call = Item::new(Kind::Call, "$ cargo test --lib parser");
+            call.status = Some(CallStatus::Ok);
+            call.outcome = Some("12 passed".into());
+            items.push(call);
+            let mut result = Item::new(Kind::Result, "exit code 0, 1.2 s")
+                .detail(long(5, "test parser::tests::reads ... ok"));
+            result.whole = Some(long(40, "test parser::tests::reads ... ok").into());
+            items.push(result);
+            let mut read = Item::new(Kind::Call, "read src/parser.rs");
+            read.status = Some(CallStatus::Ok);
+            items.push(read);
+            items
+                .push(Item::new(Kind::Notice, "retrying in 2 s").level(crate::remote::Level::Warn));
+            items.push(Item::new(
+                Kind::Text,
+                "The parser skipped blank lines at the end, so the last test failed.",
+            ));
+            items.push(Item::new(
+                Kind::Reply,
+                "Fixed.\n\n- The parser keeps blank lines.\n- All **12** tests pass.",
+            ));
+            items.push(Item::new(Kind::Turn, "3 s · $0.010"));
+        }
+        for n in 0..1000 {
+            let mut call = Item::new(Kind::Call, format!("$ cargo build -p crate{n}")).agent("r1");
+            call.status = Some(CallStatus::Ok);
+            items.push(call);
+        }
+        let mut user = Item::new(Kind::User, "And the docs?");
+        user.delivery = Some(Delivery::Turn);
+        items.push(user);
+        let mut call = Item::new(Kind::Call, "read README.md");
+        call.status = Some(CallStatus::Ok);
+        items.push(call);
+        let now = chrono::Utc::now().timestamp_millis();
+        let mut app = app();
+        for (id, mut item) in (1..).zip(items) {
+            item.id = id;
+            item.at = now;
+            item.turn = Some(id / 10);
+            app.update(Update::Item(item), Activity::default);
+        }
+        app.update(
+            Update::Worker(worker("r1", WorkerState::Running)),
+            Activity::default,
+        );
+        app.set_activity(Activity {
+            working: true,
+            since: Some(now),
+            question: None,
+        });
+        // A terminal of 120 by 40 that the frames' escape codes go to, as
+        // they would to the screen: what changed since the last frame.
+        struct Count(std::rc::Rc<std::cell::Cell<usize>>);
+        impl std::io::Write for Count {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0.set(self.0.get() + bytes.len());
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let bytes = std::rc::Rc::new(std::cell::Cell::new(0));
+        let backend = ratatui::backend::CrosstermBackend::new(Count(bytes.clone()));
+        let viewport = ratatui::Viewport::Fixed(Rect::new(0, 0, 120, 40));
+        let mut terminal =
+            Terminal::with_options(backend, ratatui::TerminalOptions { viewport }).unwrap();
+        // Draws a frame, and returns how many bytes it wrote.
+        let mut frame = |app: &mut App| {
+            terminal.draw(|frame| draw(frame, app)).unwrap();
+            bytes.replace(0)
+        };
+        let mut measure = |app: &mut App, what: &str| {
+            // The first frame fills the lines' caches.
+            frame(app);
+            assert!(app.transcript.drawn.moving, "{what} moves");
+            let mut times: Vec<Duration> = (0..300)
+                .map(|_| {
+                    let start = Instant::now();
+                    frame(app);
+                    start.elapsed()
+                })
+                .collect();
+            times.sort();
+            let mean = times.iter().sum::<Duration>() / times.len() as u32;
+            // Ten frames a second for three seconds, as the screen draws
+            // them: the share of a core they take.
+            let (wall, used) = (Instant::now(), cpu());
+            let mut written = 0;
+            for tick in 1..=30 {
+                written += frame(app);
+                std::thread::sleep(
+                    (wall + Duration::from_millis(100 * tick))
+                        .saturating_duration_since(Instant::now()),
+                );
+            }
+            let share = (cpu() - used).as_secs_f64() / wall.elapsed().as_secs_f64();
+            // Of a frame, the transcript's part.
+            let area = Rect::new(0, 0, 120, 30);
+            let mut buffer = ratatui::buffer::Buffer::empty(area);
+            let (filter, theme) = (app.filter(), app.theme.clone());
+            let start = Instant::now();
+            for _ in 0..300 {
+                app.transcript.draw(&mut buffer, area, &filter, &theme);
+            }
+            let transcript = start.elapsed() / 300;
+            println!(
+                "{what}: a frame {mean:.2?} on average ({transcript:.2?} of it the transcript), {:.2?} at the median, {:.2?} at most, {} bytes to the terminal; {:.1}% of a core at 10 frames a second",
+                times[times.len() / 2],
+                times[times.len() - 1],
+                written / 30,
+                share * 100.0,
+            );
+        };
+        measure(&mut app, "Working… on 4000 items");
+        let mut thinking = Item::new(Kind::Thinking, "**Checking the docs**\nThe README first.");
+        thinking.id = 10_000;
+        thinking.at = now;
+        app.update(Update::Item(thinking), Activity::default);
+        measure(&mut app, "thinking that streams, on 4000 items");
+    }
+
     /// "Working…" shows while the agent works and waits on its model, not
     /// while it asks the user, and the screen is drawn again for its frames
     /// only while it shows.
