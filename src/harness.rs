@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use arko_agents::Tool;
 use arko_agents::builtins::{APPLY_DIFF_TOOL_NAME, ASK_USER_TOOL_NAME, EDIT_FILE_TOOL_NAME};
-use arko_agents::terminal::{TerminalConfig, TerminalManager, TerminalTool};
+use arko_agents::terminal::{MonitorTool, TerminalConfig, TerminalManager, TerminalTool};
 use arko_ai::LLMClient;
 use arko_workflows::notes::Note;
 use arko_workflows::persistence::{EventLog, PersistenceConfig};
@@ -61,13 +61,16 @@ impl Managers {
     }
 
     /// The shell tool, which keeps the command channels of the runs it is
-    /// bound to in `runs`, and the terminal tools.
+    /// bound to in `runs`, and the terminal and monitor tools.
     pub(crate) fn tools(&self, shell: &Shell, runs: Arc<handover::Runs>) -> Vec<Arc<dyn Tool>> {
         let mut tools: Vec<Arc<dyn Tool>> = vec![Arc::new(
             ShellTool::new(self.jobs.clone(), shell.clone(), self.background.clone())
                 .keeping_runs(runs),
         )];
         for tool in TerminalTool::all(self.jobs.clone()) {
+            tools.push(Arc::new(tool));
+        }
+        for tool in MonitorTool::all(self.jobs.clone()) {
             tools.push(Arc::new(tool));
         }
         tools
@@ -168,6 +171,9 @@ pub(crate) fn unoffered(
     if missing.iter().any(|name| index::TOOL_NAMES.contains(name)) {
         parts.push("the search index tools".to_string());
     }
+    if missing.iter().any(|name| MonitorTool::NAMES.contains(name)) {
+        parts.push("monitors (monitor_start)".to_string());
+    }
     let mut servers: Vec<&str> = Vec::new();
     for (server, _) in missing.iter().filter_map(|name| mcp::split_tool_name(name)) {
         if !servers.contains(&server) {
@@ -190,6 +196,7 @@ pub(crate) fn unoffered(
             || crew::LEAD_TOOL_NAMES.contains(&name)
             || crew::WORKER_TOOL_NAMES.contains(&name)
             || agents::FILE_TOOL_NAMES.contains(&name)
+            || MonitorTool::NAMES.contains(&name)
             || name == ASK_USER_TOOL_NAME
             || name == message::MESSAGE_USER
     };
@@ -4422,6 +4429,32 @@ pub(crate) mod tests {
         assert_eq!(
             unoffered(&saved, &[(MAIN, &main), (WORKER, &worker)]).unwrap(),
             "This session started without workers that run in parallel, the file tools, questions to you (ask_user), and answers to you while it works (message_user), so its agents don't get them. A new session does."
+        );
+    }
+
+    /// A session saved before monitors is told it has none.
+    #[test]
+    fn a_session_from_before_monitors_is_told_it_has_none() {
+        let opus = ModelSettings {
+            model: resolve_model("opus").unwrap().id,
+            effort: Effort::High,
+            fast: false,
+            cache_1h: false,
+            handover_at: None,
+        };
+        let settings = AgentSettings::for_test(&opus, &opus);
+        let main = agents::main_config(&settings).unwrap();
+        let mut old = main.clone();
+        old.tool_config
+            .available_tool_names
+            .retain(|name| !MonitorTool::NAMES.contains(&name.as_str()));
+        let saved = SavedSetup {
+            name: WORKFLOW_NAME.into(),
+            configs: [(MAIN.to_string(), old)].into(),
+        };
+        assert_eq!(
+            unoffered(&saved, &[(MAIN, &main)]).unwrap(),
+            "This session started without monitors (monitor_start), so its agents don't get them. A new session does."
         );
     }
 

@@ -741,6 +741,7 @@ impl Engine {
                 &[]
             },
             indexes: &known_indexes,
+            monitors: !one_shot,
             ..AgentSettings::for_session(&settings, &provider_setup)
         };
         let main_config = agents::main_config(&agent_settings)?;
