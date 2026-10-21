@@ -2119,7 +2119,7 @@ impl App {
         } else {
             "idle"
         };
-        format!("Arko · {state} · {}", self.info.workspace)
+        crate::glyphs::render(&format!("Arko · {state} · {}", self.info.workspace)).into_owned()
     }
 }
 

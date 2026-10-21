@@ -89,6 +89,10 @@ pub fn spinner_frames(symbols: Symbols) -> (&'static [&'static str], u64) {
 /// `.env` file), else `basic` in the classic Windows console and `full`
 /// elsewhere.
 pub fn symbols() -> Symbols {
+    #[cfg(test)]
+    if let Some(symbols) = tests::CHOSEN.get() {
+        return symbols;
+    }
     static CHOSEN: OnceLock<Symbols> = OnceLock::new();
     *CHOSEN.get_or_init(|| {
         let setting = credentials::var(SYMBOLS);
@@ -156,8 +160,37 @@ pub fn classic_console() -> bool {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+
+    thread_local! {
+        /// The symbols a test chose for its thread, in place of the
+        /// terminal's.
+        pub(super) static CHOSEN: std::cell::Cell<Option<Symbols>> =
+            const { std::cell::Cell::new(None) };
+    }
+
+    /// Whether `c` is in WGL4, the set of the classic Windows console's
+    /// fonts (Latin-1, the arrows, box drawing, a few shapes, punctuation
+    /// and `≈`, which code page 437 has too).
+    pub(crate) fn wgl4(c: char) -> bool {
+        matches!(c as u32,
+            0x20..=0x7E | 0xA0..=0xFF | 0x2013 | 0x2014 | 0x2022 | 0x2026 | 0x203A | 0x221A
+            | 0x2248 | 0x2190..=0x2195 | 0x2500..=0x257F | 0x2580 | 0x2584 | 0x2588
+            | 0x25A0 | 0x25BA | 0x25CB | 0x25CF)
+    }
+
+    /// Shows `symbols` on this thread until the guard goes.
+    pub(crate) fn choose_symbols(symbols: Symbols) -> impl Drop {
+        struct Chosen;
+        impl Drop for Chosen {
+            fn drop(&mut self) {
+                CHOSEN.set(None);
+            }
+        }
+        CHOSEN.set(Some(symbols));
+        Chosen
+    }
 
     #[test]
     fn the_setting_chooses_and_the_console_decides_otherwise() {
@@ -193,12 +226,6 @@ mod tests {
     /// ones are ASCII.
     #[test]
     fn the_stand_ins_stay_in_their_sets() {
-        let wgl4 = |c: char| {
-            matches!(c as u32,
-                0x20..=0x7E | 0xA0..=0xFF | 0x2013 | 0x2014 | 0x2022 | 0x2026 | 0x203A | 0x221A
-                | 0x2248 | 0x2190..=0x2195 | 0x2500..=0x257F | 0x2580 | 0x2584 | 0x2588
-                | 0x25A0 | 0x25BA | 0x25CB | 0x25CF)
-        };
         for (symbol, basic, ascii) in SYMBOLS_TABLE {
             assert!(basic.chars().all(wgl4), "{symbol}: {basic:?}");
             assert!(ascii.is_ascii(), "{symbol}: {ascii:?}");

@@ -278,12 +278,13 @@ fn draw_list(frame: &mut Frame, app: &mut App, area: Rect, rows: Vec<ListRow>) {
                 right.push(Span::styled(format!("{state:<STATE_WIDTH$}"), style));
                 let time = transcript::run_time(worker, now).map_or_else(
                     || " ".repeat(TIME_WIDTH + 3),
-                    |ms| format!(" · {:>TIME_WIDTH$}", list_time(ms)),
+                    |ms| format!("{} {:>TIME_WIDTH$}", glyphs::render(" ·"), list_time(ms)),
                 );
                 right.push(Span::styled(time, theme.dim()));
                 right.push(Span::styled(
                     format!(
-                        " · {:>CALLS_WIDTH$} tool call{} ",
+                        "{} {:>CALLS_WIDTH$} tool call{} ",
+                        glyphs::render(" ·"),
                         worker.tool_calls,
                         if worker.tool_calls == 1 { " " } else { "s" }
                     ),
@@ -323,7 +324,7 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
     let theme = &app.theme;
     let dot = glyphs::render("●").into_owned();
     let mut left: Vec<Span<'static>> = vec![Span::raw(" ")];
-    let sep = || Span::styled(" · ".to_string(), theme.dim());
+    let sep = || Span::styled(glyphs::render(" · ").into_owned(), theme.dim());
     if let Some(worker) = &app.watching {
         left.push(Span::styled(
             format!("viewing {worker}"),
@@ -1064,6 +1065,318 @@ mod tests {
         let rows = screen(&mut app, 50, 10);
         assert!(!rows.iter().any(|row| row.contains("Tabs or spaces?")));
         assert_eq!(rows[6], " ● asks you");
+    }
+
+    /// With the symbols of the classic Windows console's fonts (`basic`) and
+    /// with plain ASCII (`ascii`), the whole screen is drawn in characters
+    /// those fonts have: the banner, every kind of item, the separators
+    /// between their parts, the status line, the agent list, the docked
+    /// question, a worker's own view and the overlays.
+    #[test]
+    fn every_symbol_on_the_screen_has_its_stand_in() {
+        use crate::glyphs::Symbols;
+        use crate::glyphs::tests::{choose_symbols, wgl4};
+        use crate::remote::{CallStatus, Delivery, Level, Source, WorkerState};
+        use crate::tui::app::tests::{job, worker};
+        use crate::tui::overlay::Overlay;
+        use std::time::Duration;
+        for symbols in [Symbols::Basic, Symbols::Ascii] {
+            let _chosen = choose_symbols(symbols);
+            let mut app = app();
+            app.key_states = crate::tui::keys_menu::tests::states;
+            app.transcript.banner = Some(transcript::Banner {
+                model: "gpt-6-luna (xhigh effort)".into(),
+                workers: "parallel workers".into(),
+                workspace: "/home/someone/project".into(),
+                session: "20261021-101010-abcd".into(),
+                project: Some("AGENTS.md".into()),
+                tools: vec!["1 skill".into(), "2 MCP servers".into()],
+                model_note: None,
+                notes: vec![("Outside access is on.".into(), Some(Level::Warn))],
+            });
+            let mut items = Vec::new();
+            let mut add = |item: Item| items.push(item);
+            let mut user = Item::new(Kind::User, "Fix the parser");
+            user.delivery = Some(Delivery::Turn);
+            user.source = Some(Source::Web);
+            add(user);
+            add(Item::new(Kind::Thinking, "**Plan**\nRead it first."));
+            add(Item::new(Kind::Text, "Reading the parser."));
+            let mut call = Item::new(Kind::Call, "$ cargo test");
+            call.status = Some(CallStatus::Ok);
+            call.outcome = Some("12 passed".into());
+            add(call);
+            let mut result = Item::new(Kind::Result, "exit code 0").detail("running 12 tests");
+            result.call = Some(4);
+            add(result);
+            let mut failed = Item::new(Kind::Call, "read a.rs");
+            failed.status = Some(CallStatus::Failed);
+            failed.outcome = Some("not found".into());
+            add(failed);
+            let mut running = Item::new(Kind::Call, "$ sleep 30");
+            running.status = Some(CallStatus::Running);
+            add(running);
+            add(Item::new(Kind::Notice, "retrying in 2 s").level(Level::Warn));
+            add(Item::new(Kind::Notice, "handed over").level(Level::Info));
+            add(Item::new(Kind::Output, "make: done"));
+            add(Item::new(Kind::Message, "Halfway there."));
+            let mut line = Item::new(Kind::WorkerLine, "Test it");
+            line.worker = Some("r1".into());
+            add(line);
+            let mut call = Item::new(Kind::Call, "cargo test").agent("r1");
+            call.status = Some(CallStatus::Ok);
+            add(call);
+            add(Item::new(Kind::Thinking, "Which test?").agent("r1"));
+            add(Item::new(Kind::Result, "done").agent("r1"));
+            let mut conversation = Item::new(Kind::Conversation, "Conversation 2");
+            conversation.detail = Some("plan 5 h 21%".into());
+            add(conversation);
+            add(Item::new(Kind::Question, "Tabs or spaces?"));
+            add(Item::new(Kind::Reply, "Done."));
+            let mut note = Item::new(Kind::User, "Keep the old name");
+            note.delivery = Some(Delivery::Note);
+            note.source = Some(Source::Web);
+            note.pending = true;
+            add(note);
+            let now = chrono::Utc::now().timestamp_millis();
+            for (id, mut item) in (1..).zip(items) {
+                item.id = id;
+                item.at = now;
+                item.turn = Some(1);
+                app.update(Update::Item(item), Activity::default);
+            }
+            let mut summary = worker("r1", WorkerState::Running);
+            summary.last = Some("cargo test".into());
+            app.update(Update::Worker(summary), Activity::default);
+            app.reading.context_tokens = Some(142_000);
+            app.reading.cost = 3.2;
+            app.set_activity(Activity {
+                working: true,
+                since: None,
+                question: Some(crate::remote::Question {
+                    id: 1,
+                    text: "Tabs or spaces for the new files?".into(),
+                }),
+            });
+
+            let mut wrong = Vec::new();
+            let mut look = |app: &mut App, state: &str| {
+                for row in screen(app, 100, 48) {
+                    let shown = |c: char| match symbols {
+                        Symbols::Ascii => c.is_ascii(),
+                        _ => wgl4(c),
+                    };
+                    if !row.chars().all(shown) {
+                        wrong.push(format!("{symbols:?}, {state}: {row}"));
+                    }
+                }
+            };
+            for view in View::ALL {
+                app.view = view;
+                look(&mut app, view.name());
+            }
+            app.view = View::Full;
+            app.watch(Some("r1".into()));
+            look(&mut app, "the worker's view");
+            app.watch(None);
+            app.overlay = Some(Overlay::Help { scroll: 0 });
+            look(&mut app, "help");
+            app.overlay = Some(Overlay::Settings {
+                row: 0,
+                picker: None,
+            });
+            look(&mut app, "settings");
+            app.overlay = None;
+            app.open_keys("", None);
+            look(&mut app, "keys");
+            app.overlay = None;
+            app.ask_quit(vec![job("sleep 300", Duration::from_secs(150))]);
+            look(&mut app, "quit");
+            app.overlay = None;
+            app.model_needs = |reachable, name| {
+                (!name.starts_with("cc:"))
+                    .then(|| crate::tui::model_picker::needs(reachable, name))
+                    .flatten()
+            };
+            app.set_reading(crate::remote::Reading {
+                models: crate::remote::Models {
+                    main: "gpt-6-luna".into(),
+                    main_effort: "high".into(),
+                    workers: "gpt-6-luna".into(),
+                    workers_effort: "high".into(),
+                    workers_follow: true,
+                    reachable: vec!["openai".into()],
+                    has_workers: true,
+                    ..Default::default()
+                },
+                ..Default::default()
+            });
+            app.open_model(crate::model_command::Target::Main);
+            look(&mut app, "the model picker");
+            app.overlay = None;
+            app.key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE));
+            look(&mut app, "the command menu");
+            assert!(wrong.is_empty(), "{wrong:#?}");
+        }
+    }
+
+    /// Not a test: how long a frame of a long transcript takes while
+    /// Working… or the thinking that streams moves on it, and how much of a
+    /// core the frames take at ten a second. Run it with
+    /// `cargo test --lib animation_cost -- --ignored --nocapture`, and
+    /// with `--release` for a release build's numbers.
+    #[test]
+    #[ignore]
+    #[cfg(unix)]
+    fn animation_cost() {
+        use crate::remote::{CallStatus, Delivery, WorkerState};
+        use crate::tui::app::tests::worker;
+        use std::time::{Duration, Instant};
+        // The CPU time this thread has used.
+        let cpu = || {
+            let mut time = libc::timespec {
+                tv_sec: 0,
+                tv_nsec: 0,
+            };
+            // SAFETY: `time` is a valid timespec for the call to fill.
+            unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut time) };
+            Duration::new(time.tv_sec as u64, time.tv_nsec as u32)
+        };
+        let long = |n: usize, line: &str| vec![line; n].join("\n");
+        let mut items = Vec::new();
+        for turn in 0..300 {
+            let mut user = Item::new(Kind::User, format!("Turn {turn}: fix the parser's tests"));
+            user.delivery = Some(Delivery::Turn);
+            items.push(user);
+            items.push(Item::new(
+                Kind::Thinking,
+                "**Planning**\nRead the tests first.\nThen the parser.",
+            ));
+            items.push(Item::new(
+                Kind::Text,
+                "Reading the **parser** first, then `cargo test`:\n\n```rust\nfn main() {}\n```",
+            ));
+            let mut call = Item::new(Kind::Call, "$ cargo test --lib parser");
+            call.status = Some(CallStatus::Ok);
+            call.outcome = Some("12 passed".into());
+            items.push(call);
+            let mut result = Item::new(Kind::Result, "exit code 0, 1.2 s")
+                .detail(long(5, "test parser::tests::reads ... ok"));
+            result.whole = Some(long(40, "test parser::tests::reads ... ok").into());
+            items.push(result);
+            let mut read = Item::new(Kind::Call, "read src/parser.rs");
+            read.status = Some(CallStatus::Ok);
+            items.push(read);
+            items
+                .push(Item::new(Kind::Notice, "retrying in 2 s").level(crate::remote::Level::Warn));
+            items.push(Item::new(
+                Kind::Text,
+                "The parser skipped blank lines at the end, so the last test failed.",
+            ));
+            items.push(Item::new(
+                Kind::Reply,
+                "Fixed.\n\n- The parser keeps blank lines.\n- All **12** tests pass.",
+            ));
+            items.push(Item::new(Kind::Turn, "3 s · $0.010"));
+        }
+        for n in 0..1000 {
+            let mut call = Item::new(Kind::Call, format!("$ cargo build -p crate{n}")).agent("r1");
+            call.status = Some(CallStatus::Ok);
+            items.push(call);
+        }
+        let mut user = Item::new(Kind::User, "And the docs?");
+        user.delivery = Some(Delivery::Turn);
+        items.push(user);
+        let mut call = Item::new(Kind::Call, "read README.md");
+        call.status = Some(CallStatus::Ok);
+        items.push(call);
+        let now = chrono::Utc::now().timestamp_millis();
+        let mut app = app();
+        for (id, mut item) in (1..).zip(items) {
+            item.id = id;
+            item.at = now;
+            item.turn = Some(id / 10);
+            app.update(Update::Item(item), Activity::default);
+        }
+        app.update(
+            Update::Worker(worker("r1", WorkerState::Running)),
+            Activity::default,
+        );
+        app.set_activity(Activity {
+            working: true,
+            since: Some(now),
+            question: None,
+        });
+        // A terminal of 120 by 40 that the frames' escape codes go to, as
+        // they would to the screen: what changed since the last frame.
+        struct Count(std::rc::Rc<std::cell::Cell<usize>>);
+        impl std::io::Write for Count {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0.set(self.0.get() + bytes.len());
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let bytes = std::rc::Rc::new(std::cell::Cell::new(0));
+        let backend = ratatui::backend::CrosstermBackend::new(Count(bytes.clone()));
+        let viewport = ratatui::Viewport::Fixed(Rect::new(0, 0, 120, 40));
+        let mut terminal =
+            Terminal::with_options(backend, ratatui::TerminalOptions { viewport }).unwrap();
+        // Draws a frame, and returns how many bytes it wrote.
+        let mut frame = |app: &mut App| {
+            terminal.draw(|frame| draw(frame, app)).unwrap();
+            bytes.replace(0)
+        };
+        let mut measure = |app: &mut App, what: &str| {
+            // The first frame fills the lines' caches.
+            frame(app);
+            assert!(app.transcript.drawn.moving, "{what} moves");
+            let mut times: Vec<Duration> = (0..300)
+                .map(|_| {
+                    let start = Instant::now();
+                    frame(app);
+                    start.elapsed()
+                })
+                .collect();
+            times.sort();
+            let mean = times.iter().sum::<Duration>() / times.len() as u32;
+            // Ten frames a second for three seconds, as the screen draws
+            // them: the share of a core they take.
+            let (wall, used) = (Instant::now(), cpu());
+            let mut written = 0;
+            for tick in 1..=30 {
+                written += frame(app);
+                std::thread::sleep(
+                    (wall + Duration::from_millis(100 * tick))
+                        .saturating_duration_since(Instant::now()),
+                );
+            }
+            let share = (cpu() - used).as_secs_f64() / wall.elapsed().as_secs_f64();
+            // Of a frame, the transcript's part.
+            let area = Rect::new(0, 0, 120, 30);
+            let mut buffer = ratatui::buffer::Buffer::empty(area);
+            let (filter, theme) = (app.filter(), app.theme.clone());
+            let start = Instant::now();
+            for _ in 0..300 {
+                app.transcript.draw(&mut buffer, area, &filter, &theme);
+            }
+            let transcript = start.elapsed() / 300;
+            println!(
+                "{what}: a frame {mean:.2?} on average ({transcript:.2?} of it the transcript), {:.2?} at the median, {:.2?} at most, {} bytes to the terminal; {:.1}% of a core at 10 frames a second",
+                times[times.len() / 2],
+                times[times.len() - 1],
+                written / 30,
+                share * 100.0,
+            );
+        };
+        measure(&mut app, "Working… on 4000 items");
+        let mut thinking = Item::new(Kind::Thinking, "**Checking the docs**\nThe README first.");
+        thinking.id = 10_000;
+        thinking.at = now;
+        app.update(Update::Item(thinking), Activity::default);
+        measure(&mut app, "thinking that streams, on 4000 items");
     }
 
     /// "Working…" shows while the agent works and waits on its model, not
