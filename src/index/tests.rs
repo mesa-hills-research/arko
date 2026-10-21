@@ -1859,3 +1859,48 @@ fn indexes_of_other_directories_are_found_by_any_path_in_them() {
     });
     fixture.shutdown(&indexes);
 }
+
+/// index_create and index_manage can move to the background, since a build
+/// or an embedding run the call waits for takes long. The others can't.
+#[test]
+fn the_tools_that_can_run_long_can_move_to_the_background() {
+    let fixture = Fixture::new();
+    let indexes = {
+        let _guard = fixture.runtime.enter();
+        Indexes::open(&fixture.data(), &fixture.base, None, true).unwrap()
+    };
+    for tool in indexes.tools() {
+        let expected = match tool.name().as_str() {
+            "index_create" | "index_manage" => arko_agents::ToolBackground::Detach,
+            _ => arko_agents::ToolBackground::Never,
+        };
+        assert_eq!(tool.background_mode(), expected, "{}", tool.name());
+    }
+    fixture.shutdown(&indexes);
+}
+
+/// A call's stop reaches its embedding run, which goes on on a thread of its
+/// own, also once the call is gone. Once the work ends, a later stop doesn't.
+#[tokio::test]
+async fn a_calls_stop_reaches_its_embedding_run() {
+    let source = arko_agents::StopSource::new();
+    let (embedding, working) = tools::embedding_stop(&source.signal());
+    source.stop("The job was stopped.");
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while !embedding.is_stopped() {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("the embedding hears of the stop");
+    assert_eq!(embedding.reason().as_deref(), Some("The job was stopped."));
+    drop(working);
+
+    let source = arko_agents::StopSource::new();
+    let (embedding, working) = tools::embedding_stop(&source.signal());
+    drop(working);
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    source.stop("Too late.");
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    assert!(!embedding.is_stopped());
+}

@@ -1863,6 +1863,16 @@ impl Indexes {
         self: &Arc<Self>,
         args: &CreateArgs,
     ) -> Result<CreateOutcome, String> {
+        self.create_stopping_with(args, None)
+    }
+
+    /// [`create_blocking`](Self::create_blocking), whose embedding, when it
+    /// waits for it, stops when `stop` fires (the call was stopped).
+    pub(crate) fn create_stopping_with(
+        self: &Arc<Self>,
+        args: &CreateArgs,
+        stop: Option<Arc<StopSignal>>,
+    ) -> Result<CreateOutcome, String> {
         let root =
             store::validate_root(&args.path, &args.cwd, self.home.as_deref(), &self.data_root)?;
         let rules = Rules::with(args.include.clone(), args.exclude.clone());
@@ -2014,7 +2024,7 @@ impl Indexes {
             if args.defer_embed {
                 EmbedPlan::Deferred
             } else if args.wait {
-                EmbedPlan::Done(self.run_embed(&entry, manifest.max_embed_tokens, true, None, None))
+                EmbedPlan::Done(self.run_embed(&entry, manifest.max_embed_tokens, true, None, stop))
             } else if self.request_embed(&entry, None, true) {
                 EmbedPlan::Background
             } else {
@@ -2052,6 +2062,18 @@ impl Indexes {
         name: &str,
         action: &Action,
         cwd: &Path,
+    ) -> Result<String, String> {
+        self.manage_stopping_with(name, action, cwd, None)
+    }
+
+    /// [`manage_blocking`](Self::manage_blocking), whose embedding, when it
+    /// waits for it, stops when `stop` fires (the call was stopped).
+    pub(crate) fn manage_stopping_with(
+        self: &Arc<Self>,
+        name: &str,
+        action: &Action,
+        cwd: &Path,
+        stop: Option<Arc<StopSignal>>,
     ) -> Result<String, String> {
         // Removing takes an index's own root, not a path in it.
         let found = self.resolve_in(name, cwd, !matches!(action, Action::Remove))?;
@@ -2098,7 +2120,7 @@ impl Indexes {
                 }
                 let cap = max_tokens.unwrap_or(manifest.max_embed_tokens);
                 if *wait {
-                    let summary = self.run_embed(&entry, cap, true, None, None)?;
+                    let summary = self.run_embed(&entry, cap, true, None, stop)?;
                     lines.push(format!("{name} {}.", summary.line()));
                 } else if self.request_embed(&entry, Some(cap), true) {
                     lines.push(format!(

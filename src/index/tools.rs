@@ -10,6 +10,7 @@ use arko_agents::{
     TaskContext, Tool, ToolDefinition, ToolError, ToolParameterDefinition, ToolParameterType,
     ToolRecovery, ToolTypeDetails,
 };
+use arko_index::dense::StopSignal;
 use async_trait::async_trait;
 use serde_json::Value;
 
@@ -225,6 +226,31 @@ fn definition(
 }
 
 /// Runs blocking index work off the async threads.
+/// The stop signal of an index's embedding run, fired when the call's
+/// `stop` fires (the turn was stopped, or the job a moved call runs in).
+/// The run goes on on a blocking thread, which a dropped call doesn't stop,
+/// so the forwarding lasts until the work drops the sender returned with
+/// it, whether the call is still there or not.
+pub(crate) fn embedding_stop(
+    stop: &arko_agents::stop::StopSignal,
+) -> (Arc<StopSignal>, tokio::sync::oneshot::Sender<()>) {
+    let embedding = Arc::new(StopSignal::new());
+    let (working, done) = tokio::sync::oneshot::channel::<()>();
+    tokio::spawn({
+        let (stop, embedding) = (stop.clone(), embedding.clone());
+        async move {
+            tokio::select! {
+                biased;
+                () = stop.stopping() => {
+                    embedding.stop(stop.reason().unwrap_or_else(|| "the call was stopped".into()));
+                }
+                _ = done => {}
+            }
+        }
+    });
+    (embedding, working)
+}
+
 async fn blocking<T: Send + 'static>(
     work: impl FnOnce() -> Result<T, String> + Send + 'static,
 ) -> Result<T, ToolError> {
@@ -993,8 +1019,19 @@ impl Tool for CreateTool {
     ) -> Result<String, ToolError> {
         let args = parse_create(&params, context.current_working_directory)?;
         let indexes = Arc::clone(&self.indexes);
-        let outcome = blocking(move || indexes.create_blocking(&args)).await?;
+        let (stop, working) = embedding_stop(&context.stop);
+        let outcome = blocking(move || {
+            let _working = working;
+            indexes.create_stopping_with(&args, Some(stop))
+        })
+        .await?;
         Ok(format_create(&outcome))
+    }
+
+    /// With `wait`, a build and its embedding can take long. The call then
+    /// moves to the background, and its stop stops the embedding.
+    fn background_mode(&self) -> arko_agents::ToolBackground {
+        arko_agents::ToolBackground::Detach
     }
 }
 
@@ -1048,7 +1085,9 @@ impl Tool for ManageTool {
         let index = str_param(&params, "index");
         let cwd = context.current_working_directory.to_path_buf();
         let indexes = Arc::clone(&self.indexes);
+        let (stop, working) = embedding_stop(&context.stop);
         blocking(move || {
+            let _working = working;
             let name = match index {
                 Some(index) => index,
                 None => {
@@ -1066,8 +1105,14 @@ impl Tool for ManageTool {
                     targets[0].layout.id()
                 }
             };
-            indexes.manage_blocking(&name, &action, &cwd)
+            indexes.manage_stopping_with(&name, &action, &cwd, Some(stop))
         })
         .await
+    }
+
+    /// A rebuild, or an embedding run it waits for, can take long. The call
+    /// then moves to the background, and its stop stops the embedding.
+    fn background_mode(&self) -> arko_agents::ToolBackground {
+        arko_agents::ToolBackground::Detach
     }
 }
