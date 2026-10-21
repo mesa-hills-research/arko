@@ -1063,13 +1063,16 @@ async fn an_update_that_came_too_late_is_found_by_its_job() {
 
 /// A monitor's news that waits in the task after the last turn wakes the
 /// agent for an alert, and for a warning only while the user wrote lately.
-/// Its other news waits for the next turn.
+/// Its other news waits for the next turn. A warning names its monitor,
+/// when it still runs, so the turn can say how long it has left.
+#[cfg(unix)]
 #[tokio::test]
 async fn a_late_alert_wakes_and_a_late_warning_wakes_while_the_user_is_here() {
     let temp = tempfile::tempdir().unwrap();
     let server =
         ModelServer::start(Arc::new(|_, _| Box::pin(async { complete("m1", "Done.") }))).await;
-    let (harness, _inputs, _sender) = harness(temp.path(), server.client(), true);
+    let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
+    let managers = equip(&mut harness, &mut inputs, 0);
     let mut task = arko_agents::Task::new(
         harness.main_config.clone(),
         "Watch it.".into(),
@@ -1077,7 +1080,16 @@ async fn a_late_alert_wakes_and_a_late_warning_wakes_while_the_user_is_here() {
         None,
     );
     let owner = task.id;
-    let id = uuid::Uuid::new_v4();
+    let id = managers
+        .jobs
+        .start_monitor(
+            &arko_agents::TaskContext::new(owner, MAIN, "", &temp.path().join("work")),
+            "sleep 60",
+            arko_agents::terminal::MonitorOptions::lines(Some("ERROR".into())),
+        )
+        .await
+        .unwrap()
+        .job_id;
     let alert = format!(
         "Monitor alert. Job {id} (`dev server`, lines that match `ERROR`) printed 1 matching line since 10:41:05 UTC.\n  ERROR boom\nIt ends in 22 min."
     );
@@ -1089,15 +1101,19 @@ async fn a_late_alert_wakes_and_a_late_warning_wakes_while_the_user_is_here() {
     );
     for away in [false, true] {
         task.pending_context_injections = vec![ended.clone()];
-        assert!(alert_waits(&task, owner, !away).is_none());
+        assert!(alert_waits(&task, owner, None, !away).is_none());
         task.pending_context_injections = vec![warning.clone()];
-        let woken = alert_waits(&task, owner, !away);
+        let woken = alert_waits(&task, owner, None, !away);
         assert_eq!(woken.is_some(), !away);
         assert!(woken.is_none_or(|alert| alert.ends_soon && alert.late));
         task.pending_context_injections = vec![warning.clone(), alert.clone(), ended.clone()];
-        let woken = alert_waits(&task, owner, !away).expect("an alert wakes");
+        let woken = alert_waits(&task, owner, None, !away).expect("an alert wakes");
         assert!(!woken.ends_soon && woken.late && woken.owner == owner);
     }
+    task.pending_context_injections = vec![warning.clone()];
+    let woken = alert_waits(&task, owner, Some(&managers.jobs), true).unwrap();
+    assert_eq!(woken.job, Some(id));
+    managers.shutdown().await;
 }
 
 /// After Arko quit with jobs of the main agent's running, the user agreeing
@@ -1670,7 +1686,7 @@ async fn an_alert_in_the_last_request_wakes_the_agent_after_its_monitor_ended() 
 
 /// A monitor's warning before it ends that would come after the idle
 /// agent's prompt cache expires comes just before it instead, and starts a
-/// turn that says the monitor is about to end and how long it has left.
+/// turn that says how long the monitor has left.
 #[cfg(unix)]
 #[tokio::test]
 async fn a_monitors_warning_wakes_the_agent_before_its_cache_expires() {
@@ -1680,7 +1696,7 @@ async fn a_monitors_warning_wakes_the_agent_before_its_cache_expires() {
         move |_, body: String| {
             bodies.lock().unwrap().push(body.clone());
             Box::pin(async move {
-                if body.contains("A monitor of yours is about to end") {
+                if body.contains("A monitor of yours ends in ") {
                     complete("m3", "Kept it.")
                 } else if body.contains("call_m1") {
                     complete("m2", "Watching the server.")
@@ -1723,13 +1739,13 @@ async fn a_monitors_warning_wakes_the_agent_before_its_cache_expires() {
     assert_eq!(summary(&harness), "Kept it.");
     let woken = bodies.lock().unwrap()[2].clone();
     assert!(
-        woken.contains("A monitor of yours is about to end. The notice follows.")
+        woken.contains("A monitor of yours ends in 10 min. Its notice follows and asks whether to keep it.")
             && woken.contains(") ends in 10 min, at "),
         "{woken}"
     );
     assert!(
         shown(&harness.feed).iter().any(|(kind, text, _)| kind == "notice"
-            && text.contains("a monitor is about to end, and the agent is asked whether to keep it")),
+            && text.contains("a monitor ends in 10 min, and the agent is asked whether to keep it")),
         "{:?}",
         shown(&harness.feed)
     );

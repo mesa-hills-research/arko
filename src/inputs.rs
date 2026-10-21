@@ -46,6 +46,8 @@ pub(crate) struct Inputs {
 pub(crate) struct Alert {
     /// Whose monitor it is.
     pub(crate) owner: uuid::Uuid,
+    /// The monitor, when known.
+    pub(crate) job: Option<uuid::Uuid>,
     /// The monitor ends soon (else it alerted).
     pub(crate) ends_soon: bool,
     /// It came during the agent's last request, and its task holds it.
@@ -56,6 +58,7 @@ impl Alert {
     fn of(alert: &arko_agents::terminal::JobAlert) -> Self {
         Self {
             owner: alert.owner,
+            job: Some(alert.job_id),
             ends_soon: matches!(alert.kind, arko_agents::terminal::AlertKind::EndsSoon),
             late: false,
         }
@@ -255,20 +258,23 @@ pub(crate) fn waits_with(
 /// framework says which notes should wake the agent (`note_wakes`). An
 /// alert does, also of a monitor that ended since, and a warning before a
 /// monitor ends does while `warnings_wake` (the user wrote lately). The
-/// monitors' other news (one ended) goes with the next turn.
+/// monitors' other news (one ended) goes with the next turn. A warning
+/// names its monitor among those `jobs` runs, to say how long it has left.
 pub(crate) fn alert_waits(
     task: &arko_agents::Task,
     owner: uuid::Uuid,
+    jobs: Option<&arko_agents::terminal::TerminalManager>,
     warnings_wake: bool,
 ) -> Option<Alert> {
-    use arko_agents::terminal::{AlertKind, note_wakes};
-    let mut warned = false;
+    use arko_agents::terminal::{AlertKind, JobKind, note_wakes};
+    let mut warning = None;
     for note in &task.pending_context_injections {
         match note_wakes(note) {
-            Some(AlertKind::EndsSoon) => warned = true,
+            Some(AlertKind::EndsSoon) => warning = warning.or(Some(note.as_str())),
             Some(_) => {
                 return Some(Alert {
                     owner,
+                    job: None,
                     ends_soon: false,
                     late: true,
                 });
@@ -276,8 +282,20 @@ pub(crate) fn alert_waits(
             None => {}
         }
     }
-    (warned && warnings_wake).then_some(Alert {
+    let warning = warning.filter(|_| warnings_wake)?;
+    let job = jobs.and_then(|jobs| {
+        jobs.jobs()
+            .into_iter()
+            .find(|job| {
+                job.owner == owner
+                    && matches!(job.kind, JobKind::Monitor(_))
+                    && warning.contains(&job.job_id.to_string())
+            })
+            .map(|job| job.job_id)
+    });
+    Some(Alert {
         owner,
+        job,
         ends_soon: true,
         late: true,
     })

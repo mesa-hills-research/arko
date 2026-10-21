@@ -92,16 +92,24 @@ fn monitor_about(info: &arko_agents::terminal::MonitorInfo) -> String {
         1 => parts.push("1 alert".into()),
         count => parts.push(format!("{count} alerts")),
     }
-    let left = info
-        .expires_at
-        .duration_since(std::time::SystemTime::now())
-        .unwrap_or_default();
-    parts.push(if left < Duration::from_secs(60) {
-        "ends in less than a minute".to_string()
-    } else {
-        format!("ends in {} min", (left.as_secs() + 30) / 60)
+    parts.push(match minutes_left(info.expires_at) {
+        0 => "ends in less than a minute".to_string(),
+        minutes => format!("ends in {minutes} min"),
     });
     parts.join(" · ")
+}
+
+/// The minutes from now to `expires_at`, to the nearest: 0 for less than
+/// one.
+fn minutes_left(expires_at: std::time::SystemTime) -> u64 {
+    let left = expires_at
+        .duration_since(std::time::SystemTime::now())
+        .unwrap_or_default();
+    if left < Duration::from_secs(60) {
+        0
+    } else {
+        (left.as_secs() + 30) / 60
+    }
 }
 
 /// When the main agent's prompt cache expires: its latest request, or the
@@ -281,9 +289,9 @@ pub(crate) enum Prompt {
     /// What the user typed during the last turn, which the agent finished
     /// before it read, without a new message.
     Unread,
-    /// A monitor of the agent's alerted, or (`ends_soon`) is about to end,
-    /// without a message from the user: its news follows.
-    Monitor { ends_soon: bool },
+    /// A monitor of the agent's alerted, or ends soon (the opening says
+    /// which), without a message from the user: its news follows.
+    Monitor(Opening),
     /// A turn Arko stopped in the middle of goes on, without a message.
     Recover,
 }
@@ -295,8 +303,7 @@ impl Prompt {
         match self {
             Prompt::News => Some(Opening::News),
             Prompt::Jobs => Some(Opening::Job),
-            Prompt::Monitor { ends_soon: false } => Some(Opening::Alert),
-            Prompt::Monitor { ends_soon: true } => Some(Opening::EndsSoon),
+            Prompt::Monitor(opening) => Some(*opening),
             Prompt::User(_) | Prompt::Unread | Prompt::Recover => None,
         }
     }
@@ -3354,8 +3361,12 @@ impl Harness {
                     .into_iter()
                     .find(|job| waits_with(&result.task, job, jobs.as_deref()));
                 // So does a monitor's news.
-                input.late_alert =
-                    alert_waits(&result.task, result.agent_run_id, self.warnings_wake());
+                input.late_alert = alert_waits(
+                    &result.task,
+                    result.agent_run_id,
+                    jobs.as_deref(),
+                    self.warnings_wake(),
+                );
                 self.conversation = Conversation::Answered(result);
                 self.track_conversations();
                 self.retitle(retitle);
@@ -3518,15 +3529,35 @@ impl Harness {
         // Other alerts go with it, and the job updates the task holds.
         input.drain_alerts();
         input.late = None;
-        let prompt = Prompt::Monitor {
-            ends_soon: alert.ends_soon,
-        };
+        // A warning says how long its monitor has left.
+        let prompt = Prompt::Monitor(if alert.ends_soon {
+            Opening::EndsSoon(alert.job.and_then(|job| self.monitor_minutes_left(job)))
+        } else {
+            Opening::Alert
+        });
         match self.turn(prompt, input).await {
             TurnEnd::Answered => News::Done,
             TurnEnd::Exit => News::Exit,
             TurnEnd::Stopped => News::Stopped,
             TurnEnd::Failed => News::Failed,
         }
+    }
+
+    /// How many minutes monitor `job` has left (0 for less than one), while
+    /// it runs.
+    fn monitor_minutes_left(&self, job: uuid::Uuid) -> Option<u64> {
+        let info = self
+            .background
+            .manager()?
+            .jobs()
+            .into_iter()
+            .find_map(|info| match info.kind {
+                arko_agents::terminal::JobKind::Monitor(monitor) if info.job_id == job => {
+                    Some(monitor)
+                }
+                _ => None,
+            })?;
+        Some(minutes_left(info.expires_at))
     }
 
     /// The main agent's run, once its conversation started.
@@ -3874,7 +3905,7 @@ impl Harness {
         let message = match prompt {
             Prompt::Recover => return String::new(),
             Prompt::User(message) => Some(message),
-            Prompt::News | Prompt::Jobs | Prompt::Unread | Prompt::Monitor { .. } => None,
+            Prompt::News | Prompt::Jobs | Prompt::Unread | Prompt::Monitor(_) => None,
         };
         let mut parts = Vec::new();
         // (A conversation cut back to its first message starts over.)

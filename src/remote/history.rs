@@ -758,7 +758,7 @@ mod tests {
             Message::new_assistant("It logs errors."),
             Message::new_user(&format!(
                 "# Session capabilities\n\nNo images.\n\n{}",
-                Opening::EndsSoon.text()
+                Opening::EndsSoon(Some(25)).text()
             )),
             Message::new_assistant("Kept it."),
             Message::new_user(&Opening::Job.text()),
@@ -788,7 +788,7 @@ mod tests {
             [
                 (Kind::User, "Watch it.".to_string(), Some(1)),
                 notice(Opening::Alert, 2),
-                notice(Opening::EndsSoon, 3),
+                notice(Opening::EndsSoon(Some(25)), 3),
                 notice(Opening::Job, 4),
                 notice(Opening::News, 5),
                 (Kind::User, "hello\n\nthere".to_string(), Some(6)),
