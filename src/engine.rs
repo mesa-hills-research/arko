@@ -889,6 +889,7 @@ impl Engine {
             handover,
             background: managers.background.clone(),
             interrupted_told: false,
+            user_active_at: std::time::SystemTime::now(),
         };
         // A chat has no project.
         if !chat {
@@ -921,6 +922,9 @@ impl Engine {
             // With -p, Arko exits when the agent finishes, jobs or not.
             finished: (!one_shot).then(|| managers.jobs.subscribe_finished()),
             late: None,
+            // With -p, monitors wake no one (the agents have none).
+            alerts: (!one_shot).then(|| managers.jobs.subscribe_alerts()),
+            late_alert: None,
         };
         let (quit_popup, quit_asks) = mpsc::unbounded_channel();
         let seam = Seam {

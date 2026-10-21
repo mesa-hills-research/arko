@@ -17,7 +17,7 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::agents::{MAIN, NO_LIMIT, WORKER};
 use crate::crew::Crew;
-use crate::inputs::{Asker, Event, Inputs, unread_notes, waits_with};
+use crate::inputs::{Alert, Asker, Event, Inputs, alert_waits, unread_notes, waits_with};
 use crate::remote::{Action, Delivery, Level, REFRESH_MESSAGE, Source};
 use crate::session::{Mode, Session, Settings};
 use crate::shell::{Shell, ShellTool};
@@ -246,6 +246,9 @@ pub(crate) enum Prompt {
     /// What the user typed during the last turn, which the agent finished
     /// before it read, without a new message.
     Unread,
+    /// A monitor of the agent's alerted, or (`ends_soon`) is about to end,
+    /// without a message from the user: its news follows.
+    Monitor { ends_soon: bool },
     /// A turn Arko stopped in the middle of goes on, without a message.
     Recover,
 }
@@ -389,6 +392,10 @@ pub(crate) struct Harness {
     /// The main agent was told which of its background jobs Arko's last
     /// stop ended (or none were): it is, once per session.
     pub(crate) interrupted_told: bool,
+    /// When the user last wrote (a message, a note, an answer, a command),
+    /// or the session opened: monitors' warnings wake the agent only for a
+    /// while after it.
+    pub(crate) user_active_at: std::time::SystemTime,
 }
 
 impl Harness {
@@ -890,6 +897,12 @@ impl Harness {
                     }
                     continue;
                 }
+                Event::Alert(alert) => {
+                    if let News::Exit = self.deliver_alert(alert, input).await {
+                        break;
+                    }
+                    continue;
+                }
                 Event::Input(Some(Input::Background(agent))) => {
                     self.move_to_background(&agent);
                     continue;
@@ -992,6 +1005,7 @@ impl Harness {
             if text.is_empty() && self.pending_images.is_empty() {
                 continue;
             }
+            self.user_present();
             if let Some(command) = command(text) {
                 // (Images go with messages only.)
                 self.pending_images.clear();
@@ -2059,6 +2073,7 @@ impl Harness {
     ) {
         match answering.take() {
             Some((id, answer)) if id == question => {
+                self.user_present();
                 if source == Source::Web {
                     self.echo_web(text);
                 }
@@ -2945,6 +2960,13 @@ impl Harness {
             && matches!(&self.conversation, Conversation::Stopped(run) if run.restart != Restart::Recover);
         let news_turn = matches!(prompt, Prompt::News);
         let jobs_turn = matches!(prompt, Prompt::Jobs);
+        let monitor_turn = match prompt {
+            Prompt::Monitor { ends_soon } => Some(ends_soon),
+            _ => None,
+        };
+        if matches!(prompt, Prompt::User(_)) {
+            self.user_present();
+        }
         let words = match &prompt {
             Prompt::User(text) => Some(text.clone()),
             _ => None,
@@ -2988,6 +3010,17 @@ impl Harness {
                 Level::Info,
                 "  ⇠ a background job finished, and its update goes to the agent",
             );
+        }
+        match monitor_turn {
+            Some(false) => self.say(
+                Level::Info,
+                "  ⇠ a monitor alerted, and its alert goes to the agent",
+            ),
+            Some(true) => self.say(
+                Level::Info,
+                "  ⇠ a monitor is about to end, and the agent is asked whether to keep it",
+            ),
+            None => {}
         }
         if resumes {
             self.say(
@@ -3071,7 +3104,7 @@ impl Harness {
                             }
                             continue;
                         }
-                        Event::Woken | Event::Finished(_) => continue,
+                        Event::Woken | Event::Finished(_) | Event::Alert(_) => continue,
                         Event::Input(Some(Input::Background(agent))) => {
                             self.move_to_background(&agent);
                             continue;
@@ -3132,6 +3165,7 @@ impl Harness {
                     if text.is_empty() && images.is_empty() {
                         continue;
                     }
+                    self.user_present();
                     if let Some(command) = command(&text) {
                         if self.refused(command, source) {
                             continue;
@@ -3226,6 +3260,13 @@ impl Harness {
                 input.late = finished
                     .into_iter()
                     .find(|job| waits_with(&result.task, job, jobs.as_deref()));
+                // So does a monitor's news.
+                input.late_alert = alert_waits(
+                    &result.task,
+                    result.agent_run_id,
+                    jobs.as_deref(),
+                    self.warnings_wake(),
+                );
                 self.conversation = Conversation::Answered(result);
                 self.track_conversations();
                 self.retitle(retitle);
@@ -3332,14 +3373,83 @@ impl Harness {
             );
             return News::Waiting;
         }
-        // Others that finished meanwhile go with it.
+        // Others that finished meanwhile go with it, and the monitors' news
+        // the task holds.
         input.drain_finished();
+        input.late_alert = None;
         match self.turn(Prompt::Jobs, input).await {
             TurnEnd::Answered => News::Done,
             TurnEnd::Exit => News::Exit,
             TurnEnd::Stopped => News::Stopped,
             TurnEnd::Failed => News::Failed,
         }
+    }
+
+    /// While the main agent's conversation waits for a message, a monitor of
+    /// its that alerted, or is about to end, starts a turn of it: the
+    /// monitor's news reaches the agent as the turn starts. (News that comes
+    /// while the agent works reaches it as a note.) An alert whose news a
+    /// turn that started meanwhile took starts none.
+    pub(crate) async fn deliver_alert(&mut self, alert: Alert, input: &mut Inputs) -> News {
+        let run = match &self.conversation {
+            Conversation::New => return News::Done,
+            Conversation::Answered(result) => result.agent_run_id,
+            Conversation::Stopped(run) => run.result.agent_run_id,
+        };
+        if alert.owner != run {
+            return News::Done;
+        }
+        if !alert.late
+            && !self
+                .background
+                .manager()
+                .is_some_and(|jobs| jobs.has_news(run))
+        {
+            return News::Done;
+        }
+        if !matches!(self.conversation, Conversation::Answered(_)) {
+            self.say(
+                Level::Info,
+                if alert.ends_soon {
+                    "  (a monitor is about to end, and its notice goes with your next message)"
+                } else {
+                    "  (a monitor alerted, and its alert goes with your next message)"
+                },
+            );
+            return News::Waiting;
+        }
+        // Other alerts go with it, and the job updates the task holds.
+        input.drain_alerts();
+        input.late = None;
+        let prompt = Prompt::Monitor {
+            ends_soon: alert.ends_soon,
+        };
+        match self.turn(prompt, input).await {
+            TurnEnd::Answered => News::Done,
+            TurnEnd::Exit => News::Exit,
+            TurnEnd::Stopped => News::Stopped,
+            TurnEnd::Failed => News::Failed,
+        }
+    }
+
+    /// The user wrote just now: the monitors' warnings go on waking the
+    /// agent for a while.
+    pub(crate) fn user_present(&mut self) {
+        self.user_active_at = std::time::SystemTime::now();
+        if let Some(jobs) = self.background.manager() {
+            jobs.set_user_active_at(self.user_active_at);
+        }
+    }
+
+    /// Whether a monitor's warning wakes the agent now: the user wrote within
+    /// the time warnings wake it for.
+    pub(crate) fn warnings_wake(&self) -> bool {
+        let within = self.background.manager().map_or(
+            Some(arko_agents::terminal::DEFAULT_WARNINGS_WAKE_WITHIN),
+            |jobs| jobs.warning_wakes_within(),
+        );
+        let since = self.user_active_at.elapsed().unwrap_or_default();
+        within.is_none_or(|within| since < within)
     }
 
     /// Ctrl+B: moves the calls `agent` runs (the main agent, or a worker by
@@ -3609,6 +3719,11 @@ impl Harness {
                         return TurnEnd::Exit;
                     }
                 }
+                Event::Alert(alert) => {
+                    if let News::Exit = self.deliver_alert(alert, input).await {
+                        return TurnEnd::Exit;
+                    }
+                }
                 Event::Question(question) => drop(question),
                 Event::Request(request) => {
                     self.only_workers = true;
@@ -3645,10 +3760,14 @@ impl Harness {
     /// Recovery keeps the existing prompt.
     pub(crate) fn compose(&mut self, prompt: Prompt) -> String {
         let jobs = matches!(prompt, Prompt::Jobs);
+        let monitor = match prompt {
+            Prompt::Monitor { ends_soon } => Some(ends_soon),
+            _ => None,
+        };
         let message = match prompt {
             Prompt::Recover => return String::new(),
             Prompt::User(message) => Some(message),
-            Prompt::News | Prompt::Jobs | Prompt::Unread => None,
+            Prompt::News | Prompt::Jobs | Prompt::Unread | Prompt::Monitor { .. } => None,
         };
         let mut parts = Vec::new();
         // (A conversation cut back to its first message starts over.)
@@ -3708,6 +3827,11 @@ impl Harness {
         }
         if jobs {
             parts.push("A background job of yours finished after your last turn ended. Its update follows. (Arko started this turn for it. The user hasn't written.)".to_string());
+        }
+        match monitor {
+            Some(false) => parts.push("A monitor of yours alerted after your last turn ended. The alert follows. (Arko started this turn for it. The user hasn't written.)".to_string()),
+            Some(true) => parts.push("A monitor of yours is about to end. The notice follows. (Arko started this turn for it. The user hasn't written.)".to_string()),
+            None => {}
         }
         match message {
             Some(message) if parts.is_empty() => message,
@@ -4857,6 +4981,7 @@ pub(crate) mod tests {
             handover,
             background,
             interrupted_told: false,
+            user_active_at: std::time::SystemTime::now(),
         };
         harness.open(false).unwrap();
         let inputs = Inputs {
@@ -4868,6 +4993,8 @@ pub(crate) mod tests {
             requests: mpsc::unbounded_channel().1,
             finished: None,
             late: None,
+            alerts: None,
+            late_alert: None,
         };
         (harness, inputs, input_sender)
     }

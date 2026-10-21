@@ -22,7 +22,29 @@ fn equip(harness: &mut Harness, inputs: &mut Inputs, after: u64) -> Managers {
     harness.background = managers.background.clone();
     harness.open(false).unwrap();
     inputs.finished = Some(managers.jobs.subscribe_finished());
+    inputs.alerts = Some(managers.jobs.subscribe_alerts());
     managers
+}
+
+/// Monitor limits that send news soon: notes `interval` apart at least,
+/// news gathered for a tenth of a second, and a start that doesn't wait.
+fn quick_monitors(managers: &Managers, interval: Duration) {
+    let mut limits = arko_agents::terminal::MonitorLimits::default();
+    limits.alert_interval = interval;
+    limits.gather = Duration::from_millis(100);
+    limits.start_wait = Duration::ZERO;
+    managers.jobs.set_monitor_limits(limits).unwrap();
+}
+
+/// The next event, which is a monitor's alert, within `within`.
+async fn next_alert(inputs: &mut Inputs, within: Duration) -> crate::inputs::Alert {
+    match tokio::time::timeout(within, inputs.next_event(true))
+        .await
+        .expect("an alert in time")
+    {
+        Event::Alert(alert) => alert,
+        _ => panic!("expected a monitor's alert"),
+    }
 }
 
 /// A model that records the requests' bodies.
@@ -1180,4 +1202,141 @@ async fn a_failed_turn_leaves_the_stopped_jobs_for_the_next_message() {
     assert!(harness.interrupted_told, "a message that didn't name them");
     harness.tell_stopped_jobs_again(true);
     assert!(!harness.interrupted_told);
+}
+
+/// A monitor the agent started alerts while the agent waits for the user:
+/// that starts a turn, whose message says why and carries the alert, and
+/// the transcript says so. Another alert soon after waits for the minute
+/// (here two seconds) since the first.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_monitors_alert_starts_a_turn_while_the_agent_waits_for_the_user() {
+    let bodies: Bodies = Arc::default();
+    let server = ModelServer::start(Arc::new({
+        let bodies = bodies.clone();
+        move |_, body: String| {
+            bodies.lock().unwrap().push(body.clone());
+            Box::pin(async move {
+                if body.contains("A monitor of yours alerted") {
+                    complete("m3", "The server logged an error.")
+                } else if body.contains("call_m1") {
+                    complete("m2", "Watching the server.")
+                } else {
+                    tool_call(
+                        "m1",
+                        "monitor_start",
+                        serde_json::json!({
+                            "command": "sleep 1; echo 'ERROR boom'; sleep 1; echo 'ERROR again'; sleep 30",
+                            "pattern": "ERROR"
+                        }),
+                    )
+                }
+            })
+        }
+    }))
+    .await;
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
+    let managers = equip(&mut harness, &mut inputs, 0);
+    quick_monitors(&managers, Duration::from_secs(2));
+    let end = tokio::time::timeout(
+        Duration::from_secs(20),
+        harness.turn(Prompt::User("Start the server and watch it.".into()), &mut inputs),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(end, TurnEnd::Answered));
+    let started = bodies.lock().unwrap()[1].clone();
+    assert!(started.contains("Monitor ") && started.contains(" started."), "{started}");
+
+    let alert = next_alert(&mut inputs, Duration::from_secs(10)).await;
+    let first = std::time::Instant::now();
+    assert!(!alert.ends_soon);
+    assert!(matches!(
+        harness.deliver_alert(alert, &mut inputs).await,
+        News::Done
+    ));
+    assert_eq!(summary(&harness), "The server logged an error.");
+    let woken = bodies.lock().unwrap()[2].clone();
+    assert!(
+        woken.contains("A monitor of yours alerted after your last turn ended. The alert follows."),
+        "{woken}"
+    );
+    assert!(woken.contains("Monitor alert.") && woken.contains("ERROR boom"), "{woken}");
+    assert!(
+        shown(&harness.feed)
+            .iter()
+            .any(|(kind, text, _)| kind == "notice"
+                && text.contains("a monitor alerted, and its alert goes to the agent")),
+        "{:?}",
+        shown(&harness.feed)
+    );
+
+    // The second line came a second after the first: its alert waits.
+    let alert = next_alert(&mut inputs, Duration::from_secs(10)).await;
+    assert!(first.elapsed() >= Duration::from_millis(1500), "{:?}", first.elapsed());
+    harness.deliver_alert(alert, &mut inputs).await;
+    let again = bodies.lock().unwrap()[3].clone();
+    assert!(again.contains("\\n  ERROR again\\n"), "{again}");
+    assert_eq!(again.matches("\\n  ERROR boom\\n").count(), 1, "said once");
+    managers.shutdown().await;
+}
+
+/// A monitor's alert that reaches the agent while it makes its last request
+/// still starts a turn once the agent is idle: the agent's task kept it for
+/// the next turn, which reads it once.
+#[cfg(unix)]
+#[tokio::test]
+async fn an_alert_during_the_last_request_still_wakes_the_agent() {
+    let bodies: Bodies = Arc::default();
+    let server = ModelServer::start(Arc::new({
+        let bodies = bodies.clone();
+        move |_, body: String| {
+            bodies.lock().unwrap().push(body.clone());
+            Box::pin(async move {
+                if body.contains("A monitor of yours alerted") {
+                    complete("m3", "The server logged an error.")
+                } else if body.contains("call_m1") {
+                    // The line comes while this reply is on its way.
+                    tokio::time::sleep(Duration::from_secs(3)).await;
+                    complete("m2", "Watching the server.")
+                } else {
+                    tool_call(
+                        "m1",
+                        "monitor_start",
+                        serde_json::json!({
+                            "command": "sleep 1; echo 'ERROR boom'; sleep 30",
+                            "pattern": "ERROR"
+                        }),
+                    )
+                }
+            })
+        }
+    }))
+    .await;
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
+    let managers = equip(&mut harness, &mut inputs, 0);
+    quick_monitors(&managers, Duration::from_secs(2));
+    tokio::time::timeout(
+        Duration::from_secs(20),
+        harness.turn(Prompt::User("Start the server and watch it.".into()), &mut inputs),
+    )
+    .await
+    .unwrap();
+    assert_eq!(summary(&harness), "Watching the server.");
+    let alert = next_alert(&mut inputs, Duration::from_secs(1)).await;
+    assert!(alert.late && !alert.ends_soon);
+    harness.deliver_alert(alert, &mut inputs).await;
+    assert_eq!(summary(&harness), "The server logged an error.");
+    let bodies = bodies.lock().unwrap();
+    assert_eq!(bodies.len(), 3);
+    assert!(
+        bodies[2].contains("A monitor of yours alerted") && bodies[2].contains("ERROR boom"),
+        "{}",
+        bodies[2]
+    );
+    assert_eq!(bodies[2].matches("\\n  ERROR boom\\n").count(), 1, "read once");
+    drop(bodies);
+    managers.shutdown().await;
 }
