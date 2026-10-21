@@ -15,6 +15,10 @@ impl Default for Wakes {
     }
 }
 
+/// The setting's name, in /settings, on the web page and in what Arko
+/// says of it.
+pub(crate) const NAME: &str = "Monitor wakes";
+
 /// Two hours.
 const DEFAULT_SECONDS: u64 = 2 * 3_600;
 
@@ -112,6 +116,31 @@ impl Wakes {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The web page and /settings' list in the commands' help call the
+    /// setting by the one name.
+    #[test]
+    fn the_setting_has_one_name() {
+        let page = include_str!("remote/page/index.html");
+        assert!(
+            page.contains(&format!("<span class=\"setting-name\">{NAME}</span>")),
+            "the page's row"
+        );
+        let settings = crate::commands::find("/settings").unwrap();
+        assert!(settings.about.contains(&NAME.to_lowercase()));
+        #[cfg(feature = "tui")]
+        {
+            let help = <crate::cli::Args as clap::CommandFactory>::command()
+                .get_after_help()
+                .map(|help| help.to_string())
+                .unwrap_or_default();
+            assert_eq!(
+                help.matches(&NAME.to_lowercase()).count(),
+                2,
+                "/settings and the page"
+            );
+        }
+    }
 
     #[test]
     fn times_always_and_off_are_read_and_shown() {

@@ -2648,7 +2648,8 @@ impl Harness {
             self.say(
                 Level::Info,
                 &format!(
-                    "Monitor wakes was set to {} from the web page.",
+                    "{} was set to {} from the web page.",
+                    crate::monitors::NAME,
                     wakes.shown()
                 ),
             );

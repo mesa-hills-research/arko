@@ -569,7 +569,7 @@ fn settings(frame: &mut Frame, app: &App, area: Rect, selected: usize) {
             ),
             SettingsRow::MonitorWakes => (
                 "Session",
-                "Monitor wakes",
+                crate::monitors::NAME,
                 vec![
                     Span::styled(format!("{} ", glyphs::render("←")), theme.dim()),
                     Span::styled(
