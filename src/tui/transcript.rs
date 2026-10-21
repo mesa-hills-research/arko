@@ -1774,13 +1774,17 @@ pub fn state(worker: &WorkerSummary, theme: &Theme) -> (&'static str, Style) {
     }
 }
 
-/// How long the worker has run (or ran).
+/// How long the worker has run in all its runs, also those before the
+/// session was opened again. `None` until it has run.
 pub fn worker_time(worker: &WorkerSummary) -> Option<String> {
-    let start = worker.started_at?;
-    let end = worker
-        .ended_at
-        .unwrap_or_else(|| chrono::Utc::now().timestamp_millis());
-    Some(duration(end - start))
+    run_time(worker, chrono::Utc::now().timestamp_millis()).map(duration)
+}
+
+/// The worker's run time at `now` in milliseconds (its runs that ended and
+/// the current one so far), once it has run.
+pub fn run_time(worker: &WorkerSummary, now: i64) -> Option<i64> {
+    (worker.ran_ms > 0 || worker.running_since.is_some())
+        .then(|| i64::try_from(worker.run_time_ms(now)).unwrap_or(i64::MAX))
 }
 
 /// A worker's line: `r2 Fix flaky test · 18 tool calls · 2m · running`.
@@ -2492,5 +2496,50 @@ mod tests {
         // The agent's text stays, as on the web page.
         assert!(messages.iter().any(|r| r.contains("Thinking.")));
         assert_eq!(t.item(1).unwrap().agent, MAIN_AGENT);
+    }
+
+    /// A worker's time is the total of its runs, also those before Arko
+    /// quit and the session was resumed, and not only its latest run.
+    #[test]
+    fn a_worker_s_time_counts_all_its_runs() {
+        let now = chrono::Utc::now().timestamp_millis();
+        let summary = |state, ran_ms, running_since: Option<i64>| WorkerSummary {
+            id: "r1".into(),
+            title: "Test it".into(),
+            state,
+            tool_calls: 2,
+            // Its latest run began five minutes ago.
+            started_at: Some(now - 300_000),
+            ended_at: (state != WorkerState::Running).then_some(now),
+            last: None,
+            report: None,
+            ran_ms,
+            running_since,
+        };
+        // Two hours in earlier runs, five minutes in the one going on.
+        let running = summary(WorkerState::Running, 7_200_000, Some(now - 300_000));
+        assert_eq!(run_time(&running, now), Some(7_500_000));
+        assert_eq!(worker_time(&running).as_deref(), Some("2h 5m"));
+        let finished = summary(WorkerState::Finished, 7_500_000, None);
+        assert_eq!(run_time(&finished, now + 60_000), Some(7_500_000));
+        // A worker waiting for its first run has no time yet.
+        let queued = summary(WorkerState::Queued, 0, None);
+        assert_eq!(worker_time(&queued), None);
+
+        let mut t = Transcript::new();
+        let mut line = item(1, Kind::WorkerLine, "Test it");
+        line.worker = Some("r1".into());
+        line.turn = Some(1);
+        t.apply(Update::Item(line));
+        t.apply(Update::Worker(finished));
+        let quiet = rows(&mut t, &Filter::Main(View::Quiet), 60, 4);
+        assert!(
+            quiet
+                .iter()
+                .any(|r| r.contains("r1 Test it · 2 tool calls · 2h 5m · finished")),
+            "{quiet:?}"
+        );
+        let own = rows(&mut t, &Filter::Worker("r1".into()), 60, 4);
+        assert!(own[0].contains("r1 Test it · finished · 2h 5m"), "{own:?}");
     }
 }

@@ -156,12 +156,20 @@ test('figures and workers read briefly', () => {
     ['5 h 21%', '$1.25', '≈ $4.50'],
   );
   const words = core.workerWords(
-    { id: 'r2', title: 'Fix flaky test', state: 'running', tool_calls: 18, started_at: 0, ended_at: null, last: '$ cargo test' },
+    { id: 'r2', title: 'Fix flaky test', state: 'running', tool_calls: 18, started_at: 0, ended_at: null, ran_ms: 0, running_since: 0, last: '$ cargo test' },
     134_000,
   );
   assert.deepEqual(words, { title: 'Fix flaky test', meta: '18 calls · 2m14s · running', last: '$ cargo test' });
-  const done = core.workerWords({ id: 'r1', title: '', state: 'finished', tool_calls: 1, started_at: 0, ended_at: 5000, report: '\nAll good.\nMore.' }, 9e9);
+  const done = core.workerWords({ id: 'r1', title: '', state: 'finished', tool_calls: 1, started_at: 0, ended_at: 5000, ran_ms: 5000, running_since: null, report: '\nAll good.\nMore.' }, 9e9);
   assert.deepEqual(done, { title: 'r1', meta: '1 call · 5s · finished', last: 'All good.' });
+  // The time counts every run, also those before the session was opened
+  // again, and not only the latest.
+  const again = { id: 'r3', state: 'running', tool_calls: 40, started_at: 3_600_000, ended_at: null, ran_ms: 3_600_000, running_since: 3_600_000 };
+  assert.equal(core.workerWords(again, 3_900_000).meta, '40 calls · 1h05m · running');
+  const ended = { ...again, state: 'finished', ended_at: 3_900_000, ran_ms: 3_900_000, running_since: null };
+  assert.equal(core.workerWords(ended, 9e9).meta, '40 calls · 1h05m · finished');
+  const waiting = { id: 'r4', state: 'queued', tool_calls: 0, started_at: null, ended_at: null, ran_ms: 0, running_since: null };
+  assert.equal(core.workerWords(waiting, 9e9).meta, '0 calls · queued');
   assert.equal(core.stateOf({ working: true, question: { id: 1 } }, 'live').label, 'Asks you');
   assert.equal(core.stateOf({ working: true }, 'live').key, 'working');
   assert.equal(core.stateOf(null, 'offline').key, 'offline');
