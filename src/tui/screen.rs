@@ -194,10 +194,10 @@ fn list_time(ms: i64) -> String {
 }
 
 /// The agent list, below the input: `● main` and a row for each worker
-/// running, the one shown marked, up to five workers, with a count of the
-/// workers above them and one of those below when there are. ↓ from the
-/// box moves into it, Enter shows a worker's own transcript, and the wheel
-/// scrolls it.
+/// running or waiting and each that ended in the last five minutes, the one
+/// shown marked, up to five workers, with a count of the workers above them
+/// and one of those below when there are. ↓ from the box moves into it,
+/// Enter shows a worker's own transcript, and the wheel scrolls it.
 fn draw_list(frame: &mut Frame, app: &mut App, area: Rect, rows: Vec<ListRow>) {
     let count = app.list().len();
     let focus = app.list_focus.map(|row| row.min(count - 1));
@@ -233,10 +233,19 @@ fn draw_list(frame: &mut Frame, app: &mut App, area: Rect, rows: Vec<ListRow>) {
         };
         let row = list[index];
         let shown = row.map(|w| w.id.as_str()) == app.watching.as_deref();
-        let bullet = if shown {
+        // A worker that ended has a filled bullet in its state's colour (the
+        // theme's success colour once it finished). The one shown has its
+        // name in bold.
+        let ended = row.filter(|w| !w.state.is_active());
+        let bullet = if shown || ended.is_some() {
             glyphs::render("●").into_owned()
         } else {
             glyphs::render("○").into_owned()
+        };
+        let bullet_style = match ended {
+            Some(worker) => transcript::state(worker, theme).1,
+            None if shown => theme.accent(),
+            None => theme.dim(),
         };
         let name_style = if shown {
             theme.text().add_modifier(Modifier::BOLD)
@@ -245,10 +254,7 @@ fn draw_list(frame: &mut Frame, app: &mut App, area: Rect, rows: Vec<ListRow>) {
         };
         let mut left = vec![
             Span::raw(" "),
-            Span::styled(
-                format!("{bullet} "),
-                if shown { theme.accent() } else { theme.dim() },
-            ),
+            Span::styled(format!("{bullet} "), bullet_style),
         ];
         let mut right: Vec<Span<'static>> = Vec::new();
         match row {
@@ -688,7 +694,7 @@ mod tests {
     #[test]
     fn the_agent_list_counts_the_workers_above_and_below_it() {
         use crate::remote::WorkerState::{Finished, Running};
-        use crate::tui::app::tests::worker;
+        use crate::tui::app::tests::{ended_earlier, worker};
         let mut app = app();
         for n in 1..=6 {
             let summary = worker(&format!("r{n}"), Running);
@@ -717,8 +723,11 @@ mod tests {
             ["main", "1", "r2", "r3", "r4", "r5", "r6"]
         );
         assert!(!shown.iter().any(|row| row.contains("more")));
-        // A worker ends: the others fit, and nothing is counted.
-        app.update(Update::Worker(worker("r1", Finished)), Activity::default);
+        // A worker leaves the list: the others fit, and nothing is counted.
+        app.update(
+            Update::Worker(ended_earlier("r1", Finished)),
+            Activity::default,
+        );
         let rows = screen(&mut app, 80, 40);
         assert!(
             !rows
@@ -729,17 +738,18 @@ mod tests {
     }
 
     /// The agent list under the input: the main agent, five of the workers
-    /// running and how many more. A worker that ended isn't in it.
+    /// running and how many more. A worker that ended more than five minutes
+    /// ago isn't in it.
     #[test]
     fn the_agent_list_shows_five_workers_running_and_counts_the_rest() {
         use crate::remote::WorkerState::{Finished, Running};
-        use crate::tui::app::tests::worker;
+        use crate::tui::app::tests::ended_earlier;
         let mut app = app();
         let states = [
             Running, Finished, Running, Running, Running, Running, Running, Running,
         ];
         for (n, state) in states.into_iter().enumerate() {
-            let summary = worker(&format!("r{}", n + 1), state);
+            let summary = ended_earlier(&format!("r{}", n + 1), state);
             app.update(Update::Worker(summary), Activity::default);
         }
         let rows = screen(&mut app, 80, 40);
@@ -756,6 +766,72 @@ mod tests {
         );
         assert_eq!(list[6], "   … 2 more");
         assert!(!rows.iter().any(|row| row.contains("r2")), "{rows:#?}");
+    }
+
+    /// A worker that ended stays in the agent list with a filled bullet in
+    /// its state's colour, the theme's success colour once it finished. The
+    /// one shown keeps its name in bold.
+    #[test]
+    fn ended_workers_have_a_filled_bullet_in_their_state_s_colour() {
+        use crate::remote::WorkerState::{Failed, Finished, Running, Stopped};
+        use crate::tui::app::tests::worker;
+        let mut app = app();
+        for (id, state) in [
+            ("r1", Running),
+            ("r2", Finished),
+            ("r3", Failed),
+            ("r4", Stopped),
+        ] {
+            app.update(Update::Worker(worker(id, state)), Activity::default);
+        }
+        let theme = app.theme.clone();
+        assert_ne!(theme.success().fg, theme.accent().fg);
+        let mut terminal = Terminal::new(TestBackend::new(80, 40)).unwrap();
+        let mut look = |app: &mut App| {
+            terminal.draw(|frame| draw(frame, app)).unwrap();
+            let buffer = terminal.backend().buffer().clone();
+            // Each agent's bullet, its colour, and whether its name is bold.
+            (35..40)
+                .map(|y| {
+                    let name: String = (3..7).map(|x| buffer[(x, y)].symbol()).collect();
+                    let bullet = &buffer[(1, y)];
+                    let bold = buffer[(3, y)].modifier.contains(Modifier::BOLD);
+                    (
+                        name.trim().to_string(),
+                        bullet.symbol().to_string(),
+                        bullet.fg,
+                        bold,
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        let row = |name: &str, bullet: &str, style: Style, bold| {
+            (
+                name.to_string(),
+                bullet.to_string(),
+                style.fg.unwrap(),
+                bold,
+            )
+        };
+        assert_eq!(
+            look(&mut app),
+            [
+                row("main", "●", theme.accent(), true),
+                row("r1", "○", theme.dim(), false),
+                row("r2", "●", theme.success(), false),
+                row("r3", "●", theme.error(), false),
+                row("r4", "●", theme.warning(), false),
+            ]
+        );
+        app.watch(Some("r2".into()));
+        assert_eq!(
+            look(&mut app)[..3],
+            [
+                row("main", "○", theme.dim(), false),
+                row("r1", "○", theme.dim(), false),
+                row("r2", "●", theme.success(), true),
+            ]
+        );
     }
 
     /// The agent list's state, time and tool calls are columns that line
