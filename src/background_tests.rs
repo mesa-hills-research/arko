@@ -1225,7 +1225,7 @@ async fn the_first_message_after_a_quit_names_the_jobs_that_stopped() {
     );
     assert!(
         body.contains(&format!(
-            "- the monitor of `sleep 62` (lines that match ERROR, job {}…)",
+            "- the monitor of `sleep 62` (lines that match `ERROR`, job {}…)",
             short(monitor)
         )),
         "{body}"
@@ -1798,6 +1798,50 @@ fn the_monitor_wakes_flag_sets_a_new_sessions_time() {
         crate::monitors::Wakes(None)
     );
     assert!(Args::try_parse_from(["arko", "--monitor-wakes", "soon"]).is_err());
+}
+
+/// `/jobs` lists a monitor with a long pattern, or one with a line break,
+/// on one line of its own.
+#[cfg(unix)]
+#[tokio::test]
+async fn jobs_lists_a_long_or_broken_pattern_on_one_line() {
+    let server =
+        ModelServer::start(Arc::new(|_, _| Box::pin(async { complete("m1", "Done.") }))).await;
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
+    let managers = equip(&mut harness, &mut inputs, 0);
+    let workspace = temp.path().join("work");
+    let long = format!("ERROR|{}", "x".repeat(600));
+    for pattern in ["ERROR\n|WARN".to_string(), long] {
+        managers
+            .jobs
+            .start_monitor(
+                &arko_agents::TaskContext::new(uuid::Uuid::new_v4(), MAIN, "", &workspace),
+                "sleep 60",
+                arko_agents::terminal::MonitorOptions::lines(Some(pattern)),
+            )
+            .await
+            .unwrap();
+    }
+    harness.jobs_command("");
+    let outputs: Vec<String> = shown(&harness.feed)
+        .into_iter()
+        .filter(|(kind, ..)| kind == "output")
+        .map(|(_, text, _)| text)
+        .collect();
+    let rows: Vec<&str> = outputs
+        .iter()
+        .flat_map(|text| text.lines())
+        .filter(|row| row.contains("monitor  sleep 60") || row.starts_with("|WARN"))
+        .collect();
+    assert_eq!(rows.len(), 2, "{rows:?}");
+    assert!(
+        rows.iter()
+            .any(|row| row.contains("lines that match ERROR\\n|WARN · ends in 30 min")),
+        "{rows:?}"
+    );
+    assert!(rows.iter().all(|row| row.chars().count() < 160), "{rows:?}");
+    managers.shutdown().await;
 }
 
 /// `/jobs` lists a monitor with what it watches, its alerts and when it

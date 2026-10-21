@@ -86,7 +86,7 @@ impl Managers {
 /// What `/jobs` says of a running monitor: what it watches, its alerts and
 /// when it ends ("lines that match error · 3 alerts · ends in 22 min").
 fn monitor_about(info: &arko_agents::terminal::MonitorInfo) -> String {
-    let mut parts = vec![info.trigger.watching()];
+    let mut parts = vec![crate::jobs::watching(&info.trigger, false)];
     match info.alerts {
         0 => {}
         1 => parts.push("1 alert".into()),
@@ -3974,7 +3974,7 @@ impl Harness {
                     arko_agents::terminal::JobKind::Monitor(info) => format!(
                         "- the monitor of `{}` ({}, job {id}…)",
                         jobs_label(&job.label),
-                        info.trigger.watching()
+                        crate::jobs::watching(&info.trigger, true)
                     ),
                     _ if job.label.trim().is_empty() => format!("- a command (job {id}…)"),
                     _ => format!("- `{}` (job {id}…)", jobs_label(&job.label)),

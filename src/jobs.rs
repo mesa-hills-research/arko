@@ -149,10 +149,45 @@ fn start(agent_of: &dyn Fn(Uuid) -> String, job: &JobInfo) -> JobStart {
         started_at: started,
         monitor: match &job.kind {
             terminal::JobKind::Monitor(info) => {
-                Some((info.trigger.watching(), unix_ms(info.expires_at)))
+                Some((watching(&info.trigger, false), unix_ms(info.expires_at)))
             }
             _ => None,
         },
+    }
+}
+
+/// What a monitor watches on one line, as `/jobs`, the feed and the
+/// resume message show it ("lines that match error|warn", "a check every
+/// 15 s"). A pattern shows its line breaks and other control characters as
+/// escapes (`\n`), and at most 80 characters, with `…` when more is left
+/// out. With `code`, the pattern is in backticks, as the agent reads it.
+pub(crate) fn watching(trigger: &terminal::MonitorTrigger, code: bool) -> String {
+    let terminal::MonitorTrigger::Lines {
+        pattern: Some(pattern),
+        ..
+    } = trigger
+    else {
+        return trigger.watching();
+    };
+    let shown: String = pattern
+        .chars()
+        .flat_map(|c| {
+            let escaped: Vec<char> = if c.is_control() {
+                c.escape_default().collect()
+            } else {
+                vec![c]
+            };
+            escaped
+        })
+        .collect();
+    let mut cut: String = shown.chars().take(80).collect();
+    if cut.len() < shown.len() {
+        cut.push('…');
+    }
+    if code {
+        format!("lines that match `{cut}`")
+    } else {
+        format!("lines that match {cut}")
     }
 }
 
@@ -318,6 +353,32 @@ mod tests {
             [(monitor, "monitor · sleep 60")]
         );
         jobs.shutdown().await;
+    }
+
+    /// A monitor's pattern shows on one line, with its line breaks as
+    /// escapes, cut after 80 characters, and in backticks for the agent.
+    #[test]
+    fn a_monitors_pattern_shows_on_one_line() {
+        let shown = |pattern: &str, code| {
+            watching(
+                &terminal::MonitorOptions::lines(Some(pattern.into())).trigger,
+                code,
+            )
+        };
+        assert_eq!(
+            shown("ERROR\n|WARN\t", false),
+            "lines that match ERROR\\n|WARN\\t"
+        );
+        assert_eq!(shown("error|warn", true), "lines that match `error|warn`");
+        let long = format!("ERROR|{}", "x".repeat(600));
+        assert_eq!(
+            shown(&long, true),
+            format!("lines that match `ERROR|{}…`", "x".repeat(74))
+        );
+        assert_eq!(
+            watching(&terminal::MonitorOptions::lines(None).trigger, true),
+            "every line"
+        );
     }
 
     /// A monitor whose time was up reads as expired, and other jobs that
