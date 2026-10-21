@@ -760,6 +760,13 @@ impl Engine {
         } else {
             managers.tools(&shell, runs.clone())
         };
+        // With -p, no one would hear the monitors' alerts, so the agents get
+        // none (the workflow offers each agent every tool it's given).
+        if one_shot {
+            tools.retain(|tool| {
+                !arko_agents::terminal::MonitorTool::NAMES.contains(&tool.name().as_str())
+            });
+        }
         tools.extend(mcp.tools().iter().cloned());
         if let Some(indexes) = &indexes {
             tools.extend(indexes.tools());
@@ -3736,6 +3743,88 @@ mod tests {
             Err(error) => panic!("{error}"),
             Ok(_) => panic!("opened"),
         }
+    }
+
+    /// With -p, the agents have no monitors, since no one would hear their
+    /// alerts. The session continued without -p keeps its agents'
+    /// configuration, as it keeps their way of replying, and its next
+    /// message says it has no monitors.
+    #[tokio::test]
+    async fn a_session_started_with_p_has_no_monitors() {
+        let _alone = ALONE_TESTS.lock().await;
+        let temp = tempfile::tempdir().unwrap();
+        let bodies: Arc<Mutex<Vec<String>>> = Arc::default();
+        let server = ModelServer::start(Arc::new({
+            let bodies = bodies.clone();
+            move |_, body: String| {
+                bodies.lock().unwrap().push(body);
+                Box::pin(async { complete("a1", "Hello.") })
+            }
+        }))
+        .await;
+        let root = temp.path().join("arko");
+        let workspace = temp.path().join("work");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let luna = ModelSettings {
+            model: resolve_model("luna").unwrap().id,
+            effort: Effort::High,
+            fast: false,
+            cache_1h: false,
+            handover_at: None,
+        };
+        let session = Session::create(&root).unwrap();
+        session
+            .save_settings(&Settings::for_test(&workspace, &luna))
+            .unwrap();
+        for one_shot in [true, false] {
+            let options = Options {
+                root: Some(root.clone()),
+                session: SessionChoice::Resume(session.id.clone()),
+                one_shot,
+                interactive: false,
+                client: Some(GivenClient(Arc::new(server.client()))),
+                ..Options::default()
+            };
+            let (mut engine, seam) = match Engine::open(options, Arc::new(NoPrompter)).await {
+                Ok(open) => open,
+                Err(error) => panic!("{error}"),
+            };
+            engine.front_end(FrontEnd::default());
+            assert_eq!(
+                engine.run_prompt("Say hello.".into()).await,
+                RunEnd::Answered
+            );
+            engine.shutdown().await;
+            drop(seam);
+            // (Its tasks let the session go as they end.)
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+        let bodies = bodies.lock().unwrap().clone();
+        assert_eq!(bodies.len(), 2);
+        for body in &bodies {
+            let body: serde_json::Value = serde_json::from_str(body).unwrap();
+            let offered: Vec<&str> = body["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|tool| tool["name"].as_str())
+                .collect();
+            assert!(offered.contains(&"terminal_start"), "{offered:?}");
+            for tool in arko_agents::terminal::MonitorTool::NAMES {
+                assert!(!offered.contains(&tool), "{tool}");
+            }
+            assert!(
+                !body["instructions"]
+                    .as_str()
+                    .unwrap()
+                    .contains("monitor_start")
+            );
+        }
+        assert!(
+            bodies[1].contains("This session started without monitors (monitor_start), so its agents don't get them. A new session does."),
+            "{}",
+            bodies[1]
+        );
     }
 
     /// A session opens, answers a message and shuts down with no terminal:
