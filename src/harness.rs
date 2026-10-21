@@ -339,6 +339,9 @@ pub(crate) struct Harness {
     /// The background jobs the line prompt's last `/exit` warned of: the
     /// next `/exit` stops those, and asks again about any other.
     pub(crate) jobs_shown: Vec<uuid::Uuid>,
+    /// The jobs the last `/jobs` listed, in its order, with their names:
+    /// `/jobs stop N` stops the one it showed as N.
+    pub(crate) jobs_listed: Vec<(uuid::Uuid, String)>,
     /// Where the full-screen view, while it is up, is told to ask about
     /// the background jobs running (its quit popup).
     pub(crate) quit_popup: Option<mpsc::UnboundedSender<ui::QuitAsk>>,
@@ -2617,7 +2620,7 @@ impl Harness {
     pub(crate) fn may_exit(&mut self, agreed: Option<Vec<uuid::Uuid>>) -> bool {
         let workers = self.crew.as_ref().map_or(0, |crew| crew.running().len());
         let warn_workers = workers > 0 && !self.exit_warned;
-        let jobs = match agreed {
+        let mut jobs = match agreed {
             None if warn_workers => Vec::new(),
             None => return true,
             // Arko stays, for now: the jobs only to say so.
@@ -2627,6 +2630,13 @@ impl Harness {
                 Err(jobs) => jobs,
             },
         };
+        // A moved call by what it does, as the transcript shows it.
+        let names = self.job_names();
+        for job in &mut jobs {
+            if let Some(name) = names.get(&job.job_id) {
+                job.command = name.clone();
+            }
+        }
         self.exit_warned = true;
         self.jobs_shown = jobs.iter().map(|job| job.job_id).collect();
         if let Some(popup) = self
@@ -3385,8 +3395,8 @@ impl Harness {
         }
     }
 
-    /// Stops the background job `job` for the user, and returns what it
-    /// ran.
+    /// Stops the background job `job` for the user, and returns its name
+    /// as `/jobs` shows it.
     pub(crate) fn stop_job(&self, job: uuid::Uuid) -> Result<String, String> {
         let not_running = || "That job isn't running.".to_string();
         let jobs = self.background.manager().ok_or_else(not_running)?;
@@ -3397,7 +3407,29 @@ impl Harness {
             .ok_or_else(not_running)?;
         jobs.stop_for_user(found.owner, job)
             .map_err(|_| not_running())?;
-        Ok(found.label)
+        Ok(self.job_name(&found))
+    }
+
+    /// A job as `/jobs` and the quit popup name it: its command, or a moved
+    /// call as the transcript shows it, on one line.
+    fn job_name(&self, job: &arko_agents::terminal::JobInfo) -> String {
+        let text = match (&job.kind, job.tool_call_id) {
+            (arko_agents::terminal::JobKind::Call { .. }, Some(call)) => self.feed.call_text(call),
+            _ => None,
+        };
+        jobs_label(text.as_deref().unwrap_or(&job.label))
+    }
+
+    /// The names of the background jobs running (see
+    /// [`job_name`](Self::job_name)), by job.
+    fn job_names(&self) -> std::collections::HashMap<uuid::Uuid, String> {
+        self.background
+            .manager()
+            .map(|jobs| jobs.jobs())
+            .unwrap_or_default()
+            .iter()
+            .map(|job| (job.job_id, self.job_name(job)))
+            .collect()
     }
 
     /// The web page's Move to background or Stop: done, and what didn't
@@ -3410,9 +3442,9 @@ impl Harness {
                 }
             }
             Action::StopJob { job } => match self.stop_job(job) {
-                Ok(label) => self.say(
+                Ok(name) => self.say(
                     Level::Info,
-                    &format!("Stopped the background job {}.", jobs_label(&label)),
+                    &format!("Stopped job {} ({name}).", &job.to_string()[..8]),
                 ),
                 Err(why) => self.feed.notice(Level::Info, &why),
             },
@@ -3421,7 +3453,8 @@ impl Harness {
     }
 
     /// `/jobs`: the background jobs running, and `/jobs stop N` or
-    /// `/jobs stop all` stops them.
+    /// `/jobs stop all` stops them. N is the number the last `/jobs`
+    /// showed.
     pub(crate) fn jobs_command(&mut self, argument: &str) {
         let running = self
             .background
@@ -3430,8 +3463,15 @@ impl Harness {
             .unwrap_or_default();
         let words: Vec<&str> = argument.split_whitespace().collect();
         let text = match words.as_slice() {
-            [] if running.is_empty() => "No background jobs are running.".to_string(),
+            [] if running.is_empty() => {
+                self.jobs_listed.clear();
+                "No background jobs are running.".to_string()
+            }
             [] => {
+                self.jobs_listed = running
+                    .iter()
+                    .map(|job| (job.job_id, self.job_name(job)))
+                    .collect();
                 let agents: Vec<String> = running
                     .iter()
                     .map(|job| self.gauges.agent_of(job.owner))
@@ -3440,16 +3480,16 @@ impl Harness {
                 let mut lines: Vec<String> = running
                     .iter()
                     .zip(&agents)
+                    .zip(&self.jobs_listed)
                     .enumerate()
-                    .map(|(index, (job, agent))| {
+                    .map(|(index, ((job, agent), (_, name)))| {
                         let kind = match job.kind {
                             arko_agents::terminal::JobKind::Call { .. } => "call",
                             _ => "command",
                         };
                         format!(
-                            "{:<3}{agent:<width$}  {kind:<8} {} · {}",
+                            "{:<3}{agent:<width$}  {kind:<8} {name} · {}",
                             index + 1,
-                            jobs_label(&job.label),
                             remote::duration_words(job.started.elapsed()),
                         )
                     })
@@ -3472,17 +3512,28 @@ impl Harness {
                     stopped => format!("Stopped {stopped} background jobs."),
                 }
             }
-            ["stop", number] => match number
-                .parse::<usize>()
-                .ok()
-                .and_then(|number| running.get(number.checked_sub(1)?))
-            {
-                Some(job) => match self.stop_job(job.job_id) {
-                    Ok(label) => format!("Stopped job {number} ({}).", jobs_label(&label)),
-                    Err(why) => why,
-                },
-                None => format!("There's no job {number}. /jobs lists them."),
-            },
+            ["stop", number] => {
+                // As the last /jobs numbered them, or as it would now.
+                let listed = if self.jobs_listed.is_empty() {
+                    running
+                        .iter()
+                        .map(|job| (job.job_id, self.job_name(job)))
+                        .collect()
+                } else {
+                    self.jobs_listed.clone()
+                };
+                match number
+                    .parse::<usize>()
+                    .ok()
+                    .and_then(|number| listed.get(number.checked_sub(1)?))
+                {
+                    Some((job, name)) => match self.stop_job(*job) {
+                        Ok(_) => format!("Stopped job {number} ({name})."),
+                        Err(_) => format!("Job {number} ({name}) already ended."),
+                    },
+                    None => format!("There's no job {number}. /jobs lists them."),
+                }
+            }
             _ => "/jobs lists the background jobs, and /jobs stop N or /jobs stop all stops them."
                 .to_string(),
         };
@@ -4743,6 +4794,7 @@ pub(crate) mod tests {
             one_shot: !interactive,
             exit_warned: false,
             jobs_shown: Vec::new(),
+            jobs_listed: Vec::new(),
             quit_popup: None,
             news_hint_shown: false,
             feed,

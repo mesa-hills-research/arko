@@ -876,6 +876,7 @@ impl Engine {
             one_shot,
             exit_warned: false,
             jobs_shown: Vec::new(),
+            jobs_listed: Vec::new(),
             quit_popup: None,
             news_hint_shown: false,
             feed,

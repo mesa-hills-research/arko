@@ -853,6 +853,118 @@ async fn the_page_moves_a_call_and_jobs_lists_and_stops_it() {
     managers.shutdown().await;
 }
 
+/// `/jobs stop N` stops the job the last `/jobs` showed as N, though a job
+/// ended since, and says so when that job is the one that ended.
+#[tokio::test]
+async fn jobs_stop_n_stops_the_job_the_list_showed() {
+    let server =
+        ModelServer::start(Arc::new(|_, _| Box::pin(async { complete("m1", "Done.") }))).await;
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
+    let managers = equip(&mut harness, &mut inputs, 0);
+    let owner = uuid::Uuid::new_v4();
+    let mut ids = Vec::new();
+    for name in ["first", "second", "third"] {
+        let snapshot = managers
+            .jobs
+            .adopt_call(
+                owner,
+                uuid::Uuid::new_v4(),
+                name,
+                name.into(),
+                arko_agents::stop::StopSource::new(),
+                Box::pin(std::future::pending()),
+            )
+            .unwrap();
+        ids.push(snapshot.job_id);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let said = |harness: &Harness, text: &str| {
+        shown(&harness.feed)
+            .iter()
+            .any(|(kind, shown, _)| kind == "output" && shown.contains(text))
+    };
+    assert!(harness.live_command("/jobs", Source::Terminal));
+    assert!(said(&harness, "2  main  call     second"), "{:?}", shown(&harness.feed));
+    // The first ends (its agent stopped it) before the user types.
+    managers.jobs.cancel(owner, ids[0]).unwrap();
+    until(|| managers.jobs.jobs().len() == 2).await;
+    assert!(harness.live_command("/jobs stop 2", Source::Terminal));
+    assert!(said(&harness, "Stopped job 2 (second)."), "{:?}", shown(&harness.feed));
+    until(|| managers.jobs.jobs().len() == 1).await;
+    assert_eq!(managers.jobs.jobs()[0].job_id, ids[2], "the third runs on");
+    assert!(harness.live_command("/jobs stop 1", Source::Terminal));
+    assert!(said(&harness, "Job 1 (first) already ended."));
+    // A new listing numbers them again.
+    assert!(harness.live_command("/jobs", Source::Terminal));
+    assert!(harness.live_command("/jobs stop 1", Source::Terminal));
+    assert!(said(&harness, "Stopped job 1 (third)."));
+    managers.shutdown().await;
+}
+
+/// `/jobs` and the quit popup name a moved call by its line in the
+/// transcript, so two calls of one tool can be told apart.
+#[tokio::test]
+async fn moved_calls_are_named_by_what_they_do() {
+    let server =
+        ModelServer::start(Arc::new(|_, _| Box::pin(async { complete("m1", "Done.") }))).await;
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
+    let managers = equip(&mut harness, &mut inputs, 0);
+    let owner = uuid::Uuid::new_v4();
+    for word in ["mesa", "butte"] {
+        let call = uuid::Uuid::new_v4();
+        harness.feed.event(
+            &arko_workflows::WorkflowEvent {
+                timestamp: chrono::Utc::now(),
+                workflow_run_id: uuid::Uuid::nil(),
+                agent_name: MAIN.into(),
+                agent_run_id: owner,
+                event: arko_agents::AgentEvent::ToolCallFormatted {
+                    tool_call_id: call,
+                    tool_name: "mcp__geo__lookup".into(),
+                    parameters: [("word".to_string(), serde_json::json!(word))].into(),
+                },
+            },
+            None,
+        );
+        managers
+            .jobs
+            .adopt_call(
+                owner,
+                call,
+                "mcp__geo__lookup",
+                "mcp__geo__lookup".into(),
+                arko_agents::stop::StopSource::new(),
+                Box::pin(std::future::pending()),
+            )
+            .unwrap();
+    }
+    assert!(harness.live_command("/jobs", Source::Terminal));
+    let lines: Vec<String> = shown(&harness.feed)
+        .into_iter()
+        .filter(|(kind, ..)| kind == "output")
+        .map(|(_, text, _)| text)
+        .collect();
+    for word in ["mesa", "butte"] {
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("lookup (geo)") && line.contains(word)),
+            "{lines:?}"
+        );
+    }
+    let (popup, mut asked) = mpsc::unbounded_channel();
+    harness.quit_popup = Some(popup);
+    assert!(!harness.may_exit(Some(Vec::new())));
+    let ask = asked.try_recv().unwrap();
+    let mut named: Vec<&str> = ask.jobs.iter().map(|job| job.command.as_str()).collect();
+    named.sort();
+    assert_eq!(named.len(), 2);
+    assert!(named[0].contains("butte") && named[1].contains("mesa"), "{named:?}");
+    managers.shutdown().await;
+}
+
 /// A job's update that came too late for the agent's last turn is found by
 /// the job's ID, whatever its form (a command's terminal update, a moved
 /// call's note), and also when no runtime got it.

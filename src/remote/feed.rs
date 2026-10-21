@@ -1543,6 +1543,19 @@ impl Feed {
         self.lock().calls.get(&call).map(|call| call.item)
     }
 
+    /// What the transcript shows of the call `call` (one of the latest),
+    /// such as `slow_lookup (slow) {"word":"mesa"}`.
+    pub(crate) fn call_text(&self, call: Uuid) -> Option<String> {
+        let mut state = self.lock();
+        let (_, agent, item) = state
+            .call_items
+            .iter()
+            .find(|(id, ..)| *id == call)
+            .cloned()?;
+        let (lane, _) = state.lane(&agent);
+        lane.find(item).map(|item| item.text.clone())
+    }
+
     /// The call item `item` of a call still running: its call's ID.
     pub(crate) fn running_call(&self, item: u64) -> Option<Uuid> {
         self.lock()
