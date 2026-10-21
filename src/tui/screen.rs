@@ -14,6 +14,7 @@ use super::app::{App, ListRow};
 use super::markdown;
 use super::overlay::{self, hints};
 use super::select::Docked;
+use super::theme::Theme;
 use super::transcript::{self, View};
 use super::wrap::{self, width as text_width};
 use crate::glyphs;
@@ -37,7 +38,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
 
     // From the bottom: the agent list (while there are workers), the
-    // input box between two rules, the status line.
+    // input box between two rules, the status line, and a rule above it.
     let rows = app.list_rows(LIST_LINES.min(area.height as usize / 4));
     let list_rows = rows.len() as u16;
     let text_width = (area.width as usize).saturating_sub(4).max(4);
@@ -67,9 +68,13 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
     let status_y = input_area.y - 1;
     draw_status(frame, app, Rect::new(area.x, status_y, area.width, 1));
+    let rule_y = status_y - 1;
+    frame
+        .buffer_mut()
+        .set_line(area.x, rule_y, &rule(&theme, area.width), area.width);
 
-    // What docks above the status line for a while.
-    let above = Rect::new(area.x, area.y, area.width, status_y - area.y);
+    // What docks above the status line's rule for a while.
+    let above = Rect::new(area.x, area.y, area.width, rule_y - area.y);
     let previous = app.docked.take();
     let docked = if !app.menu_items().is_empty() {
         draw_menu(frame, app, above)
@@ -87,6 +92,19 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     app.after_draw();
 }
 
+/// A rule `width` columns wide, as the input box and the status line have.
+fn rule(theme: &Theme, width: u16) -> Line<'static> {
+    let style = if theme.is_terminal() {
+        theme.dim()
+    } else {
+        Style::new().fg(theme.border)
+    };
+    Line::from(Span::styled(
+        glyphs::render("─").repeat(width as usize),
+        style,
+    ))
+}
+
 /// The input box: the text between two rules the width of the screen (no
 /// box: the screen's edges are its sides).
 fn draw_input(
@@ -97,15 +115,7 @@ fn draw_input(
     cursor: (usize, usize),
 ) {
     let theme = &app.theme;
-    let rule_style = if theme.is_terminal() {
-        theme.dim()
-    } else {
-        Style::new().fg(theme.border)
-    };
-    let rule = Line::from(Span::styled(
-        glyphs::render("─").repeat(area.width as usize),
-        rule_style,
-    ));
+    let rule = rule(theme, area.width);
     frame
         .buffer_mut()
         .set_line(area.x, area.y, &rule, area.width);
@@ -342,19 +352,14 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
         let word = if app.stopping { "stopping" } else { "working" };
         left.push(Span::styled(format!("{dot} {word}"), theme.accent()));
         left.push(Span::styled(format!(" {time}"), theme.dim()));
-    } else {
+    } else if let Some(turn) = app.last_turn {
+        // Waiting for the user is the usual state, so it isn't named. The
+        // last turn's time stands in place of a line after each turn in the
+        // transcript.
         left.push(Span::styled(
-            format!("{} idle", glyphs::render("○")),
+            format!("last turn {}", clock(turn.as_secs())),
             theme.dim(),
         ));
-        // In place of a line after each turn in the transcript.
-        if let Some(turn) = app.last_turn {
-            left.push(sep());
-            left.push(Span::styled(
-                format!("last turn {}", clock(turn.as_secs())),
-                theme.dim(),
-            ));
-        }
     }
     let reading = &app.reading;
     // The risky setting, only while it is on, first.
@@ -443,6 +448,13 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
         }
         spans
     };
+    // Nothing before the first item: no separator before it either.
+    if left
+        .get(1)
+        .is_some_and(|span| span.content == sep().content)
+    {
+        left.remove(1);
+    }
     let left = Line::from(left);
     let right = Line::from(right);
     frame
@@ -967,7 +979,8 @@ mod tests {
     fn the_empty_screen_has_the_status_line_and_a_message_box() {
         let mut app = app();
         let rows = screen(&mut app, 60, 8);
-        assert_eq!(rows[4], " ○ idle");
+        assert_eq!(rows[3], "─".repeat(60));
+        assert_eq!(rows[4], "", "nothing to say yet");
         assert_eq!(rows[5], "─".repeat(60));
         assert_eq!(rows[6], " › Message  / for commands");
         assert_eq!(rows[7], "─".repeat(60));
@@ -1008,7 +1021,7 @@ mod tests {
         });
         let rows = screen(&mut app, 80, 6);
         assert!(
-            rows[2].starts_with(" ○ idle · last turn 0s · 142k/250k · $3.20 · quiet"),
+            rows[2].starts_with(" last turn 0s · 142k/250k · $3.20 · quiet"),
             "{}",
             rows[2]
         );
@@ -1056,9 +1069,10 @@ mod tests {
             }),
         });
         let rows = screen(&mut app, 50, 10);
-        assert!(rows[3].contains("The agent asks"), "{rows:?}");
-        assert!(rows[4].contains("Tabs or spaces?"));
-        assert!(rows[5].contains("Enter  answer"));
+        assert!(rows[2].contains("The agent asks"), "{rows:?}");
+        assert!(rows[3].contains("Tabs or spaces?"));
+        assert!(rows[4].contains("Enter  answer"));
+        assert_eq!(rows[5], "─".repeat(50));
         assert_eq!(rows[6], " ● asks you");
         assert_eq!(rows[8], " › Answer the agent's question");
         app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
@@ -1415,10 +1429,10 @@ mod tests {
         }
         let rows = screen(&mut app, 100, 8);
         assert!(
-            rows[3].starts_with("   /watch  follow one worker"),
+            rows[2].starts_with("   /watch  follow one worker"),
             "{rows:?}"
         );
-        assert!(rows[3].ends_with("WORKER|main"), "{rows:?}");
+        assert!(rows[2].ends_with("WORKER|main"), "{rows:?}");
         assert_eq!(rows[6], " › /wa");
         // An argument's completion follows the cursor.
         for c in "tch m".chars() {
@@ -1600,16 +1614,16 @@ mod tests {
             app.update(Update::Item(item), Activity::default);
         }
         // Eight rows of transcript, scrolled up to the block's lines.
-        screen(&mut app, 40, 12);
+        screen(&mut app, 40, 13);
         app.transcript.scroll(-4);
-        let rows = screen(&mut app, 40, 12);
+        let rows = screen(&mut app, 40, 13);
         assert_eq!(rows[0], "  │ line 1");
         assert_eq!(rows[4], "  │ … 6 more lines");
         let left = MouseButton::Left;
         let click = |app: &mut App, x: u16| {
             mouse(app, MouseEventKind::Down(left), x, 4);
             mouse(app, MouseEventKind::Up(left), x, 4);
-            screen(app, 40, 12)
+            screen(app, 40, 13)
         };
         let rows = click(&mut app, 12);
         assert_eq!(
@@ -1637,7 +1651,7 @@ mod tests {
         mouse(&mut app, MouseEventKind::Down(left), 4, 4);
         mouse(&mut app, MouseEventKind::Drag(left), 7, 4);
         mouse(&mut app, MouseEventKind::Up(left), 7, 4);
-        assert_eq!(screen(&mut app, 40, 12)[4], "  │ … 6 more lines");
+        assert_eq!(screen(&mut app, 40, 13)[4], "  │ … 6 more lines");
         assert_eq!(app.take_effects(), [copy("… 6", "3 characters")]);
         // A double click copies a word, then a triple click (on another
         // cell) the line. (Frames are drawn between the clicks.)
@@ -1647,7 +1661,7 @@ mod tests {
         for _ in 0..3 {
             click(&mut app, 10);
         }
-        assert_eq!(screen(&mut app, 40, 12)[4], "  │ … 6 more lines");
+        assert_eq!(screen(&mut app, 40, 13)[4], "  │ … 6 more lines");
         assert_eq!(
             app.take_effects(),
             [
