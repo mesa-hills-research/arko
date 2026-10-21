@@ -101,6 +101,16 @@ pub struct Menu {
 /// below, when there are.
 pub const LIST_WORKERS: usize = 5;
 
+/// How long a worker that finished, failed or was stopped stays in the
+/// agent list, in milliseconds. Those that ended earlier leave it, so a long
+/// session's list holds the workers that matter now.
+pub const LIST_ENDED_MS: i64 = 5 * 60 * 1000;
+
+/// Whether `worker` ended in the last [`LIST_ENDED_MS`] before `now`.
+fn ended_lately(worker: &crate::remote::WorkerSummary, now: i64) -> bool {
+    !worker.state.is_active() && worker.ended_at.is_some_and(|at| now - at < LIST_ENDED_MS)
+}
+
 /// A row of the agent list.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ListRow {
@@ -261,6 +271,10 @@ pub struct App {
     /// The wheel scrolled the list since the focus last moved, so its rows
     /// stay where the wheel left them.
     list_wheeled: bool,
+    /// The time the agent list goes by (Unix milliseconds), that of the
+    /// frame last drawn, for the workers that ended in the last five
+    /// minutes.
+    list_now: i64,
     /// What a model needs that the session doesn't have, for `/model`'s
     /// picker (from the providers the session reaches, and Claude Code's
     /// login).
@@ -341,6 +355,7 @@ impl App {
             list_scroll: (0, 0),
             list_followed: None,
             list_wheeled: false,
+            list_now: chrono::Utc::now().timestamp_millis(),
             press: None,
             last_click: None,
             folded: None,
@@ -846,6 +861,12 @@ impl App {
                     self.list_focus = Some(0);
                 }
             }
+            // With nothing to complete, Tab goes on to the agent list, and
+            // Shift+Tab to its last agent.
+            KeyCode::Tab | KeyCode::BackTab if !self.list().is_empty() => {
+                let last = self.list().len() - 1;
+                self.list_focus = Some(if key.code == KeyCode::Tab { 0 } else { last });
+            }
             KeyCode::Char(c) if !ctrl && !alt => self.typed(c),
             _ => {}
         }
@@ -1009,16 +1030,19 @@ impl App {
     }
 
     /// The agent list below the input: the main agent, then the workers
-    /// running or waiting to run, and the one shown when it has ended.
-    /// Empty when there are none, so it takes no room. (The workers that
-    /// ended are in `/workers`, and `/watch` still shows them.)
+    /// running or waiting to run, those that ended in the last five minutes
+    /// ([`LIST_ENDED_MS`]), and the one shown when it ended before. Empty
+    /// when there are none, so it takes no room. (The workers that ended
+    /// are in `/workers`, and `/watch` still shows them.)
     pub fn list(&self) -> Vec<Option<&crate::remote::WorkerSummary>> {
         let workers: Vec<Option<&crate::remote::WorkerSummary>> = self
             .transcript
             .workers()
             .iter()
             .filter(|worker| {
-                worker.state.is_active() || self.watching.as_deref() == Some(worker.id.as_str())
+                worker.state.is_active()
+                    || ended_lately(worker, self.list_now)
+                    || self.watching.as_deref() == Some(worker.id.as_str())
             })
             .map(Some)
             .collect();
@@ -1028,10 +1052,23 @@ impl App {
         std::iter::once(None).chain(workers).collect()
     }
 
-    /// The agent list's rows in `height` rows at most. They show the agent
-    /// the focus is on, as workers come and go and the area changes, unless
-    /// the wheel scrolled the list since the focus last moved.
+    /// Whether the agent list changes with the time: a worker runs (its
+    /// time goes on), or one that ended is still in it (it leaves the list
+    /// when its five minutes are over).
+    pub fn list_ticks(&self) -> bool {
+        self.transcript
+            .workers()
+            .iter()
+            .any(|worker| worker.state.is_active() || ended_lately(worker, self.list_now))
+    }
+
+    /// The agent list's rows in `height` rows at most, for the frame being
+    /// drawn. They show the agent the focus is on, as workers come and go
+    /// and the area changes, unless the wheel scrolled the list since the
+    /// focus last moved. The list goes by the time of this frame until the
+    /// next one, so a worker's five minutes don't end halfway through it.
     pub fn list_rows(&mut self, height: usize) -> Vec<ListRow> {
+        self.list_now = chrono::Utc::now().timestamp_millis();
         if self.list_focus != self.list_followed {
             self.list_wheeled = false;
         }
@@ -1078,6 +1115,11 @@ impl App {
             KeyCode::Up => self.list_focus = Some(row - 1),
             KeyCode::Down => self.list_focus = Some((row + 1).min(list.len() - 1)),
             KeyCode::Char('t') if ctrl => self.list_focus = Some((row + 1) % list.len()),
+            // Tab moves down the list and Shift+Tab up it. Past either end
+            // the focus goes back to the input box.
+            KeyCode::Tab if row + 1 < list.len() => self.list_focus = Some(row + 1),
+            KeyCode::BackTab if row > 0 => self.list_focus = Some(row - 1),
+            KeyCode::Tab | KeyCode::BackTab => self.list_focus = None,
             KeyCode::Enter => {
                 let id = list[row].map(|w| w.id.clone());
                 self.watch(id);
@@ -2379,6 +2421,17 @@ pub(super) mod tests {
         }
     }
 
+    /// A worker `id` that ended in `state` six minutes ago, so it has left
+    /// the agent list.
+    pub fn ended_earlier(
+        id: &str,
+        state: crate::remote::WorkerState,
+    ) -> crate::remote::WorkerSummary {
+        let mut summary = worker(id, state);
+        summary.ended_at = summary.ended_at.map(|at| at - LIST_ENDED_MS - 60_000);
+        summary
+    }
+
     /// The list's rows: the main agent and up to five workers, with a count
     /// of the workers above them and one of those below, when there are.
     /// The workers shown follow the focus, and a short screen shows fewer.
@@ -2506,8 +2559,8 @@ pub(super) mod tests {
     }
 
     /// The list has the workers running or waiting, not those that ended
-    /// (unless one is shown). Past five, ↓ and a click on the count reach
-    /// the others.
+    /// more than five minutes ago (unless one is shown). Past five, ↓ and a
+    /// click on the count reach the others.
     #[test]
     fn the_list_drops_ended_workers_and_reaches_the_others() {
         use crate::remote::WorkerState::{Failed, Finished, Queued, Running, Stopped};
@@ -2517,7 +2570,7 @@ pub(super) mod tests {
         ];
         for (n, state) in states.into_iter().enumerate() {
             app.update(
-                Update::Worker(worker(&format!("r{}", n + 1), state)),
+                Update::Worker(ended_earlier(&format!("r{}", n + 1), state)),
                 Activity::default,
             );
         }
@@ -2616,9 +2669,57 @@ pub(super) mod tests {
             wheel(&mut app, MouseEventKind::ScrollDown);
         }
         assert_eq!(app.list_rows(7), bottom);
-        // A worker that ends leaves the list.
+        // A worker that ends stays in its place for five minutes, and the
+        // clock redraws the list until it leaves.
         app.update(Update::Worker(worker("r1", Finished)), Activity::default);
-        assert_eq!(ids(&app), ["main", "r3", "r5", "r6", "r8", "r9", "r10"]);
+        assert_eq!(ids(&app)[..3], ["main", "r1", "r3"]);
+        app.update(Update::Worker(worker("r3", Failed)), Activity::default);
+        assert_eq!(ids(&app)[..3], ["main", "r1", "r3"]);
+        for id in ["r5", "r6", "r8", "r9", "r10"] {
+            app.update(Update::Worker(worker(id, Stopped)), Activity::default);
+        }
+        assert_eq!(ids(&app).len(), 8);
+        assert!(app.list_ticks());
+        app.list_now += LIST_ENDED_MS + 1000;
+        assert!(ids(&app).is_empty());
+        assert!(!app.list_ticks());
+    }
+
+    /// Tab from the input box goes on to the agent list, moves down it, and
+    /// past its last agent goes back to the box. Shift+Tab goes the other
+    /// way. A command's completion in the box keeps Tab.
+    #[test]
+    fn tab_moves_through_the_agent_list_and_back_to_the_box() {
+        use crate::remote::WorkerState::Running;
+        let mut app = app();
+        // No workers, so no list to go to.
+        press(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+        assert_eq!(app.list_focus, None);
+        for id in ["r1", "r2"] {
+            app.update(Update::Worker(worker(id, Running)), Activity::default);
+        }
+        let focus = |app: &mut App, code, modifiers| {
+            (0..4)
+                .map(|_| {
+                    press(app, code, modifiers);
+                    app.list_focus
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            focus(&mut app, KeyCode::Tab, KeyModifiers::NONE),
+            [Some(0), Some(1), Some(2), None]
+        );
+        assert_eq!(
+            focus(&mut app, KeyCode::BackTab, KeyModifiers::SHIFT),
+            [Some(2), Some(1), Some(0), None]
+        );
+        assert!(app.editor.is_empty());
+        // In the box, Tab still takes an argument's choice.
+        type_text(&mut app, "/view q");
+        press(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+        assert_eq!(app.editor.text(), "/view quiet");
+        assert_eq!(app.list_focus, None);
     }
 
     #[test]

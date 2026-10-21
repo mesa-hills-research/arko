@@ -282,14 +282,20 @@
     return n + ' ' + (n === 1 ? one : many);
   }
 
+  /** How long a worker has run at `now`, in all its runs (also those
+   * before the session was opened again), or null until it has run. */
+  function runTime(summary, now) {
+    const ran = summary.ran_ms || 0;
+    if (summary.running_since != null) return ran + Math.max(0, now - summary.running_since);
+    return ran > 0 ? ran : null;
+  }
+
   /** A worker's summary in words: `{ title, meta, last }`, where meta is
    * "18 calls · 2m14s · running". */
   function workerWords(summary, now) {
     const parts = [plural(summary.tool_calls, 'call', 'calls')];
-    if (summary.started_at != null) {
-      const end = summary.ended_at != null ? summary.ended_at : now;
-      parts.push(duration(end - summary.started_at));
-    }
+    const ran = runTime(summary, now);
+    if (ran != null) parts.push(duration(ran));
     parts.push(summary.state);
     let last = summary.last || '';
     if (summary.state === 'finished' && summary.report) last = summary.report.split('\n').find((l) => l.trim()) || last;

@@ -389,7 +389,7 @@ async fn run(
             _ = frames.tick(), if dirty => draw_now = true,
             _ = clock.tick() => {
                 let reading = setup.meter.read();
-                let workers = app.transcript.workers().iter().any(|w| w.state.is_active());
+                let workers = app.list_ticks();
                 // (The quit popup's jobs show how long they have run.)
                 let quitting = matches!(app.overlay, Some(overlay::Overlay::Quit { .. }));
                 if reading != app.reading || app.activity.working || workers || app.hint.is_some() || quitting {

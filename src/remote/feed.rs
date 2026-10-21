@@ -389,8 +389,8 @@ pub struct WorkerSummary {
     pub state: WorkerState,
     /// The calls it made, in all its runs.
     pub tool_calls: u32,
-    /// When its latest run started (Unix milliseconds). A continued worker
-    /// counts its time from there.
+    /// When its latest run started (Unix milliseconds). How long it ran in
+    /// all its runs is [`run_time_ms`](Self::run_time_ms).
     pub started_at: Option<i64>,
     /// When its latest run ended.
     pub ended_at: Option<i64>,
