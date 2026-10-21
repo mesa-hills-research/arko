@@ -225,7 +225,6 @@ fn definition(
     }
 }
 
-/// Runs blocking index work off the async threads.
 /// The stop signal of an index's embedding run, fired when the call's
 /// `stop` fires (the turn was stopped, or the job a moved call runs in).
 /// The run goes on on a blocking thread, which a dropped call doesn't stop,
@@ -251,6 +250,7 @@ pub(crate) fn embedding_stop(
     (embedding, working)
 }
 
+/// Runs blocking index work off the async threads.
 async fn blocking<T: Send + 'static>(
     work: impl FnOnce() -> Result<T, String> + Send + 'static,
 ) -> Result<T, ToolError> {

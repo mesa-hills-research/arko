@@ -1858,7 +1858,9 @@ impl Indexes {
 
     /// Creates an index (or updates the settings of the index of the same
     /// directory and kind), builds it, estimates and starts its embedding, and
-    /// watches it when it is monitored (blocking).
+    /// watches it when it is monitored (blocking). For `arko index` and
+    /// tests, since the agents' tools take a stop.
+    #[cfg(any(feature = "tui", test))]
     pub(crate) fn create_blocking(
         self: &Arc<Self>,
         args: &CreateArgs,
@@ -2056,7 +2058,9 @@ impl Indexes {
 
     // ----- manage -----
 
-    /// Runs `action` on the index `name` names (blocking); a report.
+    /// Runs `action` on the index `name` names (blocking), and reports it.
+    /// For `arko index` and tests, since the agents' tools take a stop.
+    #[cfg(any(feature = "tui", test))]
     pub(crate) fn manage_blocking(
         self: &Arc<Self>,
         name: &str,
