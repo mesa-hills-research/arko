@@ -75,6 +75,16 @@ pub const SYMBOLS_TABLE: &[(char, &str, &str)] = &[
     ('▄', "▄", "_"),
 ];
 
+/// A spinner's frames in `symbols`, and how long each shows (in
+/// milliseconds): braille dots where the font has them, else a turning
+/// line.
+pub fn spinner_frames(symbols: Symbols) -> (&'static [&'static str], u64) {
+    match symbols {
+        Symbols::Full => (&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"], 100),
+        Symbols::Basic | Symbols::Ascii => (&["|", "/", "-", "\\"], 200),
+    }
+}
+
 /// The symbols this terminal shows: ARKO_SYMBOLS (in the environment or a
 /// `.env` file), else `basic` in the classic Windows console and `full`
 /// elsewhere.
@@ -192,6 +202,20 @@ mod tests {
         for (symbol, basic, ascii) in SYMBOLS_TABLE {
             assert!(basic.chars().all(wgl4), "{symbol}: {basic:?}");
             assert!(ascii.is_ascii(), "{symbol}: {ascii:?}");
+        }
+    }
+
+    /// The spinner's frames are one column wide, and the stand-ins' are
+    /// ASCII (which the classic console's fonts have too).
+    #[test]
+    fn the_spinner_has_frames_for_every_terminal() {
+        for symbols in [Symbols::Full, Symbols::Basic, Symbols::Ascii] {
+            let (frames, ms) = spinner_frames(symbols);
+            assert!(frames.len() >= 4 && ms >= 80, "{symbols:?}");
+            for frame in frames {
+                assert_eq!(frame.chars().count(), 1, "{frame:?}");
+                assert!(symbols == Symbols::Full || frame.is_ascii(), "{frame:?}");
+            }
         }
     }
 

@@ -898,6 +898,34 @@ mod tests {
         assert_eq!(rows[6], " ● asks you");
     }
 
+    /// "Working…" shows while the agent works and waits on its model, not
+    /// while it asks the user, and the screen is drawn again for its frames
+    /// only while it shows.
+    #[test]
+    fn working_shows_while_the_agent_waits_on_its_model() {
+        let mut app = app();
+        let working = |rows: &[String]| rows.iter().any(|row| row.ends_with(" Working…"));
+        assert!(!working(&screen(&mut app, 50, 10)));
+        assert!(!app.transcript.drawn.moving);
+        let mut activity = Activity {
+            working: true,
+            since: Some(0),
+            question: None,
+        };
+        app.set_activity(activity.clone());
+        let rows = screen(&mut app, 50, 10);
+        assert!(working(&rows), "{rows:?}");
+        assert!(app.transcript.drawn.moving);
+        activity.question = Some(Question {
+            id: 1,
+            text: "Tabs or spaces?".into(),
+        });
+        app.set_activity(activity);
+        let rows = screen(&mut app, 50, 10);
+        assert!(!working(&rows), "{rows:?}");
+        assert!(!app.transcript.drawn.moving);
+    }
+
     #[test]
     fn the_menu_lists_commands_above_the_input() {
         let mut app = app();

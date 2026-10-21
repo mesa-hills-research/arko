@@ -18,6 +18,7 @@
 //! counts what is new.
 
 use std::collections::{HashMap, VecDeque};
+use std::time::{Duration, Instant};
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -25,6 +26,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
 use super::markdown;
+use super::motion;
 use super::theme::Theme;
 use super::wrap::{self, Join, Wrapped, width as text_width};
 use crate::glyphs;
@@ -83,6 +85,8 @@ struct Entry {
     /// A command's block shows its whole output, or an agent's thinking
     /// shows whole (a click opened it).
     open: bool,
+    /// When it came, or last changed (text streamed into it).
+    changed: Instant,
 }
 
 impl Entry {
@@ -91,6 +95,7 @@ impl Entry {
             item,
             cache: None,
             open: false,
+            changed: Instant::now(),
         }
     }
 }
@@ -123,6 +128,41 @@ enum Shown {
         failed: usize,
         running: usize,
     },
+    /// "Working…", at the end, while the agent waits on its model and
+    /// nothing else shows it.
+    Working,
+}
+
+/// The key of the "Working…" line: after every item's.
+const WORKING_KEY: u64 = u64::MAX;
+
+/// Text that hasn't grown for this long, while its agent works, no longer
+/// shows that the agent is under way (it may be writing a long call).
+const QUIET: Duration = Duration::from_secs(2);
+
+/// What an agent that works is under way with, as its latest items say.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Busy {
+    /// It waits on its model, and nothing the model sent shows it yet: a
+    /// turn began, a call's result went back, an answer came.
+    Model,
+    /// Its thinking streams (the item's ID).
+    Thinking(u64),
+    /// Its text streams, last grown at this moment.
+    Text(Instant),
+    /// A call of its runs, which shows it.
+    Tool,
+    /// It replied.
+    Done,
+}
+
+/// What shows that a view's agent is under way, besides its calls.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct Motion {
+    /// Its thinking that streams, by ID: its label moves.
+    thinking: Option<u64>,
+    /// The "Working…" line, at the end.
+    working: bool,
 }
 
 /// A block of lines in the drawn transcript.
@@ -195,6 +235,8 @@ pub struct Drawn {
     pub marker: Option<Rect>,
     /// The keys of the counted turns' lines.
     counters: Vec<u64>,
+    /// Something on the screen moves: it is drawn again at the next frame.
+    pub moving: bool,
 }
 
 impl Drawn {
@@ -243,6 +285,12 @@ pub struct Transcript {
     /// The agents' thinking shows whole from the start (`--show-thinking`),
     /// instead of folded to its first line.
     open_thinking: bool,
+    /// Since when the main agent works (Unix milliseconds), while it isn't
+    /// waiting for the user's answer.
+    pub working: Option<i64>,
+    /// What showed that the agent was under way, as the blocks were last
+    /// made.
+    motion: Motion,
 }
 
 impl Default for Transcript {
@@ -265,6 +313,8 @@ impl Transcript {
             pending_scroll: 0,
             pin: None,
             open_thinking: false,
+            working: None,
+            motion: Motion::default(),
         }
     }
 
@@ -318,6 +368,7 @@ impl Transcript {
                 if let Some(entry) = self.find_mut(id) {
                     entry.item.text.push_str(&text);
                     entry.cache = None;
+                    entry.changed = Instant::now();
                 }
             }
             Update::Change(item) => {
@@ -325,6 +376,7 @@ impl Transcript {
                 if let Some(entry) = self.find_mut(item.id) {
                     entry.item = for_terminal(item);
                     entry.cache = None;
+                    entry.changed = Instant::now();
                 }
             }
             Update::Worker(summary) => match self.workers.iter_mut().find(|w| w.id == summary.id) {
@@ -456,6 +508,73 @@ impl Transcript {
         self.pending_scroll = i64::MIN / 2;
     }
 
+    /// What the agent `agent` is under way with while it works (its turn
+    /// began at `since`, in Unix milliseconds), as its latest items say.
+    fn busy(&self, agent: &str, since: i64) -> Busy {
+        // The calls of one response may run side by side: one that ended
+        // doesn't mean the others did.
+        let mut after_call = false;
+        for entry in self.entries.iter().rev() {
+            let item = &entry.item;
+            if item.agent != agent || item.pending {
+                continue;
+            }
+            match item.kind {
+                Kind::Call if item.status == Some(CallStatus::Running) => return Busy::Tool,
+                Kind::Call | Kind::Result => after_call = true,
+                // Arko's lines, a command's output, the workers' places and
+                // what the user typed beside the agent's work.
+                Kind::Notice | Kind::Output | Kind::WorkerLine => {}
+                Kind::User
+                    if matches!(item.delivery, Some(Delivery::Command | Delivery::Queued)) => {}
+                _ if after_call => return Busy::Model,
+                Kind::Thinking => return Busy::Thinking(item.id),
+                Kind::Text => return Busy::Text(entry.changed),
+                Kind::Reply => return Busy::Done,
+                // The end of a turn before this one began (a turn without a
+                // message, when the workers' news came), or of this one.
+                Kind::Turn if item.at < since => return Busy::Model,
+                Kind::Turn => return Busy::Done,
+                _ => return Busy::Model,
+            }
+        }
+        Busy::Model
+    }
+
+    /// What shows that the agent of `filter`'s view is under way, besides
+    /// its calls: its thinking as it streams, or else "Working…" while it
+    /// waits on its model with nothing else to show.
+    fn motion(&self, filter: &Filter) -> Motion {
+        let (agent, since) = match filter {
+            Filter::Main(_) => (MAIN_AGENT, self.working),
+            Filter::Worker(id) => (
+                id.as_str(),
+                self.worker(id)
+                    .filter(|worker| worker.state == WorkerState::Running)
+                    .map(|_| i64::MIN),
+            ),
+        };
+        let Some(since) = since else {
+            return Motion::default();
+        };
+        // (The Messages view leaves the agent's thinking out.)
+        let thinking_shown = !matches!(filter, Filter::Main(View::Messages));
+        let working = |working| Motion {
+            working,
+            ..Motion::default()
+        };
+        match self.busy(agent, since) {
+            Busy::Model => working(true),
+            Busy::Text(grown) => working(grown.elapsed() >= QUIET),
+            Busy::Thinking(id) if thinking_shown => Motion {
+                thinking: Some(id),
+                working: false,
+            },
+            Busy::Thinking(_) => working(true),
+            Busy::Tool | Busy::Done => Motion::default(),
+        }
+    }
+
     /// The blocks of `filter`'s view of the items, at `width`.
     fn blocks(&mut self, filter: &Filter, theme: &Theme, width: usize) -> Vec<Block> {
         // A worker's own view doesn't name it on every line.
@@ -568,7 +687,39 @@ impl Transcript {
                 lines,
             });
         }
+        self.motion = self.motion(filter);
+        if self.motion.working {
+            // Where the agent's output comes next: above the notes it hasn't
+            // read, which wait at the end.
+            let mut at = blocks.len();
+            while at > 0
+                && matches!(blocks[at - 1].shown, Shown::Entry(index) if self.entries[index].item.pending)
+            {
+                at -= 1;
+            }
+            let before = at.checked_sub(1).map(|last| self.group_of(&blocks[last]));
+            blocks.insert(
+                at,
+                Block {
+                    key: WORKING_KEY,
+                    shown: Shown::Working,
+                    // It stands where the agent's thinking or calls would.
+                    gap: before.is_some_and(|before| before != Group::Activity),
+                    lines: 1,
+                },
+            );
+        }
         blocks
+    }
+
+    /// The kind of block `block` is, for the spacing.
+    fn group_of(&self, block: &Block) -> Group {
+        match &block.shown {
+            Shown::Banner | Shown::Heading(_) => Group::Prose,
+            Shown::Entry(index) if self.entries[*index].item.kind == Kind::Output => Group::Output,
+            Shown::Entry(index) => group(&self.entries[*index].item),
+            _ => Group::Activity,
+        }
     }
 
     /// The entries in the order they are drawn: by ID, except that a
@@ -627,6 +778,13 @@ impl Transcript {
         }
         let blocks = self.blocks(filter, theme, width);
         let total: usize = blocks.iter().map(Block::height).sum();
+        // The lines of text: "Working…" comes and goes without being new.
+        let text_lines = total
+            - blocks
+                .iter()
+                .filter(|block| block.shown == Shown::Working)
+                .map(Block::height)
+                .sum::<usize>();
         let bottom = total.saturating_sub(height);
         // Where each block starts.
         let mut starts = Vec::with_capacity(blocks.len());
@@ -690,7 +848,7 @@ impl Transcript {
                     .as_ref()
                     .is_none_or(|(view, _)| view != filter)
                 {
-                    self.baseline = Some((filter.clone(), total));
+                    self.baseline = Some((filter.clone(), text_lines));
                 }
                 self.anchor = Some(here);
             }
@@ -729,6 +887,8 @@ impl Transcript {
             .saturating_sub(1);
         let mut y = 0usize;
         let mut skip = top.saturating_sub(starts.get(first).copied().unwrap_or(0));
+        let mut moving = false;
+        let ms = motion::clock();
         for (index, block) in blocks.iter().enumerate().skip(first) {
             if y >= height {
                 break;
@@ -756,11 +916,21 @@ impl Transcript {
                         buffer[(area.x + x as u16, row)].set_style(highlight);
                     }
                 }
-                rows[y] = Some(RowRef {
-                    key: block.key,
-                    line,
-                    gap: block.gap && line == 0,
-                });
+                let gap = block.gap && line == 0;
+                if block.shown == Shown::Working {
+                    // (Not text: the mouse finds the line above it.)
+                    if !gap {
+                        let label = text_width(&glyphs::render(WORKING));
+                        motion::paint(buffer, (area.x, row), label, theme, ms);
+                        moving = true;
+                    }
+                } else {
+                    rows[y] = Some(RowRef {
+                        key: block.key,
+                        line,
+                        gap,
+                    });
+                }
                 y += 1;
             }
             skip = 0;
@@ -770,7 +940,7 @@ impl Transcript {
         let new = self
             .baseline
             .as_ref()
-            .map_or(0, |(_, then)| total.saturating_sub(*then));
+            .map_or(0, |(_, then)| text_lines.saturating_sub(*then));
         self.drawn = Drawn {
             area,
             rows,
@@ -781,6 +951,7 @@ impl Transcript {
                 .filter(|block| matches!(block.shown, Shown::Counter { .. }))
                 .map(|block| block.key)
                 .collect(),
+            moving,
         };
         if self.anchor.is_some() && area.height > 0 && top < bottom {
             let text = if new > 0 {
@@ -863,6 +1034,16 @@ impl Transcript {
                     spans.push(Span::styled(" · running".to_string(), theme.dim()));
                 }
                 vec![margin(Line::from(spans))]
+            }
+            // (The spinner goes in the margin as it is drawn.)
+            Shown::Working => {
+                let label = glyphs::render(WORKING).into_owned();
+                let mut line = Wrapped::line(vec![
+                    Span::raw(" ".repeat(MARGIN)),
+                    Span::styled(label, theme.dim().add_modifier(Modifier::BOLD)),
+                ]);
+                line.bare = true;
+                vec![line]
             }
         }
     }
@@ -1278,6 +1459,9 @@ const FOLD_CLOSE: &str = "↑ show the first lines only";
 
 /// The label of an agent's thinking.
 const THINKING: &str = "Thinking";
+
+/// The line that says the agent works, while it waits on its model.
+const WORKING: &str = "Working…";
 
 /// The last line of an agent's thinking shown whole: a click on it folds
 /// it to its first line again.
@@ -2086,6 +2270,179 @@ mod tests {
             rows(&mut shown, &full(), 40, 3),
             ["  Thinking", "  All of it.", "  ↑ show the first line only"]
         );
+    }
+
+    /// Whether `row` is the "Working…" line, its spinner in the margin.
+    fn is_working(row: &str) -> bool {
+        let (frames, _) = glyphs::spinner_frames(glyphs::symbols());
+        let mut chars = row.chars();
+        let spinner = chars.next().map(String::from).unwrap_or_default();
+        frames.contains(&spinner.as_str()) && chars.as_str() == " Working…"
+    }
+
+    /// While the main agent waits on its model with nothing on the screen
+    /// to show it (a turn began, a call's result went back, its text went
+    /// quiet), "Working…" stands at the end. Its thinking, its text as it
+    /// streams and its calls running show it instead, and it goes once
+    /// the agent replied or stopped working.
+    #[test]
+    fn working_shows_while_the_agent_waits_on_its_model() {
+        let mut t = Transcript::new();
+        let last = |t: &mut Transcript, view: View| {
+            let shown = rows(t, &Filter::Main(view), 40, 12);
+            shown
+                .into_iter()
+                .rfind(|row| !row.is_empty())
+                .unwrap_or_default()
+        };
+        let mut user = item(1, Kind::User, "Fix the tests");
+        user.delivery = Some(Delivery::Turn);
+        t.apply(Update::Item(user));
+        assert_eq!(last(&mut t, View::Full), "▎ Fix the tests", "idle");
+        t.working = Some(0);
+        let shown = rows(&mut t, &full(), 40, 3);
+        assert_eq!(shown[..2], ["▎ Fix the tests", ""]);
+        assert!(is_working(&shown[2]), "{shown:?}");
+
+        // Its thinking streams: the thinking shows it, but not in Messages.
+        t.apply(Update::Item(item(2, Kind::Thinking, "Where to start?")));
+        assert_eq!(last(&mut t, View::Full), "  Thinking · Where to start?");
+        assert!(is_working(&last(&mut t, View::Messages)));
+        // A call runs, then ends: the model has its result.
+        let mut call = item(3, Kind::Call, "$ cargo test");
+        call.status = Some(CallStatus::Running);
+        t.apply(Update::Item(call.clone()));
+        assert_eq!(last(&mut t, View::Full), "▸ $ cargo test …");
+        call.status = Some(CallStatus::Ok);
+        t.apply(Update::Change(call));
+        let shown = rows(&mut t, &full(), 40, 5);
+        assert_eq!(shown[3], "▸ $ cargo test · ✓", "no blank line before it");
+        assert!(is_working(&shown[4]), "{shown:?}");
+        assert!(is_working(&last(&mut t, View::Quiet)));
+        assert!(is_working(&last(&mut t, View::Messages)));
+
+        // Two calls side by side: while one runs, it shows the agent works.
+        let mut calls = [
+            item(4, Kind::Call, "read a.rs"),
+            item(5, Kind::Call, "read b.rs"),
+        ];
+        calls[0].status = Some(CallStatus::Running);
+        calls[1].status = Some(CallStatus::Ok);
+        for call in &calls {
+            t.apply(Update::Item(call.clone()));
+        }
+        assert_eq!(last(&mut t, View::Full), "▸ read b.rs · ✓");
+        calls[0].status = Some(CallStatus::Ok);
+        t.apply(Update::Change(calls[0].clone()));
+        assert!(is_working(&last(&mut t, View::Full)));
+
+        // Its text streams, then goes quiet (it writes a long call).
+        t.apply(Update::Item(item(6, Kind::Text, "Fixing the parser.")));
+        assert_eq!(last(&mut t, View::Full), "  Fixing the parser.");
+        let entry = t.entries.back_mut().unwrap();
+        entry.changed -= QUIET;
+        assert!(is_working(&last(&mut t, View::Full)));
+        t.apply(Update::Append {
+            id: 6,
+            text: " Then the tests.".into(),
+        });
+        assert_eq!(
+            last(&mut t, View::Full),
+            "  Fixing the parser. Then the tests."
+        );
+
+        // Its reply ends the turn.
+        t.apply(Update::Item(item(7, Kind::Reply, "All pass.")));
+        assert_eq!(last(&mut t, View::Full), "  All pass.");
+        let turn = item(8, Kind::Turn, "3 s");
+        let ended = turn.at;
+        t.apply(Update::Item(turn));
+        assert_eq!(last(&mut t, View::Full), "  All pass.");
+        t.working = None;
+        assert_eq!(last(&mut t, View::Full), "  All pass.");
+        // A turn that begins without a message (the workers' news came).
+        t.apply(Update::Item(item(
+            9,
+            Kind::Notice,
+            "the workers' news goes to the agent",
+        )));
+        t.working = Some(ended + 1);
+        assert!(is_working(&last(&mut t, View::Full)));
+    }
+
+    /// "Working…" stands where the agent's output comes next: above a
+    /// note the agent hasn't read, which waits at the end.
+    #[test]
+    fn working_stands_above_a_note_waiting_to_be_read() {
+        let mut t = Transcript::new();
+        t.working = Some(0);
+        let mut call = item(1, Kind::Call, "$ make");
+        call.status = Some(CallStatus::Ok);
+        t.apply(Update::Item(call));
+        let mut note = item(2, Kind::User, "Use tabs.");
+        note.delivery = Some(Delivery::Note);
+        note.pending = true;
+        t.apply(Update::Item(note));
+        let shown = rows(&mut t, &full(), 40, 4);
+        assert_eq!(shown[0], "▸ $ make · ✓");
+        assert!(is_working(&shown[1]), "{shown:?}");
+        assert_eq!(shown[2..], ["", "▎ Use tabs.  added to the task"]);
+    }
+
+    /// In a worker's own view, "Working…" says the worker waits on its
+    /// model, from its start. A copy leaves it out, and the marker of
+    /// what is new doesn't count it.
+    #[test]
+    fn working_shows_in_a_workers_view_and_is_not_text() {
+        let mut t = Transcript::new();
+        let mut worker = WorkerSummary {
+            id: "r1".into(),
+            title: "Test it".into(),
+            state: WorkerState::Running,
+            tool_calls: 0,
+            started_at: None,
+            ended_at: None,
+            last: None,
+            report: None,
+            ran_ms: 0,
+            running_since: None,
+        };
+        t.apply(Update::Worker(worker.clone()));
+        let own = Filter::Worker("r1".into());
+        let shown = rows(&mut t, &own, 40, 3);
+        assert!(shown[0].starts_with("  r1 Test it"), "{shown:?}");
+        assert_eq!(shown[1], "");
+        assert!(is_working(&shown[2]), "{shown:?}");
+        // The main agent doesn't work: its view has no such line.
+        assert!(
+            !rows(&mut t, &full(), 40, 3)
+                .iter()
+                .any(|row| is_working(row))
+        );
+        t.apply(Update::Item(item(1, Kind::Text, "Reading.").agent("r1")));
+        t.apply(Update::Item(item(2, Kind::Result, "done").agent("r1")));
+        let shown = rows(&mut t, &own, 40, 5);
+        assert!(is_working(&shown[4]), "{shown:?}");
+        // Selected to the end, it isn't copied.
+        assert_eq!(shown[1], "  Reading.");
+        let (from, to) = (t.point_at(0, 1).unwrap(), t.point_at(39, 4).unwrap());
+        t.select(from, to, &own);
+        assert_eq!(
+            t.selected_text(&own, &Theme::terminal()).unwrap(),
+            "Reading.\n\ndone"
+        );
+        assert_eq!(t.drawn.key_at(4, 4), None);
+        // Scrolled up, it isn't counted as new.
+        t.selection = None;
+        rows(&mut t, &own, 40, 2);
+        t.scroll(-1);
+        let scrolled = rows(&mut t, &own, 40, 2);
+        assert!(scrolled[1].ends_with("↓ end"), "{scrolled:?}");
+        worker.state = WorkerState::Finished;
+        t.apply(Update::Worker(worker));
+        t.follow();
+        let shown = rows(&mut t, &own, 40, 5);
+        assert!(!shown.iter().any(|row| is_working(row)), "{shown:?}");
     }
 
     /// The user's messages sit on a band the width of the screen. The

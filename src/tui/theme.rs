@@ -112,6 +112,29 @@ impl Rgb {
     }
 }
 
+/// `color` as red, green and blue, where it says them: a 24-bit colour, or
+/// one of xterm's 256 past the first 16 (which follow the terminal's
+/// palette).
+fn rgb(color: Color) -> Option<Rgb> {
+    const LEVELS: [u8; 6] = [0, 95, 135, 175, 215, 255];
+    match color {
+        Color::Rgb(r, g, b) => Some(Rgb(r, g, b)),
+        Color::Indexed(index @ 16..=231) => {
+            let cube = index - 16;
+            Some(Rgb(
+                LEVELS[usize::from(cube / 36)],
+                LEVELS[usize::from(cube / 6 % 6)],
+                LEVELS[usize::from(cube % 6)],
+            ))
+        }
+        Color::Indexed(index @ 232..=255) => {
+            let gray = 8 + 10 * (index - 232);
+            Some(Rgb(gray, gray, gray))
+        }
+        _ => None,
+    }
+}
+
 /// How many colours the terminal shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Depth {
@@ -451,6 +474,25 @@ impl Theme {
         }
     }
 
+    /// Dim text lit `amount` of the way (0 to 1) to the text's colour: the
+    /// highlight that sweeps across what is under way. Where there are no
+    /// colours to blend (the terminal's own), it is dim, or past halfway
+    /// the text's.
+    pub fn lit(&self, amount: f64) -> Style {
+        let amount = amount.clamp(0.0, 1.0);
+        match (rgb(self.dim), rgb(self.text)) {
+            (Some(dim), Some(text)) => {
+                let color = dim.mix(text, amount);
+                Style::new().fg(match self.dim {
+                    Color::Indexed(_) => Color::Indexed(color.xterm256()),
+                    _ => Color::Rgb(color.0, color.1, color.2),
+                })
+            }
+            _ if amount >= 0.5 => Style::new().fg(self.text).remove_modifier(Modifier::DIM),
+            _ => self.dim(),
+        }
+    }
+
     pub fn accent(&self) -> Style {
         Style::new().fg(self.accent)
     }
@@ -673,6 +715,27 @@ mod tests {
         assert_eq!(Rgb(0xDE, 0xDE, 0xDE).xterm256(), 253);
         assert_eq!(Rgb(0x07, 0x7C, 0xFD).xterm256(), 33);
         assert_eq!(Rgb(0xF9, 0xF9, 0xF9).xterm256(), 231);
+    }
+
+    /// The highlight blends dim text into the text's colour in 24-bit and
+    /// 256 colours, and in the terminal's own colours it is dim or not.
+    #[test]
+    fn the_highlight_lights_dim_text_up_to_the_texts_colour() {
+        let catalog = Catalog::load(None);
+        let rgb = catalog.theme(DEFAULT, Depth::Rgb);
+        assert_eq!(rgb.lit(0.0).fg, Some(rgb.dim));
+        assert_eq!(rgb.lit(1.0).fg, Some(rgb.text));
+        let between = rgb.lit(0.5).fg;
+        assert!(matches!(between, Some(Color::Rgb(..))), "{between:?}");
+        assert!(between != Some(rgb.dim) && between != Some(rgb.text));
+        let indexed = catalog.theme(DEFAULT, Depth::Ansi256);
+        assert_eq!(indexed.lit(0.0).fg, Some(indexed.dim));
+        assert_eq!(indexed.lit(1.0).fg, Some(indexed.text));
+        let terminal = Theme::terminal();
+        assert_eq!(terminal.lit(0.2), terminal.dim());
+        let lit = terminal.lit(0.8);
+        assert_eq!(lit.fg, Some(terminal.text));
+        assert!(lit.sub_modifier.contains(Modifier::DIM));
     }
 
     /// Every bundled variant reads: its text, dim text, accent and

@@ -204,6 +204,12 @@ pub fn list_rows(
     ListWindow { rows, scroll, most }
 }
 
+/// Since when the main agent works (Unix milliseconds), unless it waits
+/// for the user's answer (not on its model).
+fn agent_works_since(activity: &Activity) -> Option<i64> {
+    (activity.working && activity.question.is_none()).then(|| activity.since.unwrap_or(i64::MIN))
+}
+
 /// The view's state.
 pub struct App {
     pub transcript: Transcript,
@@ -309,6 +315,7 @@ impl App {
         let mouse = prefs.mouse.unwrap_or(true);
         let mut transcript = Transcript::new();
         let activity = snapshot.activity.clone();
+        transcript.working = agent_works_since(&activity);
         transcript.reset(snapshot);
         Self {
             transcript,
@@ -695,6 +702,7 @@ impl App {
         {
             self.say("The question was answered elsewhere. Your text is a message now");
         }
+        self.transcript.working = agent_works_since(&activity);
         self.activity = activity;
         !self.focused && (asked || finished)
     }
