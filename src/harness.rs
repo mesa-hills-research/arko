@@ -376,6 +376,9 @@ pub(crate) struct Harness {
     /// When the shell's commands move to the background, and those running
     /// (`/background-after`, Ctrl+B).
     pub(crate) background: Arc<shell::Background>,
+    /// The main agent was told which of its background jobs Arko's last
+    /// stop ended (or none were): it is, once per session.
+    pub(crate) interrupted_told: bool,
 }
 
 impl Harness {
@@ -3200,9 +3203,10 @@ impl Harness {
                 self.keep_unread(unread, true);
                 // Its task keeps that update for the next turn, which the
                 // job starts as if it finished now.
+                let jobs = self.background.manager();
                 input.late = finished
                     .into_iter()
-                    .find(|job| waits_with(&result.task, job));
+                    .find(|job| waits_with(&result.task, job, jobs.as_deref()));
                 self.conversation = Conversation::Answered(result);
                 self.track_conversations();
                 self.retitle(retitle);
@@ -3621,8 +3625,11 @@ impl Harness {
         if let Some(notice) = &self.unoffered {
             parts.push(format!("# Session capabilities\n\n{notice}"));
         }
+        if let Some(stopped) = self.interrupted_jobs() {
+            parts.push(stopped);
+        }
         if jobs {
-            parts.push("A background job of yours finished after your last turn ended: its terminal update follows. (Arko started this turn for it. The user hasn't written.)".to_string());
+            parts.push("A background job of yours finished after your last turn ended. Its update follows. (Arko started this turn for it. The user hasn't written.)".to_string());
         }
         match message {
             Some(message) if parts.is_empty() => message,
@@ -3635,6 +3642,45 @@ impl Harness {
             }
             None => parts.join("\n\n"),
         }
+    }
+
+    /// The main agent's background jobs that were running when Arko last
+    /// stopped, which don't start again, for its first message since: once
+    /// per session.
+    fn interrupted_jobs(&mut self) -> Option<String> {
+        // (A new conversation has no jobs yet.)
+        let run = match &self.conversation {
+            Conversation::New => return None,
+            Conversation::Answered(result) => result.agent_run_id,
+            Conversation::Stopped(run) => run.result.agent_run_id,
+        };
+        if std::mem::replace(&mut self.interrupted_told, true) {
+            return None;
+        }
+        let lines: Vec<String> = self
+            .background
+            .manager()?
+            .interrupted_at_open()
+            .into_iter()
+            .filter(|job| job.owner == run)
+            .map(|job| {
+                let id = job.job_id.to_string();
+                let id = &id[..8];
+                match &job.kind {
+                    arko_agents::terminal::JobKind::Call { tool_name } => {
+                        format!("- your {tool_name} call (job {id}…)")
+                    }
+                    _ if job.label.trim().is_empty() => format!("- a command (job {id}…)"),
+                    _ => format!("- `{}` (job {id}…)", jobs_label(&job.label)),
+                }
+            })
+            .collect();
+        (!lines.is_empty()).then(|| {
+            format!(
+                "# Background jobs\n\nArko was closed, so these background jobs of yours stopped, and they don't start again on their own. Start again any you still need.\n{}",
+                lines.join("\n")
+            )
+        })
     }
 
     /// Keeps the notes the run never read for the agent. After a reply
@@ -4679,6 +4725,7 @@ pub(crate) mod tests {
             outside,
             handover,
             background,
+            interrupted_told: false,
         };
         harness.open(false).unwrap();
         let inputs = Inputs {

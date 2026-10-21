@@ -886,6 +886,7 @@ impl Engine {
             outside,
             handover,
             background: managers.background.clone(),
+            interrupted_told: false,
         };
         // A chat has no project.
         if !chat {

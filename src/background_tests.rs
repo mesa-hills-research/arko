@@ -702,3 +702,129 @@ async fn the_page_moves_a_call_and_jobs_lists_and_stops_it() {
     );
     managers.shutdown().await;
 }
+
+/// A job's update that came too late for the agent's last turn is found by
+/// the job's ID, whatever its form (a command's terminal update, a moved
+/// call's note), and also when no runtime got it.
+#[tokio::test]
+async fn an_update_that_came_too_late_is_found_by_its_job() {
+    let temp = tempfile::tempdir().unwrap();
+    let server = ModelServer::start(Arc::new(|_, _| Box::pin(async { complete("m1", "Done.") }))).await;
+    let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
+    let managers = equip(&mut harness, &mut inputs, 0);
+    let mut task = arko_agents::Task::new(
+        harness.main_config.clone(),
+        "Look it up.".into(),
+        harness.settings.workspace.clone(),
+        None,
+    );
+    let owner = task.id;
+    let finished = |job_id| arko_agents::terminal::JobFinished {
+        owner,
+        job_id,
+        state: arko_agents::terminal::JobState::Succeeded,
+    };
+    let late = uuid::Uuid::new_v4();
+    assert!(!waits_with(&task, &finished(late), Some(&managers.jobs)));
+    task.pending_context_injections.push(format!(
+        "Job {late} ended. It ran your slow_lookup call, which moved to the background 1 min ago. Its result follows.\n\nFound 3 matches."
+    ));
+    assert!(waits_with(&task, &finished(late), Some(&managers.jobs)));
+
+    // An update the manager keeps for the owner's next runtime.
+    let kept = managers
+        .jobs
+        .adopt_call(
+            owner,
+            uuid::Uuid::new_v4(),
+            "slow_lookup",
+            "slow_lookup".into(),
+            arko_agents::StopSource::new(),
+            Box::pin(async { arko_agents::terminal::CallOutput::text("Found it.") }),
+        )
+        .unwrap();
+    until(|| managers.jobs.has_news(owner)).await;
+    task.pending_context_injections.clear();
+    assert!(waits_with(&task, &finished(kept.job_id), Some(&managers.jobs)));
+    assert!(!waits_with(&task, &finished(kept.job_id), None));
+    managers.shutdown().await;
+}
+
+/// After Arko stopped with jobs of the main agent's running, its first
+/// message in the session that opens again says which stopped, once.
+#[tokio::test]
+async fn the_first_message_after_a_restart_names_the_jobs_that_stopped() {
+    let bodies: Bodies = Arc::default();
+    let server = ModelServer::start(Arc::new({
+        let bodies = bodies.clone();
+        move |_, body: String| {
+            bodies.lock().unwrap().push(body);
+            Box::pin(async { complete("m1", "Done.") })
+        }
+    }))
+    .await;
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
+    assert!(matches!(
+        harness.turn(Prompt::User("Start.".into()), &mut inputs).await,
+        TurnEnd::Answered
+    ));
+    let run = match &harness.conversation {
+        Conversation::Answered(result) => result.agent_run_id,
+        _ => unreachable!(),
+    };
+    // The jobs' records as the last Arko left them, running.
+    let jobs_dir = harness.session.jobs_dir();
+    let (call, command, other) = (uuid::Uuid::new_v4(), uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+    for (id, owner, extra) in [
+        (call, run, serde_json::json!({"label": "index_create", "call": {"tool_name": "index_create"}})),
+        (command, run, serde_json::json!({"label": "cargo build --release"})),
+        // A worker's, which the main agent isn't told of.
+        (other, uuid::Uuid::new_v4(), serde_json::json!({"label": "npm test"})),
+    ] {
+        let mut record = serde_json::json!({
+            "job_id": id, "owner": owner, "revision": 1, "state": "running", "input": null,
+            "exit_code": null, "error": null, "terminal": false, "output_end": 0,
+            "log_truncated": false,
+        });
+        record
+            .as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        std::fs::create_dir_all(jobs_dir.join(id.to_string())).unwrap();
+        std::fs::write(
+            jobs_dir.join(id.to_string()).join("job.json"),
+            record.to_string(),
+        )
+        .unwrap();
+    }
+    // The terminal opens as a resumed session's does, with its conversation
+    // there.
+    let managers = Managers::open(&harness.session, &Shell::detect(WindowsShell::Cmd)).unwrap();
+    harness.background = managers.background.clone();
+    assert!(matches!(
+        harness.turn(Prompt::User("Go on.".into()), &mut inputs).await,
+        TurnEnd::Answered
+    ));
+    let body = body_with(&bodies, "Go on.");
+    let short = |id: uuid::Uuid| id.to_string()[..8].to_string();
+    assert!(
+        body.contains("# Background jobs\\n\\nArko was closed, so these background jobs of yours stopped, and they don't start again on their own. Start again any you still need."),
+        "{body}"
+    );
+    assert!(body.contains(&format!("- your index_create call (job {}…)", short(call))), "{body}");
+    assert!(body.contains(&format!("- `cargo build --release` (job {}…)", short(command))), "{body}");
+    assert!(!body.contains("npm test"), "{body}");
+    assert!(matches!(
+        harness.turn(Prompt::User("Once more.".into()), &mut inputs).await,
+        TurnEnd::Answered
+    ));
+    // Once: the next message has only the earlier one's.
+    assert_eq!(
+        body_with(&bodies, "Once more.")
+            .matches("# Background jobs")
+            .count(),
+        1
+    );
+    managers.shutdown().await;
+}
