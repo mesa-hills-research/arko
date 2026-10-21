@@ -2,7 +2,7 @@
 # The command and the library are both `arko`. The name `arko` on crates.io
 # belongs to another project.
 name = "arko-tui"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.89"
 description = "A general-purpose agent for the terminal, with a shell, background jobs, file tools and workers that run in parallel"
@@ -42,8 +42,8 @@ testing = []
 # The framework, from crates.io. CONTRIBUTING.md shows how to build against
 # a local checkout of it.
 arko_ai = "0.1.0"
-arko_agents = "0.1.1"
-arko_workflows = "0.1.0"
+arko_agents = "0.1.2"
+arko_workflows = "0.1.1"
 arko_index = "0.3.0"
 
 async-trait = "0.1.79"

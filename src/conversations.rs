@@ -513,6 +513,7 @@ impl Harness {
                 latest.task.agent_config.tool_config.ends_task_with_text(),
                 &self.images,
             ));
+            self.end_restored_jobs(latest.agent_run_id);
         }
         let next = match &self.conversation {
             Conversation::Answered(result) if result.task.conversation.messages.is_empty() => {

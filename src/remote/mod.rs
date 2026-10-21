@@ -35,10 +35,10 @@ use tokio::sync::mpsc;
 
 // The page's server and the terminal's full-screen view are both clients
 // of the feed.
-#[allow(unused_imports)]
 pub use feed::{
-    Activity, Batches, CallStatus, Delivery, Feed, Item, Kind, Level, MAIN_AGENT, Question,
-    REFRESH_MESSAGE, Snapshot, Source, Update, WorkerChange, WorkerState, WorkerSummary,
+    Activity, Batches, CallStatus, Delivery, Feed, Item, JobKind, JobStart, JobState, JobSummary,
+    Kind, Level, MAIN_AGENT, Question, REFRESH_MESSAGE, Snapshot, Source, Update, WorkerChange,
+    WorkerState, WorkerSummary,
 };
 pub(crate) use history::all_items;
 pub use history::items as history;
@@ -48,6 +48,7 @@ pub use links::Kind as LinkKind;
 pub use links::{HOST_VARIABLE, Interface, Link};
 #[cfg(not(feature = "remote"))]
 pub use no_server::Server;
+pub(crate) use render::duration_words;
 #[cfg(feature = "remote")]
 pub use server::Server;
 
@@ -73,6 +74,7 @@ pub const KEY_FILE: &str = "remote.key";
 /// What the page asks of the session.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(not(feature = "remote"), allow(dead_code))]
+#[non_exhaustive]
 pub enum Action {
     /// A message, as if typed at the prompt. It's a note while the agent
     /// works, a new turn when it is idle, the answer to its question, or a
@@ -82,6 +84,12 @@ pub enum Action {
     Answer { question: u64, text: String },
     /// Stops the turn, as Ctrl-C does.
     Stop,
+    /// Moves the running call `item` (a call item [`Reading::movable`]
+    /// lists) to the background, or with `None` the main agent's calls
+    /// that can move, as Ctrl+B does.
+    Background { item: Option<u64> },
+    /// Stops the background job `job` (as [`JobSummary::id`] names it).
+    StopJob { job: uuid::Uuid },
 }
 
 /// Reads what the page's status shows of the session as it asks.
@@ -115,10 +123,15 @@ pub struct Reading {
     pub workers: Option<String>,
     /// The settings a client may change (with commands).
     pub settings: LiveSettings,
-    /// The agents running a shell command now, which Ctrl+B moves to the
-    /// background, as [`MAIN_AGENT`] or a worker's ID.
+    /// The agents running a call now that can move to the background (a
+    /// shell command, an MCP tool's call), which Ctrl+B moves, as
+    /// [`MAIN_AGENT`] or a worker's ID.
     #[serde(skip)]
     pub commands: Vec<String>,
+    /// The feed items of the calls running now that can move to the
+    /// background, for a client that offers to move one
+    /// (`Request::MoveCall`, the page's Move to background).
+    pub movable: Vec<u64>,
     /// The jobs running in the background, which stop when Arko exits. The
     /// full-screen view's quit popup shows them. (The page can't quit Arko.)
     #[serde(skip)]

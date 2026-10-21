@@ -31,7 +31,7 @@ pub(crate) struct Inputs {
     pub(crate) finished:
         Option<tokio::sync::broadcast::Receiver<arko_agents::terminal::JobFinished>>,
     /// A job that finished during the agent's last turn, too late for it
-    /// to read the update (see `waits_with`).
+    /// to read its update (see `waits_with`).
     pub(crate) late: Option<arko_agents::terminal::JobFinished>,
 }
 
@@ -163,19 +163,21 @@ pub(crate) fn unread_notes(notes: &[(u64, String)], workflow: &Workflow) -> Vec<
         .collect()
 }
 
-/// Whether the terminal update of `job` came while the agent made its last
-/// request, too late for it to read: its task keeps it for the next turn.
-/// shortcut: misses an update the turn's runtime ended before it was sent
-/// (it goes with the next message), upgrade with a TerminalManager query
-/// if that shows up.
+/// Whether the update of `job` (a command's terminal update, a moved
+/// call's note) came too late for the agent to read in its last turn. It
+/// came while the agent made its last request, and its task keeps it for
+/// the next turn. Or the turn's runtime ended before it was sent, and the
+/// manager (`jobs`) keeps it for the next runtime (`has_news`).
 pub(crate) fn waits_with(
     task: &arko_agents::Task,
     job: &arko_agents::terminal::JobFinished,
+    jobs: Option<&arko_agents::terminal::TerminalManager>,
 ) -> bool {
     let id = job.job_id.to_string();
     task.pending_context_injections
         .iter()
-        .any(|content| content.starts_with("Terminal update:") && content.contains(&id))
+        .any(|content| content.contains(&id))
+        || jobs.is_some_and(|jobs| jobs.has_news(job.owner))
 }
 
 /// The crew's next wake-up; never, without a crew.

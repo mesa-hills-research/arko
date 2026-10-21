@@ -105,7 +105,7 @@ pub const COMMANDS: &[Command] = &[
     Command::screen(
         "/settings",
         "",
-        "the view, theme, mouse, outside access, handover size, background commands, text replies, extra rules, Claude Code compaction, project instructions, web page and API keys",
+        "the view, theme, mouse, outside access, handover size, background jobs, text replies, extra rules, Claude Code compaction, project instructions, web page and API keys",
     ),
     Command {
         name: "/model",
@@ -139,9 +139,16 @@ pub const COMMANDS: &[Command] = &[
         runs: Runs::Session,
     },
     Command {
+        name: "/jobs",
+        args: "[stop N|all]",
+        about: "the background jobs, and stopping them (/jobs stop 2, /jobs stop all)",
+        aliases: &[],
+        runs: Runs::Session,
+    },
+    Command {
         name: "/background-after",
         args: "DURATION|off",
-        about: "when a shell command still running moves to the background, where it goes on as a job and the agent goes on with its work (/background-after 10m, /background-after off)",
+        about: "when a shell command or another long call still running moves to the background, where it goes on as a job and the agent goes on with its work (/background-after 10m, /background-after off)",
         aliases: &[],
         runs: Runs::Session,
     },
@@ -228,6 +235,8 @@ const CHOICES: &[(&str, &[&str], &[&str])] = &[
     ("/view", &[], &["full", "quiet", "messages"]),
     ("/outside", &[], ON_OFF),
     ("/background-after", &[], &["off"]),
+    ("/jobs", &[], &["stop"]),
+    ("/jobs", &["stop"], &["all"]),
     ("/text-replies", &[], ON_OFF),
     ("/cc-compact", &[], ON_OFF),
     ("/extra-rules", &[], &["small", "all", "off"]),

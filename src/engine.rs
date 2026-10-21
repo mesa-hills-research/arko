@@ -134,6 +134,16 @@ pub enum Request {
     /// Gives the session this name, also during a turn. An empty name gives
     /// it back its conversation's.
     Rename { title: String, reply: Reply<()> },
+    /// Moves the running call `item` (a `Kind::Call` item that
+    /// `Reading::movable` lists) to the background, as Ctrl+B does for the
+    /// agent shown. The call is answered with its job's ID, the agent goes
+    /// on, and the call's result reaches it as a note. `Err` says why it
+    /// can't move now (it ended, or it isn't one that can move).
+    MoveCall { item: u64, reply: Reply<()> },
+    /// Stops the background job `job` (as `JobSummary::id` names it) for the
+    /// user. Its agent hears of it with its next turn, and an idle agent
+    /// isn't woken. `Err` when it isn't running.
+    StopJob { job: uuid::Uuid, reply: Reply<()> },
     /// A chat's instructions from the user (`None` for none), for its next
     /// conversations. They apply from the chat's first message, or else
     /// from its next new conversation, as the one it is in keeps its own. A
@@ -377,6 +387,8 @@ pub struct Engine {
     _alone: Option<Alone>,
     /// Sends the status as it changes.
     publisher: tokio::task::JoinHandle<()>,
+    /// Keeps the feed's background jobs in step with the terminal's.
+    jobs: tokio::task::JoinHandle<()>,
     harness: Harness,
     inputs: Inputs,
     managers: Managers,
@@ -774,6 +786,7 @@ impl Engine {
             extra_rules: Default::default(),
             project: Default::default(),
             background: managers.background.clone(),
+            feed: Some(feed.clone()),
             page: Mutex::default(),
             changed: Default::default(),
             title: Default::default(),
@@ -863,6 +876,7 @@ impl Engine {
             one_shot,
             exit_warned: false,
             jobs_shown: Vec::new(),
+            jobs_listed: Vec::new(),
             quit_popup: None,
             news_hint_shown: false,
             feed,
@@ -873,6 +887,7 @@ impl Engine {
             outside,
             handover,
             background: managers.background.clone(),
+            interrupted_told: false,
         };
         // A chat has no project.
         if !chat {
@@ -934,10 +949,12 @@ impl Engine {
             show_thinking: harness.settings.show_thinking,
         };
         let publisher = harness.gauges.publish(&harness.feed);
+        let jobs = crate::jobs::follower(&harness.gauges, &harness.feed);
         let engine = Engine {
             _lock: lock,
             _alone: alone,
             publisher,
+            jobs,
             harness,
             inputs,
             managers,
@@ -1020,6 +1037,7 @@ impl Engine {
     /// terminal's jobs. The session is saved as it goes.
     pub async fn shutdown(self) {
         self.publisher.abort();
+        self.jobs.abort();
         let mut harness = self.harness;
         let output = harness.output.clone();
         if harness.remote.is_some() {
@@ -1039,11 +1057,14 @@ impl Engine {
             }
             crew.shutdown().await;
         }
+        // The background jobs stop before the MCP servers and the indexes
+        // their moved calls wait on, so the jobs are saved as stopped by the
+        // exit, and the session continued later names them.
+        self.managers.shutdown().await;
         harness.mcp.shutdown().await;
         if let Some(indexes) = &harness.indexes {
             indexes.shutdown().await;
         }
-        self.managers.shutdown().await;
         harness.gauges.release();
     }
 }

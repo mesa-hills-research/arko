@@ -180,6 +180,8 @@ fn router(app: Arc<App>) -> Router {
         .route("/api/message", axum::routing::post(message))
         .route("/api/answer", axum::routing::post(answer))
         .route("/api/stop", axum::routing::post(stop))
+        .route("/api/background", axum::routing::post(background))
+        .route("/api/jobs/stop", axum::routing::post(stop_job))
         .route("/api/links", get(links))
         .layer(DefaultBodyLimit::max(MAX_BODY))
         .layer(axum::middleware::map_response(harden))
@@ -492,9 +494,10 @@ async fn session_open(
 }
 
 /// `GET /api/events`: the stream. It starts with `reset` (the history, the
-/// workers and the status), then sends `item` (a new item), `append` (more
-/// text for an item), `change` (an item, changed: a call's outcome),
-/// `worker` (a worker's summary) and `status` events. A stream that falls
+/// workers, the background jobs and the status), then sends `item` (a new
+/// item), `append` (more text for an item), `change` (an item, changed: a
+/// call's outcome), `worker` (a worker's summary), `job` (a background
+/// job's summary) and `status` events. A stream that falls
 /// behind starts over with a `reset`.
 async fn events(
     State(app): State<Arc<App>>,
@@ -545,6 +548,7 @@ impl Stream {
                 serde_json::json!({
                     "items": snapshot.items,
                     "workers": snapshot.workers,
+                    "jobs": snapshot.jobs,
                     "status": status,
                 })
                 .to_string(),
@@ -588,6 +592,11 @@ impl Stream {
                 Event::default()
                     .event("remove")
                     .data(serde_json::json!({ "id": id }).to_string()),
+            ),
+            Update::Job(summary) => self.pending.push_back(
+                Event::default()
+                    .event("job")
+                    .data(serde_json::to_string(&summary).unwrap_or_default()),
             ),
             // The page starts over from the history as it is now.
             Update::Truncate { .. } => self.reset(),
@@ -759,6 +768,55 @@ async fn stop(
         return refusal.into_response();
     }
     app.act(Action::Stop)
+}
+
+#[derive(Deserialize)]
+struct BackgroundBody {
+    #[serde(default)]
+    item: Option<u64>,
+}
+
+/// `POST /api/background` with `{"item": ID}`: moves that running call to
+/// the background, or with `{}` the main agent's calls that can move.
+async fn background(
+    State(app): State<Arc<App>>,
+    ConnectInfo(peer): Peer,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    if let Err(refusal) = app.authorize(&headers, peer.ip()) {
+        return refusal.into_response();
+    }
+    let body = if body.is_empty() {
+        Ok(BackgroundBody { item: None })
+    } else {
+        serde_json::from_slice::<BackgroundBody>(&body)
+    };
+    let Ok(body) = body else {
+        return (StatusCode::BAD_REQUEST, error_body("send {\"item\": ID}")).into_response();
+    };
+    app.act(Action::Background { item: body.item })
+}
+
+#[derive(Deserialize)]
+struct StopJobBody {
+    job: uuid::Uuid,
+}
+
+/// `POST /api/jobs/stop` with `{"job": ID}`: stops that background job.
+async fn stop_job(
+    State(app): State<Arc<App>>,
+    ConnectInfo(peer): Peer,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    if let Err(refusal) = app.authorize(&headers, peer.ip()) {
+        return refusal.into_response();
+    }
+    let Ok(body) = serde_json::from_slice::<StopJobBody>(&body) else {
+        return (StatusCode::BAD_REQUEST, error_body("send {\"job\": ID}")).into_response();
+    };
+    app.act(Action::StopJob { job: body.job })
 }
 
 #[cfg(test)]
@@ -1214,6 +1272,28 @@ mod tests {
         assert_eq!(events[0].1["pending"], true);
         assert_eq!(events[1].1["id"], events[0].1["id"]);
         assert_eq!(events[2].1["text"], "Also the docs.");
+
+        // A background job's summary comes as `job`, and a page that
+        // connects later gets the jobs with the history.
+        let job = uuid::Uuid::new_v4();
+        feed.job_started(super::super::JobStart {
+            id: job,
+            agent: "main".into(),
+            tool_call: None,
+            kind: super::super::JobKind::Call,
+            label: "index_create".into(),
+            started_at: 0,
+        });
+        let events = read_until(&mut stream, &mut buffer, |name, _| name == "job").await;
+        let (_, summary) = events.last().unwrap();
+        assert_eq!(summary["id"], job.to_string());
+        assert_eq!(summary["kind"], "call");
+        assert_eq!(summary["state"], "running");
+        assert_eq!(summary["label"], "index_create");
+        let mut later = served.get("/api/events", Some(&cookie)).await;
+        let mut buffer = String::new();
+        let events = read_until(&mut later, &mut buffer, |name, _| name == "reset").await;
+        assert_eq!(events.last().unwrap().1["jobs"][0]["id"], job.to_string());
     }
 
     /// The page's Model row names the model the session runs now, not the
@@ -1346,6 +1426,40 @@ mod tests {
         let response = served.post("/api/stop", Some(&cookie), "").await;
         assert_eq!(response.status(), StatusCode::ACCEPTED);
         assert_eq!(served.actions.recv().await.unwrap(), Action::Stop);
+
+        // Move to background, for one call or the main agent's, and a job's
+        // Stop.
+        for (body, item) in [(r#"{"item": 12}"#, Some(12)), ("", None), ("{}", None)] {
+            let response = served.post("/api/background", Some(&cookie), body).await;
+            assert_eq!(response.status(), StatusCode::ACCEPTED);
+            assert_eq!(
+                served.actions.recv().await.unwrap(),
+                Action::Background { item }
+            );
+        }
+        let job = uuid::Uuid::new_v4();
+        let response = served
+            .post(
+                "/api/jobs/stop",
+                Some(&cookie),
+                &format!(r#"{{"job": "{job}"}}"#),
+            )
+            .await;
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        assert_eq!(
+            served.actions.recv().await.unwrap(),
+            Action::StopJob { job }
+        );
+        for (path, body) in [
+            ("/api/jobs/stop", r#"{"job": "nine"}"#),
+            ("/api/background", r#"{"item": "first"}"#),
+        ] {
+            let response = served.post(path, Some(&cookie), body).await;
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{path}");
+        }
+        // Without the session's cookie, nothing moves or stops.
+        let response = served.post("/api/background", None, "{}").await;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
     /// A stopped server ends its streams, and its cookies don't open the

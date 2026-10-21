@@ -80,6 +80,38 @@ pub struct IndexFacts {
 }
 
 impl IndexFacts {
+    /// The index `name`, of `kind`, of the folder `root`, with nothing else
+    /// known yet. It isn't monitored or built, and is searched by keywords.
+    /// The fields are public, so an app sets the others (in its tests or
+    /// previews, say).
+    ///
+    /// ```
+    /// use arko::details::{IndexEmbeddings, IndexFacts, IndexKind, IndexWatch};
+    ///
+    /// let mut index = IndexFacts::new("app", IndexKind::Code, "/work/app");
+    /// index.watch = IndexWatch::Here;
+    /// index.chunks = Some(1_200);
+    /// let mut embeddings = IndexEmbeddings::new("voyage-code-4");
+    /// embeddings.embedded = 1_200;
+    /// embeddings.complete = true;
+    /// index.embeddings = Some(embeddings);
+    /// assert!(index.monitored());
+    /// ```
+    pub fn new(name: impl Into<String>, kind: IndexKind, root: impl Into<PathBuf>) -> Self {
+        Self {
+            name: name.into(),
+            kind,
+            root: root.into(),
+            monitor: false,
+            watch: IndexWatch::Off,
+            chunks: None,
+            built: None,
+            files: None,
+            embeddings: None,
+            last_error: None,
+        }
+    }
+
     /// An Arko keeps the index current as files change (this one or
     /// another), which is what the banner calls monitored.
     pub fn monitored(&self) -> bool {
@@ -145,6 +177,23 @@ pub struct IndexEmbeddings {
     /// dollars.
     pub tokens: u64,
     pub dollars: f64,
+}
+
+impl IndexEmbeddings {
+    /// Embeddings by the model `model`, none made yet. The fields are
+    /// public, so an app sets the others. See [`IndexFacts::new`].
+    pub fn new(model: impl Into<String>) -> Self {
+        Self {
+            model: model.into(),
+            embedded: 0,
+            complete: false,
+            running: false,
+            cap_reached: false,
+            needs_key: false,
+            tokens: 0,
+            dollars: 0.0,
+        }
+    }
 }
 
 /// The facts of the indexes `indexes` reads as the workspace's.
@@ -579,6 +628,28 @@ fn switch_cost(settings: &Settings, tokens: usize) -> SwitchCost {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An app can make an index's facts and its embeddings, which start with
+    /// nothing known.
+    #[test]
+    fn index_facts_and_embeddings_can_be_made() {
+        let facts = IndexFacts::new("docs", IndexKind::Docs, "/work/docs");
+        assert_eq!(
+            (facts.name.as_str(), facts.kind, facts.root.as_path()),
+            ("docs", IndexKind::Docs, std::path::Path::new("/work/docs"))
+        );
+        assert!(!facts.monitor && !facts.monitored());
+        assert!(facts.chunks.is_none() && facts.built.is_none() && facts.embeddings.is_none());
+        let embeddings = IndexEmbeddings::new("voyage-4");
+        assert_eq!(
+            (
+                embeddings.model.as_str(),
+                embeddings.embedded,
+                embeddings.complete
+            ),
+            ("voyage-4", 0, false)
+        );
+    }
 
     /// A switch costs writing the conversation to the cache again: at the
     /// model's write price, or nothing on a plan.

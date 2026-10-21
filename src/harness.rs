@@ -339,6 +339,9 @@ pub(crate) struct Harness {
     /// The background jobs the line prompt's last `/exit` warned of: the
     /// next `/exit` stops those, and asks again about any other.
     pub(crate) jobs_shown: Vec<uuid::Uuid>,
+    /// The jobs the last `/jobs` listed, in its order, with their names:
+    /// `/jobs stop N` stops the one it showed as N.
+    pub(crate) jobs_listed: Vec<(uuid::Uuid, String)>,
     /// Where the full-screen view, while it is up, is told to ask about
     /// the background jobs running (its quit popup).
     pub(crate) quit_popup: Option<mpsc::UnboundedSender<ui::QuitAsk>>,
@@ -376,6 +379,9 @@ pub(crate) struct Harness {
     /// When the shell's commands move to the background, and those running
     /// (`/background-after`, Ctrl+B).
     pub(crate) background: Arc<shell::Background>,
+    /// The main agent was told which of its background jobs Arko's last
+    /// stop ended (or none were): it is, once per session.
+    pub(crate) interrupted_told: bool,
 }
 
 impl Harness {
@@ -525,6 +531,14 @@ impl Harness {
             feed: self.feed.clone(),
             images: self.images.clone(),
         }));
+        // Long calls can move to the background (Ctrl+B, or after the
+        // session's time), except with -p, where nothing is there to move
+        // them and Arko ends with the turn.
+        if !self.one_shot
+            && let Some(jobs) = self.background.manager()
+        {
+            builder = builder.background_jobs(jobs);
+        }
         if let Some(checkpoint) = checkpoint {
             builder = builder.resume_from(checkpoint);
             // The saved workers' runs are checked as the workflow is built.
@@ -740,6 +754,7 @@ impl Harness {
                 run.task.agent_config.tool_config.ends_task_with_text(),
                 &self.images,
             ));
+            self.end_restored_jobs(run.agent_run_id);
         }
         if let Conversation::Answered(result) = &self.conversation {
             if result.task.conversation.messages.is_empty() {
@@ -954,6 +969,10 @@ impl Harness {
                 // (The page's stop never quits Arko.)
                 Event::Remote(Action::Stop) => {
                     self.feed.notice(Level::Info, "No turn is running.");
+                    continue;
+                }
+                Event::Remote(action @ (Action::Background { .. } | Action::StopJob { .. })) => {
+                    self.page_job_action(action);
                     continue;
                 }
                 Event::Remote(Action::Answer { .. }) => {
@@ -1458,6 +1477,7 @@ impl Harness {
             "/extra-rules" => self.extra_rules_command(argument, source),
             "/project-instructions" => self.project_command(argument, source),
             "/background-after" => self.background_after_command(argument, source),
+            "/jobs" => self.jobs_command(argument),
             _ => self.handover_at_command(argument, source),
         }
         // (A setting it changed shows in the status and the details.)
@@ -1488,6 +1508,12 @@ impl Harness {
                     self.publish_title();
                 }
                 let _ = reply.send(renamed);
+            }
+            Request::MoveCall { item, reply } => {
+                let _ = reply.send(self.move_call(Some(item)));
+            }
+            Request::StopJob { job, reply } => {
+                let _ = reply.send(self.stop_job(job).map(|_| ()));
             }
             Request::ChatInstructions { reply, .. }
             | Request::SwitchMode { reply, .. }
@@ -2572,11 +2598,11 @@ impl Harness {
         }
         let note = match after {
             0 => format!(
-                "From now on, shell commands no longer move to the background on their own: each runs until it finishes or timeout_seconds passes, which now defaults to {}.",
+                "From now on, shell commands and other long calls no longer move to the background on their own. Each runs until it finishes or its time limit passes. A shell command's timeout_seconds now defaults to {}.",
                 shell::default_timeout(0)
             ),
             after => format!(
-                "From now on, a shell command still running after {} moves to the background, where it goes on as a job: the result gives its job ID and output so far, and a terminal update tells you when it finishes. timeout_seconds now defaults to {}.",
+                "From now on, a shell command still running after {} moves to the background, where it goes on as a job. The result gives its job ID and output so far, and a terminal update tells you when it finishes. timeout_seconds now defaults to {}. Other long calls (MCP tools, index_create) move after the same time, and their results reach you as notes.",
                 shell::background_after_words(after),
                 shell::default_timeout(after)
             ),
@@ -2595,7 +2621,7 @@ impl Harness {
     pub(crate) fn may_exit(&mut self, agreed: Option<Vec<uuid::Uuid>>) -> bool {
         let workers = self.crew.as_ref().map_or(0, |crew| crew.running().len());
         let warn_workers = workers > 0 && !self.exit_warned;
-        let jobs = match agreed {
+        let mut jobs = match agreed {
             None if warn_workers => Vec::new(),
             None => return true,
             // Arko stays, for now: the jobs only to say so.
@@ -2605,6 +2631,13 @@ impl Harness {
                 Err(jobs) => jobs,
             },
         };
+        // A moved call by what it does, as the transcript shows it.
+        let names = self.job_names();
+        for job in &mut jobs {
+            if let Some(name) = names.get(&job.job_id) {
+                job.command = name.clone();
+            }
+        }
         self.exit_warned = true;
         self.jobs_shown = jobs.iter().map(|job| job.job_id).collect();
         if let Some(popup) = self
@@ -2924,6 +2957,7 @@ impl Harness {
             self.cut_back = Some(0);
         }
         let mut message = self.compose(prompt);
+        let told_stopped_jobs = message.contains(STOPPED_JOBS);
         let cut = self.cut_back.take();
         // A conversation cut back to its first message is named by the new
         // one.
@@ -3052,6 +3086,12 @@ impl Harness {
                             self.answer(&mut answering, question, &text, Source::Web);
                             continue;
                         }
+                        Event::Remote(
+                            action @ (Action::Background { .. } | Action::StopJob { .. }),
+                        ) => {
+                            self.page_job_action(action);
+                            continue;
+                        }
                         Event::Input(Some(Input::Answer { question, text })) => {
                             let source = self.input_source;
                             self.answer(&mut answering, question, &text, source);
@@ -3175,9 +3215,10 @@ impl Harness {
                 self.keep_unread(unread, true);
                 // Its task keeps that update for the next turn, which the
                 // job starts as if it finished now.
+                let jobs = self.background.manager();
                 input.late = finished
                     .into_iter()
-                    .find(|job| waits_with(&result.task, job));
+                    .find(|job| waits_with(&result.task, job, jobs.as_deref()));
                 self.conversation = Conversation::Answered(result);
                 self.track_conversations();
                 self.retitle(retitle);
@@ -3197,6 +3238,7 @@ impl Harness {
                 );
                 self.keep_unread(unread_notes(&notes, &workflow), false);
                 self.recover_after_error(&workflow);
+                self.tell_stopped_jobs_again(told_stopped_jobs);
                 TurnEnd::Failed
             }
         };
@@ -3293,14 +3335,15 @@ impl Harness {
         }
     }
 
-    /// Ctrl+B: moves the shell command `agent` runs (the main agent, or a
-    /// worker by its ID) to the background at once.
+    /// Ctrl+B: moves the calls `agent` runs (the main agent, or a worker by
+    /// its ID) to the background at once, a shell command or another long
+    /// call (an MCP tool, `index_create`).
     pub(crate) fn move_to_background(&self, agent: &str) {
         let workers = self.workflow().subagents();
         // The runs that aren't workers' are the main agent's.
         let runs: Vec<uuid::Uuid> = self
             .background
-            .running()
+            .movable()
             .into_iter()
             .filter(
                 |run| match workers.iter().find(|worker| worker.run_id == *run) {
@@ -3314,11 +3357,209 @@ impl Harness {
             .map(|run| self.background.move_run(run))
             .sum();
         if moved == 0 {
-            self.say(
-                Level::Info,
-                "  No command is running to move to the background.",
-            );
+            self.say(Level::Info, &format!("  {NOTHING_TO_MOVE}"));
         }
+    }
+
+    /// Moves the running call `item` (a feed item) to the background, or
+    /// with `None` the main agent's calls that can move.
+    pub(crate) fn move_call(&self, item: Option<u64>) -> Result<(), String> {
+        let Some(jobs) = self.background.manager() else {
+            return Err(NOTHING_TO_MOVE.into());
+        };
+        let moved = match item {
+            None => {
+                let main: Vec<uuid::Uuid> = {
+                    let workers = self.workflow().subagents();
+                    self.background
+                        .movable()
+                        .into_iter()
+                        .filter(|run| !workers.iter().any(|worker| worker.run_id == *run))
+                        .collect()
+                };
+                return match main
+                    .into_iter()
+                    .map(|run| jobs.move_to_background(run, None))
+                    .sum()
+                {
+                    0 => Err(NOTHING_TO_MOVE.into()),
+                    _ => Ok(()),
+                };
+            }
+            Some(item) => crate::jobs::movable_call(&self.feed, &jobs, item)
+                .is_some_and(|(owner, call)| jobs.move_to_background(owner, Some(call)) > 0),
+        };
+        if moved {
+            Ok(())
+        } else {
+            Err("That call can't move to the background now.".into())
+        }
+    }
+
+    /// Stops the background job `job` for the user, and returns its name
+    /// as `/jobs` shows it.
+    pub(crate) fn stop_job(&self, job: uuid::Uuid) -> Result<String, String> {
+        let not_running = || "That job isn't running.".to_string();
+        let jobs = self.background.manager().ok_or_else(not_running)?;
+        let found = jobs
+            .jobs()
+            .into_iter()
+            .find(|running| running.job_id == job)
+            .ok_or_else(not_running)?;
+        jobs.stop_for_user(found.owner, job)
+            .map_err(|_| not_running())?;
+        Ok(self.job_name(&found))
+    }
+
+    /// The restored rows of `owner`'s calls that moved to the background
+    /// say how their jobs ended, with an earlier Arko or since. Those still
+    /// running say so until they end.
+    pub(crate) fn end_restored_jobs(&self, owner: uuid::Uuid) {
+        let Some(jobs) = self.background.manager() else {
+            return;
+        };
+        for job in self.feed.moved_jobs() {
+            if let Ok(snapshot) = jobs.status(owner, job, None)
+                && snapshot.state.is_terminal()
+            {
+                self.feed
+                    .job_ended_earlier(job, crate::jobs::ending(&snapshot).0);
+            }
+        }
+    }
+
+    /// A job as `/jobs` and the quit popup name it: its command, or a moved
+    /// call as the transcript shows it, on one line.
+    fn job_name(&self, job: &arko_agents::terminal::JobInfo) -> String {
+        let text = match (&job.kind, job.tool_call_id) {
+            (arko_agents::terminal::JobKind::Call { .. }, Some(call)) => self.feed.call_text(call),
+            _ => None,
+        };
+        jobs_label(text.as_deref().unwrap_or(&job.label))
+    }
+
+    /// The names of the background jobs running (see
+    /// [`job_name`](Self::job_name)), by job.
+    fn job_names(&self) -> std::collections::HashMap<uuid::Uuid, String> {
+        self.background
+            .manager()
+            .map(|jobs| jobs.jobs())
+            .unwrap_or_default()
+            .iter()
+            .map(|job| (job.job_id, self.job_name(job)))
+            .collect()
+    }
+
+    /// The web page's Move to background or Stop: done, and what didn't
+    /// work said.
+    fn page_job_action(&mut self, action: Action) {
+        match action {
+            Action::Background { item } => {
+                if let Err(why) = self.move_call(item) {
+                    self.feed.notice(Level::Info, &why);
+                }
+            }
+            Action::StopJob { job } => match self.stop_job(job) {
+                Ok(name) => self.say(
+                    Level::Info,
+                    &format!("Stopped job {} ({name}).", &job.to_string()[..8]),
+                ),
+                Err(why) => self.feed.notice(Level::Info, &why),
+            },
+            _ => {}
+        }
+    }
+
+    /// `/jobs`: the background jobs running, and `/jobs stop N` or
+    /// `/jobs stop all` stops them. N is the number the last `/jobs`
+    /// showed.
+    pub(crate) fn jobs_command(&mut self, argument: &str) {
+        let running = self
+            .background
+            .manager()
+            .map(|jobs| jobs.jobs())
+            .unwrap_or_default();
+        let words: Vec<&str> = argument.split_whitespace().collect();
+        let text = match words.as_slice() {
+            [] if running.is_empty() => {
+                self.jobs_listed.clear();
+                "No background jobs are running.".to_string()
+            }
+            [] => {
+                self.jobs_listed = running
+                    .iter()
+                    .map(|job| (job.job_id, self.job_name(job)))
+                    .collect();
+                let agents: Vec<String> = running
+                    .iter()
+                    .map(|job| self.gauges.agent_of(job.owner))
+                    .collect();
+                let width = agents.iter().map(String::len).max().unwrap_or(0);
+                let mut lines: Vec<String> = running
+                    .iter()
+                    .zip(&agents)
+                    .zip(&self.jobs_listed)
+                    .enumerate()
+                    .map(|(index, ((job, agent), (_, name)))| {
+                        let kind = match job.kind {
+                            arko_agents::terminal::JobKind::Call { .. } => "call",
+                            _ => "command",
+                        };
+                        format!(
+                            "{:<3}{agent:<width$}  {kind:<8} {name} · {}",
+                            index + 1,
+                            remote::duration_words(job.started.elapsed()),
+                        )
+                    })
+                    .collect();
+                lines.push(if running.len() == 1 {
+                    "/jobs stop 1 stops it.".to_string()
+                } else {
+                    "/jobs stop 2 stops the second, and /jobs stop all stops them all.".to_string()
+                });
+                lines.join("\n")
+            }
+            ["stop", "all"] if running.is_empty() => "No background jobs are running.".to_string(),
+            ["stop", "all"] => {
+                let stopped = running
+                    .iter()
+                    .filter(|job| self.stop_job(job.job_id).is_ok())
+                    .count();
+                match stopped {
+                    1 => "Stopped 1 background job.".to_string(),
+                    stopped => format!("Stopped {stopped} background jobs."),
+                }
+            }
+            ["stop", number] => {
+                // As the last /jobs numbered them, or as it would now.
+                let listed = if self.jobs_listed.is_empty() {
+                    running
+                        .iter()
+                        .map(|job| (job.job_id, self.job_name(job)))
+                        .collect()
+                } else {
+                    self.jobs_listed.clone()
+                };
+                match number
+                    .parse::<usize>()
+                    .ok()
+                    .and_then(|number| listed.get(number.checked_sub(1)?))
+                {
+                    Some((job, name)) => match self.stop_job(*job) {
+                        Ok(_) => format!("Stopped job {number} ({name})."),
+                        Err(_) => format!("Job {number} ({name}) already ended."),
+                    },
+                    None => format!("There's no job {number}. /jobs lists them."),
+                }
+            }
+            _ => "/jobs lists the background jobs, and /jobs stop N or /jobs stop all stops them."
+                .to_string(),
+        };
+        self.mirrored(|harness| {
+            for line in text.lines() {
+                harness.output.line(line);
+            }
+        });
     }
 
     /// Without a terminal (with -p, or input from a pipe), Arko waits for
@@ -3369,6 +3610,9 @@ impl Harness {
                 }
                 Event::Input(Some(Input::Line(_))) => {}
                 Event::Input(Some(Input::Background(agent))) => self.move_to_background(&agent),
+                Event::Remote(action @ (Action::Background { .. } | Action::StopJob { .. })) => {
+                    self.page_job_action(action)
+                }
                 Event::Remote(Action::Message(_) | Action::Answer { .. })
                 | Event::Input(Some(Input::Message(_) | Input::Answer { .. })) => {
                     self.feed.notice(
@@ -3452,8 +3696,11 @@ impl Harness {
         if let Some(notice) = &self.unoffered {
             parts.push(format!("# Session capabilities\n\n{notice}"));
         }
+        if let Some(stopped) = self.interrupted_jobs() {
+            parts.push(stopped);
+        }
         if jobs {
-            parts.push("A background job of yours finished after your last turn ended: its terminal update follows. (Arko started this turn for it. The user hasn't written.)".to_string());
+            parts.push("A background job of yours finished after your last turn ended. Its update follows. (Arko started this turn for it. The user hasn't written.)".to_string());
         }
         match message {
             Some(message) if parts.is_empty() => message,
@@ -3465,6 +3712,67 @@ impl Harness {
                 "Your workers sent you news as your last turn ended: it follows. (Arko started this turn for it; the user hasn't written.)".to_string()
             }
             None => parts.join("\n\n"),
+        }
+    }
+
+    /// The main agent's background jobs that were running when Arko last
+    /// stopped or quit, which don't start again, for the first message of
+    /// their conversation since: once per session. (Another conversation's
+    /// message leaves them for theirs.)
+    fn interrupted_jobs(&mut self) -> Option<String> {
+        // (A new conversation has no jobs yet.)
+        let run = match &self.conversation {
+            Conversation::New => return None,
+            Conversation::Answered(result) => result.agent_run_id,
+            Conversation::Stopped(run) => run.result.agent_run_id,
+        };
+        if self.interrupted_told {
+            return None;
+        }
+        let lines: Vec<String> = self
+            .background
+            .manager()?
+            .interrupted_at_open()
+            .into_iter()
+            .filter(|job| job.owner == run)
+            .map(|job| {
+                let id = job.job_id.to_string();
+                let id = &id[..8];
+                match &job.kind {
+                    arko_agents::terminal::JobKind::Call { tool_name } => {
+                        format!("- your {tool_name} call (job {id}…)")
+                    }
+                    _ if job.label.trim().is_empty() => format!("- a command (job {id}…)"),
+                    _ => format!("- `{}` (job {id}…)", jobs_label(&job.label)),
+                }
+            })
+            .collect();
+        if lines.is_empty() {
+            return None;
+        }
+        self.interrupted_told = true;
+        Some(format!("{STOPPED_JOBS}\n{}", lines.join("\n")))
+    }
+
+    /// After a failed turn: the stopped jobs its message named are named
+    /// again by the next message, unless the conversation holds that
+    /// message (the model may have read it).
+    pub(crate) fn tell_stopped_jobs_again(&mut self, told: bool) {
+        let task = match &self.conversation {
+            Conversation::New => None,
+            Conversation::Answered(result) => Some(&result.task),
+            Conversation::Stopped(run) => Some(&run.result.task),
+        };
+        let held = task.is_some_and(|task| {
+            task.conversation
+                .messages
+                .iter()
+                .flat_map(|message| &message.content)
+                .filter_map(arko_ai::Content::as_text)
+                .any(|text| text.contains(STOPPED_JOBS))
+        });
+        if told && !held {
+            self.interrupted_told = false;
         }
     }
 
@@ -3649,7 +3957,7 @@ pub(crate) fn place(link: &remote::Link) -> String {
 /// The commands that change a setting while the session runs, which take
 /// an argument: `/outside`, `/model`, `/handover`, `/handover-at`, `/keys`.
 /// And `/message`, which works while the agent works too.
-pub(crate) const LIVE_COMMANDS: [&str; 11] = [
+pub(crate) const LIVE_COMMANDS: [&str; 12] = [
     "/outside",
     "/model",
     "/handover",
@@ -3660,19 +3968,39 @@ pub(crate) const LIVE_COMMANDS: [&str; 11] = [
     "/extra-rules",
     "/project-instructions",
     "/background-after",
+    "/jobs",
     "/message",
 ];
+
+/// What Ctrl+B (or the page's Move to background) says when nothing can
+/// move.
+pub(crate) const NOTHING_TO_MOVE: &str = "Nothing is running that can move to the background.";
+
+/// How the main agent's message names its background jobs that stopped with
+/// the last Arko, the jobs' lines following.
+const STOPPED_JOBS: &str = "# Background jobs\n\nArko was closed, so these background jobs of yours stopped, and they don't start again on their own. Start again any you still need.";
+
+/// A job's command or tool as `/jobs` shows it, on one line.
+fn jobs_label(label: &str) -> String {
+    let line = label.lines().next().unwrap_or_default().trim();
+    let cut: String = line.chars().take(80).collect();
+    if cut.len() < line.len() || label.trim().lines().count() > 1 {
+        format!("{cut}…")
+    } else {
+        cut
+    }
+}
 
 /// What the user is told of when shell commands move to the background,
 /// after `after` seconds (0: never).
 pub(crate) fn background_after_text(after: u64) -> String {
     match after {
         0 => format!(
-            "Shell commands stay in the foreground until they finish, and timeout_seconds defaults to {} s.",
+            "Shell commands and other long calls stay in the foreground until they finish, and a command's timeout_seconds defaults to {} s.",
             shell::default_timeout(0)
         ),
         after => format!(
-            "A shell command still running after {} moves to the background, where it goes on as a job, and timeout_seconds defaults to {} s.",
+            "A shell command or another long call (an MCP tool, index_create) still running after {} moves to the background, where it goes on as a job, and a command's timeout_seconds defaults to {} s.",
             shell::background_after_words(after),
             shell::default_timeout(after)
         ),
@@ -4423,6 +4751,7 @@ pub(crate) mod tests {
             extra_rules: Default::default(),
             project: Default::default(),
             background: background.clone(),
+            feed: Some(feed.clone()),
             page: Mutex::default(),
             changed: Default::default(),
             title: Default::default(),
@@ -4483,6 +4812,7 @@ pub(crate) mod tests {
             one_shot: !interactive,
             exit_warned: false,
             jobs_shown: Vec::new(),
+            jobs_listed: Vec::new(),
             quit_popup: None,
             news_hint_shown: false,
             feed,
@@ -4493,6 +4823,7 @@ pub(crate) mod tests {
             outside,
             handover,
             background,
+            interrupted_told: false,
         };
         harness.open(false).unwrap();
         let inputs = Inputs {

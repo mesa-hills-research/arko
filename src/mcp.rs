@@ -611,6 +611,12 @@ impl Tool for ServerTool {
         self.tool.recovery_mode()
     }
 
+    /// A call can move to the background (Ctrl+B), its job awaiting the
+    /// server's response.
+    fn background_mode(&self) -> arko_agents::ToolBackground {
+        self.tool.background_mode()
+    }
+
     async fn execute(
         &self,
         context: &TaskContext<'_>,
@@ -1081,6 +1087,9 @@ mod tests {
         let definition = echo.definition();
         assert!(definition.description.contains("Echoes text"));
         assert!(definition.parallel_safe, "the stub marks echo read-only");
+        // Its calls can move to the background, as the framework's MCP
+        // tools' can.
+        assert_eq!(echo.background_mode(), arko_agents::ToolBackground::Detach);
         let context = TaskContext::new(uuid::Uuid::new_v4(), "main", "test", temp.path());
         let output = echo
             .execute(

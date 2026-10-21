@@ -4,7 +4,9 @@
 // path a user takes, with the mock model. (Included in `main`'s tests,
 // whose helpers they use.)
 
-use crate::mock_model::{ModelServer, complete, tool_call};
+#[cfg(unix)]
+use crate::mock_model::tool_call;
+use crate::mock_model::{ModelServer, complete};
 
 const SHELL_TOOL: &str = crate::shell::SHELL_TOOL_NAME;
 
@@ -106,8 +108,10 @@ async fn a_long_command_moves_to_the_background_and_its_end_wakes_the_idle_agent
     assert!(woken.contains("succeeded"), "{woken}");
     assert!(woken.contains("built"), "{woken}");
     assert!(
-        shown(&harness.feed).iter().any(|(kind, text, _)| kind == "notice"
-            && text.contains("a background job finished, and its update goes to the agent")),
+        shown(&harness.feed)
+            .iter()
+            .any(|(kind, text, _)| kind == "notice"
+                && text.contains("a background job finished, and its update goes to the agent")),
         "{:?}",
         shown(&harness.feed)
     );
@@ -202,7 +206,7 @@ async fn ctrl_b_moves_the_running_command_and_the_user_writes_at_once() {
     let managers = equip(&mut harness, &mut inputs, 0);
     let background = harness.background.clone();
     let typing = tokio::spawn(async move {
-        until(|| !background.running().is_empty()).await;
+        until(|| !background.movable().is_empty()).await;
         sender
             .send(Input::Background(remote::MAIN_AGENT.into()))
             .unwrap();
@@ -285,7 +289,9 @@ async fn exit_with_a_background_job_warns_first_at_the_line_prompt() {
     // The job shows the command the agent gave, not the shell's wrapping.
     let jobs = harness.background.jobs();
     assert_eq!(
-        jobs.iter().map(|job| job.command.as_str()).collect::<Vec<_>>(),
+        jobs.iter()
+            .map(|job| job.command.as_str())
+            .collect::<Vec<_>>(),
         ["sleep 30"]
     );
     let first = jobs[0].job_id;
@@ -335,7 +341,10 @@ async fn exit_with_a_background_job_warns_first_at_the_line_prompt() {
     assert_eq!(warnings(&harness).len(), 2, "the popup asks instead");
     // With asking turned off, it quits; with both agreed to, too.
     assert!(harness.mirrored(|harness| harness.may_exit(None)));
-    assert!(start("sleep 30").is_ok(), "asking off doesn't ready the jobs");
+    assert!(
+        start("sleep 30").is_ok(),
+        "asking off doesn't ready the jobs"
+    );
     harness.exit_warned = false;
     let third = harness.background.jobs()[2].job_id;
     assert!(harness.mirrored(|harness| harness.may_exit(Some(vec![first, second, third]))));
@@ -374,21 +383,30 @@ async fn the_background_after_command_sets_keeps_and_tells() {
     assert!(harness.live_command("/background-after", Source::Terminal));
     assert!(harness.live_command("/background-after soon", Source::Terminal));
     assert!(harness.live_command("/background-after 5m", Source::Web));
+    assert_eq!(harness.background.after(), Some(Duration::from_secs(300)));
     assert_eq!(
-        harness.background.after(),
-        Some(Duration::from_secs(300))
+        harness.session.load_settings().unwrap().background_after,
+        300
     );
-    assert_eq!(harness.session.load_settings().unwrap().background_after, 300);
     let outputs = shown(&harness.feed);
     let said = |start: &str| {
         outputs
             .iter()
             .any(|(kind, text, _)| (kind == "output" || kind == "notice") && text.contains(start))
     };
-    assert!(said("A shell command still running after 10 minutes moves to the background"));
+    assert!(said(
+        "A shell command or another long call (an MCP tool, index_create) still running after 10 minutes moves to the background"
+    ));
     assert!(said("isn't a time"));
     assert!(said("Background after was set to 5m from the web page."));
-    assert!(said("A shell command still running after 5 minutes moves to the background"));
+    assert!(said(
+        "still running after 5 minutes moves to the background"
+    ));
+    // The calls the runtime moves follow the same time.
+    assert_eq!(
+        managers.jobs.background_after(),
+        Some(Duration::from_secs(300))
+    );
     assert!(matches!(
         harness
             .turn(Prompt::User("Go on.".into()), &mut inputs)
@@ -397,12 +415,769 @@ async fn the_background_after_command_sets_keeps_and_tells() {
     ));
     let body = body_with(&bodies, "Go on.");
     assert!(
-        body.contains("From now on, a shell command still running after 5 minutes moves to the background"),
+        body.contains(
+            "From now on, a shell command still running after 5 minutes moves to the background"
+        ),
         "{body}"
     );
-    assert!(body.contains("timeout_seconds now defaults to 1800"), "{body}");
+    assert!(
+        body.contains("timeout_seconds now defaults to 1800"),
+        "{body}"
+    );
+    assert!(
+        body.contains("Other long calls (MCP tools, index_create) move after the same time"),
+        "{body}"
+    );
     assert!(harness.live_command("/background-after off", Source::Terminal));
     assert_eq!(harness.background.after(), None);
+    assert_eq!(managers.jobs.background_after(), None);
     assert_eq!(harness.session.load_settings().unwrap().background_after, 0);
     managers.shutdown().await;
+}
+
+/// A tool whose calls the runtime moves to the background (as an MCP
+/// tool's), and which runs until the test releases it.
+#[derive(Debug, Default)]
+struct SlowLookup {
+    release: tokio::sync::Notify,
+}
+
+#[async_trait::async_trait]
+impl arko_agents::Tool for SlowLookup {
+    fn definition(&self) -> arko_agents::ToolDefinition {
+        arko_agents::ToolDefinition {
+            name: "slow_lookup".into(),
+            description: "Looks something up, slowly.".into(),
+            output_based_example: None,
+            parameters: vec![],
+            parallel_safe: false,
+            tool_type_details: arko_agents::ToolTypeDetails::DeveloperDefined,
+            raw_json_schema_override: None,
+        }
+    }
+
+    fn background_mode(&self) -> arko_agents::ToolBackground {
+        arko_agents::ToolBackground::Detach
+    }
+
+    async fn execute(
+        &self,
+        _: &arko_agents::TaskContext<'_>,
+        _: std::collections::HashMap<String, serde_json::Value>,
+    ) -> Result<String, arko_agents::ToolError> {
+        self.release.notified().await;
+        Ok("Found 3 matches.".into())
+    }
+}
+
+/// A parallel-safe tool, of `mode`, whose calls run until the test
+/// releases them.
+#[derive(Debug)]
+struct Lookup {
+    name: &'static str,
+    mode: arko_agents::ToolBackground,
+    release: tokio::sync::Notify,
+}
+
+#[async_trait::async_trait]
+impl arko_agents::Tool for Lookup {
+    fn definition(&self) -> arko_agents::ToolDefinition {
+        arko_agents::ToolDefinition {
+            name: self.name.into(),
+            description: "Looks something up.".into(),
+            output_based_example: None,
+            parameters: vec![],
+            parallel_safe: true,
+            tool_type_details: arko_agents::ToolTypeDetails::DeveloperDefined,
+            raw_json_schema_override: None,
+        }
+    }
+
+    fn background_mode(&self) -> arko_agents::ToolBackground {
+        self.mode
+    }
+
+    async fn execute(
+        &self,
+        _: &arko_agents::TaskContext<'_>,
+        _: std::collections::HashMap<String, serde_json::Value>,
+    ) -> Result<String, arko_agents::ToolError> {
+        self.release.notified().await;
+        Ok(format!("{} found it.", self.name))
+    }
+}
+
+/// A model turn calling `first` and `second` together.
+fn two_calls(id: &str, first: &str, second: &str) -> String {
+    let call = |index: usize, suffix: &str, name: &str| {
+        serde_json::json!({"type": "response.output_item.done", "output_index": index, "item": {
+            "type": "function_call", "id": format!("fc_{id}{suffix}"), "call_id": format!("call_{id}{suffix}"),
+            "name": name, "arguments": "{}", "status": "completed",
+        }})
+    };
+    let completed = serde_json::json!({"type": "response.completed", "response": {
+        "id": format!("resp_{id}"), "object": "response", "created_at": 0, "status": "completed",
+        "model": "gpt-6-luna", "output": [], "usage": {"input_tokens": 10, "output_tokens": 5},
+        "metadata": {},
+    }});
+    [call(0, "a", first), call(1, "b", second), completed]
+        .iter()
+        .map(|event| format!("data: {event}\n\n"))
+        .collect()
+}
+
+/// In a parallel group, a call moved alone (the page's Move to background)
+/// whose job ends before the group's other call does: its line says the
+/// job finished, though its result came after.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_moved_call_of_a_parallel_group_that_ends_first_says_it_finished() {
+    let server = ModelServer::start(Arc::new(move |_, body: String| {
+        Box::pin(async move {
+            if body.contains("call_m1a") {
+                complete("m2", "Both done.")
+            } else {
+                two_calls("m1", "mover", "stayer")
+            }
+        })
+    }))
+    .await;
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
+    let lookup = |name, mode| {
+        Arc::new(Lookup {
+            name,
+            mode,
+            release: Default::default(),
+        })
+    };
+    let mover = lookup("mover", arko_agents::ToolBackground::Detach);
+    let stayer = lookup("stayer", arko_agents::ToolBackground::Never);
+    harness
+        .main_config
+        .tool_config
+        .available_tool_names
+        .push("stayer".into());
+    let managers = equip_with(&mut harness, &mut inputs, mover.clone());
+    harness.tools.push(stayer.clone());
+    harness.open(false).unwrap();
+    let follower =
+        crate::jobs::follow(harness.feed.clone(), Arc::downgrade(&managers.jobs), |_| {
+            remote::MAIN_AGENT.to_string()
+        });
+    let (jobs, feed) = (managers.jobs.clone(), harness.feed.clone());
+    let (moving, staying) = (mover.clone(), stayer.clone());
+    let pressing = tokio::spawn(async move {
+        until(|| !crate::jobs::movable(&feed, &jobs).is_empty()).await;
+        let call = jobs.foreground_calls()[0].clone();
+        assert_eq!(call.tool_name, "mover");
+        assert_eq!(
+            jobs.move_to_background(call.owner, Some(call.tool_call_id)),
+            1
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        // The moved call ends in its job, before the other one.
+        moving.release.notify_one();
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        staying.release.notify_one();
+    });
+    let end = tokio::time::timeout(
+        Duration::from_secs(20),
+        harness.turn(Prompt::User("Look both up.".into()), &mut inputs),
+    )
+    .await
+    .unwrap();
+    pressing.await.unwrap();
+    assert!(matches!(end, TurnEnd::Answered));
+    let line = || {
+        harness
+            .feed
+            .subscribe()
+            .0
+            .items
+            .into_iter()
+            .find(|item| item.kind == remote::Kind::Call && item.text.contains("mover"))
+            .and_then(|item| item.outcome)
+            .unwrap_or_default()
+    };
+    let ended = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let outcome = line();
+            if !outcome.starts_with("in the background") {
+                return outcome;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    follower.abort();
+    managers.shutdown().await;
+    let ended = ended.unwrap_or_else(|_| panic!("the line still reads {:?}", line()));
+    assert!(ended.starts_with("finished in the background"), "{ended}");
+}
+
+/// Gives the main agent `tool` beside the session's shell and terminal
+/// tools.
+fn equip_with(
+    harness: &mut Harness,
+    inputs: &mut Inputs,
+    tool: Arc<dyn arko_agents::Tool>,
+) -> Managers {
+    harness
+        .main_config
+        .tool_config
+        .available_tool_names
+        .push(tool.name());
+    let managers = equip(harness, inputs, 0);
+    harness.tools.push(tool);
+    harness.open(false).unwrap();
+    managers
+}
+
+/// Ctrl+B moves a long call that isn't a shell command (an MCP tool's, say):
+/// the agent gets its job's ID at once and finishes its turn, and when the
+/// call ends, with the agent idle, its result starts a turn.
+#[cfg(unix)]
+#[tokio::test]
+async fn ctrl_b_moves_another_tools_call_and_its_result_wakes_the_agent() {
+    let bodies: Bodies = Arc::default();
+    let server = ModelServer::start(Arc::new({
+        let bodies = bodies.clone();
+        move |_, body: String| {
+            bodies.lock().unwrap().push(body.clone());
+            Box::pin(async move {
+                if body.contains("It ran your slow_lookup call") {
+                    complete("m3", "The lookup found 3 matches.")
+                } else if body.contains("call_m1") {
+                    complete("m2", "The lookup goes on in the background.")
+                } else {
+                    tool_call("m1", "slow_lookup", serde_json::json!({}))
+                }
+            })
+        }
+    }))
+    .await;
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, sender) = harness(temp.path(), server.client(), true);
+    let lookup = Arc::new(SlowLookup::default());
+    let managers = equip_with(&mut harness, &mut inputs, lookup.clone());
+    let follower =
+        crate::jobs::follow(harness.feed.clone(), Arc::downgrade(&managers.jobs), |_| {
+            remote::MAIN_AGENT.to_string()
+        });
+    let background = harness.background.clone();
+    let (feed, jobs) = (harness.feed.clone(), managers.jobs.clone());
+    let pressing = tokio::spawn(async move {
+        until(|| !background.movable().is_empty()).await;
+        // A client offers to move the call by its item.
+        let movable = crate::jobs::movable(&feed, &jobs);
+        assert_eq!(movable.len(), 1);
+        sender
+            .send(Input::Background(remote::MAIN_AGENT.into()))
+            .unwrap();
+        (sender, movable[0])
+    });
+    let end = tokio::time::timeout(
+        Duration::from_secs(20),
+        harness.turn(Prompt::User("Look it up.".into()), &mut inputs),
+    )
+    .await
+    .unwrap();
+    // (Kept: a closed input quits.)
+    let (_sender, item) = pressing.await.unwrap();
+    assert!(matches!(end, TurnEnd::Answered));
+    assert_eq!(summary(&harness), "The lookup goes on in the background.");
+    let moved = body_with(&bodies, "call_m1");
+    assert!(
+        moved.contains("The user moved this call to the background."),
+        "{moved}"
+    );
+    let jobs = managers.jobs.jobs();
+    assert_eq!(jobs.len(), 1);
+    assert_eq!(
+        jobs[0].kind,
+        arko_agents::terminal::JobKind::Call {
+            tool_name: "slow_lookup".into()
+        }
+    );
+
+    // The call's line names its job, which the feed follows.
+    let job = jobs[0].job_id.to_string();
+    until(|| {
+        harness
+            .feed
+            .subscribe()
+            .0
+            .jobs
+            .iter()
+            .any(|summary| summary.id == job && summary.call == Some(item))
+    })
+    .await;
+    let call = |feed: &remote::Feed| {
+        feed.subscribe()
+            .0
+            .items
+            .into_iter()
+            .find(|found| found.id == item)
+            .unwrap()
+    };
+    assert_eq!(call(&harness.feed).job.as_deref(), Some(job.as_str()));
+    assert!(
+        call(&harness.feed)
+            .outcome
+            .is_some_and(|outcome| outcome.starts_with("in the background · job ")),
+    );
+
+    lookup.release.notify_one();
+    let finished = match tokio::time::timeout(Duration::from_secs(10), inputs.next_event(true))
+        .await
+        .unwrap()
+    {
+        Event::Finished(finished) => finished,
+        _ => panic!("expected a finished job"),
+    };
+    assert_eq!(finished.job_id, jobs[0].job_id);
+    assert!(matches!(
+        harness.deliver_finished(finished, &mut inputs).await,
+        News::Done
+    ));
+    assert_eq!(summary(&harness), "The lookup found 3 matches.");
+    let woken = body_with(&bodies, "It ran your slow_lookup call");
+    assert!(woken.contains("Found 3 matches."), "{woken}");
+    // Its line says it finished in the background.
+    until(|| {
+        call(&harness.feed)
+            .outcome
+            .is_some_and(|outcome| outcome.starts_with("finished in the background · "))
+    })
+    .await;
+    follower.abort();
+    managers.shutdown().await;
+}
+
+/// The page's Move to background moves the call its line names, while the
+/// turn runs. `/jobs` lists the job and stops it for the user, which wakes
+/// no one, and the agent reads that the user stopped it with its next
+/// message. The app's requests answer when there's nothing to move or
+/// stop.
+#[cfg(unix)]
+#[tokio::test]
+async fn the_page_moves_a_call_and_jobs_lists_and_stops_it() {
+    let bodies: Bodies = Arc::default();
+    let server = ModelServer::start(Arc::new({
+        let bodies = bodies.clone();
+        move |_, body: String| {
+            bodies.lock().unwrap().push(body.clone());
+            Box::pin(async move {
+                if body.contains("Look again.") {
+                    complete("m3", "Noted.")
+                } else if body.contains("call_m1") {
+                    complete("m2", "It goes on in the background.")
+                } else {
+                    tool_call("m1", "slow_lookup", serde_json::json!({}))
+                }
+            })
+        }
+    }))
+    .await;
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
+    let lookup = Arc::new(SlowLookup::default());
+    let managers = equip_with(&mut harness, &mut inputs, lookup.clone());
+    let (feed, jobs, actions) = (
+        harness.feed.clone(),
+        managers.jobs.clone(),
+        harness.remote_actions.clone(),
+    );
+    let pressing = tokio::spawn(async move {
+        until(|| !crate::jobs::movable(&feed, &jobs).is_empty()).await;
+        let item = crate::jobs::movable(&feed, &jobs)[0];
+        actions
+            .send(Action::Background { item: Some(item) })
+            .unwrap();
+    });
+    let end = tokio::time::timeout(
+        Duration::from_secs(20),
+        harness.turn(Prompt::User("Look it up.".into()), &mut inputs),
+    )
+    .await
+    .unwrap();
+    pressing.await.unwrap();
+    assert!(matches!(end, TurnEnd::Answered));
+    assert!(body_with(&bodies, "call_m1").contains("The user moved this call to the background."),);
+    assert_eq!(managers.jobs.jobs().len(), 1);
+
+    let mut finished = managers.jobs.subscribe_finished();
+    let said = |harness: &Harness, text: &str| {
+        shown(&harness.feed)
+            .iter()
+            .any(|(kind, shown, _)| kind == "output" && shown.contains(text))
+    };
+    assert!(harness.live_command("/jobs", Source::Terminal));
+    assert!(
+        said(&harness, "1  main  call     slow_lookup · 0 s"),
+        "{:?}",
+        shown(&harness.feed)
+    );
+    assert!(said(&harness, "/jobs stop 1 stops it."));
+    assert!(harness.live_command("/jobs stop 2", Source::Terminal));
+    assert!(said(&harness, "There's no job 2. /jobs lists them."));
+    let job = managers.jobs.jobs()[0].job_id;
+    assert!(harness.live_command("/jobs stop 1", Source::Web));
+    assert!(said(&harness, "Stopped job 1 (slow_lookup)."));
+    // The call has its grace, then the job ends.
+    until(|| managers.jobs.jobs().is_empty()).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(finished.try_recv().is_err(), "the user's stop wakes no one");
+    assert!(harness.live_command("/jobs", Source::Terminal));
+    assert!(said(&harness, "No background jobs are running."));
+
+    // Nothing to move or stop now.
+    let (reply, answer) = tokio::sync::oneshot::channel();
+    harness
+        .request(crate::engine::Request::StopJob { job, reply }, false)
+        .await;
+    assert_eq!(answer.await.unwrap(), Err("That job isn't running.".into()));
+    let (reply, answer) = tokio::sync::oneshot::channel();
+    harness
+        .request(crate::engine::Request::MoveCall { item: 1, reply }, false)
+        .await;
+    assert_eq!(
+        answer.await.unwrap(),
+        Err("That call can't move to the background now.".into())
+    );
+
+    // The next message carries the note.
+    assert!(matches!(
+        harness
+            .turn(Prompt::User("Look again.".into()), &mut inputs)
+            .await,
+        TurnEnd::Answered
+    ));
+    let next = body_with(&bodies, "Look again.");
+    assert!(
+        next.contains(&format!(
+            "The user stopped job {job} (your slow_lookup call) before it ended"
+        )),
+        "{next}"
+    );
+    managers.shutdown().await;
+}
+
+/// `/jobs stop N` stops the job the last `/jobs` showed as N, though a job
+/// ended since, and says so when that job is the one that ended.
+#[tokio::test]
+async fn jobs_stop_n_stops_the_job_the_list_showed() {
+    let server =
+        ModelServer::start(Arc::new(|_, _| Box::pin(async { complete("m1", "Done.") }))).await;
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
+    let managers = equip(&mut harness, &mut inputs, 0);
+    let owner = uuid::Uuid::new_v4();
+    let mut ids = Vec::new();
+    for name in ["first", "second", "third"] {
+        let snapshot = managers
+            .jobs
+            .adopt_call(
+                owner,
+                uuid::Uuid::new_v4(),
+                name,
+                name.into(),
+                arko_agents::stop::StopSource::new(),
+                Box::pin(std::future::pending()),
+            )
+            .unwrap();
+        ids.push(snapshot.job_id);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let said = |harness: &Harness, text: &str| {
+        shown(&harness.feed)
+            .iter()
+            .any(|(kind, shown, _)| kind == "output" && shown.contains(text))
+    };
+    assert!(harness.live_command("/jobs", Source::Terminal));
+    assert!(
+        said(&harness, "2  main  call     second"),
+        "{:?}",
+        shown(&harness.feed)
+    );
+    // The first ends (its agent stopped it) before the user types.
+    managers.jobs.cancel(owner, ids[0]).unwrap();
+    until(|| managers.jobs.jobs().len() == 2).await;
+    assert!(harness.live_command("/jobs stop 2", Source::Terminal));
+    assert!(
+        said(&harness, "Stopped job 2 (second)."),
+        "{:?}",
+        shown(&harness.feed)
+    );
+    until(|| managers.jobs.jobs().len() == 1).await;
+    assert_eq!(managers.jobs.jobs()[0].job_id, ids[2], "the third runs on");
+    assert!(harness.live_command("/jobs stop 1", Source::Terminal));
+    assert!(said(&harness, "Job 1 (first) already ended."));
+    // A new listing numbers them again.
+    assert!(harness.live_command("/jobs", Source::Terminal));
+    assert!(harness.live_command("/jobs stop 1", Source::Terminal));
+    assert!(said(&harness, "Stopped job 1 (third)."));
+    managers.shutdown().await;
+}
+
+/// `/jobs` and the quit popup name a moved call by its line in the
+/// transcript, so two calls of one tool can be told apart.
+#[tokio::test]
+async fn moved_calls_are_named_by_what_they_do() {
+    let server =
+        ModelServer::start(Arc::new(|_, _| Box::pin(async { complete("m1", "Done.") }))).await;
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
+    let managers = equip(&mut harness, &mut inputs, 0);
+    let owner = uuid::Uuid::new_v4();
+    for word in ["mesa", "butte"] {
+        let call = uuid::Uuid::new_v4();
+        harness.feed.event(
+            &arko_workflows::WorkflowEvent {
+                timestamp: chrono::Utc::now(),
+                workflow_run_id: uuid::Uuid::nil(),
+                agent_name: MAIN.into(),
+                agent_run_id: owner,
+                event: arko_agents::AgentEvent::ToolCallFormatted {
+                    tool_call_id: call,
+                    tool_name: "mcp__geo__lookup".into(),
+                    parameters: [("word".to_string(), serde_json::json!(word))].into(),
+                },
+            },
+            None,
+        );
+        managers
+            .jobs
+            .adopt_call(
+                owner,
+                call,
+                "mcp__geo__lookup",
+                "mcp__geo__lookup".into(),
+                arko_agents::stop::StopSource::new(),
+                Box::pin(std::future::pending()),
+            )
+            .unwrap();
+    }
+    assert!(harness.live_command("/jobs", Source::Terminal));
+    let lines: Vec<String> = shown(&harness.feed)
+        .into_iter()
+        .filter(|(kind, ..)| kind == "output")
+        .map(|(_, text, _)| text)
+        .collect();
+    for word in ["mesa", "butte"] {
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("lookup (geo)") && line.contains(word)),
+            "{lines:?}"
+        );
+    }
+    let (popup, mut asked) = mpsc::unbounded_channel();
+    harness.quit_popup = Some(popup);
+    assert!(!harness.may_exit(Some(Vec::new())));
+    let ask = asked.try_recv().unwrap();
+    let mut named: Vec<&str> = ask.jobs.iter().map(|job| job.command.as_str()).collect();
+    named.sort();
+    assert_eq!(named.len(), 2);
+    assert!(
+        named[0].contains("butte") && named[1].contains("mesa"),
+        "{named:?}"
+    );
+    managers.shutdown().await;
+}
+
+/// A job's update that came too late for the agent's last turn is found by
+/// the job's ID, whatever its form (a command's terminal update, a moved
+/// call's note), and also when no runtime got it.
+#[tokio::test]
+async fn an_update_that_came_too_late_is_found_by_its_job() {
+    let temp = tempfile::tempdir().unwrap();
+    let server =
+        ModelServer::start(Arc::new(|_, _| Box::pin(async { complete("m1", "Done.") }))).await;
+    let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
+    let managers = equip(&mut harness, &mut inputs, 0);
+    let mut task = arko_agents::Task::new(
+        harness.main_config.clone(),
+        "Look it up.".into(),
+        harness.settings.workspace.clone(),
+        None,
+    );
+    let owner = task.id;
+    let finished = |job_id| arko_agents::terminal::JobFinished {
+        owner,
+        job_id,
+        state: arko_agents::terminal::JobState::Succeeded,
+    };
+    let late = uuid::Uuid::new_v4();
+    assert!(!waits_with(&task, &finished(late), Some(&managers.jobs)));
+    task.pending_context_injections.push(format!(
+        "Job {late} ended. It ran your slow_lookup call, which moved to the background 1 min ago. Its result follows.\n\nFound 3 matches."
+    ));
+    assert!(waits_with(&task, &finished(late), Some(&managers.jobs)));
+
+    // An update the manager keeps for the owner's next runtime.
+    let kept = managers
+        .jobs
+        .adopt_call(
+            owner,
+            uuid::Uuid::new_v4(),
+            "slow_lookup",
+            "slow_lookup".into(),
+            arko_agents::StopSource::new(),
+            Box::pin(async { arko_agents::terminal::CallOutput::text("Found it.") }),
+        )
+        .unwrap();
+    until(|| managers.jobs.has_news(owner)).await;
+    task.pending_context_injections.clear();
+    assert!(waits_with(
+        &task,
+        &finished(kept.job_id),
+        Some(&managers.jobs)
+    ));
+    assert!(!waits_with(&task, &finished(kept.job_id), None));
+    managers.shutdown().await;
+}
+
+/// After Arko quit with jobs of the main agent's running, the user agreeing
+/// to stop them, the first message of their conversation in the session
+/// that opens again says which stopped, once. A message in another
+/// conversation leaves them for theirs.
+#[cfg(unix)]
+#[tokio::test]
+async fn the_first_message_after_a_quit_names_the_jobs_that_stopped() {
+    let bodies: Bodies = Arc::default();
+    let server = ModelServer::start(Arc::new({
+        let bodies = bodies.clone();
+        move |_, body: String| {
+            bodies.lock().unwrap().push(body);
+            Box::pin(async { complete("m1", "Done.") })
+        }
+    }))
+    .await;
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
+    assert!(matches!(
+        harness
+            .turn(Prompt::User("Start.".into()), &mut inputs)
+            .await,
+        TurnEnd::Answered
+    ));
+    let run = match &harness.conversation {
+        Conversation::Answered(result) => result.agent_run_id,
+        _ => unreachable!(),
+    };
+    // This Arko's jobs: a command and a moved call of the main agent's, and
+    // a worker's command.
+    let shell = Shell::detect(WindowsShell::Cmd);
+    let managers = Managers::open(&harness.session, &shell).unwrap();
+    harness.background = managers.background.clone();
+    let workspace = temp.path().join("work");
+    let start = |owner: uuid::Uuid, command: &str| {
+        managers
+            .jobs
+            .start(
+                &arko_agents::TaskContext::new(owner, MAIN, "", &workspace),
+                command,
+                arko_agents::terminal::StartOptions {
+                    terminal: false,
+                    detect_prompts: false,
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+            .job_id
+    };
+    let command = start(run, "sleep 60");
+    start(uuid::Uuid::new_v4(), "sleep 61");
+    let call = managers
+        .jobs
+        .adopt_call(
+            run,
+            uuid::Uuid::new_v4(),
+            "index_create",
+            "index_create".into(),
+            arko_agents::stop::StopSource::new(),
+            Box::pin(std::future::pending::<arko_agents::terminal::CallOutput>()),
+        )
+        .unwrap()
+        .job_id;
+    // The user quits, and agrees to stop them.
+    assert!(!harness.may_exit(Some(Vec::new())));
+    assert_eq!(harness.jobs_shown.len(), 3);
+    let agreed = harness.jobs_shown.clone();
+    assert!(harness.may_exit(Some(agreed)));
+    managers.shutdown().await;
+    drop(managers);
+
+    // The session opens again (`arko -c`).
+    let managers = Managers::open(&harness.session, &shell).unwrap();
+    harness.background = managers.background.clone();
+    harness.new_conversation();
+    assert!(matches!(
+        harness
+            .turn(Prompt::User("Something else.".into()), &mut inputs)
+            .await,
+        TurnEnd::Answered
+    ));
+    assert!(matches!(
+        harness
+            .turn(Prompt::User("And more.".into()), &mut inputs)
+            .await,
+        TurnEnd::Answered
+    ));
+    for text in ["Something else.", "And more."] {
+        assert!(!body_with(&bodies, text).contains("# Background jobs"));
+    }
+    harness.resume_command("1").await;
+    assert!(matches!(
+        harness
+            .turn(Prompt::User("Go on.".into()), &mut inputs)
+            .await,
+        TurnEnd::Answered
+    ));
+    let body = body_with(&bodies, "Go on.");
+    let short = |id: uuid::Uuid| id.to_string()[..8].to_string();
+    assert!(
+        body.contains("# Background jobs\\n\\nArko was closed, so these background jobs of yours stopped, and they don't start again on their own. Start again any you still need."),
+        "{body}"
+    );
+    assert!(
+        body.contains(&format!("- your index_create call (job {}…)", short(call))),
+        "{body}"
+    );
+    assert!(
+        body.contains(&format!("- `sleep 60` (job {}…)", short(command))),
+        "{body}"
+    );
+    assert!(!body.contains("sleep 61"), "{body}");
+    assert!(matches!(
+        harness
+            .turn(Prompt::User("Once more.".into()), &mut inputs)
+            .await,
+        TurnEnd::Answered
+    ));
+    // Once: the next message has only the earlier one's.
+    assert_eq!(
+        body_with(&bodies, "Once more.")
+            .matches("# Background jobs")
+            .count(),
+        1
+    );
+    managers.shutdown().await;
+}
+
+/// A failed turn whose message named the stopped jobs, and which the
+/// conversation doesn't hold, leaves them for the next message.
+#[tokio::test]
+async fn a_failed_turn_leaves_the_stopped_jobs_for_the_next_message() {
+    let server =
+        ModelServer::start(Arc::new(|_, _| Box::pin(async { complete("m1", "Done.") }))).await;
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, _inputs, _sender) = harness(temp.path(), server.client(), true);
+    harness.interrupted_told = true;
+    harness.tell_stopped_jobs_again(false);
+    assert!(harness.interrupted_told, "a message that didn't name them");
+    harness.tell_stopped_jobs_again(true);
+    assert!(!harness.interrupted_told);
 }

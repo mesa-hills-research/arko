@@ -13,6 +13,7 @@ use arko_agents::builtins::{
 use arko_agents::handover::{HANDOVER_REPORT_PARAM_NAME, HANDOVER_REPORT_TOOL_NAME};
 use arko_workflows::services::RUN_WORKFLOW_AGENT_TOOL_NAME;
 use serde_json::Value;
+use uuid::Uuid;
 
 use super::feed::{CallStatus, Item, Kind, Level};
 use crate::crew;
@@ -167,6 +168,41 @@ fn long(text: &str, limit: usize) -> String {
     }
 }
 
+/// How the line of a call that moved to the background starts, before
+/// its job's first characters: `in the background · job 4d2c1a9b`.
+pub const MOVED_OUTCOME: &str = "in the background · job ";
+
+/// The job a call's result says it moved to, when it moved to the
+/// background (`in the background as job 4d2c…, 95.3 s`).
+pub fn moved_job(output: &str) -> Option<Uuid> {
+    output
+        .lines()
+        .next()?
+        .strip_prefix(IN_THE_BACKGROUND)?
+        .split(',')
+        .next()?
+        .trim()
+        .parse()
+        .ok()
+}
+
+/// A moved call's line: `in the background · job 4d2c1a9b`.
+fn moved_outcome(job: Uuid) -> String {
+    let job = job.to_string();
+    format!("{MOVED_OUTCOME}{}", &job[..8])
+}
+
+/// How long something ran, in a few words: `40 s`, `4 min`, `2 h 5 min`.
+pub fn duration_words(duration: std::time::Duration) -> String {
+    let seconds = duration.as_secs();
+    match seconds {
+        0..60 => format!("{seconds} s"),
+        60..3600 => format!("{} min", seconds / 60),
+        _ if seconds % 3600 < 60 => format!("{} h", seconds / 3600),
+        _ => format!("{} h {} min", seconds / 3600, seconds % 3600 / 60),
+    }
+}
+
 /// What became of a call, from its result.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Outcome {
@@ -178,6 +214,8 @@ pub struct Outcome {
     /// The call's whole result (or why it failed), for an app's view of it
     /// (the call item's `output`). A command's is its block's `whole`.
     pub output: Option<Arc<str>>,
+    /// The job the call moved to, when it moved to the background.
+    pub job: Option<Uuid>,
 }
 
 impl Outcome {
@@ -188,6 +226,7 @@ impl Outcome {
             text: (!text.trim().is_empty()).then_some(text),
             block: None,
             output: None,
+            job: None,
         }
     }
 
@@ -219,6 +258,7 @@ impl Outcome {
             text: (!text.is_empty()).then_some(text),
             block,
             output: (!message.is_empty()).then(|| message.into()),
+            job: None,
         }
     }
 }
@@ -237,7 +277,18 @@ const OUTCOME_CHARS: usize = 60;
 /// What the result `output` of a call of `tool` says, in brief, with the
 /// whole of it for an app's view of the call.
 pub fn outcome(tool: &str, output: &str) -> Outcome {
+    let job = moved_job(output);
+    if tool != SHELL_TOOL_NAME
+        && let Some(job) = job
+    {
+        // Any tool's call that moved, as the shell's line says it.
+        let mut outcome = Outcome::ok(moved_outcome(job));
+        outcome.output = Some(output.into());
+        outcome.job = Some(job);
+        return outcome;
+    }
     let mut outcome = brief(tool, output);
+    outcome.job = job;
     if tool != SHELL_TOOL_NAME && outcome.output.is_none() && !output.trim().is_empty() {
         outcome.output = Some(output.into());
     }
@@ -296,6 +347,7 @@ fn brief(tool: &str, output: &str) -> Outcome {
                             .level(Level::Warn),
                     ),
                     output: None,
+                    job: None,
                 },
                 _ => Outcome::ok(cut(first, OUTCOME_CHARS)),
             }
@@ -359,7 +411,7 @@ fn command_outcome(output: &str) -> Outcome {
     let (how, time) = status.rsplit_once(", ").unwrap_or((status, ""));
     let tests = tests(&rest);
     let text = if let Some(job) = job {
-        format!("in the background · job {}", job.get(..8).unwrap_or(job))
+        format!("{MOVED_OUTCOME}{}", job.get(..8).unwrap_or(job))
     } else if ok {
         tests.unwrap_or_else(|| time.to_string())
     } else {
@@ -400,6 +452,7 @@ fn command_outcome(output: &str) -> Outcome {
         text: Some(cut(&text, OUTCOME_CHARS)).filter(|text| !text.is_empty()),
         block,
         output: None,
+        job: None,
     }
 }
 

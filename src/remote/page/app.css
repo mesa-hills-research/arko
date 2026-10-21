@@ -421,6 +421,12 @@ kbd {
 .call-line .ok { color: var(--success); }
 .call-line .failed { color: var(--error); }
 .call-line .running { letter-spacing: 1px; animation: pulse 1.2s ease-in-out infinite; }
+.call-line .call-action {
+  flex: none; border: 1px solid var(--line); border-radius: 6px; background: var(--surface);
+  color: var(--text); font-size: 12px; padding: 1px 8px; margin-left: 4px;
+}
+.call-line .call-action:hover { background: var(--secondary-hover); }
+.call-line .call-action:disabled { opacity: 0.5; }
 details.call > summary { list-style: none; cursor: pointer; }
 details.call > summary::-webkit-details-marker { display: none; }
 details.call[open] > summary .mark { transform: rotate(90deg); }

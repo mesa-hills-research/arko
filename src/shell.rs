@@ -8,8 +8,8 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use arko_agents::terminal::{
@@ -34,8 +34,9 @@ pub const BACKGROUND_TIMEOUT_SECONDS: u64 = 1_800;
 /// How long a command runs before it moves to the background, by default
 /// in sessions the user takes part in (in seconds).
 pub const DEFAULT_BACKGROUND_AFTER: u64 = 600;
-/// How a backgrounded command's result starts, as the transcript reads it.
-pub const IN_THE_BACKGROUND: &str = "in the background as job ";
+/// How the result of a call that moved to the background starts, as the
+/// transcript reads it (the shell's and any other tool's).
+pub use arko_agents::terminal::IN_THE_BACKGROUND;
 /// The most a call may ask for.
 pub const MAX_TIMEOUT_SECONDS: u64 = 3_600;
 /// Output longer than this many characters keeps its start and end.
@@ -195,41 +196,37 @@ fn find_program(name: &str) -> Option<PathBuf> {
         .find(|candidate| candidate.is_file())
 }
 
-/// When the shell tool's commands move to the background on their own (the
-/// session's "background after"), the commands running, which the user
-/// can move at once (Ctrl+B), and the jobs in the background.
+/// When long calls move to the background on their own (the session's
+/// "background after"), the calls running that can move, which the user
+/// can move at once (Ctrl+B), and the jobs in the background. The session's
+/// [`TerminalManager`] lists the calls and runs the jobs.
 #[derive(Debug, Default)]
 pub struct Background {
-    /// After how many seconds a command still running moves; 0: never.
+    /// After how many seconds a call still running moves, or 0 for never.
     after: AtomicU64,
-    /// The commands running, by job.
-    running: Mutex<HashMap<Uuid, Running>>,
     /// The session's terminal jobs, whose manager owns them.
     jobs: std::sync::Weak<TerminalManager>,
 }
 
-/// A command running, as [`Background`] keeps it.
-#[derive(Debug)]
-struct Running {
-    /// The run of the agent whose call it is.
-    run: Uuid,
-    /// Moves it to the background.
-    moved: Arc<tokio::sync::Notify>,
-}
-
 impl Background {
-    /// Commands move after `after` seconds (0: never), as jobs of `jobs`.
+    /// Calls move after `after` seconds (0: never), as jobs of `jobs`.
     pub fn new(after: u64, jobs: &Arc<TerminalManager>) -> Arc<Self> {
-        Arc::new(Self {
-            after: after.into(),
-            running: Mutex::default(),
+        let background = Arc::new(Self {
+            after: 0.into(),
             jobs: Arc::downgrade(jobs),
-        })
+        });
+        background.set_after(after);
+        background
+    }
+
+    /// The session's terminal manager, while the session is open.
+    pub fn manager(&self) -> Option<Arc<TerminalManager>> {
+        self.jobs.upgrade()
     }
 
     /// The jobs running in the background, oldest first: the commands moved
-    /// there and those the terminal tools started. They stop when Arko
-    /// exits.
+    /// there, the calls moved there, and those the terminal tools started.
+    /// They stop when Arko exits.
     pub fn jobs(&self) -> Vec<BackgroundJob> {
         self.jobs
             .upgrade()
@@ -245,7 +242,7 @@ impl Background {
         self.jobs.upgrade().map_or(Ok(()), |jobs| jobs.close(known))
     }
 
-    /// After how long a command still running moves; `None`: never.
+    /// After how long a call still running moves; `None`: never.
     pub fn after(&self) -> Option<Duration> {
         match self.after.load(Ordering::Relaxed) {
             0 => None,
@@ -253,60 +250,36 @@ impl Background {
         }
     }
 
-    /// Commands started from now on move after `after` seconds (0: never).
+    /// Calls started from now on move after `after` seconds (0: never):
+    /// the shell's commands, and the calls the runtime moves (MCP tools,
+    /// `index_create`).
     pub fn set_after(&self, after: u64) {
         self.after.store(after, Ordering::Relaxed);
+        if let Some(jobs) = self.jobs.upgrade() {
+            jobs.set_background_after((after > 0).then(|| Duration::from_secs(after)));
+        }
     }
 
-    /// The runs of the agents running a command.
-    pub fn running(&self) -> Vec<Uuid> {
-        let running = self.running.lock().unwrap();
-        let mut runs: Vec<Uuid> = running.values().map(|command| command.run).collect();
+    /// The runs of the agents with a call running that can move.
+    pub fn movable(&self) -> Vec<Uuid> {
+        let mut runs: Vec<Uuid> = self
+            .jobs
+            .upgrade()
+            .map(|jobs| jobs.foreground_calls())
+            .unwrap_or_default()
+            .into_iter()
+            .map(|call| call.owner)
+            .collect();
         runs.sort();
         runs.dedup();
         runs
     }
 
-    /// Moves the commands of `run` to the background; returns how many.
+    /// Moves the calls of `run` to the background; returns how many.
     pub fn move_run(&self, run: Uuid) -> usize {
-        let running = self.running.lock().unwrap();
-        let mut moved = 0;
-        for command in running.values().filter(|command| command.run == run) {
-            command.moved.notify_one();
-            moved += 1;
-        }
-        moved
-    }
-
-    /// Keeps `job`, a command of `run`, among the commands running until
-    /// the guard is dropped.
-    fn hold(&self, job: Uuid, run: Uuid) -> Held<'_> {
-        let moved = Arc::new(tokio::sync::Notify::new());
-        self.running.lock().unwrap().insert(
-            job,
-            Running {
-                run,
-                moved: moved.clone(),
-            },
-        );
-        Held {
-            background: self,
-            job,
-            moved,
-        }
-    }
-}
-
-/// A command among those running (see [`Background::hold`]).
-struct Held<'a> {
-    background: &'a Background,
-    job: Uuid,
-    moved: Arc<tokio::sync::Notify>,
-}
-
-impl Drop for Held<'_> {
-    fn drop(&mut self) {
-        self.background.running.lock().unwrap().remove(&self.job);
+        self.jobs
+            .upgrade()
+            .map_or(0, |jobs| jobs.move_to_background(run, None))
     }
 }
 
@@ -540,6 +513,12 @@ impl Tool for ShellTool {
         false
     }
 
+    /// A command moves itself to the background: when the user moves the
+    /// call (Ctrl+B), its job is released and the call returns its ID.
+    fn background_mode(&self) -> arko_agents::ToolBackground {
+        arko_agents::ToolBackground::Own
+    }
+
     fn bind_runtime(
         &self,
         task_id: Uuid,
@@ -611,7 +590,6 @@ impl Tool for ShellTool {
             job: job.job_id,
             armed: true,
         };
-        let held = self.background.hold(job.job_id, context.task_id);
         let moves_at = after.map(|after| tokio::time::Instant::from_std(started + after));
         let failed = |error: TerminalError| ToolError::ExecutionFailed(error.to_string());
         let mut revision = job.revision;
@@ -631,7 +609,7 @@ impl Tool for ShellTool {
                     continue;
                 }
                 () = tokio::time::sleep_until(moves_at.unwrap_or_else(tokio::time::Instant::now)), if moves_at.is_some() => false,
-                () = held.moved.notified() => true,
+                () = context.moved.moved() => true,
             };
             match self.manager.release(context.task_id, job.job_id) {
                 Ok(snapshot) => {
@@ -649,7 +627,6 @@ impl Tool for ShellTool {
                 Err(error) => return Err(failed(error)),
             }
         };
-        drop(held);
         guard.armed = false;
         let elapsed = started.elapsed();
         let output = std::fs::read(&done.log_path)
@@ -1074,7 +1051,11 @@ mod tests {
             .unwrap()
             .parse()
             .unwrap();
-        assert!(tool.background.running().is_empty());
+        // The other calls the runtime moves follow the same time.
+        assert_eq!(
+            tool.manager.background_after(),
+            Some(Duration::from_secs(1))
+        );
         assert_eq!(
             tool.manager.status(task, job, None).unwrap().state,
             JobState::Running
@@ -1095,32 +1076,25 @@ mod tests {
         assert!(content.contains("late"), "{content}");
     }
 
-    /// The user moves a command at once (Ctrl+B), also with the setting off.
+    /// The user moves a command at once (Ctrl+B), also with the setting off:
+    /// the call's move signal fires, its job goes on in the background, and
+    /// the call returns its ID.
     #[cfg(unix)]
     #[tokio::test]
     async fn the_user_moves_a_command_to_the_background() {
         let temp = tempfile::tempdir().unwrap();
-        let tool = Arc::new(tool(temp.path()));
+        let tool = tool(temp.path());
+        assert_eq!(tool.background_mode(), arko_agents::ToolBackground::Own);
         let task = Uuid::new_v4();
-        let call = {
-            let (tool, directory) = (tool.clone(), temp.path().to_path_buf());
-            tokio::spawn(async move {
-                let params =
-                    serde_json::from_value(serde_json::json!({"command": "sleep 30"})).unwrap();
-                tool.execute(&context(task, &directory), params).await
-            })
-        };
-        while tool.background.running().is_empty() {
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-        assert_eq!(tool.background.running(), [task]);
-        assert_eq!(tool.background.move_run(Uuid::new_v4()), 0);
-        assert_eq!(tool.background.move_run(task), 1);
-        let result = tokio::time::timeout(Duration::from_secs(5), call)
-            .await
-            .unwrap()
-            .unwrap()
-            .unwrap();
+        let moves = arko_agents::MoveSource::new();
+        let mut call = context(task, temp.path());
+        call.moved = moves.signal();
+        let params = serde_json::from_value(serde_json::json!({"command": "sleep 30"})).unwrap();
+        let (result, ()) = tokio::join!(tool.execute(&call, params), async {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            moves.fire();
+        });
+        let result = result.unwrap();
         assert!(result.starts_with(IN_THE_BACKGROUND), "{result}");
         assert!(
             result.contains("\nThe user moved it to the background."),
@@ -1130,6 +1104,7 @@ mod tests {
             result.ends_with("Its output so far:\n(no output)"),
             "{result}"
         );
+        assert_eq!(tool.background.jobs().len(), 1);
         // A command that finishes quickly is still returned whole.
         let result = run(
             &tool,
@@ -1139,6 +1114,7 @@ mod tests {
         .await
         .unwrap();
         assert!(result.starts_with("exit code 0, "), "{result}");
+        tool.manager.shutdown().await;
     }
 
     /// The description says when commands move to the background, as they

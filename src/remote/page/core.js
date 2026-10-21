@@ -31,20 +31,29 @@
       this.items = [];
       this.byId = new Map();
       this.workers = new Map();
+      /** The background jobs' summaries, by ID. */
+      this.jobs = new Map();
       this.counts = { main: 0, workers: 0 };
       /** When each item came or last changed, in this device's time. */
       this.grown = new Map();
     }
 
-    /** Starts over with `items` and `workers` (a `reset`). */
-    reset(items, workers) {
+    /** Starts over with `items`, `workers` and `jobs` (a `reset`). */
+    reset(items, workers, jobs) {
       this.items = [];
       this.byId.clear();
       this.workers.clear();
+      this.jobs.clear();
       this.grown.clear();
       this.counts = { main: 0, workers: 0 };
       for (const item of items) this.add(item);
       for (const worker of workers || []) this.workers.set(worker.id, worker);
+      for (const job of jobs || []) this.jobs.set(job.id, job);
+    }
+
+    /** A background job's summary, whole. */
+    job(summary) {
+      this.jobs.set(summary.id, summary);
     }
 
     /** A new item, come at `now`; returns the items trimmed to keep the
@@ -120,6 +129,40 @@
       }
       return { turn, since };
     }
+  }
+
+  /**
+   * What a call's line offers: `move` while it runs and the status lists
+   * it among the calls that can move to the background (`movable`), and
+   * `stop`, the ID of the background job it made while that job runs.
+   */
+  function callActions(item, store, movable) {
+    const actions = { move: false, stop: null };
+    if (item.kind !== 'call') return actions;
+    actions.move = item.status === 'running' && (movable || []).includes(item.id);
+    const job = item.job && store.jobs.get(item.job);
+    if (job && job.state === 'running') actions.stop = job.id;
+    return actions;
+  }
+
+  /**
+   * After a status, the calls that can now move to the background, or no
+   * longer can: `stale(id)` for each, whose line changes, then one
+   * `redraw()`, so a running call offers Move to background as soon as it
+   * can move. Returns whether any changed.
+   */
+  function movableChanged(before, after, stale, redraw) {
+    const was = before || [];
+    const is = after || [];
+    let changed = false;
+    for (const id of was.concat(is)) {
+      if (was.includes(id) !== is.includes(id)) {
+        stale(id);
+        changed = true;
+      }
+    }
+    if (changed) redraw();
+    return changed;
   }
 
   // ----- views -----
@@ -686,6 +729,8 @@
     VIEWS,
     BUDGET,
     Store,
+    callActions,
+    movableChanged,
     layout,
     QUIET_MS,
     motion,

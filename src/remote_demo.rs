@@ -242,6 +242,7 @@ async fn remote_page_demo() {
         extra_rules: Default::default(),
         project: Default::default(),
         background: managers.background.clone(),
+        feed: Some(harness.feed.clone()),
         page: std::sync::Mutex::default(),
         changed: Default::default(),
         title: Default::default(),
