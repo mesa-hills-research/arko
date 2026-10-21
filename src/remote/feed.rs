@@ -1841,8 +1841,8 @@ impl Feed {
         }
     }
 
-    /// The user's message to `worker`, which went to it directly. The
-    /// worker's own transcript shows it, and the main one too.
+    /// The user's message to `worker`, which went to it directly. It is
+    /// the worker's item, so only the worker's own transcript shows it.
     pub fn to_worker(&self, worker: &str, text: &str, source: Source) {
         let mut item = Item::new(Kind::User, text.trim()).agent(worker);
         item.source = Some(source);

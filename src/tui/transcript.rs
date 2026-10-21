@@ -1425,11 +1425,10 @@ impl Filter {
                     return worker_line();
                 }
                 if !item.is_main() {
-                    // A worker's calls and what went wrong show in Full,
-                    // and what the user wrote to it in every view. Its text
-                    // and report are its own view's.
+                    // A worker's calls and what went wrong show in Full. Its
+                    // text, its report and what the user wrote to it are its
+                    // own view's.
                     return match (view, item.kind) {
-                        (_, Kind::User) => Show::Item,
                         (View::Full, Kind::Call) => Show::Item,
                         (View::Full, Kind::Notice) if item.level != Some(Level::Info) => Show::Item,
                         _ => Show::Hidden,
@@ -1552,7 +1551,7 @@ fn entry_lines(
                 (theme.text(), theme.accent())
             };
             let mut lines = plain(&item.text, style, inner);
-            if let Some(tag) = user_tag(item, own) {
+            if let Some(tag) = user_tag(item) {
                 // (Not the user's text: a copy leaves it out.)
                 let tag = Span::styled(format!("  {tag}"), theme.dim());
                 let tag_width = text_width(&tag.content);
@@ -1936,22 +1935,18 @@ fn cut_middle(text: &str, width: usize) -> String {
     format!("{start}{}{end}", glyphs::render("…"))
 }
 
-/// What the user's text became, when it isn't the usual (a new turn). Out
-/// of its worker's own view (`own`), a message to a worker says to which.
-fn user_tag(item: &Item, own: bool) -> Option<String> {
+/// What the user's text became, when it isn't the usual (a new turn).
+fn user_tag(item: &Item) -> Option<String> {
     let delivery = match item.delivery {
-        Some(Delivery::Note) => Some("added to the task".to_string()),
-        Some(Delivery::Answer) => Some("answer".to_string()),
-        Some(Delivery::Queued) => Some("waits for its turn".to_string()),
-        _ if !item.is_main() && !own => Some(format!("to {}", item.agent)),
+        Some(Delivery::Note) => Some("added to the task"),
+        Some(Delivery::Answer) => Some("answer"),
+        Some(Delivery::Queued) => Some("waits for its turn"),
         _ => None,
     };
     let web = (item.source == Some(Source::Web)).then_some("from the web page");
     match (delivery, web) {
         (Some(d), Some(w)) => Some(rendered(format!("{d} · {w}"))),
-        (Some(d), None) => Some(d),
-        (None, Some(w)) => Some(w.to_string()),
-        (None, None) => None,
+        (d, w) => d.or(w).map(str::to_string),
     }
 }
 
@@ -2169,25 +2164,31 @@ mod tests {
         );
     }
 
-    /// What the user wrote to a worker shows in its own view as the user's
-    /// message, and in every view of the main transcript with the worker
-    /// it went to.
+    /// What the user wrote to a worker shows in that worker's own view, as
+    /// the user's message. No view of the main transcript has it, and no
+    /// other worker's view.
     #[test]
-    fn the_users_message_to_a_worker_shows_where_it_went() {
+    fn the_users_message_to_a_worker_shows_in_its_own_view_only() {
         let mut t = Transcript::new();
-        let mut message = item(1, Kind::User, "Use tabs.");
-        message.agent = "r1".into();
+        t.apply(Update::Item(item(1, Kind::User, "Fix it")));
+        let mut message = item(2, Kind::User, "Use tabs.").agent("r1");
         message.source = Some(Source::Web);
         t.apply(Update::Item(message));
+        t.apply(Update::Item(item(3, Kind::Text, "Testing.").agent("r2")));
         for view in View::ALL {
             assert_eq!(
-                rows(&mut t, &Filter::Main(view), 50, 1),
-                ["▎ Use tabs.  to r1 · from the web page"]
+                rows(&mut t, &Filter::Main(view), 50, 2),
+                ["▎ Fix it", ""],
+                "{view:?}"
             );
         }
         assert_eq!(
-            rows(&mut t, &Filter::Worker("r1".into()), 50, 1),
-            ["▎ Use tabs.  from the web page"]
+            rows(&mut t, &Filter::Worker("r1".into()), 50, 2),
+            ["▎ Use tabs.  from the web page", ""]
+        );
+        assert_eq!(
+            rows(&mut t, &Filter::Worker("r2".into()), 50, 2),
+            ["  Testing.", ""]
         );
     }
 
