@@ -1615,6 +1615,62 @@ mod tests {
         quit(seam, ended).await;
     }
 
+    /// How long monitors' warnings wake the agent can be set for a new
+    /// session, which keeps it, and again as it resumes.
+    #[tokio::test]
+    async fn monitor_wakes_are_set_for_a_new_session_and_on_resume() {
+        let temp = tempfile::tempdir().unwrap();
+        let (server, _bodies) = counting_server().await;
+        let (root, project) = (temp.path().join("arko"), temp.path().join("project"));
+        std::fs::create_dir_all(&project).unwrap();
+        let open = |session: SessionChoice, wakes: Option<u64>| {
+            let running = spawn(
+                Options {
+                    root: Some(root.clone()),
+                    session,
+                    workspace: Some(project.clone()),
+                    model: Some("luna".into()),
+                    openai_auth: Some(OpenAiAuth::ApiKey),
+                    cache_1h: Some(false),
+                    monitor_wakes: wakes.map(|seconds| crate::monitors::Wakes(Some(seconds))),
+                    client: Some(GivenClient(Arc::new(server.client()))),
+                    ..Options::default()
+                },
+                Arc::new(NoPrompter),
+            );
+            async move {
+                let seam = tokio::time::timeout(Duration::from_secs(30), running.opened)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .unwrap();
+                (seam, running.ended)
+            }
+        };
+        let wakes = |id: &str| {
+            Session::open(&root, id)
+                .unwrap()
+                .load_settings()
+                .unwrap()
+                .monitor_wakes
+        };
+        let (seam, ended) = open(SessionChoice::New, Some(2_700)).await;
+        let id = seam.session.id.clone();
+        assert_eq!(wakes(&id), crate::monitors::Wakes(Some(2_700)));
+        quit(seam, ended).await;
+        // A resume without the option keeps the session's.
+        let (seam, ended) = open(SessionChoice::Resume(id.clone()), None).await;
+        assert_eq!(wakes(&id), crate::monitors::Wakes(Some(2_700)));
+        quit(seam, ended).await;
+        let (seam, ended) = open(SessionChoice::Resume(id.clone()), Some(1_800)).await;
+        assert_eq!(wakes(&id), crate::monitors::Wakes(Some(1_800)));
+        assert_eq!(
+            seam.meter.read().settings.monitor_wakes,
+            crate::monitors::Wakes(Some(1_800))
+        );
+        quit(seam, ended).await;
+    }
+
     /// A process opens one session without `spawn`: it reads the process's
     /// settings and keys, so a second is refused, until the first closes.
     #[tokio::test]

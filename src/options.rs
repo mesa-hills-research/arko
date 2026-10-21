@@ -24,8 +24,9 @@ pub enum SessionChoice {
 
 /// What a session opens with. A resumed session keeps its models and the
 /// settings it was started with. The options it can change as it resumes
-/// are the project instructions, when commands move to the background,
-/// outside access, the handover size and the MCP config files.
+/// are the project instructions, when commands move to the background, how
+/// long monitors' warnings wake the agent (`monitor_wakes`), outside
+/// access, the handover size and the MCP config files.
 #[derive(Debug, Clone)]
 pub struct Options {
     /// Arko's folder, by default `ARKO_HOME`, else `arko` in the data
