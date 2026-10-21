@@ -143,9 +143,7 @@ fn items_from(
                 }
             }
             Role::Assistant => {
-                let reply = text_replies
-                    && message.tool_calls.is_empty()
-                    && !messages.get(index + 1).is_some_and(is_answer);
+                let reply = text_replies && is_reply(messages, index);
                 if reply {
                     let text: String = message
                         .content
@@ -205,9 +203,7 @@ fn items_from(
                 .tool_calls
                 .iter()
                 .any(|call| call.name == "complete_task")
-                || (text_replies
-                    && message.tool_calls.is_empty()
-                    && !messages.get(index + 1).is_some_and(is_answer));
+                || (text_replies && is_reply(messages, index));
         }
         for item in &mut items[start..] {
             item.turn = turn;
@@ -223,6 +219,17 @@ fn reopened(text: &str) -> bool {
         && text.lines().any(|line| {
             line.starts_with("Your run was stopped before it finished and has now been reopened:")
         })
+}
+
+/// Whether the agent's message at `index` ends its turn when it replies in
+/// text. That's text alone, with neither the answer to its question after
+/// it nor more of its response. Claude Code's agents save the text of a
+/// response apart from its calls, as a message of its own before them.
+fn is_reply(messages: &[Message], index: usize) -> bool {
+    messages[index].tool_calls.is_empty()
+        && messages
+            .get(index + 1)
+            .is_none_or(|next| next.role != Role::Assistant && !is_answer(next))
 }
 
 /// Whether `message` can begin a turn: a message from the user's side with
@@ -667,6 +674,63 @@ mod tests {
             ]
         );
         assert_eq!(items.last().unwrap().turn, Some(4));
+    }
+
+    /// An agent in Claude Code has its response's text saved as a message
+    /// of its own before the calls. That text is what it wrote beside them,
+    /// not its reply, and the turn goes on, also through a note it got with
+    /// a call's result.
+    #[test]
+    fn text_saved_apart_from_its_calls_reads_as_text() {
+        let calls = |id: &str, command: &str| {
+            let mut message = Message::new_assistant("");
+            message.tool_calls = vec![call(
+                id,
+                crate::shell::SHELL_TOOL_NAME,
+                serde_json::json!({ "command": command }),
+            )];
+            message
+        };
+        let result = |id: &str| {
+            Message::new_user_with_contents(vec![Content::ToolResult(ToolResult::new(
+                Some(id.into()),
+                crate::shell::SHELL_TOOL_NAME,
+                "exit code 0, 0.1 s",
+            ))])
+        };
+        let messages = vec![
+            Message::new_user("Count the words."),
+            Message::new_assistant("First I'll write count.py."),
+            calls("call_1", "touch count.py"),
+            result("call_1"),
+            Message::new_user(
+                "# Workflow context update\n\nNew notes on your task, oldest first. A note refines your task.\n- Note 1 from the operator (the person running this workflow), 2026-10-21 13:20 UTC:\n  Skip empty files.",
+            ),
+            Message::new_assistant("It's written. Next I'll run it."),
+            calls("call_2", "python3 count.py"),
+            result("call_2"),
+            Message::new_assistant("There are 3 files."),
+            Message::new_user("Thanks."),
+            Message::new_assistant("You're welcome."),
+        ];
+        let shown: Vec<(Kind, String, Option<u64>)> = items(&messages, true, &Images::default())
+            .into_iter()
+            .filter(|item| matches!(item.kind, Kind::Text | Kind::Reply | Kind::User))
+            .map(|item| (item.kind, item.text, item.turn))
+            .collect();
+        let text = |text: &str| text.to_string();
+        assert_eq!(
+            shown,
+            [
+                (Kind::User, text("Count the words."), Some(1)),
+                (Kind::Text, text("First I'll write count.py."), Some(1)),
+                (Kind::User, text("Skip empty files."), Some(1)),
+                (Kind::Text, text("It's written. Next I'll run it."), Some(1)),
+                (Kind::Reply, text("There are 3 files."), Some(1)),
+                (Kind::User, text("Thanks."), Some(2)),
+                (Kind::Reply, text("You're welcome."), Some(2)),
+            ]
+        );
     }
 
     /// With text replies, a response of text alone is the agent's reply,

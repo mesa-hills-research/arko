@@ -584,6 +584,15 @@ impl Indexes {
         Some(line)
     }
 
+    /// The states of the workspace's indexes, the ones [`Self::summary`]
+    /// names, by name (they read a few small files each).
+    pub(crate) fn workspace_reports(&self) -> Vec<IndexReport> {
+        self.related(&self.workspace)
+            .into_iter()
+            .map(|found| self.report(found.layout, Ok(found.manifest)))
+            .collect()
+    }
+
     /// Tokens billed for embeddings (indexing and queries) in this process, and
     /// their cost in dollars.
     pub fn spent(&self) -> (u64, f64) {

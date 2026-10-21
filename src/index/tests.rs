@@ -560,6 +560,101 @@ fn the_voyage_key_changes_while_arko_runs() {
     fixture.shutdown(&indexes);
 }
 
+/// An app reads the workspace's indexes as data: the ones the banner
+/// lists, by name, with how they're kept current and their embeddings.
+#[test]
+fn an_app_reads_the_workspace_indexes_as_data() {
+    use crate::details::{IndexKind, IndexWatch, index_facts};
+
+    let fixture = Fixture::new();
+    let root = fixture.code_project();
+    let handbook = fixture.docs_project();
+    write(&root.join("guide/setup.md"), "# Setup\n\nInstall it.\n");
+    let indexes = fixture.open(&root, Backend::Hash, true, fast(false));
+    assert!(index_facts(&indexes).is_empty());
+
+    indexes.create_blocking(&create_args(&root, None)).unwrap();
+    let guide = CreateArgs {
+        embed: Some(false),
+        monitor: false,
+        ..create_args(&root.join("guide"), Some(Kind::Docs))
+    };
+    indexes.create_blocking(&guide).unwrap();
+    // Another tree's index isn't the workspace's.
+    indexes
+        .create_blocking(&create_args(&handbook, None))
+        .unwrap();
+    let proj = indexes.resolve("proj", &root).unwrap();
+    wait_for("the watcher", || {
+        matches!(
+            indexes.live_state(&proj.layout).0,
+            WatchState::Watching { .. }
+        )
+    });
+
+    let facts = index_facts(&indexes);
+    let names: Vec<&str> = facts.iter().map(|facts| facts.name.as_str()).collect();
+    assert_eq!(names, ["guide", "proj"], "{facts:?}");
+
+    let guide = &facts[0];
+    assert_eq!(guide.kind, IndexKind::Docs);
+    assert_eq!(guide.root, root.join("guide"));
+    assert!(!guide.monitor);
+    assert_eq!(guide.watch, IndexWatch::Off);
+    assert!(!guide.monitored());
+    assert_eq!(guide.chunks, Some(1));
+    assert_eq!(guide.files, Some(1));
+    assert!(guide.embeddings.is_none(), "{guide:?}");
+
+    let proj = &facts[1];
+    assert_eq!(proj.kind, IndexKind::Code);
+    assert_eq!(proj.kind.as_str(), "code");
+    assert_eq!(proj.root, root);
+    assert!(proj.monitor);
+    assert_eq!(proj.watch, IndexWatch::Here);
+    assert!(proj.monitored());
+    assert!(proj.built.is_some());
+    assert!(proj.files.is_some_and(|files| files >= 3), "{proj:?}");
+    assert_eq!(proj.last_error, None);
+    let chunks = proj.chunks.unwrap();
+    assert!(chunks >= 3, "{proj:?}");
+    let embeddings = proj.embeddings.as_ref().unwrap();
+    assert_eq!(embeddings.model, embed::HASH_MODEL);
+    assert_eq!(embeddings.embedded, chunks);
+    assert!(embeddings.complete);
+    assert!(!embeddings.cap_reached);
+    assert!(!embeddings.needs_key);
+    assert!(embeddings.tokens > 0, "{embeddings:?}");
+
+    // The banner names the same indexes.
+    let summary = indexes.summary().unwrap();
+    assert!(
+        summary.starts_with("indexes guide (docs, lexical), proj (code, monitored)"),
+        "{summary}"
+    );
+    fixture.shutdown(&indexes);
+}
+
+/// Without a Voyage key, an index that embeds says semantic search waits
+/// for one.
+#[test]
+fn an_app_reads_that_semantic_search_needs_a_key() {
+    let fixture = Fixture::new();
+    let root = fixture.code_project();
+    let indexes = fixture.open(&root, Backend::voyage(None), false, fast(false));
+    indexes.create_blocking(&create_args(&root, None)).unwrap();
+    let facts = crate::details::index_facts(&indexes);
+    assert_eq!(facts.len(), 1, "{facts:?}");
+    assert_eq!(facts[0].watch, crate::details::IndexWatch::Off);
+    let embeddings = facts[0].embeddings.as_ref().unwrap();
+    assert_eq!(embeddings.model, "voyage-code-4");
+    assert_eq!(embeddings.embedded, 0);
+    assert!(!embeddings.complete);
+    assert!(embeddings.needs_key);
+    assert_eq!(embeddings.tokens, 0);
+    fixture.shutdown(&indexes);
+}
+
 #[test]
 fn creating_refuses_bad_roots_and_names_uniquely() {
     let fixture = Fixture::new();
