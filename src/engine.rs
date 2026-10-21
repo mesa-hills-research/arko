@@ -1056,11 +1056,14 @@ impl Engine {
             }
             crew.shutdown().await;
         }
+        // The background jobs stop before the MCP servers and the indexes
+        // their moved calls wait on, so the jobs are saved as stopped by the
+        // exit, and the session continued later names them.
+        self.managers.shutdown().await;
         harness.mcp.shutdown().await;
         if let Some(indexes) = &harness.indexes {
             indexes.shutdown().await;
         }
-        self.managers.shutdown().await;
         harness.gauges.release();
     }
 }

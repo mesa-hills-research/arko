@@ -750,10 +750,13 @@ async fn an_update_that_came_too_late_is_found_by_its_job() {
     managers.shutdown().await;
 }
 
-/// After Arko stopped with jobs of the main agent's running, its first
-/// message in the session that opens again says which stopped, once.
+/// After Arko quit with jobs of the main agent's running, the user agreeing
+/// to stop them, the first message of their conversation in the session
+/// that opens again says which stopped, once. A message in another
+/// conversation leaves them for theirs.
+#[cfg(unix)]
 #[tokio::test]
-async fn the_first_message_after_a_restart_names_the_jobs_that_stopped() {
+async fn the_first_message_after_a_quit_names_the_jobs_that_stopped() {
     let bodies: Bodies = Arc::default();
     let server = ModelServer::start(Arc::new({
         let bodies = bodies.clone();
@@ -773,35 +776,65 @@ async fn the_first_message_after_a_restart_names_the_jobs_that_stopped() {
         Conversation::Answered(result) => result.agent_run_id,
         _ => unreachable!(),
     };
-    // The jobs' records as the last Arko left them, running.
-    let jobs_dir = harness.session.jobs_dir();
-    let (call, command, other) = (uuid::Uuid::new_v4(), uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
-    for (id, owner, extra) in [
-        (call, run, serde_json::json!({"label": "index_create", "call": {"tool_name": "index_create"}})),
-        (command, run, serde_json::json!({"label": "cargo build --release"})),
-        // A worker's, which the main agent isn't told of.
-        (other, uuid::Uuid::new_v4(), serde_json::json!({"label": "npm test"})),
-    ] {
-        let mut record = serde_json::json!({
-            "job_id": id, "owner": owner, "revision": 1, "state": "running", "input": null,
-            "exit_code": null, "error": null, "terminal": false, "output_end": 0,
-            "log_truncated": false,
-        });
-        record
-            .as_object_mut()
-            .unwrap()
-            .extend(extra.as_object().unwrap().clone());
-        std::fs::create_dir_all(jobs_dir.join(id.to_string())).unwrap();
-        std::fs::write(
-            jobs_dir.join(id.to_string()).join("job.json"),
-            record.to_string(),
-        )
-        .unwrap();
-    }
-    // The terminal opens as a resumed session's does, with its conversation
-    // there.
-    let managers = Managers::open(&harness.session, &Shell::detect(WindowsShell::Cmd)).unwrap();
+    // This Arko's jobs: a command and a moved call of the main agent's, and
+    // a worker's command.
+    let shell = Shell::detect(WindowsShell::Cmd);
+    let managers = Managers::open(&harness.session, &shell).unwrap();
     harness.background = managers.background.clone();
+    let workspace = temp.path().join("work");
+    let start = |owner: uuid::Uuid, command: &str| {
+        managers
+            .jobs
+            .start(
+                &arko_agents::TaskContext::new(owner, MAIN, "", &workspace),
+                command,
+                arko_agents::terminal::StartOptions {
+                    terminal: false,
+                    detect_prompts: false,
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+            .job_id
+    };
+    let command = start(run, "sleep 60");
+    start(uuid::Uuid::new_v4(), "sleep 61");
+    let call = managers
+        .jobs
+        .adopt_call(
+            run,
+            uuid::Uuid::new_v4(),
+            "index_create",
+            "index_create".into(),
+            arko_agents::stop::StopSource::new(),
+            Box::pin(std::future::pending::<arko_agents::terminal::CallOutput>()),
+        )
+        .unwrap()
+        .job_id;
+    // The user quits, and agrees to stop them.
+    assert!(!harness.may_exit(Some(Vec::new())));
+    assert_eq!(harness.jobs_shown.len(), 3);
+    let agreed = harness.jobs_shown.clone();
+    assert!(harness.may_exit(Some(agreed)));
+    managers.shutdown().await;
+    drop(managers);
+
+    // The session opens again (`arko -c`).
+    let managers = Managers::open(&harness.session, &shell).unwrap();
+    harness.background = managers.background.clone();
+    harness.new_conversation();
+    assert!(matches!(
+        harness.turn(Prompt::User("Something else.".into()), &mut inputs).await,
+        TurnEnd::Answered
+    ));
+    assert!(matches!(
+        harness.turn(Prompt::User("And more.".into()), &mut inputs).await,
+        TurnEnd::Answered
+    ));
+    for text in ["Something else.", "And more."] {
+        assert!(!body_with(&bodies, text).contains("# Background jobs"));
+    }
+    harness.resume_command("1").await;
     assert!(matches!(
         harness.turn(Prompt::User("Go on.".into()), &mut inputs).await,
         TurnEnd::Answered
@@ -812,9 +845,15 @@ async fn the_first_message_after_a_restart_names_the_jobs_that_stopped() {
         body.contains("# Background jobs\\n\\nArko was closed, so these background jobs of yours stopped, and they don't start again on their own. Start again any you still need."),
         "{body}"
     );
-    assert!(body.contains(&format!("- your index_create call (job {}…)", short(call))), "{body}");
-    assert!(body.contains(&format!("- `cargo build --release` (job {}…)", short(command))), "{body}");
-    assert!(!body.contains("npm test"), "{body}");
+    assert!(
+        body.contains(&format!("- your index_create call (job {}…)", short(call))),
+        "{body}"
+    );
+    assert!(
+        body.contains(&format!("- `sleep 60` (job {}…)", short(command))),
+        "{body}"
+    );
+    assert!(!body.contains("sleep 61"), "{body}");
     assert!(matches!(
         harness.turn(Prompt::User("Once more.".into()), &mut inputs).await,
         TurnEnd::Answered
@@ -827,4 +866,18 @@ async fn the_first_message_after_a_restart_names_the_jobs_that_stopped() {
         1
     );
     managers.shutdown().await;
+}
+
+/// A failed turn whose message named the stopped jobs, and which the
+/// conversation doesn't hold, leaves them for the next message.
+#[tokio::test]
+async fn a_failed_turn_leaves_the_stopped_jobs_for_the_next_message() {
+    let server = ModelServer::start(Arc::new(|_, _| Box::pin(async { complete("m1", "Done.") }))).await;
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, _inputs, _sender) = harness(temp.path(), server.client(), true);
+    harness.interrupted_told = true;
+    harness.tell_stopped_jobs_again(false);
+    assert!(harness.interrupted_told, "a message that didn't name them");
+    harness.tell_stopped_jobs_again(true);
+    assert!(!harness.interrupted_told);
 }

@@ -2946,6 +2946,7 @@ impl Harness {
             self.cut_back = Some(0);
         }
         let mut message = self.compose(prompt);
+        let told_stopped_jobs = message.contains(STOPPED_JOBS);
         let cut = self.cut_back.take();
         // A conversation cut back to its first message is named by the new
         // one.
@@ -3226,6 +3227,7 @@ impl Harness {
                 );
                 self.keep_unread(unread_notes(&notes, &workflow), false);
                 self.recover_after_error(&workflow);
+                self.tell_stopped_jobs_again(told_stopped_jobs);
                 TurnEnd::Failed
             }
         };
@@ -3645,8 +3647,9 @@ impl Harness {
     }
 
     /// The main agent's background jobs that were running when Arko last
-    /// stopped, which don't start again, for its first message since: once
-    /// per session.
+    /// stopped or quit, which don't start again, for the first message of
+    /// their conversation since: once per session. (Another conversation's
+    /// message leaves them for theirs.)
     fn interrupted_jobs(&mut self) -> Option<String> {
         // (A new conversation has no jobs yet.)
         let run = match &self.conversation {
@@ -3654,7 +3657,7 @@ impl Harness {
             Conversation::Answered(result) => result.agent_run_id,
             Conversation::Stopped(run) => run.result.agent_run_id,
         };
-        if std::mem::replace(&mut self.interrupted_told, true) {
+        if self.interrupted_told {
             return None;
         }
         let lines: Vec<String> = self
@@ -3675,12 +3678,33 @@ impl Harness {
                 }
             })
             .collect();
-        (!lines.is_empty()).then(|| {
-            format!(
-                "# Background jobs\n\nArko was closed, so these background jobs of yours stopped, and they don't start again on their own. Start again any you still need.\n{}",
-                lines.join("\n")
-            )
-        })
+        if lines.is_empty() {
+            return None;
+        }
+        self.interrupted_told = true;
+        Some(format!("{STOPPED_JOBS}\n{}", lines.join("\n")))
+    }
+
+    /// After a failed turn: the stopped jobs its message named are named
+    /// again by the next message, unless the conversation holds that
+    /// message (the model may have read it).
+    pub(crate) fn tell_stopped_jobs_again(&mut self, told: bool) {
+        let task = match &self.conversation {
+            Conversation::New => None,
+            Conversation::Answered(result) => Some(&result.task),
+            Conversation::Stopped(run) => Some(&run.result.task),
+        };
+        let held = task.is_some_and(|task| {
+            task.conversation
+                .messages
+                .iter()
+                .flat_map(|message| &message.content)
+                .filter_map(arko_ai::Content::as_text)
+                .any(|text| text.contains(STOPPED_JOBS))
+        });
+        if told && !held {
+            self.interrupted_told = false;
+        }
     }
 
     /// Keeps the notes the run never read for the agent. After a reply
@@ -3882,6 +3906,10 @@ pub(crate) const LIVE_COMMANDS: [&str; 12] = [
 /// What Ctrl+B (or the page's Move to background) says when nothing can
 /// move.
 pub(crate) const NOTHING_TO_MOVE: &str = "Nothing is running that can move to the background.";
+
+/// How the main agent's message names its background jobs that stopped with
+/// the last Arko, the jobs' lines following.
+const STOPPED_JOBS: &str = "# Background jobs\n\nArko was closed, so these background jobs of yours stopped, and they don't start again on their own. Start again any you still need.";
 
 /// A job's command or tool as `/jobs` shows it, on one line.
 fn jobs_label(label: &str) -> String {
