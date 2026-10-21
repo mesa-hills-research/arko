@@ -129,8 +129,10 @@ enum Shown {
         running: usize,
     },
     /// "Working…", at the end, while the agent waits on its model and
-    /// nothing else shows it.
-    Working,
+    /// nothing else shows it. `hangs`: it follows the turn's activity (a
+    /// call, its output, thinking), and hangs from it on a rail as a
+    /// command's output does.
+    Working { hangs: bool },
 }
 
 /// The key of the "Working…" line: after every item's.
@@ -704,7 +706,9 @@ impl Transcript {
                 at,
                 Block {
                     key: WORKING_KEY,
-                    shown: Shown::Working,
+                    shown: Shown::Working {
+                        hangs: before == Some(Group::Activity),
+                    },
                     // It stands where the agent's thinking or calls would.
                     gap: before.is_some_and(|before| before != Group::Activity),
                     lines: 1,
@@ -784,7 +788,7 @@ impl Transcript {
         let text_lines = total
             - blocks
                 .iter()
-                .filter(|block| block.shown == Shown::Working)
+                .filter(|block| matches!(block.shown, Shown::Working { .. }))
                 .map(Block::height)
                 .sum::<usize>();
         let bottom = total.saturating_sub(height);
@@ -923,11 +927,12 @@ impl Transcript {
                     motion::paint(buffer, (area.x, row), text_width(THINKING), theme, ms);
                     moving = true;
                 }
-                if block.shown == Shown::Working {
+                if matches!(block.shown, Shown::Working { .. }) {
                     // (Not text: the mouse finds the line above it.)
                     if !gap {
                         let label = text_width(&glyphs::render(WORKING));
-                        motion::paint(buffer, (area.x, row), label, theme, ms);
+                        let x = area.x + WORKING_SPINNER as u16;
+                        motion::paint(buffer, (x, row), label, theme, ms);
                         moving = true;
                     }
                 } else {
@@ -1045,10 +1050,20 @@ impl Transcript {
                 vec![margin(Line::from(spans))]
             }
             // (The spinner goes in the margin as it is drawn.)
-            Shown::Working => {
+            Shown::Working { hangs } => {
                 let label = glyphs::render(WORKING).into_owned();
+                // The rail where a command's output has it, then the
+                // spinner's column and its space. First in its turn, the
+                // line stands in the same place without the rail.
+                let rail = if *hangs {
+                    glyphs::render("│ ").into_owned()
+                } else {
+                    "  ".to_string()
+                };
                 let mut line = Wrapped::line(vec![
                     Span::raw(" ".repeat(MARGIN)),
+                    Span::styled(rail, theme.dim()),
+                    Span::raw("  "),
                     Span::styled(label, theme.dim().add_modifier(Modifier::BOLD)),
                 ]);
                 line.bare = true;
@@ -1503,6 +1518,9 @@ const THINKING: &str = "Thinking";
 
 /// The line that says the agent works, while it waits on its model.
 const WORKING: &str = "Working…";
+/// The column of the "Working…" line's spinner, after the margin and the
+/// rail it hangs from.
+const WORKING_SPINNER: usize = MARGIN + 2;
 
 /// The last line of an agent's thinking shown whole: a click on it folds
 /// it to its first line again.
@@ -2338,9 +2356,21 @@ mod tests {
         spins.then(|| &row[first.len_utf8()..])
     }
 
-    /// Whether `row` is the "Working…" line, its spinner in the margin.
+    /// Whether `row` is the "Working…" line.
     fn is_working(row: &str) -> bool {
-        after_spinner(row) == Some(" Working…")
+        working_rail(row).is_some()
+    }
+
+    /// The "Working…" line's rail: `Some(true)` when it hangs from the
+    /// turn's activity above it as a command's output does, `Some(false)`
+    /// when it's first in its turn and stands in the same place without it.
+    fn working_rail(row: &str) -> Option<bool> {
+        let rail = format!("  {}", glyphs::render("│ "));
+        let (rest, hangs) = match row.strip_prefix(rail.as_str()) {
+            Some(rest) => (rest, true),
+            None => (row.strip_prefix("    ")?, false),
+        };
+        (after_spinner(rest) == Some(" Working…")).then_some(hangs)
     }
 
     /// While the main agent waits on its model with nothing on the screen
@@ -2366,6 +2396,8 @@ mod tests {
         let shown = rows(&mut t, &full(), 40, 3);
         assert_eq!(shown[..2], ["▎ Fix the tests", ""]);
         assert!(is_working(&shown[2]), "{shown:?}");
+        // First in its turn, it stands without the rail.
+        assert_eq!(working_rail(&shown[2]), Some(false), "{shown:?}");
 
         // Its thinking streams: the thinking shows it, its label moving, but
         // not in Messages.
@@ -2489,6 +2521,8 @@ mod tests {
         let shown = rows(&mut t, &full(), 40, 4);
         assert_eq!(shown[0], "▸ $ make · ✓");
         assert!(is_working(&shown[1]), "{shown:?}");
+        // After a command, it hangs from it on the rail.
+        assert_eq!(working_rail(&shown[1]), Some(true), "{shown:?}");
         assert_eq!(shown[2..], ["", "▎ Use tabs.  added to the task"]);
     }
 
