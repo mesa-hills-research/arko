@@ -82,6 +82,19 @@ impl Managers {
     }
 }
 
+/// When the main agent's prompt cache expires: its latest request, or the
+/// latest refresh that kept it warm, plus its lifetime, as the status line
+/// counts them. `None` while either is unknown.
+pub(crate) fn cache_expiry(stats: &crate::ui::Stats) -> Option<std::time::SystemTime> {
+    let used = stats
+        .last_request
+        .as_ref()
+        .map(|request| request.at)
+        .max(stats.cache_refreshed_at)?;
+    let used = std::time::UNIX_EPOCH + Duration::from_millis(u64::try_from(used).ok()?);
+    Some(used + stats.cache_lifetime?)
+}
+
 /// The workflow's name in new sessions.
 pub(crate) const WORKFLOW_NAME: &str = "arko";
 
@@ -1827,6 +1840,7 @@ impl Harness {
                     stats.cache_refreshed_at = Some(started);
                     stats.cache_use = Some((read, written));
                 }
+                self.tell_monitors_of_the_cache();
                 self.gauges.touch();
                 Ok(crate::engine::Refreshed::OutOfBand {
                     read,
@@ -3030,6 +3044,11 @@ impl Harness {
         }
         let spent_before = self.spent();
         let started = Instant::now();
+        // While the agent works its monitors' news reaches it as notes, so
+        // their warnings needn't come before its cache expires.
+        if let (Some(run), Some(jobs)) = (self.conversation_run(), self.background.manager()) {
+            jobs.set_prompt_cache_expiry(run, None);
+        }
         let conversation = std::mem::replace(&mut self.conversation, Conversation::New);
         // Where this turn's message goes in the conversation.
         let at = cut.unwrap_or(match &conversation {
@@ -3291,6 +3310,7 @@ impl Harness {
             }
         };
         self.footer(spent_before, started);
+        self.tell_monitors_of_the_cache();
         if let Some(item) = user_item {
             self.mark_message(item, at);
         }
@@ -3429,6 +3449,24 @@ impl Harness {
             TurnEnd::Exit => News::Exit,
             TurnEnd::Stopped => News::Stopped,
             TurnEnd::Failed => News::Failed,
+        }
+    }
+
+    /// The main agent's run, once its conversation started.
+    fn conversation_run(&self) -> Option<uuid::Uuid> {
+        match &self.conversation {
+            Conversation::New => None,
+            Conversation::Answered(result) => Some(result.agent_run_id),
+            Conversation::Stopped(run) => Some(run.result.agent_run_id),
+        }
+    }
+
+    /// Tells the main agent's monitors when its prompt cache expires (see
+    /// [`cache_expiry`]), so a warning before a monitor ends that would come
+    /// after that wakes the idle agent before it instead.
+    pub(crate) fn tell_monitors_of_the_cache(&self) {
+        if let (Some(run), Some(jobs)) = (self.conversation_run(), self.background.manager()) {
+            jobs.set_prompt_cache_expiry(run, cache_expiry(&lock(&self.stats)));
         }
     }
 

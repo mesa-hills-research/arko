@@ -1340,3 +1340,71 @@ async fn an_alert_during_the_last_request_still_wakes_the_agent() {
     drop(bodies);
     managers.shutdown().await;
 }
+
+/// A monitor's warning before it ends that would come after the idle
+/// agent's prompt cache expires comes just before it instead, and starts a
+/// turn that says the monitor is about to end and how long it has left.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_monitors_warning_wakes_the_agent_before_its_cache_expires() {
+    let bodies: Bodies = Arc::default();
+    let server = ModelServer::start(Arc::new({
+        let bodies = bodies.clone();
+        move |_, body: String| {
+            bodies.lock().unwrap().push(body.clone());
+            Box::pin(async move {
+                if body.contains("A monitor of yours is about to end") {
+                    complete("m3", "Kept it.")
+                } else if body.contains("call_m1") {
+                    complete("m2", "Watching the server.")
+                } else {
+                    tool_call(
+                        "m1",
+                        "monitor_start",
+                        serde_json::json!({
+                            "command": "sleep 60",
+                            "pattern": "ERROR",
+                            "expires_minutes": 10
+                        }),
+                    )
+                }
+            })
+        }
+    }))
+    .await;
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
+    let managers = equip(&mut harness, &mut inputs, 0);
+    let mut limits = arko_agents::terminal::MonitorLimits::default();
+    limits.gather = Duration::from_millis(100);
+    limits.start_wait = Duration::ZERO;
+    limits.cache_margin = Duration::from_secs(1);
+    managers.jobs.set_monitor_limits(limits).unwrap();
+    // A cache that lasts 3 seconds after each request.
+    harness.stats.lock().unwrap().cache_lifetime = Some(Duration::from_secs(3));
+    tokio::time::timeout(
+        Duration::from_secs(20),
+        harness.turn(Prompt::User("Start the server and watch it.".into()), &mut inputs),
+    )
+    .await
+    .unwrap();
+    let ended = std::time::Instant::now();
+    let alert = next_alert(&mut inputs, Duration::from_secs(10)).await;
+    assert!(alert.ends_soon);
+    assert!(ended.elapsed() < Duration::from_secs(5), "{:?}", ended.elapsed());
+    harness.deliver_alert(alert, &mut inputs).await;
+    assert_eq!(summary(&harness), "Kept it.");
+    let woken = bodies.lock().unwrap()[2].clone();
+    assert!(
+        woken.contains("A monitor of yours is about to end. The notice follows.")
+            && woken.contains(") ends in 10 min, at "),
+        "{woken}"
+    );
+    assert!(
+        shown(&harness.feed).iter().any(|(kind, text, _)| kind == "notice"
+            && text.contains("a monitor is about to end, and the agent is asked whether to keep it")),
+        "{:?}",
+        shown(&harness.feed)
+    );
+    managers.shutdown().await;
+}
