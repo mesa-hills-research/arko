@@ -1032,10 +1032,13 @@ impl Transcript {
                     ),
                 ];
                 if *failed > 0 {
-                    spans.push(Span::styled(format!(" · {failed} failed"), theme.error()));
+                    spans.push(Span::styled(
+                        rendered(format!(" · {failed} failed")),
+                        theme.error(),
+                    ));
                 }
                 if *running > 0 {
-                    spans.push(Span::styled(" · running".to_string(), theme.dim()));
+                    spans.push(Span::styled(rendered(" · running"), theme.dim()));
                 }
                 vec![margin(Line::from(spans))]
             }
@@ -1602,29 +1605,29 @@ fn entry_lines(
         Kind::Call => {
             let mut spans = worker_prefix(item);
             let failed = item.status == Some(CallStatus::Failed);
-            spans.push(Span::styled(item.text.clone(), theme.dim()));
+            spans.push(Span::styled(rendered(&item.text), theme.dim()));
             match item.status {
                 Some(CallStatus::Ok) => {
-                    spans.push(Span::styled(" · ".to_string(), theme.dim()));
+                    spans.push(Span::styled(rendered(" · "), theme.dim()));
                     spans.push(Span::styled(
                         glyphs::render("✓").into_owned(),
                         theme.success(),
                     ));
                     if let Some(outcome) = &item.outcome {
-                        spans.push(Span::styled(format!(" {outcome}"), theme.dim()));
+                        spans.push(Span::styled(rendered(format!(" {outcome}")), theme.dim()));
                     }
                 }
                 Some(CallStatus::Failed) => {
-                    spans.push(Span::styled(" · ".to_string(), theme.dim()));
+                    spans.push(Span::styled(rendered(" · "), theme.dim()));
                     let outcome = item.outcome.as_deref().unwrap_or("failed");
                     spans.push(Span::styled(
-                        format!("{} {outcome}", glyphs::render("✗")),
+                        rendered(format!("✗ {outcome}")),
                         theme.error(),
                     ));
                 }
                 _ => {
                     if let Some(clock) = clock {
-                        spans.push(Span::styled(format!(" · {clock}"), theme.dim()));
+                        spans.push(Span::styled(rendered(format!(" · {clock}")), theme.dim()));
                     }
                     spans.push(Span::styled(
                         format!(" {}", glyphs::render("…")),
@@ -1673,7 +1676,7 @@ fn entry_lines(
                 _ => ("·", theme.dim()),
             };
             let mut spans = worker_prefix(item);
-            spans.push(Span::styled(item.text.clone(), style));
+            spans.push(Span::styled(rendered(&item.text), style));
             wrap::prefixed(
                 wrap::wrap_lines(&spans, inner, 0),
                 mark(symbol, style),
@@ -1682,10 +1685,10 @@ fn entry_lines(
         }
         Kind::Turn | Kind::Conversation => {
             let rule = glyphs::render("─").into_owned();
-            let text = match &item.detail {
+            let text = rendered(match &item.detail {
                 Some(plan) => format!("{rule}{rule} {} · {plan} ", item.text),
                 None => format!("{rule}{rule} {} ", item.text),
-            };
+            });
             let fill = inner.saturating_sub(text_width(&text));
             let mut spans = vec![Span::styled(text, theme.dim())];
             spans.push(Span::styled(rule.repeat(fill), theme.dim()));
@@ -1715,11 +1718,16 @@ fn entry_lines(
                 if more && !cut && text_width(&shown) + 2 <= room {
                     shown.push_str(" …");
                 }
-                let separator = if shown.is_empty() { "" } else { " · " };
-                spans.push(Span::styled(separator.to_string(), theme.dim()));
-                spans.push(Span::styled(glyphs::render(&shown).into_owned(), style));
+                let separator = if shown.is_empty() {
+                    String::new()
+                } else {
+                    rendered(" · ")
+                };
+                let separator_width = text_width(&separator);
+                spans.push(Span::styled(separator, theme.dim()));
+                spans.push(Span::styled(rendered(&shown), style));
                 let mut line = Wrapped::line(spans);
-                line.skip = label + text_width(separator);
+                line.skip = label + separator_width;
                 return wrap::prefixed(vec![line], blank(), blank());
             }
             let mut heading = Wrapped::line(spans);
@@ -1853,7 +1861,7 @@ fn banner_lines(banner: &Banner, theme: &Theme, width: usize) -> Vec<Wrapped> {
         lines.push(row("Project", project, cut_end(project, value_width)));
     }
     if !banner.tools.is_empty() {
-        let tools = banner.tools.join(" · ");
+        let tools = rendered(banner.tools.join(" · "));
         let spans = [Span::styled(tools, theme.text())];
         // Tools may take more than a line: under their value.
         for (n, line) in wrap::wrap_lines(&spans, value_width, 0)
@@ -1932,11 +1940,17 @@ fn user_tag(item: &Item, own: bool) -> Option<String> {
     };
     let web = (item.source == Some(Source::Web)).then_some("from the web page");
     match (delivery, web) {
-        (Some(d), Some(w)) => Some(format!("{d} · {w}")),
+        (Some(d), Some(w)) => Some(rendered(format!("{d} · {w}"))),
         (Some(d), None) => Some(d),
         (None, Some(w)) => Some(w.to_string()),
         (None, None) => None,
     }
+}
+
+/// `text` (Arko's words around the agent's) with its symbols as the
+/// terminal shows them.
+fn rendered(text: impl AsRef<str>) -> String {
+    glyphs::render(text.as_ref()).into_owned()
 }
 
 /// `text` as it is, wrapped.
@@ -2030,7 +2044,7 @@ fn worker_line(
         ));
         facts.extend(worker_time(worker));
         spans.push(Span::styled(
-            format!("{} · ", facts.join(" · ")),
+            rendered(format!("{} · ", facts.join(" · "))),
             theme.dim(),
         ));
         let (word, style) = state(worker, theme);
@@ -2038,7 +2052,7 @@ fn worker_line(
         if worker.state == WorkerState::Running
             && let Some(last) = &worker.last
         {
-            spans.push(Span::styled(format!(" · {last}"), theme.dim()));
+            spans.push(Span::styled(rendered(format!(" · {last}")), theme.dim()));
         }
     }
     // One line, cut at the width.
@@ -2081,11 +2095,11 @@ fn heading_lines(worker: &WorkerSummary, theme: &Theme, width: usize) -> Vec<Wra
             theme.text().add_modifier(Modifier::BOLD),
         ),
         Span::styled(worker.title.clone(), theme.text()),
-        Span::styled(" · ".to_string(), theme.dim()),
+        Span::styled(rendered(" · "), theme.dim()),
         Span::styled(word.to_string(), style),
     ];
     if let Some(time) = worker_time(worker) {
-        spans.push(Span::styled(format!(" · {time}"), theme.dim()));
+        spans.push(Span::styled(rendered(format!(" · {time}")), theme.dim()));
     }
     wrap::prefixed(
         wrap::wrap_lines(&spans, inner, 0),

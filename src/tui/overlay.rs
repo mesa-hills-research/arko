@@ -352,7 +352,7 @@ fn help(frame: &mut Frame, app: &App, area: Rect, scroll: usize) {
         let spans = vec![
             cap(theme, &key),
             Span::raw(" ".repeat(pad + 1)),
-            Span::styled(what.to_string(), theme.text()),
+            Span::styled(glyphs::render(what).into_owned(), theme.text()),
         ];
         for line in wrap::wrap(&spans, inner_width, key_width + 1) {
             lines.push(Line::from(line));
@@ -365,7 +365,10 @@ fn help(frame: &mut Frame, app: &App, area: Rect, scroll: usize) {
             format!("{:<14}", command.name),
             theme.text().add_modifier(Modifier::BOLD),
         )];
-        spans.push(Span::styled(command.about.to_string(), theme.text()));
+        spans.push(Span::styled(
+            glyphs::render(command.about).into_owned(),
+            theme.text(),
+        ));
         for line in wrap::wrap(&spans, inner_width, 14) {
             lines.push(Line::from(line));
         }
@@ -904,14 +907,16 @@ fn page(frame: &mut Frame, app: &App, area: Rect, link: usize, since: Instant) {
             // Ranked: the local network first, VPNs last.
             let mut about = vec![Span::styled(
                 match &shown.interface {
-                    Some(name) if !shown.loopback => format!("{name} · {}", shown.kind.label()),
+                    Some(name) if !shown.loopback => {
+                        glyphs::render(&format!("{name} · {}", shown.kind.label())).into_owned()
+                    }
                     _ => shown.kind.label().to_string(),
                 },
                 theme.dim(),
             )];
             if links.len() > 1 {
                 about.push(Span::styled(
-                    format!(" · {} of {}", link + 1, links.len()),
+                    glyphs::render(&format!(" · {} of {}", link + 1, links.len())).into_owned(),
                     theme.dim(),
                 ));
             }

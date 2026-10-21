@@ -278,12 +278,13 @@ fn draw_list(frame: &mut Frame, app: &mut App, area: Rect, rows: Vec<ListRow>) {
                 right.push(Span::styled(format!("{state:<STATE_WIDTH$}"), style));
                 let time = transcript::run_time(worker, now).map_or_else(
                     || " ".repeat(TIME_WIDTH + 3),
-                    |ms| format!(" · {:>TIME_WIDTH$}", list_time(ms)),
+                    |ms| format!("{} {:>TIME_WIDTH$}", glyphs::render(" ·"), list_time(ms)),
                 );
                 right.push(Span::styled(time, theme.dim()));
                 right.push(Span::styled(
                     format!(
-                        " · {:>CALLS_WIDTH$} tool call{} ",
+                        "{} {:>CALLS_WIDTH$} tool call{} ",
+                        glyphs::render(" ·"),
                         worker.tool_calls,
                         if worker.tool_calls == 1 { " " } else { "s" }
                     ),
@@ -323,7 +324,7 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
     let theme = &app.theme;
     let dot = glyphs::render("●").into_owned();
     let mut left: Vec<Span<'static>> = vec![Span::raw(" ")];
-    let sep = || Span::styled(" · ".to_string(), theme.dim());
+    let sep = || Span::styled(glyphs::render(" · ").into_owned(), theme.dim());
     if let Some(worker) = &app.watching {
         left.push(Span::styled(
             format!("viewing {worker}"),
@@ -1064,6 +1065,159 @@ mod tests {
         let rows = screen(&mut app, 50, 10);
         assert!(!rows.iter().any(|row| row.contains("Tabs or spaces?")));
         assert_eq!(rows[6], " ● asks you");
+    }
+
+    /// With the symbols of the classic Windows console's fonts (`basic`) and
+    /// with plain ASCII (`ascii`), the whole screen is drawn in characters
+    /// those fonts have: the banner, every kind of item, the separators
+    /// between their parts, the status line, the agent list, the docked
+    /// question, a worker's own view and the overlays.
+    #[test]
+    fn every_symbol_on_the_screen_has_its_stand_in() {
+        use crate::glyphs::Symbols;
+        use crate::glyphs::tests::{choose_symbols, wgl4};
+        use crate::remote::{CallStatus, Delivery, Level, Source, WorkerState};
+        use crate::tui::app::tests::{job, worker};
+        use crate::tui::overlay::Overlay;
+        use std::time::Duration;
+        for symbols in [Symbols::Basic, Symbols::Ascii] {
+            let _chosen = choose_symbols(symbols);
+            let mut app = app();
+            app.key_states = crate::tui::keys_menu::tests::states;
+            app.transcript.banner = Some(transcript::Banner {
+                model: "gpt-6-luna (xhigh effort)".into(),
+                workers: "parallel workers".into(),
+                workspace: "/home/someone/project".into(),
+                session: "20261021-101010-abcd".into(),
+                project: Some("AGENTS.md".into()),
+                tools: vec!["1 skill".into(), "2 MCP servers".into()],
+                model_note: None,
+                notes: vec![("Outside access is on.".into(), Some(Level::Warn))],
+            });
+            let mut items = Vec::new();
+            let mut add = |item: Item| items.push(item);
+            let mut user = Item::new(Kind::User, "Fix the parser");
+            user.delivery = Some(Delivery::Turn);
+            user.source = Some(Source::Web);
+            add(user);
+            add(Item::new(Kind::Thinking, "**Plan**\nRead it first."));
+            add(Item::new(Kind::Text, "Reading the parser."));
+            let mut call = Item::new(Kind::Call, "$ cargo test");
+            call.status = Some(CallStatus::Ok);
+            call.outcome = Some("12 passed".into());
+            add(call);
+            let mut result = Item::new(Kind::Result, "exit code 0").detail("running 12 tests");
+            result.call = Some(4);
+            add(result);
+            let mut failed = Item::new(Kind::Call, "read a.rs");
+            failed.status = Some(CallStatus::Failed);
+            failed.outcome = Some("not found".into());
+            add(failed);
+            let mut running = Item::new(Kind::Call, "$ sleep 30");
+            running.status = Some(CallStatus::Running);
+            add(running);
+            add(Item::new(Kind::Notice, "retrying in 2 s").level(Level::Warn));
+            add(Item::new(Kind::Notice, "handed over").level(Level::Info));
+            add(Item::new(Kind::Output, "make: done"));
+            add(Item::new(Kind::Message, "Halfway there."));
+            let mut line = Item::new(Kind::WorkerLine, "Test it");
+            line.worker = Some("r1".into());
+            add(line);
+            let mut call = Item::new(Kind::Call, "cargo test").agent("r1");
+            call.status = Some(CallStatus::Ok);
+            add(call);
+            add(Item::new(Kind::Thinking, "Which test?").agent("r1"));
+            add(Item::new(Kind::Result, "done").agent("r1"));
+            let mut conversation = Item::new(Kind::Conversation, "Conversation 2");
+            conversation.detail = Some("plan 5 h 21%".into());
+            add(conversation);
+            add(Item::new(Kind::Question, "Tabs or spaces?"));
+            add(Item::new(Kind::Reply, "Done."));
+            let mut note = Item::new(Kind::User, "Keep the old name");
+            note.delivery = Some(Delivery::Note);
+            note.source = Some(Source::Web);
+            note.pending = true;
+            add(note);
+            let now = chrono::Utc::now().timestamp_millis();
+            for (id, mut item) in (1..).zip(items) {
+                item.id = id;
+                item.at = now;
+                item.turn = Some(1);
+                app.update(Update::Item(item), Activity::default);
+            }
+            let mut summary = worker("r1", WorkerState::Running);
+            summary.last = Some("cargo test".into());
+            app.update(Update::Worker(summary), Activity::default);
+            app.reading.context_tokens = Some(142_000);
+            app.reading.cost = 3.2;
+            app.set_activity(Activity {
+                working: true,
+                since: None,
+                question: Some(crate::remote::Question {
+                    id: 1,
+                    text: "Tabs or spaces for the new files?".into(),
+                }),
+            });
+
+            let mut wrong = Vec::new();
+            let mut look = |app: &mut App, state: &str| {
+                for row in screen(app, 100, 48) {
+                    let shown = |c: char| match symbols {
+                        Symbols::Ascii => c.is_ascii(),
+                        _ => wgl4(c),
+                    };
+                    if !row.chars().all(shown) {
+                        wrong.push(format!("{symbols:?}, {state}: {row}"));
+                    }
+                }
+            };
+            for view in View::ALL {
+                app.view = view;
+                look(&mut app, view.name());
+            }
+            app.view = View::Full;
+            app.watch(Some("r1".into()));
+            look(&mut app, "the worker's view");
+            app.watch(None);
+            app.overlay = Some(Overlay::Help { scroll: 0 });
+            look(&mut app, "help");
+            app.overlay = Some(Overlay::Settings {
+                row: 0,
+                picker: None,
+            });
+            look(&mut app, "settings");
+            app.overlay = None;
+            app.open_keys("", None);
+            look(&mut app, "keys");
+            app.overlay = None;
+            app.ask_quit(vec![job("sleep 300", Duration::from_secs(150))]);
+            look(&mut app, "quit");
+            app.overlay = None;
+            app.model_needs = |reachable, name| {
+                (!name.starts_with("cc:"))
+                    .then(|| crate::tui::model_picker::needs(reachable, name))
+                    .flatten()
+            };
+            app.set_reading(crate::remote::Reading {
+                models: crate::remote::Models {
+                    main: "gpt-6-luna".into(),
+                    main_effort: "high".into(),
+                    workers: "gpt-6-luna".into(),
+                    workers_effort: "high".into(),
+                    workers_follow: true,
+                    reachable: vec!["openai".into()],
+                    has_workers: true,
+                    ..Default::default()
+                },
+                ..Default::default()
+            });
+            app.open_model(crate::model_command::Target::Main);
+            look(&mut app, "the model picker");
+            app.overlay = None;
+            app.key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE));
+            look(&mut app, "the command menu");
+            assert!(wrong.is_empty(), "{wrong:#?}");
+        }
     }
 
     /// "Working…" shows while the agent works and waits on its model, not
