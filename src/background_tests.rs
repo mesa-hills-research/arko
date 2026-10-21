@@ -454,6 +454,156 @@ impl arko_agents::Tool for SlowLookup {
     }
 }
 
+/// A parallel-safe tool, of `mode`, whose calls run until the test
+/// releases them.
+#[derive(Debug)]
+struct Lookup {
+    name: &'static str,
+    mode: arko_agents::ToolBackground,
+    release: tokio::sync::Notify,
+}
+
+#[async_trait::async_trait]
+impl arko_agents::Tool for Lookup {
+    fn definition(&self) -> arko_agents::ToolDefinition {
+        arko_agents::ToolDefinition {
+            name: self.name.into(),
+            description: "Looks something up.".into(),
+            output_based_example: None,
+            parameters: vec![],
+            parallel_safe: true,
+            tool_type_details: arko_agents::ToolTypeDetails::DeveloperDefined,
+            raw_json_schema_override: None,
+        }
+    }
+
+    fn background_mode(&self) -> arko_agents::ToolBackground {
+        self.mode
+    }
+
+    async fn execute(
+        &self,
+        _: &arko_agents::TaskContext<'_>,
+        _: std::collections::HashMap<String, serde_json::Value>,
+    ) -> Result<String, arko_agents::ToolError> {
+        self.release.notified().await;
+        Ok(format!("{} found it.", self.name))
+    }
+}
+
+/// A model turn calling `first` and `second` together.
+fn two_calls(id: &str, first: &str, second: &str) -> String {
+    let call = |index: usize, suffix: &str, name: &str| {
+        serde_json::json!({"type": "response.output_item.done", "output_index": index, "item": {
+            "type": "function_call", "id": format!("fc_{id}{suffix}"), "call_id": format!("call_{id}{suffix}"),
+            "name": name, "arguments": "{}", "status": "completed",
+        }})
+    };
+    let completed = serde_json::json!({"type": "response.completed", "response": {
+        "id": format!("resp_{id}"), "object": "response", "created_at": 0, "status": "completed",
+        "model": "gpt-6-luna", "output": [], "usage": {"input_tokens": 10, "output_tokens": 5},
+        "metadata": {},
+    }});
+    [call(0, "a", first), call(1, "b", second), completed]
+        .iter()
+        .map(|event| format!("data: {event}\n\n"))
+        .collect()
+}
+
+/// In a parallel group, a call moved alone (the page's Move to background)
+/// whose job ends before the group's other call does: its line says the
+/// job finished, though its result came after.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_moved_call_of_a_parallel_group_that_ends_first_says_it_finished() {
+    let server = ModelServer::start(Arc::new(move |_, body: String| {
+        Box::pin(async move {
+            if body.contains("call_m1a") {
+                complete("m2", "Both done.")
+            } else {
+                two_calls("m1", "mover", "stayer")
+            }
+        })
+    }))
+    .await;
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
+    let lookup = |name, mode| {
+        Arc::new(Lookup {
+            name,
+            mode,
+            release: Default::default(),
+        })
+    };
+    let mover = lookup("mover", arko_agents::ToolBackground::Detach);
+    let stayer = lookup("stayer", arko_agents::ToolBackground::Never);
+    harness
+        .main_config
+        .tool_config
+        .available_tool_names
+        .push("stayer".into());
+    let managers = equip_with(&mut harness, &mut inputs, mover.clone());
+    harness.tools.push(stayer.clone());
+    harness.open(false).unwrap();
+    let follower = crate::jobs::follow(
+        harness.feed.clone(),
+        Arc::downgrade(&managers.jobs),
+        |_| remote::MAIN_AGENT.to_string(),
+    );
+    let (jobs, feed) = (managers.jobs.clone(), harness.feed.clone());
+    let (moving, staying) = (mover.clone(), stayer.clone());
+    let pressing = tokio::spawn(async move {
+        until(|| !crate::jobs::movable(&feed, &jobs).is_empty()).await;
+        let call = jobs.foreground_calls()[0].clone();
+        assert_eq!(call.tool_name, "mover");
+        assert_eq!(
+            jobs.move_to_background(call.owner, Some(call.tool_call_id)),
+            1
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        // The moved call ends in its job, before the other one.
+        moving.release.notify_one();
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        staying.release.notify_one();
+    });
+    let end = tokio::time::timeout(
+        Duration::from_secs(20),
+        harness.turn(Prompt::User("Look both up.".into()), &mut inputs),
+    )
+    .await
+    .unwrap();
+    pressing.await.unwrap();
+    assert!(matches!(end, TurnEnd::Answered));
+    let line = || {
+        harness
+            .feed
+            .subscribe()
+            .0
+            .items
+            .into_iter()
+            .find(|item| item.kind == remote::Kind::Call && item.text.contains("mover"))
+            .and_then(|item| item.outcome)
+            .unwrap_or_default()
+    };
+    let ended = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let outcome = line();
+            if !outcome.starts_with("in the background") {
+                return outcome;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    follower.abort();
+    managers.shutdown().await;
+    let ended = ended.unwrap_or_else(|_| panic!("the line still reads {:?}", line()));
+    assert!(
+        ended.starts_with("finished in the background"),
+        "{ended}"
+    );
+}
+
 /// Gives the main agent `tool` beside the session's shell and terminal
 /// tools.
 fn equip_with(

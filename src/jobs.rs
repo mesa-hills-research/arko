@@ -29,17 +29,31 @@ pub(crate) fn follow(
     jobs: Weak<TerminalManager>,
     agent_of: impl Fn(Uuid) -> String + Send + 'static,
 ) -> tokio::task::JoinHandle<()> {
+    // Taken now, so what happens before the task first runs is seen.
+    let (_, mut updates) = feed.subscribe();
+    let mut finished = jobs.upgrade().map(|jobs| jobs.subscribe_finished());
     tokio::spawn(async move {
-        let (_, mut updates) = feed.subscribe();
-        let mut finished = jobs.upgrade().map(|jobs| jobs.subscribe_finished());
         // The jobs running, as the feed has them, with their owners.
         let mut known: HashMap<Uuid, Uuid> = HashMap::new();
+        // A job that finished, which may have ended before it was seen run.
+        let mut just_ended: Option<terminal::JobFinished> = None;
         loop {
             {
                 let Some(jobs) = jobs.upgrade() else {
                     break;
                 };
                 sync(&feed, &agent_of, &jobs, &mut known);
+                if let Some(job) = just_ended.take()
+                    && !known.contains_key(&job.job_id)
+                {
+                    // The feed ends it, or knows it ended, so the line of a
+                    // call that moved there says so.
+                    let (state, outcome) = match jobs.status(job.owner, job.job_id, None) {
+                        Ok(snapshot) => ending(&snapshot),
+                        Err(_) => (remote::JobState::Finished, None),
+                    };
+                    feed.job_ended(job.job_id, state, outcome);
+                }
             }
             let wait = if known.is_empty() {
                 WHILE_IDLE
@@ -48,14 +62,12 @@ pub(crate) fn follow(
             };
             let ended = async {
                 match finished.as_mut() {
-                    Some(finished) => {
-                        let _ = finished.recv().await;
-                    }
+                    Some(finished) => finished.recv().await.ok(),
                     None => std::future::pending().await,
                 }
             };
             tokio::select! {
-                () = ended => {}
+                job = ended => just_ended = job,
                 () = tokio::time::sleep(wait) => {}
                 closed = calls_changed(&mut updates) => if closed {
                     break;
@@ -183,4 +195,87 @@ pub(crate) fn follower(gauges: &Arc<Gauges>, feed: &remote::Feed) -> tokio::task
             |gauges| gauges.agent_of(run),
         )
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arko_agents::AgentEvent;
+
+    fn event(event: AgentEvent) -> arko_workflows::WorkflowEvent {
+        arko_workflows::WorkflowEvent {
+            timestamp: chrono::Utc::now(),
+            workflow_run_id: Uuid::nil(),
+            agent_name: "main".into(),
+            agent_run_id: Uuid::nil(),
+            event,
+        }
+    }
+
+    /// A moved call whose job ends before the follower sees it run still
+    /// has its line say the job finished.
+    #[tokio::test]
+    async fn a_job_that_ends_before_it_is_seen_ends_its_calls_line() {
+        let temp = tempfile::tempdir().unwrap();
+        let jobs =
+            TerminalManager::new(terminal::TerminalConfig::new(temp.path().join("jobs"))).unwrap();
+        let feed = remote::Feed::new("main");
+        let (owner, call) = (Uuid::new_v4(), Uuid::new_v4());
+        feed.event(
+            &event(AgentEvent::ToolCallFormatted {
+                tool_call_id: call,
+                tool_name: "lookup".into(),
+                parameters: Default::default(),
+            }),
+            None,
+        );
+        // Its job runs first, and ends at once.
+        let job = jobs
+            .adopt_call(
+                owner,
+                call,
+                "lookup",
+                "lookup".into(),
+                arko_agents::stop::StopSource::new(),
+                Box::pin(async { terminal::CallOutput::text("found") }),
+            )
+            .unwrap()
+            .job_id;
+        let follower = follow(feed.clone(), Arc::downgrade(&jobs), |_| {
+            remote::MAIN_AGENT.to_string()
+        });
+        feed.event(
+            &event(AgentEvent::ToolResult {
+                tool_call_id: call,
+                tool_name: "lookup".into(),
+                output: format!(
+                    "{}{job}, 0.2 s\nThe user moved this call to the background.",
+                    terminal::IN_THE_BACKGROUND
+                ),
+            }),
+            None,
+        );
+        let line = || {
+            feed.subscribe()
+                .0
+                .items
+                .into_iter()
+                .find(|item| item.kind == remote::Kind::Call)
+                .and_then(|item| item.outcome)
+                .unwrap_or_default()
+        };
+        let ended = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let outcome = line();
+                if !outcome.starts_with("in the background") {
+                    return outcome;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+        follower.abort();
+        let ended = ended.unwrap_or_else(|_| panic!("the line still reads {:?}", line()));
+        assert!(ended.starts_with("finished in the background"), "{ended}");
+    }
 }

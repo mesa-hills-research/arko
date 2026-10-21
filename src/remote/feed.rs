@@ -873,6 +873,9 @@ struct State {
     early_reads: VecDeque<u64>,
     /// The background jobs, in the order they started.
     jobs: Vec<JobSummary>,
+    /// The latest jobs that ended without the feed having seen them run,
+    /// with how and when: a moved call's result may name one after.
+    unseen_ends: VecDeque<(String, JobState, i64)>,
 }
 
 impl State {
@@ -1091,6 +1094,23 @@ impl Feed {
             summary.call = Some(call.item);
             let summary = summary.clone();
             self.send(Update::Job(summary));
+        }
+        // A job that ended before the call's result came (in a parallel
+        // group, whose results come together) ends its line now.
+        if let Some(job) = outcome.job.map(|job| job.to_string()) {
+            let ended = match state.jobs.iter().find(|summary| summary.id == job) {
+                Some(summary) => summary
+                    .ended_at
+                    .map(|at| (summary.state, Some(summary.started_at), at)),
+                None => state
+                    .unseen_ends
+                    .iter()
+                    .find(|(id, ..)| *id == job)
+                    .map(|(_, ended, at)| (*ended, None, *at)),
+            };
+            if let Some((ended, started, at)) = ended {
+                self.end_moved_call(state, &call.agent, call.item, ended, started, at);
+            }
         }
         if let Some(mut block) = outcome.block {
             block.call = Some(call.item);
@@ -1592,6 +1612,21 @@ impl Feed {
         let id = id.to_string();
         let now = now_ms();
         let Some(job) = state.jobs.iter_mut().find(|job| job.id == id) else {
+            // One that ended before the feed saw it run: the line of the
+            // call that moved there, now or when its result comes.
+            let calls: Vec<(String, u64)> = [&state.main, &state.workers_lane]
+                .into_iter()
+                .flat_map(|lane| &lane.items)
+                .filter(|item| item.job.as_deref() == Some(id.as_str()))
+                .map(|item| (item.agent.clone(), item.id))
+                .collect();
+            for (agent, item) in calls {
+                self.end_moved_call(&mut state, &agent, item, ended, None, now);
+            }
+            state.unseen_ends.push_back((id, ended, now));
+            if state.unseen_ends.len() > ENDED_JOBS {
+                state.unseen_ends.pop_front();
+            }
             return;
         };
         if !job.state.is_running() {
@@ -1604,10 +1639,31 @@ impl Feed {
         self.send(Update::Job(job.clone()));
         // A moved call's line says how it ended. A command terminal_start
         // started has its own result already.
-        let Some(item) = job.call else {
-            return;
-        };
-        let (lane, _) = state.lane(&job.agent);
+        if let Some(item) = job.call {
+            self.end_moved_call(
+                &mut state,
+                &job.agent,
+                item,
+                ended,
+                Some(job.started_at),
+                now,
+            );
+        }
+    }
+
+    /// The call `item` of `agent`, if its line says it moved to the
+    /// background, says how its job ended: as `ended`, at `now`, having
+    /// started at `started` (else with the call).
+    fn end_moved_call(
+        &self,
+        state: &mut State,
+        agent: &str,
+        item: u64,
+        ended: JobState,
+        started: Option<i64>,
+        now: i64,
+    ) {
+        let (lane, _) = state.lane(agent);
         let Some(call) = lane.find(item) else {
             return;
         };
@@ -1619,7 +1675,7 @@ impl Feed {
             return;
         }
         let ran = render::duration_words(Duration::from_millis(
-            u64::try_from(now - job.started_at).unwrap_or(0),
+            u64::try_from(now - started.unwrap_or(call.at)).unwrap_or(0),
         ));
         let (status, text) = match ended {
             JobState::Finished => (
@@ -2388,6 +2444,61 @@ mod tests {
                 Some("stopped by the user")
             );
         }
+    }
+
+    /// A job that ended before its call's result came ends the call's line
+    /// as the result comes, whether the feed saw the job run (a call of a
+    /// parallel group, whose results come together) or not. One that ended
+    /// unseen after the result ends the line at once.
+    #[test]
+    fn a_job_that_ended_first_ends_its_calls_line_when_the_result_comes() {
+        let result = |feed: &Feed, call: Uuid, job: Uuid| {
+            feed.event(
+                &event(
+                    "main",
+                    AgentEvent::ToolResult {
+                        tool_call_id: call,
+                        tool_name: "mcp__search__lookup".into(),
+                        output: moved(job),
+                    },
+                ),
+                None,
+            );
+        };
+        let outcome = |feed: &Feed| call_item(feed, "lookup").outcome;
+
+        let feed = Feed::new("main");
+        let (call, job) = (Uuid::new_v4(), Uuid::new_v4());
+        feed.event(&event("main", lookup(call)), None);
+        feed.job_started(JobStart {
+            id: job,
+            agent: MAIN_AGENT.into(),
+            tool_call: Some(call),
+            kind: JobKind::Call,
+            label: "mcp__search__lookup".into(),
+            started_at: now_ms() - 240_000,
+        });
+        feed.job_ended(job, JobState::Finished, None);
+        result(&feed, call, job);
+        assert_eq!(
+            outcome(&feed).as_deref(),
+            Some("finished in the background · 4 min")
+        );
+
+        let feed = Feed::new("main");
+        let (call, job) = (Uuid::new_v4(), Uuid::new_v4());
+        feed.event(&event("main", lookup(call)), None);
+        feed.job_ended(job, JobState::Failed, None);
+        result(&feed, call, job);
+        assert_eq!(outcome(&feed).as_deref(), Some("failed in the background"));
+
+        let feed = Feed::new("main");
+        let (call, job) = (Uuid::new_v4(), Uuid::new_v4());
+        feed.event(&event("main", lookup(call)), None);
+        result(&feed, call, job);
+        feed.job_ended(job, JobState::Stopped, None);
+        assert_eq!(outcome(&feed).as_deref(), Some("stopped"));
+        assert!(feed.subscribe().0.jobs.is_empty());
     }
 
     /// A job a command started (terminal_start) keeps its call's own line,
