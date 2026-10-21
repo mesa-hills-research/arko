@@ -1061,6 +1061,45 @@ async fn an_update_that_came_too_late_is_found_by_its_job() {
     managers.shutdown().await;
 }
 
+/// A monitor's news that waits in the task after the last turn wakes the
+/// agent for an alert, and for a warning only while the user wrote lately.
+/// Its other news waits for the next turn.
+#[tokio::test]
+async fn a_late_alert_wakes_and_a_late_warning_wakes_while_the_user_is_here() {
+    let temp = tempfile::tempdir().unwrap();
+    let server =
+        ModelServer::start(Arc::new(|_, _| Box::pin(async { complete("m1", "Done.") }))).await;
+    let (harness, _inputs, _sender) = harness(temp.path(), server.client(), true);
+    let mut task = arko_agents::Task::new(
+        harness.main_config.clone(),
+        "Watch it.".into(),
+        harness.settings.workspace.clone(),
+        None,
+    );
+    let owner = task.id;
+    let id = uuid::Uuid::new_v4();
+    let alert = format!(
+        "Monitor alert. Job {id} (`dev server`, lines that match `ERROR`) printed 1 matching line since 10:41:05 UTC.\n  ERROR boom\nIt ends in 22 min."
+    );
+    let warning = format!(
+        "Monitor {id} (`dev server`) ends in 5 min, at 11:00 UTC. monitor_control rearm keeps it going for up to 30 min from now. If you no longer need it, let it end."
+    );
+    let ended = format!(
+        "Monitor {id} (`dev server`) ended at 11:00 UTC and its command was stopped. It alerted once."
+    );
+    for away in [false, true] {
+        task.pending_context_injections = vec![ended.clone()];
+        assert!(alert_waits(&task, owner, !away).is_none());
+        task.pending_context_injections = vec![warning.clone()];
+        let woken = alert_waits(&task, owner, !away);
+        assert_eq!(woken.is_some(), !away);
+        assert!(woken.is_none_or(|alert| alert.ends_soon && alert.late));
+        task.pending_context_injections = vec![warning.clone(), alert.clone(), ended.clone()];
+        let woken = alert_waits(&task, owner, !away).expect("an alert wakes");
+        assert!(!woken.ends_soon && woken.late && woken.owner == owner);
+    }
+}
+
 /// After Arko quit with jobs of the main agent's running, the user agreeing
 /// to stop them, the first message of their conversation in the session
 /// that opens again says which stopped, once. A message in another
@@ -1356,6 +1395,161 @@ async fn an_alert_during_the_last_request_still_wakes_the_agent() {
         bodies[2]
     );
     assert_eq!(bodies[2].matches("\\n  ERROR boom\\n").count(), 1, "read once");
+    managers.shutdown().await;
+}
+
+/// An alert whose news a turn of the user's already took starts no turn
+/// when it's read, although the update of a job the user stopped waits
+/// (that wakes no one).
+#[cfg(unix)]
+#[tokio::test]
+async fn an_alert_a_turn_took_starts_none_beside_a_job_the_user_stopped() {
+    let bodies: Bodies = Arc::default();
+    let server = ModelServer::start(Arc::new({
+        let bodies = bodies.clone();
+        move |_, body: String| {
+            bodies.lock().unwrap().push(body.clone());
+            Box::pin(async move {
+                if body.contains("A monitor of yours alerted") {
+                    complete("m9", "Woken for nothing.")
+                } else if body.contains("What is up") {
+                    complete("m4", "Saw the error.")
+                } else if body.contains("call_m2") {
+                    complete("m3", "Watching the server.")
+                } else if body.contains("call_m1") {
+                    tool_call(
+                        "m2",
+                        "terminal_start",
+                        serde_json::json!({"command": "sleep 60"}),
+                    )
+                } else {
+                    tool_call(
+                        "m1",
+                        "monitor_start",
+                        serde_json::json!({
+                            "command": "sleep 2; echo 'ERROR boom'; sleep 60",
+                            "pattern": "ERROR"
+                        }),
+                    )
+                }
+            })
+        }
+    }))
+    .await;
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
+    let managers = equip(&mut harness, &mut inputs, 0);
+    quick_monitors(&managers, Duration::from_secs(2));
+    tokio::time::timeout(
+        Duration::from_secs(20),
+        harness.turn(Prompt::User("Start the server and watch it.".into()), &mut inputs),
+    )
+    .await
+    .unwrap();
+    assert_eq!(summary(&harness), "Watching the server.");
+    // The alert is announced while the agent is idle, and the user writes
+    // before the session reads it.
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while inputs.alerts.as_ref().unwrap().is_empty() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("an alert announced");
+    harness
+        .turn(Prompt::User("What is up?".into()), &mut inputs)
+        .await;
+    assert!(body_with(&bodies, "What is up").contains("ERROR boom"));
+    let command = managers
+        .jobs
+        .jobs()
+        .into_iter()
+        .find(|job| matches!(job.kind, arko_agents::terminal::JobKind::Command))
+        .unwrap()
+        .job_id;
+    harness.stop_job(command).unwrap();
+    until(|| managers.jobs.has_news(harness_run(&harness))).await;
+    let before = bodies.lock().unwrap().len();
+    let alert = next_alert(&mut inputs, Duration::from_secs(1)).await;
+    assert!(matches!(
+        harness.deliver_alert(alert, &mut inputs).await,
+        News::Done
+    ));
+    assert_eq!(bodies.lock().unwrap().len(), before, "no turn started");
+    assert_eq!(summary(&harness), "Saw the error.");
+    managers.shutdown().await;
+}
+
+/// The main agent's run in `harness`'s conversation.
+fn harness_run(harness: &Harness) -> uuid::Uuid {
+    match &harness.conversation {
+        Conversation::Answered(result) => result.agent_run_id,
+        Conversation::Stopped(run) => run.result.agent_run_id,
+        Conversation::New => panic!("no conversation yet"),
+    }
+}
+
+/// An alert that reaches the agent during its last request wakes it once
+/// the turn ends, also when its monitor ended (it expired) before then.
+#[cfg(unix)]
+#[tokio::test]
+async fn an_alert_in_the_last_request_wakes_the_agent_after_its_monitor_ended() {
+    let bodies: Bodies = Arc::default();
+    let server = ModelServer::start(Arc::new({
+        let bodies = bodies.clone();
+        move |_, body: String| {
+            bodies.lock().unwrap().push(body.clone());
+            Box::pin(async move {
+                if body.contains("A monitor of yours alerted") {
+                    complete("m9", "Read the alert.")
+                } else if body.contains("Keep going") {
+                    // The line, then the monitor's end, come during this
+                    // request.
+                    tokio::time::sleep(Duration::from_secs(4)).await;
+                    complete("m2", "Still here.")
+                } else {
+                    complete("m1", "Hi.")
+                }
+            })
+        }
+    }))
+    .await;
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
+    let managers = equip(&mut harness, &mut inputs, 0);
+    quick_monitors(&managers, Duration::from_secs(1));
+    harness
+        .turn(Prompt::User("Hello.".into()), &mut inputs)
+        .await;
+    let workspace = temp.path().join("work");
+    managers
+        .jobs
+        .start_monitor(
+            &arko_agents::TaskContext::new(harness_run(&harness), MAIN, "", &workspace),
+            "sleep 1; echo 'ERROR boom'; sleep 60",
+            arko_agents::terminal::MonitorOptions::lines(Some("ERROR".into()))
+                .with_expiry(Duration::from_secs(3)),
+        )
+        .await
+        .unwrap();
+    harness
+        .turn(Prompt::User("Keep going.".into()), &mut inputs)
+        .await;
+    assert_eq!(summary(&harness), "Still here.");
+    assert!(
+        managers
+            .jobs
+            .jobs()
+            .iter()
+            .all(|job| !matches!(job.kind, arko_agents::terminal::JobKind::Monitor(_))),
+        "the monitor ended"
+    );
+    let alert = next_alert(&mut inputs, Duration::from_secs(1)).await;
+    assert!(alert.late && !alert.ends_soon);
+    harness.deliver_alert(alert, &mut inputs).await;
+    assert_eq!(summary(&harness), "Read the alert.");
+    let woken = body_with(&bodies, "A monitor of yours alerted");
+    assert_eq!(woken.matches("\\n  ERROR boom\\n").count(), 1, "{woken}");
     managers.shutdown().await;
 }
 

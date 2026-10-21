@@ -235,7 +235,8 @@ pub(crate) fn unread_notes(notes: &[(u64, String)], workflow: &Workflow) -> Vec<
 /// call's note) came too late for the agent to read in its last turn. It
 /// came while the agent made its last request, and its task keeps it for
 /// the next turn. Or the turn's runtime ended before it was sent, and the
-/// manager (`jobs`) keeps it for the next runtime (`has_news`).
+/// manager (`jobs`) keeps it for the next runtime, with the owner's other
+/// news that should wake it (`has_alerts`).
 pub(crate) fn waits_with(
     task: &arko_agents::Task,
     job: &arko_agents::terminal::JobFinished,
@@ -245,43 +246,39 @@ pub(crate) fn waits_with(
     task.pending_context_injections
         .iter()
         .any(|content| content.contains(&id))
-        || jobs.is_some_and(|jobs| jobs.has_news(job.owner))
+        || jobs.is_some_and(|jobs| jobs.has_alerts(job.owner))
 }
 
 /// A monitor's news that came too late for the agent to read in its last
-/// turn: the runtime got it while the agent made its last request, and the
-/// agent's task (`task`, of `owner`'s run) keeps it for the next turn. A
-/// note names its monitor's job, as `waits_with` finds a job's update. A
-/// monitor's alert wakes the agent, and its warning before it ends does
-/// while `warnings_wake` (the user wrote lately). Its other news (the
-/// monitor ended) goes with the next turn.
+/// turn. The runtime got it while the agent made its last request, and the
+/// agent's task (`task`, of `owner`'s run) keeps it for the next turn. The
+/// framework says which notes should wake the agent (`note_wakes`). An
+/// alert does, also of a monitor that ended since, and a warning before a
+/// monitor ends does while `warnings_wake` (the user wrote lately). The
+/// monitors' other news (one ended) goes with the next turn.
 pub(crate) fn alert_waits(
     task: &arko_agents::Task,
     owner: uuid::Uuid,
-    jobs: Option<&arko_agents::terminal::TerminalManager>,
     warnings_wake: bool,
 ) -> Option<Alert> {
-    let monitors: Vec<String> = jobs?
-        .jobs()
-        .into_iter()
-        .filter(|job| {
-            job.owner == owner && matches!(job.kind, arko_agents::terminal::JobKind::Monitor(_))
-        })
-        .map(|job| job.job_id.to_string())
-        .collect();
-    let mut news = task
-        .pending_context_injections
-        .iter()
-        .filter(|content| monitors.iter().any(|id| content.contains(id.as_str())));
-    let first = news.next()?;
-    // Its alerts start "Monitor alert.", and a warning is the other news of
-    // a monitor still running.
-    let alerted = std::iter::once(first)
-        .chain(news)
-        .any(|content| content.contains("Monitor alert."));
-    (alerted || warnings_wake).then_some(Alert {
+    use arko_agents::terminal::{AlertKind, note_wakes};
+    let mut warned = false;
+    for note in &task.pending_context_injections {
+        match note_wakes(note) {
+            Some(AlertKind::EndsSoon) => warned = true,
+            Some(_) => {
+                return Some(Alert {
+                    owner,
+                    ends_soon: false,
+                    late: true,
+                });
+            }
+            None => {}
+        }
+    }
+    (warned && warnings_wake).then_some(Alert {
         owner,
-        ends_soon: !alerted,
+        ends_soon: true,
         late: true,
     })
 }

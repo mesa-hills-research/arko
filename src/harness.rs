@@ -3357,12 +3357,8 @@ impl Harness {
                     .into_iter()
                     .find(|job| waits_with(&result.task, job, jobs.as_deref()));
                 // So does a monitor's news.
-                input.late_alert = alert_waits(
-                    &result.task,
-                    result.agent_run_id,
-                    jobs.as_deref(),
-                    self.warnings_wake(),
-                );
+                input.late_alert =
+                    alert_waits(&result.task, result.agent_run_id, self.warnings_wake());
                 self.conversation = Conversation::Answered(result);
                 self.track_conversations();
                 self.retitle(retitle);
@@ -3486,7 +3482,8 @@ impl Harness {
     /// its that alerted, or is about to end, starts a turn of it: the
     /// monitor's news reaches the agent as the turn starts. (News that comes
     /// while the agent works reaches it as a note.) An alert whose news a
-    /// turn that started meanwhile took starts none.
+    /// turn that started meanwhile took starts none, even if news that
+    /// wakes no one (a job the user stopped) waits.
     pub(crate) async fn deliver_alert(&mut self, alert: Alert, input: &mut Inputs) -> News {
         let run = match &self.conversation {
             Conversation::New => return News::Done,
@@ -3500,7 +3497,7 @@ impl Harness {
             && !self
                 .background
                 .manager()
-                .is_some_and(|jobs| jobs.has_news(run))
+                .is_some_and(|jobs| jobs.has_alerts(run))
         {
             return News::Done;
         }
