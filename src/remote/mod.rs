@@ -115,8 +115,9 @@ pub struct Reading {
     pub workers: Option<String>,
     /// The settings a client may change (with commands).
     pub settings: LiveSettings,
-    /// The agents running a shell command now, which Ctrl+B moves to the
-    /// background, as [`MAIN_AGENT`] or a worker's ID.
+    /// The agents running a call now that can move to the background (a
+    /// shell command, an MCP tool's call), which Ctrl+B moves, as
+    /// [`MAIN_AGENT`] or a worker's ID.
     #[serde(skip)]
     pub commands: Vec<String>,
     /// The jobs running in the background, which stop when Arko exits. The

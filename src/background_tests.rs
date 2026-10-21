@@ -202,7 +202,7 @@ async fn ctrl_b_moves_the_running_command_and_the_user_writes_at_once() {
     let managers = equip(&mut harness, &mut inputs, 0);
     let background = harness.background.clone();
     let typing = tokio::spawn(async move {
-        until(|| !background.running().is_empty()).await;
+        until(|| !background.movable().is_empty()).await;
         sender
             .send(Input::Background(remote::MAIN_AGENT.into()))
             .unwrap();
@@ -385,10 +385,17 @@ async fn the_background_after_command_sets_keeps_and_tells() {
             .iter()
             .any(|(kind, text, _)| (kind == "output" || kind == "notice") && text.contains(start))
     };
-    assert!(said("A shell command still running after 10 minutes moves to the background"));
+    assert!(said(
+        "A shell command or another long call (an MCP tool, index_create) still running after 10 minutes moves to the background"
+    ));
     assert!(said("isn't a time"));
     assert!(said("Background after was set to 5m from the web page."));
-    assert!(said("A shell command still running after 5 minutes moves to the background"));
+    assert!(said("still running after 5 minutes moves to the background"));
+    // The calls the runtime moves follow the same time.
+    assert_eq!(
+        managers.jobs.background_after(),
+        Some(Duration::from_secs(300))
+    );
     assert!(matches!(
         harness
             .turn(Prompt::User("Go on.".into()), &mut inputs)
@@ -401,8 +408,144 @@ async fn the_background_after_command_sets_keeps_and_tells() {
         "{body}"
     );
     assert!(body.contains("timeout_seconds now defaults to 1800"), "{body}");
+    assert!(
+        body.contains("Other long calls (MCP tools, index_create) move after the same time"),
+        "{body}"
+    );
     assert!(harness.live_command("/background-after off", Source::Terminal));
     assert_eq!(harness.background.after(), None);
+    assert_eq!(managers.jobs.background_after(), None);
     assert_eq!(harness.session.load_settings().unwrap().background_after, 0);
+    managers.shutdown().await;
+}
+
+/// A tool whose calls the runtime moves to the background (as an MCP
+/// tool's), and which runs until the test releases it.
+#[derive(Debug, Default)]
+struct SlowLookup {
+    release: tokio::sync::Notify,
+}
+
+#[async_trait::async_trait]
+impl arko_agents::Tool for SlowLookup {
+    fn definition(&self) -> arko_agents::ToolDefinition {
+        arko_agents::ToolDefinition {
+            name: "slow_lookup".into(),
+            description: "Looks something up, slowly.".into(),
+            output_based_example: None,
+            parameters: vec![],
+            parallel_safe: false,
+            tool_type_details: arko_agents::ToolTypeDetails::DeveloperDefined,
+            raw_json_schema_override: None,
+        }
+    }
+
+    fn background_mode(&self) -> arko_agents::ToolBackground {
+        arko_agents::ToolBackground::Detach
+    }
+
+    async fn execute(
+        &self,
+        _: &arko_agents::TaskContext<'_>,
+        _: std::collections::HashMap<String, serde_json::Value>,
+    ) -> Result<String, arko_agents::ToolError> {
+        self.release.notified().await;
+        Ok("Found 3 matches.".into())
+    }
+}
+
+/// Gives the main agent `tool` beside the session's shell and terminal
+/// tools.
+fn equip_with(
+    harness: &mut Harness,
+    inputs: &mut Inputs,
+    tool: Arc<dyn arko_agents::Tool>,
+) -> Managers {
+    harness
+        .main_config
+        .tool_config
+        .available_tool_names
+        .push(tool.name());
+    let managers = equip(harness, inputs, 0);
+    harness.tools.push(tool);
+    harness.open(false).unwrap();
+    managers
+}
+
+/// Ctrl+B moves a long call that isn't a shell command (an MCP tool's, say):
+/// the agent gets its job's ID at once and finishes its turn, and when the
+/// call ends, with the agent idle, its result starts a turn.
+#[cfg(unix)]
+#[tokio::test]
+async fn ctrl_b_moves_another_tools_call_and_its_result_wakes_the_agent() {
+    let bodies: Bodies = Arc::default();
+    let server = ModelServer::start(Arc::new({
+        let bodies = bodies.clone();
+        move |_, body: String| {
+            bodies.lock().unwrap().push(body.clone());
+            Box::pin(async move {
+                if body.contains("It ran your slow_lookup call") {
+                    complete("m3", "The lookup found 3 matches.")
+                } else if body.contains("call_m1") {
+                    complete("m2", "The lookup goes on in the background.")
+                } else {
+                    tool_call("m1", "slow_lookup", serde_json::json!({}))
+                }
+            })
+        }
+    }))
+    .await;
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, sender) = harness(temp.path(), server.client(), true);
+    let lookup = Arc::new(SlowLookup::default());
+    let managers = equip_with(&mut harness, &mut inputs, lookup.clone());
+    let background = harness.background.clone();
+    let pressing = tokio::spawn(async move {
+        until(|| !background.movable().is_empty()).await;
+        sender
+            .send(Input::Background(remote::MAIN_AGENT.into()))
+            .unwrap();
+        sender
+    });
+    let end = tokio::time::timeout(
+        Duration::from_secs(20),
+        harness.turn(Prompt::User("Look it up.".into()), &mut inputs),
+    )
+    .await
+    .unwrap();
+    // (Kept: a closed input quits.)
+    let _sender = pressing.await.unwrap();
+    assert!(matches!(end, TurnEnd::Answered));
+    assert_eq!(summary(&harness), "The lookup goes on in the background.");
+    let moved = body_with(&bodies, "call_m1");
+    assert!(
+        moved.contains("The user moved this call to the background."),
+        "{moved}"
+    );
+    let jobs = managers.jobs.jobs();
+    assert_eq!(jobs.len(), 1);
+    assert_eq!(
+        jobs[0].kind,
+        arko_agents::terminal::JobKind::Call {
+            tool_name: "slow_lookup".into()
+        }
+    );
+
+    lookup.release.notify_one();
+    let finished = match tokio::time::timeout(Duration::from_secs(10), inputs.next_event(true))
+        .await
+        .unwrap()
+    {
+        Event::Finished(finished) => finished,
+        _ => panic!("expected a finished job"),
+    };
+    assert_eq!(finished.job_id, jobs[0].job_id);
+    assert!(matches!(
+        harness.deliver_finished(finished, &mut inputs).await,
+        News::Done
+    ));
+    assert_eq!(summary(&harness), "The lookup found 3 matches.");
+    let woken = body_with(&bodies, "It ran your slow_lookup call");
+    assert!(woken.contains("Found 3 matches."), "{woken}");
     managers.shutdown().await;
 }

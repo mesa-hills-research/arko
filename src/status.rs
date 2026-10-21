@@ -99,6 +99,11 @@ impl Gauges {
         let gauges = Arc::downgrade(self);
         let feed = feed.clone();
         let (_, mut updates) = feed.subscribe();
+        // A call becomes one that can move a moment after its item shows.
+        let mut movable = self
+            .background
+            .manager()
+            .map(|jobs| jobs.watch_foreground_calls());
         tokio::spawn(async move {
             let mut working = false;
             loop {
@@ -110,8 +115,18 @@ impl Gauges {
                 } else {
                     Duration::from_secs(3600)
                 };
+                let moves = async {
+                    let changed = match movable.as_mut() {
+                        Some(movable) => movable.changed().await.is_ok(),
+                        None => false,
+                    };
+                    if !changed {
+                        std::future::pending::<()>().await;
+                    }
+                };
                 tokio::select! {
                     () = this.changed.notified() => {}
+                    () = moves => {}
                     update = updates.recv() => {
                         if let Err(broadcast::error::RecvError::Closed) = update {
                             break;
@@ -144,10 +159,11 @@ impl Gauges {
         })
     }
 
-    /// The agents running a shell command, as the clients name them:
+    /// The agents running a call that can move to the background (a shell
+    /// command, an MCP tool's call), as the clients name them:
     /// [`remote::MAIN_AGENT`], or a worker's ID.
     pub(crate) fn commands_running(&self) -> Vec<String> {
-        let running = self.background.running();
+        let running = self.background.movable();
         if running.is_empty() {
             return Vec::new();
         }

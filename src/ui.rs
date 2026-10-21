@@ -58,8 +58,9 @@ pub enum Input {
     /// lists the background jobs the user agreed to stop in the quit popup,
     /// and `None` means the user turned asking off.
     Quit(Option<Vec<uuid::Uuid>>),
-    /// Ctrl+B in the full-screen view. The shell command this agent runs
-    /// (the main agent, or a worker by its ID) moves to the background.
+    /// Ctrl+B in the full-screen view. The calls this agent runs that can
+    /// move (the main agent's, or a worker's by its ID) move to the
+    /// background.
     Background(String),
     /// A message from an app. It starts a turn when the agent is idle, is a
     /// note while it works, and runs as a command when it is one. Unlike a

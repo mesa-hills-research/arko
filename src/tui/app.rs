@@ -969,7 +969,8 @@ impl App {
     }
 
     /// Whether the agent whose transcript is shown (the main agent, or the
-    /// worker watched) runs a shell command now.
+    /// worker watched) runs a call that can move to the background now (a
+    /// shell command, an MCP tool's call).
     pub fn command_running(&self) -> bool {
         let shown = self
             .watching
@@ -978,9 +979,9 @@ impl App {
         self.reading.commands.iter().any(|agent| agent == shown)
     }
 
-    /// Ctrl+B while the agent shown runs a shell command: the command moves
-    /// to the background, and the agent goes on (what is typed meanwhile
-    /// reaches it as a note, the call no longer in the way).
+    /// Ctrl+B while the agent shown runs a call that can move: the call
+    /// moves to the background, and the agent goes on (what is typed
+    /// meanwhile reaches it as a note, the call no longer in the way).
     fn move_command(&mut self) {
         let shown = self
             .watching

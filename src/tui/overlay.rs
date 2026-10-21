@@ -307,7 +307,7 @@ pub const KEYS: &[(&str, &str)] = &[
     ),
     (
         "Ctrl+B",
-        "move the agent's running shell command to the background, else back a character",
+        "move the agent's running call to the background, else back a character",
     ),
     ("Ctrl+O", "the next view (full, quiet, messages)"),
     (
@@ -557,9 +557,9 @@ fn settings(frame: &mut Frame, app: &App, area: Rect, selected: usize) {
                     Span::styled(format!(" {}", glyphs::render("→")), theme.dim()),
                 ],
                 match app.background_after() {
-                    0 => "Shell commands stay in the foreground until they finish. Ctrl+B moves one to the background at once.".to_string(),
+                    0 => "Shell commands and other long calls stay in the foreground until they finish. Ctrl+B moves one to the background at once.".to_string(),
                     after => format!(
-                        "A shell command still running after {} moves to the background, where it goes on as a job and the agent goes on with its work. Ctrl+B moves one at once.",
+                        "A shell command or another long call (an MCP tool, index_create) still running after {} moves to the background, where it goes on as a job and the agent goes on with its work. Ctrl+B moves one at once.",
                         crate::shell::background_after_words(after)
                     ),
                 },

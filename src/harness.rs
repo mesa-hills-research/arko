@@ -525,6 +525,14 @@ impl Harness {
             feed: self.feed.clone(),
             images: self.images.clone(),
         }));
+        // Long calls can move to the background (Ctrl+B, or after the
+        // session's time), except with -p, where nothing is there to move
+        // them and Arko ends with the turn.
+        if !self.one_shot
+            && let Some(jobs) = self.background.manager()
+        {
+            builder = builder.background_jobs(jobs);
+        }
         if let Some(checkpoint) = checkpoint {
             builder = builder.resume_from(checkpoint);
             // The saved workers' runs are checked as the workflow is built.
@@ -2572,11 +2580,11 @@ impl Harness {
         }
         let note = match after {
             0 => format!(
-                "From now on, shell commands no longer move to the background on their own: each runs until it finishes or timeout_seconds passes, which now defaults to {}.",
+                "From now on, shell commands and other long calls no longer move to the background on their own: each runs until it finishes or its time limit passes. A shell command's timeout_seconds now defaults to {}.",
                 shell::default_timeout(0)
             ),
             after => format!(
-                "From now on, a shell command still running after {} moves to the background, where it goes on as a job: the result gives its job ID and output so far, and a terminal update tells you when it finishes. timeout_seconds now defaults to {}.",
+                "From now on, a shell command still running after {} moves to the background, where it goes on as a job: the result gives its job ID and output so far, and a terminal update tells you when it finishes. timeout_seconds now defaults to {}. Other long calls (MCP tools, index_create) move after the same time, and their results reach you as notes.",
                 shell::background_after_words(after),
                 shell::default_timeout(after)
             ),
@@ -3293,14 +3301,15 @@ impl Harness {
         }
     }
 
-    /// Ctrl+B: moves the shell command `agent` runs (the main agent, or a
-    /// worker by its ID) to the background at once.
+    /// Ctrl+B: moves the calls `agent` runs (the main agent, or a worker by
+    /// its ID) to the background at once, a shell command or another long
+    /// call (an MCP tool, `index_create`).
     pub(crate) fn move_to_background(&self, agent: &str) {
         let workers = self.workflow().subagents();
         // The runs that aren't workers' are the main agent's.
         let runs: Vec<uuid::Uuid> = self
             .background
-            .running()
+            .movable()
             .into_iter()
             .filter(
                 |run| match workers.iter().find(|worker| worker.run_id == *run) {
@@ -3316,7 +3325,7 @@ impl Harness {
         if moved == 0 {
             self.say(
                 Level::Info,
-                "  No command is running to move to the background.",
+                "  Nothing is running that can move to the background.",
             );
         }
     }
@@ -3668,11 +3677,11 @@ pub(crate) const LIVE_COMMANDS: [&str; 11] = [
 pub(crate) fn background_after_text(after: u64) -> String {
     match after {
         0 => format!(
-            "Shell commands stay in the foreground until they finish, and timeout_seconds defaults to {} s.",
+            "Shell commands and other long calls stay in the foreground until they finish, and a command's timeout_seconds defaults to {} s.",
             shell::default_timeout(0)
         ),
         after => format!(
-            "A shell command still running after {} moves to the background, where it goes on as a job, and timeout_seconds defaults to {} s.",
+            "A shell command or another long call (an MCP tool, index_create) still running after {} moves to the background, where it goes on as a job, and a command's timeout_seconds defaults to {} s.",
             shell::background_after_words(after),
             shell::default_timeout(after)
         ),

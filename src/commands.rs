@@ -141,7 +141,7 @@ pub const COMMANDS: &[Command] = &[
     Command {
         name: "/background-after",
         args: "DURATION|off",
-        about: "when a shell command still running moves to the background, where it goes on as a job and the agent goes on with its work (/background-after 10m, /background-after off)",
+        about: "when a shell command or another long call still running moves to the background, where it goes on as a job and the agent goes on with its work (/background-after 10m, /background-after off)",
         aliases: &[],
         runs: Runs::Session,
     },
