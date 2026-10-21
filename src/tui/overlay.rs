@@ -290,7 +290,7 @@ pub const KEYS: &[(&str, &str)] = &[
     ),
     (
         "Tab",
-        "complete a command in the menu, or its argument (↑ ↓ show the others, → takes the one shown)",
+        "complete a command in the menu, or its argument (↑ ↓ show the others, → takes the one shown), else go to the agent list",
     ),
     ("Ctrl+A E B F", "line start, end, back, forward (readline)"),
     (
@@ -312,7 +312,7 @@ pub const KEYS: &[(&str, &str)] = &[
     ("Ctrl+O", "the next view (full, quiet, messages)"),
     (
         "Ctrl+T",
-        "the agent list, where Enter shows a worker's own work",
+        "the agent list, where Tab and Shift+Tab move through it and Enter shows a worker's own work",
     ),
     ("Esc", "close, go back, or put the agent's question off"),
     ("Ctrl+C", "stop the turn, else clear the box"),

@@ -861,6 +861,12 @@ impl App {
                     self.list_focus = Some(0);
                 }
             }
+            // With nothing to complete, Tab goes on to the agent list, and
+            // Shift+Tab to its last agent.
+            KeyCode::Tab | KeyCode::BackTab if !self.list().is_empty() => {
+                let last = self.list().len() - 1;
+                self.list_focus = Some(if key.code == KeyCode::Tab { 0 } else { last });
+            }
             KeyCode::Char(c) if !ctrl && !alt => self.typed(c),
             _ => {}
         }
@@ -1109,6 +1115,11 @@ impl App {
             KeyCode::Up => self.list_focus = Some(row - 1),
             KeyCode::Down => self.list_focus = Some((row + 1).min(list.len() - 1)),
             KeyCode::Char('t') if ctrl => self.list_focus = Some((row + 1) % list.len()),
+            // Tab moves down the list and Shift+Tab up it. Past either end
+            // the focus goes back to the input box.
+            KeyCode::Tab if row + 1 < list.len() => self.list_focus = Some(row + 1),
+            KeyCode::BackTab if row > 0 => self.list_focus = Some(row - 1),
+            KeyCode::Tab | KeyCode::BackTab => self.list_focus = None,
             KeyCode::Enter => {
                 let id = list[row].map(|w| w.id.clone());
                 self.watch(id);
@@ -2672,6 +2683,43 @@ pub(super) mod tests {
         app.list_now += LIST_ENDED_MS + 1000;
         assert!(ids(&app).is_empty());
         assert!(!app.list_ticks());
+    }
+
+    /// Tab from the input box goes on to the agent list, moves down it, and
+    /// past its last agent goes back to the box. Shift+Tab goes the other
+    /// way. A command's completion in the box keeps Tab.
+    #[test]
+    fn tab_moves_through_the_agent_list_and_back_to_the_box() {
+        use crate::remote::WorkerState::Running;
+        let mut app = app();
+        // No workers, so no list to go to.
+        press(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+        assert_eq!(app.list_focus, None);
+        for id in ["r1", "r2"] {
+            app.update(Update::Worker(worker(id, Running)), Activity::default);
+        }
+        let focus = |app: &mut App, code, modifiers| {
+            (0..4)
+                .map(|_| {
+                    press(app, code, modifiers);
+                    app.list_focus
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            focus(&mut app, KeyCode::Tab, KeyModifiers::NONE),
+            [Some(0), Some(1), Some(2), None]
+        );
+        assert_eq!(
+            focus(&mut app, KeyCode::BackTab, KeyModifiers::SHIFT),
+            [Some(2), Some(1), Some(0), None]
+        );
+        assert!(app.editor.is_empty());
+        // In the box, Tab still takes an argument's choice.
+        type_text(&mut app, "/view q");
+        press(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+        assert_eq!(app.editor.text(), "/view quiet");
+        assert_eq!(app.list_focus, None);
     }
 
     #[test]
