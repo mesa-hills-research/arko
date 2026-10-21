@@ -2597,11 +2597,11 @@ impl Harness {
         }
         let note = match after {
             0 => format!(
-                "From now on, shell commands and other long calls no longer move to the background on their own: each runs until it finishes or its time limit passes. A shell command's timeout_seconds now defaults to {}.",
+                "From now on, shell commands and other long calls no longer move to the background on their own. Each runs until it finishes or its time limit passes. A shell command's timeout_seconds now defaults to {}.",
                 shell::default_timeout(0)
             ),
             after => format!(
-                "From now on, a shell command still running after {} moves to the background, where it goes on as a job: the result gives its job ID and output so far, and a terminal update tells you when it finishes. timeout_seconds now defaults to {}. Other long calls (MCP tools, index_create) move after the same time, and their results reach you as notes.",
+                "From now on, a shell command still running after {} moves to the background, where it goes on as a job. The result gives its job ID and output so far, and a terminal update tells you when it finishes. timeout_seconds now defaults to {}. Other long calls (MCP tools, index_create) move after the same time, and their results reach you as notes.",
                 shell::background_after_words(after),
                 shell::default_timeout(after)
             ),

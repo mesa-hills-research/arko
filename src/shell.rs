@@ -202,7 +202,7 @@ fn find_program(name: &str) -> Option<PathBuf> {
 /// [`TerminalManager`] lists the calls and runs the jobs.
 #[derive(Debug, Default)]
 pub struct Background {
-    /// After how many seconds a call still running moves; 0: never.
+    /// After how many seconds a call still running moves, or 0 for never.
     after: AtomicU64,
     /// The session's terminal jobs, whose manager owns them.
     jobs: std::sync::Weak<TerminalManager>,

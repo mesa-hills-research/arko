@@ -239,8 +239,8 @@ pub struct Item {
     /// other items may have followed by the time the result came.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub call: Option<u64>,
-    /// The background job a `call` made, its ID: the call moved to the
-    /// background, or it started a job (`terminal_start`). Its
+    /// The ID of the background job a `call` made, when the call moved to
+    /// the background or started a job (`terminal_start`). Its
     /// [`JobSummary`] says how the job is doing.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub job: Option<String>,
@@ -461,7 +461,7 @@ pub enum WorkerChange<'a> {
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum JobKind {
-    /// A command: a shell command that moved to the background, or one
+    /// A shell command that moved to the background, or one
     /// `terminal_start` started.
     Command,
     /// A tool call that moved to the background (an MCP tool's,
@@ -548,7 +548,8 @@ pub enum Update {
     /// The item `id` is gone. It held text a model's response streamed
     /// before it failed, which its retry streams again.
     Remove { id: u64 },
-    /// A background job's summary, whole: one started, changed or ended.
+    /// The whole summary of a background job that started, changed or
+    /// ended.
     Job(JobSummary),
 }
 
