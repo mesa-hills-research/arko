@@ -629,10 +629,16 @@ fn tool_instructions(settings: &AgentSettings, worker: bool) -> String {
     } else {
         "building, testing, git, running programs, and searching text with `rg` (to find code or docs to read, start with `index_search`: see Search indexes below)"
     };
-    let monitors = if settings.monitors {
-        " To be told when a server's or a build's output shows an error, or when a check starts passing (`curl -sf localhost:3000/health`), use `monitor_start` instead of polling. Its alerts reach you as notes while you work, and start a turn while you wait for the user."
-    } else {
-        ""
+    // A worker's monitors stop with its run, and its alerts reach it only
+    // while it works.
+    let monitors = match (settings.monitors, worker) {
+        (false, _) => "",
+        (true, false) => {
+            " To be told when a server's or a build's output shows an error, or when a check starts passing (`curl -sf localhost:3000/health`), use `monitor_start` instead of polling. Its alerts reach you as notes while you work, and start a turn while you wait for the user."
+        }
+        (true, true) => {
+            " To be told when a server's or a build's output shows an error, or when a check starts passing (`curl -sf localhost:3000/health`), use `monitor_start` instead of polling. Its alerts reach you as notes while you work. Your monitors stop when your run ends."
+        }
     };
     let mut text = format!(
         "\n# Tools\n\
@@ -1099,7 +1105,9 @@ mod tests {
     }
 
     /// Both agents have the monitor tools, and are told to use them instead
-    /// of polling, except with -p, where no one would hear the alerts.
+    /// of polling, except with -p, where no one would hear the alerts. The
+    /// main agent is told its alerts start a turn while it waits for the
+    /// user, and a worker that its monitors stop when its run ends.
     #[test]
     fn both_agents_watch_commands_with_monitors_except_with_p() {
         let opus = model("opus", false);
@@ -1109,19 +1117,25 @@ mod tests {
             ..AgentSettings::for_test(&opus, &opus)
         };
         for (settings, offered) in [(&session, true), (&one_shot, false)] {
-            for config in [
-                main_config(settings).unwrap(),
-                worker_config(settings).unwrap(),
+            for (config, worker) in [
+                (main_config(settings).unwrap(), false),
+                (worker_config(settings).unwrap(), true),
             ] {
                 let names = &config.tool_config.available_tool_names;
                 for tool in MonitorTool::NAMES {
                     assert_eq!(names.iter().any(|name| name == tool), offered, "{tool}");
                 }
+                let told = |text: &str| config.instructions.contains(text);
+                assert_eq!(told("use `monitor_start` instead of polling."), offered);
+                // Only the main agent waits for the user. A worker's
+                // monitors stop with its run.
                 assert_eq!(
-                    config
-                        .instructions
-                        .contains("use `monitor_start` instead of polling."),
-                    offered
+                    told("start a turn while you wait for the user."),
+                    offered && !worker
+                );
+                assert_eq!(
+                    told("Your monitors stop when your run ends."),
+                    offered && worker
                 );
             }
         }
