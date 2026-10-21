@@ -513,16 +513,56 @@ pub struct JobSummary {
     pub outcome: Option<String>,
 }
 
-/// A background job that started, for [`Feed::job_started`].
+/// A background job that started, for [`Feed::job_started`]. An app that
+/// follows a terminal manager itself, or a test, makes one with
+/// [`JobStart::new`].
 #[derive(Debug, Clone)]
-pub(crate) struct JobStart {
+#[non_exhaustive]
+pub struct JobStart {
+    /// The job's ID.
     pub id: Uuid,
+    /// Whose job it is, as the feed names agents ([`MAIN_AGENT`] or a
+    /// worker's ID).
     pub agent: String,
     /// The call that made it, if one did.
     pub tool_call: Option<Uuid>,
     pub kind: JobKind,
+    /// What it runs, its command or tool.
     pub label: String,
+    /// When it started, in Unix milliseconds.
     pub started_at: i64,
+}
+
+impl JobStart {
+    /// `agent`'s job `id`, a `kind` of job that runs `label`, which started
+    /// now and no call made.
+    pub fn new(
+        id: Uuid,
+        agent: impl Into<String>,
+        kind: JobKind,
+        label: impl Into<String>,
+    ) -> Self {
+        Self {
+            id,
+            agent: agent.into(),
+            tool_call: None,
+            kind,
+            label: label.into(),
+            started_at: now_ms(),
+        }
+    }
+
+    /// The call `call` made the job.
+    pub fn made_by(mut self, call: Uuid) -> Self {
+        self.tool_call = Some(call);
+        self
+    }
+
+    /// The job started at `at`, in Unix milliseconds.
+    pub fn started(mut self, at: i64) -> Self {
+        self.started_at = at;
+        self
+    }
 }
 
 /// The ended jobs kept for the clients, besides those running.
@@ -1566,9 +1606,25 @@ impl Feed {
             .map(|(id, _)| *id)
     }
 
-    /// A background job started: its summary goes out, and the call that
-    /// made it says it did. A job the feed knows already is left alone.
-    pub(crate) fn job_started(&self, start: JobStart) {
+    /// A background job started. Its summary goes out, and the line of the
+    /// call that made it names it. A job the feed knows already is left
+    /// alone. Arko calls this as its terminal manager's jobs start, and an
+    /// app that follows the manager itself (or a test) can too.
+    ///
+    /// ```
+    /// use arko::remote::{Feed, JobKind, JobStart, JobState, MAIN_AGENT, Update};
+    ///
+    /// let feed = Feed::new("main");
+    /// let (_, mut updates) = feed.subscribe();
+    /// let job = uuid::Uuid::new_v4();
+    /// feed.job_started(JobStart::new(job, MAIN_AGENT, JobKind::Command, "cargo build"));
+    /// feed.job_ended(job, JobState::Failed, Some("exit 1".into()));
+    /// let Ok(Update::Job(summary)) = updates.try_recv() else { panic!() };
+    /// assert_eq!(summary.state, JobState::Running);
+    /// let Ok(Update::Job(summary)) = updates.try_recv() else { panic!() };
+    /// assert_eq!((summary.state, summary.outcome.as_deref()), (JobState::Failed, Some("exit 1")));
+    /// ```
+    pub fn job_started(&self, start: JobStart) {
         let mut state = self.lock();
         let id = start.id.to_string();
         if state.jobs.iter().any(|job| job.id == id) {
@@ -1618,10 +1674,12 @@ impl Feed {
         self.send(Update::Job(summary));
     }
 
-    /// The background job `id` ended as `state` (with `outcome`, a few
-    /// words): its summary goes out, and the call that made it, when it
-    /// moved there, says how it ended.
-    pub(crate) fn job_ended(&self, id: Uuid, ended: JobState, outcome: Option<String>) {
+    /// The background job `id` ended as `ended`, with `outcome` in a few
+    /// words ("exit 1", say). Its summary goes out, and the line of a call
+    /// that moved there says how it ended. The end of a job the feed hasn't
+    /// seen start goes to the line of the call that names it, now or when
+    /// its result comes.
+    pub fn job_ended(&self, id: Uuid, ended: JobState, outcome: Option<String>) {
         let mut state = self.lock();
         let id = id.to_string();
         let now = now_ms();

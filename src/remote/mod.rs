@@ -35,11 +35,9 @@ use tokio::sync::mpsc;
 
 // The page's server and the terminal's full-screen view are both clients
 // of the feed.
-#[allow(unused_imports)]
-pub(crate) use feed::JobStart;
 pub use feed::{
-    Activity, Batches, CallStatus, Delivery, Feed, Item, JobKind, JobState, JobSummary, Kind,
-    Level, MAIN_AGENT, Question, REFRESH_MESSAGE, Snapshot, Source, Update, WorkerChange,
+    Activity, Batches, CallStatus, Delivery, Feed, Item, JobKind, JobStart, JobState, JobSummary,
+    Kind, Level, MAIN_AGENT, Question, REFRESH_MESSAGE, Snapshot, Source, Update, WorkerChange,
     WorkerState, WorkerSummary,
 };
 pub(crate) use history::all_items;
