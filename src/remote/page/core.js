@@ -209,15 +209,10 @@
       if (placed.has(item.id)) continue;
       const main = item.agent === MAIN;
       if (view === 'full') {
-        // The workers' calls and troubles inline; their text and reports
-        // are in their own views.
+        // The workers' calls and troubles inline. Their text, their reports
+        // and what the user wrote to them are in their own views.
         if (main) push(item);
-        else if (['call', 'user'].includes(item.kind) || (item.kind === 'notice' && serious(item))) rows.push({ key: 'i' + item.id, id: item.id, item });
-        continue;
-      }
-      // What the user wrote to a worker shows in every view.
-      if (!main && item.kind === 'user') {
-        rows.push({ key: 'i' + item.id, id: item.id, item });
+        else if (item.kind === 'call' || (item.kind === 'notice' && serious(item))) rows.push({ key: 'i' + item.id, id: item.id, item });
         continue;
       }
       if (!main) continue;
