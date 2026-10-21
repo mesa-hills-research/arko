@@ -13,6 +13,7 @@ use ratatui::widgets::{Block, Borders, Clear};
 use super::app::{App, ListRow};
 use super::markdown;
 use super::overlay::{self, hints};
+use super::select::Docked;
 use super::transcript::{self, View};
 use super::wrap::{self, width as text_width};
 use crate::glyphs;
@@ -69,10 +70,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
     // What docks above the status line for a while.
     let above = Rect::new(area.x, area.y, area.width, status_y - area.y);
+    let previous = app.docked.take();
     let docked = if !app.menu_items().is_empty() {
         draw_menu(frame, app, above)
     } else if app.question_shown().is_some() {
-        draw_question(frame, app, above)
+        draw_question(frame, app, above, previous)
     } else {
         0
     };
@@ -464,24 +466,25 @@ fn clock(seconds: u64) -> String {
 
 /// The agent's question, docked above the status line: the input box is
 /// the answer box while it is open. Returns the rows it takes.
-fn draw_question(frame: &mut Frame, app: &App, above: Rect) -> u16 {
-    let theme = &app.theme;
+fn draw_question(frame: &mut Frame, app: &mut App, above: Rect, previous: Option<Docked>) -> u16 {
+    let theme = app.theme.clone();
+    let theme = &theme;
     let Some(question) = app.question_shown() else {
         return 0;
     };
+    let id = question.id;
     let inner_width = (above.width as usize).saturating_sub(4).max(4);
-    let mut lines: Vec<Vec<Span<'static>>> =
-        markdown::render(&question.text, theme.text(), theme, inner_width)
-            .into_iter()
-            .map(|line| line.spans)
-            .collect();
+    let mut lines = markdown::render(&question.text, theme.text(), theme, inner_width);
     let room = (above.height as usize / 2).saturating_sub(2).max(1);
     if lines.len() > room {
         lines.truncate(room.saturating_sub(1));
-        lines.push(vec![Span::styled(
+        // (Not the question's text: a copy leaves it out.)
+        let mut more = wrap::Wrapped::line(vec![Span::styled(
             glyphs::render("… (the whole question is in the transcript)").into_owned(),
             theme.dim(),
         )]);
+        more.bare = true;
+        lines.push(more);
     }
     let height = (lines.len() as u16 + 2).min(above.height);
     let rect = Rect::new(above.x, above.bottom() - height, above.width, height);
@@ -497,14 +500,34 @@ fn draw_question(frame: &mut Frame, app: &App, above: Rect) -> u16 {
         )));
     let inner = block.inner(rect);
     frame.render_widget(block, rect);
-    for (row, spans) in lines.into_iter().enumerate().take(inner.height as usize) {
+    lines.truncate(inner.height as usize);
+    for (row, line) in lines.iter().enumerate() {
         frame.buffer_mut().set_line(
             inner.x + 1,
             inner.y + row as u16,
-            &Line::from(spans),
+            &Line::from(line.spans.clone()),
             inner.width.saturating_sub(1),
         );
     }
+    // Its text is selected as the transcript's is: what was highlighted
+    // stays while the same question shows the same way.
+    let area = Rect::new(
+        inner.x + 1,
+        inner.y,
+        inner.width.saturating_sub(1),
+        lines.len() as u16,
+    );
+    let selection = previous
+        .filter(|docked| docked.id == id && docked.area == area && docked.lines == lines)
+        .and_then(|docked| docked.selection);
+    let docked = Docked {
+        id,
+        area,
+        lines,
+        selection,
+    };
+    docked.draw_selection(frame.buffer_mut(), theme);
+    app.docked = Some(docked);
     let keys = Line::from({
         let mut spans = hints(theme, &[("Enter", "answer"), ("Esc", "later")]);
         spans.push(Span::raw(" "));
@@ -1043,6 +1066,34 @@ mod tests {
         assert_eq!(rows[6], " ● asks you");
     }
 
+    /// "Working…" shows while the agent works and waits on its model, not
+    /// while it asks the user, and the screen is drawn again for its frames
+    /// only while it shows.
+    #[test]
+    fn working_shows_while_the_agent_waits_on_its_model() {
+        let mut app = app();
+        let working = |rows: &[String]| rows.iter().any(|row| row.ends_with(" Working…"));
+        assert!(!working(&screen(&mut app, 50, 10)));
+        assert!(!app.transcript.drawn.moving);
+        let mut activity = Activity {
+            working: true,
+            since: Some(0),
+            question: None,
+        };
+        app.set_activity(activity.clone());
+        let rows = screen(&mut app, 50, 10);
+        assert!(working(&rows), "{rows:?}");
+        assert!(app.transcript.drawn.moving);
+        activity.question = Some(Question {
+            id: 1,
+            text: "Tabs or spaces?".into(),
+        });
+        app.set_activity(activity);
+        let rows = screen(&mut app, 50, 10);
+        assert!(!working(&rows), "{rows:?}");
+        assert!(!app.transcript.drawn.moving);
+    }
+
     #[test]
     fn the_menu_lists_commands_above_the_input() {
         let mut app = app();
@@ -1130,6 +1181,83 @@ mod tests {
                 copy("Hello there, reader.", "20 characters")
             ]
         );
+    }
+
+    /// The question docked above the status line is text to select, as the
+    /// transcript's is: a drag highlights it and copies it when the button
+    /// is let go, a double click copies a word, and a triple click the
+    /// line, joined again where the box wrapped it. A key clears the
+    /// highlight.
+    #[test]
+    fn the_docked_questions_text_selects_and_copies() {
+        use crate::tui::app::Effect;
+        use crossterm::event::{MouseButton, MouseEventKind};
+        let mut app = app();
+        let text = "Tabs or spaces for the **new** files? The old ones use tabs, so I'd keep them.";
+        app.set_activity(Activity {
+            working: true,
+            since: None,
+            question: Some(Question {
+                id: 1,
+                text: text.into(),
+            }),
+        });
+        let rows = screen(&mut app, 50, 20);
+        let y = rows.iter().position(|row| row.contains("Tabs or")).unwrap();
+        let x = rows[y].chars().position(|c| c == 'T').unwrap() as u16;
+        let y = y as u16;
+        let left = MouseButton::Left;
+        let copy = |text: &str, what: &str| Effect::Copy {
+            text: text.into(),
+            what: what.into(),
+        };
+        mouse(&mut app, MouseEventKind::Down(left), x, y);
+        mouse(&mut app, MouseEventKind::Drag(left), x + 6, y);
+        screen(&mut app, 50, 20);
+        mouse(&mut app, MouseEventKind::Drag(left), x + 13, y);
+        mouse(&mut app, MouseEventKind::Up(left), x + 13, y);
+        assert_eq!(
+            app.take_effects(),
+            [copy("Tabs or spaces", "14 characters")]
+        );
+        // It is highlighted, from its first cell to its last.
+        let mut terminal = Terminal::new(TestBackend::new(50, 20)).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        let lit = |dx: u16| buffer[(x + dx, y)].bg == app.theme.selection;
+        assert!(lit(0) && lit(13) && !lit(14));
+        app.key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+        assert_eq!(app.docked.as_ref().unwrap().selection, None);
+        app.key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+        // A double click: a word.
+        for kind in [
+            MouseEventKind::Down(left),
+            MouseEventKind::Up(left),
+            MouseEventKind::Down(left),
+            MouseEventKind::Up(left),
+        ] {
+            mouse(&mut app, kind, x + 9, y);
+            screen(&mut app, 50, 20);
+        }
+        assert_eq!(app.take_effects(), [copy("spaces", "6 characters")]);
+        // A triple click (on another cell, so the count starts over): the
+        // second click copies the word, the third the line, whole.
+        for _ in 0..3 {
+            mouse(&mut app, MouseEventKind::Down(left), x + 1, y);
+            screen(&mut app, 50, 20);
+            mouse(&mut app, MouseEventKind::Up(left), x + 1, y);
+        }
+        let whole = text.replace("**", "");
+        let length = format!("{} characters", whole.chars().count());
+        assert_eq!(
+            app.take_effects(),
+            [copy("Tabs", "4 characters"), copy(&whole, &length)]
+        );
+        // A click elsewhere clears it.
+        mouse(&mut app, MouseEventKind::Down(left), 5, 0);
+        mouse(&mut app, MouseEventKind::Up(left), 5, 0);
+        assert_eq!(app.docked.as_ref().unwrap().selection, None);
+        assert!(app.take_effects().is_empty());
     }
 
     /// A click on a command's "more lines" opens its whole output, and a

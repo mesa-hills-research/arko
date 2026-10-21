@@ -17,10 +17,12 @@ mod input;
 mod keys_menu;
 mod markdown;
 mod model_picker;
+mod motion;
 mod overlay;
 mod prefs;
 mod resume_picker;
 mod screen;
+mod select;
 pub(crate) mod theme;
 mod transcript;
 mod wrap;
@@ -315,6 +317,9 @@ async fn run(
     let mut clock = tokio::time::interval(Duration::from_millis(500));
     let mut frames = tokio::time::interval(FRAME);
     frames.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    // While the screen shows something that moves, its frames.
+    let mut animation = tokio::time::interval(motion::FRAME);
+    animation.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     // Something changed: drawn at the next frame. Keys draw at once.
     let mut dirty = false;
     let mut draw_now = true;
@@ -387,6 +392,7 @@ async fn run(
                 dirty = true;
             }
             _ = frames.tick(), if dirty => draw_now = true,
+            _ = animation.tick(), if app.transcript.drawn.moving => draw_now = true,
             _ = clock.tick() => {
                 let reading = setup.meter.read();
                 let workers = app.list_ticks();

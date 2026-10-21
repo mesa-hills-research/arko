@@ -459,6 +459,22 @@ details.thinking > summary .first { font-style: italic; overflow: hidden; text-o
 details.thinking[open] > summary .mark { transform: rotate(90deg); }
 details.thinking[open] > summary .first { display: none; }
 details.thinking .thinking-text { font-style: italic; margin: 4px 0 0 18px; }
+
+/* While the agent waits on its model, "Working…" stands where its thinking
+   would. Its word, and the thinking's label while it streams, shimmer as a
+   highlight sweeps across the muted word. */
+.row.working { margin: 4px 0; font-size: 13.5px; color: var(--muted); display: flex; gap: 6px; }
+.row.working .mark { visibility: hidden; }
+.row.working .what { font-weight: 600; }
+.row.working .what,
+.row.thinking.streaming summary .what {
+  background: linear-gradient(90deg, var(--muted) 40%, var(--text) 50%, var(--muted) 60%) 100% 0 / 300% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: shimmer 2s linear infinite;
+}
+@keyframes shimmer { to { background-position: 0 0; } }
 .row.notice.level-warn { color: var(--warn); }
 .row.notice.level-error { color: var(--error); }
 

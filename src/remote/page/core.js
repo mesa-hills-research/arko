@@ -32,6 +32,8 @@
       this.byId = new Map();
       this.workers = new Map();
       this.counts = { main: 0, workers: 0 };
+      /** When each item came or last changed, in this device's time. */
+      this.grown = new Map();
     }
 
     /** Starts over with `items` and `workers` (a `reset`). */
@@ -39,19 +41,22 @@
       this.items = [];
       this.byId.clear();
       this.workers.clear();
+      this.grown.clear();
       this.counts = { main: 0, workers: 0 };
       for (const item of items) this.add(item);
       for (const worker of workers || []) this.workers.set(worker.id, worker);
     }
 
-    /** A new item; returns the items trimmed to keep the budget. */
-    add(item) {
+    /** A new item, come at `now`; returns the items trimmed to keep the
+     * budget. */
+    add(item, now = Date.now()) {
       if (this.byId.has(item.id)) {
-        this.change(item);
+        this.change(item, now);
         return [];
       }
       this.items.push(item);
       this.byId.set(item.id, item);
+      this.grown.set(item.id, now);
       const lane = item.agent === MAIN ? 'main' : 'workers';
       this.counts[lane] += 1;
       const trimmed = [];
@@ -60,17 +65,19 @@
         if (index < 0) break;
         const [old] = this.items.splice(index, 1);
         this.byId.delete(old.id);
+        this.grown.delete(old.id);
         this.counts[lane] -= 1;
         trimmed.push(old);
       }
       return trimmed;
     }
 
-    /** More text for the item `id`; false if it isn't kept. */
-    append(id, text) {
+    /** More text for the item `id`, come at `now`; false if it isn't kept. */
+    append(id, text, now = Date.now()) {
       const item = this.byId.get(id);
       if (!item) return false;
       item.text += text;
+      this.grown.set(id, now);
       return true;
     }
 
@@ -80,17 +87,19 @@
       if (!item) return false;
       this.items.splice(this.items.indexOf(item), 1);
       this.byId.delete(id);
+      this.grown.delete(id);
       this.counts[item.agent === MAIN ? 'main' : 'workers'] -= 1;
       return true;
     }
 
-    /** The item with this one's ID is now this one. */
-    change(item) {
+    /** The item with this one's ID is now this one, since `now`. */
+    change(item, now = Date.now()) {
       const old = this.byId.get(item.id);
       if (!old) return false;
       Object.assign(old, item);
       // A field gone from the new one (an outcome) is gone.
       for (const key of Object.keys(old)) if (!(key in item)) delete old[key];
+      this.grown.set(item.id, now);
       return true;
     }
 
@@ -238,6 +247,107 @@
     }
   }
 
+  // ----- what shows the agent is under way -----
+
+  /** Text that hasn't grown for this long, while its agent works, no
+   * longer shows that the agent is under way (it may be writing a long
+   * call). */
+  const QUIET_MS = 2000;
+
+  /** What `agent`, which works (its turn began at `since`, in Arko's
+   * time), is under way with, as its latest items say: `{ kind, id }`,
+   * where `kind` is `model` (it waits on its model, and nothing the model
+   * sent shows it yet), `thinking` or `text` (they stream, the item
+   * `id`), `tool` (a call of its runs) or `done` (it replied). */
+  function busy(items, agent, since) {
+    // The calls of one response may run side by side: one that ended
+    // doesn't mean the others did.
+    let afterCall = false;
+    for (let i = items.length - 1; i >= 0; i--) {
+      const item = items[i];
+      if (item.agent !== agent || item.pending) continue;
+      switch (item.kind) {
+        case 'call':
+          if (item.status === 'running') return { kind: 'tool' };
+          afterCall = true;
+          continue;
+        case 'result':
+          afterCall = true;
+          continue;
+        // Arko's lines, a command's output and the workers' places.
+        case 'notice':
+        case 'output':
+        case 'worker_line':
+          continue;
+        // What the user typed beside the agent's work.
+        case 'user':
+          if (item.delivery === 'command' || item.delivery === 'queued') continue;
+          break;
+      }
+      if (afterCall) return { kind: 'model' };
+      switch (item.kind) {
+        case 'thinking':
+        case 'text':
+          return { kind: item.kind, id: item.id };
+        case 'reply':
+          return { kind: 'done' };
+        // The end of a turn before this one began (a turn without a
+        // message, when the workers' news came), or of this one.
+        case 'turn':
+          return { kind: item.at < since ? 'model' : 'done' };
+        default:
+          return { kind: 'model' };
+      }
+    }
+    return { kind: 'model' };
+  }
+
+  /**
+   * What shows that the agent of a view is under way, besides its calls:
+   * `{ thinking, working }`. `thinking` is the ID of its thinking that
+   * streams, whose label moves, and `working` says a "Working…" row stands
+   * at the end, while the agent waits on its model with nothing else to
+   * show. `now` is this device's time, as the store's `grown` has it.
+   */
+  function motion(store, status, view, worker, now) {
+    const still = { thinking: null, working: false };
+    let since = -Infinity;
+    if (worker) {
+      const summary = store.workers.get(worker);
+      if (!summary || summary.state !== 'running') return still;
+    } else {
+      // (While the agent asks, it waits on the user, not on its model.)
+      if (!status || !status.working || status.question) return still;
+      if (status.since != null) since = status.since;
+    }
+    const doing = busy(store.items, worker || MAIN, since);
+    switch (doing.kind) {
+      case 'model':
+        return { thinking: null, working: true };
+      case 'text': {
+        const grown = store.grown.has(doing.id) ? store.grown.get(doing.id) : now;
+        return { thinking: null, working: now - grown >= QUIET_MS };
+      }
+      case 'thinking':
+        // The Messages view leaves the agent's thinking out.
+        if (!worker && view === 'messages') return { thinking: null, working: true };
+        return { thinking: doing.id, working: false };
+      default:
+        return still;
+    }
+  }
+
+  /** `rows` with the "Working…" row, when `working`, where the agent's
+   * output comes next: at the end, above the notes it hasn't read. */
+  function withWorking(rows, working) {
+    if (!working) return rows;
+    let at = rows.length;
+    while (at > 0 && rows[at - 1].item && rows[at - 1].item.pending) at--;
+    const out = rows.slice();
+    out.splice(at, 0, { key: 'working', id: null, working: true });
+    return out;
+  }
+
   /** The row of `rows` to keep the reader's place at, for the item `id`
    * they were reading: that one, else the nearest one before it, else the
    * nearest one after. (A result shows under its call, so the rows'
@@ -246,6 +356,7 @@
     let before = null;
     let after = null;
     for (const row of rows) {
+      if (row.working) continue;
       if (row.id === id) return row;
       if (row.id < id && (!before || row.id > before.id)) before = row;
       if (row.id > id && (!after || row.id < after.id)) after = row;
@@ -253,10 +364,11 @@
     return before || after;
   }
 
-  /** How many of `rows` came after the item `seen`. */
+  /** How many of `rows` came after the item `seen` ("Working…" isn't
+   * new). */
   function unseen(rows, seen) {
     let count = 0;
-    for (const row of rows) if (row.id > seen) count++;
+    for (const row of rows) if (!row.working && row.id > seen) count++;
     return count;
   }
 
@@ -575,6 +687,9 @@
     BUDGET,
     Store,
     layout,
+    QUIET_MS,
+    motion,
+    withWorking,
     nearest,
     unseen,
     duration,

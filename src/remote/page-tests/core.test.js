@@ -243,3 +243,76 @@ test("an agent's thinking shows (folded) in Full and Quiet and in its own view, 
   assert.equal(core.firstLine('\n\n  Checking the parser.  \nMore.'), 'Checking the parser.');
   assert.equal(core.firstLine(''), '');
 });
+
+test('"Working…" shows while the agent waits on its model, and its thinking moves as it streams', () => {
+  next = 0;
+  const store = new core.Store();
+  const still = { thinking: null, working: false };
+  const working = { thinking: null, working: true };
+  const status = { working: true, since: 0, question: null };
+  const add = (kind, fields) => store.add(item(kind, fields), 1000);
+  const set = (id, fields) => store.change({ ...store.byId.get(id), ...fields }, 1000);
+  const at = (now = 1000, view = 'full', what = status) => core.motion(store, what, view, null, now);
+  add('user', { delivery: 'turn' });
+  assert.deepEqual(at(), working, 'a turn began');
+  assert.deepEqual(at(1000, 'full', { working: false }), still, 'idle');
+  assert.deepEqual(at(1000, 'full', { ...status, question: { id: 1, text: 'Tabs?' } }), still, 'it asks');
+  add('thinking');
+  assert.deepEqual(at(), { thinking: 2, working: false });
+  assert.deepEqual(at(1000, 'messages'), working, 'Messages leaves thinking out');
+  add('call', { status: 'running' });
+  assert.deepEqual(at(), still);
+  set(3, { status: 'ok' });
+  assert.deepEqual(at(), working, 'the result went back');
+  // Calls side by side: while one runs, it shows the agent works.
+  add('call', { status: 'running' });
+  add('call', { status: 'ok' });
+  assert.deepEqual(at(), still);
+  set(4, { status: 'ok' });
+  assert.deepEqual(at(), working);
+  // Its text streams, then goes quiet (it writes a long call).
+  add('text');
+  assert.deepEqual(at(), still);
+  assert.deepEqual(at(1000 + core.QUIET_MS), working);
+  store.append(6, ' more', 5000);
+  assert.deepEqual(at(5000), still);
+  add('reply');
+  const turn = item('turn');
+  store.add(turn, 1000);
+  assert.deepEqual(at(), still, 'it replied');
+  // A turn that begins without a message (the workers' news came).
+  add('notice', { level: 'info' });
+  assert.deepEqual(at(1000, 'full', { working: true, since: turn.at + 1 }), working);
+});
+
+test("a worker's own view says it works while it runs", () => {
+  next = 0;
+  const store = new core.Store();
+  store.workers.set('r1', { id: 'r1', state: 'running' });
+  const at = (view = 'full') => core.motion(store, { working: false }, view, 'r1', 1000);
+  assert.deepEqual(at(), { thinking: null, working: true }, 'from its start');
+  store.add(item('thinking', { agent: 'r1' }), 1000);
+  assert.deepEqual(at(), { thinking: 1, working: false });
+  assert.deepEqual(at('messages'), { thinking: 1, working: false }, 'its own view shows thinking');
+  store.add(item('result', { agent: 'r1' }), 1000);
+  assert.deepEqual(at(), { thinking: null, working: true });
+  store.workers.set('r1', { id: 'r1', state: 'finished' });
+  assert.deepEqual(at(), { thinking: null, working: false });
+});
+
+test('"Working…" stands above the notes the agent hasn\'t read, and isn\'t new', () => {
+  next = 0;
+  const items = [
+    item('user'),
+    item('call', { status: 'ok' }),
+    item('user', { delivery: 'note', pending: true }),
+  ];
+  const rows = core.layout(items, 'full');
+  assert.equal(core.withWorking(rows, false), rows);
+  const shown = core.withWorking(rows, true);
+  assert.deepEqual(shown.map((row) => row.key), ['i1', 'i2', 'working', 'i3']);
+  assert.equal(rows.length, 3, 'the rows themselves stay as they were');
+  assert.equal(core.unseen(shown, 1), 2);
+  assert.equal(core.nearest(shown, 99).key, 'i3');
+  assert.equal(core.nearest(shown, 0).key, 'i1');
+});

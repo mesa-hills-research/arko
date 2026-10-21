@@ -261,6 +261,14 @@
   }
 
   function renderRow(row) {
+    if (row.working) {
+      // The agent waits on its model. The row stands in the thinking's
+      // place, its word shimmering as the thinking's label does while it
+      // streams.
+      const box = element('div', 'row working');
+      box.append(element('span', 'mark', '▸'), element('span', 'what', 'Working…'));
+      return box;
+    }
     if (row.count) {
       const box = element('div', 'row count');
       const button = element('button');
@@ -385,6 +393,10 @@
 
   /** The rows shown, and their elements by key. */
   let rows = [];
+  /** The view's rows of items, without "Working…". */
+  let laidOut = [];
+  /** What shows the agent is under way, as last drawn. */
+  let moving = { thinking: null, working: false };
   const nodes = new Map();
   /** Keys whose element must be built again (a change, more text). */
   const stale = new Set();
@@ -415,7 +427,7 @@
   function place(keys) {
     const top = log.getBoundingClientRect().top;
     for (const row of rows) {
-      if (keys && !keys.has(row.key)) continue;
+      if (row.working || (keys && !keys.has(row.key))) continue;
       const node = nodes.get(row.key);
       if (!node || !node.isConnected) continue;
       const box = node.getBoundingClientRect();
@@ -443,11 +455,13 @@
       // The reader's place: a row they can see that stays (a view that
       // hides the top one keeps the next one where it was).
       if (!following && !anchor) anchor = place(new Set(next.map((row) => row.key)));
-      rows = next;
+      laidOut = next;
       relayout = false;
     } else if (!following && !anchor) {
       anchor = place();
     }
+    moving = motionNow();
+    rows = C.withWorking(laidOut, moving.working);
     const wanted = new Set();
     let cursor = list.firstChild;
     for (const row of rows) {
@@ -465,6 +479,7 @@
         node.dataset.key = row.key;
         if (row.count) node.dataset.sig = sig;
       }
+      if (row.item && row.item.kind === 'thinking') node.classList.toggle('streaming', row.id === moving.thinking);
       if (node !== cursor) list.insertBefore(node, cursor);
       else cursor = cursor.nextSibling;
     }
@@ -504,6 +519,19 @@
       }
     }
     pill();
+  }
+
+  /** What shows the agent is under way now, while the page is live. */
+  function motionNow() {
+    if (connection !== 'live') return { thinking: null, working: false };
+    return C.motion(store, status, view, worker, Date.now());
+  }
+
+  /** Draws the transcript again if what shows the agent is under way
+   * changed (its status, the connection, or text that went quiet). */
+  function followMotion() {
+    const now = motionNow();
+    if (now.working !== moving.working || now.thinking !== moving.thinking) draw();
   }
 
   function newest() {
@@ -653,6 +681,7 @@
     renderStatus();
     if (JSON.stringify(asked) !== JSON.stringify(status.question)) renderAsk();
     renderSettings();
+    followMotion();
   }
 
   function renderStatus() {
@@ -687,6 +716,8 @@
       if (summary) node.textContent = C.workerWords(summary, serverNow()).meta;
     }
     if (worker) renderBanner();
+    // Once the agent's text has been quiet a while, "Working…" comes.
+    followMotion();
   }
   setInterval(tick, 1000);
 
@@ -1304,6 +1335,7 @@
   function setConnection(next) {
     connection = next;
     renderStatus();
+    followMotion();
     $('offline').hidden = next !== 'offline';
   }
 

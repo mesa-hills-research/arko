@@ -16,6 +16,7 @@ use super::model_picker::{self, ModelPicker, Outcome};
 use super::overlay::{Overlay, Picker, SettingsRow};
 use super::prefs::Prefs;
 use super::resume_picker::{self, ResumePicker};
+use super::select::{Docked, Spot};
 use super::theme::{self, Catalog, Depth, Theme};
 use super::transcript::{Filter, Transcript, View};
 use crate::agents::ExtraRules;
@@ -52,6 +53,17 @@ struct Press {
     /// The view followed the bottom when the button went down: a click
     /// (no drag) leaves it following.
     following: bool,
+}
+
+/// The left button pressed on the docked question's text: where the press
+/// began in it, where the mouse is, and whether it highlighted text (a
+/// drag, or a double or triple click), which is copied when the button is
+/// let go.
+#[derive(Debug, Clone, Copy)]
+struct DockPress {
+    anchor: Spot,
+    at: (u16, u16),
+    dragged: bool,
 }
 
 /// What the session is, for the status line, the title and the overlays.
@@ -214,6 +226,12 @@ pub fn list_rows(
     ListWindow { rows, scroll, most }
 }
 
+/// Since when the main agent works (Unix milliseconds), unless it waits
+/// for the user's answer (not on its model).
+fn agent_works_since(activity: &Activity) -> Option<i64> {
+    (activity.working && activity.question.is_none()).then(|| activity.since.unwrap_or(i64::MIN))
+}
+
 /// The view's state.
 pub struct App {
     pub transcript: Transcript,
@@ -257,6 +275,11 @@ pub struct App {
     pub list_focus: Option<usize>,
     /// The left button, while it is down over the transcript.
     press: Option<Press>,
+    /// The question docked above the status line, as last drawn, for the
+    /// mouse.
+    pub docked: Option<Docked>,
+    /// The left button, while it is down over the docked question's text.
+    docked_press: Option<DockPress>,
     /// The last click: when, where, and how many in a row.
     last_click: Option<(Instant, u16, u16, u8)>,
     /// The block whose fold the last click opened or closed.
@@ -323,6 +346,7 @@ impl App {
         let mouse = prefs.mouse.unwrap_or(true);
         let mut transcript = Transcript::new();
         let activity = snapshot.activity.clone();
+        transcript.working = agent_works_since(&activity);
         transcript.reset(snapshot);
         Self {
             transcript,
@@ -357,6 +381,8 @@ impl App {
             list_wheeled: false,
             list_now: chrono::Utc::now().timestamp_millis(),
             press: None,
+            docked: None,
+            docked_press: None,
             last_click: None,
             folded: None,
             model_needs: model_picker::needs,
@@ -710,6 +736,7 @@ impl App {
         {
             self.say("The question was answered elsewhere. Your text is a message now");
         }
+        self.transcript.working = agent_works_since(&activity);
         self.activity = activity;
         !self.focused && (asked || finished)
     }
@@ -725,6 +752,9 @@ impl App {
         }
         // A key press clears what the mouse highlighted.
         self.transcript.selection = None;
+        if let Some(docked) = &mut self.docked {
+            docked.selection = None;
+        }
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let alt = key.modifiers.contains(KeyModifiers::ALT);
         let shift = key.modifiers.contains(KeyModifiers::SHIFT);
@@ -1779,7 +1809,8 @@ impl App {
 
     // ----- the mouse -----
 
-    /// The mouse: the wheel scrolls; a drag over the transcript highlights
+    /// The mouse: the wheel scrolls; a drag over the transcript, or over
+    /// the text of the question docked above the status line, highlights
     /// text, copied when the button is let go (a double click a word, a
     /// triple click a line); a click (no drag) opens what it is on.
     pub fn mouse(&mut self, event: MouseEvent) {
@@ -1833,6 +1864,26 @@ impl App {
                     _ => 1,
                 };
                 self.last_click = Some((now, x, y, count));
+                // On the docked question's text, it selects that text.
+                if let Some(docked) = &mut self.docked {
+                    if docked.contains(x, y) {
+                        let Some(spot) = docked.spot_at(x, y) else {
+                            return;
+                        };
+                        docked.selection = match count {
+                            2 => docked.word_at(spot),
+                            3 => docked.line_at(spot),
+                            _ => None,
+                        };
+                        self.docked_press = Some(DockPress {
+                            anchor: docked.selection.map_or(spot, |(from, _)| from),
+                            at: (x, y),
+                            dragged: docked.selection.is_some(),
+                        });
+                        return;
+                    }
+                    docked.selection = None;
+                }
                 let folded = self.folded.take();
                 let on_marker = self
                     .transcript
@@ -1883,6 +1934,29 @@ impl App {
                         following,
                     },
                 });
+            }
+            MouseEventKind::Drag(MouseButton::Left) if self.docked_press.is_some() => {
+                let Some(press) = &mut self.docked_press else {
+                    return;
+                };
+                if press.at == (x, y) {
+                    return;
+                }
+                press.dragged = true;
+                press.at = (x, y);
+                let anchor = press.anchor;
+                if let Some(docked) = &mut self.docked
+                    && let Some(head) = docked.spot_at(x, y)
+                {
+                    docked.selection = Some((anchor, head));
+                }
+            }
+            MouseEventKind::Up(MouseButton::Left) if self.docked_press.is_some() => {
+                if self.docked_press.take().is_some_and(|press| press.dragged)
+                    && let Some(text) = self.docked.as_ref().and_then(Docked::selected_text)
+                {
+                    self.copy(text);
+                }
             }
             MouseEventKind::Drag(MouseButton::Left) => {
                 let filter = self.filter();
@@ -1936,9 +2010,13 @@ impl App {
     fn copy_selection(&mut self) {
         let filter = self.filter();
         let theme = self.theme.clone();
-        let Some(text) = self.transcript.selected_text(&filter, &theme) else {
-            return;
-        };
+        if let Some(text) = self.transcript.selected_text(&filter, &theme) {
+            self.copy(text);
+        }
+    }
+
+    /// Copies `text`, and says how much.
+    fn copy(&mut self, text: String) {
         let lines = text.lines().count();
         let what = if lines > 1 {
             format!("{lines} lines")
