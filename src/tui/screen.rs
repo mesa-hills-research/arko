@@ -175,6 +175,24 @@ fn draw_input(
     }
 }
 
+/// The agent list's state column, as wide as its widest word (`finished`).
+const STATE_WIDTH: usize = 8;
+/// Its time column, as wide as `9h 59m`.
+const TIME_WIDTH: usize = 6;
+/// The figures of its tool call column, up to 999.
+const CALLS_WIDTH: usize = 3;
+
+/// A worker's time in the agent list, such as `45s`, `12m` or `1h 05m`. The
+/// minutes have two digits beside the hours, so they line up with those of
+/// the rows that show minutes only.
+fn list_time(ms: i64) -> String {
+    let seconds = (ms / 1000).max(0);
+    if seconds < 3600 {
+        return transcript::duration(ms);
+    }
+    format!("{}h {:02}m", seconds / 3600, seconds % 3600 / 60)
+}
+
 /// The agent list, below the input: `● main` and a row for each worker
 /// running, the one shown marked, up to five workers, with a count of the
 /// workers above them and one of those below when there are. ↓ from the
@@ -186,6 +204,7 @@ fn draw_list(frame: &mut Frame, app: &mut App, area: Rect, rows: Vec<ListRow>) {
     app.list_drawn = (area, rows.clone());
     let theme = &app.theme;
     let list = app.list();
+    let now = chrono::Utc::now().timestamp_millis();
     let id_width = list
         .iter()
         .map(|row| row.map_or(4, |w| w.id.len()))
@@ -245,16 +264,20 @@ fn draw_list(frame: &mut Frame, app: &mut App, area: Rect, rows: Vec<ListRow>) {
                     worker.title.clone()
                 };
                 left.push(Span::styled(format!("  {doing}"), theme.dim()));
+                // In columns: the state, the time and the tool calls line
+                // up from row to row.
                 let (state, style) = transcript::state(worker, theme);
-                right.push(Span::styled(state.to_string(), style));
-                if let Some(time) = transcript::worker_time(worker) {
-                    right.push(Span::styled(format!(" · {time}"), theme.dim()));
-                }
+                right.push(Span::styled(format!("{state:<STATE_WIDTH$}"), style));
+                let time = transcript::run_time(worker, now).map_or_else(
+                    || " ".repeat(TIME_WIDTH + 3),
+                    |ms| format!(" · {:>TIME_WIDTH$}", list_time(ms)),
+                );
+                right.push(Span::styled(time, theme.dim()));
                 right.push(Span::styled(
                     format!(
-                        " · {} tool call{} ",
+                        " · {:>CALLS_WIDTH$} tool call{} ",
                         worker.tool_calls,
-                        if worker.tool_calls == 1 { "" } else { "s" }
+                        if worker.tool_calls == 1 { " " } else { "s" }
                     ),
                     theme.dim(),
                 ));
@@ -733,6 +756,52 @@ mod tests {
         );
         assert_eq!(list[6], "   … 2 more");
         assert!(!rows.iter().any(|row| row.contains("r2")), "{rows:#?}");
+    }
+
+    /// The agent list's state, time and tool calls are columns that line
+    /// up, for times up to 9h 59m and up to 999 tool calls.
+    #[test]
+    fn the_agent_list_s_figures_line_up() {
+        use crate::remote::WorkerState::{Queued, Running};
+        use crate::tui::app::tests::worker;
+        let mut app = app();
+        let workers = [
+            (Running, 720_000, 18),
+            (Running, 3_900_000, 104),
+            (Running, 45_000, 1),
+            (Queued, 0, 0),
+            (Running, 35_940_000, 999),
+        ];
+        for (n, (state, ran_ms, tool_calls)) in workers.into_iter().enumerate() {
+            let mut summary = worker(&format!("r{}", n + 1), state);
+            summary.ran_ms = ran_ms;
+            summary.tool_calls = tool_calls;
+            app.update(Update::Worker(summary), Activity::default);
+        }
+        let rows = screen(&mut app, 80, 40);
+        let list = &rows[rows.len() - 5..];
+        // The figures from the state's column on, which is as far left of
+        // the tool calls in every row.
+        let column = |row: &String| {
+            let calls = row[..row.find(" tool call").unwrap()].chars().count();
+            row.chars().skip(calls - 23).collect::<String>()
+        };
+        assert_eq!(
+            list.iter().map(column).collect::<Vec<_>>(),
+            [
+                "running  ·    12m ·  18 tool calls".to_string(),
+                "running  · 1h 05m · 104 tool calls".to_string(),
+                "running  ·    45s ·   1 tool call".to_string(),
+                format!("queued{}·   0 tool calls", " ".repeat(12)),
+                "running  · 9h 59m · 999 tool calls".to_string(),
+            ],
+            "{list:#?}"
+        );
+        let calls: Vec<usize> = list
+            .iter()
+            .map(|row| row[..row.find(" tool call").unwrap()].chars().count())
+            .collect();
+        assert!(calls.iter().all(|at| *at == calls[0]), "{list:#?}");
     }
 
     /// The quit popup over an 80-column screen: the background jobs, each
