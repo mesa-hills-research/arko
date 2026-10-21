@@ -416,6 +416,8 @@ pub(crate) struct Harness {
     pub(crate) shows_page_links: bool,
     /// The user was told that the workers' news waits for their message.
     pub(crate) news_hint_shown: bool,
+    /// The user was told that a monitor's alert waits for their message.
+    pub(crate) alert_hint_shown: bool,
     /// What the remote page shows: the workflows' events, and what Arko
     /// says of the turns.
     pub(crate) feed: remote::Feed,
@@ -3036,6 +3038,7 @@ impl Harness {
         self.exit_warned = false;
         self.jobs_shown.clear();
         self.news_hint_shown = false;
+        self.alert_hint_shown = false;
         // A session takes its first message's start as its name, as -p does.
         if let Prompt::User(text) = &prompt
             && self.settings.title.is_none()
@@ -3495,14 +3498,20 @@ impl Harness {
             return News::Done;
         }
         if !matches!(self.conversation, Conversation::Answered(_)) {
-            self.say(
-                Level::Info,
-                if alert.ends_soon {
-                    "  (a monitor is about to end, and its notice goes with your next message)"
-                } else {
-                    "  (a monitor alerted, and its alert goes with your next message)"
-                },
-            );
+            // A monitor alerts again each minute while its news comes: the
+            // user is told once until their next message.
+            if alert.ends_soon {
+                self.say(
+                    Level::Info,
+                    "  (a monitor is about to end, and its notice goes with your next message)",
+                );
+            } else if !self.alert_hint_shown {
+                self.alert_hint_shown = true;
+                self.say(
+                    Level::Info,
+                    "  (a monitor alerted, and its alert goes with your next message)",
+                );
+            }
             return News::Waiting;
         }
         // Other alerts go with it, and the job updates the task holds.
@@ -5061,6 +5070,7 @@ pub(crate) mod tests {
             jobs_listed: Vec::new(),
             quit_popup: None,
             news_hint_shown: false,
+            alert_hint_shown: false,
             feed,
             remote: None,
             remote_actions,

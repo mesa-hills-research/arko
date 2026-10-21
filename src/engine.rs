@@ -887,6 +887,7 @@ impl Engine {
             jobs_listed: Vec::new(),
             quit_popup: None,
             news_hint_shown: false,
+            alert_hint_shown: false,
             feed,
             remote: None,
             remote_actions,

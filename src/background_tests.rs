@@ -1480,6 +1480,121 @@ async fn an_alert_a_turn_took_starts_none_beside_a_job_the_user_stopped() {
     managers.shutdown().await;
 }
 
+/// While the user's stopped turn waits for their next message, a monitor's
+/// alerts start no turn. The transcript says once that they go with that
+/// message, which carries them.
+#[cfg(unix)]
+#[tokio::test]
+async fn alerts_while_the_turn_is_stopped_wait_for_the_next_message() {
+    let bodies: Bodies = Arc::default();
+    let asked = Arc::new(tokio::sync::Notify::new());
+    let server = ModelServer::start(Arc::new({
+        let bodies = bodies.clone();
+        let asked = asked.clone();
+        move |_, body: String| {
+            bodies.lock().unwrap().push(body.clone());
+            let asked = asked.clone();
+            Box::pin(async move {
+                if body.contains("What happened") {
+                    complete("m3", "It logs errors.")
+                } else if body.contains("call_m1") {
+                    asked.notify_one();
+                    std::future::pending::<String>().await
+                } else {
+                    tool_call(
+                        "m1",
+                        "monitor_start",
+                        serde_json::json!({
+                            "command": "while true; do echo 'ERROR tick'; sleep 0.3; done",
+                            "pattern": "ERROR"
+                        }),
+                    )
+                }
+            })
+        }
+    }))
+    .await;
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, sender) = harness(temp.path(), server.client(), true);
+    let managers = equip(&mut harness, &mut inputs, 0);
+    quick_monitors(&managers, Duration::from_secs(1));
+    let interrupt = tokio::spawn(async move {
+        asked.notified().await;
+        sender.send(Input::Interrupt).unwrap();
+        sender
+    });
+    let end = tokio::time::timeout(
+        Duration::from_secs(20),
+        harness.turn(Prompt::User("Watch the server.".into()), &mut inputs),
+    )
+    .await
+    .unwrap();
+    let _sender = interrupt.await.unwrap();
+    assert!(matches!(end, TurnEnd::Stopped));
+    let requests = bodies.lock().unwrap().len();
+    for _ in 0..2 {
+        let alert = next_alert(&mut inputs, Duration::from_secs(10)).await;
+        assert!(matches!(
+            harness.deliver_alert(alert, &mut inputs).await,
+            News::Waiting
+        ));
+    }
+    assert_eq!(bodies.lock().unwrap().len(), requests, "no turn started");
+    let hints = shown(&harness.feed)
+        .into_iter()
+        .filter(|(_, text, _)| text.contains("a monitor alerted, and its alert goes with your next message"))
+        .count();
+    assert_eq!(hints, 1);
+    harness
+        .turn(Prompt::User("What happened?".into()), &mut inputs)
+        .await;
+    assert_eq!(summary(&harness), "It logs errors.");
+    assert!(body_with(&bodies, "What happened").contains("ERROR tick"));
+    managers.shutdown().await;
+}
+
+/// A worker's monitor alerts while no runtime of the worker's is bound:
+/// that starts no turn of the main agent's.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_workers_alert_starts_no_turn() {
+    let bodies: Bodies = Arc::default();
+    let server = ModelServer::start(Arc::new({
+        let bodies = bodies.clone();
+        move |_, body: String| {
+            bodies.lock().unwrap().push(body);
+            Box::pin(async { complete("m1", "Hi.") })
+        }
+    }))
+    .await;
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
+    let managers = equip(&mut harness, &mut inputs, 0);
+    quick_monitors(&managers, Duration::from_secs(1));
+    harness
+        .turn(Prompt::User("Hello.".into()), &mut inputs)
+        .await;
+    let worker = uuid::Uuid::new_v4();
+    let workspace = temp.path().join("work");
+    managers
+        .jobs
+        .start_monitor(
+            &arko_agents::TaskContext::new(worker, WORKER, "", &workspace),
+            "echo 'ERROR boom'; sleep 60",
+            arko_agents::terminal::MonitorOptions::lines(Some("ERROR".into())),
+        )
+        .await
+        .unwrap();
+    let alert = next_alert(&mut inputs, Duration::from_secs(10)).await;
+    assert_eq!(alert.owner, worker);
+    assert!(matches!(
+        harness.deliver_alert(alert, &mut inputs).await,
+        News::Done
+    ));
+    assert_eq!(bodies.lock().unwrap().len(), 1, "no turn started");
+    managers.shutdown().await;
+}
+
 /// The main agent's run in `harness`'s conversation.
 fn harness_run(harness: &Harness) -> uuid::Uuid {
     match &harness.conversation {
