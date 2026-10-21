@@ -1889,6 +1889,156 @@ async fn a_message_to_a_finished_worker_continues_it_and_its_lead_hears_of_it() 
     crew.shutdown().await;
 }
 
+/// The user's message to r1, while r1 and r2 both run, sent each way a
+/// front end sends it: as the terminal's view of r1 does (a line), as an
+/// app does (a message) and as the web page does. Only r1's conversation
+/// gets it, as the user's, and the feed has it as r1's item alone. r2 never
+/// sees it. The lead gets a copy marked as one, with its next news.
+#[tokio::test]
+async fn the_users_message_to_a_worker_reaches_that_worker_only() {
+    const SENT: [&str; 3] = [
+        "Tabs, from the terminal.",
+        "Tabs, from an app.",
+        "Tabs, from the web page.",
+    ];
+    let temp = tempfile::tempdir().unwrap();
+    let bodies: Bodies = Arc::default();
+    let (go, gone) = tokio::sync::watch::channel(false);
+    let server = ModelServer::start(Arc::new({
+        let bodies = bodies.clone();
+        move |_, body: String| {
+            bodies.lock().unwrap().push(body.clone());
+            let mut gone = gone.clone();
+            Box::pin(async move {
+                // Each worker waits for the messages, then takes a step,
+                // then reports.
+                for (run, step, report) in [("r1", "w", "Indented."), ("r2", "v", "Tested.")] {
+                    if body.contains(&format!("You are agent run {run}")) {
+                        if body.contains(&format!("call_{step}1")) {
+                            return complete(&format!("{step}2"), report);
+                        }
+                        gone.wait_for(|go| *go).await.unwrap();
+                        return tool_call(
+                            &format!("{step}1"),
+                            SHELL_TOOL,
+                            serde_json::json!({"command": "echo hi"}),
+                        );
+                    }
+                }
+                if body.contains("Indented.") && body.contains("Tested.") {
+                    complete("m9", "All done.")
+                } else if body.contains("call_m2") {
+                    let n = body.matches("call_m3").count();
+                    tool_call(
+                        &format!("m3_{n}"),
+                        crew::WAIT_FOR_AGENTS,
+                        serde_json::json!({"timeout_seconds": 20}),
+                    )
+                } else if body.contains("call_m1") {
+                    tool_call(
+                        "m2",
+                        crew::START_AGENT,
+                        serde_json::json!({"agent": WORKER, "task": "Test it."}),
+                    )
+                } else {
+                    tool_call(
+                        "m1",
+                        crew::START_AGENT,
+                        serde_json::json!({"agent": WORKER, "task": "Indent it."}),
+                    )
+                }
+            })
+        }
+    }))
+    .await;
+    let (mut harness, mut inputs, sender) = harness(temp.path(), server.client(), true);
+    let _managers = equip(&mut harness, false);
+    let feed = harness.feed.clone();
+    let actions = harness.remote_actions.clone();
+    let typing = tokio::spawn({
+        let bodies = bodies.clone();
+        async move {
+            let started = |run: &str| {
+                let head = format!("You are agent run {run}");
+                bodies
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|body| body.contains(&head))
+            };
+            until(|| started("r1") && started("r2")).await;
+            let line = |text: &str| format!("/message r1 {text}");
+            sender.send(Input::Line(line(SENT[0]))).unwrap();
+            sender
+                .send(Input::Message(crate::ui::Message {
+                    text: line(SENT[1]),
+                    images: Vec::new(),
+                }))
+                .unwrap();
+            actions.send(Action::Message(line(SENT[2]))).unwrap();
+            until(|| to_r1(&feed).len() == SENT.len()).await;
+            go.send(true).unwrap();
+            sender
+        }
+    });
+    let end = tokio::time::timeout(
+        Duration::from_secs(40),
+        harness.turn(Prompt::User("Indent and test.".into()), &mut inputs),
+    )
+    .await
+    .unwrap();
+    let _sender = typing.await.unwrap();
+    assert!(matches!(end, TurnEnd::Answered));
+    assert_eq!(summary(&harness), "All done.");
+
+    let bodies = bodies.lock().unwrap().clone();
+    let of = |run: &str| -> Vec<&String> {
+        let head = format!("You are agent run {run}");
+        bodies.iter().filter(|body| body.contains(&head)).collect()
+    };
+    let r1 = of("r1");
+    let read = r1.last().unwrap();
+    for text in SENT {
+        assert!(
+            read.contains(&format!("The user sent you a message directly:\\n  {text}")),
+            "{read}"
+        );
+    }
+    for body in of("r2") {
+        assert!(!body.contains("Tabs, from"), "{body}");
+        assert!(!body.contains("The user sent"), "{body}");
+    }
+    // The main agent's conversation has each message once, in the copy of
+    // it that its news brings.
+    let lead = bodies
+        .iter()
+        .rfind(|body| !body.contains("You are agent run"))
+        .unwrap();
+    let copy = "The user sent r1 a message directly (a copy for you):";
+    for text in SENT {
+        assert_eq!(lead.matches(text).count(), 1, "{lead}");
+        let at = lead.find(text).unwrap();
+        let heading = lead[..at].rfind(copy).expect(lead);
+        assert!(at - heading - copy.len() <= "\\n\\n".len(), "{lead}");
+    }
+    // The feed has them as r1's, and the user's (in the order the
+    // session took them from its inputs).
+    let mut items: Vec<(String, remote::Kind, String)> = harness
+        .feed
+        .subscribe()
+        .0
+        .items
+        .into_iter()
+        .filter(|item| item.text.contains("Tabs, from"))
+        .map(|item| (item.agent, item.kind, item.text))
+        .collect();
+    items.sort_by(|a, b| a.2.cmp(&b.2));
+    let mut expected = SENT.map(|text| ("r1".to_string(), remote::Kind::User, text.to_string()));
+    expected.sort_by(|a, b| a.2.cmp(&b.2));
+    assert_eq!(items, expected);
+    harness.crew.as_ref().unwrap().shutdown().await;
+}
+
 /// `/handover-at workers` reaches a worker that is already running: it
 /// hands over at the new size from its next check, under its configured
 /// one. `/handover-at main` leaves the workers' size alone, and in a
