@@ -12,16 +12,13 @@ use arko_ai::{Content, Message, Role};
 use super::feed::{Delivery, Item, Kind, Source};
 use super::render;
 use crate::images::Images;
+use crate::openings::Opening;
 
 /// The messages read back at most (the feed keeps fewer items anyway).
 const MESSAGES: usize = 600;
 
 /// The message that kept the prompt cache warm, as Arko worded it before.
 const EARLIER_REFRESH_MESSAGE: &str = "(Arko: this message only keeps the prompt cache warm. Reply with \"Acknowledged\" and nothing else.)";
-
-/// What the restored transcript says where the workers' news started a
-/// turn.
-const NEWS_NOTICE: &str = "the workers' news went to the agent";
 
 /// The items of `messages` (a conversation of the main agent), numbered
 /// from 1 (a result's `call` names its call by that number), each with
@@ -219,9 +216,7 @@ fn items_from(
 /// Other context updates arrive during a turn and keep that turn's number.
 fn reopened(text: &str) -> bool {
     text.trim_start().starts_with("# Workflow context update")
-        && text.lines().any(|line| {
-            line.starts_with("Your run was stopped before it finished and has now been reopened:")
-        })
+        && text.lines().any(|line| line.starts_with(REOPENED))
 }
 
 /// Whether the agent's message at `index` ends its turn when it replies in
@@ -288,7 +283,8 @@ const OPERATOR_NOTE: &str = " from the operator (the person running this workflo
 /// context update. One it didn't read went with the next message, in a
 /// section of its own. A stopped run reopened with the user's message has
 /// that message after the reopening notice, in a context update, where the
-/// live transcript doesn't offer to edit it either.
+/// live transcript doesn't offer to edit it either. The news that went
+/// with it there (a monitor's alert, a job's update) isn't theirs.
 fn user_items(text: &str) -> Vec<(Item, bool)> {
     let Some(update) = context_update(text) else {
         return composed(text)
@@ -297,7 +293,11 @@ fn user_items(text: &str) -> Vec<(Item, bool)> {
             .collect();
     };
     let items = match reopened_with(update) {
-        Some(prompt) => composed(prompt),
+        Some((prompt, rest)) => {
+            let mut items = composed(prompt);
+            items.extend(operator_notes(rest).into_iter().map(note));
+            items
+        }
         None => operator_notes(update).into_iter().map(note).collect(),
     };
     items.into_iter().map(|item| (item, false)).collect()
@@ -316,13 +316,44 @@ fn context_update(text: &str) -> Option<&str> {
     update.split("\n\n# Reminder\n").next()
 }
 
-/// What follows the notice in the context update that reopens a stopped
-/// run: the message Arko composed for it (empty without one).
-fn reopened_with(update: &str) -> Option<&str> {
-    if !update.starts_with("Your run was stopped before it finished and has now been reopened:") {
-        return None;
-    }
-    Some(update.split_once("\n\n").map_or("", |(_, prompt)| prompt))
+/// How the notice that reopens a stopped run begins.
+const REOPENED: &str = "Your run was stopped before it finished and has now been reopened:";
+
+/// The message Arko composed for a stopped run it reopened (empty without
+/// one), which follows the notice in the context update, then the rest of
+/// the update. Other context can come before the notice (news that waited
+/// when the turn stopped) and after the message (news that came since).
+fn reopened_with(update: &str) -> Option<(&str, &str)> {
+    let start = if update.starts_with(REOPENED) {
+        0
+    } else {
+        update.find(&format!("\n\n{REOPENED}"))? + 2
+    };
+    let Some((_, after)) = update[start..].split_once("\n\n") else {
+        return Some(("", ""));
+    };
+    let end = std::iter::once(0)
+        .chain(after.match_indices("\n\n").map(|(at, _)| at + 2))
+        .find(|&at| is_news(&after[at..]));
+    Some(match end {
+        Some(end) => (after[..end].trim_end(), &after[end..]),
+        None => (after, ""),
+    })
+}
+
+/// Whether `text` begins with a note of the terminal's jobs or monitors,
+/// as their news reaches the agent: a monitor's alert or other news, a
+/// command's terminal update, a moved call's update.
+fn is_news(text: &str) -> bool {
+    let named = |start: &str| {
+        text.strip_prefix(start)
+            .and_then(|rest| rest.get(..36))
+            .is_some_and(|id| uuid::Uuid::parse_str(id).is_ok())
+    };
+    text.starts_with("Monitor alert. ")
+        || text.starts_with("Terminal update:\n")
+        || named("Monitor ")
+        || named("Job ")
 }
 
 /// The items of a message Arko composed: the notes in its section of what
@@ -401,8 +432,9 @@ fn note(text: String) -> Item {
 }
 
 /// What the user wrote, from a message of theirs: Arko's composed message
-/// keeps it under "# My message"; context updates and the workers' news
-/// aren't the user's words, nor is a handover's report.
+/// keeps it under "# My message"; context updates aren't the user's words,
+/// nor is a handover's report. A turn Arko started for news (the workers',
+/// a job's, a monitor's) shows the line the live transcript showed.
 fn user_item(text: &str) -> Option<Item> {
     let heading = arko_agents::handover::REPORT_HEADING;
     let text = text
@@ -422,14 +454,18 @@ fn user_item(text: &str) -> Option<Item> {
         item.delivery = Some(Delivery::Answer);
         return Some(item);
     }
-    if text.starts_with("Your workers sent you news") {
-        return Some(Item::new(Kind::Notice, NEWS_NOTICE).level(super::Level::Info));
-    }
     let mine = match text.split_once("# My message\n\n") {
         Some((_, mine)) => mine,
-        // Only Arko's own sections: no words of the user's.
-        None if text.starts_with("# ") => return None,
-        None => text,
+        None => {
+            if let Some(opening) = Opening::of(text) {
+                return Some(Item::new(Kind::Notice, opening.notice()).level(super::Level::Info));
+            }
+            // Only Arko's own sections: no words of the user's.
+            if text.starts_with("# ") {
+                return None;
+            }
+            text
+        }
     };
     let mut item = Item::new(Kind::User, mine.trim());
     item.source = Some(Source::Terminal);
@@ -702,6 +738,63 @@ mod tests {
             ]
         );
         assert_eq!(items.last().unwrap().turn, Some(4));
+    }
+
+    /// The turns Arko started for news show the lines the live transcript
+    /// showed, also after other sections and as worded before. The news
+    /// that went with a reopened run's message isn't the user's.
+    #[test]
+    fn arkos_turns_for_news_read_as_its_notices() {
+        let id = "b57d52ff-2c3e-4c4b-9a55-0d1f6a1e2b3c";
+        let alert = format!(
+            "Monitor alert. Job {id} (`while true; do echo ERROR tick; sleep 5; done`, lines that match `ERROR`) printed 2 matching lines since 22:47:55 UTC.\n  ERROR tick\n  ERROR tick\nIt ends in 22 min."
+        );
+        let reopened = "Your run was stopped before it finished and has now been reopened: continue your task where you were. Tool calls reported as cancelled or stopped did not finish; check their effects before repeating them.";
+        let messages = vec![
+            Message::new_user("Watch it."),
+            Message::new_assistant("Watching."),
+            Message::new_user(&Opening::Alert.text()),
+            Message::new_user(&format!("# Workflow context update\n\n{alert}")),
+            Message::new_assistant("It logs errors."),
+            Message::new_user(&format!(
+                "# Session capabilities\n\nNo images.\n\n{}",
+                Opening::EndsSoon.text()
+            )),
+            Message::new_assistant("Kept it."),
+            Message::new_user(&Opening::Job.text()),
+            Message::new_assistant("Built."),
+            Message::new_user(
+                "Your workers sent you news as your last turn ended: it follows. (Arko started this turn for it; the user hasn't written.)",
+            ),
+            Message::new_assistant("Noted."),
+            Message::new_user(&format!(
+                "# Workflow context update\n\n{reopened}\n\nhello\n\nthere\n\n{alert}\n\nTerminal update:\n{{}}"
+            )),
+            Message::new_assistant("Hi."),
+            Message::new_user(&format!(
+                "# Workflow context update\n\nJob {id} ended. It ran your search call, which moved to the background 1 min ago. Its result follows.\n\nfound\n\n{reopened}\n\n# My message\n\nAgain."
+            )),
+            Message::new_assistant("Again."),
+        ];
+        let shown: Vec<(Kind, String, Option<u64>)> = items(&messages, true, &Images::default())
+            .into_iter()
+            .filter(|item| matches!(item.kind, Kind::User | Kind::Notice))
+            .map(|item| (item.kind, item.text, item.turn))
+            .collect();
+        let notice =
+            |opening: Opening, turn| (Kind::Notice, opening.notice().to_string(), Some(turn));
+        assert_eq!(
+            shown,
+            [
+                (Kind::User, "Watch it.".to_string(), Some(1)),
+                notice(Opening::Alert, 2),
+                notice(Opening::EndsSoon, 3),
+                notice(Opening::Job, 4),
+                notice(Opening::News, 5),
+                (Kind::User, "hello\n\nthere".to_string(), Some(6)),
+                (Kind::User, "Again.".to_string(), Some(7)),
+            ]
+        );
     }
 
     /// An agent in Claude Code has its response's text saved as a message

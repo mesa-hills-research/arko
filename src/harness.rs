@@ -18,6 +18,7 @@ use tokio::sync::{mpsc, oneshot};
 use crate::agents::{MAIN, NO_LIMIT, WORKER};
 use crate::crew::Crew;
 use crate::inputs::{Alert, Asker, Event, Inputs, alert_waits, unread_notes, waits_with};
+use crate::openings::Opening;
 use crate::remote::{Action, Delivery, Level, REFRESH_MESSAGE, Source};
 use crate::session::{Mode, Session, Settings};
 use crate::shell::{Shell, ShellTool};
@@ -285,6 +286,20 @@ pub(crate) enum Prompt {
     Monitor { ends_soon: bool },
     /// A turn Arko stopped in the middle of goes on, without a message.
     Recover,
+}
+
+impl Prompt {
+    /// The opening of the turn's message, for a turn Arko starts while the
+    /// agent waits for the user.
+    fn opening(&self) -> Option<Opening> {
+        match self {
+            Prompt::News => Some(Opening::News),
+            Prompt::Jobs => Some(Opening::Job),
+            Prompt::Monitor { ends_soon: false } => Some(Opening::Alert),
+            Prompt::Monitor { ends_soon: true } => Some(Opening::EndsSoon),
+            Prompt::User(_) | Prompt::Unread | Prompt::Recover => None,
+        }
+    }
 }
 
 /// What became of the workers' news.
@@ -3049,12 +3064,7 @@ impl Harness {
         // A message after a stop goes to the stopped task, which resumes.
         let resumes = !matches!(prompt, Prompt::Recover)
             && matches!(&self.conversation, Conversation::Stopped(run) if run.restart != Restart::Recover);
-        let news_turn = matches!(prompt, Prompt::News);
-        let jobs_turn = matches!(prompt, Prompt::Jobs);
-        let monitor_turn = match prompt {
-            Prompt::Monitor { ends_soon } => Some(ends_soon),
-            _ => None,
-        };
+        let opening = prompt.opening();
         if matches!(prompt, Prompt::User(_)) {
             self.user_present();
         }
@@ -3093,25 +3103,8 @@ impl Harness {
             }
             .message(&report);
         }
-        if news_turn {
-            self.say(Level::Info, "  ⇠ the workers' news goes to the agent");
-        }
-        if jobs_turn {
-            self.say(
-                Level::Info,
-                "  ⇠ a background job finished, and its update goes to the agent",
-            );
-        }
-        match monitor_turn {
-            Some(false) => self.say(
-                Level::Info,
-                "  ⇠ a monitor alerted, and its alert goes to the agent",
-            ),
-            Some(true) => self.say(
-                Level::Info,
-                "  ⇠ a monitor is about to end, and the agent is asked whether to keep it",
-            ),
-            None => {}
+        if let Some(opening) = opening {
+            self.say(Level::Info, &format!("  {}", opening.notice()));
         }
         if resumes {
             self.say(
@@ -3867,11 +3860,7 @@ impl Harness {
     /// arko injects worker news from its mailbox when the run continues.
     /// Recovery keeps the existing prompt.
     pub(crate) fn compose(&mut self, prompt: Prompt) -> String {
-        let jobs = matches!(prompt, Prompt::Jobs);
-        let monitor = match prompt {
-            Prompt::Monitor { ends_soon } => Some(ends_soon),
-            _ => None,
-        };
+        let opening = prompt.opening();
         let message = match prompt {
             Prompt::Recover => return String::new(),
             Prompt::User(message) => Some(message),
@@ -3933,22 +3922,14 @@ impl Harness {
         if let Some(stopped) = self.interrupted_jobs() {
             parts.push(stopped);
         }
-        if jobs {
-            parts.push("A background job of yours finished after your last turn ended. Its update follows. (Arko started this turn for it. The user hasn't written.)".to_string());
-        }
-        match monitor {
-            Some(false) => parts.push("A monitor of yours alerted after your last turn ended. The alert follows. (Arko started this turn for it. The user hasn't written.)".to_string()),
-            Some(true) => parts.push("A monitor of yours is about to end. The notice follows. (Arko started this turn for it. The user hasn't written.)".to_string()),
-            None => {}
+        if let Some(opening) = opening {
+            parts.push(opening.text());
         }
         match message {
             Some(message) if parts.is_empty() => message,
             Some(message) => {
                 parts.push(format!("# My message\n\n{message}"));
                 parts.join("\n\n")
-            }
-            None if parts.is_empty() => {
-                "Your workers sent you news as your last turn ended: it follows. (Arko started this turn for it; the user hasn't written.)".to_string()
             }
             None => parts.join("\n\n"),
         }
@@ -5552,7 +5533,7 @@ pub(crate) mod tests {
             .find(|body| body.contains("There are 3 files.") && !body.contains("You are agent run"))
             .unwrap();
         assert!(
-            news.contains("Arko started this turn for it; the user hasn't written"),
+            news.contains(&crate::openings::Opening::News.text()),
             "{news}"
         );
         crew.shutdown().await;
