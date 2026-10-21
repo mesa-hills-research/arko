@@ -46,6 +46,7 @@ pub mod history;
 pub mod images;
 mod index;
 mod inputs;
+mod jobs;
 mod keys;
 pub mod logging;
 mod mcp;

@@ -394,6 +394,8 @@ impl Transcript {
                 self.changed(id);
                 self.entries.retain(|entry| entry.item.id != id);
             }
+            // A moved call's line follows its job through its changes.
+            Update::Job(_) => {}
         }
     }
 

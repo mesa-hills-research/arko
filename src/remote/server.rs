@@ -492,9 +492,10 @@ async fn session_open(
 }
 
 /// `GET /api/events`: the stream. It starts with `reset` (the history, the
-/// workers and the status), then sends `item` (a new item), `append` (more
-/// text for an item), `change` (an item, changed: a call's outcome),
-/// `worker` (a worker's summary) and `status` events. A stream that falls
+/// workers, the background jobs and the status), then sends `item` (a new
+/// item), `append` (more text for an item), `change` (an item, changed: a
+/// call's outcome), `worker` (a worker's summary), `job` (a background
+/// job's summary) and `status` events. A stream that falls
 /// behind starts over with a `reset`.
 async fn events(
     State(app): State<Arc<App>>,
@@ -545,6 +546,7 @@ impl Stream {
                 serde_json::json!({
                     "items": snapshot.items,
                     "workers": snapshot.workers,
+                    "jobs": snapshot.jobs,
                     "status": status,
                 })
                 .to_string(),
@@ -588,6 +590,11 @@ impl Stream {
                 Event::default()
                     .event("remove")
                     .data(serde_json::json!({ "id": id }).to_string()),
+            ),
+            Update::Job(summary) => self.pending.push_back(
+                Event::default()
+                    .event("job")
+                    .data(serde_json::to_string(&summary).unwrap_or_default()),
             ),
             // The page starts over from the history as it is now.
             Update::Truncate { .. } => self.reset(),
@@ -1214,6 +1221,28 @@ mod tests {
         assert_eq!(events[0].1["pending"], true);
         assert_eq!(events[1].1["id"], events[0].1["id"]);
         assert_eq!(events[2].1["text"], "Also the docs.");
+
+        // A background job's summary comes as `job`, and a page that
+        // connects later gets the jobs with the history.
+        let job = uuid::Uuid::new_v4();
+        feed.job_started(super::super::JobStart {
+            id: job,
+            agent: "main".into(),
+            tool_call: None,
+            kind: super::super::JobKind::Call,
+            label: "index_create".into(),
+            started_at: 0,
+        });
+        let events = read_until(&mut stream, &mut buffer, |name, _| name == "job").await;
+        let (_, summary) = events.last().unwrap();
+        assert_eq!(summary["id"], job.to_string());
+        assert_eq!(summary["kind"], "call");
+        assert_eq!(summary["state"], "running");
+        assert_eq!(summary["label"], "index_create");
+        let mut later = served.get("/api/events", Some(&cookie)).await;
+        let mut buffer = String::new();
+        let events = read_until(&mut later, &mut buffer, |name, _| name == "reset").await;
+        assert_eq!(events.last().unwrap().1["jobs"][0]["id"], job.to_string());
     }
 
     /// The page's Model row names the model the session runs now, not the

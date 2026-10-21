@@ -68,6 +68,7 @@ const WORKER_EVERY: Duration = Duration::from_millis(250);
 /// What an item is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum Kind {
     /// The user's message, note, answer or command.
     User,
@@ -108,6 +109,7 @@ pub enum Kind {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum Level {
     Info,
     Warn,
@@ -117,6 +119,7 @@ pub enum Level {
 /// Where the user's text was typed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum Source {
     Terminal,
     Web,
@@ -127,6 +130,7 @@ pub enum Source {
 /// What became of the user's text.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum Delivery {
     /// It started a turn.
     Turn,
@@ -152,6 +156,7 @@ pub const REFRESH_MESSAGE: &str = "(Arko sends this message only to keep the pro
 /// How a tool call is doing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum CallStatus {
     /// No result yet.
     Running,
@@ -234,6 +239,11 @@ pub struct Item {
     /// other items may have followed by the time the result came.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub call: Option<u64>,
+    /// The background job a `call` made, its ID: the call moved to the
+    /// background, or it started a job (`terminal_start`). Its
+    /// [`JobSummary`] says how the job is doing.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub job: Option<String>,
     /// A note of the user's that the main agent hasn't read yet. Clients
     /// show it muted, after the other items of its conversation, because
     /// the agent's output goes on above it. Once the agent reads it, the
@@ -268,6 +278,7 @@ impl Item {
             worker: None,
             from: None,
             call: None,
+            job: None,
             pending: false,
         }
     }
@@ -359,6 +370,7 @@ pub struct Activity {
 /// Where a worker is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum WorkerState {
     /// Waiting for a place (the most workers run).
     Queued,
@@ -444,8 +456,81 @@ pub enum WorkerChange<'a> {
     },
 }
 
+/// What a background job runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum JobKind {
+    /// A command: a shell command that moved to the background, or one
+    /// `terminal_start` started.
+    Command,
+    /// A tool call that moved to the background (an MCP tool's,
+    /// `index_create`).
+    Call,
+}
+
+/// How a background job is doing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum JobState {
+    Running,
+    /// It ended well.
+    Finished,
+    /// It failed, or ran out of time.
+    Failed,
+    /// The agent or the user stopped it, or Arko's exit did.
+    Stopped,
+    /// Arko stopped before it ended (a crash, or `arko -c` after one).
+    Interrupted,
+}
+
+impl JobState {
+    pub fn is_running(self) -> bool {
+        self == Self::Running
+    }
+}
+
+/// A background job, as a line such as `index_create · 3 min · running`.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[non_exhaustive]
+pub struct JobSummary {
+    /// Its ID, as the terminal tools name it.
+    pub id: String,
+    /// Whose it is, [`MAIN_AGENT`] or a worker's ID.
+    pub agent: String,
+    /// The call item that made it, while the transcript has it.
+    pub call: Option<u64>,
+    pub kind: JobKind,
+    /// The command, or the tool of a moved call.
+    pub label: String,
+    pub state: JobState,
+    /// When it started (Unix milliseconds). A moved call's job starts as it
+    /// moves.
+    pub started_at: i64,
+    pub ended_at: Option<i64>,
+    /// How it ended, in a few words, once it did ("exit 1", "timed out").
+    pub outcome: Option<String>,
+}
+
+/// A background job that started, for [`Feed::job_started`].
+#[derive(Debug, Clone)]
+pub(crate) struct JobStart {
+    pub id: Uuid,
+    pub agent: String,
+    /// The call that made it, if one did.
+    pub tool_call: Option<Uuid>,
+    pub kind: JobKind,
+    pub label: String,
+    pub started_at: i64,
+}
+
+/// The ended jobs kept for the clients, besides those running.
+const ENDED_JOBS: usize = 100;
+
 /// What changed, for the clients connected.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum Update {
     /// A new item.
     Item(Item),
@@ -463,6 +548,8 @@ pub enum Update {
     /// The item `id` is gone. It held text a model's response streamed
     /// before it failed, which its retry streams again.
     Remove { id: u64 },
+    /// A background job's summary, whole: one started, changed or ended.
+    Job(JobSummary),
 }
 
 /// A batched client's updates, from [`Feed::subscribe_batched`].
@@ -506,6 +593,7 @@ pub fn merged(updates: Vec<Update>) -> Vec<Update> {
     let mut whole: HashMap<u64, usize> = HashMap::new();
     let mut appended: HashMap<u64, usize> = HashMap::new();
     let mut workers: HashMap<String, usize> = HashMap::new();
+    let mut jobs: HashMap<String, usize> = HashMap::new();
     let mut activity: Option<usize> = None;
     for update in updates {
         match update {
@@ -550,6 +638,12 @@ pub fn merged(updates: Vec<Update>) -> Vec<Update> {
                     out[at] = None;
                 }
                 out.push(Some(Update::Worker(summary)));
+            }
+            Update::Job(summary) => {
+                if let Some(at) = jobs.insert(summary.id.clone(), out.len()) {
+                    out[at] = None;
+                }
+                out.push(Some(Update::Job(summary)));
             }
             Update::Activity => {
                 if let Some(at) = activity.replace(out.len()) {
@@ -607,6 +701,9 @@ pub struct Snapshot {
     pub items: Vec<Item>,
     /// The workers, in the order they started.
     pub workers: Vec<WorkerSummary>,
+    /// The background jobs running, and the latest that ended, in the order
+    /// they started.
+    pub jobs: Vec<JobSummary>,
     pub activity: Activity,
 }
 
@@ -774,6 +871,8 @@ struct State {
     /// The latest notes the main agent read before their items came, by
     /// number, since an item may come just after.
     early_reads: VecDeque<u64>,
+    /// The background jobs, in the order they started.
+    jobs: Vec<JobSummary>,
 }
 
 impl State {
@@ -865,6 +964,7 @@ impl Feed {
         Snapshot {
             items,
             workers: state.workers.iter().map(|w| w.summary.clone()).collect(),
+            jobs: state.jobs.clone(),
             activity: state.activity.clone(),
         }
     }
@@ -975,8 +1075,22 @@ impl Feed {
         if let Some(item) = lane.find(call.item) {
             item.status = Some(outcome.status);
             item.outcome = outcome.text;
+            if let Some(job) = outcome.job {
+                item.job = Some(job.to_string());
+            }
             let item = item.clone();
             self.send(Update::Change(item));
+        }
+        if let Some(job) = outcome.job
+            && let Some(summary) = state
+                .jobs
+                .iter_mut()
+                .find(|summary| summary.id == job.to_string())
+            && summary.call.is_none()
+        {
+            summary.call = Some(call.item);
+            let summary = summary.clone();
+            self.send(Update::Job(summary));
         }
         if let Some(mut block) = outcome.block {
             block.call = Some(call.item);
@@ -1041,6 +1155,7 @@ impl Feed {
                     text: Some("interrupted".into()),
                     block: None,
                     output: None,
+                    job: None,
                 },
             );
         }
@@ -1400,6 +1515,116 @@ impl Feed {
             .rev()
             .find(|item| item.kind == Kind::User && item.delivery == Some(Delivery::Turn));
         item.cloned()
+    }
+
+    /// The feed item of the call `call` that is still running, for a client
+    /// that offers to move it to the background.
+    pub(crate) fn running_call_item(&self, call: Uuid) -> Option<u64> {
+        self.lock().calls.get(&call).map(|call| call.item)
+    }
+
+    /// A background job started: its summary goes out, and the call that
+    /// made it says it did. A job the feed knows already is left alone.
+    pub(crate) fn job_started(&self, start: JobStart) {
+        let mut state = self.lock();
+        let id = start.id.to_string();
+        if state.jobs.iter().any(|job| job.id == id) {
+            return;
+        }
+        let item = start.tool_call.and_then(|call| {
+            state
+                .call_items
+                .iter()
+                .find(|(id, ..)| *id == call)
+                .map(|(_, agent, item)| (agent.clone(), *item))
+        });
+        let mut call = None;
+        if let Some((agent, item)) = item {
+            let (lane, _) = state.lane(&agent);
+            if let Some(found) = lane.find(item) {
+                call = Some(item);
+                if found.job.as_deref() != Some(&id) {
+                    found.job = Some(id.clone());
+                    let found = found.clone();
+                    self.send(Update::Change(found));
+                }
+            }
+        }
+        let summary = JobSummary {
+            id,
+            agent: start.agent,
+            call,
+            kind: start.kind,
+            label: start.label,
+            state: JobState::Running,
+            started_at: start.started_at,
+            ended_at: None,
+            outcome: None,
+        };
+        state.jobs.push(summary.clone());
+        let ended = state
+            .jobs
+            .iter()
+            .filter(|job| !job.state.is_running())
+            .count();
+        if ended > ENDED_JOBS
+            && let Some(oldest) = state.jobs.iter().position(|job| !job.state.is_running())
+        {
+            state.jobs.remove(oldest);
+        }
+        self.send(Update::Job(summary));
+    }
+
+    /// The background job `id` ended as `state` (with `outcome`, a few
+    /// words): its summary goes out, and the call that made it, when it
+    /// moved there, says how it ended.
+    pub(crate) fn job_ended(&self, id: Uuid, ended: JobState, outcome: Option<String>) {
+        let mut state = self.lock();
+        let id = id.to_string();
+        let now = now_ms();
+        let Some(job) = state.jobs.iter_mut().find(|job| job.id == id) else {
+            return;
+        };
+        if !job.state.is_running() {
+            return;
+        }
+        job.state = ended;
+        job.ended_at = Some(now);
+        job.outcome = outcome;
+        let job = job.clone();
+        self.send(Update::Job(job.clone()));
+        // A moved call's line says how it ended. A command terminal_start
+        // started has its own result already.
+        let Some(item) = job.call else {
+            return;
+        };
+        let (lane, _) = state.lane(&job.agent);
+        let Some(call) = lane.find(item) else {
+            return;
+        };
+        if !call
+            .outcome
+            .as_deref()
+            .is_some_and(|outcome| outcome.starts_with(render::MOVED_OUTCOME))
+        {
+            return;
+        }
+        let ran = render::duration_words(Duration::from_millis(
+            u64::try_from(now - job.started_at).unwrap_or(0),
+        ));
+        let (status, text) = match ended {
+            JobState::Finished => (
+                CallStatus::Ok,
+                format!("finished in the background · {ran}"),
+            ),
+            JobState::Failed => (CallStatus::Failed, "failed in the background".to_string()),
+            JobState::Interrupted => (CallStatus::Failed, "interrupted".to_string()),
+            _ => (CallStatus::Failed, "stopped".to_string()),
+        };
+        call.status = Some(status);
+        call.outcome = Some(text);
+        let call = call.clone();
+        self.send(Update::Change(call));
     }
 
     /// The call `call`'s tool returned `images`: its item shows them (the
@@ -2000,6 +2225,206 @@ mod tests {
     }
     use crate::shell::SHELL_TOOL_NAME;
     use arko_agents::builtins::EDIT_FILE_TOOL_NAME;
+
+    /// A call of a tool that isn't the shell, as the main agent makes it.
+    fn lookup(call: Uuid) -> AgentEvent {
+        AgentEvent::ToolCallFormatted {
+            tool_call_id: call,
+            tool_name: "mcp__search__lookup".into(),
+            parameters: Default::default(),
+        }
+    }
+
+    fn moved(job: Uuid) -> String {
+        format!(
+            "in the background as job {job}, 95.3 s\nThe user moved this call to the background."
+        )
+    }
+
+    /// The call item of `call` in `feed`.
+    fn call_item(feed: &Feed, name: &str) -> Item {
+        feed.subscribe()
+            .0
+            .items
+            .into_iter()
+            .find(|item| item.kind == Kind::Call && item.text.contains(name))
+            .unwrap()
+    }
+
+    /// Any tool's call that moved to the background says so on its line and
+    /// names its job. The job's summary follows it, and when the job ends,
+    /// the call's line says how.
+    #[test]
+    fn a_moved_calls_line_follows_its_job() {
+        let feed = Feed::new("main");
+        let (call, job) = (Uuid::new_v4(), Uuid::new_v4());
+        feed.event(&event("main", lookup(call)), None);
+        feed.event(
+            &event(
+                "main",
+                AgentEvent::ToolResult {
+                    tool_call_id: call,
+                    tool_name: "mcp__search__lookup".into(),
+                    output: moved(job),
+                },
+            ),
+            None,
+        );
+        let item = call_item(&feed, "lookup");
+        assert_eq!(item.status, Some(CallStatus::Ok));
+        assert_eq!(
+            item.outcome.as_deref(),
+            Some(format!("in the background · job {}", &job.to_string()[..8]).as_str())
+        );
+        assert_eq!(item.job, Some(job.to_string()));
+
+        let (_, mut receiver) = feed.subscribe();
+        feed.job_started(JobStart {
+            id: job,
+            agent: MAIN_AGENT.into(),
+            tool_call: Some(call),
+            kind: JobKind::Call,
+            label: "mcp__search__lookup".into(),
+            started_at: now_ms() - 240_000,
+        });
+        // Twice: a job the feed has is left alone.
+        feed.job_started(JobStart {
+            id: job,
+            agent: MAIN_AGENT.into(),
+            tool_call: Some(call),
+            kind: JobKind::Call,
+            label: "again".into(),
+            started_at: now_ms(),
+        });
+        let jobs = feed.subscribe().0.jobs;
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(
+            (
+                jobs[0].call,
+                jobs[0].kind,
+                jobs[0].state,
+                jobs[0].label.as_str()
+            ),
+            (
+                Some(item.id),
+                JobKind::Call,
+                JobState::Running,
+                "mcp__search__lookup"
+            )
+        );
+        feed.job_ended(job, JobState::Finished, None);
+        let item = call_item(&feed, "lookup");
+        assert_eq!(
+            item.outcome.as_deref(),
+            Some("finished in the background · 4 min")
+        );
+        let ended = &feed.subscribe().0.jobs[0];
+        assert_eq!(ended.state, JobState::Finished);
+        assert!(ended.ended_at.is_some());
+        let updates = updates(&mut receiver);
+        assert!(
+            matches!(updates.as_slice(), [Update::Job(started), Update::Job(finished), Update::Change(changed)]
+                if started.state == JobState::Running && finished.state == JobState::Finished && changed.id == item.id),
+            "{updates:?}"
+        );
+        // An end comes once.
+        feed.job_ended(job, JobState::Failed, None);
+        assert_eq!(feed.subscribe().0.jobs[0].state, JobState::Finished);
+    }
+
+    /// A job that started before its call's result came still finds its
+    /// call, and one that fails or is stopped says so on the call's line.
+    #[test]
+    fn a_jobs_call_is_found_in_either_order_and_its_end_is_shown() {
+        for (ended, outcome, status) in [
+            (
+                JobState::Failed,
+                "failed in the background",
+                CallStatus::Failed,
+            ),
+            (JobState::Stopped, "stopped", CallStatus::Failed),
+        ] {
+            let feed = Feed::new("main");
+            let (call, job) = (Uuid::new_v4(), Uuid::new_v4());
+            feed.event(&event("main", lookup(call)), None);
+            feed.job_started(JobStart {
+                id: job,
+                agent: MAIN_AGENT.into(),
+                tool_call: Some(call),
+                kind: JobKind::Call,
+                label: "mcp__search__lookup".into(),
+                started_at: now_ms(),
+            });
+            feed.event(
+                &event(
+                    "main",
+                    AgentEvent::ToolResult {
+                        tool_call_id: call,
+                        tool_name: "mcp__search__lookup".into(),
+                        output: moved(job),
+                    },
+                ),
+                None,
+            );
+            let item = call_item(&feed, "lookup");
+            assert_eq!(feed.subscribe().0.jobs[0].call, Some(item.id));
+            feed.job_ended(job, ended, Some("stopped by the user".into()));
+            let item = call_item(&feed, "lookup");
+            assert_eq!(
+                (item.outcome.as_deref(), item.status),
+                (Some(outcome), Some(status))
+            );
+            assert_eq!(
+                feed.subscribe().0.jobs[0].outcome.as_deref(),
+                Some("stopped by the user")
+            );
+        }
+    }
+
+    /// A job a command started (terminal_start) keeps its call's own line,
+    /// and the call names it. A batch keeps a job's last summary.
+    #[test]
+    fn a_started_commands_job_names_its_call_and_batches_keep_the_last_summary() {
+        let feed = Feed::new("main");
+        let (call, job) = (Uuid::new_v4(), Uuid::new_v4());
+        feed.event(&event("main", shell(call, "npm run dev")), None);
+        feed.event(
+            &event("main", result(call, "exit code 0, 0.1 s\nstarted")),
+            None,
+        );
+        let before = call_item(&feed, "npm run dev");
+        feed.job_started(JobStart {
+            id: job,
+            agent: MAIN_AGENT.into(),
+            tool_call: Some(call),
+            kind: JobKind::Command,
+            label: "npm run dev".into(),
+            started_at: now_ms(),
+        });
+        feed.job_ended(job, JobState::Failed, Some("exit 1".into()));
+        let after = call_item(&feed, "npm run dev");
+        assert_eq!(after.job, Some(job.to_string()));
+        assert_eq!(after.outcome, before.outcome);
+        let summary = |state| JobSummary {
+            id: job.to_string(),
+            agent: MAIN_AGENT.into(),
+            call: None,
+            kind: JobKind::Command,
+            label: "npm run dev".into(),
+            state,
+            started_at: 0,
+            ended_at: None,
+            outcome: None,
+        };
+        let merged = merged(vec![
+            Update::Job(summary(JobState::Running)),
+            Update::Activity,
+            Update::Job(summary(JobState::Finished)),
+        ]);
+        assert!(
+            matches!(merged.as_slice(), [Update::Activity, Update::Job(last)] if last.state == JobState::Finished)
+        );
+    }
 
     fn event(agent: &str, event: AgentEvent) -> WorkflowEvent {
         WorkflowEvent {

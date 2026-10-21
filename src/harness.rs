@@ -4432,6 +4432,7 @@ pub(crate) mod tests {
             extra_rules: Default::default(),
             project: Default::default(),
             background: background.clone(),
+            feed: Some(feed.clone()),
             page: Mutex::default(),
             changed: Default::default(),
             title: Default::default(),

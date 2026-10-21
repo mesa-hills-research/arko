@@ -44,6 +44,9 @@ pub(crate) struct Gauges {
     pub(crate) project: Mutex<(project::Files, bool)>,
     /// When the shell's commands move to the background, and those running.
     pub(crate) background: Arc<shell::Background>,
+    /// What the clients show of the session, whose items name the calls
+    /// that can move.
+    pub(crate) feed: Option<remote::Feed>,
     /// The web page, while it is served.
     pub(crate) page: Mutex<Option<remote::Page>>,
     /// The session's name, as the harness last published it.
@@ -157,6 +160,21 @@ impl Gauges {
                 });
             }
         })
+    }
+
+    /// The agent whose run `run` is, as the clients name it:
+    /// [`remote::MAIN_AGENT`], or a worker's ID.
+    pub(crate) fn agent_of(&self, run: uuid::Uuid) -> String {
+        lock(&self.workflow)
+            .as_ref()
+            .and_then(|workflow| {
+                workflow
+                    .subagents()
+                    .into_iter()
+                    .find(|worker| worker.run_id == run)
+                    .map(|worker| worker.handle)
+            })
+            .unwrap_or_else(|| remote::MAIN_AGENT.to_string())
     }
 
     /// The agents running a call that can move to the background (a shell
@@ -305,6 +323,10 @@ impl remote::Meter for Gauges {
                 background_after: self.background.after().map_or(0, |after| after.as_secs()),
             },
             commands: self.commands_running(),
+            movable: match (&self.feed, self.background.manager()) {
+                (Some(feed), Some(jobs)) => crate::jobs::movable(feed, &jobs),
+                _ => Vec::new(),
+            },
             jobs: self.background.jobs(),
             models: {
                 let mut models = lock(&self.models).clone();

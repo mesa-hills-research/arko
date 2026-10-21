@@ -673,6 +673,11 @@ impl EventPrinter {
             } if main => {
                 if self.commands.remove(&tool_call_id).is_some() {
                     self.shell_result(&output);
+                } else if output.starts_with(crate::shell::IN_THE_BACKGROUND) {
+                    // Another tool's call that moved: its job.
+                    let first = output.lines().next().unwrap_or_default();
+                    self.output
+                        .echo(&self.output.dim(&format!("  ⎿ {}", cut(first, 160))));
                 } else if crew::LEAD_TOOL_NAMES.contains(&tool_name.as_str())
                     && tool_name != crew::START_AGENT
                 {

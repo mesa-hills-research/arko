@@ -499,13 +499,22 @@ async fn ctrl_b_moves_another_tools_call_and_its_result_wakes_the_agent() {
     let (mut harness, mut inputs, sender) = harness(temp.path(), server.client(), true);
     let lookup = Arc::new(SlowLookup::default());
     let managers = equip_with(&mut harness, &mut inputs, lookup.clone());
+    let follower = crate::jobs::follow(
+        harness.feed.clone(),
+        Arc::downgrade(&managers.jobs),
+        |_| remote::MAIN_AGENT.to_string(),
+    );
     let background = harness.background.clone();
+    let (feed, jobs) = (harness.feed.clone(), managers.jobs.clone());
     let pressing = tokio::spawn(async move {
         until(|| !background.movable().is_empty()).await;
+        // A client offers to move the call by its item.
+        let movable = crate::jobs::movable(&feed, &jobs);
+        assert_eq!(movable.len(), 1);
         sender
             .send(Input::Background(remote::MAIN_AGENT.into()))
             .unwrap();
-        sender
+        (sender, movable[0])
     });
     let end = tokio::time::timeout(
         Duration::from_secs(20),
@@ -514,7 +523,7 @@ async fn ctrl_b_moves_another_tools_call_and_its_result_wakes_the_agent() {
     .await
     .unwrap();
     // (Kept: a closed input quits.)
-    let _sender = pressing.await.unwrap();
+    let (_sender, item) = pressing.await.unwrap();
     assert!(matches!(end, TurnEnd::Answered));
     assert_eq!(summary(&harness), "The lookup goes on in the background.");
     let moved = body_with(&bodies, "call_m1");
@@ -529,6 +538,33 @@ async fn ctrl_b_moves_another_tools_call_and_its_result_wakes_the_agent() {
         arko_agents::terminal::JobKind::Call {
             tool_name: "slow_lookup".into()
         }
+    );
+
+    // The call's line names its job, which the feed follows.
+    let job = jobs[0].job_id.to_string();
+    until(|| {
+        harness
+            .feed
+            .subscribe()
+            .0
+            .jobs
+            .iter()
+            .any(|summary| summary.id == job && summary.call == Some(item))
+    })
+    .await;
+    let call = |feed: &remote::Feed| {
+        feed.subscribe()
+            .0
+            .items
+            .into_iter()
+            .find(|found| found.id == item)
+            .unwrap()
+    };
+    assert_eq!(call(&harness.feed).job.as_deref(), Some(job.as_str()));
+    assert!(
+        call(&harness.feed)
+            .outcome
+            .is_some_and(|outcome| outcome.starts_with("in the background · job ")),
     );
 
     lookup.release.notify_one();
@@ -547,5 +583,13 @@ async fn ctrl_b_moves_another_tools_call_and_its_result_wakes_the_agent() {
     assert_eq!(summary(&harness), "The lookup found 3 matches.");
     let woken = body_with(&bodies, "It ran your slow_lookup call");
     assert!(woken.contains("Found 3 matches."), "{woken}");
+    // Its line says it finished in the background.
+    until(|| {
+        call(&harness.feed)
+            .outcome
+            .is_some_and(|outcome| outcome.starts_with("finished in the background · "))
+    })
+    .await;
+    follower.abort();
     managers.shutdown().await;
 }

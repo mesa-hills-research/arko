@@ -377,6 +377,8 @@ pub struct Engine {
     _alone: Option<Alone>,
     /// Sends the status as it changes.
     publisher: tokio::task::JoinHandle<()>,
+    /// Keeps the feed's background jobs in step with the terminal's.
+    jobs: tokio::task::JoinHandle<()>,
     harness: Harness,
     inputs: Inputs,
     managers: Managers,
@@ -774,6 +776,7 @@ impl Engine {
             extra_rules: Default::default(),
             project: Default::default(),
             background: managers.background.clone(),
+            feed: Some(feed.clone()),
             page: Mutex::default(),
             changed: Default::default(),
             title: Default::default(),
@@ -934,10 +937,12 @@ impl Engine {
             show_thinking: harness.settings.show_thinking,
         };
         let publisher = harness.gauges.publish(&harness.feed);
+        let jobs = crate::jobs::follower(&harness.gauges, &harness.feed);
         let engine = Engine {
             _lock: lock,
             _alone: alone,
             publisher,
+            jobs,
             harness,
             inputs,
             managers,
@@ -1020,6 +1025,7 @@ impl Engine {
     /// terminal's jobs. The session is saved as it goes.
     pub async fn shutdown(self) {
         self.publisher.abort();
+        self.jobs.abort();
         let mut harness = self.harness;
         let output = harness.output.clone();
         if harness.remote.is_some() {

@@ -36,9 +36,11 @@ use tokio::sync::mpsc;
 // The page's server and the terminal's full-screen view are both clients
 // of the feed.
 #[allow(unused_imports)]
+pub(crate) use feed::JobStart;
 pub use feed::{
-    Activity, Batches, CallStatus, Delivery, Feed, Item, Kind, Level, MAIN_AGENT, Question,
-    REFRESH_MESSAGE, Snapshot, Source, Update, WorkerChange, WorkerState, WorkerSummary,
+    Activity, Batches, CallStatus, Delivery, Feed, Item, JobKind, JobState, JobSummary, Kind,
+    Level, MAIN_AGENT, Question, REFRESH_MESSAGE, Snapshot, Source, Update, WorkerChange,
+    WorkerState, WorkerSummary,
 };
 pub(crate) use history::all_items;
 pub use history::items as history;
@@ -120,6 +122,10 @@ pub struct Reading {
     /// [`MAIN_AGENT`] or a worker's ID.
     #[serde(skip)]
     pub commands: Vec<String>,
+    /// The feed items of the calls running now that can move to the
+    /// background, for a client that offers to move one
+    /// (`Request::MoveCall`, the page's Move to background).
+    pub movable: Vec<u64>,
     /// The jobs running in the background, which stop when Arko exits. The
     /// full-screen view's quit popup shows them. (The page can't quit Arko.)
     #[serde(skip)]
