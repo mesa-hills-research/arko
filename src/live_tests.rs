@@ -1993,3 +1993,34 @@ async fn the_workers_size_reaches_a_running_worker() {
     );
     assert_eq!(alone.handover.workers_at(), None);
 }
+
+/// A response whose stream Claude Code abandons, then the same response
+/// again without streaming, with its call. The feed keeps the replacement's
+/// text beside the call.
+#[cfg(unix)]
+#[tokio::test]
+async fn text_of_a_response_asked_again_without_streaming_stays_in_the_feed() {
+    let temp = tempfile::tempdir().unwrap();
+    let script = serde_json::json!([[
+        {"stream_abandoned": "Let me che"},
+        {"text": "Let me check the notes.", "unstreamed": true},
+        {"tool": "mcp__arko__shell", "input": {"command": "echo hi"}, "continues": true, "unstreamed": true},
+        {"text": "It printed hi.", "stream": true},
+        {"tool": "mcp__arko__complete_task", "input": {"summary": "Done."}, "continues": true},
+    ]]);
+    let (mut harness, mut inputs, _sender, managers, _fake) = in_claude_code(temp.path(), script);
+    let end = tokio::time::timeout(
+        Duration::from_secs(60),
+        harness.turn(Prompt::User("Check the notes.".into()), &mut inputs),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(end, TurnEnd::Answered));
+    harness.flush_printer().await;
+    assert_eq!(
+        texts(&harness.feed, "text"),
+        ["Let me check the notes.", "It printed hi."]
+    );
+    harness.crew.as_ref().unwrap().shutdown().await;
+    managers.shutdown().await;
+}
