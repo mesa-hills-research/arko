@@ -9,12 +9,19 @@
 //! and when it goes arboard hands the text to a clipboard manager where
 //! there is one.
 //!
+//! On X11 and Wayland the text goes to the primary selection too, as when
+//! text is selected in other programs, so a middle click pastes it. Some
+//! programs that share the clipboard read the primary selection. A
+//! virtual machine's tools (open-vm-tools) send the host whichever of the
+//! two says it changed last, and the primary selection when the clipboard
+//! doesn't say, which XWayland's copy of a Wayland clipboard and arboard's
+//! never do. With the text in both, the host gets it either way.
+//!
 //! On a Wayland compositor without data-control, such as GNOME's, arboard
-//! falls back to XWayland's clipboard, which some programs that share the
-//! clipboard never see (a virtual machine's tools, for one). There wl-copy
-//! takes the text first when it is installed, so a Wayland program owns
-//! the copy. Where arboard can't reach a clipboard either, wl-copy, xclip
-//! or xsel take the text if one is installed.
+//! falls back to XWayland's clipboard. There wl-copy takes the text first
+//! when it is installed, so a Wayland program owns the copy. Where arboard
+//! can't reach a clipboard either, wl-copy, xclip or xsel take the text if
+//! one is installed.
 
 use std::sync::Mutex;
 
@@ -40,7 +47,7 @@ pub fn copy(text: &str) -> Copied {
         return Copied::Terminal;
     }
     #[cfg(all(unix, not(target_os = "macos")))]
-    if wl_copy_first(set("WAYLAND_DISPLAY"), data_control) && run(text, "wl-copy", &[]) {
+    if wl_copy_first(set("WAYLAND_DISPLAY"), data_control) && copy_with(text, &WL_COPY) {
         return Copied::System;
     }
     let error = match system(text) {
@@ -50,13 +57,17 @@ pub fn copy(text: &str) -> Copied {
     log::info!("the system clipboard didn't take a copy: {error}");
     #[cfg(all(unix, not(target_os = "macos")))]
     {
-        if tools(text) {
+        let wayland = set("WAYLAND_DISPLAY");
+        if programs(wayland)
+            .iter()
+            .any(|program| copy_with(text, program))
+        {
             return Copied::System;
         }
-        if !set("DISPLAY") && !set("WAYLAND_DISPLAY") {
+        if !set("DISPLAY") && !wayland {
             return Copied::Terminal;
         }
-        if set("WAYLAND_DISPLAY") {
+        if wayland {
             return Copied::Failed(
                 "Couldn't copy, because this desktop's clipboard needs wl-clipboard (install it)"
                     .into(),
@@ -78,9 +89,12 @@ fn system(text: &str) -> Result<(), String> {
     if clipboard.is_none() {
         *clipboard = Some(arboard::Clipboard::new().map_err(|error| error.to_string())?);
     }
-    let result = clipboard
-        .as_mut()
-        .map(|clipboard| clipboard.set_text(text.to_string()));
+    let result = clipboard.as_mut().map(|clipboard| {
+        clipboard.set_text(text.to_string())?;
+        #[cfg(all(unix, not(target_os = "macos")))]
+        primary(clipboard, text);
+        Ok::<(), arboard::Error>(())
+    });
     match result {
         Some(Ok(())) => Ok(()),
         Some(Err(error)) => {
@@ -89,6 +103,20 @@ fn system(text: &str) -> Result<(), String> {
             Err(error.to_string())
         }
         None => Err("no clipboard".into()),
+    }
+}
+
+/// Puts `text` in the primary selection too, where the desktop has one.
+/// The copy counts as made without it.
+#[cfg(all(unix, not(target_os = "macos")))]
+fn primary(clipboard: &mut arboard::Clipboard, text: &str) {
+    use arboard::{LinuxClipboardKind, SetExtLinux};
+    let set = clipboard
+        .set()
+        .clipboard(LinuxClipboardKind::Primary)
+        .text(text.to_string());
+    if let Err(error) = set {
+        log::info!("the primary selection didn't take a copy: {error}");
     }
 }
 
@@ -115,20 +143,61 @@ fn data_control() -> bool {
     })
 }
 
-/// Copies through an installed clipboard program.
+/// A clipboard program, with its arguments for the clipboard and for the
+/// primary selection.
 #[cfg(all(unix, not(target_os = "macos")))]
-fn tools(text: &str) -> bool {
-    let programs: &[(&str, &[&str])] = if std::env::var_os("WAYLAND_DISPLAY").is_some() {
-        &[("wl-copy", &[]), ("xclip", &["-selection", "clipboard"])]
+struct Program<'a> {
+    name: &'a str,
+    clipboard: &'a [&'a str],
+    primary: &'a [&'a str],
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+const WL_COPY: Program<'static> = Program {
+    name: "wl-copy",
+    clipboard: &[],
+    primary: &["--primary"],
+};
+
+#[cfg(all(unix, not(target_os = "macos")))]
+const XCLIP: Program<'static> = Program {
+    name: "xclip",
+    clipboard: &["-selection", "clipboard"],
+    primary: &["-selection", "primary"],
+};
+
+#[cfg(all(unix, not(target_os = "macos")))]
+const XSEL: Program<'static> = Program {
+    name: "xsel",
+    clipboard: &["--clipboard", "--input"],
+    primary: &["--primary", "--input"],
+};
+
+/// The clipboard programs tried in turn when arboard can't copy, on a
+/// Wayland desktop (`wayland`) or an X11 one.
+#[cfg(all(unix, not(target_os = "macos")))]
+fn programs(wayland: bool) -> &'static [Program<'static>] {
+    if wayland {
+        &[WL_COPY, XCLIP]
     } else {
-        &[
-            ("xclip", &["-selection", "clipboard"]),
-            ("xsel", &["--clipboard", "--input"]),
-        ]
-    };
-    programs
-        .iter()
-        .any(|(program, args)| run(text, program, args))
+        &[XCLIP, XSEL]
+    }
+}
+
+/// Copies through `program` to the clipboard, then to the primary
+/// selection. Whether the clipboard took it, which is what counts.
+#[cfg(all(unix, not(target_os = "macos")))]
+fn copy_with(text: &str, program: &Program) -> bool {
+    if !run(text, program.name, program.clipboard) {
+        return false;
+    }
+    if !run(text, program.name, program.primary) {
+        log::info!(
+            "{} didn't take a copy for the primary selection",
+            program.name
+        );
+    }
+    true
 }
 
 /// Copies through the clipboard program `program`, when it is installed.
@@ -173,5 +242,81 @@ mod tests {
     #[test]
     fn a_program_that_isnt_installed_takes_nothing() {
         assert!(!run("text", "arko-no-such-clipboard-program", &[]));
+    }
+
+    /// When arboard can't copy, wl-copy is tried first on Wayland and
+    /// xclip on X11, and each of them sets the primary selection too.
+    #[test]
+    fn programs_are_tried_by_desktop_and_set_the_primary_selection() {
+        let names = |wayland| {
+            programs(wayland)
+                .iter()
+                .map(|program| program.name)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(names(true), ["wl-copy", "xclip"]);
+        assert_eq!(names(false), ["xclip", "xsel"]);
+        for program in programs(true).iter().chain(programs(false)) {
+            assert!(
+                program.primary.iter().any(|arg| arg.contains("primary")),
+                "{} sets the primary selection",
+                program.name
+            );
+        }
+    }
+
+    /// Runs a stand-in clipboard program that logs the selection it is
+    /// asked for and the text it gets, and fails for the selection
+    /// `fails`. Returns what `copy_with` returned and the log.
+    fn copy_with_stand_in(fails: &str) -> (bool, String) {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("clipboard.sh");
+        let log = dir.path().join("log");
+        std::fs::write(
+            &script,
+            format!("printf '%s=%s\\n' \"$1\" \"$(cat)\" >> \"$2\"\n[ \"$1\" != {fails} ]\n"),
+        )
+        .unwrap();
+        let script = script.to_str().unwrap();
+        let log = log.to_str().unwrap();
+        // (Run by sh, so the script needn't be executable.)
+        let program = Program {
+            name: "sh",
+            clipboard: &[script, "clipboard", log],
+            primary: &[script, "primary", log],
+        };
+        let copied = copy_with("arko text", &program);
+        let log = std::fs::read_to_string(log).unwrap_or_default();
+        (copied, log)
+    }
+
+    /// A clipboard program gets the text for the clipboard, then for the
+    /// primary selection.
+    #[test]
+    fn a_copy_goes_to_the_clipboard_and_the_primary_selection() {
+        assert_eq!(
+            copy_with_stand_in("none"),
+            (true, "clipboard=arko text\nprimary=arko text\n".into())
+        );
+    }
+
+    /// The copy counts as made when the clipboard took it, even if the
+    /// primary selection didn't.
+    #[test]
+    fn the_clipboard_alone_counts_as_a_copy() {
+        assert_eq!(
+            copy_with_stand_in("primary"),
+            (true, "clipboard=arko text\nprimary=arko text\n".into())
+        );
+    }
+
+    /// A program that can't set the clipboard isn't asked for the primary
+    /// selection, so the next program sets both.
+    #[test]
+    fn a_program_that_cant_set_the_clipboard_sets_nothing_else() {
+        assert_eq!(
+            copy_with_stand_in("clipboard"),
+            (false, "clipboard=arko text\n".into())
+        );
     }
 }
