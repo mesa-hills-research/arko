@@ -754,6 +754,7 @@ impl Harness {
                 run.task.agent_config.tool_config.ends_task_with_text(),
                 &self.images,
             ));
+            self.end_restored_jobs(run.agent_run_id);
         }
         if let Conversation::Answered(result) = &self.conversation {
             if result.task.conversation.messages.is_empty() {
@@ -3408,6 +3409,23 @@ impl Harness {
         jobs.stop_for_user(found.owner, job)
             .map_err(|_| not_running())?;
         Ok(self.job_name(&found))
+    }
+
+    /// The restored rows of `owner`'s calls that moved to the background
+    /// say how their jobs ended, with an earlier Arko or since. Those still
+    /// running say so until they end.
+    pub(crate) fn end_restored_jobs(&self, owner: uuid::Uuid) {
+        let Some(jobs) = self.background.manager() else {
+            return;
+        };
+        for job in self.feed.moved_jobs() {
+            if let Ok(snapshot) = jobs.status(owner, job, None)
+                && snapshot.state.is_terminal()
+            {
+                self.feed
+                    .job_ended_earlier(job, crate::jobs::ending(&snapshot).0);
+            }
+        }
     }
 
     /// A job as `/jobs` and the quit popup name it: its command, or a moved

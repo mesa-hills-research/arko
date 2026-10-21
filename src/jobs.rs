@@ -139,7 +139,7 @@ fn start(agent_of: &dyn Fn(Uuid) -> String, job: &JobInfo) -> JobStart {
 }
 
 /// How a job that ended did, for the feed, with a few words of it.
-fn ending(job: &terminal::TerminalSnapshot) -> (remote::JobState, Option<String>) {
+pub(crate) fn ending(job: &terminal::TerminalSnapshot) -> (remote::JobState, Option<String>) {
     use terminal::JobState;
     match job.state {
         JobState::Succeeded => (remote::JobState::Finished, None),

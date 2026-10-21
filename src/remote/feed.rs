@@ -928,6 +928,16 @@ impl State {
         }
     }
 
+    /// The call lines, by agent and item, that name the job `id`.
+    fn lines_naming(&self, id: &str) -> Vec<(String, u64)> {
+        [&self.main, &self.workers_lane]
+            .into_iter()
+            .flat_map(|lane| &lane.items)
+            .filter(|item| item.job.as_deref() == Some(id))
+            .map(|item| (item.agent.clone(), item.id))
+            .collect()
+    }
+
     fn worker(&mut self, id: &str) -> Option<&mut Worker> {
         self.workers
             .iter_mut()
@@ -1150,7 +1160,7 @@ impl Feed {
                     .map(|(_, ended, at)| (*ended, None, *at)),
             };
             if let Some((ended, started, at)) = ended {
-                self.end_moved_call(state, &call.agent, call.item, ended, started, at);
+                self.end_moved_call(state, &call.agent, call.item, ended, started, Some(at));
             }
         }
         if let Some(mut block) = outcome.block {
@@ -1584,6 +1594,33 @@ impl Feed {
         self.lock().calls.get(&call).map(|call| call.item)
     }
 
+    /// The jobs the main transcript's calls moved to, whose lines still say
+    /// they are in the background: after a restore, those of calls an
+    /// earlier Arko moved.
+    pub(crate) fn moved_jobs(&self) -> Vec<Uuid> {
+        self.lock()
+            .main
+            .items
+            .iter()
+            .filter(|item| {
+                item.outcome
+                    .as_deref()
+                    .is_some_and(|outcome| outcome.starts_with(render::MOVED_OUTCOME))
+            })
+            .filter_map(|item| item.job.as_deref()?.parse().ok())
+            .collect()
+    }
+
+    /// The job `id` ended as `ended` some time ago (with an earlier Arko):
+    /// the lines of the calls that moved there say how.
+    pub(crate) fn job_ended_earlier(&self, id: Uuid, ended: JobState) {
+        let mut state = self.lock();
+        let id = id.to_string();
+        for (agent, item) in state.lines_naming(&id) {
+            self.end_moved_call(&mut state, &agent, item, ended, None, None);
+        }
+    }
+
     /// What the transcript shows of the call `call` (one of the latest),
     /// such as `slow_lookup (slow) {"word":"mesa"}`.
     pub(crate) fn call_text(&self, call: Uuid) -> Option<String> {
@@ -1686,14 +1723,8 @@ impl Feed {
         let Some(job) = state.jobs.iter_mut().find(|job| job.id == id) else {
             // One that ended before the feed saw it run: the line of the
             // call that moved there, now or when its result comes.
-            let calls: Vec<(String, u64)> = [&state.main, &state.workers_lane]
-                .into_iter()
-                .flat_map(|lane| &lane.items)
-                .filter(|item| item.job.as_deref() == Some(id.as_str()))
-                .map(|item| (item.agent.clone(), item.id))
-                .collect();
-            for (agent, item) in calls {
-                self.end_moved_call(&mut state, &agent, item, ended, None, now);
+            for (agent, item) in state.lines_naming(&id) {
+                self.end_moved_call(&mut state, &agent, item, ended, None, Some(now));
             }
             state.unseen_ends.push_back((id, ended, now));
             if state.unseen_ends.len() > ENDED_JOBS {
@@ -1709,23 +1740,29 @@ impl Feed {
         job.outcome = outcome;
         let job = job.clone();
         self.send(Update::Job(job.clone()));
-        // A moved call's line says how it ended. A command terminal_start
-        // started has its own result already.
+        // A moved call's line says how it ended, and so does a restored
+        // line of it. A command terminal_start started has its own result
+        // already.
+        let mut lines = state.lines_naming(&id);
         if let Some(item) = job.call {
+            lines.push((job.agent.clone(), item));
+        }
+        for (agent, item) in lines {
             self.end_moved_call(
                 &mut state,
-                &job.agent,
+                &agent,
                 item,
                 ended,
                 Some(job.started_at),
-                now,
+                Some(now),
             );
         }
     }
 
     /// The call `item` of `agent`, if its line says it moved to the
     /// background, says how its job ended: as `ended`, at `now`, having
-    /// started at `started` (else with the call).
+    /// started at `started` (else with the call). With `now` unknown (a
+    /// job that ended with an earlier Arko), the line says how only.
     fn end_moved_call(
         &self,
         state: &mut State,
@@ -1733,7 +1770,7 @@ impl Feed {
         item: u64,
         ended: JobState,
         started: Option<i64>,
-        now: i64,
+        now: Option<i64>,
     ) {
         let (lane, _) = state.lane(agent);
         let Some(call) = lane.find(item) else {
@@ -1746,13 +1783,18 @@ impl Feed {
         {
             return;
         }
-        let ran = render::duration_words(Duration::from_millis(
-            u64::try_from(now - started.unwrap_or(call.at)).unwrap_or(0),
-        ));
+        let ran = now.map(|now| {
+            render::duration_words(Duration::from_millis(
+                u64::try_from(now - started.unwrap_or(call.at)).unwrap_or(0),
+            ))
+        });
         let (status, text) = match ended {
             JobState::Finished => (
                 CallStatus::Ok,
-                format!("finished in the background · {ran}"),
+                match ran {
+                    Some(ran) => format!("finished in the background · {ran}"),
+                    None => "finished in the background".to_string(),
+                },
             ),
             JobState::Failed => (CallStatus::Failed, "failed in the background".to_string()),
             JobState::Interrupted => (CallStatus::Failed, "interrupted".to_string()),
@@ -2571,6 +2613,26 @@ mod tests {
         feed.job_ended(job, JobState::Stopped, None);
         assert_eq!(outcome(&feed).as_deref(), Some("stopped"));
         assert!(feed.subscribe().0.jobs.is_empty());
+    }
+
+    /// A restored line of a call that moved to the background says how its
+    /// job ended with an earlier Arko, without a time it can't know.
+    #[test]
+    fn a_restored_moved_call_says_how_its_job_ended() {
+        let feed = Feed::new("main");
+        let job = Uuid::new_v4();
+        let mut item = Item::new(Kind::Call, "lookup (search)");
+        item.status = Some(CallStatus::Ok);
+        item.outcome = Some(format!("in the background · job {}", &job.to_string()[..8]));
+        item.job = Some(job.to_string());
+        feed.restore(vec![item]);
+        assert_eq!(feed.moved_jobs(), [job]);
+        feed.job_ended_earlier(job, JobState::Finished);
+        assert_eq!(
+            call_item(&feed, "lookup").outcome.as_deref(),
+            Some("finished in the background")
+        );
+        assert!(feed.moved_jobs().is_empty());
     }
 
     /// A job a command started (terminal_start) keeps its call's own line,

@@ -111,6 +111,9 @@ fn items_from(
                             call.status = Some(outcome.status);
                             call.outcome = outcome.text;
                             call.output = outcome.output;
+                            // The job a moved call went on in, which may
+                            // have ended since.
+                            call.job = outcome.job.map(|job| job.to_string());
                             call.images.extend(
                                 result.images.iter().filter_map(|image| {
                                     images.add_image(&image.image, &image.label)
@@ -549,6 +552,31 @@ mod tests {
         );
         assert_eq!(items[2].outcome.as_deref(), Some("12 passed"));
         assert_eq!(items[3].call, Some(items[2].id));
+    }
+
+    /// A call that moved to the background names its job, which may have
+    /// ended since.
+    #[test]
+    fn a_moved_call_names_its_job() {
+        let job = uuid::Uuid::new_v4();
+        let mut ask = Message::new_assistant("");
+        ask.tool_calls = vec![call("call_1", "mcp__search__lookup", serde_json::json!({}))];
+        let result = Message::new_user_with_contents(vec![Content::ToolResult(ToolResult::new(
+            Some("call_1".into()),
+            "mcp__search__lookup",
+            &format!(
+                "in the background as job {job}, 95.3 s\nThe user moved this call to the background."
+            ),
+        ))]);
+        let messages = [Message::new_user("Look it up."), ask, result];
+        let items = all_items(&messages, false, &Images::default());
+        let call = items.iter().find(|item| item.kind == Kind::Call).unwrap();
+        assert_eq!(call.job, Some(job.to_string()));
+        assert!(
+            call.outcome
+                .as_deref()
+                .is_some_and(|outcome| outcome.starts_with("in the background"))
+        );
     }
 
     /// Every message reads as items when asked, however many.
