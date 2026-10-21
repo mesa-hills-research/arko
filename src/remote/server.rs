@@ -180,6 +180,8 @@ fn router(app: Arc<App>) -> Router {
         .route("/api/message", axum::routing::post(message))
         .route("/api/answer", axum::routing::post(answer))
         .route("/api/stop", axum::routing::post(stop))
+        .route("/api/background", axum::routing::post(background))
+        .route("/api/jobs/stop", axum::routing::post(stop_job))
         .route("/api/links", get(links))
         .layer(DefaultBodyLimit::max(MAX_BODY))
         .layer(axum::middleware::map_response(harden))
@@ -766,6 +768,55 @@ async fn stop(
         return refusal.into_response();
     }
     app.act(Action::Stop)
+}
+
+#[derive(Deserialize)]
+struct BackgroundBody {
+    #[serde(default)]
+    item: Option<u64>,
+}
+
+/// `POST /api/background` with `{"item": ID}`: moves that running call to
+/// the background, or with `{}` the main agent's calls that can move.
+async fn background(
+    State(app): State<Arc<App>>,
+    ConnectInfo(peer): Peer,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    if let Err(refusal) = app.authorize(&headers, peer.ip()) {
+        return refusal.into_response();
+    }
+    let body = if body.is_empty() {
+        Ok(BackgroundBody { item: None })
+    } else {
+        serde_json::from_slice::<BackgroundBody>(&body)
+    };
+    let Ok(body) = body else {
+        return (StatusCode::BAD_REQUEST, error_body("send {\"item\": ID}")).into_response();
+    };
+    app.act(Action::Background { item: body.item })
+}
+
+#[derive(Deserialize)]
+struct StopJobBody {
+    job: uuid::Uuid,
+}
+
+/// `POST /api/jobs/stop` with `{"job": ID}`: stops that background job.
+async fn stop_job(
+    State(app): State<Arc<App>>,
+    ConnectInfo(peer): Peer,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    if let Err(refusal) = app.authorize(&headers, peer.ip()) {
+        return refusal.into_response();
+    }
+    let Ok(body) = serde_json::from_slice::<StopJobBody>(&body) else {
+        return (StatusCode::BAD_REQUEST, error_body("send {\"job\": ID}")).into_response();
+    };
+    app.act(Action::StopJob { job: body.job })
 }
 
 #[cfg(test)]
@@ -1375,6 +1426,40 @@ mod tests {
         let response = served.post("/api/stop", Some(&cookie), "").await;
         assert_eq!(response.status(), StatusCode::ACCEPTED);
         assert_eq!(served.actions.recv().await.unwrap(), Action::Stop);
+
+        // Move to background, for one call or the main agent's, and a job's
+        // Stop.
+        for (body, item) in [(r#"{"item": 12}"#, Some(12)), ("", None), ("{}", None)] {
+            let response = served.post("/api/background", Some(&cookie), body).await;
+            assert_eq!(response.status(), StatusCode::ACCEPTED);
+            assert_eq!(
+                served.actions.recv().await.unwrap(),
+                Action::Background { item }
+            );
+        }
+        let job = uuid::Uuid::new_v4();
+        let response = served
+            .post(
+                "/api/jobs/stop",
+                Some(&cookie),
+                &format!(r#"{{"job": "{job}"}}"#),
+            )
+            .await;
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        assert_eq!(
+            served.actions.recv().await.unwrap(),
+            Action::StopJob { job }
+        );
+        for (path, body) in [
+            ("/api/jobs/stop", r#"{"job": "nine"}"#),
+            ("/api/background", r#"{"item": "first"}"#),
+        ] {
+            let response = served.post(path, Some(&cookie), body).await;
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{path}");
+        }
+        // Without the session's cookie, nothing moves or stops.
+        let response = served.post("/api/background", None, "{}").await;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
     /// A stopped server ends its streams, and its cookies don't open the

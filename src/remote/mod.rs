@@ -50,6 +50,7 @@ pub use links::Kind as LinkKind;
 pub use links::{HOST_VARIABLE, Interface, Link};
 #[cfg(not(feature = "remote"))]
 pub use no_server::Server;
+pub(crate) use render::duration_words;
 #[cfg(feature = "remote")]
 pub use server::Server;
 
@@ -75,6 +76,7 @@ pub const KEY_FILE: &str = "remote.key";
 /// What the page asks of the session.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(not(feature = "remote"), allow(dead_code))]
+#[non_exhaustive]
 pub enum Action {
     /// A message, as if typed at the prompt. It's a note while the agent
     /// works, a new turn when it is idle, the answer to its question, or a
@@ -84,6 +86,12 @@ pub enum Action {
     Answer { question: u64, text: String },
     /// Stops the turn, as Ctrl-C does.
     Stop,
+    /// Moves the running call `item` (a call item [`Reading::movable`]
+    /// lists) to the background, or with `None` the main agent's calls
+    /// that can move, as Ctrl+B does.
+    Background { item: Option<u64> },
+    /// Stops the background job `job` (as [`JobSummary::id`] names it).
+    StopJob { job: uuid::Uuid },
 }
 
 /// Reads what the page's status shows of the session as it asks.

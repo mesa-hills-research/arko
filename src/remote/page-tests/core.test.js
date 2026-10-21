@@ -316,3 +316,21 @@ test('"Working…" stands above the notes the agent hasn\'t read, and isn\'t new
   assert.equal(core.nearest(shown, 99).key, 'i3');
   assert.equal(core.nearest(shown, 0).key, 'i1');
 });
+
+test('a running call that can move offers it, and a running job offers Stop', () => {
+  next = 0;
+  const store = new core.Store();
+  const running = item('call', { status: 'running' });
+  const moved = item('call', { status: 'ok', job: 'j1' });
+  const other = item('text');
+  store.reset([running, moved, other], [], [{ id: 'j1', state: 'running', call: moved.id }]);
+  assert.deepEqual(core.callActions(running, store, [running.id]), { move: true, stop: null });
+  // Not listed as movable: a call of a tool that can't move.
+  assert.deepEqual(core.callActions(running, store, []), { move: false, stop: null });
+  assert.deepEqual(core.callActions(running, store, undefined), { move: false, stop: null });
+  assert.deepEqual(core.callActions(moved, store, [moved.id]), { move: false, stop: 'j1' });
+  assert.deepEqual(core.callActions(other, store, [other.id]), { move: false, stop: null });
+  // Once the job ends, its call no longer offers Stop.
+  store.job({ id: 'j1', state: 'finished', call: moved.id });
+  assert.deepEqual(core.callActions(moved, store, []), { move: false, stop: null });
+});

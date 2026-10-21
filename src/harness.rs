@@ -964,6 +964,10 @@ impl Harness {
                     self.feed.notice(Level::Info, "No turn is running.");
                     continue;
                 }
+                Event::Remote(action @ (Action::Background { .. } | Action::StopJob { .. })) => {
+                    self.page_job_action(action);
+                    continue;
+                }
                 Event::Remote(Action::Answer { .. }) => {
                     self.feed
                         .notice(Level::Warn, "That question is no longer asked.");
@@ -1466,6 +1470,7 @@ impl Harness {
             "/extra-rules" => self.extra_rules_command(argument, source),
             "/project-instructions" => self.project_command(argument, source),
             "/background-after" => self.background_after_command(argument, source),
+            "/jobs" => self.jobs_command(argument),
             _ => self.handover_at_command(argument, source),
         }
         // (A setting it changed shows in the status and the details.)
@@ -1496,6 +1501,12 @@ impl Harness {
                     self.publish_title();
                 }
                 let _ = reply.send(renamed);
+            }
+            Request::MoveCall { item, reply } => {
+                let _ = reply.send(self.move_call(Some(item)));
+            }
+            Request::StopJob { job, reply } => {
+                let _ = reply.send(self.stop_job(job).map(|_| ()));
             }
             Request::ChatInstructions { reply, .. }
             | Request::SwitchMode { reply, .. }
@@ -3060,6 +3071,12 @@ impl Harness {
                             self.answer(&mut answering, question, &text, Source::Web);
                             continue;
                         }
+                        Event::Remote(
+                            action @ (Action::Background { .. } | Action::StopJob { .. }),
+                        ) => {
+                            self.page_job_action(action);
+                            continue;
+                        }
                         Event::Input(Some(Input::Answer { question, text })) => {
                             let source = self.input_source;
                             self.answer(&mut answering, question, &text, source);
@@ -3323,11 +3340,151 @@ impl Harness {
             .map(|run| self.background.move_run(run))
             .sum();
         if moved == 0 {
-            self.say(
-                Level::Info,
-                "  Nothing is running that can move to the background.",
-            );
+            self.say(Level::Info, &format!("  {NOTHING_TO_MOVE}"));
         }
+    }
+
+    /// Moves the running call `item` (a feed item) to the background, or
+    /// with `None` the main agent's calls that can move.
+    pub(crate) fn move_call(&self, item: Option<u64>) -> Result<(), String> {
+        let Some(jobs) = self.background.manager() else {
+            return Err(NOTHING_TO_MOVE.into());
+        };
+        let moved = match item {
+            None => {
+                let main: Vec<uuid::Uuid> = {
+                    let workers = self.workflow().subagents();
+                    self.background
+                        .movable()
+                        .into_iter()
+                        .filter(|run| !workers.iter().any(|worker| worker.run_id == *run))
+                        .collect()
+                };
+                return match main
+                    .into_iter()
+                    .map(|run| jobs.move_to_background(run, None))
+                    .sum()
+                {
+                    0 => Err(NOTHING_TO_MOVE.into()),
+                    _ => Ok(()),
+                };
+            }
+            Some(item) => crate::jobs::movable_call(&self.feed, &jobs, item)
+                .is_some_and(|(owner, call)| jobs.move_to_background(owner, Some(call)) > 0),
+        };
+        if moved {
+            Ok(())
+        } else {
+            Err("That call can't move to the background now.".into())
+        }
+    }
+
+    /// Stops the background job `job` for the user, and returns what it
+    /// ran.
+    pub(crate) fn stop_job(&self, job: uuid::Uuid) -> Result<String, String> {
+        let not_running = || "That job isn't running.".to_string();
+        let jobs = self.background.manager().ok_or_else(not_running)?;
+        let found = jobs
+            .jobs()
+            .into_iter()
+            .find(|running| running.job_id == job)
+            .ok_or_else(not_running)?;
+        jobs.stop_for_user(found.owner, job)
+            .map_err(|_| not_running())?;
+        Ok(found.label)
+    }
+
+    /// The web page's Move to background or Stop: done, and what didn't
+    /// work said.
+    fn page_job_action(&mut self, action: Action) {
+        match action {
+            Action::Background { item } => {
+                if let Err(why) = self.move_call(item) {
+                    self.feed.notice(Level::Info, &why);
+                }
+            }
+            Action::StopJob { job } => match self.stop_job(job) {
+                Ok(label) => self.say(
+                    Level::Info,
+                    &format!("Stopped the background job {}.", jobs_label(&label)),
+                ),
+                Err(why) => self.feed.notice(Level::Info, &why),
+            },
+            _ => {}
+        }
+    }
+
+    /// `/jobs`: the background jobs running, and `/jobs stop N` or
+    /// `/jobs stop all` stops them.
+    pub(crate) fn jobs_command(&mut self, argument: &str) {
+        let running = self
+            .background
+            .manager()
+            .map(|jobs| jobs.jobs())
+            .unwrap_or_default();
+        let words: Vec<&str> = argument.split_whitespace().collect();
+        let text = match words.as_slice() {
+            [] if running.is_empty() => "No background jobs are running.".to_string(),
+            [] => {
+                let agents: Vec<String> = running
+                    .iter()
+                    .map(|job| self.gauges.agent_of(job.owner))
+                    .collect();
+                let width = agents.iter().map(String::len).max().unwrap_or(0);
+                let mut lines: Vec<String> = running
+                    .iter()
+                    .zip(&agents)
+                    .enumerate()
+                    .map(|(index, (job, agent))| {
+                        let kind = match job.kind {
+                            arko_agents::terminal::JobKind::Call { .. } => "call",
+                            _ => "command",
+                        };
+                        format!(
+                            "{:<3}{agent:<width$}  {kind:<8} {} · {}",
+                            index + 1,
+                            jobs_label(&job.label),
+                            remote::duration_words(job.started.elapsed()),
+                        )
+                    })
+                    .collect();
+                lines.push(if running.len() == 1 {
+                    "/jobs stop 1 stops it.".to_string()
+                } else {
+                    "/jobs stop 2 stops the second, and /jobs stop all stops them all.".to_string()
+                });
+                lines.join("\n")
+            }
+            ["stop", "all"] if running.is_empty() => "No background jobs are running.".to_string(),
+            ["stop", "all"] => {
+                let stopped = running
+                    .iter()
+                    .filter(|job| self.stop_job(job.job_id).is_ok())
+                    .count();
+                match stopped {
+                    1 => "Stopped 1 background job.".to_string(),
+                    stopped => format!("Stopped {stopped} background jobs."),
+                }
+            }
+            ["stop", number] => match number
+                .parse::<usize>()
+                .ok()
+                .and_then(|number| running.get(number.checked_sub(1)?))
+            {
+                Some(job) => match self.stop_job(job.job_id) {
+                    Ok(label) => format!("Stopped job {number} ({}).", jobs_label(&label)),
+                    Err(why) => why,
+                },
+                None => format!("There's no job {number}. /jobs lists them."),
+            },
+            _ => "/jobs lists the background jobs, and /jobs stop N or /jobs stop all stops them."
+                .to_string(),
+        };
+        self.mirrored(|harness| {
+            for line in text.lines() {
+                harness.output.line(line);
+            }
+        });
     }
 
     /// Without a terminal (with -p, or input from a pipe), Arko waits for
@@ -3378,6 +3535,9 @@ impl Harness {
                 }
                 Event::Input(Some(Input::Line(_))) => {}
                 Event::Input(Some(Input::Background(agent))) => self.move_to_background(&agent),
+                Event::Remote(action @ (Action::Background { .. } | Action::StopJob { .. })) => {
+                    self.page_job_action(action)
+                }
                 Event::Remote(Action::Message(_) | Action::Answer { .. })
                 | Event::Input(Some(Input::Message(_) | Input::Answer { .. })) => {
                     self.feed.notice(
@@ -3658,7 +3818,7 @@ pub(crate) fn place(link: &remote::Link) -> String {
 /// The commands that change a setting while the session runs, which take
 /// an argument: `/outside`, `/model`, `/handover`, `/handover-at`, `/keys`.
 /// And `/message`, which works while the agent works too.
-pub(crate) const LIVE_COMMANDS: [&str; 11] = [
+pub(crate) const LIVE_COMMANDS: [&str; 12] = [
     "/outside",
     "/model",
     "/handover",
@@ -3669,8 +3829,24 @@ pub(crate) const LIVE_COMMANDS: [&str; 11] = [
     "/extra-rules",
     "/project-instructions",
     "/background-after",
+    "/jobs",
     "/message",
 ];
+
+/// What Ctrl+B (or the page's Move to background) says when nothing can
+/// move.
+pub(crate) const NOTHING_TO_MOVE: &str = "Nothing is running that can move to the background.";
+
+/// A job's command or tool as `/jobs` shows it, on one line.
+fn jobs_label(label: &str) -> String {
+    let line = label.lines().next().unwrap_or_default().trim();
+    let cut: String = line.chars().take(80).collect();
+    if cut.len() < line.len() || label.trim().lines().count() > 1 {
+        format!("{cut}…")
+    } else {
+        cut
+    }
+}
 
 /// What the user is told of when shell commands move to the background,
 /// after `after` seconds (0: never).

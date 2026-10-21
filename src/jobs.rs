@@ -155,6 +155,20 @@ pub(crate) fn movable(feed: &remote::Feed, jobs: &TerminalManager) -> Vec<u64> {
         .collect()
 }
 
+/// The owner and ID of the call `item` (a feed item), while it runs and can
+/// move to the background.
+pub(crate) fn movable_call(
+    feed: &remote::Feed,
+    jobs: &TerminalManager,
+    item: u64,
+) -> Option<(Uuid, Uuid)> {
+    let call = feed.running_call(item)?;
+    jobs.foreground_calls()
+        .into_iter()
+        .find(|running| running.tool_call_id == call)
+        .map(|running| (running.owner, running.tool_call_id))
+}
+
 /// [`follow`] for the session `gauges` show: its agents are named as the
 /// status names them.
 pub(crate) fn follower(gauges: &Arc<Gauges>, feed: &remote::Feed) -> tokio::task::JoinHandle<()> {

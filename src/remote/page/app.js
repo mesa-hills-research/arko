@@ -257,6 +257,28 @@
       outcome.title = item.outcome || '';
     }
     if (item.status) line.append(outcome);
+    // A long call can move to the background, and a job it made can stop.
+    const actions = C.callActions(item, store, status && status.movable);
+    if (actions.move) {
+      const move = element('button', 'call-action', 'Move to background');
+      move.type = 'button';
+      move.addEventListener('click', (event) => {
+        event.stopPropagation();
+        move.disabled = true;
+        post('/api/background', { item: item.id });
+      });
+      line.append(move);
+    }
+    if (actions.stop) {
+      const stopJob = element('button', 'call-action', 'Stop');
+      stopJob.type = 'button';
+      stopJob.addEventListener('click', (event) => {
+        event.stopPropagation();
+        stopJob.disabled = true;
+        post('/api/jobs/stop', { job: actions.stop });
+      });
+      line.append(stopJob);
+    }
     parent.append(line);
   }
 
@@ -620,7 +642,7 @@
     const before = newest();
     skew = null;
     if (!following) keep = place();
-    store.reset(data.items, data.workers);
+    store.reset(data.items, data.workers, data.jobs);
     nodes.clear();
     list.replaceChildren();
     relayout = true;
@@ -673,10 +695,24 @@
     renderWorkers();
   }
 
+  /** A background job changed: the line of the call that made it offers
+   * Stop while it runs. */
+  function onJob(summary) {
+    store.job(summary);
+    if (summary.call != null) stale.add('i' + summary.call);
+    draw();
+  }
+
   // ----- the status -----
 
   function onStatus(next) {
     const asked = status && status.question;
+    // The calls that can move changed: their lines offer it, or no longer.
+    const before = (status && status.movable) || [];
+    const after = (next && next.movable) || [];
+    for (const id of before.concat(after)) {
+      if (before.includes(id) !== after.includes(id)) stale.add('i' + id);
+    }
     status = next;
     renderStatus();
     if (JSON.stringify(asked) !== JSON.stringify(status.question)) renderAsk();
@@ -1364,6 +1400,7 @@
     stream.addEventListener('change', (event) => onChange(JSON.parse(event.data)));
     stream.addEventListener('remove', (event) => onRemove(JSON.parse(event.data)));
     stream.addEventListener('worker', (event) => onWorker(JSON.parse(event.data)));
+    stream.addEventListener('job', (event) => onJob(JSON.parse(event.data)));
     stream.addEventListener('status', (event) => onStatus(JSON.parse(event.data)));
     stream.onerror = () => {
       stream.close();

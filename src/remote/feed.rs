@@ -1523,6 +1523,15 @@ impl Feed {
         self.lock().calls.get(&call).map(|call| call.item)
     }
 
+    /// The call item `item` of a call still running: its call's ID.
+    pub(crate) fn running_call(&self, item: u64) -> Option<Uuid> {
+        self.lock()
+            .calls
+            .iter()
+            .find(|(_, call)| call.item == item)
+            .map(|(id, _)| *id)
+    }
+
     /// A background job started: its summary goes out, and the call that
     /// made it says it did. A job the feed knows already is left alone.
     pub(crate) fn job_started(&self, start: JobStart) {

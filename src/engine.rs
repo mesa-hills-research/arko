@@ -134,6 +134,16 @@ pub enum Request {
     /// Gives the session this name, also during a turn. An empty name gives
     /// it back its conversation's.
     Rename { title: String, reply: Reply<()> },
+    /// Moves the running call `item` (a `Kind::Call` item that
+    /// `Reading::movable` lists) to the background, as Ctrl+B does for the
+    /// agent shown. The call is answered with its job's ID, the agent goes
+    /// on, and the call's result reaches it as a note. `Err` says why it
+    /// can't move now (it ended, or it isn't one that can move).
+    MoveCall { item: u64, reply: Reply<()> },
+    /// Stops the background job `job` (as `JobSummary::id` names it) for the
+    /// user. Its agent hears of it with its next turn, and an idle agent
+    /// isn't woken. `Err` when it isn't running.
+    StopJob { job: uuid::Uuid, reply: Reply<()> },
     /// A chat's instructions from the user (`None` for none), for its next
     /// conversations. They apply from the chat's first message, or else
     /// from its next new conversation, as the one it is in keeps its own. A

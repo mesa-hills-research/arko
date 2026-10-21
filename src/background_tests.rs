@@ -593,3 +593,112 @@ async fn ctrl_b_moves_another_tools_call_and_its_result_wakes_the_agent() {
     follower.abort();
     managers.shutdown().await;
 }
+
+/// The page's Move to background moves the call its line names, while the
+/// turn runs. `/jobs` lists the job and stops it for the user, which wakes
+/// no one, and the agent reads that the user stopped it with its next
+/// message. The app's requests answer when there's nothing to move or
+/// stop.
+#[cfg(unix)]
+#[tokio::test]
+async fn the_page_moves_a_call_and_jobs_lists_and_stops_it() {
+    let bodies: Bodies = Arc::default();
+    let server = ModelServer::start(Arc::new({
+        let bodies = bodies.clone();
+        move |_, body: String| {
+            bodies.lock().unwrap().push(body.clone());
+            Box::pin(async move {
+                if body.contains("Look again.") {
+                    complete("m3", "Noted.")
+                } else if body.contains("call_m1") {
+                    complete("m2", "It goes on in the background.")
+                } else {
+                    tool_call("m1", "slow_lookup", serde_json::json!({}))
+                }
+            })
+        }
+    }))
+    .await;
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
+    let lookup = Arc::new(SlowLookup::default());
+    let managers = equip_with(&mut harness, &mut inputs, lookup.clone());
+    let (feed, jobs, actions) = (
+        harness.feed.clone(),
+        managers.jobs.clone(),
+        harness.remote_actions.clone(),
+    );
+    let pressing = tokio::spawn(async move {
+        until(|| !crate::jobs::movable(&feed, &jobs).is_empty()).await;
+        let item = crate::jobs::movable(&feed, &jobs)[0];
+        actions.send(Action::Background { item: Some(item) }).unwrap();
+    });
+    let end = tokio::time::timeout(
+        Duration::from_secs(20),
+        harness.turn(Prompt::User("Look it up.".into()), &mut inputs),
+    )
+    .await
+    .unwrap();
+    pressing.await.unwrap();
+    assert!(matches!(end, TurnEnd::Answered));
+    assert!(
+        body_with(&bodies, "call_m1").contains("The user moved this call to the background."),
+    );
+    assert_eq!(managers.jobs.jobs().len(), 1);
+
+    let mut finished = managers.jobs.subscribe_finished();
+    let said = |harness: &Harness, text: &str| {
+        shown(&harness.feed)
+            .iter()
+            .any(|(kind, shown, _)| kind == "output" && shown.contains(text))
+    };
+    assert!(harness.live_command("/jobs", Source::Terminal));
+    assert!(
+        said(&harness, "1  main  call     slow_lookup · 0 s"),
+        "{:?}",
+        shown(&harness.feed)
+    );
+    assert!(said(&harness, "/jobs stop 1 stops it."));
+    assert!(harness.live_command("/jobs stop 2", Source::Terminal));
+    assert!(said(&harness, "There's no job 2. /jobs lists them."));
+    let job = managers.jobs.jobs()[0].job_id;
+    assert!(harness.live_command("/jobs stop 1", Source::Web));
+    assert!(said(&harness, "Stopped job 1 (slow_lookup)."));
+    // The call has its grace, then the job ends.
+    until(|| managers.jobs.jobs().is_empty()).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(finished.try_recv().is_err(), "the user's stop wakes no one");
+    assert!(harness.live_command("/jobs", Source::Terminal));
+    assert!(said(&harness, "No background jobs are running."));
+
+    // Nothing to move or stop now.
+    let (reply, answer) = tokio::sync::oneshot::channel();
+    harness
+        .request(crate::engine::Request::StopJob { job, reply }, false)
+        .await;
+    assert_eq!(answer.await.unwrap(), Err("That job isn't running.".into()));
+    let (reply, answer) = tokio::sync::oneshot::channel();
+    harness
+        .request(crate::engine::Request::MoveCall { item: 1, reply }, false)
+        .await;
+    assert_eq!(
+        answer.await.unwrap(),
+        Err("That call can't move to the background now.".into())
+    );
+
+    // The next message carries the note.
+    assert!(matches!(
+        harness
+            .turn(Prompt::User("Look again.".into()), &mut inputs)
+            .await,
+        TurnEnd::Answered
+    ));
+    let next = body_with(&bodies, "Look again.");
+    assert!(
+        next.contains(&format!(
+            "The user stopped job {job} (your slow_lookup call) before it ended"
+        )),
+        "{next}"
+    );
+    managers.shutdown().await;
+}
