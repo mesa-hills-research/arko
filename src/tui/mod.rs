@@ -22,6 +22,7 @@ mod overlay;
 mod prefs;
 mod resume_picker;
 mod screen;
+mod select;
 pub(crate) mod theme;
 mod transcript;
 mod wrap;

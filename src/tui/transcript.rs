@@ -873,11 +873,7 @@ impl Transcript {
             // Its text left the view (or the history).
             self.selection = None;
         }
-        let highlight = if theme.is_terminal() {
-            Style::new().add_modifier(Modifier::REVERSED)
-        } else {
-            Style::new().bg(theme.selection)
-        };
+        let highlight = highlight(theme);
 
         // The lines on the screen.
         buffer.set_style(area, theme.base());
@@ -1158,30 +1154,13 @@ impl Transcript {
         theme: &Theme,
     ) -> Option<(Point, Point)> {
         let rows = self.rows_of(point.key, filter, theme)?;
-        let line = rows.get(point.line)?;
-        let cells = cells(line);
-        let at = cells.iter().position(|(_, col, w)| point.col < col + w)?;
-        if at < line_skip(line, &cells) || cells[at].0.is_whitespace() {
-            return None;
-        }
-        let word = |c: char| !c.is_whitespace();
-        let mut start = at;
-        while start > 0 && word(cells[start - 1].0) && cells[start - 1].1 >= line.skip {
-            start -= 1;
-        }
-        let mut end = at;
-        while end + 1 < cells.len() && word(cells[end + 1].0) {
-            end += 1;
-        }
+        let (start, end) = word_columns(rows.get(point.line)?, point.col)?;
         Some((
             Point {
-                col: cells[start].1,
+                col: start,
                 ..point
             },
-            Point {
-                col: cells[end].1,
-                ..point
-            },
+            Point { col: end, ..point },
         ))
     }
 
@@ -1194,15 +1173,7 @@ impl Transcript {
         theme: &Theme,
     ) -> Option<(Point, Point)> {
         let rows = self.rows_of(point.key, filter, theme)?;
-        rows.get(point.line)?;
-        let mut first = point.line;
-        while first > 0 && rows[first].join != Join::Break {
-            first -= 1;
-        }
-        let mut last = point.line;
-        while last + 1 < rows.len() && rows[last + 1].join != Join::Break {
-            last += 1;
-        }
+        let (first, last) = text_line(&rows, point.line)?;
         Some((
             Point {
                 line: first,
@@ -1232,43 +1203,96 @@ impl Transcript {
         };
         let (a, b) = (place(selection.anchor)?, place(selection.head)?);
         let range = if a <= b { (a, b) } else { (b, a) };
-        let mut text = String::new();
-        let mut started = false;
-        for index in range.0.0..=range.1.0 {
-            for (line, wrapped) in self
-                .block_rows(&blocks[index], theme, width)
-                .iter()
-                .enumerate()
-            {
-                let Some((from, to)) = selected_columns(range, (index, line), wrapped) else {
-                    // A blank line inside the selection is still a line of
-                    // it (a border isn't).
-                    let inside = (index, line) > (range.0.0, range.0.1)
-                        && (index, line) < (range.1.0, range.1.1);
-                    if inside && started && !wrapped.bare {
-                        text.push('\n');
-                    }
-                    continue;
-                };
-                if started {
-                    text.push_str(match wrapped.join {
-                        Join::Break => "\n",
-                        Join::Space => " ",
-                        Join::Direct => "",
-                    });
-                }
-                started = true;
-                // A line shown shortened, selected whole, is copied whole.
-                match &wrapped.whole {
-                    Some(whole) if from <= wrapped.skip && to >= text_end(wrapped) => {
-                        text.push_str(whole)
-                    }
-                    _ => text.push_str(&columns(wrapped, from, to)),
-                }
+        let rows: Vec<((usize, usize), Wrapped)> = (range.0.0..=range.1.0)
+            .flat_map(|index| {
+                self.block_rows(&blocks[index], theme, width)
+                    .into_iter()
+                    .enumerate()
+                    .map(move |(line, wrapped)| ((index, line), wrapped))
+            })
+            .collect();
+        copied(rows.iter().map(|(at, wrapped)| (*at, wrapped)), range)
+    }
+}
+
+/// The columns of the word at column `col` of `line` (its first and last
+/// characters'): what a double click selects.
+pub(super) fn word_columns(line: &Wrapped, col: usize) -> Option<(usize, usize)> {
+    let cells = cells(line);
+    let at = cells.iter().position(|(_, start, w)| col < start + w)?;
+    if at < line_skip(line, &cells) || cells[at].0.is_whitespace() {
+        return None;
+    }
+    let word = |c: char| !c.is_whitespace();
+    let mut start = at;
+    while start > 0 && word(cells[start - 1].0) && cells[start - 1].1 >= line.skip {
+        start -= 1;
+    }
+    let mut end = at;
+    while end + 1 < cells.len() && word(cells[end + 1].0) {
+        end += 1;
+    }
+    Some((cells[start].1, cells[end].1))
+}
+
+/// The first and last of `rows` that the line of text on row `row` was
+/// wrapped into: what a triple click selects.
+pub(super) fn text_line(rows: &[Wrapped], row: usize) -> Option<(usize, usize)> {
+    rows.get(row)?;
+    let mut first = row;
+    while first > 0 && rows[first].join != Join::Break {
+        first -= 1;
+    }
+    let mut last = row;
+    while last + 1 < rows.len() && rows[last + 1].join != Join::Break {
+        last += 1;
+    }
+    Some((first, last))
+}
+
+/// What a copy of `range` takes of `lines` (each with its place, as
+/// (block, line)), as written: without the margins, gutters and indents,
+/// and with the lines wrapped only for the screen joined again.
+pub(super) fn copied<'a>(
+    lines: impl IntoIterator<Item = ((usize, usize), &'a Wrapped)>,
+    range: Range,
+) -> Option<String> {
+    let mut text = String::new();
+    let mut started = false;
+    for (at, wrapped) in lines {
+        let Some((from, to)) = selected_columns(range, at, wrapped) else {
+            // A blank line inside the selection is still a line of it (a
+            // border isn't).
+            let inside = at > (range.0.0, range.0.1) && at < (range.1.0, range.1.1);
+            if inside && started && !wrapped.bare {
+                text.push('\n');
             }
+            continue;
+        };
+        if started {
+            text.push_str(match wrapped.join {
+                Join::Break => "\n",
+                Join::Space => " ",
+                Join::Direct => "",
+            });
         }
-        let text = text.trim_end().to_string();
-        (!text.is_empty()).then_some(text)
+        started = true;
+        // A line shown shortened, selected whole, is copied whole.
+        match &wrapped.whole {
+            Some(whole) if from <= wrapped.skip && to >= text_end(wrapped) => text.push_str(whole),
+            _ => text.push_str(&columns(wrapped, from, to)),
+        }
+    }
+    let text = text.trim_end().to_string();
+    (!text.is_empty()).then_some(text)
+}
+
+/// The look of text highlighted with the mouse.
+pub(super) fn highlight(theme: &Theme) -> Style {
+    if theme.is_terminal() {
+        Style::new().add_modifier(Modifier::REVERSED)
+    } else {
+        Style::new().bg(theme.selection)
     }
 }
 
@@ -1294,10 +1318,14 @@ fn line_skip(line: &Wrapped, cells: &[(char, usize, usize)]) -> usize {
         .unwrap_or(cells.len())
 }
 
+/// What is highlighted, from its start to its end in the order of the
+/// text, each as (block, line, column).
+pub(super) type Range = ((usize, usize, usize), (usize, usize, usize));
+
 /// The columns of `line` (the `at`'th line of a block, as (block, line))
 /// that `range` covers, within its text: `None` when it covers none.
-fn selected_columns(
-    range: ((usize, usize, usize), (usize, usize, usize)),
+pub(super) fn selected_columns(
+    range: Range,
     at: (usize, usize),
     line: &Wrapped,
 ) -> Option<(usize, usize)> {
