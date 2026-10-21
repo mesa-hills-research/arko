@@ -4,8 +4,8 @@
 use serde::{Deserialize, Serialize};
 
 /// How long after the user's last message a monitor's warning still wakes
-/// an idle agent: for that many seconds, `Some(0)` for never, or `None`
-/// for always. Two hours by default.
+/// an idle agent, in seconds. `Some(0)` is never, and `None` always. Two
+/// hours by default.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Wakes(pub Option<u64>);
 
@@ -22,7 +22,8 @@ pub(crate) const NAME: &str = "Monitor wakes";
 /// Two hours.
 const DEFAULT_SECONDS: u64 = 2 * 3_600;
 
-/// The longest time a warning wakes the agent for, short of always: a day.
+/// The longest time a warning wakes the agent for, short of always, which
+/// is a day.
 const MOST_SECONDS: u64 = 24 * 3_600;
 
 impl Wakes {
@@ -32,7 +33,8 @@ impl Wakes {
         self.0.map(std::time::Duration::from_secs)
     }
 
-    /// As `/monitor-wakes` takes it: `2h`, `30m`, `always` or `off`.
+    /// As `/monitor-wakes` takes it, such as `2h`, `30m`, `always` or
+    /// `off`.
     pub fn shown(self) -> String {
         match self.0 {
             None => "always".into(),
@@ -54,8 +56,9 @@ impl Wakes {
     }
 }
 
-/// `text` as `/monitor-wakes` takes it: a whole number of seconds, minutes
-/// or hours (`90m`, `2h`), up to a day, `always`, or `off` (never).
+/// Reads `text` as `/monitor-wakes` takes it, which is a whole number of
+/// seconds, minutes or hours (`90m`, `2h`) up to a day, `always`, or `off`
+/// (never).
 pub fn parse_wakes(text: &str) -> Result<Wakes, String> {
     let text = text.trim().to_ascii_lowercase();
     match text.as_str() {

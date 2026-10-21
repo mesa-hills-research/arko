@@ -33,7 +33,7 @@ pub(crate) struct Inputs {
     /// A job that finished during the agent's last turn, too late for it
     /// to read its update (see `waits_with`).
     pub(crate) late: Option<arko_agents::terminal::JobFinished>,
-    /// The monitors' news that should wake an idle agent; `None` with -p,
+    /// The monitors' news that should wake an idle agent. `None` with -p,
     /// where it wakes no one.
     pub(crate) alerts: Option<tokio::sync::broadcast::Receiver<arko_agents::terminal::JobAlert>>,
     /// A monitor's news that came during the agent's last request, too late
@@ -85,7 +85,7 @@ pub(crate) enum Event {
 
 impl Inputs {
     /// The next input, question, action from the remote page, or (when
-    /// `woken`) wake-up, job finished or monitor's alert; cancel-safe.
+    /// `woken`) wake-up, job finished or monitor's alert. It's cancel-safe.
     pub(crate) async fn next_event(&mut self, woken: bool) -> Event {
         if let Some(input) = self.pending.take() {
             return Event::Input(Some(input));
@@ -198,8 +198,8 @@ pub(crate) async fn job_finished(
     std::future::pending().await
 }
 
-/// The next monitor's alert for an idle agent; never, without a terminal
-/// to hear from.
+/// The next monitor's alert for an idle agent, or never, without a
+/// terminal to hear from.
 pub(crate) async fn job_alert(
     alerts: &mut Option<tokio::sync::broadcast::Receiver<arko_agents::terminal::JobAlert>>,
 ) -> Alert {

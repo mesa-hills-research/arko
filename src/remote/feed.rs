@@ -1877,7 +1877,7 @@ impl Feed {
     }
 
     /// The monitor `id` alerted `alerts` times so far and ends at
-    /// `expires_at` (Unix milliseconds): its summary goes out, and the line
+    /// `expires_at` (Unix milliseconds). Its summary goes out, and the line
     /// of the call that started it says so.
     pub fn job_changed(&self, id: Uuid, alerts: u32, expires_at: i64) {
         let mut state = self.lock();

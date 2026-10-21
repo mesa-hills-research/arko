@@ -431,8 +431,8 @@ fn note(text: String) -> Item {
     item
 }
 
-/// What the user wrote, from a message of theirs: Arko's composed message
-/// keeps it under "# My message"; context updates aren't the user's words,
+/// What the user wrote, from a message of theirs. Arko's composed message
+/// keeps it under "# My message". Context updates aren't the user's words,
 /// nor is a handover's report. A turn Arko started for news (the workers',
 /// a job's, a monitor's) shows the line the live transcript showed.
 fn user_item(text: &str) -> Option<Item> {
