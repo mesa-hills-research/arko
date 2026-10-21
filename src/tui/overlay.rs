@@ -60,6 +60,9 @@ pub enum SettingsRow {
     ConfirmQuit,
     Outside,
     Background,
+    /// How long after the user's last message monitors' warnings wake the
+    /// agent.
+    MonitorWakes,
     Replies,
     Rules,
     Page,
@@ -563,6 +566,25 @@ fn settings(frame: &mut Frame, app: &App, area: Rect, selected: usize) {
                         crate::shell::background_after_words(after)
                     ),
                 },
+            ),
+            SettingsRow::MonitorWakes => (
+                "Session",
+                "Monitor wakes",
+                vec![
+                    Span::styled(format!("{} ", glyphs::render("←")), theme.dim()),
+                    Span::styled(
+                        match app.monitor_wakes().0 {
+                            None => " always ".to_string(),
+                            Some(0) => " off ".to_string(),
+                            Some(seconds) => {
+                                format!(" for {} ", crate::shell::shown_background_after(seconds))
+                            }
+                        },
+                        theme.chosen(),
+                    ),
+                    Span::styled(format!(" {}", glyphs::render("→")), theme.dim()),
+                ],
+                app.monitor_wakes().sentence(),
             ),
             SettingsRow::Replies => (
                 "Session",

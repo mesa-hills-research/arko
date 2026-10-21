@@ -55,6 +55,7 @@ mod message;
 mod mock_model;
 mod model_command;
 pub mod models;
+pub mod monitors;
 mod options;
 mod outside;
 mod project;

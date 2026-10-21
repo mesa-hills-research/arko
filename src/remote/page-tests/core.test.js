@@ -358,3 +358,10 @@ test('a call that can move, or no longer can, has its line drawn again at once',
   assert.equal(changed(undefined, []), false);
   assert.equal(draws, 3);
 });
+
+test('the monitor wakes setting reads as words', () => {
+  assert.equal(core.wakesWords(7200), 'For 2 h after your last message');
+  assert.equal(core.wakesWords(1800), 'For 30 min after your last message');
+  assert.equal(core.wakesWords(null), 'Always');
+  assert.equal(core.wakesWords(0), 'Never');
+});

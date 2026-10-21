@@ -1511,6 +1511,7 @@ impl Harness {
             "/extra-rules" => self.extra_rules_command(argument, source),
             "/project-instructions" => self.project_command(argument, source),
             "/background-after" => self.background_after_command(argument, source),
+            "/monitor-wakes" => self.monitor_wakes_command(argument, source),
             "/jobs" => self.jobs_command(argument),
             _ => self.handover_at_command(argument, source),
         }
@@ -2576,6 +2577,61 @@ impl Harness {
             self.say(
                 Level::Error,
                 &format!("Couldn't tell the agents ({error})."),
+            );
+        }
+    }
+
+    /// `/monitor-wakes`: how long after the user's last message a monitor's
+    /// warning before it ends still wakes the agent, and with a time (or
+    /// `always`, or `off`), sets it.
+    pub(crate) fn monitor_wakes_command(&mut self, argument: &str, source: Source) {
+        let now = self.settings.monitor_wakes;
+        if argument.is_empty() {
+            let text = format!(
+                "{} /monitor-wakes 30m, /monitor-wakes always or /monitor-wakes off changes that.",
+                now.sentence()
+            );
+            self.mirrored(|harness| harness.output.line(&text));
+            return;
+        }
+        let wakes = match crate::monitors::parse_wakes(argument) {
+            Ok(wakes) => wakes,
+            Err(error) => {
+                self.mirrored(|harness| harness.output.line(&harness.output.error(&error)));
+                return;
+            }
+        };
+        if wakes == now {
+            let text = format!("No change. {}", wakes.sentence());
+            self.mirrored(|harness| harness.output.line(&text));
+            return;
+        }
+        if source == Source::Web {
+            self.say(
+                Level::Info,
+                &format!(
+                    "Monitor wakes was set to {} from the web page.",
+                    wakes.shown()
+                ),
+            );
+        }
+        self.set_monitor_wakes(wakes);
+        let text = wakes.sentence();
+        self.mirrored(|harness| harness.output.line(&text));
+    }
+
+    /// Sets how long after the user's last message a monitor's warning still
+    /// wakes the agent: the monitors follow at once, and the session keeps
+    /// it.
+    pub(crate) fn set_monitor_wakes(&mut self, wakes: crate::monitors::Wakes) {
+        if let Some(jobs) = self.background.manager() {
+            jobs.set_warning_wakes_within(wakes.within());
+        }
+        self.settings.monitor_wakes = wakes;
+        if let Err(error) = self.session.save_settings(&self.settings) {
+            self.say(
+                Level::Error,
+                &format!("Couldn't save the session's settings ({error})."),
             );
         }
     }
@@ -4126,7 +4182,7 @@ pub(crate) fn place(link: &remote::Link) -> String {
 /// The commands that change a setting while the session runs, which take
 /// an argument: `/outside`, `/model`, `/handover`, `/handover-at`, `/keys`.
 /// And `/message`, which works while the agent works too.
-pub(crate) const LIVE_COMMANDS: [&str; 12] = [
+pub(crate) const LIVE_COMMANDS: [&str; 13] = [
     "/outside",
     "/model",
     "/handover",
@@ -4137,6 +4193,7 @@ pub(crate) const LIVE_COMMANDS: [&str; 12] = [
     "/extra-rules",
     "/project-instructions",
     "/background-after",
+    "/monitor-wakes",
     "/jobs",
     "/message",
 ];

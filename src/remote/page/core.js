@@ -437,6 +437,16 @@
     return n + ' ' + (n === 1 ? one : many);
   }
 
+  /** How long after the user's last message a monitor's warning wakes the
+   * agent, from the settings' `monitor_wakes` (seconds, 0 for never, or
+   * null for always): "For 2 h after your last message", "Always", "Never". */
+  function wakesWords(seconds) {
+    if (seconds == null) return 'Always';
+    if (seconds === 0) return 'Never';
+    const time = seconds % 3600 === 0 ? seconds / 3600 + ' h' : seconds % 60 === 0 ? seconds / 60 + ' min' : seconds + ' s';
+    return 'For ' + time + ' after your last message';
+  }
+
   /** How long a worker has run at `now`, in all its runs (also those
    * before the session was opened again), or null until it has run. */
   function runTime(summary, now) {
@@ -740,6 +750,7 @@
     duration,
     tokens,
     plural,
+    wakesWords,
     workerWords,
     stateOf,
     figures,

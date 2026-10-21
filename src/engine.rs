@@ -515,11 +515,15 @@ impl Engine {
                     .into());
                 }
                 // The project's instructions can change at any time, and so can
-                // when commands move to the background.
+                // when commands move to the background and how long monitors'
+                // warnings wake the agent.
                 let background = options.background_after.is_some_and(|after| {
                     std::mem::replace(&mut settings.background_after, after) != after
                 });
-                if project_from_options(&options, &mut settings) | background {
+                let wakes = options.monitor_wakes.is_some_and(|wakes| {
+                    std::mem::replace(&mut settings.monitor_wakes, wakes) != wakes
+                });
+                if project_from_options(&options, &mut settings) | background | wakes {
                     session
                         .save_settings(&settings)
                         .map_err(|error| format!("could not save the session ({error})"))?;
@@ -655,6 +659,9 @@ impl Engine {
         managers
             .background
             .set_after(background_after_for(&options, settings.background_after));
+        managers
+            .jobs
+            .set_warning_wakes_within(settings.monitor_wakes.within());
 
         // MCP servers, skills and search indexes: what goes wrong with them is
         // said, and the session goes on without.

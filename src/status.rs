@@ -321,6 +321,15 @@ impl remote::Meter for Gauges {
                 project_instructions,
                 worker_project_instructions,
                 background_after: self.background.after().map_or(0, |after| after.as_secs()),
+                monitor_wakes: crate::monitors::Wakes(
+                    self.background
+                        .manager()
+                        .map_or(
+                            Some(arko_agents::terminal::DEFAULT_WARNINGS_WAKE_WITHIN),
+                            |jobs| jobs.warning_wakes_within(),
+                        )
+                        .map(|within| within.as_secs()),
+                ),
             },
             commands: self.commands_running(),
             movable: match (&self.feed, self.background.manager()) {

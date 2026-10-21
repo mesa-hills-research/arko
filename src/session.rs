@@ -139,6 +139,11 @@ pub struct Settings {
     /// minutes in sessions saved before it.
     #[serde(default = "default_background_after")]
     pub background_after: u64,
+    /// How long after the user's last message a monitor's warning before it
+    /// ends still wakes the agent, as `/monitor-wakes` last set it. Two
+    /// hours in sessions saved before it.
+    #[serde(default)]
+    pub monitor_wakes: crate::monitors::Wakes,
 }
 
 fn default_background_after() -> u64 {
@@ -177,6 +182,7 @@ impl Settings {
             project_instructions: Default::default(),
             worker_project_instructions: false,
             background_after: 0,
+            monitor_wakes: Default::default(),
         }
     }
 
