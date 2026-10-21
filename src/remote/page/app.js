@@ -707,13 +707,10 @@
 
   function onStatus(next) {
     const asked = status && status.question;
-    // The calls that can move changed: their lines offer it, or no longer.
-    const before = (status && status.movable) || [];
-    const after = (next && next.movable) || [];
-    for (const id of before.concat(after)) {
-      if (before.includes(id) !== after.includes(id)) stale.add('i' + id);
-    }
+    const before = status && status.movable;
     status = next;
+    // The calls that can move changed: their lines offer it, or no longer.
+    C.movableChanged(before, status && status.movable, (id) => stale.add('i' + id), draw);
     renderStatus();
     if (JSON.stringify(asked) !== JSON.stringify(status.question)) renderAsk();
     renderSettings();

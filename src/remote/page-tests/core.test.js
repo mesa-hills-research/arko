@@ -334,3 +334,27 @@ test('a running call that can move offers it, and a running job offers Stop', ()
   store.job({ id: 'j1', state: 'finished', call: moved.id });
   assert.deepEqual(core.callActions(moved, store, []), { move: false, stop: null });
 });
+
+test('a call that can move, or no longer can, has its line drawn again at once', () => {
+  const stale = [];
+  let draws = 0;
+  const changed = (before, after) =>
+    core.movableChanged(before, after, (id) => stale.push(id), () => {
+      draws += 1;
+    });
+  // A call drawn before it could move offers it from the status that says so.
+  assert.equal(changed(undefined, [3]), true);
+  assert.deepEqual(stale, [3]);
+  assert.equal(draws, 1);
+  assert.equal(changed([3], [3, 5]), true);
+  assert.deepEqual(stale, [3, 5]);
+  assert.equal(draws, 2);
+  // One that moved or ended no longer does.
+  assert.equal(changed([3, 5], [5]), true);
+  assert.deepEqual(stale, [3, 5, 3]);
+  assert.equal(draws, 3);
+  // A status that changes nothing draws nothing.
+  assert.equal(changed([5], [5]), false);
+  assert.equal(changed(undefined, []), false);
+  assert.equal(draws, 3);
+});

@@ -145,6 +145,26 @@
     return actions;
   }
 
+  /**
+   * After a status, the calls that can now move to the background, or no
+   * longer can: `stale(id)` for each, whose line changes, then one
+   * `redraw()`, so a running call offers Move to background as soon as it
+   * can move. Returns whether any changed.
+   */
+  function movableChanged(before, after, stale, redraw) {
+    const was = before || [];
+    const is = after || [];
+    let changed = false;
+    for (const id of was.concat(is)) {
+      if (was.includes(id) !== is.includes(id)) {
+        stale(id);
+        changed = true;
+      }
+    }
+    if (changed) redraw();
+    return changed;
+  }
+
   // ----- views -----
 
   /** Whether a notice (or a failed call) is a warning or an error. */
@@ -710,6 +730,7 @@
     BUDGET,
     Store,
     callActions,
+    movableChanged,
     layout,
     QUIET_MS,
     motion,
