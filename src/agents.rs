@@ -327,16 +327,23 @@ pub const NO_LIMIT: u32 = u32::MAX;
 /// misses.
 pub const CHATGPT_HANDOVER_ROOM: usize = 22_000;
 
+/// The handover size of an agent on a Claude model that accepts 1M tokens,
+/// by API key or in Claude Code, which is the most `/handover-at` takes
+/// there.
+pub const CLAUDE_HANDOVER: usize = 950_000;
+
 /// The input size, in tokens, at which an agent on `model` hands over
 /// unless `--handover-at` says otherwise, in a session that reaches OpenAI
 /// models by `openai_auth`. An OpenAI model on the ChatGPT login hands over
 /// [`CHATGPT_HANDOVER_ROOM`] below what that login's backend accepts
 /// ([`CHATGPT_OAUTH_MAX_INPUT_TOKENS`](arko_ai::input_limit::CHATGPT_OAUTH_MAX_INPUT_TOKENS),
-/// 272k, less than the API's limit), so at 250k. Others hand over at 500k
-/// on Claude models (by API key, on OpenRouter or in Claude Code), 200k on
-/// the rest, and at most 80% of what the model accepts;
-/// [`providers::UNKNOWN_LIMIT_HANDOVER`] when that isn't known (an
-/// OpenRouter model without its catalog).
+/// 272k, less than the API's limit), so at 250k. A Claude model by API
+/// key or in Claude Code hands over (or compacts) at [`CLAUDE_HANDOVER`],
+/// or at 95% of what it accepts when that is less (the most
+/// [`max_handover`] allows). Others hand over at 500k on Claude models on
+/// OpenRouter, 200k on the rest, and at most 80% of what the model
+/// accepts, or at [`providers::UNKNOWN_LIMIT_HANDOVER`] when that isn't
+/// known (an OpenRouter model without its catalog).
 pub fn default_handover(model: &Model, openai_auth: Option<OpenAiAuth>) -> usize {
     let chatgpt = on_chatgpt(model, openai_auth);
     let Some(limit) = effective_max_input_tokens(model, chatgpt) else {
@@ -345,7 +352,7 @@ pub fn default_handover(model: &Model, openai_auth: Option<OpenAiAuth>) -> usize
     let most = limit / 5 * 4;
     match model.provider {
         _ if chatgpt => limit.saturating_sub(CHATGPT_HANDOVER_ROOM),
-        Provider::Anthropic | Provider::ClaudeCode => most.min(500_000),
+        Provider::Anthropic | Provider::ClaudeCode => (limit / 20 * 19).min(CLAUDE_HANDOVER),
         Provider::OpenRouter if providers::is_claude_slug(&model.id) => most.min(500_000),
         _ => most.min(200_000),
     }
@@ -1378,21 +1385,39 @@ mod tests {
     }
 
     #[test]
-    fn claude_models_hand_over_at_500k_chatgpt_at_250k_and_others_at_200k() {
+    fn claude_models_hand_over_at_950k_chatgpt_at_250k_and_others_at_200k() {
+        // By API key and in Claude Code, the most /handover-at takes, which
+        // is 95% of what the model accepts and 950k on the 1M models.
         let opus = resolve_model("opus").unwrap();
-        assert_eq!(default_handover(&opus, None), 500_000);
-        assert_eq!(default_handover(&opus, Some(OpenAiAuth::ChatGpt)), 500_000);
+        let in_cc = resolve_model("cc:opus").unwrap();
+        for claude in [&opus, &in_cc] {
+            assert_eq!(default_handover(claude, None), CLAUDE_HANDOVER);
+            assert_eq!(
+                default_handover(claude, None),
+                max_handover(claude, None).unwrap()
+            );
+            let mut small = claude.clone();
+            small.max_input_tokens = 200_000;
+            assert_eq!(default_handover(&small, None), 190_000);
+            let mut large = claude.clone();
+            large.max_input_tokens = 2_000_000;
+            assert_eq!(default_handover(&large, None), CLAUDE_HANDOVER);
+        }
+        assert_eq!(
+            default_handover(&opus, Some(OpenAiAuth::ChatGpt)),
+            CLAUDE_HANDOVER
+        );
         let sol = resolve_model("sol").unwrap();
         // The ChatGPT backend's 272k, less the room: not the API's limit,
         // which an API key has.
         assert!(sol.max_input_tokens > 272_000);
         assert_eq!(default_handover(&sol, Some(OpenAiAuth::ChatGpt)), 250_000);
         assert_eq!(default_handover(&sol, Some(OpenAiAuth::ApiKey)), 200_000);
-        // Never past 80% of what the model accepts.
-        let mut small = opus.clone();
-        small.max_input_tokens = 200_000;
-        assert_eq!(default_handover(&small, None), 160_000);
+        // Off Claude, never past 80% of what the model accepts, and on the
+        // ChatGPT login the room below what it accepts.
         let mut small = sol.clone();
+        small.max_input_tokens = 200_000;
+        assert_eq!(default_handover(&small, Some(OpenAiAuth::ApiKey)), 160_000);
         small.max_input_tokens = 128_000;
         assert_eq!(default_handover(&small, Some(OpenAiAuth::ChatGpt)), 106_000);
         // The largest size /handover-at takes: 95% of what the model
@@ -1412,7 +1437,7 @@ mod tests {
         let worker = model("sol", false);
         let settings = AgentSettings::for_test(&main, &worker);
         let handover = |config: &AgentConfig| config.handover.clone().unwrap().at_input_tokens;
-        assert_eq!(handover(&main_config(&settings).unwrap()), Some(500_000));
+        assert_eq!(handover(&main_config(&settings).unwrap()), Some(950_000));
         // A session saved before it was set per model uses its own size.
         assert_eq!(handover(&worker_config(&settings).unwrap()), Some(200_000));
     }

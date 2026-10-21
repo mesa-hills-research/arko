@@ -1719,11 +1719,11 @@ mod tests {
     fn handovers_follow_the_model_s_limit_and_a_fallback_when_unknown() {
         assert_eq!(
             default_handover(&resolve_model("opus").unwrap(), None),
-            500_000
+            950_000
         );
         assert_eq!(
             default_handover(&resolve_model("cc:fable").unwrap(), None),
-            500_000
+            950_000
         );
         assert_eq!(
             default_handover(&resolve_model("sol").unwrap(), None),
@@ -1779,7 +1779,11 @@ mod tests {
         );
         let notes = apply_catalog(&mut session, Ok(&catalog), false).unwrap();
         assert!(notes.is_empty(), "{notes:?}");
-        assert_eq!(session.main.handover_at, Some(500_000));
+        assert_eq!(
+            session.main.handover_at,
+            Some(500_000),
+            "Claude on OpenRouter"
+        );
         assert_eq!(session.worker.handover_at, Some(102_400), "80% of 128k");
         assert_eq!(session.handover_at, 500_000);
 
@@ -1828,7 +1832,7 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
-        assert_eq!(session.main.handover_at, Some(500_000));
+        assert_eq!(session.main.handover_at, Some(950_000));
     }
 
     /// The catalog is read from OpenRouter's public endpoint: a local

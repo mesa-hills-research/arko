@@ -798,7 +798,7 @@ mod tests {
             effort: Effort::Xhigh,
             fast: true,
             cache_1h: true,
-            handover_at: Some(500_000),
+            handover_at: Some(950_000),
         };
         let gemini = providers::resolve_model("gemini").unwrap();
         let on_gemini = switched(&opus, &gemini, Effort::High, None);
@@ -806,10 +806,19 @@ mod tests {
         assert!(!on_gemini.fast, "Gemini has no fast mode");
         assert!(!on_gemini.cache_1h, "nor Anthropic's cache");
         assert_eq!(on_gemini.handover_at, Some(200_000), "the model's own size");
+        // And back, to the size of a Claude model.
+        let back = switched(
+            &on_gemini,
+            &providers::resolve_model("opus").unwrap(),
+            Effort::Xhigh,
+            None,
+        );
+        assert_eq!(back.handover_at, Some(950_000));
         let cc = providers::resolve_model("cc:opus").unwrap();
         let on_cc = switched(&opus, &cc, Effort::Xhigh, None);
         assert!(on_cc.fast);
         assert!(!on_cc.cache_1h, "Claude Code chooses its own");
+        assert_eq!(on_cc.handover_at, Some(950_000));
         // A size given (--handover-at) stays, up to 95% of what the new
         // model accepts.
         let given = ModelSettings {
