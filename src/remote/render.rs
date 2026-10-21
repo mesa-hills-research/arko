@@ -172,6 +172,19 @@ fn long(text: &str, limit: usize) -> String {
 /// its job's first characters: `in the background · job 4d2c1a9b`.
 pub const MOVED_OUTCOME: &str = "in the background · job ";
 
+/// How the line of a `monitor_start` call starts while its monitor runs:
+/// `monitoring · 3 alerts`.
+pub const MONITORING: &str = "monitoring";
+
+/// The monitor a `monitor_start` call's result says it started ("Monitor
+/// 7f3e… started." or "Monitor 7f3e… ended at once, …"), and whether it
+/// still runs.
+fn started_monitor(output: &str) -> Option<(Uuid, bool)> {
+    let rest = output.strip_prefix("Monitor ")?;
+    let (id, rest) = rest.split_once(' ')?;
+    Some((id.parse().ok()?, rest.starts_with("started.")))
+}
+
 /// The job a call's result says it moved to, when it moved to the
 /// background (`in the background as job 4d2c…, 95.3 s`).
 pub fn moved_job(output: &str) -> Option<Uuid> {
@@ -285,6 +298,14 @@ pub fn outcome(tool: &str, output: &str) -> Outcome {
         let mut outcome = Outcome::ok(moved_outcome(job));
         outcome.output = Some(output.into());
         outcome.job = Some(job);
+        return outcome;
+    }
+    if tool == "monitor_start"
+        && let Some((monitor, running)) = started_monitor(output)
+    {
+        let mut outcome = Outcome::ok(if running { MONITORING } else { "ended at once" });
+        outcome.output = Some(output.into());
+        outcome.job = Some(monitor);
         return outcome;
     }
     let mut outcome = brief(tool, output);

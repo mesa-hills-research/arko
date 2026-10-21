@@ -1124,9 +1124,21 @@ async fn the_first_message_after_a_quit_names_the_jobs_that_stopped() {
         )
         .unwrap()
         .job_id;
+    let monitor = managers
+        .jobs
+        .start_monitor(
+            &arko_agents::TaskContext::new(run, MAIN, "", &workspace),
+            "sleep 62",
+            arko_agents::terminal::MonitorOptions::lines(Some("ERROR".into())),
+        )
+        .await
+        .unwrap()
+        .job_id;
+    // The quit popup names a monitor as one.
+    assert_eq!(harness.job_names()[&monitor], "monitor · sleep 62");
     // The user quits, and agrees to stop them.
     assert!(!harness.may_exit(Some(Vec::new())));
-    assert_eq!(harness.jobs_shown.len(), 3);
+    assert_eq!(harness.jobs_shown.len(), 4);
     let agreed = harness.jobs_shown.clone();
     assert!(harness.may_exit(Some(agreed)));
     managers.shutdown().await;
@@ -1170,6 +1182,13 @@ async fn the_first_message_after_a_quit_names_the_jobs_that_stopped() {
     );
     assert!(
         body.contains(&format!("- `sleep 60` (job {}…)", short(command))),
+        "{body}"
+    );
+    assert!(
+        body.contains(&format!(
+            "- the monitor of `sleep 62` (lines that match ERROR, job {}…)",
+            short(monitor)
+        )),
         "{body}"
     );
     assert!(!body.contains("sleep 61"), "{body}");
@@ -1471,4 +1490,60 @@ fn the_monitor_wakes_flag_sets_a_new_sessions_time() {
         crate::monitors::Wakes(None)
     );
     assert!(Args::try_parse_from(["arko", "--monitor-wakes", "soon"]).is_err());
+}
+
+/// `/jobs` lists a monitor with what it watches, its alerts and when it
+/// ends, and `/jobs stop N` stops it for the user.
+#[cfg(unix)]
+#[tokio::test]
+async fn jobs_lists_and_stops_a_monitor() {
+    let server =
+        ModelServer::start(Arc::new(|_, _| Box::pin(async { complete("m1", "Done.") }))).await;
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
+    let managers = equip(&mut harness, &mut inputs, 0);
+    let workspace = temp.path().join("work");
+    let monitor = managers
+        .jobs
+        .start_monitor(
+            &arko_agents::TaskContext::new(uuid::Uuid::new_v4(), MAIN, "", &workspace),
+            "sleep 60",
+            arko_agents::terminal::MonitorOptions::lines(Some("ERROR".into())),
+        )
+        .await
+        .unwrap()
+        .job_id;
+    harness.jobs_command("");
+    harness.jobs_command("stop 1");
+    let outputs: Vec<String> = shown(&harness.feed)
+        .into_iter()
+        .filter(|(kind, ..)| kind == "output")
+        .map(|(_, text, _)| text)
+        .collect();
+    assert!(
+        outputs.iter().any(|line| line.contains(
+            "  monitor  sleep 60 · lines that match ERROR · ends in 30 min"
+        )),
+        "{outputs:?}"
+    );
+    assert!(
+        outputs.iter().any(|line| line == "Stopped job 1 (sleep 60)."),
+        "{outputs:?}"
+    );
+    let status = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let status = managers
+                .jobs
+                .jobs()
+                .into_iter()
+                .find(|job| job.job_id == monitor);
+            if status.is_none() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await;
+    assert!(status.is_ok(), "the monitor stopped");
+    managers.shutdown().await;
 }

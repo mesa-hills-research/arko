@@ -82,6 +82,27 @@ impl Managers {
     }
 }
 
+/// What `/jobs` says of a running monitor: what it watches, its alerts and
+/// when it ends ("lines that match error · 3 alerts · ends in 22 min").
+fn monitor_about(info: &arko_agents::terminal::MonitorInfo) -> String {
+    let mut parts = vec![info.trigger.watching()];
+    match info.alerts {
+        0 => {}
+        1 => parts.push("1 alert".into()),
+        count => parts.push(format!("{count} alerts")),
+    }
+    let left = info
+        .expires_at
+        .duration_since(std::time::SystemTime::now())
+        .unwrap_or_default();
+    parts.push(if left < Duration::from_secs(60) {
+        "ends in less than a minute".to_string()
+    } else {
+        format!("ends in {} min", (left.as_secs() + 30) / 60)
+    });
+    parts.join(" · ")
+}
+
 /// When the main agent's prompt cache expires: its latest request, or the
 /// latest refresh that kept it warm, plus its lifetime, as the status line
 /// counts them. `None` while either is unknown.
@@ -3649,15 +3670,22 @@ impl Harness {
         jobs_label(text.as_deref().unwrap_or(&job.label))
     }
 
-    /// The names of the background jobs running (see
-    /// [`job_name`](Self::job_name)), by job.
+    /// The names of the background jobs running, for the quit popup (see
+    /// [`job_name`](Self::job_name)), by job. A monitor's says it is one.
     fn job_names(&self) -> std::collections::HashMap<uuid::Uuid, String> {
         self.background
             .manager()
             .map(|jobs| jobs.jobs())
             .unwrap_or_default()
             .iter()
-            .map(|job| (job.job_id, self.job_name(job)))
+            .map(|job| {
+                let name = self.job_name(job);
+                let name = match job.kind {
+                    arko_agents::terminal::JobKind::Monitor(_) => format!("monitor · {name}"),
+                    _ => name,
+                };
+                (job.job_id, name)
+            })
             .collect()
     }
 
@@ -3712,14 +3740,18 @@ impl Harness {
                     .zip(&self.jobs_listed)
                     .enumerate()
                     .map(|(index, ((job, agent), (_, name)))| {
-                        let kind = match job.kind {
-                            arko_agents::terminal::JobKind::Call { .. } => "call",
-                            _ => "command",
+                        let (kind, about) = match &job.kind {
+                            arko_agents::terminal::JobKind::Call { .. } => {
+                                ("call", remote::duration_words(job.started.elapsed()))
+                            }
+                            arko_agents::terminal::JobKind::Monitor(info) => {
+                                ("monitor", monitor_about(info))
+                            }
+                            _ => ("command", remote::duration_words(job.started.elapsed())),
                         };
                         format!(
-                            "{:<3}{agent:<width$}  {kind:<8} {name} · {}",
-                            index + 1,
-                            remote::duration_words(job.started.elapsed()),
+                            "{:<3}{agent:<width$}  {kind:<8} {name} · {about}",
+                            index + 1
                         )
                     })
                     .collect();
@@ -3967,6 +3999,11 @@ impl Harness {
                     arko_agents::terminal::JobKind::Call { tool_name } => {
                         format!("- your {tool_name} call (job {id}…)")
                     }
+                    arko_agents::terminal::JobKind::Monitor(info) => format!(
+                        "- the monitor of `{}` ({}, job {id}…)",
+                        jobs_label(&job.label),
+                        info.trigger.watching()
+                    ),
                     _ if job.label.trim().is_empty() => format!("- a command (job {id}…)"),
                     _ => format!("- `{}` (job {id}…)", jobs_label(&job.label)),
                 }

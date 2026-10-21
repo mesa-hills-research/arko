@@ -1283,6 +1283,7 @@ mod tests {
             kind: super::super::JobKind::Call,
             label: "index_create".into(),
             started_at: 0,
+            monitor: None,
         });
         let events = read_until(&mut stream, &mut buffer, |name, _| name == "job").await;
         let (_, summary) = events.last().unwrap();

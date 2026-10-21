@@ -141,7 +141,7 @@ pub const COMMANDS: &[Command] = &[
     Command {
         name: "/jobs",
         args: "[stop N|all]",
-        about: "the background jobs, and stopping them (/jobs stop 2, /jobs stop all)",
+        about: "the background jobs and monitors, and stopping them (/jobs stop 2, /jobs stop all)",
         aliases: &[],
         runs: Runs::Session,
     },

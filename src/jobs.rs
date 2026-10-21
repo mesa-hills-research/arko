@@ -1,6 +1,6 @@
 //! The session's background jobs as the feed shows them: the commands and
-//! calls that moved to the background, and the commands `terminal_start`
-//! started. [`follow`] keeps the feed's [`JobSummary`](crate::remote::JobSummary)s
+//! calls that moved to the background, the commands `terminal_start`
+//! started, and the monitors `monitor_start` started. [`follow`] keeps the feed's [`JobSummary`](crate::remote::JobSummary)s
 //! in step with the terminal manager, which runs them.
 
 use std::collections::HashMap;
@@ -22,8 +22,9 @@ const WHILE_IDLE: Duration = Duration::from_secs(5);
 
 /// Keeps `feed`'s jobs in step with `jobs`, the session's terminal
 /// manager: a job that started or moved to the background is added, with
-/// the call that made it and its agent as `agent_of` names it, and one that
-/// ended says how. Runs until the manager goes or it is aborted.
+/// the call that made it and its agent as `agent_of` names it, a monitor
+/// says its alerts and its end as they change, and one that ended says
+/// how. Runs until the manager goes or it is aborted.
 pub(crate) fn follow(
     feed: remote::Feed,
     jobs: Weak<TerminalManager>,
@@ -35,6 +36,8 @@ pub(crate) fn follow(
     tokio::spawn(async move {
         // The jobs running, as the feed has them, with their owners.
         let mut known: HashMap<Uuid, Uuid> = HashMap::new();
+        // The monitors' alerts and ends, as the feed has them.
+        let mut monitors: HashMap<Uuid, (u32, i64)> = HashMap::new();
         // A job that finished, which may have ended before it was seen run.
         let mut just_ended: Option<terminal::JobFinished> = None;
         loop {
@@ -42,7 +45,7 @@ pub(crate) fn follow(
                 let Some(jobs) = jobs.upgrade() else {
                     break;
                 };
-                sync(&feed, &agent_of, &jobs, &mut known);
+                sync(&feed, &agent_of, &jobs, &mut known, &mut monitors);
                 if let Some(job) = just_ended.take()
                     && !known.contains_key(&job.job_id)
                 {
@@ -98,13 +101,21 @@ fn sync(
     agent_of: &dyn Fn(Uuid) -> String,
     jobs: &TerminalManager,
     known: &mut HashMap<Uuid, Uuid>,
+    monitors: &mut HashMap<Uuid, (u32, i64)>,
 ) {
     let running = jobs.jobs();
     for job in &running {
         if known.insert(job.job_id, job.owner).is_none() {
             feed.job_started(start(agent_of, job));
         }
+        if let terminal::JobKind::Monitor(info) = &job.kind {
+            let now = (info.alerts, unix_ms(info.expires_at));
+            if monitors.insert(job.job_id, now) != Some(now) {
+                feed.job_changed(job.job_id, now.0, now.1);
+            }
+        }
     }
+    monitors.retain(|id, _| running.iter().any(|job| job.job_id == *id));
     let ended: Vec<(Uuid, Uuid)> = known
         .iter()
         .filter(|(id, _)| !running.iter().any(|job| job.job_id == **id))
@@ -131,11 +142,25 @@ fn start(agent_of: &dyn Fn(Uuid) -> String, job: &JobInfo) -> JobStart {
         tool_call: job.tool_call_id,
         kind: match job.kind {
             terminal::JobKind::Call { .. } => remote::JobKind::Call,
+            terminal::JobKind::Monitor(_) => remote::JobKind::Monitor,
             _ => remote::JobKind::Command,
         },
         label: job.label.clone(),
         started_at: started,
+        monitor: match &job.kind {
+            terminal::JobKind::Monitor(info) => {
+                Some((info.trigger.watching(), unix_ms(info.expires_at)))
+            }
+            _ => None,
+        },
     }
+}
+
+/// `at` in Unix milliseconds.
+fn unix_ms(at: std::time::SystemTime) -> i64 {
+    at.duration_since(std::time::UNIX_EPOCH).map_or(0, |since| {
+        i64::try_from(since.as_millis()).unwrap_or(i64::MAX)
+    })
 }
 
 /// How a job that ended did, for the feed, with a few words of it.
@@ -151,6 +176,10 @@ pub(crate) fn ending(job: &terminal::TerminalSnapshot) -> (remote::JobState, Opt
                 (None, None) => None,
             },
         ),
+        // A monitor's time was up.
+        JobState::TimedOut if job.error.as_deref() == Some("expired") => {
+            (remote::JobState::Expired, None)
+        }
         JobState::TimedOut => (remote::JobState::Failed, Some("timed out".into())),
         JobState::Cancelled => (remote::JobState::Stopped, job.error.clone()),
         JobState::Interrupted => (remote::JobState::Interrupted, None),
@@ -201,6 +230,29 @@ pub(crate) fn follower(gauges: &Arc<Gauges>, feed: &remote::Feed) -> tokio::task
 mod tests {
     use super::*;
     use arko_agents::AgentEvent;
+
+    /// A monitor whose time was up reads as expired, and other jobs that
+    /// ran out of time as failed.
+    #[test]
+    fn an_expired_monitor_reads_as_expired() {
+        let snapshot = |error: &str| -> terminal::TerminalSnapshot {
+            serde_json::from_value(serde_json::json!({
+                "job_id": Uuid::nil(), "revision": 1, "state": "timed_out", "input": null,
+                "exit_code": null, "error": error,
+                "output": {"start": 0, "end": 0, "available_end": 0, "gap": false, "text": ""},
+                "log_path": "/tmp/output.log", "log_truncated": false, "terminal": true,
+            }))
+            .unwrap()
+        };
+        assert_eq!(
+            ending(&snapshot("expired")),
+            (remote::JobState::Expired, None)
+        );
+        assert_eq!(
+            ending(&snapshot("timed out")),
+            (remote::JobState::Failed, Some("timed out".into()))
+        );
+    }
 
     fn event(event: AgentEvent) -> arko_workflows::WorkflowEvent {
         arko_workflows::WorkflowEvent {
