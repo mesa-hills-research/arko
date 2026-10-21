@@ -156,6 +156,63 @@ fn start(agent_of: &dyn Fn(Uuid) -> String, job: &JobInfo) -> JobStart {
     }
 }
 
+/// A job's label on one line: its first line, at most 80 characters, with
+/// `…` when more is left out.
+pub(crate) fn label(label: &str) -> String {
+    let line = label.lines().next().unwrap_or_default().trim();
+    let cut: String = line.chars().take(80).collect();
+    if cut.len() < line.len() || label.trim().lines().count() > 1 {
+        format!("{cut}…")
+    } else {
+        cut
+    }
+}
+
+/// A job as `/jobs` and the quit popup name it: its command, or a moved
+/// call as the transcript shows it, on one line.
+pub(crate) fn job_name(feed: &remote::Feed, job: &JobInfo) -> String {
+    let text = match (&job.kind, job.tool_call_id) {
+        (terminal::JobKind::Call { .. }, Some(call)) => feed.call_text(call),
+        _ => None,
+    };
+    label(text.as_deref().unwrap_or(&job.label))
+}
+
+/// The names the quit popup shows of the jobs `jobs` runs, by job: as
+/// [`job_name`] has them, a monitor's saying it is one ("monitor · npm run
+/// dev").
+pub(crate) fn popup_names(feed: &remote::Feed, jobs: &TerminalManager) -> HashMap<Uuid, String> {
+    jobs.jobs()
+        .iter()
+        .map(|job| {
+            let name = job_name(feed, job);
+            let name = match job.kind {
+                terminal::JobKind::Monitor(_) => format!("monitor · {name}"),
+                _ => name,
+            };
+            (job.job_id, name)
+        })
+        .collect()
+}
+
+/// `running`, the jobs running in the background, with the names the quit
+/// popup shows (see [`popup_names`]).
+pub(crate) fn named(
+    feed: Option<&remote::Feed>,
+    jobs: Option<&TerminalManager>,
+    mut running: Vec<terminal::BackgroundJob>,
+) -> Vec<terminal::BackgroundJob> {
+    if let (Some(feed), Some(jobs)) = (feed, jobs) {
+        let names = popup_names(feed, jobs);
+        for job in &mut running {
+            if let Some(name) = names.get(&job.job_id) {
+                job.command = name.clone();
+            }
+        }
+    }
+    running
+}
+
 /// `at` in Unix milliseconds.
 fn unix_ms(at: std::time::SystemTime) -> i64 {
     at.duration_since(std::time::UNIX_EPOCH).map_or(0, |since| {
@@ -230,6 +287,38 @@ pub(crate) fn follower(gauges: &Arc<Gauges>, feed: &remote::Feed) -> tokio::task
 mod tests {
     use super::*;
     use arko_agents::AgentEvent;
+
+    /// The jobs the quit popup shows are named as /jobs names them, a
+    /// monitor's saying it is one, also in the status a front end reads.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_quit_popups_jobs_say_what_they_are() {
+        let temp = tempfile::tempdir().unwrap();
+        let jobs =
+            TerminalManager::new(terminal::TerminalConfig::new(temp.path().join("jobs"))).unwrap();
+        let mut limits = terminal::MonitorLimits::default();
+        limits.start_wait = Duration::ZERO;
+        jobs.set_monitor_limits(limits).unwrap();
+        let feed = remote::Feed::new("main");
+        let monitor = jobs
+            .start_monitor(
+                &arko_agents::TaskContext::new(Uuid::new_v4(), "main", "", temp.path()),
+                "sleep 60",
+                terminal::MonitorOptions::lines(Some("ERROR".into())),
+            )
+            .await
+            .unwrap()
+            .job_id;
+        let shown = named(Some(&feed), Some(&jobs), jobs.background_jobs());
+        assert_eq!(
+            shown
+                .iter()
+                .map(|job| (job.job_id, job.command.as_str()))
+                .collect::<Vec<_>>(),
+            [(monitor, "monitor · sleep 60")]
+        );
+        jobs.shutdown().await;
+    }
 
     /// A monitor whose time was up reads as expired, and other jobs that
     /// ran out of time as failed.

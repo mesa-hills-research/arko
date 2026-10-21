@@ -3660,33 +3660,18 @@ impl Harness {
         }
     }
 
-    /// A job as `/jobs` and the quit popup name it: its command, or a moved
-    /// call as the transcript shows it, on one line.
+    /// A job as `/jobs` names it (see [`crate::jobs::job_name`]).
     fn job_name(&self, job: &arko_agents::terminal::JobInfo) -> String {
-        let text = match (&job.kind, job.tool_call_id) {
-            (arko_agents::terminal::JobKind::Call { .. }, Some(call)) => self.feed.call_text(call),
-            _ => None,
-        };
-        jobs_label(text.as_deref().unwrap_or(&job.label))
+        crate::jobs::job_name(&self.feed, job)
     }
 
     /// The names of the background jobs running, for the quit popup (see
-    /// [`job_name`](Self::job_name)), by job. A monitor's says it is one.
+    /// [`crate::jobs::popup_names`]), by job.
     fn job_names(&self) -> std::collections::HashMap<uuid::Uuid, String> {
         self.background
             .manager()
-            .map(|jobs| jobs.jobs())
+            .map(|jobs| crate::jobs::popup_names(&self.feed, &jobs))
             .unwrap_or_default()
-            .iter()
-            .map(|job| {
-                let name = self.job_name(job);
-                let name = match job.kind {
-                    arko_agents::terminal::JobKind::Monitor(_) => format!("monitor · {name}"),
-                    _ => name,
-                };
-                (job.job_id, name)
-            })
-            .collect()
     }
 
     /// The web page's Move to background or Stop: done, and what didn't
@@ -4245,13 +4230,7 @@ const STOPPED_JOBS: &str = "# Background jobs\n\nArko was closed, so these backg
 
 /// A job's command or tool as `/jobs` shows it, on one line.
 fn jobs_label(label: &str) -> String {
-    let line = label.lines().next().unwrap_or_default().trim();
-    let cut: String = line.chars().take(80).collect();
-    if cut.len() < line.len() || label.trim().lines().count() > 1 {
-        format!("{cut}…")
-    } else {
-        cut
-    }
+    crate::jobs::label(label)
 }
 
 /// What the user is told of when shell commands move to the background,

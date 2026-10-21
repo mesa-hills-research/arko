@@ -336,7 +336,12 @@ impl remote::Meter for Gauges {
                 (Some(feed), Some(jobs)) => crate::jobs::movable(feed, &jobs),
                 _ => Vec::new(),
             },
-            jobs: self.background.jobs(),
+            // As the quit popup names them, which a reading replaces.
+            jobs: crate::jobs::named(
+                self.feed.as_ref(),
+                self.background.manager().as_deref(),
+                self.background.jobs(),
+            ),
             models: {
                 let mut models = lock(&self.models).clone();
                 models.reachable = self.keys.reachable();
