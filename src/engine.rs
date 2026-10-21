@@ -106,8 +106,8 @@ pub struct Seam {
     pub meter: Arc<dyn remote::Meter>,
     /// The same figures, sent as they change.
     pub status: tokio::sync::watch::Receiver<Arc<remote::Reading>>,
-    /// What `/cost`, `/session`, `/mcp`, `/skills` and `/workers` say, as
-    /// data.
+    /// What `/cost`, `/session`, `/mcp`, `/skills` and `/workers` say, and
+    /// the search indexes, as data.
     pub details: Arc<crate::details::Details>,
     /// The user's input.
     pub input: mpsc::UnboundedSender<Input>,

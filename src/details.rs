@@ -1,7 +1,8 @@
 //! A session's details as data, for a front end that shows what `/cost`,
-//! `/session`, `/mcp`, `/skills` and `/workers` say in its own way. The
-//! commands' text is made from the same facts. Each getter briefly reads
-//! files or the cost ledger, so call them off a UI thread.
+//! `/session`, `/mcp`, `/skills` and `/workers` say in its own way, and the
+//! search indexes the banner lists. The commands' text is made from the same
+//! facts. Each getter briefly reads files or the cost ledger, so call them
+//! off a UI thread.
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -49,6 +50,149 @@ pub fn project_text(files: project::Files, workers: Option<bool>) -> String {
         files.name(),
         files.describe()
     )
+}
+
+/// A search index of the session's workspace, one whose folder holds the
+/// workspace or lies in it. These are the indexes the banner lists.
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub struct IndexFacts {
+    /// The name the agents' tools and `arko index` use.
+    pub name: String,
+    pub kind: IndexKind,
+    /// The indexed folder.
+    pub root: PathBuf,
+    /// The index is set to stay current as files change while Arko runs.
+    pub monitor: bool,
+    /// Who keeps it current now.
+    pub watch: IndexWatch,
+    /// Its chunks, or `None` when it hasn't been built or its state can't
+    /// be read.
+    pub chunks: Option<u64>,
+    /// When it was last built, and how many files that build indexed.
+    pub built: Option<DateTime<Utc>>,
+    pub files: Option<u64>,
+    /// Its embeddings for semantic search, or `None` for an index searched
+    /// by keywords only.
+    pub embeddings: Option<IndexEmbeddings>,
+    /// Why its last build or embedding run failed, until one succeeds.
+    pub last_error: Option<String>,
+}
+
+impl IndexFacts {
+    /// An Arko keeps the index current as files change (this one or
+    /// another), which is what the banner calls monitored.
+    pub fn monitored(&self) -> bool {
+        matches!(self.watch, IndexWatch::Here | IndexWatch::Elsewhere)
+    }
+}
+
+/// What an index holds, which chooses its embedding model.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum IndexKind {
+    /// Source code.
+    Code,
+    /// Prose, such as Markdown and reStructuredText.
+    Docs,
+}
+
+impl IndexKind {
+    /// `code` or `docs`, as the banner and the agents' tools say it.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            IndexKind::Code => "code",
+            IndexKind::Docs => "docs",
+        }
+    }
+}
+
+/// Who keeps an index current as files change.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum IndexWatch {
+    /// No Arko watches it now, so a search brings it up to date first.
+    Off,
+    /// This Arko watches it (or is starting to).
+    Here,
+    /// Another Arko watches it.
+    Elsewhere,
+    /// This Arko's watcher failed, for the reason given, and tries again.
+    Failed(String),
+}
+
+/// An index's embeddings.
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub struct IndexEmbeddings {
+    /// The embedding model, such as `voyage-code-4`.
+    pub model: String,
+    /// The chunks that have a vector, of the index's
+    /// [`chunks`](IndexFacts::chunks).
+    pub embedded: u64,
+    /// Every chunk that can have a vector has one. Chunks too long for the
+    /// model have none.
+    pub complete: bool,
+    /// An embedding run is adding vectors now.
+    pub running: bool,
+    /// The last run stopped at its token cap, and an explicit run
+    /// continues it.
+    pub cap_reached: bool,
+    /// Arko has no Voyage key, so the index is searched by keywords until
+    /// one is added.
+    pub needs_key: bool,
+    /// The tokens spent embedding this index in all, and what they cost in
+    /// dollars.
+    pub tokens: u64,
+    pub dollars: f64,
+}
+
+/// The facts of the indexes `indexes` reads as the workspace's.
+pub(crate) fn index_facts(indexes: &index::Indexes) -> Vec<IndexFacts> {
+    indexes
+        .workspace_reports()
+        .into_iter()
+        .filter_map(|report| {
+            let manifest = report.manifest.ok()?;
+            let watch = match report.watch {
+                index::WatchState::Off => IndexWatch::Off,
+                index::WatchState::Starting | index::WatchState::Watching { .. } => {
+                    IndexWatch::Here
+                }
+                index::WatchState::Elsewhere => IndexWatch::Elsewhere,
+                index::WatchState::Failed(why) => IndexWatch::Failed(why),
+            };
+            let embeddings = manifest.embed.then(|| {
+                let dense = report.dense.as_ref();
+                IndexEmbeddings {
+                    model: dense.map_or(manifest.model.clone(), |info| info.embedder.model.clone()),
+                    embedded: dense.map_or(0, |info| info.embedded),
+                    complete: dense
+                        .is_some_and(|info| info.state == arko_index::dense::EmbedState::Complete),
+                    running: report.embedding_active,
+                    cap_reached: manifest.cap_reached,
+                    needs_key: !report.has_key,
+                    tokens: manifest.embed_tokens,
+                    dollars: manifest.embed_cost,
+                }
+            });
+            Some(IndexFacts {
+                kind: match manifest.kind {
+                    index::Kind::Code => IndexKind::Code,
+                    index::Kind::Docs => IndexKind::Docs,
+                },
+                monitor: manifest.monitor,
+                watch,
+                chunks: report.chunks,
+                built: manifest.last_build.as_ref().and_then(|build| build.at),
+                files: manifest.last_build.as_ref().map(|build| build.files),
+                embeddings,
+                last_error: manifest.last_error,
+                name: manifest.name,
+                root: manifest.root,
+            })
+        })
+        .collect()
 }
 
 /// A session's details.
@@ -365,6 +509,13 @@ impl Details {
             folders: self.skill_folders.clone(),
             own_folder: self.root.join("skills"),
         })
+    }
+
+    /// The search indexes of the session's workspace, by name, as the
+    /// banner lists them. A chat has none, and neither does a session whose
+    /// indexes couldn't be opened.
+    pub fn indexes(&self) -> Vec<IndexFacts> {
+        self.indexes.as_deref().map(index_facts).unwrap_or_default()
     }
 
     /// The session's workers.

@@ -38,5 +38,7 @@ mod tests;
 
 #[cfg(feature = "tui")]
 pub use cli::{IndexCommand, run_command};
+pub(crate) use engine::WatchState;
 pub use engine::{Indexes, Known};
+pub(crate) use store::Kind;
 pub use tools::TOOL_NAMES;
