@@ -917,6 +917,14 @@ impl Transcript {
                     }
                 }
                 let gap = block.gap && line == 0;
+                // The thinking that streams: its label, on its first line.
+                if let Shown::Entry(entry) = block.shown
+                    && self.motion.thinking == Some(self.entries[entry].item.id)
+                    && line == usize::from(block.gap)
+                {
+                    motion::paint(buffer, (area.x, row), text_width(THINKING), theme, ms);
+                    moving = true;
+                }
                 if block.shown == Shown::Working {
                     // (Not text: the mouse finds the line above it.)
                     if !gap {
@@ -1656,7 +1664,9 @@ fn entry_lines(
             wrap::prefixed(wrap::wrap_lines(&spans, inner, 0), blank(), blank())
         }
         Kind::Thinking => {
-            let style = theme.dim().add_modifier(Modifier::ITALIC);
+            // (Upright: in italic, some terminals draw an arrow over the
+            // letter after it.)
+            let style = theme.dim();
             let mut spans = worker_prefix(item);
             spans.push(Span::styled(
                 THINKING.to_string(),
@@ -2272,12 +2282,17 @@ mod tests {
         );
     }
 
+    /// What follows the spinner at the start of `row`, if it has one.
+    fn after_spinner(row: &str) -> Option<&str> {
+        let (frames, _) = glyphs::spinner_frames(glyphs::symbols());
+        let first = row.chars().next()?;
+        let spins = frames.contains(&first.to_string().as_str());
+        spins.then(|| &row[first.len_utf8()..])
+    }
+
     /// Whether `row` is the "Working…" line, its spinner in the margin.
     fn is_working(row: &str) -> bool {
-        let (frames, _) = glyphs::spinner_frames(glyphs::symbols());
-        let mut chars = row.chars();
-        let spinner = chars.next().map(String::from).unwrap_or_default();
-        frames.contains(&spinner.as_str()) && chars.as_str() == " Working…"
+        after_spinner(row) == Some(" Working…")
     }
 
     /// While the main agent waits on its model with nothing on the screen
@@ -2304,9 +2319,16 @@ mod tests {
         assert_eq!(shown[..2], ["▎ Fix the tests", ""]);
         assert!(is_working(&shown[2]), "{shown:?}");
 
-        // Its thinking streams: the thinking shows it, but not in Messages.
+        // Its thinking streams: the thinking shows it, its label moving, but
+        // not in Messages.
         t.apply(Update::Item(item(2, Kind::Thinking, "Where to start?")));
-        assert_eq!(last(&mut t, View::Full), "  Thinking · Where to start?");
+        let thinking = last(&mut t, View::Full);
+        assert_eq!(
+            after_spinner(&thinking),
+            Some(" Thinking · Where to start?"),
+            "{thinking:?}"
+        );
+        assert!(t.drawn.moving);
         assert!(is_working(&last(&mut t, View::Messages)));
         // A call runs, then ends: the model has its result.
         let mut call = item(3, Kind::Call, "$ cargo test");
@@ -2316,6 +2338,10 @@ mod tests {
         call.status = Some(CallStatus::Ok);
         t.apply(Update::Change(call));
         let shown = rows(&mut t, &full(), 40, 5);
+        assert_eq!(
+            shown[2], "  Thinking · Where to start?",
+            "it no longer moves"
+        );
         assert_eq!(shown[3], "▸ $ cargo test · ✓", "no blank line before it");
         assert!(is_working(&shown[4]), "{shown:?}");
         assert!(is_working(&last(&mut t, View::Quiet)));
@@ -2368,6 +2394,35 @@ mod tests {
         )));
         t.working = Some(ended + 1);
         assert!(is_working(&last(&mut t, View::Full)));
+    }
+
+    /// A worker's thinking that streams moves in its own view, and open
+    /// whole (`--show-thinking`) its heading moves. Thinking a later item
+    /// followed is still, as is the thinking of a worker that ended.
+    #[test]
+    fn the_thinking_that_streams_moves() {
+        use crate::tui::app::tests::worker;
+        let mut t = Transcript::new();
+        t.set_open_thinking(true);
+        t.apply(Update::Worker(worker("r1", WorkerState::Running)));
+        t.apply(Update::Item(item(1, Kind::Thinking, "Plan.").agent("r1")));
+        let own = Filter::Worker("r1".into());
+        let shown = rows(&mut t, &own, 40, 5);
+        assert_eq!(after_spinner(&shown[2]), Some(" Thinking"), "{shown:?}");
+        assert_eq!(shown[3..], ["  Plan.", "  ↑ show the first line only"]);
+        assert!(t.drawn.moving);
+        t.apply(Update::Item(
+            item(2, Kind::Text, "Done planning.").agent("r1"),
+        ));
+        let shown = rows(&mut t, &own, 40, 7);
+        assert_eq!(shown[2], "  Thinking", "{shown:?}");
+        assert!(!t.drawn.moving);
+        t.apply(Update::Item(item(3, Kind::Thinking, "More.").agent("r1")));
+        rows(&mut t, &own, 40, 12);
+        assert!(t.drawn.moving);
+        t.apply(Update::Worker(worker("r1", WorkerState::Finished)));
+        let shown = rows(&mut t, &own, 40, 12);
+        assert!(!t.drawn.moving, "{shown:?}");
     }
 
     /// "Working…" stands where the agent's output comes next: above a

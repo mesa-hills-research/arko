@@ -90,6 +90,31 @@ mod tests {
         }
     }
 
+    /// A frame paints the spinner in the margin and lights the word where
+    /// the highlight is, and leaves the rest of the line as it was.
+    #[test]
+    fn a_frame_paints_the_spinner_and_the_highlight() {
+        use crate::tui::theme::{Catalog, DEFAULT, Depth};
+        use ratatui::layout::Rect;
+        use ratatui::style::Color;
+        use ratatui::text::Line;
+        let theme = Catalog::load(None).theme(DEFAULT, Depth::Rgb);
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 20, 1));
+        let line = Line::styled("  Working… and more", theme.dim());
+        buffer.set_line(0, 0, &line, 20);
+        // The highlight's middle is between the word's fourth and fifth
+        // columns.
+        let ms = SWEEP_MS / 2;
+        paint(&mut buffer, (0, 0), 8, &theme, ms);
+        assert_eq!(buffer[(0, 0)].symbol(), spinner(ms));
+        assert_eq!(buffer[(1, 0)].symbol(), " ");
+        let fg = |x: u16| buffer[(x, 0)].fg;
+        let lit = |x: u16| fg(x) != theme.dim && matches!(fg(x), Color::Rgb(..));
+        assert!(!lit(2) && lit(5) && lit(6) && !lit(9), "the word's middle");
+        assert_eq!(fg(12), theme.dim, "past the word");
+        assert_eq!(buffer[(2, 0)].symbol(), "W", "the word stays");
+    }
+
     /// The spinner turns as the clock goes.
     #[test]
     fn the_spinner_turns() {
