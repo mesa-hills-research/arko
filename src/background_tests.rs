@@ -1348,7 +1348,7 @@ async fn an_alert_during_the_last_request_still_wakes_the_agent() {
     assert!(alert.late && !alert.ends_soon);
     harness.deliver_alert(alert, &mut inputs).await;
     assert_eq!(summary(&harness), "The server logged an error.");
-    let bodies = bodies.lock().unwrap();
+    let bodies = bodies.lock().unwrap().clone();
     assert_eq!(bodies.len(), 3);
     assert!(
         bodies[2].contains("A monitor of yours alerted") && bodies[2].contains("ERROR boom"),
@@ -1356,7 +1356,6 @@ async fn an_alert_during_the_last_request_still_wakes_the_agent() {
         bodies[2]
     );
     assert_eq!(bodies[2].matches("\\n  ERROR boom\\n").count(), 1, "read once");
-    drop(bodies);
     managers.shutdown().await;
 }
 

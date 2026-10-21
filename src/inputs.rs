@@ -151,12 +151,9 @@ impl Inputs {
     pub(crate) fn drain_alerts(&mut self) {
         self.late_alert = None;
         if let Some(alerts) = &mut self.alerts {
-            loop {
-                match alerts.try_recv() {
-                    Ok(_) | Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {}
-                    Err(_) => break,
-                }
-            }
+            while let Ok(_) | Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) =
+                alerts.try_recv()
+            {}
         }
     }
 
