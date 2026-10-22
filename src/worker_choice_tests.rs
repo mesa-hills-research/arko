@@ -306,8 +306,10 @@ async fn a_refused_start_tells_the_main_agent_what_to_do_instead() {
 
     start_worker(&mut harness, &mut inputs, "Start on haiku.").await;
     let result = last_result(&seen);
+    // (With Claude Code signed in on the machine, it also offers cc:haiku.)
     assert!(
-        result.contains("Can't start a worker on claude-haiku-5-5. It needs ANTHROPIC_API_KEY, and this session has none. Ask the user to add one with /keys, or choose a model that worker_options lists as usable now."),
+        result.contains("Can't start a worker on claude-haiku-5-5. It needs ANTHROPIC_API_KEY, and this session has none. Ask the user to add it with /keys")
+            && result.ends_with(", or choose a model that worker_options lists as usable now."),
         "{result}"
     );
     start_worker(&mut harness, &mut inputs, "Start on a bad effort.").await;

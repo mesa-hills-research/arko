@@ -344,7 +344,8 @@ fn a_profile_with_a_model_arko_does_not_know_is_listed_with_a_note() {
     );
     let profiles = list(&roots);
     let note = |name: &str| profiles.get(name).unwrap().note.clone();
-    assert!(note("future").unwrap().contains("isn't a model Arko knows"));
+    // A note is one short sentence, with no list of aliases.
+    assert_eq!(note("future").unwrap(), "`gpt9` isn't a model Arko knows.");
     assert!(note("wrong-effort").unwrap().contains("not max"));
     assert_eq!(note("fine"), None);
 }

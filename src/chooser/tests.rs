@@ -207,7 +207,14 @@ fn an_effort_the_model_doesnt_take_is_refused() {
         .unwrap_err(),
         nano
     );
-    assert_eq!(pick(&basis, &[("profile", "nano")]).unwrap_err(), nano);
+    // A profile's own effort that the model doesn't take names the profile
+    // and how to go on.
+    assert_eq!(
+        pick(&basis, &[("profile", "nano")]).unwrap_err(),
+        format!(
+            "The profile `nano` asks for max effort. {nano} Pass an effort of your own to start it anyway."
+        )
+    );
     // The call chose another model: the profile's effort is a hint.
     let fitted = pick(&basis, &[("profile", "nano"), ("model", "sol")]).unwrap();
     assert!(effort_of(&fitted).contains("max"));
@@ -221,7 +228,12 @@ fn an_effort_the_model_doesnt_take_is_refused() {
     let on_luna = pick(&basis, &[("profile", "hot")]).unwrap();
     assert!(effort_of(&on_luna).contains("max"));
     let on_nano = basis_with_worker(&basis, settings("gpt-5.4-nano-2026-03-17", Effort::High));
-    assert_eq!(pick(&on_nano, &[("profile", "hot")]).unwrap_err(), nano);
+    assert_eq!(
+        pick(&on_nano, &[("profile", "hot")]).unwrap_err(),
+        format!(
+            "The profile `hot` asks for max effort. {nano} Pass an effort of your own to start it anyway."
+        )
+    );
     // A word that isn't an effort says what the efforts are.
     assert_eq!(
         pick(&basis, &[("effort", "extreme")]).unwrap_err(),
@@ -491,10 +503,10 @@ fn a_profile_that_is_missing_or_broken_says_what_to_use() {
     std::fs::write(folder.join("notes.md"), "---\nmodel sol\n---\n").unwrap();
     let why = pick(&basis, &[("profile", "notes")]).unwrap_err();
     assert!(
-        why.starts_with("The worker profile `notes` can't be used."),
+        why.starts_with("The worker profile `notes` can't be used (")
+            && why.ends_with("notes.md, line 2 isn't `key: value`). Ask the user to fix the file, or use a profile worker_options lists."),
         "{why}"
     );
-    assert!(why.contains("line 2 isn't `key: value`"), "{why}");
     // A profile whose model Arko doesn't know says which profile it is.
     write_file(
         &basis,
@@ -502,19 +514,16 @@ fn a_profile_that_is_missing_or_broken_says_what_to_use() {
         "future",
         "---\ndescription: Future\nmodel: gpt9\n---\n",
     );
-    let why = pick(&basis, &[("profile", "future")]).unwrap_err();
-    assert!(
-        why.starts_with(
-            "The profile `future` can't start a worker. `gpt9` isn't a model Arko knows."
-        ),
-        "{why}"
+    // (Without the aliases, which worker_options has.)
+    assert_eq!(
+        pick(&basis, &[("profile", "future")]).unwrap_err(),
+        "The profile `future` can't start a worker. `gpt9` isn't a model Arko knows. worker_options lists the models usable now."
     );
     // The same name in the call points to the models.
     let why = pick(&basis, &[("model", "gpt9")]).unwrap_err();
-    assert!(why.starts_with("`gpt9` isn't a model Arko knows."), "{why}");
-    assert!(
-        why.ends_with("worker_options lists the models usable now."),
-        "{why}"
+    assert_eq!(
+        why,
+        "`gpt9` isn't a model Arko knows. worker_options lists the models usable now."
     );
     // A parameter of the wrong type is told so.
     let mut bad = request(&[]);

@@ -305,6 +305,17 @@ impl Keys {
     /// or Claude Code isn't installed and signed in. The text is written
     /// for the main agent, and says how to go on.
     pub fn refusal(&self, model: &Model) -> Option<String> {
+        self.refusal_with(model, &|claude| self.needs(claude).is_none())
+    }
+
+    /// [`refusal`](Self::refusal) with `claude_code_works` telling whether
+    /// a `cc:` model can run, for the hint to use the user's Claude plan
+    /// when an Anthropic key is missing.
+    fn refusal_with(
+        &self,
+        model: &Model,
+        claude_code_works: &dyn Fn(&Model) -> bool,
+    ) -> Option<String> {
         const USABLE: &str = "worker_options lists the models usable now.";
         let name = providers::model_name(model);
         if model.provider == Provider::ClaudeCode {
@@ -329,18 +340,32 @@ impl Keys {
             Provider::Google => credentials::GEMINI_KEY,
             _ => credentials::OPENROUTER_KEY,
         };
-        let next = "Ask the user to add one with /keys, or choose a model that worker_options lists as usable now.";
+        let other = "choose a model that worker_options lists as usable now";
         Some(if self.state().withdrawn.contains(&model.provider) {
             format!(
-                "Can't start a worker on {name}. The user removed its API key ({key}) while Arko runs. {next}"
+                "Can't start a worker on {name}. The user removed its API key ({key}) while Arko runs. Ask the user to add it back with /keys, or {other}."
             )
         } else if model.provider == Provider::OpenAI {
             format!(
-                "Can't start a worker on {name}. It needs a ChatGPT login or {key}, and this session has neither. {next}"
+                "Can't start a worker on {name}. It needs a ChatGPT login or {key}, and this session has neither. Ask the user to add {key} with /keys or sign in to Codex with `codex login`, or {other}."
             )
         } else {
+            // A Claude model is one word away on the user's Claude plan.
+            let plan = (model.provider == Provider::Anthropic)
+                .then(|| {
+                    format!(
+                        "{}{}",
+                        providers::CLAUDE_CODE,
+                        providers::short_model_name(&name)
+                    )
+                })
+                .filter(|cc| {
+                    providers::resolve_model(cc).is_ok_and(|claude| claude_code_works(&claude))
+                })
+                .map(|cc| format!(", start it as {cc} on the user's Claude plan"))
+                .unwrap_or_default();
             format!(
-                "Can't start a worker on {name}. It needs {key}, and this session has none. {next}"
+                "Can't start a worker on {name}. It needs {key}, and this session has none. Ask the user to add it with /keys{plan}, or {other}."
             )
         })
     }
@@ -667,9 +692,21 @@ mod tests {
         let model = |name: &str| providers::resolve_model(name).unwrap();
         assert_eq!(keys.refusal(&model("sol")), None);
         assert_eq!(
-            keys.refusal(&model("opus")).unwrap(),
-            "Can't start a worker on claude-opus-5-5. It needs ANTHROPIC_API_KEY, and this session has none. Ask the user to add one with /keys, or choose a model that worker_options lists as usable now."
+            keys.refusal_with(&model("opus"), &|_| false).unwrap(),
+            "Can't start a worker on claude-opus-5-5. It needs ANTHROPIC_API_KEY, and this session has none. Ask the user to add it with /keys, or choose a model that worker_options lists as usable now."
         );
+        // A ChatGPT login is not added with /keys.
+        let none = Keys::new(Arc::new(LLMClient::new()), None, None, None);
+        assert_eq!(
+            none.refusal(&model("sol")).unwrap(),
+            "Can't start a worker on gpt-6.1-sol. It needs a ChatGPT login or OPENAI_API_KEY, and this session has neither. Ask the user to add OPENAI_API_KEY with /keys or sign in to Codex with `codex login`, or choose a model that worker_options lists as usable now."
+        );
+        // With Claude Code ready, the Claude plan is the next step.
+        assert_eq!(
+            keys.refusal_with(&model("opus"), &|_| true).unwrap(),
+            "Can't start a worker on claude-opus-5-5. It needs ANTHROPIC_API_KEY, and this session has none. Ask the user to add it with /keys, start it as cc:opus on the user's Claude plan, or choose a model that worker_options lists as usable now."
+        );
+
         assert!(
             keys.refusal(&model("gemini"))
                 .unwrap()
@@ -684,7 +721,7 @@ mod tests {
         keys.apply(&credentials::OPENAI, None);
         assert_eq!(
             keys.refusal(&model("sol")).unwrap(),
-            "Can't start a worker on gpt-6.1-sol. The user removed its API key (OPENAI_API_KEY) while Arko runs. Ask the user to add one with /keys, or choose a model that worker_options lists as usable now."
+            "Can't start a worker on gpt-6.1-sol. The user removed its API key (OPENAI_API_KEY) while Arko runs. Ask the user to add it back with /keys, or choose a model that worker_options lists as usable now."
         );
     }
 

@@ -130,9 +130,15 @@ pub fn choose(
         (None, Some(text)) => (text.clone(), true),
         (None, None) => (basis.worker.model.clone(), false),
     };
-    let model = providers::resolve_model(&model_text).map_err(|why| match profile_name {
-        Some(name) if from_profile => format!("The profile `{name}` can't start a worker. {why}"),
-        _ => format!("{why} worker_options lists the models usable now."),
+    let model = providers::resolve_model(&model_text).map_err(|why| {
+        // (Without the aliases: worker_options lists the models to use.)
+        let why = providers::briefly(&why);
+        match profile_name {
+            Some(name) if from_profile => format!(
+                "The profile `{name}` can't start a worker. {why} worker_options lists the models usable now."
+            ),
+            _ => format!("{why} worker_options lists the models usable now."),
+        }
     })?;
     let model_name = providers::model_name(&model);
     let same_model = providers::resolve_model(&basis.worker.model)
@@ -247,8 +253,9 @@ fn profile(basis: &Basis, name: &str) -> Result<Found, String> {
             format!("{why} The profiles are {}.", names(basis))
         }
         profiles::ReadError::Unreadable(problem) => format!(
-            "The worker profile `{name}` can't be used. {} worker_options lists the profiles you can use.",
-            unusable(&problem.reason, &problem.file)
+            "The worker profile `{name}` can't be used ({}, {}). Ask the user to fix the file, or use a profile worker_options lists.",
+            problem.file.display(),
+            problem.reason
         ),
     })
 }
@@ -263,11 +270,6 @@ pub fn names(basis: &Basis) -> String {
             .map(|found| found.profile.name),
     );
     crate::and_list(&names)
-}
-
-/// A profile file's problem as a sentence.
-fn unusable(reason: &str, file: &std::path::Path) -> String {
-    format!("{} can't be used ({reason}).", file.display())
 }
 
 /// Whether `model` doesn't reason, so takes no effort.
@@ -306,7 +308,12 @@ fn effort_for(
         // session's). When the call chose another model, it is the nearest
         // effort that one takes.
         return if call.model.is_none() {
-            check(effort)
+            check(effort).map_err(|why| {
+                format!(
+                    "The profile `{}` asks for {effort} effort. {why} Pass an effort of your own to start it anyway.",
+                    profile.map_or("", |profile| profile.name.as_str())
+                )
+            })
         } else {
             Ok(providers::fit_effort(model, effort))
         };

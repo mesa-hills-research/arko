@@ -414,7 +414,7 @@ impl Profile {
         let name = self.model.as_deref()?;
         let model = match providers::resolve_model(name) {
             Ok(model) => model,
-            Err(error) => return Some(error),
+            Err(error) => return Some(providers::briefly(&error).to_string()),
         };
         let effort = self.effort?;
         let takes = providers::efforts(&model);

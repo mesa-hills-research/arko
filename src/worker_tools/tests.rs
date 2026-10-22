@@ -614,13 +614,13 @@ async fn a_profile_that_cant_work_is_refused_before_the_user_is_asked() {
         refusal(&fixture.save, vec![("name", "default".into())]).await,
         "`default` is reserved. Choose another name for the profile."
     );
-    assert!(
+    assert_eq!(
         refusal(
             &fixture.save,
             vec![("name", "x".into()), ("model", "gpt9".into())]
         )
-        .await
-        .starts_with("`gpt9` isn't a model Arko knows.")
+        .await,
+        "`gpt9` isn't a model Arko knows. worker_options lists the models usable now."
     );
     assert_eq!(
         refusal(

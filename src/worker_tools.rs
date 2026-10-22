@@ -429,7 +429,18 @@ impl SaveWorkerProfile {
                     .map_err(|_| refused(format!("cache is 5m or 1h, not {cache}")))?,
             );
         }
-        profile.check().map_err(refused)?;
+        profile.check().map_err(|why| {
+            // A model Arko doesn't know is told where the right ones are.
+            let unknown = profile
+                .model
+                .as_deref()
+                .is_some_and(|model| providers::resolve_model(model).is_err());
+            if unknown && profile.model_problem().as_deref() == Some(why.as_str()) {
+                refused(format!("{why} worker_options lists the models usable now."))
+            } else {
+                refused(why)
+            }
+        })?;
         Ok(profile)
     }
 }

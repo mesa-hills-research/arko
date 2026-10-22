@@ -107,6 +107,17 @@ fn registered(name: &str) -> Result<Model, String> {
     Model::find(id).ok_or_else(|| unknown(name))
 }
 
+/// Where the error for an unknown model goes on from what is wrong to the
+/// aliases and prefixes that would be right.
+const UNKNOWN_HELP: &str = " Use a model ID, an alias (";
+
+/// `error` from [`resolve_model`] without the list of aliases, for a line
+/// or a note that has no room for them. It keeps what is wrong with the name
+/// and what it may have meant.
+pub fn briefly(error: &str) -> &str {
+    error.split(UNKNOWN_HELP).next().unwrap_or(error)
+}
+
 /// The error for a name that names no model, with what it may have meant.
 fn unknown(name: &str) -> String {
     let mut text = format!("`{name}` isn't a model Arko knows.");
@@ -118,7 +129,7 @@ fn unknown(name: &str) -> String {
         text.push_str(&format!(" Did you mean {close}?"));
     }
     text.push_str(&format!(
-        " Use a model ID, an alias ({}), openrouter:<slug> for a model on OpenRouter, or cc:<model> for a Claude model in Claude Code (cc:opus).",
+        "{UNKNOWN_HELP}{}), openrouter:<slug> for a model on OpenRouter, or cc:<model> for a Claude model in Claude Code (cc:opus).",
         ALIASES
             .iter()
             .map(|(alias, id)| format!("{alias} = {id}"))
@@ -2467,5 +2478,24 @@ mod tests {
         let short = short_model_name(long);
         assert_eq!(short.chars().count(), 28);
         assert!(short.starts_with("openrouter:some-maker/") && short.ends_with('…'));
+    }
+
+    /// A note with no room for the aliases keeps what is wrong with the
+    /// name and what it may have meant.
+    #[test]
+    fn an_unknown_model_error_is_cut_before_its_aliases() {
+        let full = resolve_model("sool").unwrap_err();
+        assert!(full.contains("an alias (opus = "), "{full}");
+        assert_eq!(
+            briefly(&full),
+            "`sool` isn't a model Arko knows. Did you mean sol?"
+        );
+        assert_eq!(
+            briefly(&resolve_model("gpt9").unwrap_err()),
+            "`gpt9` isn't a model Arko knows."
+        );
+        // Other errors are short as they are.
+        let openrouter = resolve_model("openrouter:").unwrap_err();
+        assert_eq!(briefly(&openrouter), openrouter);
     }
 }
