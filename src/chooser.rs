@@ -139,15 +139,15 @@ pub fn choose_in(
 ) -> Result<WorkerSetup, String> {
     let chosen = choose_at(basis, request, refuse, family);
     if family.depth > 1 {
-        return chosen.map_err(|why| without_worker_options(&why));
+        return chosen.map_err(|why| for_a_worker(&why));
     }
     chosen
 }
 
 /// A refusal as a worker reads it. A worker that starts workers has no
-/// `worker_options`, so the texts that send the main agent there send it to
-/// its lead instead.
-pub(crate) fn without_worker_options(why: &str) -> String {
+/// `worker_options` and can't ask the user, so the texts that send the main
+/// agent there, or to the user, send it to its lead instead.
+pub(crate) fn for_a_worker(why: &str) -> String {
     why.replace(
         ", or choose a model that worker_options lists as usable now.",
         ", or ask your lead which model to use.",
@@ -168,6 +168,11 @@ pub(crate) fn without_worker_options(why: &str) -> String {
         ", or use a profile worker_options lists.",
         ", or use another profile.",
     )
+    .replace(
+        ", or ask the user to allow more levels.",
+        ", or tell your lead you need more levels.",
+    )
+    .replace("Ask the user to ", "Tell your lead to ask the user to ")
 }
 
 fn choose_at(
@@ -200,7 +205,7 @@ fn choose_at(
             "The user has every worker run the session's worker model (/worker-models session), and no worker starts workers then. Start the worker without nested.".to_string()
         } else {
             format!(
-                "A worker started here is at level {} and can't start workers of its own, because the user allows {} of workers (/worker-depth). Start it without nested, or ask the user to allow more levels.",
+                "The worker would be at level {}, where it can't start workers of its own, because the user allows {} of workers (/worker-depth). Start it without nested, or ask the user to allow more levels.",
                 family.depth,
                 levels(basis.worker_depth)
             )

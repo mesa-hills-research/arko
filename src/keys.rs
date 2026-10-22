@@ -766,9 +766,11 @@ mod tests {
         refusals.push(keys.refusal(&model("sol")).unwrap());
         for refusal in refusals {
             assert!(refusal.contains("worker_options"), "{refusal}");
-            let read = crate::chooser::without_worker_options(&refusal);
+            let read = crate::chooser::for_a_worker(&refusal);
             assert!(!read.contains("worker_options"), "{read}");
             assert!(read.contains("your lead"), "{read}");
+            // (A worker can't ask the user. Its lead can.)
+            assert!(!read.contains("Ask the user"), "{read}");
         }
     }
 

@@ -505,7 +505,7 @@ async fn nested_is_refused_when_the_session_does_not_let_workers_nest() {
     turn(&mut harness, &mut inputs, "Review the files.").await;
     let refusal = &results(&one.requests("main")[1])[0];
     assert!(
-        refusal.ends_with("A worker started here is at level 1 and can't start workers of its own, because the user allows 1 level of workers (/worker-depth). Start it without nested, or ask the user to allow more levels."),
+        refusal.ends_with("The worker would be at level 1, where it can't start workers of its own, because the user allows 1 level of workers (/worker-depth). Start it without nested, or ask the user to allow more levels."),
         "{refusal}"
     );
     harness.crew.as_ref().unwrap().shutdown().await;
@@ -526,7 +526,7 @@ async fn a_worker_cant_start_a_worker_that_nests_past_the_depth() {
     // (r1 read the refusal as the result of its start, then reported.)
     let refusal = &results(&script.requests("r1")[1])[0];
     assert!(
-        refusal.ends_with("A worker started here is at level 2 and can't start workers of its own, because the user allows 2 levels of workers (/worker-depth). Start it without nested, or ask the user to allow more levels."),
+        refusal.ends_with("The worker would be at level 2, where it can't start workers of its own, because the user allows 2 levels of workers (/worker-depth). Start it without nested, or tell your lead you need more levels."),
         "{refusal}"
     );
     assert!(script.requests("r2").is_empty(), "no r2 started");

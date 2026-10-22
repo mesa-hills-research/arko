@@ -705,7 +705,7 @@ fn the_depth_and_the_limit_are_held_at_each_start() {
     let refused = nesting(&basis, at(2, 0), true).unwrap_err();
     assert_eq!(
         refused,
-        "A worker started here is at level 2 and can't start workers of its own, because the user allows 2 levels of workers (/worker-depth). Start it without nested, or ask the user to allow more levels."
+        "The worker would be at level 2, where it can't start workers of its own, because the user allows 2 levels of workers (/worker-depth). Start it without nested, or tell your lead you need more levels."
     );
     // A worker at level 1 starts workers at level 2, without start tools.
     let plain = nesting(&basis, at(2, 0), false).unwrap();
@@ -786,12 +786,36 @@ fn a_nested_worker_is_not_sent_to_worker_options() {
         let for_worker = start(&parameters, refuse);
         assert!(!for_worker.contains("worker_options"), "{for_worker}");
         assert!(for_worker.contains("your lead"), "{for_worker}");
+        // (A worker can't ask the user. Its lead can.)
+        assert!(!for_worker.contains("Ask the user"), "{for_worker}");
     }
+    // The same for what is the user's to do.
+    let keyed = start(&[("model", "opus")], Some(&refuse));
+    assert!(
+        keyed.contains("Tell your lead to ask the user to add it with /keys"),
+        "{keyed}"
+    );
+    let asking = {
+        let mut call = request(&[]);
+        call.parameters.insert("nested".into(), Value::Bool(true));
+        choose_in(&basis, &call, None, at(3, 0)).unwrap_err()
+    };
+    assert_eq!(
+        asking,
+        "The worker would be at level 3, where it can't start workers of its own, because the user allows 3 levels of workers (/worker-depth). Start it without nested, or tell your lead you need more levels."
+    );
     let broken = {
         write_file(&basis, Place::User, "broken", "no front matter");
         start(&[("profile", "broken")], None)
     };
-    assert!(!broken.contains("worker_options"), "{broken}");
+    assert!(
+        !broken.contains("worker_options") && !broken.contains("Ask the user"),
+        "{broken}"
+    );
+    assert!(
+        broken.contains("Tell your lead to ask the user to fix the file, or use another profile."),
+        "{broken}"
+    );
     let only = Basis {
         choice: ModelChoice::Profiles,
         ..basis.clone()
