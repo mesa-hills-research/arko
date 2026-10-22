@@ -147,10 +147,13 @@ fn a_claude_model_by_key_shows_its_prices_and_cache_and_a_plan_model_its_usage()
     )]);
     let text = options_text(&basis, Show::Models, &everything, &plans);
     let opus = resolve_model("opus").unwrap();
+    // (The prices of today, as the tool prints them: a model's price can
+    // have a period that starts on a date.)
+    let today = opus.pricing.at(std::time::SystemTime::now());
     let prices = format!(
         "${} / ${}",
-        dollars(opus.pricing.input_cost_per_million),
-        dollars(opus.pricing.output_cost_per_million)
+        dollars(today.input_cost_per_million),
+        dollars(today.output_cost_per_million)
     );
     let line = text
         .lines()
@@ -276,6 +279,15 @@ fn fixture(choice: ModelChoice, can_ask: bool) -> Fixture {
         questions: can_ask.then_some(questions),
         _temp: temp,
     }
+}
+
+/// Waits for `future`, which a regression in the approval flow can leave
+/// waiting for ever (a question never asked, a call that never ends), so the
+/// test fails instead of blocking the run.
+async fn within<T>(future: impl std::future::Future<Output = T>) -> T {
+    tokio::time::timeout(Duration::from_secs(10), future)
+        .await
+        .expect("it came in time")
 }
 
 async fn call(tool: &Arc<dyn Tool>, pairs: &[(&str, Value)]) -> Result<String, String> {
@@ -432,7 +444,7 @@ async fn a_profile_for_every_session_waits_for_the_users_yes() {
         let parameters = parameters.clone();
         tokio::spawn(async move { call(&save, &parameters).await })
     };
-    let question = questions.recv().await.unwrap();
+    let question = within(questions.recv()).await.unwrap();
     assert!(
         question.text.starts_with(
             "The main agent wants to save the worker profile 3d-judge in your Arko folder, for every project.\n\nJudges 3D results against a reference image\nRuns on sol at high effort."
@@ -450,7 +462,7 @@ async fn a_profile_for_every_session_waits_for_the_users_yes() {
         .send("yes, but use medium effort".into())
         .unwrap();
     assert_eq!(
-        asking.await.unwrap().unwrap(),
+        within(asking).await.unwrap().unwrap(),
         "The user didn't save 3d-judge for every project and answered \"yes, but use medium effort\". Only a plain yes saves it. If they asked for a change, make it and ask again. If they meant yes, ask again and tell them to answer yes. Or save it for this session with scope session."
     );
     assert!(profiles::read(&fixture.basis.roots, "3d-judge").is_err());
@@ -468,14 +480,13 @@ async fn a_profile_for_every_session_waits_for_the_users_yes() {
         let parameters = parameters.clone();
         tokio::spawn(async move { call(&save, &parameters).await })
     };
-    questions
-        .recv()
+    within(questions.recv())
         .await
         .unwrap()
         .answer
         .send("Yes.".into())
         .unwrap();
-    let result = asking.await.unwrap().unwrap();
+    let result = within(asking).await.unwrap().unwrap();
     assert!(
         result.starts_with("Saved the worker profile 3d-judge in the user's Arko folder, for every project. start_agent takes it by name."),
         "{result}"
@@ -506,7 +517,7 @@ async fn a_profile_for_every_session_waits_for_the_users_yes() {
             .await
         })
     };
-    let question = questions.recv().await.unwrap();
+    let question = within(questions.recv()).await.unwrap();
     assert!(
         question
             .text
@@ -544,15 +555,14 @@ async fn an_empty_answer_or_no_one_to_ask_saves_nothing() {
             .await
         })
     };
-    questions
-        .recv()
+    within(questions.recv())
         .await
         .unwrap()
         .answer
         .send("  ".into())
         .unwrap();
     assert_eq!(
-        asking.await.unwrap().unwrap(),
+        within(asking).await.unwrap().unwrap(),
         "The user didn't save audit for every project. Change it and ask again, or save it for this session with scope session."
     );
     // A session no one can answer in (-p, a script) can't approve.
@@ -565,14 +575,14 @@ async fn an_empty_answer_or_no_one_to_ask_saves_nothing() {
 
 async fn fixture_alone() -> String {
     let fixture = fixture(ModelChoice::Agent, false);
-    let refused = call(
+    let refused = within(call(
         &fixture.save,
         &[
             ("name", "audit".into()),
             ("description", "Audits".into()),
             ("scope", "project".into()),
         ],
-    )
+    ))
     .await
     .unwrap_err();
     assert!(profiles::read(&fixture.basis.roots, "audit").is_err());
@@ -762,14 +772,13 @@ async fn a_saved_profile_hidden_by_a_nearer_one_says_so() {
             .await
         })
     };
-    questions
-        .recv()
+    within(questions.recv())
         .await
         .unwrap()
         .answer
         .send("yes".into())
         .unwrap();
-    let result = asking.await.unwrap().unwrap();
+    let result = within(asking).await.unwrap().unwrap();
     assert!(
         result.contains(
             "A profile of the same name for this session comes first, so start_agent takes that one instead."

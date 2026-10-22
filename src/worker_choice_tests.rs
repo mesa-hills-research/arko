@@ -198,7 +198,14 @@ fn last_result(seen: &Seen) -> String {
 }
 
 async fn start_worker(harness: &mut Harness, inputs: &mut Inputs, message: &str) {
-    let end = harness.turn(Prompt::User(message.into()), inputs).await;
+    // (A turn that waits for an answer no one gives, as a regression in the
+    // approval flow would leave it, fails here and doesn't block the run.)
+    let end = tokio::time::timeout(
+        Duration::from_secs(60),
+        harness.turn(Prompt::User(message.into()), inputs),
+    )
+    .await
+    .expect("the turn ended in time");
     assert!(
         matches!(end, TurnEnd::Answered),
         "{}",
@@ -537,7 +544,10 @@ async fn a_profile_for_every_session_is_put_to_the_user_as_a_question() {
         last_result(&seen)
     );
     assert!(std::fs::read_to_string(&saved).unwrap().contains("made_by: agent"));
-    answers.await.unwrap();
+    tokio::time::timeout(Duration::from_secs(20), answers)
+        .await
+        .expect("the answers were given in time")
+        .unwrap();
     harness.crew.as_ref().unwrap().shutdown().await;
 }
 
