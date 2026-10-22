@@ -1,9 +1,10 @@
-# Worker profiles and a model for each worker
+# Worker profiles and workers that start workers
 
 The main agent starts workers with `start_agent`. A worker runs on the session's worker model
 unless the main agent chooses otherwise, either with a profile or with a model and an effort.
 A profile is a named setup for workers. It holds a model, an effort and instructions, and the
-main agent starts a worker with it by name.
+main agent starts a worker with it by name. A worker can start workers of its own too, which
+[the last section](#workers-that-start-workers) describes.
 
 ## A file for each profile
 
@@ -27,7 +28,7 @@ materials. Say what is wrong, in order of how much it matters.
 | `effort` | `low`, `medium`, `high`, `xhigh` or `max`, as the model takes it |
 | `fast` | `true` for fast mode, where the model has it |
 | `cache` | `5m` or `1h`, the prompt cache of Claude workers that take a choice |
-| `nested` | `true` to let the worker start workers of its own, down to the session's worker depth |
+| `nested` | `true` to let the worker start workers of its own, down to the session's worker depth. The call's `nested` wins, so `nested: false` leaves it out for one worker |
 | `made_by` | `agent` when the main agent saved the profile |
 
 A name is lowercase letters, digits and hyphens, up to 32 characters, and starts with a letter
@@ -96,46 +97,55 @@ in your Arko folder once you turn outside access on. So treat a project's profil
 `/worker-models` (also `--worker-models`) takes three values. It is the "Models for workers" row in
 `/settings` and the setting of that name on the web page. With `agent`, the default, the main agent chooses a profile, model and effort for
 each worker and can save profiles. With `profiles`, it starts workers with a profile only. With
-`session`, every worker runs the session's worker model. The setting applies to the next start.
+`session`, every worker runs the session's worker model and none starts workers. The setting applies to the next start.
 A session saved before the setting existed keeps `session`, which is how its workers always ran.
 
 `/worker-depth` (also `--worker-depth`) is saved with the session and defaults to 2. It is the
 "Worker depth" row in `/settings` and the setting of that name on the web page. It sets how many
 levels of workers the session allows, and it applies to the next worker started. With 1 only the
-main agent starts workers, and with 2 a worker the main agent starts can start workers of its own.
+main agent starts workers. With 2 or more, a worker can start workers of its own when the agent
+that starts it says so, down to that level.
 
 ## Workers that start workers
 
 The main agent starts a worker with `nested: true` in `start_agent`, or with a profile that says
-`nested: true`, to let that worker start workers of its own. It is for a part of the work that
-splits into parts again. Without it a worker starts no workers.
+`nested: true`, to let that worker start workers of its own. It is meant for a part of the work that
+splits again. The call's `nested` wins over the profile's, and `worker_options` marks the profiles
+that have it.
 
 A worker started this way has `start_agent`, `list_agents`, `stop_agent` and `link_agents` besides
-the tools every worker has, and its first message ends with a short paragraph about its workers.
+the tools every worker has, and its first message opens with a short paragraph about its workers.
+It has no `worker_options` or `save_worker_profile`, so the main agent names the profiles and
+models in its task. `list_agents` and the result of a start say what each worker runs.
+
 Its workers report to it, and the main agent reads the worker's own report. The worker can't
 report while its workers are unfinished, and it is told which ones. Stopping a worker, or the worker
-ending, stops the workers under it too. The main agent chooses the profiles and models, and tells
-the worker which to use, since `worker_options` and `save_worker_profile` are the main agent's.
+ending, stops the workers under it too.
 
 | Limit | What it is |
 |---|---|
-| Worker depth | The levels of workers the session allows, 2 by default and 4 at most. A worker at the last level starts no workers, and a start that asks for `nested` there is refused with the reason. A profile that says `nested` is started without it there |
+| Worker depth | The levels of workers the session allows, 2 by default and 4 at most. A worker at the last level starts no workers, and a start that asks for `nested` there is refused with the reason. At the last level a profile's `nested` is ignored |
 | Workers of one worker | At most 8 running or queued at once |
 | Models for workers | With `session`, every worker runs the session's worker model and none starts workers. With `profiles`, a worker starts its workers with a profile only |
 
-A worker's workers are listed under it in the agent list, `/workers` and the web page, and a
-notice says "r2 (under r1) reported". The user's message to a worker is copied to the worker that
-started it, as news that doesn't start a turn. A worker reaches the one that started it with
-`message_agent` to `lead`, and `link_agents` lets a worker's own workers message each other.
-Workers of different workers don't know each other. Each worker's cost counts once in `/cost`, and
-a worker's row also gives what it cost with its workers.
+A worker's workers are listed under it in the agent list, `/workers` and the web page. A notice of
+a stop or a failure says "r2 (under r1) stopped" in every view, and the line prompt and `-p` also
+say "r2 (under r1) reported". `/workers` and the web page's cards give what a worker cost with its
+workers, and `/cost` counts each worker once.
+
+The user's message to a worker is copied to the worker that started it, as news that doesn't start
+a turn. A worker reaches the one that started it with `message_agent` to `lead`, and `link_agents`
+lets a worker's own workers message each other. A worker can't message another worker's workers.
+`/stop-workers r1` stops r1 and the workers under it, and only the worker that started a worker can
+restart it with a message.
 
 A session that closed with a tree of workers running continues it, each worker with the setup it
 started with. A worker whose starter can't run again, because it failed, is stopped instead of
-relaunched, and its starter can restart it with a message.
+relaunched, and its starter can restart it with a message. An older Arko opens such a session and
+lists every worker as the main agent's.
 
 A conversation in Claude Code keeps the tools it started with. A session on Claude Code that was
-saved before workers could start workers resumes without `nested` in `start_agent`, and Arko says so
+made before workers could start workers resumes without `nested` in `start_agent`, and Arko says so
 when it opens. A new session has it.
 
 ## For apps

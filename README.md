@@ -13,8 +13,9 @@ models, and on your Claude plan through an installed Claude Code.
 - A web page for following a session and taking part from a browser, such as a phone's
   (`--remote`)
 - A model and effort for each worker, which the agent chooses or takes from
-  [worker profiles](docs/worker-profiles.md) you write, and workers that start workers of their own
-  when the agent asks for it
+  [worker profiles](docs/worker-profiles.md) you write
+- Workers that start workers of their own, down to a depth you set
+  ([docs](docs/worker-profiles.md#workers-that-start-workers))
 - MCP servers in Claude Code's `.mcp.json` format, and skills from `.agents/skills` or
   `.claude/skills`
 - Themes for the full-screen view, and your own in GPUI Kit's format
