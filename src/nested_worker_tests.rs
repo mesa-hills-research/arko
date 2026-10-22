@@ -948,6 +948,11 @@ async fn a_nested_workers_cost_counts_once() {
         (r2.family_cost_billed - r2.cost_billed).abs() < 1e-9,
         "{r2:?}"
     );
+    // `/workers` gives r1's cost with its workers, and r2's own only.
+    let described = harness.crew.as_ref().unwrap().describe();
+    let (r1_lines, r2_lines) = described.split_once("\nr2 ").unwrap();
+    assert!(r1_lines.contains("\n  with its workers $"), "{described}");
+    assert!(!r2_lines.contains("with its workers"), "{described}");
     harness.crew.as_ref().unwrap().shutdown().await;
 }
 

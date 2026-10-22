@@ -449,6 +449,12 @@ test('a worker that a worker started says whose it is and what the family cost',
   assert.equal(core.workerWords(alone, 60_000).meta, '4 calls · 1m00s · running · $0.10');
 });
 
+test('a worker\'s notice names the worker that started it', () => {
+  assert.equal(core.noticeLabel('r2', { id: 'r2', parent: 'r1' }), 'r2 (under r1)');
+  assert.equal(core.noticeLabel('r1', { id: 'r1' }), 'r1');
+  assert.equal(core.noticeLabel('r3', undefined), 'r3');
+});
+
 test('a family is listed with each worker\'s workers after it', () => {
   const worker = (id, parent, state = 'running') => ({ id, parent, state });
   const list = [worker('r1'), worker('r2'), worker('r3', 'r1'), worker('r4', 'r3'), worker('r5', 'r1'), worker('r6', 'r2'), worker('r7', 'r9')];

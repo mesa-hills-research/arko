@@ -670,6 +670,13 @@ impl Transcript {
             last_group = Some(group);
             let lines = match &shown {
                 Shown::Entry(index) => {
+                    // A worker's notice names the worker that started it.
+                    let under = match self.entries[*index].item.kind {
+                        Kind::Notice => self
+                            .worker(&self.entries[*index].item.agent)
+                            .and_then(|worker| worker.parent.clone()),
+                        _ => None,
+                    };
                     let entry = &mut self.entries[*index];
                     let clock = running_time(&entry.item, now);
                     let fresh = entry
@@ -685,6 +692,7 @@ impl Transcript {
                                 theme,
                                 width,
                                 own,
+                                under.as_deref(),
                                 entry.open,
                                 clock.as_deref(),
                             ),
@@ -1555,6 +1563,7 @@ const THINKING_CLOSE: &str = "↑ show the first line only";
 
 /// An item's lines at `width` (margins included), with what a copy of each
 /// needs. `own`: in its worker's own view, a worker's lines don't name it.
+/// `under`: the worker that started the item's worker, which a notice names.
 /// `open`: a command's block shows its whole output. `clock`: how long a
 /// running call has run.
 fn entry_lines(
@@ -1562,6 +1571,7 @@ fn entry_lines(
     theme: &Theme,
     width: usize,
     own: bool,
+    under: Option<&str>,
     open: bool,
     clock: Option<&str>,
 ) -> Vec<Wrapped> {
@@ -1723,6 +1733,12 @@ fn entry_lines(
                 _ => ("·", theme.dim()),
             };
             let mut spans = worker_prefix(item);
+            if let (Some(under), false) = (under, item.is_main() || own) {
+                spans.push(Span::styled(
+                    format!("(under {under}) "),
+                    theme.dim().add_modifier(Modifier::BOLD),
+                ));
+            }
             spans.push(Span::styled(rendered(&item.text), style));
             wrap::prefixed(
                 wrap::wrap_lines(&spans, inner, 0),
@@ -3135,6 +3151,53 @@ mod tests {
         let own = rows(&mut t, &Filter::Worker("r1".into()), 70, 10);
         assert!(
             own.iter().any(|r| r.contains("r2 Count the files")),
+            "{own:?}"
+        );
+    }
+
+    /// A worker's stop or failure in the main view names the worker that
+    /// started it, and the main agent's workers are named alone.
+    #[test]
+    fn a_workers_notice_names_the_worker_that_started_it() {
+        let mut t = Transcript::new();
+        let mut user = item(1, Kind::User, "Review it");
+        user.turn = Some(1);
+        t.apply(Update::Item(user));
+        t.apply(Update::Worker(WorkerSummary {
+            title: "Review the files".into(),
+            state: WorkerState::Stopped,
+            ..WorkerSummary::new("r1")
+        }));
+        t.apply(Update::Worker(WorkerSummary {
+            title: "Count the files".into(),
+            state: WorkerState::Stopped,
+            parent: Some("r1".into()),
+            depth: 2,
+            ..WorkerSummary::new("r2")
+        }));
+        let mut second = item(2, Kind::Notice, "stopped (its lead r1 was stopped)").agent("r2");
+        second.turn = Some(1);
+        t.apply(Update::Item(second));
+        let mut first = item(3, Kind::Notice, "stopped (the user stopped the worker)").agent("r1");
+        first.turn = Some(1);
+        t.apply(Update::Item(first));
+        let main = rows(&mut t, &Filter::Main(View::Full), 70, 10);
+        assert!(
+            main.iter()
+                .any(|r| r.contains("r2 (under r1) stopped (its lead r1 was stopped)")),
+            "{main:?}"
+        );
+        assert!(
+            main.iter()
+                .any(|r| r.contains("r1 stopped (the user stopped the worker)")),
+            "{main:?}"
+        );
+        // In its own view a worker's lines don't name it or its starter.
+        let own = rows(&mut t, &Filter::Worker("r2".into()), 70, 10);
+        assert!(
+            own.iter()
+                .any(|r| r.contains("stopped (its lead r1 was stopped)"))
+                && !own.iter().any(|r| r.contains("(under r1)")),
             "{own:?}"
         );
     }

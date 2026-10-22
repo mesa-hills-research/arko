@@ -483,6 +483,12 @@
     return 'with its workers ' + costWords(summary.family_cost_billed || 0, list);
   }
 
+  /** What a worker's notice is labelled with: its ID, and the worker that
+   * started it ("r2 (under r1)") when a worker did. */
+  function noticeLabel(agent, summary) {
+    return summary && summary.parent ? agent + ' (under ' + summary.parent + ')' : agent;
+  }
+
   /** The workers in the order a list shows a family: each worker that no
    * listed worker started, then the workers it started, depth first, in the
    * order they started. `summaries` are in the order the workers started.
@@ -993,6 +999,7 @@
     costWords,
     familyOrder,
     sheetOrder,
+    noticeLabel,
     WORKER_MODELS,
     workerDepthAbout,
     workerWords,

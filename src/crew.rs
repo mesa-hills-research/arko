@@ -129,6 +129,9 @@ pub struct WorkerFacts {
     /// What its model calls billed and would cost at API list prices, in
     /// dollars, when the session counted them.
     pub cost: Option<(f64, f64)>,
+    /// What it and the workers under it (and theirs) cost together, billed
+    /// and at API list prices, when the workers under it cost anything.
+    pub family_cost: Option<(f64, f64)>,
     /// The model it started on, when new workers start on another. Apps can
     /// show it. `/workers` says what every worker runs, so it doesn't.
     pub other_model: Option<String>,
@@ -633,6 +636,20 @@ pub(crate) fn describe_worker(worker: &WorkerFacts) -> String {
         } else {
             line.push_str(&format!("\n  cost ${billed:.2}"));
         }
+    }
+    // What it cost with its workers, once that is more than its own.
+    if let Some((billed, list)) = worker
+        .family_cost
+        .filter(|(_, list)| *list >= worker.cost.map_or(0.0, |(_, own)| own) + 0.005)
+    {
+        line.push_str(&format!(
+            "\n  with its workers {}",
+            if list > billed + 0.005 {
+                format!("≈ ${list:.2} at API prices")
+            } else {
+                format!("${billed:.2}")
+            }
+        ));
     }
     if let Some(lifetime) = worker.cache_lifetime {
         line.push_str(&format!(
@@ -1173,6 +1190,11 @@ impl Crew {
                         _ => lifetime,
                     };
                 }
+                let summary = self
+                    .setup
+                    .feed
+                    .as_ref()
+                    .and_then(|feed| feed.worker_summary(&run.handle));
                 WorkerFacts {
                     state: format!("{:?}", run.state).to_lowercase(),
                     task: run.task.clone(),
@@ -1186,12 +1208,12 @@ impl Crew {
                     profile: started.as_ref().and_then(|started| started.profile.clone()),
                     parent: started_by(&runs, run.run_id),
                     depth: run.depth,
-                    cost: self
-                        .setup
-                        .feed
+                    cost: summary
                         .as_ref()
-                        .and_then(|feed| feed.worker_summary(&run.handle))
                         .map(|summary| (summary.cost_billed, summary.cost_list)),
+                    family_cost: summary
+                        .as_ref()
+                        .map(|summary| (summary.family_cost_billed, summary.family_cost_list)),
                     other_model,
                     cache_lifetime: match lifetime {
                         PromptCacheLifetime::Known(lifetime) => Some(lifetime),
@@ -1829,6 +1851,7 @@ mod tests {
             parent: None,
             depth: 1,
             cost: Some((0.1234, 0.1234)),
+            family_cost: Some((0.1234, 0.1234)),
             other_model: None,
             cache_lifetime: Some(Duration::from_secs(300)),
             worktree: None,
@@ -1859,6 +1882,24 @@ mod tests {
             !text.contains("cost") && !text.contains("runs") && !text.contains("API"),
             "{text}"
         );
+        // What it cost with its workers shows once that is more than its own.
+        worker.cost = Some((0.12, 0.12));
+        worker.family_cost = Some((0.62, 0.62));
+        assert!(
+            describe_worker(&worker).contains("\n  cost $0.12\n  with its workers $0.62"),
+            "{}",
+            describe_worker(&worker)
+        );
+        worker.family_cost = Some((0.0, 0.9));
+        worker.cost = Some((0.0, 0.31));
+        assert!(
+            describe_worker(&worker).contains("\n  with its workers ≈ $0.90 at API prices"),
+            "{}",
+            describe_worker(&worker)
+        );
+        worker.family_cost = Some((0.3, 0.3));
+        worker.cost = Some((0.3, 0.3));
+        assert!(!describe_worker(&worker).contains("with its workers"));
         // A worker that a worker started says whose it is.
         worker.parent = Some("r1".into());
         worker.depth = 2;

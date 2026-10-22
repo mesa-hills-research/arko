@@ -393,7 +393,8 @@
         box.append(workerCard(item.worker));
         break;
       case 'notice':
-        if (item.agent !== C.MAIN && !worker) box.append(element('span', 'label', item.agent));
+        // A worker's notice names the worker that started it.
+        if (item.agent !== C.MAIN && !worker) box.append(element('span', 'label', C.noticeLabel(item.agent, store.workers.get(item.agent))));
         box.append(item.text);
         break;
       default:
