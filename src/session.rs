@@ -7,7 +7,9 @@ use std::path::{Path, PathBuf};
 use chrono::{DateTime, Local, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::agents::{DEFAULT_WORKER_DEPTH, ExtraRules, ModelChoice, ModelSettings};
+use crate::agents::{
+    DEFAULT_WORKER_DEPTH, ExtraRules, MAX_WORKER_DEPTH, ModelChoice, ModelSettings,
+};
 use crate::project;
 use crate::providers::OpenAiAuth;
 use crate::shell::WindowsShell;
@@ -346,8 +348,11 @@ impl Session {
         let path = self.dir.join(SETTINGS_FILE);
         let text = std::fs::read_to_string(&path)
             .map_err(|error| format!("could not read {} ({error})", path.display()))?;
-        serde_json::from_str(&text)
-            .map_err(|error| format!("could not read {} ({error})", path.display()))
+        let mut settings: Settings = serde_json::from_str(&text)
+            .map_err(|error| format!("could not read {} ({error})", path.display()))?;
+        // (A depth edited by hand to one the settings can't show.)
+        settings.worker_depth = settings.worker_depth.clamp(1, MAX_WORKER_DEPTH);
+        Ok(settings)
     }
 
     pub fn save_settings(&self, settings: &Settings) -> std::io::Result<()> {
@@ -826,6 +831,26 @@ mod tests {
         let loaded = session.load_settings().unwrap();
         assert_eq!(loaded.worker_models, ModelChoice::Profiles);
         assert_eq!(loaded.worker_depth, 3);
+    }
+
+    /// A worker depth edited by hand to 0 or past 4 loads as the nearest depth
+    /// a session can have.
+    #[test]
+    fn a_worker_depth_outside_one_to_four_loads_as_the_nearest() {
+        let temp = tempfile::tempdir().unwrap();
+        let session = test_session(temp.path());
+        let file = session.dir.join(SETTINGS_FILE);
+        let text = std::fs::read_to_string(&file).unwrap();
+        for (saved, loaded) in [(0, 1), (1, 1), (4, 4), (5, 4), (99, 4)] {
+            let mut edited: serde_json::Value = serde_json::from_str(&text).unwrap();
+            edited["worker_depth"] = saved.into();
+            std::fs::write(&file, serde_json::to_string_pretty(&edited).unwrap()).unwrap();
+            assert_eq!(
+                session.load_settings().unwrap().worker_depth,
+                loaded,
+                "{saved}"
+            );
+        }
     }
 
     /// Two that rename a session at once (an app and the session itself)
