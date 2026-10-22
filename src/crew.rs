@@ -458,6 +458,27 @@ pub(crate) fn below(runs: &[arko_workflows::subagents::SubagentRecord], root: Uu
     found
 }
 
+/// How many of the `active` workers stop when the stops of the workers
+/// `accepted` take effect: those, and the workers that they started, which
+/// stop with them and report no stop of their own.
+fn stopped_by(active: &[SubagentRecord], accepted: &[Uuid]) -> usize {
+    let mut stopped: Vec<Uuid> = Vec::new();
+    for root in accepted {
+        let mut family = vec![*root];
+        for run in active {
+            if family.contains(&run.caller_run_id) {
+                family.push(run.run_id);
+            }
+        }
+        for run in active.iter().filter(|run| family.contains(&run.run_id)) {
+            if !stopped.contains(&run.run_id) {
+                stopped.push(run.run_id);
+            }
+        }
+    }
+    stopped.len()
+}
+
 /// The start hook: a worker's setup as it starts, and which workers may
 /// start workers.
 struct StartHook {
@@ -1197,17 +1218,17 @@ impl Crew {
     }
 
     /// Stops every worker that runs or waits to run, those started by
-    /// workers too. Returns how many it stopped.
+    /// workers too. Returns how many this stopped, which leaves out a worker
+    /// already stopping.
     pub fn stop_all(&self, reason: &str) -> usize {
         self.workflow().map_or(0, |workflow| {
             let active = workflow.active_subagents();
-            // (A stop of a worker stops the ones it started, so those
-            // report no change of their own.)
-            let stopped = active
+            let accepted: Vec<Uuid> = active
                 .iter()
                 .filter(|run| workflow.stop_subagent(run.run_id, StopRequest::operator(reason)))
-                .count();
-            if stopped == 0 { 0 } else { active.len() }
+                .map(|run| run.run_id)
+                .collect();
+            stopped_by(&active, &accepted)
         })
     }
     pub async fn shutdown(&self) {
@@ -1879,6 +1900,28 @@ mod tests {
         deeper.depth = 2;
         runs.push(deeper.clone());
         assert_eq!(family(&runs, &[], &asking(deeper.run_id)).0.depth, 3);
+    }
+
+    /// "Stopping N workers" counts the workers a stop reaches, those that
+    /// stop with a worker included and one already stopping left out.
+    #[test]
+    fn stopping_all_counts_what_the_stops_reach() {
+        let main = Uuid::new_v4();
+        let r1 = record("r1", main);
+        let r2 = record("r2", r1.run_id);
+        let r3 = record("r3", r2.run_id);
+        let r4 = record("r4", main);
+        let r5 = record("r5", main);
+        let active = [r1.clone(), r2, r3, r4.clone(), r5.clone()];
+        // The stop of r1 reaches r2 and r3 as well. r4 and r5 were stopping
+        // already, so their stops changed nothing.
+        assert_eq!(stopped_by(&active, &[r1.run_id]), 3);
+        assert_eq!(stopped_by(&active, &[r1.run_id, r4.run_id]), 4);
+        assert_eq!(stopped_by(&active, &[r1.run_id, r4.run_id, r5.run_id]), 5);
+        assert_eq!(stopped_by(&active, &[]), 0);
+        // A worker stopped on its own and one of its workers stopped before
+        // it count once.
+        assert_eq!(stopped_by(&active, &[active[1].run_id, r1.run_id]), 3);
     }
 
     /// The worker that started a worker is known from the records, and the
