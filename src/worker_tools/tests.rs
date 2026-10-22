@@ -79,6 +79,12 @@ fn the_options_list_the_profiles_and_the_models_usable_now() {
         "reviewer",
         "---\ndescription: Reviews a diff\nmodel: luna\nmade_by: agent\nfast: true\n---\n",
     );
+    write(
+        &basis,
+        Place::User,
+        "splitter",
+        "---\ndescription: Splits a review by file\nmodel: haiku\neffort: low\nnested: true\n---\n",
+    );
     write(&basis, Place::Project, "notes", "---\nmodel sol\n---\n");
     write(
         &basis,
@@ -99,6 +105,14 @@ fn the_options_list_the_profiles_and_the_models_usable_now() {
         "\n- quick-read (project) · haiku, low effort, 5m cache · Reads files and answers short questions · can't start yet, needs ANTHROPIC_API_KEY"
     ));
     assert!(text.contains("\n- reviewer (session, made by you) · luna, fast · Reviews a diff"));
+    // A profile whose workers can start workers says so, and the others don't.
+    assert!(
+        text.contains(
+            "\n- splitter (user) · haiku, low effort, can start workers · Splits a review by file"
+        ),
+        "{text}"
+    );
+    assert_eq!(text.matches("can start workers").count(), 1, "{text}");
     assert!(
         text.contains("\n- future (user) · gpt9 · From a newer Arko · can't start yet, `gpt9` isn't a model Arko knows."),
         "{text}"

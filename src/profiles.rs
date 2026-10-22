@@ -1086,7 +1086,7 @@ pub fn approval_text(profile: &Profile, place: Place) -> String {
     }
     text.push('.');
     if profile.nested {
-        text.push_str(" Its workers can start workers of their own.");
+        text.push_str(" A worker started with it can start workers of its own.");
     }
     text.push('\n');
     let instructions = profile.instructions.trim();

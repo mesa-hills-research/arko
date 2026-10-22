@@ -227,6 +227,10 @@ fn profiles_text(basis: &Basis, needs: &dyn Fn(&Model) -> Option<String>) -> Str
         if let Some(cache) = profile.cache {
             details.push_str(&format!(", {} cache", cache.as_str()));
         }
+        // A worker started with it starts workers unless the call says not.
+        if profile.nested {
+            details.push_str(", can start workers");
+        }
         let place = if profile.made_by_agent() {
             format!("{}, made by you", found.place.name())
         } else {

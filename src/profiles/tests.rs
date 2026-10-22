@@ -534,7 +534,7 @@ fn the_approval_question_shows_the_whole_profile() {
         text.contains("Runs on the session's worker model in fast mode with a 5m prompt cache."),
         "{text}"
     );
-    assert!(text.contains("Its workers can start workers of their own."));
+    assert!(text.contains("A worker started with it can start workers of its own."));
     assert!(text.contains("It has no standing instructions."));
 }
 
