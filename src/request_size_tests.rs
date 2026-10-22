@@ -6,8 +6,9 @@
 //
 //     ARKO_REQUESTS=/some/dir cargo test --locked request_sizes -- --ignored --nocapture
 //
-// It writes `main-text.json`, `main-tool.json` and `worker.json` there,
-// and prints their sizes. (Included in `main`'s tests, whose helpers it
+// It writes `main-text.json`, `main-tool.json`, `worker.json` and
+// `worker-nested.json` (a worker started with `nested`) there, and prints
+// their sizes. (Included in `main`'s tests, whose helpers it
 // uses.)
 
 use crate::mock_model::{ModelServer, complete, reply, tool_call};
@@ -49,7 +50,9 @@ async fn request_sizes() {
     let out = std::path::PathBuf::from(std::env::var("ARKO_REQUESTS").expect("ARKO_REQUESTS"));
     std::fs::create_dir_all(&out).unwrap();
     let mut table = Vec::new();
-    for text_replies in [true, false] {
+    // The main agent with text replies on and off, and a worker that starts
+    // workers (the third round's).
+    for (text_replies, nested) in [(true, false), (false, false), (true, true)] {
         let bodies: Arc<Mutex<Vec<String>>> = Arc::default();
         let server = ModelServer::start(Arc::new({
             let bodies = bodies.clone();
@@ -68,7 +71,11 @@ async fn request_sizes() {
                         tool_call(
                             "m1",
                             crew::START_AGENT,
-                            serde_json::json!({"agent": WORKER, "task": "Count the files."}),
+                            serde_json::json!({
+                                "agent": WORKER,
+                                "task": "Count the files.",
+                                "nested": nested,
+                            }),
                         )
                     }
                 })
@@ -106,6 +113,8 @@ async fn request_sizes() {
         harness.main_config = main_config;
         harness.worker_config = worker_config;
         harness.open(false).unwrap();
+        // As a session does once it is open.
+        harness.start_new_workers();
         let end = tokio::time::timeout(
             Duration::from_secs(30),
             harness.turn(Prompt::User("How many files?".into()), &mut inputs),
@@ -135,9 +144,12 @@ async fn request_sizes() {
         } else {
             "main-tool"
         };
-        let mut requests = vec![(name, main)];
+        let mut requests = Vec::new();
+        if !nested {
+            requests.push((name, main));
+        }
         if text_replies {
-            requests.push(("worker", worker));
+            requests.push((if nested { "worker-nested" } else { "worker" }, worker));
         }
         for (name, body) in requests {
             let pretty: serde_json::Value = serde_json::from_str(&body).unwrap();
