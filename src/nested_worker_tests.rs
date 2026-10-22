@@ -1066,3 +1066,73 @@ async fn a_worker_starting_many_isolated_workers_together_stays_within_its_limit
     crew.stop_all("done");
     crew.shutdown().await;
 }
+
+/// The main agent is told that a worker can start workers only when the
+/// depth lets it. The instructions are those of the conversation's start, so
+/// the depth before it starts changes them, and after it starts a note tells
+/// the agent and the start hook holds each start to the depth.
+#[tokio::test]
+async fn the_main_agent_hears_of_nested_workers_only_when_the_depth_allows_them() {
+    let sentence = crate::agents::NESTING;
+    let instructions = |body: &str| -> String {
+        let body: serde_json::Value = serde_json::from_str(body).unwrap();
+        body["instructions"].as_str().unwrap().to_string()
+    };
+
+    // One level, from before the conversation: no sentence, and `nested`
+    // is refused.
+    let script = Script::new(true);
+    let server = script.serve().await;
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, _sender) = open_session(temp.path(), &server);
+    assert!(harness.live_command("/worker-depth 1", Source::Terminal));
+    turn(&mut harness, &mut inputs, "Review the files.").await;
+    let first = script.requests("main")[0].clone();
+    assert!(!instructions(&first).contains(sentence));
+    assert!(results(&script.requests("main")[1])[0].contains("(/worker-depth)"));
+    // The conversation has started: the depth changes now come as a note
+    // and the hook, and the instructions stay as they were.
+    assert!(harness.live_command("/worker-depth 3", Source::Terminal));
+    assert!(!harness.main_config.instructions.contains(sentence));
+    let hook = harness.crew.as_ref().unwrap().config().hook.unwrap();
+    let mut config = harness.worker_config.clone();
+    let mut request = StartRequest {
+        workflow_run_id: uuid::Uuid::nil(),
+        run_id: uuid::Uuid::new_v4(),
+        handle: "r9".into(),
+        agent: WORKER.into(),
+        caller_run_id: uuid::Uuid::new_v4(),
+        caller_agent: MAIN.into(),
+        task: "Count".into(),
+        parameters: Default::default(),
+    };
+    request.parameters.insert("nested".into(), true.into());
+    assert!(hook.prepare(&request, &mut config).is_ok());
+    harness.crew.as_ref().unwrap().stop_all("done");
+    harness.crew.as_ref().unwrap().shutdown().await;
+
+    // Two levels, and the instructions follow a change before the
+    // conversation starts, up and down.
+    let script = Script::new(true);
+    let server = script.serve().await;
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, _sender) = open_session(temp.path(), &server);
+    assert!(harness.main_config.instructions.contains(sentence));
+    for (command, told) in [
+        ("/worker-depth 1", false),
+        ("/worker-depth 4", true),
+        ("/worker-models session", false),
+        ("/worker-models agent", true),
+    ] {
+        assert!(harness.live_command(command, Source::Terminal), "{command}");
+        assert_eq!(
+            harness.main_config.instructions.contains(sentence),
+            told,
+            "{command}"
+        );
+    }
+    turn(&mut harness, &mut inputs, "Review the files.").await;
+    assert!(instructions(&script.requests("main")[0]).contains(sentence));
+    harness.crew.as_ref().unwrap().stop_all("done");
+    harness.crew.as_ref().unwrap().shutdown().await;
+}

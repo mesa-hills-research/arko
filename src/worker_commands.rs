@@ -41,6 +41,22 @@ const PLACEHOLDER: &str = "Describe what this profile is for";
 /// How `/profiles` is used.
 const PROFILES_USAGE: &str = "/profiles lists the worker profiles, /profiles NAME shows one, /profiles add NAME MODEL [EFFORT] [DESCRIPTION] makes one for every project, and /profiles remove NAME deletes one.";
 
+/// What the main agent is told when the user changes the depth to `depth`,
+/// if anything. With every worker on the session's model none starts workers,
+/// and it was told so.
+fn depth_note(depth: u32, choice: ModelChoice) -> Option<String> {
+    if choice == ModelChoice::Session {
+        return None;
+    }
+    Some(if depth <= 1 {
+        "The user now allows 1 level of workers. A worker can't start workers of its own, so start workers without nested.".to_string()
+    } else {
+        format!(
+            "The user now allows {depth} levels of workers. A worker you start with nested true can start workers of its own, down to level {depth}."
+        )
+    })
+}
+
 impl Harness {
     /// The three folders profiles are read from, for this session.
     pub(crate) fn profile_roots(&self) -> Roots {
@@ -116,8 +132,14 @@ impl Harness {
             // The main agent's instructions say what it could choose when the
             // conversation started: a note tells it what it can now.
             let told = match choice {
-                ModelChoice::Agent => "The user now lets you choose a profile, model and effort for each worker, and save profiles.".to_string(),
-                ModelChoice::Profiles => "The user now lets you start workers with a profile only. Leave out model and effort, and don't save profiles. worker_options lists the profiles.".to_string(),
+                ModelChoice::Agent => format!(
+                    "The user now lets you choose a profile, model and effort for each worker, and save profiles.{}",
+                    self.nesting_again()
+                ),
+                ModelChoice::Profiles => format!(
+                    "The user now lets you start workers with a profile only. Leave out model and effort, and don't save profiles. worker_options lists the profiles.{}",
+                    self.nesting_again()
+                ),
                 ModelChoice::Session => format!(
                     "The user now has every worker run the session's worker model, {}. Start workers without a profile, model or effort.",
                     self.settings.worker.describe()
@@ -133,6 +155,17 @@ impl Harness {
             }
         }
         Ok(sentence)
+    }
+
+    /// What the main agent is told again once workers are not all on the
+    /// session's model, when the depth lets them start workers: its
+    /// instructions may not have said it.
+    fn nesting_again(&self) -> String {
+        if self.settings.worker_depth > 1 {
+            format!(" {}", agents::NESTING)
+        } else {
+            String::new()
+        }
     }
 
     /// `/worker-depth`, typed at the prompt, sent from the page or chosen in
@@ -166,24 +199,26 @@ impl Harness {
                 workers::depth_effect(depth)
             ));
         }
-        self.settings.worker_depth = depth;
-        self.save_session();
-        self.start_new_workers();
-        self.publish_models();
-        if self.conversation_started()
-            && let Err(error) = self.workflow().post_note(
-                Note::new(if depth <= 1 {
-                    "The user now allows 1 level of workers. A worker can't start workers of its own, so start workers without nested.".to_string()
-                } else {
-                    format!(
-                        "The user now allows {depth} levels of workers. A worker you start with nested true can start workers of its own, down to level {depth}."
-                    )
-                })
-                .source(NoteSource::Host)
-                .to([agents::MAIN]),
-            )
-        {
-            log::warn!("could not tell the main agent how deep workers can go: {error}");
+        let mut settings = self.settings.clone();
+        settings.worker_depth = depth;
+        if self.conversation_started() {
+            self.settings = settings;
+            self.save_session();
+            self.start_new_workers();
+            self.publish_models();
+            // The main agent's instructions say what the depth was when the
+            // conversation started: a note tells it what it is now.
+            if let Some(told) = depth_note(depth, self.settings.worker_models)
+                && let Err(error) = self
+                    .workflow()
+                    .post_note(Note::new(told).source(NoteSource::Host).to([agents::MAIN]))
+            {
+                log::warn!("could not tell the main agent how deep workers can go: {error}");
+            }
+        } else {
+            // Before it starts, the agents are built again, since their
+            // instructions mention workers that start workers or not.
+            self.rebuild_agents(settings)?;
         }
         Ok(format!(
             "{} is now {depth}. {}",
@@ -472,5 +507,28 @@ impl Harness {
                 file.display()
             )
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The main agent is told of a new depth, unless every worker runs the
+    /// session's model, which leaves workers that start workers out.
+    #[test]
+    fn a_new_depth_is_told_to_the_main_agent_unless_no_worker_nests() {
+        assert_eq!(depth_note(2, ModelChoice::Session), None);
+        assert_eq!(depth_note(1, ModelChoice::Session), None);
+        assert_eq!(
+            depth_note(1, ModelChoice::Agent).unwrap(),
+            "The user now allows 1 level of workers. A worker can't start workers of its own, so start workers without nested."
+        );
+        for choice in [ModelChoice::Agent, ModelChoice::Profiles] {
+            assert_eq!(
+                depth_note(3, choice).unwrap(),
+                "The user now allows 3 levels of workers. A worker you start with nested true can start workers of its own, down to level 3."
+            );
+        }
     }
 }

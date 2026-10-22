@@ -344,6 +344,12 @@ pub struct AgentSettings<'a> {
     /// Who picks the model of a worker. The main agent's instructions tell
     /// it only what it may choose.
     pub worker_models: ModelChoice,
+    /// How many levels of workers the session allows. The main agent's
+    /// instructions mention workers that start workers only when it is more
+    /// than 1. (It can change while the session runs, and the start hook
+    /// holds each start to it, so the instructions say what it was when the
+    /// conversation started.)
+    pub worker_depth: u32,
     /// The worker profiles when the session started, each with the model it
     /// names, which the main agent's instructions list.
     pub profiles: &'a [ProfileName],
@@ -381,6 +387,7 @@ impl<'a> AgentSettings<'a> {
             chat_instructions: settings.chat_instructions.as_deref(),
             monitors: true,
             worker_models: settings.worker_models,
+            worker_depth: settings.worker_depth,
             profiles: &[],
         }
     }
@@ -408,6 +415,7 @@ impl<'a> AgentSettings<'a> {
             chat_instructions: None,
             monitors: true,
             worker_models: ModelChoice::Agent,
+            worker_depth: DEFAULT_WORKER_DEPTH,
             profiles: &[],
         }
     }
@@ -970,8 +978,9 @@ fn worker_instructions(settings: &AgentSettings) -> String {
          Workers report on their own: a worker's report, and its messages to you, reach you as notes from its run (`r1` and so on) while you work, and start a new turn for you if you have ended yours. So don't wait idly: do other work, and end your turn when you have something to tell the user, saying which workers are still running. Use `wait_for_agents` only when you can't go on without their results. Give follow-up work to the worker that already knows the code, with `message_agent`. Once you have merged an isolated worker's branch, remove its worktree with `stop_agent` and `remove_workspace: true`.\n\n\
          Use workers for independent parts of a large task (exploring separate areas of a codebase, an audit split by area, changes in separate worktrees), or to keep a long investigation out of your own context. Do small things yourself. Check what a worker reports before you rely on it.\n"
     );
-    // With every worker on the session's model, none starts workers.
-    if settings.worker_models != ModelChoice::Session {
+    // With every worker on the session's model, or with one level, none
+    // starts workers.
+    if settings.worker_models != ModelChoice::Session && settings.worker_depth > 1 {
         text.push_str(&format!("\n{NESTING}\n"));
     }
     match settings.worker_models {
@@ -1337,6 +1346,15 @@ mod tests {
             assert_eq!(text.matches(NESTING).count(), 1);
         }
         assert!(!session.contains("nested"));
+        // One level leaves it out too, two to four put it in.
+        for (depth, told) in [(1, false), (2, true), (3, true), (4, true)] {
+            let with = AgentSettings {
+                worker_depth: depth,
+                ..AgentSettings::for_test(&opus, &opus)
+            };
+            let instructions = main_config(&with).unwrap().instructions;
+            assert_eq!(instructions.contains(NESTING), told, "depth {depth}");
+        }
     }
 
     /// The main agent is offered the profile tools with the lead's tools.
