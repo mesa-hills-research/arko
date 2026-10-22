@@ -1128,6 +1128,42 @@ mod tests {
         assert!(hook.prepare(&request, &mut config).is_err());
     }
 
+    /// A run is offered the start tools only when its own setup adds them.
+    /// Applying a setup takes them off a configuration that carries them
+    /// (another run's, saved with them), and puts back only the ones the
+    /// setup lists.
+    #[test]
+    fn applying_a_setup_leaves_the_start_tools_only_when_it_adds_them() {
+        let worker = luna();
+        let config =
+            crate::agents::worker_config(&crate::agents::AgentSettings::for_test(&worker, &worker))
+                .unwrap();
+        let setup = WorkerSetup::of(&config);
+        let mut carrying = config.clone();
+        for name in NESTED_TOOL_NAMES {
+            carrying
+                .tool_config
+                .available_tool_names
+                .push(name.to_string());
+        }
+        setup.apply(&mut carrying);
+        let tools = &carrying.tool_config.available_tool_names;
+        for name in NESTED_TOOL_NAMES {
+            assert!(!tools.iter().any(|tool| tool == name), "{name} stays");
+        }
+        for name in WORKER_TOOL_NAMES {
+            assert!(tools.iter().any(|tool| tool == name), "{name} goes");
+        }
+        // A setup that adds some gives those, once, and no others.
+        let mut adding = setup.clone();
+        adding.tools_added = vec![START_AGENT.to_string(), START_AGENT.to_string()];
+        let mut given = carrying.clone();
+        adding.apply(&mut given);
+        let tools = &given.tool_config.available_tool_names;
+        assert_eq!(tools.iter().filter(|tool| *tool == START_AGENT).count(), 1);
+        assert!(!tools.iter().any(|tool| tool == LIST_AGENTS));
+    }
+
     /// A crew over `session_dir` whose workers run `worker` unless told
     /// otherwise, attached as if its workflow were open. Profiles are in
     /// `root`.
