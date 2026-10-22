@@ -1125,6 +1125,16 @@ async fn the_main_agent_hears_of_nested_workers_only_when_the_depth_allows_them(
     // and the hook, and the instructions stay as they were.
     assert!(harness.live_command("/worker-depth 3", Source::Terminal));
     assert!(!harness.main_config.instructions.contains(sentence));
+    // The main agent reads what the user changed with its next message.
+    turn(&mut harness, &mut inputs, "And now?").await;
+    let latest = script.requests("main").pop().unwrap();
+    assert!(
+        read(&latest).contains(
+            "The user now allows 3 levels of workers. A worker you start with nested true can start workers of its own, down to level 3."
+        ),
+        "{}",
+        read(&latest)
+    );
     let hook = harness.crew.as_ref().unwrap().config().hook.unwrap();
     let mut config = harness.worker_config.clone();
     let mut request = StartRequest {
@@ -1209,6 +1219,69 @@ async fn stopping_a_workers_worker_says_who_resumes_it() {
             .iter()
             .all(|body| !read(body).contains("The user stopped")),
         "the main agent was told of a worker it doesn't know"
+    );
+    crew.stop_all("done");
+    crew.shutdown().await;
+}
+
+/// The start hook tells the feed which worker started a worker before the
+/// worker's first event, so that event, which may come before the workflow's
+/// start news, puts the worker's line in its parent's transcript.
+#[tokio::test]
+async fn the_start_hook_places_a_workers_line_before_its_first_event() {
+    let script = Script::new(true);
+    let server = script.serve().await;
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, _sender) = open_session(temp.path(), &server);
+    turn(&mut harness, &mut inputs, "Review the files.").await;
+    tokio::time::timeout(Duration::from_secs(20), script.refused.notified())
+        .await
+        .expect("r1 asked to report early");
+    let crew = harness.crew.clone().unwrap();
+    until(|| crew.running() == ["r1", "r2"] && script.requests("r2").len() == 1).await;
+    let r1 = harness
+        .workflow()
+        .subagents()
+        .into_iter()
+        .find(|run| run.handle == "r1")
+        .unwrap();
+    // A start by r1 passes the hook, and the worker's own first event comes
+    // before anything else of it.
+    let hook = crew.config().hook.unwrap();
+    let request = StartRequest {
+        workflow_run_id: uuid::Uuid::nil(),
+        run_id: uuid::Uuid::new_v4(),
+        handle: "r9".into(),
+        agent: WORKER.into(),
+        caller_run_id: r1.run_id,
+        caller_agent: WORKER.into(),
+        task: "Count".into(),
+        parameters: Default::default(),
+    };
+    let mut config = harness.worker_config.clone();
+    hook.prepare(&request, &mut config).unwrap();
+    harness.feed.event(
+        &arko_workflows::WorkflowEvent {
+            timestamp: chrono::Utc::now(),
+            workflow_run_id: uuid::Uuid::nil(),
+            agent_name: WORKER.into(),
+            agent_run_id: request.run_id,
+            event: arko_agents::AgentEvent::AssistantResponseChunk("Counting.".into()),
+        },
+        Some("r9"),
+    );
+    let lines: Vec<(String, Option<String>)> = harness
+        .feed
+        .subscribe()
+        .0
+        .items
+        .iter()
+        .filter(|item| item.kind == remote::Kind::WorkerLine)
+        .map(|item| (item.agent.clone(), item.worker.clone()))
+        .collect();
+    assert!(
+        lines.contains(&("r1".to_string(), Some("r9".to_string()))),
+        "{lines:?}"
     );
     crew.stop_all("done");
     crew.shutdown().await;

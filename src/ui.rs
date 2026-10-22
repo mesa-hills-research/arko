@@ -528,22 +528,11 @@ pub async fn print_events(
                                 .as_ref()
                                 .and_then(std::sync::Weak::upgrade)
                                 .map(|workflow| {
-                                    let runs = workflow.active_subagents();
-                                    let all = workflow.subagents();
-                                    let by_main = event.agent_name == MAIN;
-                                    runs.into_iter()
-                                        .filter(|run| {
-                                            if by_main {
-                                                // (Not started by a worker.)
-                                                !all.iter().any(|other| {
-                                                    other.run_id == run.caller_run_id
-                                                })
-                                            } else {
-                                                run.caller_run_id == event.agent_run_id
-                                            }
-                                        })
-                                        .map(|run| run.handle)
-                                        .collect()
+                                    crew::waited_runs(
+                                        &workflow.active_subagents(),
+                                        &workflow.subagents(),
+                                        (event.agent_name != MAIN).then_some(event.agent_run_id),
+                                    )
                                 })
                                 .unwrap_or_default(),
                         );

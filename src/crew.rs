@@ -445,6 +445,48 @@ pub(crate) fn started_by(
         .map(|parent| parent.handle.clone())
 }
 
+/// The worker `handle` (run `run`) as a notice names it among `runs`: `r2`,
+/// or `r2 (under r1)` when a worker started it.
+pub(crate) fn named_in(runs: &[SubagentRecord], handle: &str, run: Uuid) -> String {
+    match started_by(runs, run) {
+        Some(parent) => format!("{handle} (under {parent})"),
+        None => handle.to_string(),
+    }
+}
+
+/// The runs a `wait_for_agents` without ids waits for, among the `active`
+/// ones of the session's workers `all`: those of the worker `waiting` that
+/// started them, or, for the main agent (`None`), those that no worker started.
+pub(crate) fn waited_runs(
+    active: &[SubagentRecord],
+    all: &[SubagentRecord],
+    waiting: Option<Uuid>,
+) -> Vec<String> {
+    active
+        .iter()
+        .filter(|run| match waiting {
+            Some(waiting) => run.caller_run_id == waiting,
+            None => !all.iter().any(|other| other.run_id == run.caller_run_id),
+        })
+        .map(|run| run.handle.clone())
+        .collect()
+}
+
+/// The workers in the order a list shows a family: each worker followed by
+/// the workers it started.
+fn in_family_order(facts: Vec<WorkerFacts>) -> Vec<WorkerFacts> {
+    let order = remote::family_order_of(
+        facts
+            .iter()
+            .map(|fact| (fact.id.as_str(), fact.parent.as_deref())),
+    );
+    let mut facts: Vec<Option<WorkerFacts>> = facts.into_iter().map(Some).collect();
+    order
+        .into_iter()
+        .filter_map(|at| facts[at].take())
+        .collect()
+}
+
 /// The handles of the workers among `runs` that were started by the run
 /// `root`, or by one of those, in the order they started.
 pub(crate) fn below(runs: &[arko_workflows::subagents::SubagentRecord], root: Uuid) -> Vec<String> {
@@ -969,11 +1011,7 @@ impl Crew {
         let Some(workflow) = self.workflow() else {
             return handle.to_string();
         };
-        let runs = workflow.subagents();
-        match started_by(&runs, run) {
-            Some(parent) => format!("{handle} (under {parent})"),
-            None => handle.to_string(),
-        }
+        named_in(&workflow.subagents(), handle, run)
     }
 
     /// What became of a worker, for the feed: its summary and placeholder
@@ -1246,16 +1284,7 @@ impl Crew {
             })
             .collect();
         // A worker's workers follow it.
-        let order = remote::family_order_of(
-            facts
-                .iter()
-                .map(|fact| (fact.id.as_str(), fact.parent.as_deref())),
-        );
-        let mut facts: Vec<Option<WorkerFacts>> = facts.into_iter().map(Some).collect();
-        order
-            .into_iter()
-            .filter_map(|at| facts[at].take())
-            .collect()
+        in_family_order(facts)
     }
 
     /// The worker that started the worker `id`, when a worker did (and not
@@ -1999,6 +2028,78 @@ mod tests {
         deeper.depth = 2;
         runs.push(deeper.clone());
         assert_eq!(family(&runs, &[], &asking(deeper.run_id)).0.depth, 3);
+    }
+
+    /// The four tools that let a worker start workers are the framework's,
+    /// and `worker_options` and `save_worker_profile` stay with the main agent.
+    #[test]
+    fn the_start_tools_a_nested_worker_gets_are_the_four_of_the_framework() {
+        assert_eq!(
+            NESTED_TOOL_NAMES,
+            ["start_agent", "list_agents", "stop_agent", "link_agents"]
+        );
+        for name in [WORKER_OPTIONS, SAVE_WORKER_PROFILE] {
+            assert!(!NESTED_TOOL_NAMES.contains(&name));
+            assert!(LEAD_TOOL_NAMES.contains(&name));
+        }
+    }
+
+    /// A wait without ids waits for the runs of the agent that waits: the
+    /// main agent's own, and not the workers of its workers, or the worker's.
+    #[test]
+    fn a_wait_without_ids_waits_for_the_runs_of_the_agent_that_waits() {
+        let main = Uuid::new_v4();
+        let (r1, r2) = (record("r1", main), record("r2", main));
+        let r3 = record("r3", r1.run_id);
+        let r4 = record("r4", r3.run_id);
+        let all = [r1.clone(), r2.clone(), r3.clone(), r4.clone()];
+        let active = |runs: &[&arko_workflows::subagents::SubagentRecord]| -> Vec<_> {
+            runs.iter().map(|run| (*run).clone()).collect()
+        };
+        let running = active(&[&r1, &r2, &r3, &r4]);
+        assert_eq!(waited_runs(&running, &all, None), ["r1", "r2"]);
+        assert_eq!(waited_runs(&running, &all, Some(r1.run_id)), ["r3"]);
+        assert_eq!(waited_runs(&running, &all, Some(r3.run_id)), ["r4"]);
+        assert!(waited_runs(&running, &all, Some(r2.run_id)).is_empty());
+        // Only those still running count.
+        assert_eq!(waited_runs(&active(&[&r2, &r4]), &all, None), ["r2"]);
+    }
+
+    /// A notice names the worker that started a worker, and the lists put
+    /// a worker's workers after it though they started later.
+    #[test]
+    fn notices_and_lists_follow_the_family() {
+        let main = Uuid::new_v4();
+        let (r1, r2) = (record("r1", main), record("r2", main));
+        let r3 = record("r3", r1.run_id);
+        let runs = [r1.clone(), r2.clone(), r3.clone()];
+        assert_eq!(named_in(&runs, "r1", r1.run_id), "r1");
+        assert_eq!(named_in(&runs, "r3", r3.run_id), "r3 (under r1)");
+        let fact = |id: &str, parent: Option<&str>| WorkerFacts {
+            id: id.into(),
+            state: "running".into(),
+            task: String::new(),
+            model: None,
+            effort: None,
+            profile: None,
+            parent: parent.map(str::to_string),
+            depth: 1,
+            cost: None,
+            family_cost: None,
+            other_model: None,
+            cache_lifetime: None,
+            worktree: None,
+            report: None,
+        };
+        let ids: Vec<String> = in_family_order(vec![
+            fact("r1", None),
+            fact("r2", None),
+            fact("r3", Some("r1")),
+        ])
+        .into_iter()
+        .map(|fact| fact.id)
+        .collect();
+        assert_eq!(ids, ["r1", "r3", "r2"]);
     }
 
     /// What `/stop-workers NAME` says: the workers that stop with the worker,

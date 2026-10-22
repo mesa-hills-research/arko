@@ -473,6 +473,13 @@ test('a family is listed with each worker\'s workers after it', () => {
   ];
   assert.deepEqual(core.sheetOrder(ended).map((w) => w.id), ['r2', 'r6', 'r4', 'r5', 'r1', 'r3']);
   assert.deepEqual(core.sheetOrder([]), []);
+  // A worker waiting for its turn is going, and the families that ended come latest first.
+  const queued = [worker('r1', undefined, 'finished'), worker('r2', undefined, 'finished'), worker('r3', 'r1', 'queued'), worker('r4', undefined, 'failed')];
+  assert.deepEqual(core.sheetOrder(queued).map((w) => w.id), ['r1', 'r3', 'r4', 'r2']);
+  // A worker whose starter is not listed is a family of its own, in its place.
+  const orphans = [worker('r1', 'r9', 'running'), worker('r2', undefined, 'finished'), worker('r3', 'r8', 'stopped')];
+  assert.deepEqual(core.familyOrder(orphans).map((w) => w.id), ['r1', 'r2', 'r3']);
+  assert.deepEqual(core.sheetOrder(orphans).map((w) => w.id), ['r1', 'r3', 'r2']);
 });
 
 test('the workers settings read as words', () => {
