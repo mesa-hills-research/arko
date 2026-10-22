@@ -347,6 +347,9 @@ pub struct LiveSettings {
     /// After how many seconds a shell command still running moves to the
     /// background, or 0 for never.
     pub background_after: u64,
+    /// How long after the user's last message a monitor's warning before it
+    /// ends still wakes the agent (`/monitor-wakes`).
+    pub monitor_wakes: crate::monitors::Wakes,
 }
 
 /// A random token of `bytes` bytes, in URL-safe base64.

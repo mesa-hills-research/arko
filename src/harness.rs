@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use arko_agents::Tool;
 use arko_agents::builtins::{APPLY_DIFF_TOOL_NAME, ASK_USER_TOOL_NAME, EDIT_FILE_TOOL_NAME};
-use arko_agents::terminal::{TerminalConfig, TerminalManager, TerminalTool};
+use arko_agents::terminal::{MonitorTool, TerminalConfig, TerminalManager, TerminalTool};
 use arko_ai::LLMClient;
 use arko_workflows::notes::Note;
 use arko_workflows::persistence::{EventLog, PersistenceConfig};
@@ -17,7 +17,8 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::agents::{MAIN, NO_LIMIT, WORKER};
 use crate::crew::Crew;
-use crate::inputs::{Asker, Event, Inputs, unread_notes, waits_with};
+use crate::inputs::{Alert, Asker, Event, Inputs, alert_waits, unread_notes, waits_with};
+use crate::openings::Opening;
 use crate::remote::{Action, Delivery, Level, REFRESH_MESSAGE, Source};
 use crate::session::{Mode, Session, Settings};
 use crate::shell::{Shell, ShellTool};
@@ -61,13 +62,16 @@ impl Managers {
     }
 
     /// The shell tool, which keeps the command channels of the runs it is
-    /// bound to in `runs`, and the terminal tools.
+    /// bound to in `runs`, and the terminal and monitor tools.
     pub(crate) fn tools(&self, shell: &Shell, runs: Arc<handover::Runs>) -> Vec<Arc<dyn Tool>> {
         let mut tools: Vec<Arc<dyn Tool>> = vec![Arc::new(
             ShellTool::new(self.jobs.clone(), shell.clone(), self.background.clone())
                 .keeping_runs(runs),
         )];
         for tool in TerminalTool::all(self.jobs.clone()) {
+            tools.push(Arc::new(tool));
+        }
+        for tool in MonitorTool::all(self.jobs.clone()) {
             tools.push(Arc::new(tool));
         }
         tools
@@ -77,6 +81,48 @@ impl Managers {
     pub(crate) async fn shutdown(&self) {
         self.jobs.shutdown().await;
     }
+}
+
+/// What `/jobs` says of a running monitor: what it watches, its alerts and
+/// when it ends ("lines that match error · 3 alerts · ends in 22 min").
+fn monitor_about(info: &arko_agents::terminal::MonitorInfo) -> String {
+    let mut parts = vec![crate::jobs::watching(&info.trigger, false)];
+    match info.alerts {
+        0 => {}
+        1 => parts.push("1 alert".into()),
+        count => parts.push(format!("{count} alerts")),
+    }
+    parts.push(match minutes_left(info.expires_at) {
+        0 => "ends in less than a minute".to_string(),
+        minutes => format!("ends in {minutes} min"),
+    });
+    parts.join(" · ")
+}
+
+/// The minutes from now to `expires_at`, to the nearest: 0 for less than
+/// one.
+fn minutes_left(expires_at: std::time::SystemTime) -> u64 {
+    let left = expires_at
+        .duration_since(std::time::SystemTime::now())
+        .unwrap_or_default();
+    if left < Duration::from_secs(60) {
+        0
+    } else {
+        (left.as_secs() + 30) / 60
+    }
+}
+
+/// When the main agent's prompt cache expires: its latest request, or the
+/// latest refresh that kept it warm, plus its lifetime, as the status line
+/// counts them. `None` while either is unknown.
+pub(crate) fn cache_expiry(stats: &crate::ui::Stats) -> Option<std::time::SystemTime> {
+    let used = stats
+        .last_request
+        .as_ref()
+        .map(|request| request.at)
+        .max(stats.cache_refreshed_at)?;
+    let used = std::time::UNIX_EPOCH + Duration::from_millis(u64::try_from(used).ok()?);
+    Some(used + stats.cache_lifetime?)
 }
 
 /// The workflow's name in new sessions.
@@ -168,6 +214,9 @@ pub(crate) fn unoffered(
     if missing.iter().any(|name| index::TOOL_NAMES.contains(name)) {
         parts.push("the search index tools".to_string());
     }
+    if missing.iter().any(|name| MonitorTool::NAMES.contains(name)) {
+        parts.push("monitors (monitor_start)".to_string());
+    }
     let mut servers: Vec<&str> = Vec::new();
     for (server, _) in missing.iter().filter_map(|name| mcp::split_tool_name(name)) {
         if !servers.contains(&server) {
@@ -190,6 +239,7 @@ pub(crate) fn unoffered(
             || crew::LEAD_TOOL_NAMES.contains(&name)
             || crew::WORKER_TOOL_NAMES.contains(&name)
             || agents::FILE_TOOL_NAMES.contains(&name)
+            || MonitorTool::NAMES.contains(&name)
             || name == ASK_USER_TOOL_NAME
             || name == message::MESSAGE_USER
     };
@@ -239,8 +289,24 @@ pub(crate) enum Prompt {
     /// What the user typed during the last turn, which the agent finished
     /// before it read, without a new message.
     Unread,
+    /// A monitor of the agent's alerted, or ends soon (the opening says
+    /// which), without a message from the user: its news follows.
+    Monitor(Opening),
     /// A turn Arko stopped in the middle of goes on, without a message.
     Recover,
+}
+
+impl Prompt {
+    /// The opening of the turn's message, for a turn Arko starts while the
+    /// agent waits for the user.
+    fn opening(&self) -> Option<Opening> {
+        match self {
+            Prompt::News => Some(Opening::News),
+            Prompt::Jobs => Some(Opening::Job),
+            Prompt::Monitor(opening) => Some(*opening),
+            Prompt::User(_) | Prompt::Unread | Prompt::Recover => None,
+        }
+    }
 }
 
 /// What became of the workers' news.
@@ -357,6 +423,8 @@ pub(crate) struct Harness {
     pub(crate) shows_page_links: bool,
     /// The user was told that the workers' news waits for their message.
     pub(crate) news_hint_shown: bool,
+    /// The user was told that a monitor's alert waits for their message.
+    pub(crate) alert_hint_shown: bool,
     /// What the remote page shows: the workflows' events, and what Arko
     /// says of the turns.
     pub(crate) feed: remote::Feed,
@@ -382,6 +450,10 @@ pub(crate) struct Harness {
     /// The main agent was told which of its background jobs Arko's last
     /// stop ended (or none were): it is, once per session.
     pub(crate) interrupted_told: bool,
+    /// When the user last wrote (a message, a note, an answer, a command),
+    /// or the session opened: monitors' warnings wake the agent only for a
+    /// while after it.
+    pub(crate) user_active_at: std::time::SystemTime,
 }
 
 impl Harness {
@@ -883,6 +955,12 @@ impl Harness {
                     }
                     continue;
                 }
+                Event::Alert(alert) => {
+                    if let News::Exit = self.deliver_alert(alert, input).await {
+                        break;
+                    }
+                    continue;
+                }
                 Event::Input(Some(Input::Background(agent))) => {
                     self.move_to_background(&agent);
                     continue;
@@ -985,6 +1063,7 @@ impl Harness {
             if text.is_empty() && self.pending_images.is_empty() {
                 continue;
             }
+            self.user_present();
             if let Some(command) = command(text) {
                 // (Images go with messages only.)
                 self.pending_images.clear();
@@ -1477,6 +1556,7 @@ impl Harness {
             "/extra-rules" => self.extra_rules_command(argument, source),
             "/project-instructions" => self.project_command(argument, source),
             "/background-after" => self.background_after_command(argument, source),
+            "/monitor-wakes" => self.monitor_wakes_command(argument, source),
             "/jobs" => self.jobs_command(argument),
             _ => self.handover_at_command(argument, source),
         }
@@ -1806,6 +1886,7 @@ impl Harness {
                     stats.cache_refreshed_at = Some(started);
                     stats.cache_use = Some((read, written));
                 }
+                self.tell_monitors_of_the_cache();
                 self.gauges.touch();
                 Ok(crate::engine::Refreshed::OutOfBand {
                     read,
@@ -2052,6 +2133,7 @@ impl Harness {
     ) {
         match answering.take() {
             Some((id, answer)) if id == question => {
+                self.user_present();
                 if source == Source::Web {
                     self.echo_web(text);
                 }
@@ -2544,6 +2626,62 @@ impl Harness {
         }
     }
 
+    /// `/monitor-wakes`: how long after the user's last message a monitor's
+    /// warning before it ends still wakes the agent, and with a time (or
+    /// `always`, or `off`), sets it.
+    pub(crate) fn monitor_wakes_command(&mut self, argument: &str, source: Source) {
+        let now = self.settings.monitor_wakes;
+        if argument.is_empty() {
+            let text = format!(
+                "{} /monitor-wakes 30m, /monitor-wakes always or /monitor-wakes off changes that.",
+                now.sentence()
+            );
+            self.mirrored(|harness| harness.output.line(&text));
+            return;
+        }
+        let wakes = match crate::monitors::parse_wakes(argument) {
+            Ok(wakes) => wakes,
+            Err(error) => {
+                self.mirrored(|harness| harness.output.line(&harness.output.error(&error)));
+                return;
+            }
+        };
+        if wakes == now {
+            let text = format!("No change. {}", wakes.sentence());
+            self.mirrored(|harness| harness.output.line(&text));
+            return;
+        }
+        if source == Source::Web {
+            self.say(
+                Level::Info,
+                &format!(
+                    "{} was set to {} from the web page.",
+                    crate::monitors::NAME,
+                    wakes.shown()
+                ),
+            );
+        }
+        self.set_monitor_wakes(wakes);
+        let text = wakes.sentence();
+        self.mirrored(|harness| harness.output.line(&text));
+    }
+
+    /// Sets how long after the user's last message a monitor's warning still
+    /// wakes the agent: the monitors follow at once, and the session keeps
+    /// it.
+    pub(crate) fn set_monitor_wakes(&mut self, wakes: crate::monitors::Wakes) {
+        if let Some(jobs) = self.background.manager() {
+            jobs.set_warning_wakes_within(wakes.within());
+        }
+        self.settings.monitor_wakes = wakes;
+        if let Err(error) = self.session.save_settings(&self.settings) {
+            self.say(
+                Level::Error,
+                &format!("Couldn't save the session's settings ({error})."),
+            );
+        }
+    }
+
     /// `/background-after`: when shell commands move to the background, and
     /// with a time (or `off`), sets it.
     pub(crate) fn background_after_command(&mut self, argument: &str, source: Source) {
@@ -2908,6 +3046,7 @@ impl Harness {
         self.exit_warned = false;
         self.jobs_shown.clear();
         self.news_hint_shown = false;
+        self.alert_hint_shown = false;
         // A session takes its first message's start as its name, as -p does.
         if let Prompt::User(text) = &prompt
             && self.settings.title.is_none()
@@ -2936,8 +3075,10 @@ impl Harness {
         // A message after a stop goes to the stopped task, which resumes.
         let resumes = !matches!(prompt, Prompt::Recover)
             && matches!(&self.conversation, Conversation::Stopped(run) if run.restart != Restart::Recover);
-        let news_turn = matches!(prompt, Prompt::News);
-        let jobs_turn = matches!(prompt, Prompt::Jobs);
+        let opening = prompt.opening();
+        if matches!(prompt, Prompt::User(_)) {
+            self.user_present();
+        }
         let words = match &prompt {
             Prompt::User(text) => Some(text.clone()),
             _ => None,
@@ -2973,14 +3114,8 @@ impl Harness {
             }
             .message(&report);
         }
-        if news_turn {
-            self.say(Level::Info, "  ⇠ the workers' news goes to the agent");
-        }
-        if jobs_turn {
-            self.say(
-                Level::Info,
-                "  ⇠ a background job finished, and its update goes to the agent",
-            );
+        if let Some(opening) = opening {
+            self.say(Level::Info, &format!("  {}", opening.notice()));
         }
         if resumes {
             self.say(
@@ -2990,6 +3125,11 @@ impl Harness {
         }
         let spent_before = self.spent();
         let started = Instant::now();
+        // While the agent works its monitors' news reaches it as notes, so
+        // their warnings needn't come before its cache expires.
+        if let (Some(run), Some(jobs)) = (self.conversation_run(), self.background.manager()) {
+            jobs.set_prompt_cache_expiry(run, None);
+        }
         let conversation = std::mem::replace(&mut self.conversation, Conversation::New);
         // Where this turn's message goes in the conversation.
         let at = cut.unwrap_or(match &conversation {
@@ -3064,7 +3204,7 @@ impl Harness {
                             }
                             continue;
                         }
-                        Event::Woken | Event::Finished(_) => continue,
+                        Event::Woken | Event::Finished(_) | Event::Alert(_) => continue,
                         Event::Input(Some(Input::Background(agent))) => {
                             self.move_to_background(&agent);
                             continue;
@@ -3125,6 +3265,7 @@ impl Harness {
                     if text.is_empty() && images.is_empty() {
                         continue;
                     }
+                    self.user_present();
                     if let Some(command) = command(&text) {
                         if self.refused(command, source) {
                             continue;
@@ -3219,6 +3360,13 @@ impl Harness {
                 input.late = finished
                     .into_iter()
                     .find(|job| waits_with(&result.task, job, jobs.as_deref()));
+                // So does a monitor's news.
+                input.late_alert = alert_waits(
+                    &result.task,
+                    result.agent_run_id,
+                    jobs.as_deref(),
+                    self.warnings_wake(),
+                );
                 self.conversation = Conversation::Answered(result);
                 self.track_conversations();
                 self.retitle(retitle);
@@ -3243,6 +3391,7 @@ impl Harness {
             }
         };
         self.footer(spent_before, started);
+        self.tell_monitors_of_the_cache();
         if let Some(item) = user_item {
             self.mark_message(item, at);
         }
@@ -3325,14 +3474,128 @@ impl Harness {
             );
             return News::Waiting;
         }
-        // Others that finished meanwhile go with it.
+        // Others that finished meanwhile go with it, and the monitors' news
+        // the task holds.
         input.drain_finished();
+        input.late_alert = None;
         match self.turn(Prompt::Jobs, input).await {
             TurnEnd::Answered => News::Done,
             TurnEnd::Exit => News::Exit,
             TurnEnd::Stopped => News::Stopped,
             TurnEnd::Failed => News::Failed,
         }
+    }
+
+    /// While the main agent's conversation waits for a message, a monitor of
+    /// its that alerted, or is about to end, starts a turn of it: the
+    /// monitor's news reaches the agent as the turn starts. (News that comes
+    /// while the agent works reaches it as a note.) An alert whose news a
+    /// turn that started meanwhile took starts none, even if news that
+    /// wakes no one (a job the user stopped) waits.
+    pub(crate) async fn deliver_alert(&mut self, alert: Alert, input: &mut Inputs) -> News {
+        let run = match &self.conversation {
+            Conversation::New => return News::Done,
+            Conversation::Answered(result) => result.agent_run_id,
+            Conversation::Stopped(run) => run.result.agent_run_id,
+        };
+        if alert.owner != run {
+            return News::Done;
+        }
+        if !alert.late
+            && !self
+                .background
+                .manager()
+                .is_some_and(|jobs| jobs.has_alerts(run))
+        {
+            return News::Done;
+        }
+        if !matches!(self.conversation, Conversation::Answered(_)) {
+            // A monitor alerts again each minute while its news comes: the
+            // user is told once until their next message.
+            if alert.ends_soon {
+                self.say(
+                    Level::Info,
+                    "  (a monitor is about to end, and its notice goes with your next message)",
+                );
+            } else if !self.alert_hint_shown {
+                self.alert_hint_shown = true;
+                self.say(
+                    Level::Info,
+                    "  (a monitor alerted, and its alert goes with your next message)",
+                );
+            }
+            return News::Waiting;
+        }
+        // Other alerts go with it, and the job updates the task holds.
+        input.drain_alerts();
+        input.late = None;
+        // A warning says how long its monitor has left.
+        let prompt = Prompt::Monitor(if alert.ends_soon {
+            Opening::EndsSoon(alert.job.and_then(|job| self.monitor_minutes_left(job)))
+        } else {
+            Opening::Alert
+        });
+        match self.turn(prompt, input).await {
+            TurnEnd::Answered => News::Done,
+            TurnEnd::Exit => News::Exit,
+            TurnEnd::Stopped => News::Stopped,
+            TurnEnd::Failed => News::Failed,
+        }
+    }
+
+    /// How many minutes monitor `job` has left (0 for less than one), while
+    /// it runs.
+    fn monitor_minutes_left(&self, job: uuid::Uuid) -> Option<u64> {
+        let info = self
+            .background
+            .manager()?
+            .jobs()
+            .into_iter()
+            .find_map(|info| match info.kind {
+                arko_agents::terminal::JobKind::Monitor(monitor) if info.job_id == job => {
+                    Some(monitor)
+                }
+                _ => None,
+            })?;
+        Some(minutes_left(info.expires_at))
+    }
+
+    /// The main agent's run, once its conversation started.
+    fn conversation_run(&self) -> Option<uuid::Uuid> {
+        match &self.conversation {
+            Conversation::New => None,
+            Conversation::Answered(result) => Some(result.agent_run_id),
+            Conversation::Stopped(run) => Some(run.result.agent_run_id),
+        }
+    }
+
+    /// Tells the main agent's monitors when its prompt cache expires (see
+    /// [`cache_expiry`]), so a warning before a monitor ends that would come
+    /// after that wakes the idle agent before it instead.
+    pub(crate) fn tell_monitors_of_the_cache(&self) {
+        if let (Some(run), Some(jobs)) = (self.conversation_run(), self.background.manager()) {
+            jobs.set_prompt_cache_expiry(run, cache_expiry(&lock(&self.stats)));
+        }
+    }
+
+    /// The user wrote just now: the monitors' warnings go on waking the
+    /// agent for a while.
+    pub(crate) fn user_present(&mut self) {
+        self.user_active_at = std::time::SystemTime::now();
+        if let Some(jobs) = self.background.manager() {
+            jobs.set_user_active_at(self.user_active_at);
+        }
+    }
+
+    /// Whether a monitor's warning wakes the agent now: the user wrote within
+    /// the time warnings wake it for.
+    pub(crate) fn warnings_wake(&self) -> bool {
+        let within = self.background.manager().map_or(
+            Some(arko_agents::terminal::DEFAULT_WARNINGS_WAKE_WITHIN),
+            |jobs| jobs.warning_wakes_within(),
+        );
+        let since = self.user_active_at.elapsed().unwrap_or_default();
+        within.is_none_or(|within| since < within)
     }
 
     /// Ctrl+B: moves the calls `agent` runs (the main agent, or a worker by
@@ -3428,26 +3691,18 @@ impl Harness {
         }
     }
 
-    /// A job as `/jobs` and the quit popup name it: its command, or a moved
-    /// call as the transcript shows it, on one line.
+    /// A job as `/jobs` names it (see [`crate::jobs::job_name`]).
     fn job_name(&self, job: &arko_agents::terminal::JobInfo) -> String {
-        let text = match (&job.kind, job.tool_call_id) {
-            (arko_agents::terminal::JobKind::Call { .. }, Some(call)) => self.feed.call_text(call),
-            _ => None,
-        };
-        jobs_label(text.as_deref().unwrap_or(&job.label))
+        crate::jobs::job_name(&self.feed, job)
     }
 
-    /// The names of the background jobs running (see
-    /// [`job_name`](Self::job_name)), by job.
+    /// The names of the background jobs running, for the quit popup (see
+    /// [`crate::jobs::popup_names`]), by job.
     fn job_names(&self) -> std::collections::HashMap<uuid::Uuid, String> {
         self.background
             .manager()
-            .map(|jobs| jobs.jobs())
+            .map(|jobs| crate::jobs::popup_names(&self.feed, &jobs))
             .unwrap_or_default()
-            .iter()
-            .map(|job| (job.job_id, self.job_name(job)))
-            .collect()
     }
 
     /// The web page's Move to background or Stop: done, and what didn't
@@ -3501,14 +3756,18 @@ impl Harness {
                     .zip(&self.jobs_listed)
                     .enumerate()
                     .map(|(index, ((job, agent), (_, name)))| {
-                        let kind = match job.kind {
-                            arko_agents::terminal::JobKind::Call { .. } => "call",
-                            _ => "command",
+                        let (kind, about) = match &job.kind {
+                            arko_agents::terminal::JobKind::Call { .. } => {
+                                ("call", remote::duration_words(job.started.elapsed()))
+                            }
+                            arko_agents::terminal::JobKind::Monitor(info) => {
+                                ("monitor", monitor_about(info))
+                            }
+                            _ => ("command", remote::duration_words(job.started.elapsed())),
                         };
                         format!(
-                            "{:<3}{agent:<width$}  {kind:<8} {name} · {}",
-                            index + 1,
-                            remote::duration_words(job.started.elapsed()),
+                            "{:<3}{agent:<width$}  {kind:<8} {name} · {about}",
+                            index + 1
                         )
                     })
                     .collect();
@@ -3602,6 +3861,11 @@ impl Harness {
                         return TurnEnd::Exit;
                     }
                 }
+                Event::Alert(alert) => {
+                    if let News::Exit = self.deliver_alert(alert, input).await {
+                        return TurnEnd::Exit;
+                    }
+                }
                 Event::Question(question) => drop(question),
                 Event::Request(request) => {
                     self.only_workers = true;
@@ -3637,11 +3901,11 @@ impl Harness {
     /// arko injects worker news from its mailbox when the run continues.
     /// Recovery keeps the existing prompt.
     pub(crate) fn compose(&mut self, prompt: Prompt) -> String {
-        let jobs = matches!(prompt, Prompt::Jobs);
+        let opening = prompt.opening();
         let message = match prompt {
             Prompt::Recover => return String::new(),
             Prompt::User(message) => Some(message),
-            Prompt::News | Prompt::Jobs | Prompt::Unread => None,
+            Prompt::News | Prompt::Jobs | Prompt::Unread | Prompt::Monitor(_) => None,
         };
         let mut parts = Vec::new();
         // (A conversation cut back to its first message starts over.)
@@ -3699,17 +3963,14 @@ impl Harness {
         if let Some(stopped) = self.interrupted_jobs() {
             parts.push(stopped);
         }
-        if jobs {
-            parts.push("A background job of yours finished after your last turn ended. Its update follows. (Arko started this turn for it. The user hasn't written.)".to_string());
+        if let Some(opening) = opening {
+            parts.push(opening.text());
         }
         match message {
             Some(message) if parts.is_empty() => message,
             Some(message) => {
                 parts.push(format!("# My message\n\n{message}"));
                 parts.join("\n\n")
-            }
-            None if parts.is_empty() => {
-                "Your workers sent you news as your last turn ended: it follows. (Arko started this turn for it; the user hasn't written.)".to_string()
             }
             None => parts.join("\n\n"),
         }
@@ -3742,6 +4003,11 @@ impl Harness {
                     arko_agents::terminal::JobKind::Call { tool_name } => {
                         format!("- your {tool_name} call (job {id}…)")
                     }
+                    arko_agents::terminal::JobKind::Monitor(info) => format!(
+                        "- the monitor of `{}` ({}, job {id}…)",
+                        jobs_label(&job.label),
+                        crate::jobs::watching(&info.trigger, true)
+                    ),
                     _ if job.label.trim().is_empty() => format!("- a command (job {id}…)"),
                     _ => format!("- `{}` (job {id}…)", jobs_label(&job.label)),
                 }
@@ -3957,7 +4223,7 @@ pub(crate) fn place(link: &remote::Link) -> String {
 /// The commands that change a setting while the session runs, which take
 /// an argument: `/outside`, `/model`, `/handover`, `/handover-at`, `/keys`.
 /// And `/message`, which works while the agent works too.
-pub(crate) const LIVE_COMMANDS: [&str; 12] = [
+pub(crate) const LIVE_COMMANDS: [&str; 13] = [
     "/outside",
     "/model",
     "/handover",
@@ -3968,6 +4234,7 @@ pub(crate) const LIVE_COMMANDS: [&str; 12] = [
     "/extra-rules",
     "/project-instructions",
     "/background-after",
+    "/monitor-wakes",
     "/jobs",
     "/message",
 ];
@@ -3982,13 +4249,7 @@ const STOPPED_JOBS: &str = "# Background jobs\n\nArko was closed, so these backg
 
 /// A job's command or tool as `/jobs` shows it, on one line.
 fn jobs_label(label: &str) -> String {
-    let line = label.lines().next().unwrap_or_default().trim();
-    let cut: String = line.chars().take(80).collect();
-    if cut.len() < line.len() || label.trim().lines().count() > 1 {
-        format!("{cut}…")
-    } else {
-        cut
-    }
+    crate::jobs::label(label)
 }
 
 /// What the user is told of when shell commands move to the background,
@@ -4425,6 +4686,32 @@ pub(crate) mod tests {
         );
     }
 
+    /// A session saved before monitors is told it has none.
+    #[test]
+    fn a_session_from_before_monitors_is_told_it_has_none() {
+        let opus = ModelSettings {
+            model: resolve_model("opus").unwrap().id,
+            effort: Effort::High,
+            fast: false,
+            cache_1h: false,
+            handover_at: None,
+        };
+        let settings = AgentSettings::for_test(&opus, &opus);
+        let main = agents::main_config(&settings).unwrap();
+        let mut old = main.clone();
+        old.tool_config
+            .available_tool_names
+            .retain(|name| !MonitorTool::NAMES.contains(&name.as_str()));
+        let saved = SavedSetup {
+            name: WORKFLOW_NAME.into(),
+            configs: [(MAIN.to_string(), old)].into(),
+        };
+        assert_eq!(
+            unoffered(&saved, &[(MAIN, &main)]).unwrap(),
+            "This session started without monitors (monitor_start), so its agents don't get them. A new session does."
+        );
+    }
+
     /// A session fin (Arko's name before) saved resumes in Arko: its
     /// checkpoint names the workflow `fin`, and its agents' saved
     /// configurations say "You are fin", which Arko keeps for it. The main
@@ -4815,6 +5102,7 @@ pub(crate) mod tests {
             jobs_listed: Vec::new(),
             quit_popup: None,
             news_hint_shown: false,
+            alert_hint_shown: false,
             feed,
             remote: None,
             remote_actions,
@@ -4824,6 +5112,7 @@ pub(crate) mod tests {
             handover,
             background,
             interrupted_told: false,
+            user_active_at: std::time::SystemTime::now(),
         };
         harness.open(false).unwrap();
         let inputs = Inputs {
@@ -4835,6 +5124,8 @@ pub(crate) mod tests {
             requests: mpsc::unbounded_channel().1,
             finished: None,
             late: None,
+            alerts: None,
+            late_alert: None,
         };
         (harness, inputs, input_sender)
     }
@@ -5284,7 +5575,7 @@ pub(crate) mod tests {
             .find(|body| body.contains("There are 3 files.") && !body.contains("You are agent run"))
             .unwrap();
         assert!(
-            news.contains("Arko started this turn for it; the user hasn't written"),
+            news.contains(&crate::openings::Opening::News.text()),
             "{news}"
         );
         crew.shutdown().await;

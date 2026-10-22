@@ -167,6 +167,19 @@
         </form>
       </details>
       <p id="background-note" class="note" hidden></p>
+      <div class="setting">
+        <div class="setting-text"><span class="setting-name">Monitor wakes</span><span class="setting-about">How long after your last message a monitor's warning before it ends wakes the agent, so it can keep the monitor.</span></div>
+        <span id="wakes-value" class="setting-value"></span>
+      </div>
+      <details class="more" id="wakes-more">
+        <summary>Change</summary>
+        <form id="wakes-form" class="inline-form">
+          <label for="wakes-input">Time</label>
+          <input id="wakes-input" autocomplete="off" placeholder="2h, always or off">
+          <button class="secondary" type="submit">Set</button>
+        </form>
+      </details>
+      <p id="wakes-note" class="note" hidden></p>
     </section>
 
     <section id="links-group" class="group" hidden>

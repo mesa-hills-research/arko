@@ -7,7 +7,7 @@ use arko_agents::builtins::{
     ASK_USER_TOOL_NAME, EDIT_FILE_TOOL_NAME, LIST_FILES_TOOL_NAME, READ_FILE_TOOL_NAME,
     WRITE_FILE_TOOL_NAME,
 };
-use arko_agents::terminal::TerminalTool;
+use arko_agents::terminal::{MonitorTool, TerminalTool};
 use arko_agents::{
     AgentConfig, AgentLLMConfig, AgentToolConfig, BuiltInEnvironmentDetail,
     EnvironmentDetailPlacement, EnvironmentDetailsConfig, HandoverConfig, PerToolConfigOverride,
@@ -261,6 +261,9 @@ pub struct AgentSettings<'a> {
     pub mode: crate::session::Mode,
     /// A chat's instructions from the user, if any.
     pub chat_instructions: Option<&'a str>,
+    /// The agents have the monitor tools. Not with -p, where Arko ends with
+    /// the agent's turn and no one would hear the alerts.
+    pub monitors: bool,
 }
 
 impl<'a> AgentSettings<'a> {
@@ -285,6 +288,7 @@ impl<'a> AgentSettings<'a> {
             extra_rules: settings.extra_rules,
             mode: settings.mode,
             chat_instructions: settings.chat_instructions.as_deref(),
+            monitors: true,
         }
     }
 
@@ -309,6 +313,7 @@ impl<'a> AgentSettings<'a> {
             extra_rules: ExtraRules::Off,
             mode: crate::session::Mode::Agent,
             chat_instructions: None,
+            monitors: true,
         }
     }
 }
@@ -408,19 +413,26 @@ pub const FILE_TOOL_NAMES: [&str; 4] = [
     EDIT_FILE_TOOL_NAME,
 ];
 
-/// The tools both agents have: the shell and the terminal tools.
-pub fn terminal_tool_names() -> Vec<String> {
+/// The tools both agents have: the shell, the terminal tools and (with
+/// `monitors`) the monitor tools.
+pub fn terminal_tool_names(monitors: bool) -> Vec<String> {
+    let monitors = if monitors {
+        &MonitorTool::NAMES[..]
+    } else {
+        &[]
+    };
     std::iter::once(SHELL_TOOL_NAME)
         .chain(TerminalTool::NAMES)
+        .chain(monitors.iter().copied())
         .map(String::from)
         .collect()
 }
 
-/// The tools both agents have: the shell, the terminal tools, the file
-/// tools, the search index tools and the MCP servers' tools. (`load_skill`
-/// is added for each run when there are skills to load.)
+/// The tools both agents have: the shell, the terminal and monitor tools,
+/// the file tools, the search index tools and the MCP servers' tools.
+/// (`load_skill` is added for each run when there are skills to load.)
 fn shared_tool_names(settings: &AgentSettings) -> Vec<String> {
-    let mut tools = terminal_tool_names();
+    let mut tools = terminal_tool_names(settings.monitors);
     tools.extend(FILE_TOOL_NAMES.iter().map(|name| name.to_string()));
     tools.extend(settings.index_tools.iter().map(|name| name.to_string()));
     tools.extend(settings.mcp_tools.iter().cloned());
@@ -617,10 +629,21 @@ fn tool_instructions(settings: &AgentSettings, worker: bool) -> String {
     } else {
         "building, testing, git, running programs, and searching text with `rg` (to find code or docs to read, start with `index_search`: see Search indexes below)"
     };
+    // A worker's monitors stop with its run, and its alerts reach it only
+    // while it works.
+    let monitors = match (settings.monitors, worker) {
+        (false, _) => "",
+        (true, false) => {
+            " To be told when a server's or a build's output shows an error, or when a check starts passing (`curl -sf localhost:3000/health`), use `monitor_start` instead of polling. Its alerts reach you as notes while you work, and start a turn while you wait for the user."
+        }
+        (true, true) => {
+            " To be told when a server's or a build's output shows an error, or when a check starts passing (`curl -sf localhost:3000/health`), use `monitor_start` instead of polling. Its alerts reach you as notes while you work. Your monitors stop when your run ends."
+        }
+    };
     let mut text = format!(
         "\n# Tools\n\
          Paths and file names the user gives are relative to the working directory unless they say otherwise: look for them there, not across the disk.\n\n\
-         Use `shell` for what you would do in a terminal: {uses}. Use the terminal tools only when `shell` doesn't fit: for servers, watchers, long builds you want to keep an eye on, and programs that ask questions. Cancel the jobs you start once you no longer need them.\n\n\
+         Use `shell` for what you would do in a terminal: {uses}. Use the terminal tools only when `shell` doesn't fit: for servers, watchers, long builds you want to keep an eye on, and programs that ask questions. Cancel the jobs you start once you no longer need them.{monitors}\n\n\
          Change files with `edit_file` and `write_file` rather than with heredocs and scripts in the shell, which fail on long text. Use the shell for mechanical changes across many files, such as a rename with `sed`.\n\n\
          A command guard refuses commands that would delete, move or overwrite the filesystem root, the home directory, system directories or devices, and paths outside the working directory unless the user has turned on outside access. The file tools' writes follow the same rule. The user can turn outside access on and off at any time, and a note tells you when they do. A refusal is the guard working, not an obstacle: don't rephrase, split or encode the command to get past it. Do the work another way, or say what was refused and why you needed it.\n",
     );
@@ -1078,6 +1101,43 @@ mod tests {
                     .instructions
                     .contains("begin every task with `index_search`")
             );
+        }
+    }
+
+    /// Both agents have the monitor tools, and are told to use them instead
+    /// of polling, except with -p, where no one would hear the alerts. The
+    /// main agent is told its alerts start a turn while it waits for the
+    /// user, and a worker that its monitors stop when its run ends.
+    #[test]
+    fn both_agents_watch_commands_with_monitors_except_with_p() {
+        let opus = model("opus", false);
+        let session = AgentSettings::for_test(&opus, &opus);
+        let one_shot = AgentSettings {
+            monitors: false,
+            ..AgentSettings::for_test(&opus, &opus)
+        };
+        for (settings, offered) in [(&session, true), (&one_shot, false)] {
+            for (config, worker) in [
+                (main_config(settings).unwrap(), false),
+                (worker_config(settings).unwrap(), true),
+            ] {
+                let names = &config.tool_config.available_tool_names;
+                for tool in MonitorTool::NAMES {
+                    assert_eq!(names.iter().any(|name| name == tool), offered, "{tool}");
+                }
+                let told = |text: &str| config.instructions.contains(text);
+                assert_eq!(told("use `monitor_start` instead of polling."), offered);
+                // Only the main agent waits for the user. A worker's
+                // monitors stop with its run.
+                assert_eq!(
+                    told("start a turn while you wait for the user."),
+                    offered && !worker
+                );
+                assert_eq!(
+                    told("Your monitors stop when your run ends."),
+                    offered && worker
+                );
+            }
         }
     }
 

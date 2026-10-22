@@ -1007,6 +1007,12 @@ impl EventPrinter {
                 command_line(text("command"))
             ),
             "terminal_control" => format!("{bullet} terminal {}", text("action")),
+            "monitor_start" => format!(
+                "{bullet} {} {}",
+                self.output.bold("monitor"),
+                command_line(text("command"))
+            ),
+            "monitor_control" => format!("{bullet} monitor {}", text("action")),
             "terminal_input" => format!("{bullet} terminal input"),
             "terminal_status" => format!("{bullet} terminal status"),
             LOAD_SKILL_TOOL_NAME => {
@@ -1084,6 +1090,8 @@ pub fn brief(tool: &str, parameters: &HashMap<String, serde_json::Value>) -> Str
         crew::WAIT_FOR_AGENTS => "waiting for messages".to_string(),
         "terminal_start" => format!("background {}", command_line(text("command"))),
         tool if TerminalTool::NAMES.contains(&tool) => tool.replace('_', " "),
+        "monitor_start" => format!("monitor {}", command_line(text("command"))),
+        "monitor_control" => format!("monitor {}", text("action")),
         LOAD_SKILL_TOOL_NAME => format!("skill {}", text("name")),
         tool if index::TOOL_NAMES.contains(&tool) || mcp::split_tool_name(tool).is_some() => {
             let (name, detail) = labelled(tool, parameters);
@@ -1289,6 +1297,17 @@ mod tests {
             r#"create_issue (github) {"labels":["a"],"title":"Bug"}"#
         );
         assert_eq!(brief("mcp__db__ping", &params(&[])), "ping (db)");
+        assert_eq!(
+            brief(
+                "monitor_start",
+                &params(&[("command", "npm run dev".into())])
+            ),
+            "monitor $ npm run dev"
+        );
+        assert_eq!(
+            brief("monitor_control", &params(&[("action", "rearm".into())])),
+            "monitor rearm"
+        );
     }
 
     #[test]

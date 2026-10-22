@@ -247,6 +247,7 @@ pub(crate) fn new_settings(
         openai_auth,
         own_worker_model,
         background_after: background_after_for(options, shell::DEFAULT_BACKGROUND_AFTER),
+        monitor_wakes: options.monitor_wakes.unwrap_or_default(),
     };
     project_from_options(options, &mut settings);
     if settings.mode == crate::session::Mode::Chat {

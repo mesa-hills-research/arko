@@ -321,13 +321,27 @@ impl remote::Meter for Gauges {
                 project_instructions,
                 worker_project_instructions,
                 background_after: self.background.after().map_or(0, |after| after.as_secs()),
+                monitor_wakes: crate::monitors::Wakes(
+                    self.background
+                        .manager()
+                        .map_or(
+                            Some(arko_agents::terminal::DEFAULT_WARNINGS_WAKE_WITHIN),
+                            |jobs| jobs.warning_wakes_within(),
+                        )
+                        .map(|within| within.as_secs()),
+                ),
             },
             commands: self.commands_running(),
             movable: match (&self.feed, self.background.manager()) {
                 (Some(feed), Some(jobs)) => crate::jobs::movable(feed, &jobs),
                 _ => Vec::new(),
             },
-            jobs: self.background.jobs(),
+            // As the quit popup names them, which a reading replaces.
+            jobs: crate::jobs::named(
+                self.feed.as_ref(),
+                self.background.manager().as_deref(),
+                self.background.jobs(),
+            ),
             models: {
                 let mut models = lock(&self.models).clone();
                 models.reachable = self.keys.reachable();

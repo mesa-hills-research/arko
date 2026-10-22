@@ -1457,6 +1457,9 @@ impl App {
         if commands::find("/background-after 10m").is_some() {
             rows.push(SettingsRow::Background);
         }
+        if commands::find("/monitor-wakes 2h").is_some() {
+            rows.push(SettingsRow::MonitorWakes);
+        }
         if commands::find("/text-replies on").is_some() {
             rows.push(SettingsRow::Replies);
         }
@@ -1650,6 +1653,12 @@ impl App {
                         ));
                     }
                 }
+                SettingsRow::MonitorWakes => {
+                    // The next step down (to off) or up (to always).
+                    if let Some(wakes) = self.monitor_wakes().step(step >= 0) {
+                        self.send(&format!("/monitor-wakes {}", wakes.shown()));
+                    }
+                }
                 SettingsRow::Replies => {
                     let on = !self.text_replies();
                     self.send(if on {
@@ -1793,6 +1802,12 @@ impl App {
     /// background; 0: never.
     pub fn background_after(&self) -> u64 {
         self.reading.settings.background_after
+    }
+
+    /// How long after the user's last message a monitor's warning still
+    /// wakes the agent.
+    pub fn monitor_wakes(&self) -> crate::monitors::Wakes {
+        self.reading.settings.monitor_wakes
     }
 
     /// The handover size now.
@@ -3028,6 +3043,34 @@ pub(super) mod tests {
         assert_eq!(sent(&mut app), ["/background-after off"]);
     }
 
+    /// How long monitors' warnings wake the agent is a session setting, after
+    /// when commands move to the background: the row steps from off to
+    /// always with `/monitor-wakes`.
+    #[test]
+    fn the_monitor_wakes_row_sends_the_command() {
+        let mut app = app();
+        let rows = app.settings_rows();
+        let row = rows
+            .iter()
+            .position(|row| *row == SettingsRow::MonitorWakes)
+            .unwrap();
+        let background = rows
+            .iter()
+            .position(|row| *row == SettingsRow::Background)
+            .unwrap();
+        assert_eq!(row, background + 1);
+        app.overlay = Some(Overlay::Settings { row, picker: None });
+        press(&mut app, KeyCode::Right, KeyModifiers::NONE);
+        press(&mut app, KeyCode::Left, KeyModifiers::NONE);
+        assert_eq!(sent(&mut app), ["/monitor-wakes 4h", "/monitor-wakes 1h"]);
+        app.reading.settings.monitor_wakes = crate::monitors::Wakes(Some(8 * 3600));
+        press(&mut app, KeyCode::Right, KeyModifiers::NONE);
+        assert_eq!(sent(&mut app), ["/monitor-wakes always"]);
+        app.reading.settings.monitor_wakes = crate::monitors::Wakes(Some(1800));
+        press(&mut app, KeyCode::Left, KeyModifiers::NONE);
+        assert_eq!(sent(&mut app), ["/monitor-wakes off"]);
+    }
+
     /// Text replies are a session setting: the row turns them on or off with
     /// `/text-replies`, and says what they do and whether they can change.
     #[test]
@@ -3038,12 +3081,12 @@ pub(super) mod tests {
             .iter()
             .position(|row| *row == SettingsRow::Replies)
             .unwrap();
-        let background = app
+        let wakes = app
             .settings_rows()
             .iter()
-            .position(|row| *row == SettingsRow::Background)
+            .position(|row| *row == SettingsRow::MonitorWakes)
             .unwrap();
-        assert_eq!(row, background + 1, "beside the other session settings");
+        assert_eq!(row, wakes + 1, "beside the other session settings");
         app.overlay = Some(Overlay::Settings { row, picker: None });
         press(&mut app, KeyCode::Right, KeyModifiers::NONE);
         assert_eq!(sent(&mut app), ["/text-replies on"]);

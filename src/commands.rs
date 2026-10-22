@@ -105,7 +105,7 @@ pub const COMMANDS: &[Command] = &[
     Command::screen(
         "/settings",
         "",
-        "the view, theme, mouse, outside access, handover size, background jobs, text replies, extra rules, Claude Code compaction, project instructions, web page and API keys",
+        "the view, theme, mouse, outside access, handover size, background jobs, monitor wakes, text replies, extra rules, Claude Code compaction, project instructions, web page and API keys",
     ),
     Command {
         name: "/model",
@@ -141,7 +141,7 @@ pub const COMMANDS: &[Command] = &[
     Command {
         name: "/jobs",
         args: "[stop N|all]",
-        about: "the background jobs, and stopping them (/jobs stop 2, /jobs stop all)",
+        about: "the background jobs and monitors, and stopping them (/jobs stop 2, /jobs stop all)",
         aliases: &[],
         runs: Runs::Session,
     },
@@ -149,6 +149,13 @@ pub const COMMANDS: &[Command] = &[
         name: "/background-after",
         args: "DURATION|off",
         about: "when a shell command or another long call still running moves to the background, where it goes on as a job and the agent goes on with its work (/background-after 10m, /background-after off)",
+        aliases: &[],
+        runs: Runs::Session,
+    },
+    Command {
+        name: "/monitor-wakes",
+        args: "DURATION|always|off",
+        about: "how long after your last message a monitor's warning before it ends still wakes the agent, so it can keep the monitor (/monitor-wakes 30m, /monitor-wakes always, /monitor-wakes off)",
         aliases: &[],
         runs: Runs::Session,
     },
@@ -235,6 +242,7 @@ const CHOICES: &[(&str, &[&str], &[&str])] = &[
     ("/view", &[], &["full", "quiet", "messages"]),
     ("/outside", &[], ON_OFF),
     ("/background-after", &[], &["off"]),
+    ("/monitor-wakes", &[], &["always", "off"]),
     ("/jobs", &[], &["stop"]),
     ("/jobs", &["stop"], &["all"]),
     ("/text-replies", &[], ON_OFF),

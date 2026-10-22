@@ -515,11 +515,15 @@ impl Engine {
                     .into());
                 }
                 // The project's instructions can change at any time, and so can
-                // when commands move to the background.
+                // when commands move to the background and how long monitors'
+                // warnings wake the agent.
                 let background = options.background_after.is_some_and(|after| {
                     std::mem::replace(&mut settings.background_after, after) != after
                 });
-                if project_from_options(&options, &mut settings) | background {
+                let wakes = options.monitor_wakes.is_some_and(|wakes| {
+                    std::mem::replace(&mut settings.monitor_wakes, wakes) != wakes
+                });
+                if project_from_options(&options, &mut settings) | background | wakes {
                     session
                         .save_settings(&settings)
                         .map_err(|error| format!("could not save the session ({error})"))?;
@@ -655,6 +659,9 @@ impl Engine {
         managers
             .background
             .set_after(background_after_for(&options, settings.background_after));
+        managers
+            .jobs
+            .set_warning_wakes_within(settings.monitor_wakes.within());
 
         // MCP servers, skills and search indexes: what goes wrong with them is
         // said, and the session goes on without.
@@ -741,6 +748,7 @@ impl Engine {
                 &[]
             },
             indexes: &known_indexes,
+            monitors: !one_shot,
             ..AgentSettings::for_session(&settings, &provider_setup)
         };
         let main_config = agents::main_config(&agent_settings)?;
@@ -752,6 +760,13 @@ impl Engine {
         } else {
             managers.tools(&shell, runs.clone())
         };
+        // With -p, no one would hear the monitors' alerts, so the agents get
+        // none (the workflow offers each agent every tool it's given).
+        if one_shot {
+            tools.retain(|tool| {
+                !arko_agents::terminal::MonitorTool::NAMES.contains(&tool.name().as_str())
+            });
+        }
         tools.extend(mcp.tools().iter().cloned());
         if let Some(indexes) = &indexes {
             tools.extend(indexes.tools());
@@ -879,6 +894,7 @@ impl Engine {
             jobs_listed: Vec::new(),
             quit_popup: None,
             news_hint_shown: false,
+            alert_hint_shown: false,
             feed,
             remote: None,
             remote_actions,
@@ -888,6 +904,7 @@ impl Engine {
             handover,
             background: managers.background.clone(),
             interrupted_told: false,
+            user_active_at: std::time::SystemTime::now(),
         };
         // A chat has no project.
         if !chat {
@@ -920,6 +937,9 @@ impl Engine {
             // With -p, Arko exits when the agent finishes, jobs or not.
             finished: (!one_shot).then(|| managers.jobs.subscribe_finished()),
             late: None,
+            // With -p, monitors wake no one (the agents have none).
+            alerts: (!one_shot).then(|| managers.jobs.subscribe_alerts()),
+            late_alert: None,
         };
         let (quit_popup, quit_asks) = mpsc::unbounded_channel();
         let seam = Seam {
@@ -1599,6 +1619,62 @@ mod tests {
         let settings = Session::open(&root, &id).unwrap().load_settings().unwrap();
         assert_eq!(settings.workers_handover_at, Some(250_000));
         assert_eq!(seam.meter.read().settings.workers_handover_at, 250_000);
+        quit(seam, ended).await;
+    }
+
+    /// How long monitors' warnings wake the agent can be set for a new
+    /// session, which keeps it, and again as it resumes.
+    #[tokio::test]
+    async fn monitor_wakes_are_set_for_a_new_session_and_on_resume() {
+        let temp = tempfile::tempdir().unwrap();
+        let (server, _bodies) = counting_server().await;
+        let (root, project) = (temp.path().join("arko"), temp.path().join("project"));
+        std::fs::create_dir_all(&project).unwrap();
+        let open = |session: SessionChoice, wakes: Option<u64>| {
+            let running = spawn(
+                Options {
+                    root: Some(root.clone()),
+                    session,
+                    workspace: Some(project.clone()),
+                    model: Some("luna".into()),
+                    openai_auth: Some(OpenAiAuth::ApiKey),
+                    cache_1h: Some(false),
+                    monitor_wakes: wakes.map(|seconds| crate::monitors::Wakes(Some(seconds))),
+                    client: Some(GivenClient(Arc::new(server.client()))),
+                    ..Options::default()
+                },
+                Arc::new(NoPrompter),
+            );
+            async move {
+                let seam = tokio::time::timeout(Duration::from_secs(30), running.opened)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .unwrap();
+                (seam, running.ended)
+            }
+        };
+        let wakes = |id: &str| {
+            Session::open(&root, id)
+                .unwrap()
+                .load_settings()
+                .unwrap()
+                .monitor_wakes
+        };
+        let (seam, ended) = open(SessionChoice::New, Some(2_700)).await;
+        let id = seam.session.id.clone();
+        assert_eq!(wakes(&id), crate::monitors::Wakes(Some(2_700)));
+        quit(seam, ended).await;
+        // A resume without the option keeps the session's.
+        let (seam, ended) = open(SessionChoice::Resume(id.clone()), None).await;
+        assert_eq!(wakes(&id), crate::monitors::Wakes(Some(2_700)));
+        quit(seam, ended).await;
+        let (seam, ended) = open(SessionChoice::Resume(id.clone()), Some(1_800)).await;
+        assert_eq!(wakes(&id), crate::monitors::Wakes(Some(1_800)));
+        assert_eq!(
+            seam.meter.read().settings.monitor_wakes,
+            crate::monitors::Wakes(Some(1_800))
+        );
         quit(seam, ended).await;
     }
 
@@ -3667,6 +3743,88 @@ mod tests {
             Err(error) => panic!("{error}"),
             Ok(_) => panic!("opened"),
         }
+    }
+
+    /// With -p, the agents have no monitors, since no one would hear their
+    /// alerts. The session continued without -p keeps its agents'
+    /// configuration, as it keeps their way of replying, and its next
+    /// message says it has no monitors.
+    #[tokio::test]
+    async fn a_session_started_with_p_has_no_monitors() {
+        let _alone = ALONE_TESTS.lock().await;
+        let temp = tempfile::tempdir().unwrap();
+        let bodies: Arc<Mutex<Vec<String>>> = Arc::default();
+        let server = ModelServer::start(Arc::new({
+            let bodies = bodies.clone();
+            move |_, body: String| {
+                bodies.lock().unwrap().push(body);
+                Box::pin(async { complete("a1", "Hello.") })
+            }
+        }))
+        .await;
+        let root = temp.path().join("arko");
+        let workspace = temp.path().join("work");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let luna = ModelSettings {
+            model: resolve_model("luna").unwrap().id,
+            effort: Effort::High,
+            fast: false,
+            cache_1h: false,
+            handover_at: None,
+        };
+        let session = Session::create(&root).unwrap();
+        session
+            .save_settings(&Settings::for_test(&workspace, &luna))
+            .unwrap();
+        for one_shot in [true, false] {
+            let options = Options {
+                root: Some(root.clone()),
+                session: SessionChoice::Resume(session.id.clone()),
+                one_shot,
+                interactive: false,
+                client: Some(GivenClient(Arc::new(server.client()))),
+                ..Options::default()
+            };
+            let (mut engine, seam) = match Engine::open(options, Arc::new(NoPrompter)).await {
+                Ok(open) => open,
+                Err(error) => panic!("{error}"),
+            };
+            engine.front_end(FrontEnd::default());
+            assert_eq!(
+                engine.run_prompt("Say hello.".into()).await,
+                RunEnd::Answered
+            );
+            engine.shutdown().await;
+            drop(seam);
+            // (Its tasks let the session go as they end.)
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+        let bodies = bodies.lock().unwrap().clone();
+        assert_eq!(bodies.len(), 2);
+        for body in &bodies {
+            let body: serde_json::Value = serde_json::from_str(body).unwrap();
+            let offered: Vec<&str> = body["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|tool| tool["name"].as_str())
+                .collect();
+            assert!(offered.contains(&"terminal_start"), "{offered:?}");
+            for tool in arko_agents::terminal::MonitorTool::NAMES {
+                assert!(!offered.contains(&tool), "{tool}");
+            }
+            assert!(
+                !body["instructions"]
+                    .as_str()
+                    .unwrap()
+                    .contains("monitor_start")
+            );
+        }
+        assert!(
+            bodies[1].contains("This session started without monitors (monitor_start), so its agents don't get them. A new session does."),
+            "{}",
+            bodies[1]
+        );
     }
 
     /// A session opens, answers a message and shuts down with no terminal:

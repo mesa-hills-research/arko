@@ -467,6 +467,8 @@ pub enum JobKind {
     /// A tool call that moved to the background (an MCP tool's,
     /// `index_create`).
     Call,
+    /// A monitor that watches a command for its agent (`monitor_start`).
+    Monitor,
 }
 
 /// How a background job is doing.
@@ -483,6 +485,8 @@ pub enum JobState {
     Stopped,
     /// Arko stopped before it ended (a crash, or `arko -c` after one).
     Interrupted,
+    /// A monitor that lasted as long as it was armed for.
+    Expired,
 }
 
 impl JobState {
@@ -511,6 +515,16 @@ pub struct JobSummary {
     pub ended_at: Option<i64>,
     /// How it ended, in a few words, once it did ("exit 1", "timed out").
     pub outcome: Option<String>,
+    /// What a monitor watches ("lines that match error|warn", "a check
+    /// every 15 s").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub watching: Option<String>,
+    /// How many of its agent's notes a monitor's alerts went in.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub alerts: Option<u32>,
+    /// When a monitor ends, as last armed (Unix milliseconds).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<i64>,
 }
 
 /// A background job that started, for [`Feed::job_started`]. An app that
@@ -531,6 +545,8 @@ pub struct JobStart {
     pub label: String,
     /// When it started, in Unix milliseconds.
     pub started_at: i64,
+    /// What a monitor watches, and when it ends (Unix milliseconds).
+    pub monitor: Option<(String, i64)>,
 }
 
 impl JobStart {
@@ -549,6 +565,7 @@ impl JobStart {
             kind,
             label: label.into(),
             started_at: now_ms(),
+            monitor: None,
         }
     }
 
@@ -561,6 +578,13 @@ impl JobStart {
     /// The job started at `at`, in Unix milliseconds.
     pub fn started(mut self, at: i64) -> Self {
         self.started_at = at;
+        self
+    }
+
+    /// The job is a monitor that watches `watching` until `expires_at`
+    /// (Unix milliseconds).
+    pub fn monitoring(mut self, watching: impl Into<String>, expires_at: i64) -> Self {
+        self.monitor = Some((watching.into(), expires_at));
         self
     }
 }
@@ -949,6 +973,40 @@ fn now_ms() -> i64 {
     chrono::Utc::now().timestamp_millis()
 }
 
+/// How a monitor's call line reads, from the monitor's summary.
+fn monitor_outcome(job: &JobSummary) -> (CallStatus, String) {
+    let alerts = match job.alerts.unwrap_or(0) {
+        0 => String::new(),
+        1 => " · 1 alert".to_string(),
+        count => format!(" · {count} alerts"),
+    };
+    let ran = job.ended_at.map(|at| {
+        render::duration_words(Duration::from_millis(
+            u64::try_from(at - job.started_at).unwrap_or(0),
+        ))
+    });
+    match job.state {
+        JobState::Running => (CallStatus::Ok, format!("{}{alerts}", render::MONITORING)),
+        JobState::Expired => (
+            CallStatus::Ok,
+            match ran {
+                Some(ran) => format!("ended after {ran}{alerts}"),
+                None => format!("ended{alerts}"),
+            },
+        ),
+        JobState::Finished => (CallStatus::Ok, format!("its command exited{alerts}")),
+        JobState::Failed => (
+            CallStatus::Failed,
+            match &job.outcome {
+                Some(how) => format!("its command exited ({how}){alerts}"),
+                None => format!("its command exited{alerts}"),
+            },
+        ),
+        JobState::Interrupted => (CallStatus::Failed, "interrupted".to_string()),
+        _ => (CallStatus::Ok, format!("stopped{alerts}")),
+    }
+}
+
 /// A worker's title: its task's first line, in brief.
 fn title(task: &str) -> String {
     let line = task
@@ -1161,6 +1219,18 @@ impl Feed {
             };
             if let Some((ended, started, at)) = ended {
                 self.end_moved_call(state, &call.agent, call.item, ended, started, Some(at));
+                if started.is_none() {
+                    self.end_monitor_line(state, &call.agent, call.item, ended);
+                }
+            }
+            // A monitor's line follows its monitor from its start.
+            if let Some(summary) = state
+                .jobs
+                .iter()
+                .find(|summary| summary.id == job && summary.kind == JobKind::Monitor)
+                .cloned()
+            {
+                self.follow_monitor(state, &call.agent, call.item, &summary);
             }
         }
         if let Some(mut block) = outcome.block {
@@ -1603,22 +1673,54 @@ impl Feed {
             .items
             .iter()
             .filter(|item| {
-                item.outcome
-                    .as_deref()
-                    .is_some_and(|outcome| outcome.starts_with(render::MOVED_OUTCOME))
+                item.outcome.as_deref().is_some_and(|outcome| {
+                    outcome.starts_with(render::MOVED_OUTCOME)
+                        || outcome.starts_with(render::MONITORING)
+                })
             })
             .filter_map(|item| item.job.as_deref()?.parse().ok())
             .collect()
     }
 
     /// The job `id` ended as `ended` some time ago (with an earlier Arko):
-    /// the lines of the calls that moved there say how.
+    /// the lines of the calls that moved there, or started it as a
+    /// monitor, say how.
     pub(crate) fn job_ended_earlier(&self, id: Uuid, ended: JobState) {
         let mut state = self.lock();
         let id = id.to_string();
         for (agent, item) in state.lines_naming(&id) {
             self.end_moved_call(&mut state, &agent, item, ended, None, None);
+            self.end_monitor_line(&mut state, &agent, item, ended);
         }
+    }
+
+    /// The call `item` of `agent`, if its line says it is monitoring, says
+    /// its monitor ended as `ended`, for a monitor whose summary the feed
+    /// doesn't have (it ended with an earlier Arko, or before the feed saw
+    /// it run).
+    fn end_monitor_line(&self, state: &mut State, agent: &str, item: u64, ended: JobState) {
+        let (lane, _) = state.lane(agent);
+        let Some(call) = lane.find(item) else {
+            return;
+        };
+        if !call
+            .outcome
+            .as_deref()
+            .is_some_and(|outcome| outcome.starts_with(render::MONITORING))
+        {
+            return;
+        }
+        let (status, text) = match ended {
+            JobState::Interrupted => (CallStatus::Failed, "interrupted"),
+            JobState::Failed => (CallStatus::Failed, "its command exited"),
+            JobState::Finished => (CallStatus::Ok, "its command exited"),
+            JobState::Stopped => (CallStatus::Ok, "stopped"),
+            _ => (CallStatus::Ok, "ended"),
+        };
+        call.status = Some(status);
+        call.outcome = Some(text.to_string());
+        let call = call.clone();
+        self.send(Update::Change(call));
     }
 
     /// What the transcript shows of the call `call` (one of the latest),
@@ -1686,6 +1788,7 @@ impl Feed {
                 }
             }
         }
+        let (watching, expires_at) = start.monitor.unzip();
         let summary = JobSummary {
             id,
             agent: start.agent,
@@ -1696,6 +1799,9 @@ impl Feed {
             started_at: start.started_at,
             ended_at: None,
             outcome: None,
+            alerts: watching.is_some().then_some(0),
+            watching,
+            expires_at,
         };
         state.jobs.push(summary.clone());
         let ended = state
@@ -1725,6 +1831,7 @@ impl Feed {
             // call that moved there, now or when its result comes.
             for (agent, item) in state.lines_naming(&id) {
                 self.end_moved_call(&mut state, &agent, item, ended, None, Some(now));
+                self.end_monitor_line(&mut state, &agent, item, ended);
             }
             state.unseen_ends.push_back((id, ended, now));
             if state.unseen_ends.len() > ENDED_JOBS {
@@ -1740,6 +1847,16 @@ impl Feed {
         job.outcome = outcome;
         let job = job.clone();
         self.send(Update::Job(job.clone()));
+        if job.kind == JobKind::Monitor {
+            let mut lines = state.lines_naming(&id);
+            if let Some(item) = job.call {
+                lines.push((job.agent.clone(), item));
+            }
+            for (agent, item) in lines {
+                self.follow_monitor(&mut state, &agent, item, &job);
+            }
+            return;
+        }
         // A moved call's line says how it ended, and so does a restored
         // line of it. A command terminal_start started has its own result
         // already.
@@ -1757,6 +1874,59 @@ impl Feed {
                 Some(now),
             );
         }
+    }
+
+    /// The monitor `id` alerted `alerts` times so far and ends at
+    /// `expires_at` (Unix milliseconds). Its summary goes out, and the line
+    /// of the call that started it says so.
+    pub fn job_changed(&self, id: Uuid, alerts: u32, expires_at: i64) {
+        let mut state = self.lock();
+        let id = id.to_string();
+        let Some(job) = state.jobs.iter_mut().find(|job| job.id == id) else {
+            return;
+        };
+        if !job.state.is_running()
+            || (job.alerts == Some(alerts) && job.expires_at == Some(expires_at))
+        {
+            return;
+        }
+        job.alerts = Some(alerts);
+        job.expires_at = Some(expires_at);
+        let job = job.clone();
+        self.send(Update::Job(job.clone()));
+        let mut lines = state.lines_naming(&id);
+        if let Some(item) = job.call {
+            lines.push((job.agent.clone(), item));
+        }
+        for (agent, item) in lines {
+            self.follow_monitor(&mut state, &agent, item, &job);
+        }
+    }
+
+    /// The call `item` of `agent`, if its line says it started the monitor
+    /// `job` and is monitoring, says how the monitor is doing: "monitoring ·
+    /// 3 alerts", "ended after 30 min · 4 alerts", "stopped", "its command
+    /// exited (exit 1)".
+    fn follow_monitor(&self, state: &mut State, agent: &str, item: u64, job: &JobSummary) {
+        let (lane, _) = state.lane(agent);
+        let Some(call) = lane.find(item) else {
+            return;
+        };
+        if !call
+            .outcome
+            .as_deref()
+            .is_some_and(|outcome| outcome.starts_with(render::MONITORING))
+        {
+            return;
+        }
+        let (status, text) = monitor_outcome(job);
+        if call.outcome.as_deref() == Some(text.as_str()) && call.status == Some(status) {
+            return;
+        }
+        call.status = Some(status);
+        call.outcome = Some(text);
+        let call = call.clone();
+        self.send(Update::Change(call));
     }
 
     /// The call `item` of `agent`, if its line says it moved to the
@@ -2430,6 +2600,122 @@ mod tests {
             .unwrap()
     }
 
+    /// A monitor's call says it is monitoring, and its line follows the
+    /// monitor: its alerts, then how it ended. The monitor's summary says
+    /// what it watches, its alerts and its end.
+    #[test]
+    fn a_monitors_line_follows_its_monitor() {
+        let feed = Feed::new("main");
+        let line = |feed: &Feed| call_item(feed, "monitor $ npm run dev");
+        let start = |feed: &Feed, call: Uuid, job: Uuid, output: String| {
+            let mut parameters = HashMap::new();
+            parameters.insert("command".to_string(), serde_json::json!("npm run dev"));
+            feed.event(
+                &event(
+                    "main",
+                    AgentEvent::ToolCallFormatted {
+                        tool_call_id: call,
+                        tool_name: "monitor_start".into(),
+                        parameters,
+                    },
+                ),
+                None,
+            );
+            feed.event(
+                &event(
+                    "main",
+                    AgentEvent::ToolResult {
+                        tool_call_id: call,
+                        tool_name: "monitor_start".into(),
+                        output,
+                    },
+                ),
+                None,
+            );
+            feed.job_started(
+                JobStart::new(job, MAIN_AGENT, JobKind::Monitor, "npm run dev")
+                    .made_by(call)
+                    .started(now_ms() - 30 * 60_000)
+                    .monitoring("lines that match error", now_ms()),
+            );
+        };
+        let (call, job) = (Uuid::new_v4(), Uuid::new_v4());
+        start(
+            &feed,
+            call,
+            job,
+            format!(
+                "Monitor {job} started. It runs `npm run dev` and alerts you of lines that match `error`, until 12:00 UTC (30 min). It has printed nothing yet."
+            ),
+        );
+        let item = line(&feed);
+        assert_eq!(item.outcome.as_deref(), Some("monitoring"));
+        assert_eq!(item.job, Some(job.to_string()));
+        let summary = feed.subscribe().0.jobs[0].clone();
+        assert_eq!(
+            (summary.kind, summary.watching.as_deref(), summary.alerts),
+            (JobKind::Monitor, Some("lines that match error"), Some(0))
+        );
+
+        feed.job_changed(job, 3, now_ms() + 60_000);
+        assert_eq!(
+            line(&feed).outcome.as_deref(),
+            Some("monitoring · 3 alerts")
+        );
+        assert_eq!(feed.subscribe().0.jobs[0].alerts, Some(3));
+        feed.job_ended(job, JobState::Expired, None);
+        let ended = line(&feed);
+        assert_eq!(
+            (ended.status, ended.outcome.as_deref()),
+            (Some(CallStatus::Ok), Some("ended after 30 min · 3 alerts"))
+        );
+
+        // A command that exited, and a monitor that ended at once.
+        let feed = Feed::new("main");
+        let (call, job) = (Uuid::new_v4(), Uuid::new_v4());
+        start(
+            &feed,
+            call,
+            job,
+            format!("Monitor {job} started. It runs …"),
+        );
+        feed.job_ended(job, JobState::Failed, Some("exit 1".into()));
+        let ended = line(&feed);
+        assert_eq!(
+            (ended.status, ended.outcome.as_deref()),
+            (
+                Some(CallStatus::Failed),
+                Some("its command exited (exit 1)")
+            )
+        );
+        let feed = Feed::new("main");
+        let (call, job) = (Uuid::new_v4(), Uuid::new_v4());
+        start(
+            &feed,
+            call,
+            job,
+            format!(
+                "Monitor {job} ended at once, because its command `npm run dev` exited with code 1. It printed nothing."
+            ),
+        );
+        assert_eq!(line(&feed).outcome.as_deref(), Some("ended at once"));
+        // Its later news doesn't change that.
+        feed.job_ended(job, JobState::Failed, Some("exit 1".into()));
+        assert_eq!(line(&feed).outcome.as_deref(), Some("ended at once"));
+        // One restored from an earlier Arko says it ended.
+        let feed = Feed::new("main");
+        let (call, job) = (Uuid::new_v4(), Uuid::new_v4());
+        start(
+            &feed,
+            call,
+            job,
+            format!("Monitor {job} started. It runs …"),
+        );
+        assert_eq!(feed.moved_jobs(), [job]);
+        feed.job_ended_earlier(job, JobState::Interrupted);
+        assert_eq!(line(&feed).outcome.as_deref(), Some("interrupted"));
+    }
+
     /// Any tool's call that moved to the background says so on its line and
     /// names its job. The job's summary follows it, and when the job ends,
     /// the call's line says how.
@@ -2465,6 +2751,7 @@ mod tests {
             kind: JobKind::Call,
             label: "mcp__search__lookup".into(),
             started_at: now_ms() - 240_000,
+            monitor: None,
         });
         // Twice: a job the feed has is left alone.
         feed.job_started(JobStart {
@@ -2474,6 +2761,7 @@ mod tests {
             kind: JobKind::Call,
             label: "again".into(),
             started_at: now_ms(),
+            monitor: None,
         });
         let jobs = feed.subscribe().0.jobs;
         assert_eq!(jobs.len(), 1);
@@ -2533,6 +2821,7 @@ mod tests {
                 kind: JobKind::Call,
                 label: "mcp__search__lookup".into(),
                 started_at: now_ms(),
+                monitor: None,
             });
             feed.event(
                 &event(
@@ -2591,6 +2880,7 @@ mod tests {
             kind: JobKind::Call,
             label: "mcp__search__lookup".into(),
             started_at: now_ms() - 240_000,
+            monitor: None,
         });
         feed.job_ended(job, JobState::Finished, None);
         result(&feed, call, job);
@@ -2654,6 +2944,7 @@ mod tests {
             kind: JobKind::Command,
             label: "npm run dev".into(),
             started_at: now_ms(),
+            monitor: None,
         });
         feed.job_ended(job, JobState::Failed, Some("exit 1".into()));
         let after = call_item(&feed, "npm run dev");
@@ -2669,6 +2960,9 @@ mod tests {
             started_at: 0,
             ended_at: None,
             outcome: None,
+            watching: None,
+            alerts: None,
+            expires_at: None,
         };
         let merged = merged(vec![
             Update::Job(summary(JobState::Running)),
