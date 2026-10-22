@@ -1656,7 +1656,7 @@ impl App {
                 SettingsRow::MonitorWakes => {
                     // The next step down (to off) or up (to always).
                     if let Some(wakes) = self.monitor_wakes().step(step >= 0) {
-                        self.send(&format!("/monitor-wakes {}", wakes.shown()));
+                        self.send(&wakes.command());
                     }
                 }
                 SettingsRow::Replies => {

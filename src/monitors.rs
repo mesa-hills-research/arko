@@ -15,9 +15,14 @@ impl Default for Wakes {
     }
 }
 
-/// The setting's name, in /settings, on the web page and in what Arko
-/// says of it.
-pub(crate) const NAME: &str = "Monitor wakes";
+/// The setting's name, as /settings, the web page and what Arko says of it
+/// call it. An app that lists the setting uses it as the label, so every
+/// front end names it the same.
+pub const NAME: &str = "Monitor wakes";
+
+/// The command that sets it, which takes a time such as `30m`, `always` or
+/// `off` ([`parse_wakes`] reads it, [`Wakes::command`] writes it).
+pub const COMMAND: &str = "/monitor-wakes";
 
 /// Two hours.
 const DEFAULT_SECONDS: u64 = 2 * 3_600;
@@ -41,6 +46,12 @@ impl Wakes {
             Some(0) => "off".into(),
             Some(seconds) => crate::shell::shown_background_after(seconds),
         }
+    }
+
+    /// The command that sets it, such as `/monitor-wakes 2h`. An app sends
+    /// it to the session as the user's input.
+    pub fn command(self) -> String {
+        format!("{COMMAND} {}", self.shown())
     }
 
     /// What it means, in a sentence.
@@ -142,6 +153,24 @@ mod tests {
                 2,
                 "/settings and the page"
             );
+        }
+    }
+
+    /// An app that depends on the library names the setting and sets it
+    /// with what the library gives it.
+    #[test]
+    fn the_name_and_the_command_are_public() {
+        assert_eq!(crate::monitors::NAME, "Monitor wakes");
+        assert_eq!(crate::monitors::COMMAND, "/monitor-wakes");
+        assert!(crate::commands::find(COMMAND).is_some());
+        assert_eq!(Wakes::default().command(), "/monitor-wakes 2h");
+        assert_eq!(Wakes(None).command(), "/monitor-wakes always");
+        assert_eq!(Wakes(Some(0)).command(), "/monitor-wakes off");
+        // What the command says is what `parse_wakes` reads back.
+        for wakes in STEPS {
+            let said = wakes.command();
+            let argument = said.strip_prefix(COMMAND).unwrap();
+            assert_eq!(parse_wakes(argument), Ok(wakes), "{said}");
         }
     }
 
