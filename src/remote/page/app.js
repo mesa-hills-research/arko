@@ -1095,6 +1095,13 @@
       depthOptions.append(option);
     }
     $('worker-depth-about').textContent = C.workerDepthAbout();
+    // Copies of the user's messages to a worker go to its starter, unless this is off.
+    const copying = pending && pending.copies !== undefined;
+    const copies = copying ? pending.copies : settings.message_copies !== false;
+    const copySwitch = $('message-copies-switch');
+    copySwitch.setAttribute('aria-checked', String(copies));
+    copySwitch.setAttribute('aria-busy', String(Boolean(copying)));
+    $('message-copies-about').textContent = C.messageCopiesAbout(copies);
     $('project-workers').hidden = !(status && status.models && status.models.has_workers);
     const toWorkers = $('project-workers-switch');
     const giving = pending && pending.workers !== undefined;
@@ -1234,6 +1241,12 @@
     if (level === now) return;
     command('/worker-depth ' + level, 'worker-note', (settings) => settings.worker_depth === level, { workerDepth: level });
   }
+
+  $('message-copies-switch').addEventListener('click', () => {
+    if (pending) return;
+    const on = !(status && status.settings && status.settings.message_copies !== false);
+    command('/message-copies ' + (on ? 'on' : 'off'), 'worker-note', (settings) => (settings.message_copies !== false) === on, { copies: on });
+  });
 
   function chooseProject(key) {
     if (pending) return;

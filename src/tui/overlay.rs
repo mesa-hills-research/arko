@@ -77,6 +77,9 @@ pub enum SettingsRow {
     WorkerModels,
     /// How many levels of workers there can be.
     WorkerDepth,
+    /// Whether the agent that started a worker gets a copy of the user's
+    /// messages to it.
+    MessageCopies,
     Keys,
 }
 
@@ -683,6 +686,12 @@ fn settings(frame: &mut Frame, app: &App, area: Rect, selected: usize) {
                     Span::styled(format!(" {}", glyphs::render("→")), theme.dim()),
                 ],
                 crate::workers::depth_about().to_string(),
+            ),
+            SettingsRow::MessageCopies => (
+                "Workers",
+                crate::workers::COPIES_NAME,
+                choices(theme, &["on", "off"], usize::from(!app.message_copies())),
+                crate::workers::copies_about(app.message_copies()).to_string(),
             ),
             SettingsRow::Page => (
                 "Session",

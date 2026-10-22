@@ -856,8 +856,18 @@ mod tests {
             );
         }
         assert!(CORE.contains(&format!("\"{}\"", workers::depth_about())));
+        for on in [true, false] {
+            assert!(
+                CORE.contains(&format!("\"{}\"", workers::copies_about(on))),
+                "{on}"
+            );
+        }
         // The markup names the settings and says what the first does.
-        for name in [workers::MODELS_NAME, workers::DEPTH_NAME] {
+        for name in [
+            workers::MODELS_NAME,
+            workers::DEPTH_NAME,
+            workers::COPIES_NAME,
+        ] {
             assert!(INDEX.contains(&format!(">{name}<")), "{name}");
             assert!(INDEX.contains(&format!("aria-label=\"{name}\"")), "{name}");
         }

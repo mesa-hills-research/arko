@@ -1683,6 +1683,7 @@ mod tests {
         use crate::workers;
         let mut app = app();
         app.reading.models.has_workers = true;
+        app.reading.settings.message_copies = true;
         for (row, name, about) in [
             (
                 SettingsRow::WorkerModels,
@@ -1698,6 +1699,11 @@ mod tests {
                 SettingsRow::WorkerDepth,
                 workers::DEPTH_NAME,
                 workers::depth_about().to_string(),
+            ),
+            (
+                SettingsRow::MessageCopies,
+                workers::COPIES_NAME,
+                workers::copies_about(true).to_string(),
             ),
         ] {
             let at = app
@@ -2145,6 +2151,27 @@ mod tests {
         assert!(
             line.starts_with(
                 "   /worker-depth  how deep workers go, from 1 to 4. 1 means only the main agent"
+            ),
+            "{line}"
+        );
+    }
+
+    /// The menu line of `/message-copies` says in its first columns what it
+    /// sets, which an 80-column screen cuts the rest of.
+    #[test]
+    fn the_message_copies_menu_line_says_what_it_sets_at_80_columns() {
+        let mut app = app();
+        for c in "/message-c".chars() {
+            app.key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        let rows = screen(&mut app, 80, 8);
+        let line = rows
+            .iter()
+            .find(|row| row.contains("/message-copies"))
+            .unwrap_or_else(|| panic!("{rows:?}"));
+        assert!(
+            line.starts_with(
+                "   /message-copies  copies of your messages to a worker for the agent"
             ),
             "{line}"
         );

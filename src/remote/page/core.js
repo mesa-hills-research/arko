@@ -457,6 +457,14 @@
     return "How many levels of workers there can be, from 1 to 4. With 1 only the main agent starts workers. With 2 or more, a worker can start workers of its own when the agent that starts it says so, down to that level.";
   }
 
+  /** What the message copies setting does, as the library's
+   * `workers::copies_about` says it. */
+  function messageCopiesAbout(on) {
+    return on
+      ? "The agent that started a worker gets a copy of each message you send the worker, with its next news."
+      : "The agent that started a worker doesn't see the messages you send the worker.";
+  }
+
   /** How long a worker has run at `now`, in all its runs (also those
    * before the session was opened again), or null until it has run. */
   function runTime(summary, now) {
@@ -1005,6 +1013,7 @@
     noticeLabel,
     WORKER_MODELS,
     workerDepthAbout,
+    messageCopiesAbout,
     workerWords,
     stateOf,
     deliveryTag,
