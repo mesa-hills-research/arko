@@ -361,6 +361,62 @@ test('a call that can move, or no longer can, has its line drawn again at once',
   assert.equal(draws, 3);
 });
 
+test("the header shows the worker's own figures while its view shows", () => {
+  const status = {
+    working: true,
+    context_tokens: 142_400,
+    cost: 3.2,
+    api_price: 4.5,
+    plan_usage: 'Claude plan 5 h 21%',
+    settings: { handover_at: 250_000 },
+    agents: [
+      { id: 'r1', context_tokens: 88_000, context_window: 1_000_000, handover_at: 190_000, compacts: false },
+      { id: 'r3', context_tokens: 12_300, context_window: null, handover_at: null, compacts: false },
+    ],
+  };
+  const running = { id: 'r1', state: 'running', ran_ms: 0, running_since: 0, cost_billed: 0.1234, cost_list: 0.1234 };
+  // The main agent's, as before.
+  assert.deepEqual(core.figures(status), ['142k/250k', '5 h 21%', '$3.20', '≈ $4.50']);
+  assert.equal(core.contextTitle(status), 'Context 142k tokens, handover size 250k');
+  assert.deepEqual(core.stateOf(status, 'live'), { key: 'working', label: 'Working' });
+  // A running worker: its context against its own handover size, its cost.
+  assert.deepEqual(core.figures(status, running), ['88k/190k', '5 h 21%', '$0.12']);
+  assert.equal(core.contextTitle(status, running), 'Context 88k tokens, handover size 190k');
+  assert.deepEqual(core.stateOf(status, 'live', running), { key: 'working', label: 'r1 working' });
+  assert.equal(core.runTime(running, 134_000), 134_000);
+  // A worker whose calls a plan covered shows what they would cost.
+  const plan = { id: 'r1', state: 'finished', ran_ms: 5000, running_since: null, cost_billed: 0, cost_list: 0.31 };
+  assert.deepEqual(core.figures(status, plan), ['88k/190k', '5 h 21%', '≈ $0.31']);
+  assert.deepEqual(core.stateOf(status, 'live', plan), { key: 'idle', label: 'r1 finished' });
+  assert.equal(core.runTime(plan, 9e9), 5000);
+  // Ended workers keep their figures, a failure is marked.
+  assert.deepEqual(core.stateOf(status, 'live', { ...plan, state: 'failed' }), { key: 'failed', label: 'r1 failed' });
+  assert.equal(core.stateOf(status, 'live', { ...plan, state: 'stopped' }).label, 'r1 stopped');
+  // No figures yet: none of the main agent's stand in for them. A context
+  // without a handover size shows alone.
+  const waiting = { id: 'r2', state: 'queued', ran_ms: 0, running_since: null };
+  assert.deepEqual(core.figures(status, waiting), ['5 h 21%']);
+  assert.equal(core.contextTitle(status, waiting), '');
+  assert.deepEqual(core.stateOf(status, 'live', waiting), { key: 'idle', label: 'r2 queued' });
+  assert.equal(core.runTime(waiting, 9e9), null);
+  assert.deepEqual(core.figures(status, { id: 'r3', state: 'running', ran_ms: 0, running_since: 0 }), ['12k', '5 h 21%']);
+  assert.equal(core.contextTitle(status, { id: 'r3', state: 'running' }), 'Context 12k tokens');
+  // Before the summary comes, the worker is only named.
+  assert.deepEqual(core.stateOf(status, 'live', { id: 'r4' }), { key: 'idle', label: 'r4' });
+  assert.deepEqual(core.figures({ ...status, plan_usage: null, agents: undefined }, { id: 'r4' }), []);
+  // The main agent's question stays in the worker's view, named.
+  const asking = { ...status, question: { id: 7, text: 'Tabs or spaces?' } };
+  assert.deepEqual(core.stateOf(asking, 'live', running), { key: 'asking', label: 'Main asks you' });
+  assert.equal(core.stateOf(asking, 'live').label, 'Asks you');
+  // A connection that isn't live says so, whoever is shown.
+  assert.equal(core.stateOf(status, 'offline', running).key, 'offline');
+  assert.equal(core.stateOf(status, 'connecting', running).key, 'connecting');
+  // An older Arko sends no worker figures.
+  const older = { ...status };
+  delete older.agents;
+  assert.deepEqual(core.figures(older, running), ['5 h 21%', '$0.12']);
+});
+
 test('the monitor wakes setting reads as words', () => {
   assert.equal(core.wakesWords(7200), 'For 2 h after your last message');
   assert.equal(core.wakesWords(1800), 'For 30 min after your last message');

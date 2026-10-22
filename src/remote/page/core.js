@@ -493,33 +493,81 @@
     return { title: summary.title || summary.id, meta: parts.join(' · '), last: last.trim() };
   }
 
-  /** The header's state: `{ key, label }`. */
-  function stateOf(status, connection) {
+  /** The header's state: `{ key, label }`. While a worker's own view shows,
+   * `viewing` is its summary (or `{ id }` before the summary comes), and the
+   * state is the worker's: "r2 working", "r2 finished". The main agent's
+   * question stays, named, because the message box answers it. */
+  function stateOf(status, connection, viewing) {
     if (connection === 'offline') return { key: 'offline', label: 'Offline' };
     if (connection !== 'live') return { key: 'connecting', label: 'Connecting' };
     if (!status) return { key: 'connecting', label: 'Connecting' };
-    if (status.question) return { key: 'asking', label: 'Asks you' };
+    if (status.question) return { key: 'asking', label: viewing ? 'Main asks you' : 'Asks you' };
+    if (viewing) return workerState(viewing);
     if (status.working) return { key: 'working', label: 'Working' };
     return { key: 'idle', label: 'Idle' };
   }
 
+  /** A worker's state for the header: "r2 working" while it runs, else
+   * its state in a word ("r2 queued", "r2 finished", "r2 failed"). */
+  function workerState(summary) {
+    if (!summary.state) return { key: 'idle', label: summary.id };
+    const word = summary.state === 'running' ? 'working' : summary.state;
+    const key = summary.state === 'running' ? 'working' : summary.state === 'failed' ? 'failed' : 'idle';
+    return { key, label: summary.id + ' ' + word };
+  }
+
+  /** The figures the header shows for the agent whose transcript is shown:
+   * the main agent's, or the worker `viewing`'s own, which the status gives
+   * as `agents` (its context and the size it hands over at) and its summary
+   * as its costs. */
+  function agentFigures(status, viewing) {
+    if (!viewing) {
+      return {
+        context: status.context_tokens,
+        handover: status.settings && status.settings.handover_at,
+        cost: status.cost,
+        // What the usage on a plan would cost at API prices.
+        api: status.api_price,
+      };
+    }
+    const agent = (status.agents || []).find((one) => one.id === viewing.id) || {};
+    const billed = viewing.cost_billed || 0;
+    const list = viewing.cost_list || 0;
+    return {
+      context: agent.context_tokens,
+      handover: agent.handover_at,
+      cost: billed >= 0.005 ? billed : 0,
+      api: list > billed + 1e-9 && list >= 0.005 ? list : 0,
+    };
+  }
+
   /** The header's figures: context against the handover size, then cost
-   * (or the plan's usage on a subscription). */
-  function figures(status) {
+   * (or the plan's usage on a subscription). While a worker's own view
+   * shows (`viewing`, its summary), they are the worker's. */
+  function figures(status, viewing) {
     const parts = [];
     if (!status) return parts;
-    const handover = status.settings && status.settings.handover_at;
-    if (status.context_tokens != null) {
+    const { context, handover, cost, api } = agentFigures(status, viewing);
+    if (context != null) {
       // As the terminal's status line says it: the context against the
       // size the agent hands over at.
-      parts.push(tokens(status.context_tokens) + (handover ? '/' + tokens(handover) : ''));
+      parts.push(tokens(context) + (handover ? '/' + tokens(handover) : ''));
     }
     // A plan's usage ("Claude plan 5 h 21%, 7 d 4%"), what was billed,
     // and what the usage on a plan would cost at API prices ("≈ $3.20").
     if (status.plan_usage) parts.push(status.plan_usage.replace(/^.*?\bplan\s+/i, ''));
-    if (status.cost > 0) parts.push('$' + status.cost.toFixed(2));
-    if (status.api_price > 0) parts.push('≈ $' + status.api_price.toFixed(2));
+    if (cost > 0) parts.push('$' + cost.toFixed(2));
+    if (api > 0) parts.push('≈ $' + api.toFixed(2));
     return parts;
+  }
+
+  /** The tooltip of the header's figures: "Context 142k tokens, handover
+   * size 250k", or nothing before a request reported a size. */
+  function contextTitle(status, viewing) {
+    if (!status) return '';
+    const { context, handover } = agentFigures(status, viewing);
+    if (context == null) return '';
+    return 'Context ' + tokens(context) + ' tokens' + (handover ? ', handover size ' + tokens(handover) : '');
   }
 
   // ----- markdown -----
@@ -783,6 +831,8 @@
     workerWords,
     stateOf,
     figures,
+    contextTitle,
+    runTime,
     firstLine,
     markdown,
     inline,

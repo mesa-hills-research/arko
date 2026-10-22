@@ -149,7 +149,7 @@ kbd {
 .state.working .dot { background: var(--accent); animation: pulse 1.4s ease-in-out infinite; }
 .state.asking .dot { background: var(--warn-mark); }
 .state.asking { color: var(--warn); }
-.state.offline .dot { background: var(--error); }
+.state.offline .dot, .state.failed .dot { background: var(--error); }
 .state.offline { color: var(--error); }
 .state.connecting { color: var(--muted); }
 .state-time { font-weight: 400; color: var(--muted); font-variant-numeric: tabular-nums; }

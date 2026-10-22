@@ -1347,6 +1347,45 @@ mod tests {
         assert_eq!(events.last().unwrap().1["jobs"][0]["id"], job.to_string());
     }
 
+    /// The status carries each worker's context and the size it hands over
+    /// at, which the page's header shows in a worker's own view. A session
+    /// without workers sends none.
+    #[tokio::test]
+    async fn the_status_carries_each_workers_context() {
+        let feed = Feed::new("main");
+        let meter = Arc::new(Moving(Mutex::new(Reading::default())));
+        let served = serve_with(&feed, "127.0.0.1:0", Info::default(), meter.clone());
+        let cookie = served.login().await;
+        let mut stream = served.get("/api/events", Some(&cookie)).await;
+        let mut buffer = String::new();
+        let events = read_until(&mut stream, &mut buffer, |name, _| name == "reset").await;
+        let (_, reset) = events.last().unwrap();
+        assert!(reset["status"].get("agents").is_none(), "{reset}");
+
+        lock(&meter.0).agents = vec![super::super::AgentStatus {
+            id: "r1".into(),
+            context_tokens: Some(88_000),
+            context_window: Some(1_000_000),
+            handover_at: Some(190_000),
+            compacts: false,
+        }];
+        let events = read_until(&mut stream, &mut buffer, |name, data| {
+            name == "status" && data.get("agents").is_some()
+        })
+        .await;
+        let (_, status) = events.last().unwrap();
+        assert_eq!(
+            status["agents"],
+            serde_json::json!([{
+                "id": "r1",
+                "context_tokens": 88_000,
+                "context_window": 1_000_000,
+                "handover_at": 190_000,
+                "compacts": false,
+            }])
+        );
+    }
+
     /// The page's Model row names the model the session runs now, not the
     /// one it ran as the server started: `/model` before the conversation
     /// starts changes it then. A page open gets it with the next status,

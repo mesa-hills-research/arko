@@ -157,8 +157,9 @@ pub struct Reading {
     /// Each plan's usage windows, as last reported.
     #[serde(skip)]
     pub plans: Vec<PlanStatus>,
-    /// Each worker's context and handover size.
-    #[serde(skip)]
+    /// Each worker's context and handover size, which the page shows in a
+    /// worker's own view.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub agents: Vec<AgentStatus>,
     /// The main agent's prompt cache, as its latest request left it.
     #[serde(skip)]
@@ -251,7 +252,7 @@ pub struct PlanWindow {
 
 /// A worker's context, as its latest request reported it, and the size it
 /// hands over (or Claude Code compacts) at.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct AgentStatus {
     /// Its ID, such as r1 or r2.
     pub id: String,

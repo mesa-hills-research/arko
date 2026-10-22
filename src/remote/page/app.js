@@ -691,6 +691,8 @@
     rebuildWorkerRows(summary.id);
     draw();
     renderWorkers();
+    // Its state and cost are in the header while its view shows.
+    if (summary.id === worker) renderStatus();
   }
 
   /** A background job changed: the line of the call that made it offers
@@ -715,28 +717,39 @@
     followMotion();
   }
 
+  /** The worker whose own view shows, as its summary (or just its ID before
+   * the summary comes), or null in the main one. The header shows its
+   * figures in place of the main agent's. */
+  function viewing() {
+    return worker ? store.workers.get(worker) || { id: worker } : null;
+  }
+
   function renderStatus() {
-    const state = C.stateOf(status, connection);
+    const shown = viewing();
+    const state = C.stateOf(status, connection, shown);
     $('state').className = 'state ' + state.key;
     $('state-label').textContent = state.label;
-    $('figures').textContent = C.figures(status).join(' · ');
-    const settings = status && status.settings;
-    $('figures').title =
-      status && status.context_tokens != null
-        ? 'Context ' + C.tokens(status.context_tokens) + ' tokens' + (settings && settings.handover_at ? ', handover size ' + C.tokens(settings.handover_at) : '')
-        : '';
+    $('figures').textContent = C.figures(status, shown).join(' · ');
+    $('figures').title = C.contextTitle(status, shown);
     $('outside').hidden = !(status && status.settings && status.settings.outside);
     const working = status && status.working && connection === 'live';
     stop.hidden = !working;
     tick();
     placeholder();
-    document.title = 'Arko' + (state.key === 'asking' ? ' · asks you' : state.key === 'working' ? ' · working' : '');
+    // (The tab's title is the session's, the main agent's.)
+    const session = C.stateOf(status, connection).key;
+    document.title = 'Arko' + (session === 'asking' ? ' · asks you' : session === 'working' ? ' · working' : '');
   }
 
-  /** The clocks: how long the turn has gone on, and the workers' times. */
+  /** The clocks: how long the turn has gone on, or the worker's run time
+   * while its view shows, and the workers' times. */
   function tick() {
     const time = $('state-time');
-    if (status && status.working && connection === 'live') {
+    const shown = viewing();
+    if (shown) {
+      const ran = status && status.question ? null : C.runTime(shown, serverNow());
+      time.textContent = connection === 'live' && ran != null ? C.duration(ran) : '';
+    } else if (status && status.working && connection === 'live') {
       const { since } = store.currentTurn();
       time.textContent = since ? C.duration(serverNow() - since) : '';
     } else {
@@ -874,7 +887,8 @@
     relayout = true;
     nodes.clear();
     list.replaceChildren();
-    placeholder();
+    // The header shows this agent's figures.
+    renderStatus();
     draw();
   }
 
