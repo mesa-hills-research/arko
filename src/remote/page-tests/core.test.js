@@ -368,6 +368,18 @@ test('the monitor wakes setting reads as words', () => {
   assert.equal(core.wakesWords(0), 'Never');
 });
 
+test('a worker says its model, profile and cost once the summary has them', () => {
+  const base = { id: 'r2', title: 'Judge', state: 'running', tool_calls: 4, started_at: 0, ended_at: null, ran_ms: 0, running_since: 0 };
+  assert.equal(core.workerWords(base, 60_000).meta, '4 calls · 1m00s · running');
+  const known = { ...base, model: 'gpt-6.1-sol', effort: 'high', profile: '3d-judge', cost_billed: 0.1234, cost_list: 0.1234 };
+  assert.equal(core.workerWords(known, 60_000).meta, '4 calls · 1m00s · running · gpt-6.1-sol, high · profile 3d-judge · $0.12');
+  // A model that doesn't reason names no effort, and a plan covers the calls.
+  const plan = { ...base, model: 'cc:claude-haiku-5-5', cost_billed: 0, cost_list: 0.31 };
+  assert.equal(core.workerWords(plan, 60_000).meta, '4 calls · 1m00s · running · cc:claude-haiku-5-5 · ≈ $0.31 at API prices');
+  assert.equal(core.costWords(0, 0.004), '');
+  assert.equal(core.costWords(undefined, undefined), '');
+});
+
 test('the workers settings read as words', () => {
   assert.deepEqual(Object.keys(core.WORKER_MODELS), ['agent', 'profiles', 'session']);
   assert.equal(core.WORKER_MODELS.agent.name, 'Main agent chooses');

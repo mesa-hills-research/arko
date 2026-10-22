@@ -742,10 +742,10 @@ async fn profiles_lists_shows_adds_and_removes() {
     let listed = last_said(&harness.feed);
     let expected = format!(
         "Worker profiles
-  default   gpt-6-luna, high effort                     the session's worker model
-  3d-judge  sol, high effort         for every project  Judges 3D results against a reference image
-  quick     luna                     for every project  Describe what this profile is for
-  reviewer  sol                      for this session   Reviews a diff (made by the main agent)
+  default   luna, high effort                     the session's worker model
+  3d-judge  sol, high effort   for every project  Judges 3D results against a reference image
+  quick     luna               for every project  Describe what this profile is for
+  reviewer  sol                for this session   Reviews a diff (made by the main agent)
 Hidden by a nearer profile of the same name
   reviewer  for this project
 Can't be read

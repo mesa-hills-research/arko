@@ -281,7 +281,27 @@ fn draw_list(frame: &mut Frame, app: &mut App, area: Rect, rows: Vec<ListRow>) {
                 } else {
                     worker.title.clone()
                 };
-                left.push(Span::styled(format!("  {doing}"), theme.dim()));
+                // The model, when it isn't the one workers run unless told
+                // otherwise.
+                let other = worker
+                    .model
+                    .as_deref()
+                    .filter(|model| *model != app.reading.models.workers);
+                let tag = match (other, &worker.effort) {
+                    (Some(model), Some(effort)) => Some(format!(
+                        "{} {effort}",
+                        crate::providers::short_model_name(model)
+                    )),
+                    (Some(model), None) => Some(crate::providers::short_model_name(model)),
+                    _ => None,
+                };
+                left.push(Span::styled(
+                    match tag {
+                        Some(tag) => format!("  {tag} {} {doing}", glyphs::render("·")),
+                        None => format!("  {doing}"),
+                    },
+                    theme.dim(),
+                ));
                 // In columns: the state, the time and the tool calls line
                 // up from row to row.
                 let (state, style) = transcript::state(worker, theme);
@@ -914,6 +934,37 @@ mod tests {
             .map(|row| row[..row.find(" tool call").unwrap()].chars().count())
             .collect();
         assert!(calls.iter().all(|at| *at == calls[0]), "{list:#?}");
+    }
+
+    /// A worker on another model than the session's workers say so on its
+    /// row, with its effort, and one on that model says nothing.
+    #[test]
+    fn the_agent_list_names_a_workers_model_when_it_is_not_the_default() {
+        use crate::remote::WorkerState::Running;
+        use crate::tui::app::tests::worker;
+        let mut app = app();
+        app.reading.models.workers = "gpt-6-luna".into();
+        let mut default = worker("r1", Running);
+        default.model = Some("gpt-6-luna".into());
+        default.effort = Some("high".into());
+        let mut other = worker("r2", Running);
+        other.model = Some("gpt-6.1-sol".into());
+        other.effort = Some("xhigh".into());
+        let mut plan = worker("r3", Running);
+        plan.model = Some("cc:claude-haiku-5-5".into());
+        let unknown = worker("r4", Running);
+        for summary in [default, other, plan, unknown] {
+            app.update(Update::Worker(summary), Activity::default);
+        }
+        let rows = screen(&mut app, 100, 30);
+        let list = &rows[rows.len() - 4..];
+        assert!(list[0].contains("r1    Task of r1"), "{list:#?}");
+        assert!(
+            list[1].contains("r2    sol xhigh · Task of r2"),
+            "{list:#?}"
+        );
+        assert!(list[2].contains("r3    cc:haiku · Task of r3"), "{list:#?}");
+        assert!(list[3].contains("r4    Task of r4"), "{list:#?}");
     }
 
     /// The quit popup over an 80-column screen: the background jobs, each

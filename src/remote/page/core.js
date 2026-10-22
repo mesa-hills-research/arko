@@ -466,13 +466,27 @@
     return ran > 0 ? ran : null;
   }
 
+  /** What a worker's model calls cost, from the summary's `cost_billed`
+   * and `cost_list` (dollars): "$0.12", or "≈ $0.31 at API prices" when a
+   * plan covered the calls, and nothing under half a cent. */
+  function costWords(billed, list) {
+    if (!(list >= 0.005)) return '';
+    if (list > billed + 0.005) return '≈ $' + list.toFixed(2) + ' at API prices';
+    return '$' + billed.toFixed(2);
+  }
+
   /** A worker's summary in words: `{ title, meta, last }`, where meta is
-   * "18 calls · 2m14s · running". */
+   * "18 calls · 2m14s · running · gpt-6.1-sol, high · profile judge · $0.12"
+   * (the model, the profile and the cost once the summary has them). */
   function workerWords(summary, now) {
     const parts = [plural(summary.tool_calls, 'call', 'calls')];
     const ran = runTime(summary, now);
     if (ran != null) parts.push(duration(ran));
     parts.push(summary.state);
+    if (summary.model) parts.push(summary.effort ? summary.model + ', ' + summary.effort : summary.model);
+    if (summary.profile) parts.push('profile ' + summary.profile);
+    const cost = costWords(summary.cost_billed || 0, summary.cost_list || 0);
+    if (cost) parts.push(cost);
     let last = summary.last || '';
     if (summary.state === 'finished' && summary.report) last = summary.report.split('\n').find((l) => l.trim()) || last;
     return { title: summary.title || summary.id, meta: parts.join(' · '), last: last.trim() };
@@ -762,6 +776,7 @@
     tokens,
     plural,
     wakesWords,
+    costWords,
     WORKER_MODELS,
     workerDepthWords,
     workerWords,

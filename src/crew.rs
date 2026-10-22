@@ -123,6 +123,9 @@ pub struct WorkerFacts {
     pub effort: Option<String>,
     /// The profile it started with, if any.
     pub profile: Option<String>,
+    /// What its model calls billed and would cost at API list prices, in
+    /// dollars, when the session counted them.
+    pub cost: Option<(f64, f64)>,
     /// The model it started on, when new workers start on another.
     pub other_model: Option<String>,
     /// How long its prompt cache lasts, when that is known.
@@ -394,6 +397,55 @@ fn start_parameters() -> Vec<ToolParameterDefinition> {
             "Optional. low, medium, high, xhigh or max, as the model takes it. It overrides the profile's.",
         ),
     ]
+}
+
+/// A worker's lines for `/workers`.
+pub(crate) fn describe_worker(worker: &WorkerFacts) -> String {
+    let mut line = format!(
+        "{}  {}  {}",
+        worker.id,
+        worker.state,
+        ui::cut(&worker.task, 100)
+    );
+    if let Some(model) = &worker.model {
+        line.push_str(&format!("\n  runs {model}"));
+        if let Some(effort) = &worker.effort {
+            line.push_str(&format!(" at {effort} effort"));
+        }
+        if let Some(profile) = &worker.profile {
+            line.push_str(&format!(", profile {profile}"));
+        }
+        if worker.other_model.is_some() {
+            line.push_str(", the setup it started with");
+        }
+    }
+    // What it has cost, once it has cost something.
+    if let Some((billed, list)) = worker.cost.filter(|(_, list)| *list >= 0.005) {
+        if list > billed + 0.005 {
+            line.push_str(&format!(
+                "\n  ≈ ${list:.2} at API prices, ${billed:.2} billed"
+            ));
+        } else {
+            line.push_str(&format!("\n  cost ${billed:.2}"));
+        }
+    }
+    if let Some(lifetime) = worker.cache_lifetime {
+        line.push_str(&format!(
+            "\n  prompt cache of {} minutes",
+            lifetime.as_secs() / 60
+        ));
+    }
+    if let Some((path, branch)) = &worker.worktree {
+        line.push_str(&format!(
+            "\n  {} ({})",
+            path.display(),
+            branch.as_deref().unwrap_or("worktree")
+        ));
+    }
+    if let Some(report) = &worker.report {
+        line.push_str(&format!("\n  {}", ui::cut(report, 240)));
+    }
+    line
 }
 
 /// A view of one workflow's subagents. It has no worker runtime or mailbox.
@@ -849,43 +901,7 @@ impl Crew {
     pub fn describe(&self) -> String {
         self.facts()
             .iter()
-            .map(|worker| {
-                let mut line = format!(
-                    "{}  {}  {}",
-                    worker.id,
-                    worker.state,
-                    ui::cut(&worker.task, 100)
-                );
-                if let Some(model) = &worker.model {
-                    line.push_str(&format!("\n  runs {model}"));
-                    if let Some(effort) = &worker.effort {
-                        line.push_str(&format!(" at {effort} effort"));
-                    }
-                    if let Some(profile) = &worker.profile {
-                        line.push_str(&format!(", profile {profile}"));
-                    }
-                    if worker.other_model.is_some() {
-                        line.push_str(", the setup it started with");
-                    }
-                }
-                if let Some(lifetime) = worker.cache_lifetime {
-                    line.push_str(&format!(
-                        "\n  prompt cache of {} minutes",
-                        lifetime.as_secs() / 60
-                    ));
-                }
-                if let Some((path, branch)) = &worker.worktree {
-                    line.push_str(&format!(
-                        "\n  {} ({})",
-                        path.display(),
-                        branch.as_deref().unwrap_or("worktree")
-                    ));
-                }
-                if let Some(report) = &worker.report {
-                    line.push_str(&format!("\n  {}", ui::cut(report, 240)));
-                }
-                line
-            })
+            .map(describe_worker)
             .collect::<Vec<_>>()
             .join("\n")
     }
@@ -955,6 +971,12 @@ impl Crew {
                         .and_then(|started| started.effort)
                         .map(|effort| effort.to_string()),
                     profile: started.as_ref().and_then(|started| started.profile.clone()),
+                    cost: self
+                        .setup
+                        .feed
+                        .as_ref()
+                        .and_then(|feed| feed.worker_summary(&run.handle))
+                        .map(|summary| (summary.cost_billed, summary.cost_list)),
                     other_model,
                     cache_lifetime: match lifetime {
                         PromptCacheLifetime::Known(lifetime) => Some(lifetime),
@@ -1443,5 +1465,47 @@ mod tests {
         ] {
             assert_eq!(crew.check_start(&fine), None, "{fine:?}");
         }
+    }
+
+    /// `/workers` says what each worker runs, what it has cost once that is
+    /// worth a line, and what it did.
+    #[test]
+    fn a_workers_lines_say_what_it_runs_and_what_it_cost() {
+        let mut worker = WorkerFacts {
+            id: "r2".into(),
+            state: "running".into(),
+            task: "Judge the render".into(),
+            model: Some("gpt-6.1-sol".into()),
+            effort: Some("high".into()),
+            profile: Some("3d-judge".into()),
+            cost: Some((0.1234, 0.1234)),
+            other_model: None,
+            cache_lifetime: Some(Duration::from_secs(300)),
+            worktree: None,
+            report: Some("Done.".into()),
+        };
+        assert_eq!(
+            describe_worker(&worker),
+            "r2  running  Judge the render\n  runs gpt-6.1-sol at high effort, profile 3d-judge\n  cost $0.12\n  prompt cache of 5 minutes\n  Done."
+        );
+        // A plan covered the calls: they bill nothing, and the list prices
+        // say what they are worth.
+        worker.cost = Some((0.0, 0.31));
+        worker.other_model = Some("gpt-6-luna".into());
+        worker.profile = None;
+        let text = describe_worker(&worker);
+        assert!(
+            text.contains("\n  runs gpt-6.1-sol at high effort, the setup it started with\n  ≈ $0.31 at API prices, $0.00 billed\n"),
+            "{text}"
+        );
+        // Under half a cent is no line, and a worker with no record names no
+        // model.
+        worker.cost = Some((0.0, 0.004));
+        worker.model = None;
+        let text = describe_worker(&worker);
+        assert!(
+            !text.contains("cost") && !text.contains("runs") && !text.contains("API"),
+            "{text}"
+        );
     }
 }

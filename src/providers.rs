@@ -174,6 +174,23 @@ pub fn model_name(model: &Model) -> String {
     }
 }
 
+/// `name` (a model as [`model_name`] writes it) in as few characters as
+/// still name it: its alias (`sol`, `cc:opus`), else a long OpenRouter slug
+/// cut short.
+pub fn short_model_name(name: &str) -> String {
+    let (prefix, id) = match name.strip_prefix(CLAUDE_CODE) {
+        Some(id) => (CLAUDE_CODE, id),
+        None => ("", name),
+    };
+    if let Some((alias, _)) = ALIASES.iter().find(|(_, registry)| *registry == id) {
+        return format!("{prefix}{alias}");
+    }
+    if name.chars().count() > 28 {
+        return format!("{}…", name.chars().take(27).collect::<String>());
+    }
+    name.to_string()
+}
+
 /// The provider's name, as Arko's messages say it.
 pub fn provider_name(model: &Model) -> &'static str {
     match model.provider {
@@ -2435,5 +2452,20 @@ mod tests {
         ] {
             assert_eq!(explain_error(other), other);
         }
+    }
+
+    #[test]
+    fn a_model_is_named_by_its_alias_when_it_has_one() {
+        assert_eq!(short_model_name("gpt-6.1-sol"), "sol");
+        assert_eq!(short_model_name("claude-opus-5-5"), "opus");
+        assert_eq!(short_model_name("cc:claude-haiku-5-5"), "cc:haiku");
+        assert_eq!(
+            short_model_name("gpt-5.4-nano-2026-03-17"),
+            "gpt-5.4-nano-2026-03-17"
+        );
+        let long = "openrouter:some-maker/some-very-long-model-name-latest";
+        let short = short_model_name(long);
+        assert_eq!(short.chars().count(), 28);
+        assert!(short.starts_with("openrouter:some-maker/") && short.ends_with('…'));
     }
 }

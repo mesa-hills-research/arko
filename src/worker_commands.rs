@@ -216,7 +216,10 @@ impl Harness {
             .map_or(true, |model| !providers::efforts(&model).is_empty());
         let mut rows: Vec<(String, String, String, String)> = vec![(
             "default".into(),
-            crate::worker_tools::runs_text(Some(&worker.model), reasons.then_some(worker.effort)),
+            crate::worker_tools::runs_text(
+                Some(&providers::short_model_name(&worker.model)),
+                reasons.then_some(worker.effort),
+            ),
             String::new(),
             "the session's worker model".into(),
         )];
