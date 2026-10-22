@@ -474,18 +474,71 @@
     return '$' + billed.toFixed(2);
   }
 
+  /** What a worker and the workers under it cost, as "with its workers $0.50",
+   * once they cost more than the worker alone (the summary's
+   * `family_cost_billed` and `family_cost_list`). */
+  function familyCostWords(summary) {
+    const list = summary.family_cost_list || 0;
+    if (!(list >= (summary.cost_list || 0) + 0.005)) return '';
+    return 'with its workers ' + costWords(summary.family_cost_billed || 0, list);
+  }
+
+  /** The workers in the order a list shows a family: each worker that no
+   * listed worker started, then the workers it started, depth first, in the
+   * order they started. `summaries` are in the order the workers started.
+   * The library's `remote::family_order` is the same order. */
+  function familyOrder(summaries) {
+    const ids = new Set(summaries.map((summary) => summary.id));
+    const order = [];
+    const place = (summary) => {
+      order.push(summary);
+      for (const other of summaries) {
+        if (other !== summary && other.parent === summary.id) place(other);
+      }
+    };
+    for (const summary of summaries) {
+      if (!summary.parent || !ids.has(summary.parent)) place(summary);
+    }
+    for (const summary of summaries) {
+      if (!order.includes(summary)) order.push(summary);
+    }
+    return order;
+  }
+
+  /** The workers in the order the sheet lists them: the families with a
+   * worker going first in the order they started, then the others, the
+   * latest first, each family with its workers after it. */
+  function sheetOrder(summaries) {
+    const ids = new Set(summaries.map((summary) => summary.id));
+    const families = [];
+    for (const summary of familyOrder(summaries)) {
+      if (!summary.parent || !ids.has(summary.parent) || families.length === 0) families.push([]);
+      families[families.length - 1].push(summary);
+    }
+    const going = (family) => family.some((summary) => summary.state === 'running' || summary.state === 'queued');
+    return [
+      ...families.filter(going).flat(),
+      ...families.filter((family) => !going(family)).reverse().flat(),
+    ];
+  }
+
   /** A worker's summary in words: `{ title, meta, last }`, where meta is
-   * "18 calls · 2m14s · running · gpt-6.1-sol, high · profile judge · $0.12"
-   * (the model, the profile and the cost once the summary has them). */
+   * "18 calls · 2m14s · running · under r1 · gpt-6.1-sol, high · profile
+   * judge · $0.12" (who started it when a worker did, the model, the
+   * profile and the cost once the summary has them, and what it cost with
+   * its workers). */
   function workerWords(summary, now) {
     const parts = [plural(summary.tool_calls, 'call', 'calls')];
     const ran = runTime(summary, now);
     if (ran != null) parts.push(duration(ran));
     parts.push(summary.state);
+    if (summary.parent) parts.push('under ' + summary.parent);
     if (summary.model) parts.push(summary.effort ? summary.model + ', ' + summary.effort : summary.model);
     if (summary.profile) parts.push('profile ' + summary.profile);
     const cost = costWords(summary.cost_billed || 0, summary.cost_list || 0);
     if (cost) parts.push(cost);
+    const family = familyCostWords(summary);
+    if (family) parts.push(family);
     let last = summary.last || '';
     if (summary.state === 'finished' && summary.report) last = summary.report.split('\n').find((l) => l.trim()) || last;
     return { title: summary.title || summary.id, meta: parts.join(' · '), last: last.trim() };
@@ -938,6 +991,8 @@
     plural,
     wakesWords,
     costWords,
+    familyOrder,
+    sheetOrder,
     WORKER_MODELS,
     workerDepthAbout,
     workerWords,

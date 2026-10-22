@@ -535,6 +535,8 @@ details.thinking .thinking-text { font-style: italic; margin: 4px 0 0 18px; }
   line-height: 1.35;
 }
 .wcard:hover { border-color: var(--muted); }
+/* A worker that a worker started, in the sheet, a step in for each level. */
+.wcard.nested { width: calc(100% - var(--depth) * 18px); margin-left: calc(var(--depth) * 18px); }
 .wcard .wdot { grid-row: span 3; width: 10px; height: 10px; border-radius: 50%; background: var(--muted); }
 .wcard.running .wdot { background: var(--accent); animation: pulse 1.4s ease-in-out infinite; }
 .wcard.queued .wdot { background: none; box-shadow: inset 0 0 0 2px var(--muted); }

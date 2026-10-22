@@ -3391,6 +3391,12 @@ mod tests {
         feed.worker_info("r2", info);
         assert_eq!(family("r1").1, 3.5);
         assert_eq!(family("r2").1, 3.0);
+        // The page reads the totals and the family from the summary's JSON.
+        let json = serde_json::to_value(feed.worker_summary("r2").unwrap()).unwrap();
+        assert_eq!(json["parent"], "r1");
+        assert_eq!(json["depth"], 2);
+        assert_eq!(json["family_cost_billed"], 3.0);
+        assert!(json["family_cost_list"].is_number());
     }
 
     /// A job a command started (terminal_start) keeps its call's own line,

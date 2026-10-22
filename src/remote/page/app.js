@@ -218,13 +218,18 @@
 
   const CHEVRON = 'M8 5l5 5-5 5';
 
-  /** A worker's live line; `main` makes the sheet's "Main" entry. */
-  function workerCard(id) {
+  /** A worker's live line. In the workers' sheet (`listed`), the workers a
+   * worker started are indented under it. */
+  function workerCard(id, listed) {
     const summary = store.workers.get(id) || { id, title: '', state: 'running', tool_calls: 0 };
     const words = C.workerWords(summary, serverNow());
     const card = element('button', 'wcard ' + summary.state);
     card.type = 'button';
     card.dataset.worker = id;
+    if (listed && summary.depth > 1) {
+      card.classList.add('nested');
+      card.style.setProperty('--depth', String(Math.min(summary.depth, 4) - 1));
+    }
     const title = element('span', 'wtitle');
     title.append(element('span', 'wid', id), words.title);
     const go = element('span', 'wgo');
@@ -955,10 +960,9 @@
     main.append(element('span', 'wdot'), title, element('span', 'wgo'), element('span', 'wmeta', worker ? 'Back to the main transcript' : 'Shown now'));
     main.lastChild.previousSibling.append(icon(CHEVRON));
     list.append(main);
-    // Running and queued ones first, then the latest.
-    const active = (id) => ['running', 'queued'].includes(store.workers.get(id).state);
-    for (const id of ids.filter(active)) list.append(workerCard(id));
-    for (const id of ids.filter((id) => !active(id)).reverse()) list.append(workerCard(id));
+    // The families with a worker going first, then the latest, each worker
+    // followed by the workers it started.
+    for (const summary of C.sheetOrder(ids.map((id) => store.workers.get(id)))) list.append(workerCard(summary.id, true));
   }
 
   $('workers-button').addEventListener('click', () => {

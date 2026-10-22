@@ -436,6 +436,36 @@ test('a worker says its model, profile and cost once the summary has them', () =
   assert.equal(core.costWords(undefined, undefined), '');
 });
 
+test('a worker that a worker started says whose it is and what the family cost', () => {
+  const base = { id: 'r3', title: 'Count', state: 'running', tool_calls: 4, started_at: 0, ended_at: null, ran_ms: 0, running_since: 0 };
+  const nested = { ...base, parent: 'r1', depth: 2, model: 'gpt-6.1-sol', cost_billed: 0.1, cost_list: 0.1, family_cost_billed: 0.1, family_cost_list: 0.1 };
+  assert.equal(core.workerWords(nested, 60_000).meta, '4 calls · 1m00s · running · under r1 · gpt-6.1-sol · $0.10');
+  // A worker with workers under it says what they cost together, once that is more.
+  const parent = { ...base, id: 'r1', cost_billed: 0.1, cost_list: 0.1, family_cost_billed: 0.6, family_cost_list: 0.6 };
+  assert.equal(core.workerWords(parent, 60_000).meta, '4 calls · 1m00s · running · $0.10 · with its workers $0.60');
+  const plan = { ...parent, cost_billed: 0, cost_list: 0.2, family_cost_billed: 0, family_cost_list: 0.9 };
+  assert.equal(core.workerWords(plan, 60_000).meta, '4 calls · 1m00s · running · ≈ $0.20 at API prices · with its workers ≈ $0.90 at API prices');
+  const alone = { ...parent, family_cost_billed: 0.1, family_cost_list: 0.1 };
+  assert.equal(core.workerWords(alone, 60_000).meta, '4 calls · 1m00s · running · $0.10');
+});
+
+test('a family is listed with each worker\'s workers after it', () => {
+  const worker = (id, parent, state = 'running') => ({ id, parent, state });
+  const list = [worker('r1'), worker('r2'), worker('r3', 'r1'), worker('r4', 'r3'), worker('r5', 'r1'), worker('r6', 'r2'), worker('r7', 'r9')];
+  assert.deepEqual(core.familyOrder(list).map((w) => w.id), ['r1', 'r3', 'r4', 'r5', 'r2', 'r6', 'r7']);
+  // The sheet: the families with a worker going first, then the others, the latest first.
+  const ended = [
+    worker('r1', undefined, 'finished'),
+    worker('r2', undefined, 'finished'),
+    worker('r3', 'r1', 'finished'),
+    worker('r4', undefined, 'running'),
+    worker('r5', 'r4', 'finished'),
+    worker('r6', 'r2', 'running'),
+  ];
+  assert.deepEqual(core.sheetOrder(ended).map((w) => w.id), ['r2', 'r6', 'r4', 'r5', 'r1', 'r3']);
+  assert.deepEqual(core.sheetOrder([]), []);
+});
+
 test('the workers settings read as words', () => {
   assert.deepEqual(Object.keys(core.WORKER_MODELS), ['agent', 'profiles', 'session']);
   assert.equal(core.WORKER_MODELS.agent.name, 'Main agent chooses');
