@@ -48,7 +48,7 @@ pub fn depth_command(depth: u32) -> String {
 
 /// The line under the depth setting, saying what it does.
 pub fn depth_about() -> &'static str {
-    "How many levels of workers there can be, from 1 to 4. 1 means only the main agent starts workers. 2 lets a worker the main agent starts begin workers of its own, when the main agent allows it."
+    "How many levels of workers there can be, from 1 to 4. With 1 only the main agent starts workers. With 2 or more, a worker can start workers of its own when the agent that starts it says so, down to that level."
 }
 
 /// What a worker depth of `depth` means for the session now, as a sentence
@@ -58,7 +58,7 @@ pub fn depth_effect(depth: u32) -> String {
         "Only the main agent starts workers.".to_string()
     } else {
         format!(
-            "Workers can go {depth} levels deep. A worker the main agent starts can start workers of its own when the main agent allows it."
+            "Workers can go {depth} levels deep. A worker can start workers of its own when the agent that starts it says so, down to level {depth}."
         )
     }
 }
@@ -109,10 +109,20 @@ mod tests {
             ]
         );
         assert_eq!(depth_command(3), "/worker-depth 3");
+        // Choosing the session's model says that no worker starts workers.
+        assert_eq!(
+            ModelChoice::Session.about(),
+            "Every worker runs the session's worker model, and none starts workers."
+        );
         // The sentences an app shows say what the value means.
         assert_eq!(depth_effect(1), "Only the main agent starts workers.");
-        assert!(depth_effect(3).starts_with("Workers can go 3 levels deep."));
-        assert!(depth_about().contains("1 means only the main agent starts workers"));
+        assert_eq!(
+            depth_effect(3),
+            "Workers can go 3 levels deep. A worker can start workers of its own when the agent that starts it says so, down to level 3."
+        );
+        assert_ne!(depth_effect(3), depth_effect(4));
+        assert!(depth_effect(4).ends_with("down to level 4."));
+        assert!(depth_about().contains("With 1 only the main agent starts workers"));
         assert!(!depth_about().contains("takes effect"));
         assert_eq!(parse_depth(" 4 "), Ok(4));
         assert_eq!(check_depth(1), Ok(1));

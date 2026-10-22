@@ -471,7 +471,7 @@ test('the workers settings read as words', () => {
   assert.equal(core.WORKER_MODELS.agent.name, 'Main agent chooses');
   assert.equal(core.WORKER_MODELS.profiles.name, 'Profiles only');
   assert.equal(core.WORKER_MODELS.session.name, "Session's worker model");
-  assert.match(core.workerDepthAbout(), /^How many levels of workers there can be, from 1 to 4\. 1 means only the main agent starts workers\./);
+  assert.match(core.workerDepthAbout(), /^How many levels of workers there can be, from 1 to 4\. With 1 only the main agent starts workers\./);
   assert.doesNotMatch(core.workerDepthAbout(), /takes effect/);
 });
 

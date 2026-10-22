@@ -69,7 +69,7 @@ impl Harness {
     fn models_sentence(&self, choice: ModelChoice) -> String {
         match choice {
             ModelChoice::Session => format!(
-                "Every worker runs the session's worker model, {}.",
+                "Every worker runs the session's worker model, {}. No worker starts workers.",
                 self.settings.worker.describe()
             ),
             other => other.about().to_string(),

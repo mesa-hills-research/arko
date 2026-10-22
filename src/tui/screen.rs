@@ -2080,6 +2080,28 @@ mod tests {
         assert_eq!(rows[6], " › /watch main");
     }
 
+    /// The menu line of `/worker-depth` says in its first 62 columns what the
+    /// number is and what 1 means, so an 80-column screen, which cuts the
+    /// rest, still says it.
+    #[test]
+    fn the_worker_depth_menu_line_says_what_it_sets_at_80_columns() {
+        let mut app = app();
+        for c in "/worker-d".chars() {
+            app.key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        let rows = screen(&mut app, 80, 8);
+        let line = rows
+            .iter()
+            .find(|row| row.contains("/worker-depth"))
+            .unwrap_or_else(|| panic!("{rows:?}"));
+        assert!(
+            line.starts_with(
+                "   /worker-depth  how deep workers go, from 1 to 4. 1 means only the main agent"
+            ),
+            "{line}"
+        );
+    }
+
     fn mouse(app: &mut App, kind: crossterm::event::MouseEventKind, x: u16, y: u16) {
         app.mouse(crossterm::event::MouseEvent {
             kind,

@@ -614,7 +614,7 @@ async fn worker_models_sets_who_chooses_the_workers_models() {
     assert!(harness.live_command("/worker-models session", Source::Web));
     assert_eq!(
         last_said(&harness.feed),
-        "Changed from the web page. Every worker runs the session's worker model, gpt-6-luna (high effort)."
+        "Changed from the web page. Every worker runs the session's worker model, gpt-6-luna (high effort). No worker starts workers."
     );
     assert!(harness.conversation_started());
     start_worker(&mut harness, &mut inputs, "Start with the judge.").await;
@@ -643,7 +643,7 @@ async fn worker_depth_is_kept_and_says_what_it_allows() {
     assert!(harness.live_command("/worker-depth", Source::Terminal));
     assert_eq!(
         last_said(&harness.feed),
-        "Worker depth is 2. Workers can go 2 levels deep. A worker the main agent starts can start workers of its own when the main agent allows it. /worker-depth 1 to 4 changes it."
+        "Worker depth is 2. Workers can go 2 levels deep. A worker can start workers of its own when the agent that starts it says so, down to level 2. /worker-depth 1 to 4 changes it."
     );
     for bad in ["0", "5", "deep"] {
         assert!(harness.live_command(&format!("/worker-depth {bad}"), Source::Terminal));
@@ -657,7 +657,7 @@ async fn worker_depth_is_kept_and_says_what_it_allows() {
     assert!(harness.live_command("/worker-depth 3", Source::Terminal));
     assert_eq!(
         last_said(&harness.feed),
-        "Worker depth is now 3. Workers can go 3 levels deep. A worker the main agent starts can start workers of its own when the main agent allows it."
+        "Worker depth is now 3. Workers can go 3 levels deep. A worker can start workers of its own when the agent that starts it says so, down to level 3."
     );
     assert_eq!(harness.settings.worker_depth, 3);
     assert_eq!(harness.session.load_settings().unwrap().worker_depth, 3);

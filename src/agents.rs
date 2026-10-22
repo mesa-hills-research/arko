@@ -217,7 +217,9 @@ impl ModelChoice {
             ModelChoice::Profiles => {
                 "The main agent starts workers with a profile only. It can't choose a model or effort by itself."
             }
-            ModelChoice::Session => "Every worker runs the session's worker model.",
+            ModelChoice::Session => {
+                "Every worker runs the session's worker model, and none starts workers."
+            }
         }
     }
 }
