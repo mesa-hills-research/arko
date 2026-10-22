@@ -326,6 +326,20 @@ async fn a_worker_started_to_nest_starts_a_worker_whose_report_reaches_it() {
     let _ =
         tokio::time::timeout(Duration::from_secs(30), harness.finish_workers(&mut inputs)).await;
 
+    // The start's result tells each starter what the worker it started runs.
+    let main_asked = script.requests("main");
+    assert!(
+        results(&main_asked[1])[0].contains("\nruns gpt-6-luna at high effort"),
+        "{:?}",
+        results(&main_asked[1])
+    );
+    let r1_asked = script.requests("r1");
+    assert!(
+        results(&r1_asked[1])[0].contains("\nruns gpt-6-luna at high effort"),
+        "{:?}",
+        results(&r1_asked[1])
+    );
+
     // r1 was told about its own workers in its first message, and offered
     // the tools to start them.
     let r1 = script.requests("r1");
@@ -893,6 +907,7 @@ async fn stopping_the_main_agents_turn_leaves_the_tree_going() {
     assert!(
         listed.contains("r1 · agent `worker` · running")
             && listed.contains("waiting for r2")
+            && listed.contains("runs gpt-6-luna at high effort")
             && !listed.contains("r2 ·"),
         "{listed}"
     );

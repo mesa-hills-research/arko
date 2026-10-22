@@ -506,6 +506,19 @@ impl SubagentHook for StartHook {
         )
     }
 
+    /// What the worker runs and its profile, for its starter: the start's
+    /// result and `list_agents` say it, so a starter that chose a model sees
+    /// what it got and one that lost track of its workers sees what each is.
+    fn describe(&self, record: &SubagentRecord) -> Option<String> {
+        let models = self.models.lock().unwrap();
+        let setup = models.runs.get(&record.run_id)?;
+        Some(runs_words(
+            &crate::providers::model_name(&setup.llm_config.model),
+            setup.effort.map(|effort| effort.to_string()).as_deref(),
+            setup.profile.as_deref(),
+        ))
+    }
+
     /// Only a worker whose setup, as recorded when it started, gives it the
     /// start tools, so the answer is the same each time for a run, also when
     /// the session resumes and whatever the settings are by then. A run
@@ -582,6 +595,18 @@ fn start_parameters() -> Vec<ToolParameterDefinition> {
     ]
 }
 
+/// What a worker runs, as a sentence: "runs sol at high effort, profile judge".
+fn runs_words(model: &str, effort: Option<&str>, profile: Option<&str>) -> String {
+    let mut text = format!("runs {model}");
+    if let Some(effort) = effort {
+        text.push_str(&format!(" at {effort} effort"));
+    }
+    if let Some(profile) = profile {
+        text.push_str(&format!(", profile {profile}"));
+    }
+    text
+}
+
 /// A worker's lines for `/workers`.
 pub(crate) fn describe_worker(worker: &WorkerFacts) -> String {
     let mut line = format!(
@@ -594,13 +619,10 @@ pub(crate) fn describe_worker(worker: &WorkerFacts) -> String {
         line.push_str(&format!("\n  started by {parent}"));
     }
     if let Some(model) = &worker.model {
-        line.push_str(&format!("\n  runs {model}"));
-        if let Some(effort) = &worker.effort {
-            line.push_str(&format!(" at {effort} effort"));
-        }
-        if let Some(profile) = &worker.profile {
-            line.push_str(&format!(", profile {profile}"));
-        }
+        line.push_str(&format!(
+            "\n  {}",
+            runs_words(model, worker.effort.as_deref(), worker.profile.as_deref())
+        ));
     }
     // What it has cost, once it has cost something.
     if let Some((billed, list)) = worker.cost.filter(|(_, list)| *list >= 0.005) {
@@ -1555,6 +1577,17 @@ mod tests {
         assert!(hook.offers_start_tools(&record(&nests)));
         assert!(!hook.offers_start_tools(&record(&plain)));
         assert!(!hook.offers_start_tools(&record(&start("r9", &[]))));
+        // What each runs is told to its starter, and nothing of a run that
+        // was not recorded.
+        assert_eq!(
+            hook.describe(&record(&nests)).as_deref(),
+            Some("runs gpt-6-luna at high effort, profile judge")
+        );
+        assert_eq!(
+            hook.describe(&record(&plain)).as_deref(),
+            Some("runs gpt-6-luna at high effort")
+        );
+        assert_eq!(hook.describe(&record(&start("r9", &[]))), None);
 
         // The profile is edited and deleted, a Claude Code login changes
         // nothing: the same configuration, from the registered worker and
