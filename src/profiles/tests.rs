@@ -785,3 +785,39 @@ fn an_isolated_key_from_an_earlier_file_is_kept_and_means_nothing() {
     let again = Profile::parse("tree", &profile.render()).unwrap();
     assert_eq!(again, profile);
 }
+
+/// What a file makes a reason or a list say can't move a terminal's cursor
+/// or be as long as the file likes: a value or a name with a control
+/// character is shown with a replacement mark.
+#[test]
+fn a_reason_or_a_name_from_a_file_has_no_control_characters() {
+    let temp = tempfile::tempdir().unwrap();
+    let roots = roots(temp.path());
+    write(
+        &roots,
+        Place::Project,
+        "bad-effort",
+        "---\ndescription: A\neffort: \u{1b}[2Kfake\n---\n",
+    );
+    let folder = roots.folder(Place::Project).unwrap();
+    std::fs::write(folder.join("odd\u{1b}[1Aname.md"), "no front matter").unwrap();
+    let listed = list(&roots);
+    assert_eq!(listed.unreadable.len(), 2);
+    for problem in &listed.unreadable {
+        let shown = format!("{} {}", problem.name, problem.reason);
+        assert!(
+            !shown.chars().any(|c| c.is_control()),
+            "{shown:?} has a control character"
+        );
+    }
+    let effort = listed
+        .unreadable
+        .iter()
+        .find(|problem| problem.name == "bad-effort")
+        .unwrap();
+    assert!(
+        effort.reason.contains("\u{fffd}[2Kfake"),
+        "{}",
+        effort.reason
+    );
+}

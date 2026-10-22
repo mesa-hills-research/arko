@@ -533,20 +533,28 @@ fn quoted(value: &str) -> String {
 /// or a zero-width character. They would make the question that asks the
 /// user to approve the profile show something other than the text.
 fn unprintable(text: &str) -> Option<char> {
-    text.chars().find(|c| {
-        (c.is_control() && !matches!(c, '\n' | '\t'))
-            || matches!(c, '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}' | '\u{2066}'..='\u{2069}' | '\u{feff}')
-    })
+    text.chars().find(|c| is_unprintable(*c))
 }
 
-/// `text` cut to `most` characters, with an ellipsis when it was cut. A
-/// value read from a file goes into a reason this way, so a file can't make
-/// the reason as long as it likes.
+fn is_unprintable(c: char) -> bool {
+    (c.is_control() && !matches!(c, '\n' | '\t'))
+        || matches!(c, '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}' | '\u{2066}'..='\u{2069}' | '\u{feff}')
+}
+
+/// `text` cut to `most` characters, with an ellipsis when it was cut, and
+/// with a replacement mark for each character [`unprintable`] finds. A value
+/// or a name read from a file goes into a reason or a list this way, so a
+/// file can't make it as long as it likes or move the cursor of the
+/// terminal that shows it.
 fn cut(text: &str, most: usize) -> String {
+    let clean = |c: char| if is_unprintable(c) { '\u{fffd}' } else { c };
     if text.chars().count() <= most {
-        text.to_string()
+        text.chars().map(clean).collect()
     } else {
-        format!("{}…", text.chars().take(most).collect::<String>())
+        format!(
+            "{}…",
+            text.chars().take(most).map(clean).collect::<String>()
+        )
     }
 }
 
@@ -833,7 +841,7 @@ fn read_file(place: Place, file: &Path, name: &str) -> Result<Found, Unreadable>
     let unreadable = |reason: String| Unreadable {
         place,
         file: file.to_path_buf(),
-        name: name.to_string(),
+        name: cut(name, MAX_NAME * 2),
         reason,
     };
     if check_name(name).is_err() {
