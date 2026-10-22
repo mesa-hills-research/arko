@@ -1589,6 +1589,7 @@ impl Harness {
             "/monitor-wakes" => self.monitor_wakes_command(argument, source),
             "/worker-models" => self.worker_models_command(argument, source),
             "/worker-depth" => self.worker_depth_command(argument, source),
+            "/profiles" => self.profiles_command(argument),
             "/jobs" => self.jobs_command(argument),
             _ => self.handover_at_command(argument, source),
         }
@@ -4263,7 +4264,7 @@ pub(crate) fn place(link: &remote::Link) -> String {
 /// The commands that change a setting while the session runs, which take
 /// an argument: `/outside`, `/model`, `/handover`, `/handover-at`, `/keys`.
 /// And `/message`, which works while the agent works too.
-pub(crate) const LIVE_COMMANDS: [&str; 15] = [
+pub(crate) const LIVE_COMMANDS: [&str; 16] = [
     "/outside",
     "/model",
     "/handover",
@@ -4277,6 +4278,7 @@ pub(crate) const LIVE_COMMANDS: [&str; 15] = [
     "/monitor-wakes",
     "/worker-models",
     "/worker-depth",
+    "/profiles",
     "/jobs",
     "/message",
 ];

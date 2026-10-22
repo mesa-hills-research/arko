@@ -4,13 +4,24 @@
 
 use arko_workflows::notes::{Note, NoteSource};
 
-use crate::Harness;
 use crate::agents::{self, ModelChoice};
 use crate::crew::NESTED_WORKERS;
+use crate::profiles::{self, Author, Found, Place, Profile, Roots};
 use crate::remote::Source;
 use crate::workers;
+use crate::{Harness, providers};
+
+/// How `/profiles` is used.
+const PROFILES_USAGE: &str = "/profiles lists the worker profiles, /profiles NAME shows one, /profiles add NAME MODEL [EFFORT] [DESCRIPTION] makes one for every project, and /profiles remove NAME deletes one.";
 
 impl Harness {
+    /// The three folders profiles are read from, for this session.
+    pub(crate) fn profile_roots(&self) -> Roots {
+        Roots::new(&self.root)
+            .workspace(&self.settings.workspace)
+            .session(&self.session.dir)
+    }
+
     /// What the user is told about the workers' models once `choice` is set.
     fn models_sentence(&self, choice: ModelChoice) -> String {
         match choice {
@@ -169,5 +180,225 @@ impl Harness {
             log::warn!("could not tell the main agent how deep workers can go: {error}");
         }
         Ok(Self::depth_sentence(depth))
+    }
+
+    /// `/profiles`, typed at the prompt or sent from the page: the worker
+    /// profiles, one profile whole, and making and deleting one.
+    pub(crate) fn profiles_command(&mut self, argument: &str) {
+        let words: Vec<&str> = argument.split_whitespace().collect();
+        let result = match words.as_slice() {
+            [] => Ok(self.profiles_list()),
+            ["add"] | ["remove"] | ["delete"] => Err(PROFILES_USAGE.to_string()),
+            ["add", name, rest @ ..] => self.profiles_add(name, rest),
+            ["remove" | "delete", name] => self.profiles_remove(name),
+            [name] => self.profiles_show(name),
+            _ => Err(PROFILES_USAGE.to_string()),
+        };
+        self.mirrored(|harness| match result {
+            Ok(text) => {
+                for line in text.lines() {
+                    harness.output.line(line);
+                }
+            }
+            Err(error) => harness.output.line(&harness.output.error(&error)),
+        });
+    }
+
+    fn profiles_list(&self) -> String {
+        let roots = self.profile_roots();
+        let listed = profiles::list(&roots);
+        if listed.active.is_empty() && listed.unreadable.is_empty() {
+            return "No worker profiles yet. /profiles add NAME MODEL creates one, or ask the agent to save one."
+                .to_string();
+        }
+        let worker = &self.settings.worker;
+        let reasons = providers::resolve_model(&worker.model)
+            .map_or(true, |model| !providers::efforts(&model).is_empty());
+        let mut rows: Vec<(String, String, String, String)> = vec![(
+            "default".into(),
+            crate::worker_tools::runs_text(Some(&worker.model), reasons.then_some(worker.effort)),
+            String::new(),
+            "the session's worker model".into(),
+        )];
+        let mut row = |found: &Found| {
+            let profile = &found.profile;
+            let mut description = profile.description.clone();
+            if profile.made_by_agent() {
+                description.push_str(" (made by the main agent)");
+            }
+            if let Some(note) = &found.note {
+                description.push_str(&format!(" (can't start, {note})"));
+            }
+            (
+                profile.name.clone(),
+                crate::worker_tools::runs_text(profile.model.as_deref(), profile.effort),
+                format!("for {}", found.place.reach()),
+                description,
+            )
+        };
+        rows.extend(listed.active.iter().map(&mut row));
+        let widths = |pick: fn(&(String, String, String, String)) -> usize| {
+            rows.iter().map(pick).max().unwrap_or(0)
+        };
+        let (name_width, run_width, place_width) = (
+            widths(|row| row.0.chars().count()),
+            widths(|row| row.1.chars().count()),
+            widths(|row| row.2.chars().count()),
+        );
+        let line = |row: &(String, String, String, String)| {
+            format!(
+                "  {:name_width$}  {:run_width$}  {:place_width$}  {}",
+                row.0, row.1, row.2, row.3
+            )
+            .trim_end()
+            .to_string()
+        };
+        let mut text = String::from("Worker profiles");
+        for found in &rows {
+            text.push('\n');
+            text.push_str(&line(found));
+        }
+        if !listed.hidden.is_empty() {
+            text.push_str("\nHidden by a nearer profile of the same name");
+            for found in &listed.hidden {
+                text.push_str(&format!(
+                    "\n  {}  for {}",
+                    found.profile.name,
+                    found.place.reach()
+                ));
+            }
+        }
+        if !listed.unreadable.is_empty() {
+            text.push_str("\nCan't be read");
+            for problem in &listed.unreadable {
+                text.push_str(&format!(
+                    "\n  {}  {}  {}",
+                    problem.name,
+                    problem.place.reach(),
+                    problem.reason
+                ));
+            }
+        }
+        text.push_str("\n/profiles NAME shows one. The files are in");
+        for (place, folder) in profiles::folders(&roots) {
+            text.push_str(&format!("\n  {} ({})", folder.display(), place.reach()));
+        }
+        text
+    }
+
+    fn profiles_show(&self, name: &str) -> Result<String, String> {
+        if name == "default" {
+            let worker = &self.settings.worker;
+            return Ok(format!(
+                "default · the session's worker model\nIt runs {}. /model worker changes it. It has no file.",
+                self.settings.describe(worker)
+            ));
+        }
+        let found = profiles::read(&self.profile_roots(), name).map_err(|error| match error {
+            profiles::ReadError::Missing => {
+                format!("There is no worker profile `{name}`. /profiles lists them.")
+            }
+            other => other.to_string(),
+        })?;
+        let profile = &found.profile;
+        let mut text = format!(
+            "{} · for {}\n{}\n{}\nRuns on {}",
+            profile.name,
+            found.place.reach(),
+            found.file.display(),
+            profile.description,
+            profile.runs_on()
+        );
+        if profile.fast {
+            text.push_str(" in fast mode");
+        }
+        if let Some(cache) = profile.cache {
+            text.push_str(&format!(" with a {} prompt cache", cache.as_str()));
+        }
+        text.push('.');
+        if profile.isolated {
+            text.push_str(" It works in a git worktree of its own.");
+        }
+        if NESTED_WORKERS && profile.nested {
+            text.push_str(" Its workers can start workers of their own.");
+        }
+        if profile.made_by_agent() {
+            text.push_str(" The main agent made it.");
+        }
+        if let Some(note) = &found.note {
+            text.push_str(&format!("\nIt can't start workers yet, since {note}"));
+        }
+        if profile.instructions.is_empty() {
+            text.push_str("\nIt has no instructions.");
+        } else {
+            text.push_str(&format!("\nInstructions\n{}", profile.instructions));
+        }
+        Ok(text)
+    }
+
+    /// `/profiles add NAME MODEL [EFFORT] [DESCRIPTION]`: writes the file in
+    /// Arko's folder, with an empty body, for the user to edit.
+    fn profiles_add(&self, name: &str, rest: &[&str]) -> Result<String, String> {
+        let Some((model, rest)) = rest.split_first() else {
+            return Err(PROFILES_USAGE.to_string());
+        };
+        let (effort, description) = match rest.split_first() {
+            Some((word, after)) if word.parse::<agents::Effort>().is_ok() => {
+                (word.parse::<agents::Effort>().ok(), after)
+            }
+            _ => (None, rest),
+        };
+        let description = description.join(" ");
+        let mut profile = Profile::new(
+            name,
+            if description.is_empty() {
+                "Describe what this profile is for".to_string()
+            } else {
+                description
+            },
+        );
+        profile.model = Some(model.to_string());
+        profile.effort = effort;
+        profile.check()?;
+        let roots = self.profile_roots();
+        let user_folder = roots.folder(Place::User);
+        if user_folder
+            .as_ref()
+            .is_some_and(|folder| folder.join(Profile::file_name(name)).is_file())
+        {
+            return Err(format!(
+                "There is a profile `{name}` for every project already. Edit its file, or /profiles remove {name} first."
+            ));
+        }
+        let saved = profiles::save(&roots, Place::User, &profile, Author::User)?;
+        let mut text = format!(
+            "Saved the worker profile {name} for every project in {}. Edit the file to write its description and instructions.",
+            saved.file.display()
+        );
+        if let Some(nearer) = saved.hidden_by {
+            text.push_str(&format!(
+                " A profile of the same name for {} comes first, so it hides this one.",
+                nearer.reach()
+            ));
+        }
+        Ok(text)
+    }
+
+    /// `/profiles remove NAME`: deletes the file of the profile `/profiles`
+    /// shows under that name.
+    fn profiles_remove(&self, name: &str) -> Result<String, String> {
+        let roots = self.profile_roots();
+        let found = profiles::read(&roots, name).map_err(|error| match error {
+            profiles::ReadError::Missing => {
+                format!("There is no worker profile `{name}`. /profiles lists them.")
+            }
+            other => other.to_string(),
+        })?;
+        let file = profiles::delete(&roots, found.place, name)?;
+        Ok(format!(
+            "Removed the worker profile {name} for {} ({}). The workers started with it keep their setup.",
+            found.place.reach(),
+            file.display()
+        ))
     }
 }

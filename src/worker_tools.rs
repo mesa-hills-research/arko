@@ -180,7 +180,7 @@ fn options_text(
 }
 
 /// `sol, high effort`, or `the worker model` when the profile names none.
-fn runs_text(model: Option<&str>, effort: Option<Effort>) -> String {
+pub(crate) fn runs_text(model: Option<&str>, effort: Option<Effort>) -> String {
     let model = model.unwrap_or("the worker model");
     match effort {
         Some(effort) => format!("{model}, {effort} effort"),

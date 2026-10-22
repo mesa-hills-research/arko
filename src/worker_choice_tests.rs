@@ -667,6 +667,121 @@ async fn worker_depth_is_kept_and_says_it_takes_effect_later() {
     harness.crew.as_ref().unwrap().shutdown().await;
 }
 
+/// `/profiles` lists the profiles of the three places with where each is,
+/// what hides what and what can't be read, shows one whole, makes one for
+/// every project and deletes one.
+#[tokio::test]
+async fn profiles_lists_shows_adds_and_removes() {
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, _inputs, _sender, _server, _seen) = setup(temp.path()).await;
+    assert!(harness.live_command("/profiles", Source::Terminal));
+    assert_eq!(
+        last_said(&harness.feed),
+        "No worker profiles yet. /profiles add NAME MODEL creates one, or ask the agent to save one."
+    );
+
+    // Adding one writes the file in Arko's folder, with the words given.
+    assert!(harness.live_command(
+        "/profiles add 3d-judge sol high Judges 3D results against a reference image",
+        Source::Terminal
+    ));
+    let file = harness.root.join("profiles").join("3d-judge.md");
+    assert_eq!(
+        last_said(&harness.feed),
+        format!(
+            "Saved the worker profile 3d-judge for every project in {}. Edit the file to write its description and instructions.",
+            file.display()
+        )
+    );
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        "---\ndescription: Judges 3D results against a reference image\nmodel: sol\neffort: high\n---\n"
+    );
+    assert!(harness.live_command("/profiles add 3d-judge opus", Source::Terminal));
+    assert!(last_said(&harness.feed).starts_with("There is a profile `3d-judge` for every project already."));
+    assert!(harness.live_command("/profiles add quick gpt9", Source::Terminal));
+    assert!(last_said(&harness.feed).contains("`gpt9` isn't a model Arko knows."));
+    assert!(harness.live_command("/profiles add Bad opus", Source::Terminal));
+    assert!(last_said(&harness.feed).contains("isn't a profile name"));
+    assert!(harness.live_command("/profiles add quick", Source::Terminal));
+    assert!(last_said(&harness.feed).starts_with("/profiles lists the worker profiles"));
+    assert!(harness.live_command("/profiles add quick luna", Source::Terminal));
+    assert!(
+        std::fs::read_to_string(harness.root.join("profiles").join("quick.md"))
+            .unwrap()
+            .contains("description: Describe what this profile is for")
+    );
+
+    // The project's and the session's, a hidden one and one that can't be
+    // read.
+    let project = harness.settings.workspace.join(".agents").join("profiles");
+    std::fs::create_dir_all(&project).unwrap();
+    std::fs::write(project.join("reviewer.md"), "---\ndescription: The project's reviewer\nmodel: opus\neffort: high\n---\n").unwrap();
+    std::fs::write(project.join("notes.md"), "---\nmodel sol\n---\n").unwrap();
+    let session = harness.session.dir.join("profiles");
+    std::fs::create_dir_all(&session).unwrap();
+    std::fs::write(
+        session.join("reviewer.md"),
+        "---\ndescription: Reviews a diff\nmade_by: agent\nmodel: sol\n---\nBody.\n",
+    )
+    .unwrap();
+    assert!(harness.live_command("/profiles", Source::Terminal));
+    let listed = last_said(&harness.feed);
+    let expected = format!(
+        "Worker profiles
+  default   gpt-6-luna, high effort                     the session's worker model
+  3d-judge  sol, high effort         for every project  Judges 3D results against a reference image
+  quick     luna                     for every project  Describe what this profile is for
+  reviewer  sol                      for this session   Reviews a diff (made by the main agent)
+Hidden by a nearer profile of the same name
+  reviewer  for this project
+Can't be read
+  notes  this project  line 2 isn't `key: value`
+/profiles NAME shows one. The files are in
+  {} (this session)
+  {} (this project)
+  {} (every project)",
+        session.display(),
+        project.display(),
+        harness.root.join("profiles").display()
+    );
+    assert_eq!(listed, expected);
+
+    assert!(harness.live_command("/profiles reviewer", Source::Terminal));
+    assert_eq!(
+        last_said(&harness.feed),
+        format!(
+            "reviewer · for this session\n{}\nReviews a diff\nRuns on sol. The main agent made it.\nInstructions\nBody.",
+            session.join("reviewer.md").display()
+        )
+    );
+    assert!(harness.live_command("/profiles default", Source::Terminal));
+    assert!(last_said(&harness.feed).starts_with("default · the session's worker model\nIt runs gpt-6-luna"));
+    assert!(harness.live_command("/profiles nobody", Source::Terminal));
+    assert_eq!(
+        last_said(&harness.feed),
+        "There is no worker profile `nobody`. /profiles lists them."
+    );
+    assert!(harness.live_command("/profiles notes", Source::Terminal));
+    assert!(last_said(&harness.feed).contains("can't be used (line 2 isn't `key: value`)"));
+
+    // Removing deletes the one shown, which brings the next into force.
+    assert!(harness.live_command("/profiles remove reviewer", Source::Terminal));
+    assert_eq!(
+        last_said(&harness.feed),
+        format!(
+            "Removed the worker profile reviewer for this session ({}). The workers started with it keep their setup.",
+            session.join("reviewer.md").display()
+        )
+    );
+    assert!(harness.live_command("/profiles reviewer", Source::Terminal));
+    assert!(last_said(&harness.feed).starts_with("reviewer · for this project"));
+    assert!(harness.live_command("/profiles remove nobody", Source::Terminal));
+    assert!(last_said(&harness.feed).starts_with("There is no worker profile `nobody`."));
+    assert!(said(&harness.feed).contains("Removed the worker profile reviewer"));
+    harness.crew.as_ref().unwrap().shutdown().await;
+}
+
 fn args(words: &[&str]) -> Options {
     Args::parse_from(std::iter::once("arko").chain(words.iter().copied()))
         .options()
