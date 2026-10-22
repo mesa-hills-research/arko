@@ -201,7 +201,7 @@ pub(crate) fn unoffered(
     } else if missing.contains(&crew::WORKER_OPTIONS)
         || missing.contains(&crew::SAVE_WORKER_PROFILE)
     {
-        parts.push("worker profiles and a model for each worker".to_string());
+        parts.push("the worker profile tools (worker_options and save_worker_profile)".to_string());
     }
     if missing
         .iter()
@@ -4777,7 +4777,7 @@ pub(crate) mod tests {
         };
         assert_eq!(
             unoffered(&saved, &[(MAIN, &main)]).unwrap(),
-            "This session started without worker profiles and a model for each worker, so its agents don't get them. A new session does."
+            "This session started without the worker profile tools (worker_options and save_worker_profile), so its agents don't get them. A new session does."
         );
         // Without workers at all, that is what it says instead.
         old.tool_config
