@@ -59,6 +59,7 @@ pub mod monitors;
 mod openings;
 mod options;
 mod outside;
+pub mod profiles;
 mod project;
 mod prompter;
 mod providers;
