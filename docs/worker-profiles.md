@@ -104,7 +104,7 @@ A session saved before the setting existed keeps `session`, which is how its wor
 `/worker-depth` (also `--worker-depth`) is saved with the session and defaults to 2. It is the
 "Worker depth" row in `/settings` and the setting of that name on the web page. It sets how many
 levels of workers the session allows, and it applies to the next worker started. With 1 only the
-main agent starts workers. With 2 or more, a worker can start workers of its own when the agent
+main agent starts workers. With more, a worker can start workers of its own when the agent
 that starts it says so, down to that level.
 
 `/message-copies` (also `--message-copies` and `--no-message-copies`) is saved with the session and

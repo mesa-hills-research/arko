@@ -447,14 +447,14 @@
    * `about`), which a Rust test compares with these. */
   const WORKER_MODELS = {
     agent: { name: "Main agent chooses", about: "The main agent chooses a profile, model and effort for each worker, and can save profiles." },
-    profiles: { name: "Profiles only", about: "The main agent starts workers with a profile only. It can't choose a model or effort by itself." },
+    profiles: { name: "Profiles only", about: "The main agent starts workers with a profile only and can't choose a model or effort." },
     session: { name: "Session's worker model", about: "Every worker runs the session's worker model, and none starts workers." },
   };
 
   /** What the worker depth setting does. The library's
    * `workers::depth_about` has the same sentence. */
   function workerDepthAbout() {
-    return "How many levels of workers there can be, from 1 to 4. With 1 only the main agent starts workers. With 2 or more, a worker can start workers of its own when the agent that starts it says so, down to that level.";
+    return "How many levels of workers there can be, from 1 to 4. With 1 only the main agent starts workers. With more, a worker can start workers of its own when the agent that starts it says so, down to that level.";
   }
 
   /** What the message copies setting does, as the library's
