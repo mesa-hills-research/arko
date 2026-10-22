@@ -553,6 +553,10 @@ fn only_a_plain_yes_approves() {
         "no",
         "yes, but use high effort",
         "yes please change the name",
+        "yes, please use high",
+        "please",
+        "thanks",
+        "no thanks",
         "use high effort, not max",
         "maybe",
         "yep",
@@ -592,4 +596,138 @@ fn the_same_folder_reached_twice_is_read_once() {
     let profiles = list(&roots);
     assert_eq!(profiles.active.len(), 1);
     assert!(profiles.hidden.is_empty(), "{:?}", profiles.hidden);
+}
+
+/// A profile can't hold what would make the question that asks the user to
+/// approve it show something else: control and escape characters, a
+/// direction override, a zero-width character. A file with one is listed as
+/// unreadable.
+#[test]
+fn text_that_could_disguise_the_question_is_refused() {
+    let with = |text: &str| {
+        let mut profile = Profile::new("judge", "Judges");
+        profile.instructions = text.into();
+        profile
+    };
+    for bad in [
+        "line\u{1b}[2K",
+        "up\u{1b}[3A\u{1b}[J",
+        "over\rwritten",
+        "right\u{202e}to left",
+        "zero\u{200b}width",
+        "bom\u{feff}inside",
+        "bell\u{7}",
+    ] {
+        assert_eq!(
+            with(bad).check().unwrap_err(),
+            "The instructions can't have a control or invisible character."
+        );
+        assert_eq!(
+            Profile::parse("judge", &format!("---\ndescription: A\n---\n{bad}\n")).unwrap_err(),
+            "the instructions can't have a control or invisible character"
+        );
+    }
+    // Line breaks and tabs in the instructions are fine.
+    assert!(with("one\n\ttwo\n").check().is_ok());
+    let mut profile = Profile::new("judge", "Judges\u{1b}[2K");
+    assert!(
+        profile
+            .check()
+            .unwrap_err()
+            .starts_with("The description can't have")
+    );
+    profile.description = "Judges".into();
+    profile.model = Some("sol\u{200b}".into());
+    assert!(
+        profile
+            .check()
+            .unwrap_err()
+            .starts_with("The model can't have")
+    );
+    let temp = tempfile::tempdir().unwrap();
+    let roots = roots(temp.path());
+    write(
+        &roots,
+        Place::User,
+        "bad",
+        "---\ndescription: A\u{1b}[2K\n---\n",
+    );
+    let listed = list(&roots);
+    assert!(listed.active.is_empty());
+    assert!(
+        listed.unreadable[0]
+            .reason
+            .contains("description can't have a control")
+    );
+}
+
+/// A model is up to 100 characters, so a slug can't make a file nobody can
+/// read, and the reasons a file gives for being unreadable cut what it wrote.
+#[test]
+fn a_long_model_or_value_is_cut_short() {
+    let mut profile = Profile::new("judge", "Judges");
+    profile.model = Some(format!("openrouter:{}", "a".repeat(200)));
+    assert!(
+        profile
+            .check()
+            .unwrap_err()
+            .starts_with("The model is 211 characters")
+    );
+    profile.model = Some(format!("openrouter:{}", "a".repeat(88)));
+    assert!(profile.check().is_ok(), "100 characters are fine");
+    let long = format!(
+        "---\ndescription: A\nmodel: openrouter:{}\n---\n",
+        "a".repeat(200)
+    );
+    assert_eq!(
+        Profile::parse("judge", &long).unwrap_err(),
+        "the model is over 100 characters"
+    );
+    let effort = format!("---\ndescription: A\neffort: {}\n---\n", "e".repeat(12_000));
+    let why = Profile::parse("judge", &effort).unwrap_err();
+    assert!(why.len() < 120, "{why}");
+    assert!(why.starts_with("`effort: eeee") && why.contains("…` isn't an effort"));
+    let cache = format!("---\ndescription: A\ncache: {}\n---\n", "c".repeat(12_000));
+    assert!(Profile::parse("judge", &cache).unwrap_err().len() < 120);
+}
+
+/// The names Windows keeps for devices can't be profile names, since a
+/// file by one can't be made there and profiles travel through git. A file
+/// by one that is there is listed as unreadable and can still be deleted.
+#[test]
+fn windows_device_names_are_not_profile_names() {
+    for device in ["con", "prn", "aux", "nul", "com1", "com9", "lpt1", "lpt9"] {
+        let why = check_name(device).unwrap_err();
+        assert!(
+            why.contains("a name Windows keeps for a device"),
+            "{device}: {why}"
+        );
+    }
+    assert!(check_name("com10").is_ok() && check_name("console").is_ok());
+    let temp = tempfile::tempdir().unwrap();
+    let roots = roots(temp.path());
+    write(&roots, Place::User, "nul", "---\ndescription: A\n---\n");
+    let listed = list(&roots);
+    assert_eq!(
+        listed.unreadable[0].reason,
+        "its name, `nul`, is one Windows keeps for a device"
+    );
+    assert!(save(&roots, Place::User, &Profile::new("nul", "A"), Author::User).is_err());
+    delete(&roots, Place::User, "nul").unwrap();
+}
+
+/// A value in quotes that the quotes don't enclose whole is read as written,
+/// and a delete refuses a name that is a path.
+#[test]
+fn quotes_that_are_not_a_pair_stay_and_a_delete_takes_no_path() {
+    let text = "---\ndescription: \"a\" and \"b\"\n---\n";
+    assert_eq!(
+        Profile::parse("judge", text).unwrap().description,
+        "\"a\" and \"b\""
+    );
+    let temp = tempfile::tempdir().unwrap();
+    let roots = roots(temp.path());
+    for bad in ["../x", "a/b", "..", "A", ""] {
+        assert!(delete(&roots, Place::User, bad).is_err(), "{bad}");
+    }
 }

@@ -60,6 +60,9 @@ pub const MAX_NAME: usize = 32;
 pub const MAX_DESCRIPTION: usize = 120;
 /// The longest instructions, in characters.
 pub const MAX_INSTRUCTIONS: usize = 4_000;
+/// The longest model, in characters. (Any `openrouter:<slug>` names a model,
+/// so the length is the only limit on a slug.)
+pub const MAX_MODEL: usize = 100;
 /// The largest profile file Arko reads, in bytes.
 pub const MAX_FILE_BYTES: u64 = 16 * 1024;
 /// Names a profile can't take, because they mean something else to the
@@ -253,20 +256,26 @@ impl Profile {
                     described = true;
                 }
                 "model" => profile.model = Some(value).filter(|value| !value.is_empty()),
-                "effort" => profile.effort = match value.as_str() {
-                    "" => None,
-                    other => Some(other.parse::<Effort>().map_err(|()| {
-                        format!(
-                            "`effort: {other}` isn't an effort (low, medium, high, xhigh or max)"
-                        )
-                    })?),
-                },
+                "effort" => {
+                    profile.effort = match value.as_str() {
+                        "" => None,
+                        other => Some(other.parse::<Effort>().map_err(|()| {
+                            format!(
+                                "`effort: {}` isn't an effort (low, medium, high, xhigh or max)",
+                                cut(other, 40)
+                            )
+                        })?),
+                    }
+                }
                 "fast" => profile.fast = boolean("fast", &value)?,
                 "cache" => {
                     profile.cache = match value.as_str() {
                         "" => None,
                         other => Some(other.parse::<Cache>().map_err(|()| {
-                            format!("`cache: {other}` isn't a prompt cache (5m or 1h)")
+                            format!(
+                                "`cache: {}` isn't a prompt cache (5m or 1h)",
+                                cut(other, 40)
+                            )
                         })?),
                     }
                 }
@@ -294,6 +303,24 @@ impl Profile {
                 "the instructions are over {} characters",
                 thousands(MAX_INSTRUCTIONS)
             ));
+        }
+        if profile
+            .model
+            .as_ref()
+            .is_some_and(|model| model.chars().count() > MAX_MODEL)
+        {
+            return Err(format!("the model is over {MAX_MODEL} characters"));
+        }
+        for (what, text) in [
+            ("description", Some(&profile.description)),
+            ("instructions", Some(&profile.instructions)),
+            ("model", profile.model.as_ref()),
+        ] {
+            if text.is_some_and(|text| unprintable(text).is_some()) {
+                return Err(format!(
+                    "the {what} can't have a control or invisible character"
+                ));
+            }
         }
         Ok(profile)
     }
@@ -361,6 +388,25 @@ impl Profile {
                 thousands(length),
                 thousands(MAX_INSTRUCTIONS)
             ));
+        }
+        if let Some(model) = &self.model
+            && model.chars().count() > MAX_MODEL
+        {
+            return Err(format!(
+                "The model is {} characters, and the limit is {MAX_MODEL}.",
+                model.chars().count()
+            ));
+        }
+        for (what, text) in [
+            ("description", Some(&self.description)),
+            ("instructions", Some(&self.instructions)),
+            ("model", self.model.as_ref()),
+        ] {
+            if text.is_some_and(|text| unprintable(text).is_some()) {
+                return Err(format!(
+                    "The {what} can't have a control or invisible character."
+                ));
+            }
         }
         if let Some(problem) = self.model_problem() {
             return Err(problem);
@@ -430,8 +476,20 @@ fn boolean(key: &str, value: &str) -> Result<bool, String> {
 fn unquote(value: &str) -> String {
     let bytes = value.as_bytes();
     if value.len() >= 2 && bytes[0] == b'"' && bytes[value.len() - 1] == b'"' {
+        // Quotes inside that nothing escapes mean the outer ones aren't a
+        // pair around the whole value (`"a" and "b"`): it is read as written.
+        let inner = &value[1..value.len() - 1];
+        let mut escaped = false;
+        for c in inner.chars() {
+            match (escaped, c) {
+                (true, _) => escaped = false,
+                (false, '\\') => escaped = true,
+                (false, '"') => return value.to_string(),
+                _ => {}
+            }
+        }
         let mut out = String::new();
-        let mut chars = value[1..value.len() - 1].chars();
+        let mut chars = inner.chars();
         while let Some(c) = chars.next() {
             if c != '\\' {
                 out.push(c);
@@ -476,6 +534,29 @@ fn quoted(value: &str) -> String {
     )
 }
 
+/// The first character of `text` that a profile can't hold: a control
+/// character other than a line break or a tab (an escape sequence moves the
+/// cursor, a lone carriage return overwrites a line), a direction override
+/// or a zero-width character. They would make the question that asks the
+/// user to approve the profile show something other than the text.
+fn unprintable(text: &str) -> Option<char> {
+    text.chars().find(|c| {
+        (c.is_control() && !matches!(c, '\n' | '\t'))
+            || matches!(c, '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}' | '\u{2066}'..='\u{2069}' | '\u{feff}')
+    })
+}
+
+/// `text` cut to `most` characters, with an ellipsis when it was cut. A
+/// value read from a file goes into a reason this way, so a file can't make
+/// the reason as long as it likes.
+fn cut(text: &str, most: usize) -> String {
+    if text.chars().count() <= most {
+        text.to_string()
+    } else {
+        format!("{}…", text.chars().take(most).collect::<String>())
+    }
+}
+
 /// `text` on one line: its lines joined by single spaces.
 fn one_line(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
@@ -489,6 +570,18 @@ fn thousands(number: usize) -> String {
         .map(|group| group.iter().rev().collect())
         .collect();
     groups.into_iter().rev().collect::<Vec<_>>().join(",")
+}
+
+/// Names Windows keeps for devices. A file by one of them can't be made
+/// there, with or without an extension, and profiles travel through git.
+const DEVICE_NAMES: [&str; 22] = [
+    "con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8",
+    "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
+];
+
+/// Whether `name` is one of the names Windows keeps for devices.
+fn is_device_name(name: &str) -> bool {
+    DEVICE_NAMES.contains(&name)
 }
 
 /// What a profile name is.
@@ -508,6 +601,11 @@ pub fn check_name(name: &str) -> Result<(), String> {
     if RESERVED.contains(&name) {
         return Err(format!(
             "`{name}` is reserved. Choose another name for the profile."
+        ));
+    }
+    if is_device_name(name) {
+        return Err(format!(
+            "`{name}` is a name Windows keeps for a device, so a file can't have it there. Choose another name for the profile."
         ));
     }
     Ok(())
@@ -728,11 +826,11 @@ pub fn read(roots: &Roots, name: &str) -> Result<Found, ReadError> {
 }
 
 /// A name that can be a file's name here: the file name rules without the
-/// reserved names (those can't be saved, and a file by one is shown as
-/// unreadable).
+/// reserved names and the device names (those can't be saved, and a file by
+/// one is shown as unreadable).
 fn check_file_name(name: &str) -> Result<(), String> {
     match check_name(name) {
-        Err(why) if !RESERVED.contains(&name) => Err(why),
+        Err(why) if !RESERVED.contains(&name) && !is_device_name(name) => Err(why),
         _ => Ok(()),
     }
 }
@@ -748,6 +846,8 @@ fn read_file(place: Place, file: &Path, name: &str) -> Result<Found, Unreadable>
         // (The reserved names get their own reason.)
         return Err(unreadable(if RESERVED.contains(&name) {
             format!("its name, `{name}`, is reserved")
+        } else if is_device_name(name) {
+            format!("its name, `{name}`, is one Windows keeps for a device")
         } else {
             "its name isn't a profile name (lowercase letters, digits and hyphens, up to 32 characters, starting with a letter or a digit)".to_string()
         }));
@@ -945,16 +1045,18 @@ pub fn approval_text(profile: &Profile, place: Place) -> String {
     text
 }
 
-/// Whether the user's answer to [`approval_text`] approves it. Only "yes",
-/// "y", "ok", "okay" or "allow" do, in any case and with punctuation after.
-/// Anything else is the user's feedback for the agent, so "yes, but use
-/// high effort" saves nothing.
+/// Whether the user's answer to [`approval_text`] approves it. That is
+/// "yes", "y", "ok", "okay" or "allow", in any case, with punctuation after
+/// and then "please" or "thanks" if the user likes ("Yes, please!"). Anything
+/// else is the user's feedback for the agent, so "yes, but use high effort"
+/// saves nothing.
 pub fn is_approval(answer: &str) -> bool {
-    let word = answer
-        .trim()
-        .trim_end_matches(|c: char| c.is_ascii_punctuation() || c.is_whitespace())
-        .to_ascii_lowercase();
-    matches!(word.as_str(), "yes" | "y" | "ok" | "okay" | "allow")
+    let lowered = answer.to_lowercase();
+    let mut words = lowered
+        .split(|c: char| c.is_whitespace() || c.is_ascii_punctuation())
+        .filter(|word| !word.is_empty());
+    matches!(words.next(), Some("yes" | "y" | "ok" | "okay" | "allow"))
+        && words.all(|word| matches!(word, "please" | "thanks"))
 }
 
 #[cfg(test)]
