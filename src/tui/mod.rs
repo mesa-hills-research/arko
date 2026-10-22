@@ -12,6 +12,7 @@
 //! chat apps, pagers and readline.
 
 mod app;
+mod backend;
 mod clipboard;
 mod input;
 mod keys_menu;
@@ -43,13 +44,13 @@ use crossterm::terminal::{
 use crossterm::{Command, cursor, execute, queue};
 use futures_util::{FutureExt, StreamExt};
 use ratatui::Terminal;
-use ratatui::backend::CrosstermBackend;
 use tokio::sync::{broadcast, mpsc, oneshot};
 
 use crate::glyphs;
 use crate::remote;
 use crate::ui::{self, Input, Output};
 use app::{App, Effect, Info};
+use backend::CursorBackend;
 pub use transcript::Banner;
 
 /// How long Enter waits to see if more keys follow it: keys that come
@@ -211,7 +212,7 @@ impl Command for EnableMouse {
 /// mouse, pastes and focus reported, and Shift+Enter told apart from
 /// Enter where the terminal can (the kitty keyboard protocol). Returns the
 /// terminal and whether Shift+Enter is reported.
-fn open() -> std::io::Result<(Terminal<CrosstermBackend<Stdout>>, bool)> {
+fn open() -> std::io::Result<(Terminal<CursorBackend<Stdout>>, bool)> {
     crossterm::terminal::enable_raw_mode()?;
     OPEN.store(true, std::sync::atomic::Ordering::SeqCst);
     // A panic restores the terminal before its message prints (as
@@ -246,7 +247,7 @@ fn open() -> std::io::Result<(Terminal<CrosstermBackend<Stdout>>, bool)> {
         );
     }
     ENHANCED.store(enhanced, std::sync::atomic::Ordering::SeqCst);
-    let mut terminal = Terminal::new(CrosstermBackend::new(stdout))?;
+    let mut terminal = Terminal::new(CursorBackend::new(stdout))?;
     terminal.clear()?;
     Ok((terminal, enhanced || cfg!(windows)))
 }
@@ -306,7 +307,7 @@ fn types(event: &Event) -> bool {
 /// The view's loop: terminal events, the feed's updates and the clock, until
 /// `stop`. Returns the last reply.
 async fn run(
-    mut terminal: Terminal<CrosstermBackend<Stdout>>,
+    mut terminal: Terminal<CursorBackend<Stdout>>,
     mut app: App,
     mut setup: Setup,
     mut updates: broadcast::Receiver<remote::Update>,
@@ -570,7 +571,7 @@ fn handle(
 /// A frame, drawn as one update where the terminal can (synchronized
 /// output, CSI ?2026: crossterm/src/terminal.rs:433-450; others ignore it),
 /// so it doesn't flicker.
-fn draw(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) {
+fn draw(terminal: &mut Terminal<CursorBackend<Stdout>>, app: &mut App) {
     let _ = queue!(terminal.backend_mut(), BeginSynchronizedUpdate);
     let _ = terminal.draw(|frame| screen::draw(frame, app));
     let _ = execute!(terminal.backend_mut(), EndSynchronizedUpdate);
