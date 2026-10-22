@@ -82,6 +82,7 @@ pub mod testing;
 #[cfg(feature = "tui")]
 mod tui;
 mod ui;
+mod worker_tools;
 
 use std::sync::Mutex;
 

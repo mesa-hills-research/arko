@@ -287,6 +287,19 @@ impl Keys {
             .filter(|_| !state.withdrawn.contains(&Provider::OpenAI))
     }
 
+    /// What `model` needs that this session doesn't have: Claude Code
+    /// installed and signed in, or its provider's key (or login). `None`
+    /// when it can be used.
+    pub fn needs(&self, model: &Model) -> Option<String> {
+        match &model.provider {
+            Provider::ClaudeCode => {
+                providers::missing_credential(&providers::model_name(model), None)
+            }
+            provider if self.reaches(provider) => None,
+            provider => Some(providers::credential_name(provider).to_string()),
+        }
+    }
+
     /// Why a new worker can't start on `model`, when it can't: its
     /// provider's key isn't in this session or was removed while Arko runs,
     /// or Claude Code isn't installed and signed in. The text is written

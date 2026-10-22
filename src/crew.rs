@@ -32,6 +32,10 @@ pub use arko_workflows::subagents::{
     START_AGENT_TOOL_NAME as START_AGENT, STOP_AGENT_TOOL_NAME as STOP_AGENT,
     WAIT_FOR_AGENTS_TOOL_NAME as WAIT_FOR_AGENTS,
 };
+/// The tool that lists the profiles and the models workers can run on, and
+/// the one that saves a profile.
+pub const WORKER_OPTIONS: &str = "worker_options";
+pub const SAVE_WORKER_PROFILE: &str = "save_worker_profile";
 pub const LEAD_TOOL_NAMES: &[&str] = &[
     START_AGENT,
     MESSAGE_AGENT,
@@ -39,11 +43,19 @@ pub const LEAD_TOOL_NAMES: &[&str] = &[
     LIST_AGENTS,
     STOP_AGENT,
     "link_agents",
+    WORKER_OPTIONS,
+    SAVE_WORKER_PROFILE,
 ];
 pub const WORKER_TOOL_NAMES: &[&str] = &[MESSAGE_AGENT, WAIT_FOR_AGENTS];
 /// The tools that let a worker start workers of its own. Only a worker
 /// that nests has them, and the start hook gives them with the run's setup.
-pub const NESTED_TOOL_NAMES: &[&str] = &[START_AGENT, LIST_AGENTS, STOP_AGENT, "link_agents"];
+pub const NESTED_TOOL_NAMES: &[&str] = &[
+    START_AGENT,
+    LIST_AGENTS,
+    STOP_AGENT,
+    "link_agents",
+    WORKER_OPTIONS,
+];
 /// Whether a worker can start workers of its own. It can't yet, so no
 /// worker is offered [`NESTED_TOOL_NAMES`] whatever its start, its profile or
 /// `worker_depth` say, and the start tools offer no `nested` parameter.
@@ -440,6 +452,19 @@ impl Crew {
     /// The model new workers start on from now on.
     pub fn set_new_workers(&self, new: NewWorkers) {
         self.models.lock().unwrap().new = Some(new);
+    }
+
+    /// Tells the user something, in the terminal and on the page.
+    pub fn notice(&self, level: remote::Level, text: &str) {
+        let out = &self.setup.output;
+        out.echo(&match level {
+            remote::Level::Info => out.dim(text),
+            remote::Level::Warn => out.warn(text),
+            remote::Level::Error => out.error(text),
+        });
+        if let Some(feed) = &self.setup.feed {
+            feed.notice(level, text);
+        }
     }
 
     /// Why a call to `start_agent` with `parameters` can't go on as it is,

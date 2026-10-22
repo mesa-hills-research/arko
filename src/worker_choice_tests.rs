@@ -90,6 +90,27 @@ fn lead(body: &str, step: &str) -> String {
     let Some(user) = start else {
         return complete(step, "Done.");
     };
+    let saving = |scope: Option<&str>| {
+        let mut call = serde_json::json!({
+            "name": "3d-judge",
+            "description": "Judges 3D results against a reference image",
+            "model": "sol",
+            "effort": "high",
+            "instructions": "You judge 3D models.",
+        });
+        if let Some(scope) = scope {
+            call["scope"] = scope.into();
+        }
+        tool_call(step, crew::SAVE_WORKER_PROFILE, call)
+    };
+    match user.as_str() {
+        "Start by listing the options." => {
+            return tool_call(step, crew::WORKER_OPTIONS, serde_json::json!({}));
+        }
+        "Start by saving a profile." => return saving(None),
+        "Start by saving a profile for everyone." => return saving(Some("user")),
+        _ => {}
+    }
     let mut parameters = serde_json::json!({"agent": WORKER, "task": user});
     let object = parameters.as_object_mut().unwrap();
     let with = |object: &mut serde_json::Map<String, serde_json::Value>, pairs: &[(&str, &str)]| {
@@ -100,6 +121,7 @@ fn lead(body: &str, step: &str) -> String {
     match user.as_str() {
         "Start on a model." => with(object, &[("model", "astra"), ("effort", "low")]),
         "Start with the judge." => with(object, &[("profile", "judge")]),
+        "Start with the saved profile." => with(object, &[("profile", "3d-judge")]),
         "Start with the judge on a model." => {
             with(object, &[("profile", "judge"), ("model", "luna")])
         }
@@ -181,10 +203,17 @@ fn last_result(seen: &Seen) -> String {
 }
 
 async fn start_worker(harness: &mut Harness, inputs: &mut Inputs, message: &str) {
-    assert!(matches!(
-        harness.turn(Prompt::User(message.into()), inputs).await,
-        TurnEnd::Answered
-    ));
+    let end = harness.turn(Prompt::User(message.into()), inputs).await;
+    assert!(
+        matches!(end, TurnEnd::Answered),
+        "{}",
+        match end {
+            TurnEnd::Answered => "answered",
+            TurnEnd::Stopped => "stopped",
+            TurnEnd::Failed => "failed",
+            TurnEnd::Exit => "exit",
+        }
+    );
     let _ = tokio::time::timeout(Duration::from_secs(20), harness.finish_workers(inputs)).await;
 }
 
@@ -425,5 +454,98 @@ async fn a_worker_resumes_with_its_setup_after_its_profile_is_deleted() {
     let _ = tokio::time::timeout(Duration::from_secs(20), harness.finish_workers(&mut inputs)).await;
     // `/workers` still says what it runs.
     assert!(harness.crew.as_ref().unwrap().describe().contains("r1"));
+    harness.crew.as_ref().unwrap().shutdown().await;
+}
+
+/// The main agent lists the options through its tool, keeps a profile for
+/// the session without asking, and starts a worker with it.
+#[tokio::test]
+async fn the_main_agent_lists_the_options_saves_a_profile_and_starts_a_worker_with_it() {
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, _sender, _server, seen) = setup(temp.path()).await;
+
+    start_worker(&mut harness, &mut inputs, "Start by listing the options.").await;
+    let options = last_result(&seen);
+    assert!(options.starts_with("Worker profiles (start_agent's profile)\n- default · gpt-6-luna, high effort · the session's worker model (/model worker)\n\nModels usable now"), "{options}");
+    assert!(options.contains("\n- sol · efforts low to max · "), "{options}");
+    assert!(options.contains("Not usable now"), "{options}");
+
+    start_worker(&mut harness, &mut inputs, "Start by saving a profile.").await;
+    assert_eq!(
+        last_result(&seen),
+        "Saved the worker profile 3d-judge for this session. start_agent takes it by name."
+    );
+    assert!(
+        harness
+            .session
+            .dir
+            .join("profiles")
+            .join("3d-judge.md")
+            .is_file()
+    );
+    assert!(has(
+        &harness.feed,
+        "notice",
+        "The main agent saved the worker profile 3d-judge for this session.",
+        ""
+    ));
+    // The list now has it, and a worker starts with it.
+    start_worker(&mut harness, &mut inputs, "Start by listing the options.").await;
+    assert!(last_result(&seen).contains(
+        "\n- 3d-judge (session, made by you) · sol, high effort · Judges 3D results against a reference image"
+    ));
+    start_worker(&mut harness, &mut inputs, "Start with the saved profile.").await;
+    let (model, effort, opening) = worker_with(&seen, "Start with the saved profile.").unwrap();
+    assert_eq!((model.as_str(), effort.as_str()), ("gpt-6.1-sol", "high"));
+    assert!(opening.contains("# Your profile (3d-judge)\nYou judge 3D models."), "{opening}");
+    harness.crew.as_ref().unwrap().shutdown().await;
+}
+
+/// A profile for every session reaches the user as a question, the same one
+/// the agent's `ask_user` makes. A reply that is not a plain yes is feedback
+/// and saves nothing, and a yes saves the file in Arko's folder.
+#[tokio::test]
+async fn a_profile_for_every_session_is_put_to_the_user_as_a_question() {
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, input, _server, seen) = setup(temp.path()).await;
+    let feed = harness.feed.clone();
+    // (The input stays open while the turns end: a closed one quits.)
+    let sender = input.clone();
+    let answers = tokio::spawn(async move {
+        for reply in ["no, use medium effort", "Yes"] {
+            until(|| feed.activity().question.is_some()).await;
+            let question = feed.activity().question.unwrap();
+            assert!(
+                question.text.starts_with(
+                    "The main agent wants to save the worker profile 3d-judge in your Arko folder, for every project.\n\nJudges 3D results against a reference image\nRuns on sol at high effort."
+                ),
+                "{}",
+                question.text
+            );
+            assert!(question.text.contains("Instructions\nYou judge 3D models."));
+            sender
+                .send(Input::Answer {
+                    question: question.id,
+                    text: reply.into(),
+                })
+                .unwrap();
+            until(|| feed.activity().question.is_none()).await;
+        }
+    });
+    let saved = harness.root.join("profiles").join("3d-judge.md");
+    start_worker(&mut harness, &mut inputs, "Start by saving a profile for everyone.").await;
+    assert_eq!(
+        last_result(&seen),
+        "The user didn't save 3d-judge for every project and wrote \"no, use medium effort\". Change it and ask again, or save it for this session with scope session."
+    );
+    assert!(!saved.exists());
+    start_worker(&mut harness, &mut inputs, "Start by saving a profile for everyone.").await;
+    assert!(
+        last_result(&seen).starts_with("Saved the worker profile 3d-judge in the user's Arko folder, for every project."),
+        "{}",
+        last_result(&seen)
+    );
+    assert!(std::fs::read_to_string(&saved).unwrap().contains("made_by: agent"));
+    answers.await.unwrap();
     harness.crew.as_ref().unwrap().shutdown().await;
 }

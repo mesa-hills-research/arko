@@ -948,6 +948,18 @@ impl EventPrinter {
             }
             crew::START_AGENT => {
                 let mut notes = Vec::new();
+                let profile = text(crew::PROFILE_PARAM).trim();
+                if !profile.is_empty() {
+                    notes.push(format!("profile {profile}"));
+                }
+                let model = text(crew::MODEL_PARAM).trim();
+                if !model.is_empty() {
+                    notes.push(model.to_string());
+                }
+                let effort = text(crew::EFFORT_PARAM).trim();
+                if !effort.is_empty() {
+                    notes.push(format!("{effort} effort"));
+                }
                 if flag(parameters, "isolated") {
                     notes.push("worktree".to_string());
                 }
@@ -978,6 +990,18 @@ impl EventPrinter {
                     .bold(&waiting_for(parameters, &self.running_runs))
             ),
             crew::LIST_AGENTS => format!("{bullet} {}", self.output.bold("list workers")),
+            crew::WORKER_OPTIONS => {
+                format!("{bullet} {}", self.output.bold("list worker options"))
+            }
+            crew::SAVE_WORKER_PROFILE => format!(
+                "{bullet} {} {}{}",
+                self.output.bold("save worker profile"),
+                text("name").trim(),
+                match text("scope").trim() {
+                    "" | "session" => String::new(),
+                    scope => format!(" for the {scope}"),
+                }
+            ),
             crew::STOP_AGENT => format!(
                 "{bullet} {} {}{}",
                 self.output.bold("stop"),
@@ -1484,6 +1508,31 @@ mod tests {
             )
             .unwrap(),
             "● message w2 “Use plan B.”"
+        );
+        assert_eq!(
+            line(
+                crew::START_AGENT,
+                &[
+                    ("task", "Judge it.".into()),
+                    ("profile", "3d-judge".into()),
+                    ("model", "sol".into()),
+                    ("effort", "high".into()),
+                ]
+            )
+            .unwrap(),
+            "● start worker (profile 3d-judge, sol, high effort) “Judge it.”"
+        );
+        assert_eq!(
+            line(crew::WORKER_OPTIONS, &[]).unwrap(),
+            "● list worker options"
+        );
+        assert_eq!(
+            line(
+                crew::SAVE_WORKER_PROFILE,
+                &[("name", "judge".into()), ("scope", "project".into())]
+            )
+            .unwrap(),
+            "● save worker profile judge for the project"
         );
         // A wait for no run in particular waits for a message when the
         // agent has no runs, and names the runs it has going.

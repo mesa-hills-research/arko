@@ -327,6 +327,14 @@ pub(crate) struct Asker {
     pub(crate) questions: Option<mpsc::UnboundedSender<Question>>,
 }
 
+impl Asker {
+    /// Whether anyone can answer a question (there is a terminal, or an
+    /// app).
+    pub(crate) fn can_ask(&self) -> bool {
+        self.questions.is_some()
+    }
+}
+
 /// The answer when no one can answer.
 pub(crate) const CANT_ASK: &str = "No one can answer questions in this session (Arko runs without a terminal, from a script or with -p). Decide yourself, go on, and say in your reply what you assumed.";
 

@@ -452,13 +452,7 @@ impl Harness {
 
     /// What `model` needs that this session doesn't have.
     pub(crate) fn needs(&self, model: &Model) -> Option<String> {
-        match &model.provider {
-            Provider::ClaudeCode => {
-                providers::missing_credential(&providers::model_name(model), None)
-            }
-            provider if self.keys.reaches(provider) => None,
-            provider => Some(providers::credential_name(provider).to_string()),
-        }
+        self.keys.needs(model)
     }
 
     /// How the session reaches OpenAI models when its models don't say: as

@@ -26,7 +26,7 @@ use crate::status::Gauges;
 use crate::ui::{Control, Input, Output, Stats};
 use crate::{
     agents, commands, conversations, crew, details, glyphs, handover, index, keys, mcp, message,
-    outside, project, providers, remote, shell, skills, ui,
+    outside, project, providers, remote, shell, skills, ui, worker_tools,
 };
 use crate::{and_list, lock};
 
@@ -198,6 +198,10 @@ pub(crate) fn unoffered(
     let mut parts = Vec::new();
     if missing.contains(&crew::START_AGENT) {
         parts.push("workers that run in parallel".to_string());
+    } else if missing.contains(&crew::WORKER_OPTIONS)
+        || missing.contains(&crew::SAVE_WORKER_PROFILE)
+    {
+        parts.push("worker profiles and a model for each worker".to_string());
     }
     if missing
         .iter()
@@ -583,6 +587,15 @@ impl Harness {
             }
         }
         if let Some(crew) = &self.crew {
+            // The main agent chooses and saves the workers' profiles.
+            for tool in worker_tools::tools(
+                crew.clone(),
+                self.keys.clone(),
+                self.stats.clone(),
+                self.asker.clone(),
+            ) {
+                builder = builder.agent_tool(MAIN, tool);
+            }
             let weak = Arc::downgrade(crew);
             builder = builder
                 .workflow_services(
@@ -4732,6 +4745,46 @@ pub(crate) mod tests {
         assert_eq!(
             unoffered(&saved, &[(MAIN, &main)]).unwrap(),
             "This session started without monitors (monitor_start), so its agents don't get them. A new session does."
+        );
+    }
+
+    /// A session saved before workers could have a profile and a model of
+    /// their own says so when it resumes, once its workers are there (the
+    /// longer-ago ones say they have none).
+    #[test]
+    fn a_session_saved_before_worker_profiles_says_it_has_none() {
+        let opus = ModelSettings {
+            model: resolve_model("opus").unwrap().id,
+            effort: Effort::High,
+            fast: false,
+            cache_1h: false,
+            handover_at: None,
+        };
+        let settings = AgentSettings::for_test(&opus, &opus);
+        let main = agents::main_config(&settings).unwrap();
+        let mut old = main.clone();
+        old.tool_config
+            .available_tool_names
+            .retain(|name| name != crew::WORKER_OPTIONS && name != crew::SAVE_WORKER_PROFILE);
+        let saved = SavedSetup {
+            name: WORKFLOW_NAME.into(),
+            configs: [(MAIN.to_string(), old.clone())].into(),
+        };
+        assert_eq!(
+            unoffered(&saved, &[(MAIN, &main)]).unwrap(),
+            "This session started without worker profiles and a model for each worker, so its agents don't get them. A new session does."
+        );
+        // Without workers at all, that is what it says instead.
+        old.tool_config
+            .available_tool_names
+            .retain(|name| !crew::LEAD_TOOL_NAMES.contains(&name.as_str()));
+        let saved = SavedSetup {
+            name: WORKFLOW_NAME.into(),
+            configs: [(MAIN.to_string(), old)].into(),
+        };
+        assert_eq!(
+            unoffered(&saved, &[(MAIN, &main)]).unwrap(),
+            "This session started without workers that run in parallel, so its agents don't get them. A new session does."
         );
     }
 

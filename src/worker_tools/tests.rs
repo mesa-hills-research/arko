@@ -1,0 +1,796 @@
+use std::time::Duration;
+
+use super::*;
+use crate::agents::{ExtraRules, ModelSettings, resolve_model};
+use crate::crew::{NewWorkers, Setup, WorkerSetup};
+use crate::profiles::Roots;
+use crate::remote;
+use crate::ui::Output;
+
+fn settings(name: &str, effort: Effort) -> ModelSettings {
+    let model = resolve_model(name).unwrap();
+    ModelSettings {
+        model: providers::model_name(&model),
+        effort,
+        fast: false,
+        cache_1h: false,
+        handover_at: Some(crate::agents::default_handover(&model, None)),
+    }
+}
+
+fn basis(temp: &std::path::Path, choice: ModelChoice) -> Basis {
+    Basis {
+        roots: Roots::new(temp.join("arko"))
+            .workspace(temp.join("work"))
+            .session(temp.join("session")),
+        worker: settings("luna", Effort::High),
+        providers: providers::Setup::new(Some(providers::OpenAiAuth::ChatGpt)),
+        thinking_text: true,
+        cc_compact: true,
+        handover_at: 200_000,
+        choice,
+        extra_rules: ExtraRules::Off,
+        rules_text: None,
+    }
+}
+
+fn write(basis: &Basis, place: Place, name: &str, text: &str) {
+    let folder = basis.roots.folder(place).unwrap();
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(folder.join(format!("{name}.md")), text).unwrap();
+}
+
+/// What `keys` has: OpenAI only.
+fn needs(model: &Model) -> Option<String> {
+    match model.provider {
+        Provider::OpenAI => None,
+        Provider::ClaudeCode => Some("Claude Code signed in".to_string()),
+        ref other => Some(providers::credential_name(other).to_string()),
+    }
+}
+
+fn plans() -> BTreeMap<String, String> {
+    BTreeMap::from([(
+        "ChatGPT plan".to_string(),
+        "ChatGPT plan 5 h 12%, 7 d 40%".to_string(),
+    )])
+}
+
+#[test]
+fn the_options_list_the_profiles_and_the_models_usable_now() {
+    let temp = tempfile::tempdir().unwrap();
+    let basis = basis(temp.path(), ModelChoice::Agent);
+    write(
+        &basis,
+        Place::User,
+        "3d-judge",
+        "---\ndescription: Judges 3D results against a reference image\nmodel: sol\neffort: high\n---\nJudge.\n",
+    );
+    write(
+        &basis,
+        Place::Project,
+        "quick-read",
+        "---\ndescription: Reads files and answers short questions\nmodel: haiku\neffort: low\ncache: 5m\n---\n",
+    );
+    write(
+        &basis,
+        Place::Session,
+        "reviewer",
+        "---\ndescription: Reviews a diff\nmodel: luna\nisolated: true\nmade_by: agent\nfast: true\n---\n",
+    );
+    write(&basis, Place::Project, "notes", "---\nmodel sol\n---\n");
+    write(
+        &basis,
+        Place::User,
+        "future",
+        "---\ndescription: From a newer Arko\nmodel: gpt9\n---\n",
+    );
+    let text = options_text(&basis, Show::All, &needs, &plans());
+
+    assert!(
+        text.starts_with("Worker profiles (start_agent's profile)\n- default · gpt-6-luna, high effort · the session's worker model (/model worker)\n"),
+        "{text}"
+    );
+    assert!(text.contains(
+        "\n- 3d-judge (user) · sol, high effort · Judges 3D results against a reference image"
+    ));
+    assert!(text.contains(
+        "\n- quick-read (project) · haiku, low effort, 5m cache · Reads files and answers short questions · can't start yet, needs ANTHROPIC_API_KEY"
+    ));
+    assert!(text.contains(
+        "\n- reviewer (session, made by you) · luna, fast, in a worktree of its own (start it with isolated: true) · Reviews a diff"
+    ));
+    assert!(
+        text.contains("\n- future (user) · gpt9 · From a newer Arko · can't start yet, `gpt9` isn't a model Arko knows."),
+        "{text}"
+    );
+    assert!(text.contains("\nCan't be read\n- notes (project) · line 2 isn't `key: value`"));
+
+    // The models: what the session reaches, with plan usage for the
+    // ChatGPT login, and what it doesn't with how to get it.
+    assert!(text.contains(
+        "\n\nModels usable now (price per million input and output tokens, handover size)\n"
+    ));
+    assert!(
+        text.contains("\n- sol · efforts low to max · ChatGPT plan 5 h 12%, 7 d 40%, shared with the user's own use · hands over at 250k · cache 30 min, fixed"),
+        "{text}"
+    );
+    assert!(text.contains("\n- luna · efforts low to max · "));
+    assert!(text.contains("\nNot usable now\n"));
+    assert!(text.contains(
+        "\n- opus, fable, sonnet, haiku, mythos · needs ANTHROPIC_API_KEY. The user adds it with /keys."
+    ));
+    assert!(
+        text.contains("\n- gemini, flash · needs GEMINI_API_KEY. The user adds it with /keys.")
+    );
+    assert!(text.contains(
+        "\n- cc:opus, cc:fable, cc:sonnet, cc:haiku, cc:mythos · needs Claude Code signed in. The user signs in with `claude auth login`."
+    ));
+    assert!(text.contains("needs OPENROUTER_API_KEY. The user adds it with /keys."));
+
+    // One part alone.
+    let profiles_only = options_text(&basis, Show::Profiles, &needs, &plans());
+    assert!(
+        profiles_only.starts_with("Worker profiles") && !profiles_only.contains("Models usable")
+    );
+    let models_only = options_text(&basis, Show::Models, &needs, &plans());
+    assert!(models_only.starts_with("Models usable now") && !models_only.contains("3d-judge"));
+}
+
+#[test]
+fn a_claude_model_by_key_shows_its_prices_and_cache_and_a_plan_model_its_usage() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut basis = basis(temp.path(), ModelChoice::Agent);
+    basis.providers = providers::Setup::new(None);
+    let everything = |_: &Model| None;
+    let plans = BTreeMap::from([(
+        "Claude plan".to_string(),
+        "Claude plan 5 h 62%, 7 d 31%".to_string(),
+    )]);
+    let text = options_text(&basis, Show::Models, &everything, &plans);
+    let opus = resolve_model("opus").unwrap();
+    let prices = format!(
+        "${} / ${}",
+        dollars(opus.pricing.input_cost_per_million),
+        dollars(opus.pricing.output_cost_per_million)
+    );
+    let line = text
+        .lines()
+        .find(|line| line.starts_with("- opus ·"))
+        .unwrap();
+    assert_eq!(
+        line,
+        format!(
+            "- opus · efforts low to max · {prices} · hands over at 950k · cache 5m or 1h (1h costs twice the input price to write)"
+        )
+    );
+    assert!(text.contains(
+        "\n- cc:opus · efforts low to max · Claude plan 5 h 62%, 7 d 31%, shared with the user's own use · hands over at 950k, Claude Code compacts · cache 1 h, fixed"
+    ), "{text}");
+    assert!(text.contains("\n- gemini · efforts low to high · $"));
+    assert!(
+        text.contains("\n- openrouter:<slug> · any model OpenRouter serves · billed per token")
+    );
+    assert!(!text.contains("Not usable now"));
+    // A session that hands over in Claude Code says so.
+    basis.cc_compact = false;
+    let text = options_text(&basis, Show::Models, &everything, &plans);
+    assert!(text.contains("hands over at 950k · cache 1 h, fixed"));
+}
+
+#[test]
+fn a_setting_that_limits_the_choice_is_said_first() {
+    let temp = tempfile::tempdir().unwrap();
+    let profiles_only = options_text(
+        &basis(temp.path(), ModelChoice::Profiles),
+        Show::Profiles,
+        &needs,
+        &plans(),
+    );
+    assert!(profiles_only.starts_with(
+        "The user lets you start workers with a profile only (/worker-models profiles)"
+    ));
+    let session = options_text(
+        &basis(temp.path(), ModelChoice::Session),
+        Show::Profiles,
+        &needs,
+        &plans(),
+    );
+    assert!(session.starts_with(
+        "The user has every worker run the session's worker model (/worker-models session)"
+    ));
+}
+
+#[test]
+fn efforts_dollars_and_sizes_read_briefly() {
+    let efforts = |name: &str| efforts_range(&resolve_model(name).unwrap());
+    assert_eq!(efforts("opus"), "low to max");
+    assert_eq!(efforts("gemini"), "low to high");
+    assert_eq!(efforts("gpt-5-pro-2025-10-06"), "high");
+    assert_eq!(efforts("gpt-5.4-nano-2026-03-17"), "low to xhigh");
+    assert_eq!(dollars(5.0), "5");
+    assert_eq!(dollars(1.25), "1.25");
+    assert_eq!(dollars(0.1), "0.1");
+    assert_eq!(thousands(950_000), "950k");
+}
+
+/// The tools with real parts: a crew in a temporary session folder, keys that
+/// reach OpenAI, and an asker whose answers the test gives.
+struct Fixture {
+    options: Arc<dyn Tool>,
+    save: Arc<dyn Tool>,
+    basis: Arc<Basis>,
+    crew: Arc<Crew>,
+    feed: remote::Feed,
+    questions: Option<tokio::sync::mpsc::UnboundedReceiver<crate::inputs::Question>>,
+    _temp: tempfile::TempDir,
+}
+
+fn fixture(choice: ModelChoice, can_ask: bool) -> Fixture {
+    let temp = tempfile::tempdir().unwrap();
+    let basis = Arc::new(basis(temp.path(), choice));
+    let feed = remote::Feed::new("main");
+    let (crew, _) = Crew::new(Setup {
+        session_id: "example".into(),
+        session_dir: temp.path().join("session"),
+        output: Arc::new(Output::new(None, true)),
+        max_running: 4,
+        cache_1h: false,
+        cache_lifetime: arko_ai::prompt_cache::PromptCacheLifetime::Known(Duration::from_secs(300)),
+        feed: Some(feed.clone()),
+        refuse: None,
+    });
+    let worker = settings("luna", Effort::High);
+    let config =
+        crate::agents::worker_config(&crate::agents::AgentSettings::for_test(&worker, &worker))
+            .unwrap();
+    crew.set_new_workers(NewWorkers {
+        model: WorkerSetup::of(&config),
+        cache_lifetime: arko_ai::prompt_cache::PromptCacheLifetime::Known(Duration::from_secs(300)),
+        basis: basis.clone(),
+    });
+    let client = arko_ai::LLMClient::new()
+        .with_openai_client(arko_ai::providers::openai::OpenAIClient::new("test-key"));
+    let keys = Keys::new(
+        Arc::new(client),
+        Some(providers::OpenAiAuth::ApiKey),
+        None,
+        None,
+    );
+    let (sender, questions) = tokio::sync::mpsc::unbounded_channel();
+    let asker = Arc::new(Asker {
+        questions: can_ask.then_some(sender),
+    });
+    let mut tools = tools(
+        crew.clone(),
+        keys,
+        Arc::new(Mutex::new(Stats::default())),
+        asker,
+    );
+    let save = tools.pop().unwrap();
+    let options = tools.pop().unwrap();
+    Fixture {
+        options,
+        save,
+        basis,
+        crew,
+        feed,
+        questions: can_ask.then_some(questions),
+        _temp: temp,
+    }
+}
+
+async fn call(tool: &Arc<dyn Tool>, pairs: &[(&str, Value)]) -> Result<String, String> {
+    let directory = std::env::temp_dir();
+    let context = TaskContext::new(uuid::Uuid::nil(), "main", "", &directory);
+    let params = pairs
+        .iter()
+        .map(|(name, value)| (name.to_string(), value.clone()))
+        .collect();
+    tool.execute(&context, params)
+        .await
+        .map_err(|error| match error {
+            ToolError::ExecutionFailed(text) => text,
+            other => other.to_string(),
+        })
+}
+
+fn shown(feed: &remote::Feed) -> Vec<String> {
+    feed.subscribe()
+        .0
+        .items
+        .iter()
+        .map(|item| {
+            let item = serde_json::to_value(item).unwrap();
+            item["text"].as_str().unwrap_or_default().to_string()
+        })
+        .collect()
+}
+
+#[test]
+fn the_tools_are_defined_for_the_main_agent() {
+    let fixture = fixture(ModelChoice::Agent, true);
+    let options = fixture.options.definition();
+    assert_eq!(options.name, "worker_options");
+    assert_eq!(options.parameters.len(), 1);
+    assert!(!options.parameters[0].required && options.parallel_safe);
+    let save = fixture.save.definition();
+    assert_eq!(save.name, "save_worker_profile");
+    let names: Vec<(&str, bool)> = save
+        .parameters
+        .iter()
+        .map(|parameter| (parameter.name.as_str(), parameter.required))
+        .collect();
+    assert_eq!(
+        names,
+        [
+            ("name", true),
+            ("description", true),
+            ("model", false),
+            ("effort", false),
+            ("instructions", false),
+            ("isolated", false),
+            ("cache", false),
+            ("scope", false),
+        ]
+    );
+    assert!(!save.parallel_safe);
+    assert!(!fixture.save.uses_host_timeout());
+    // The tools are the main agent's, among the lead's.
+    for name in ["worker_options", "save_worker_profile"] {
+        assert!(crate::crew::LEAD_TOOL_NAMES.contains(&name));
+        assert!(!crate::crew::WORKER_TOOL_NAMES.contains(&name));
+    }
+}
+
+#[tokio::test]
+async fn worker_options_lists_what_is_there_and_takes_show() {
+    let fixture = fixture(ModelChoice::Agent, true);
+    write(
+        &fixture.basis,
+        Place::User,
+        "judge",
+        "---\ndescription: Judges\nmodel: sol\n---\n",
+    );
+    let all = call(&fixture.options, &[]).await.unwrap();
+    assert!(all.contains("- judge (user) · sol · Judges"), "{all}");
+    assert!(all.contains("Models usable now"));
+    let profiles = call(&fixture.options, &[("show", "profiles".into())])
+        .await
+        .unwrap();
+    assert!(!profiles.contains("Models usable now"));
+    let models = call(&fixture.options, &[("show", "models".into())])
+        .await
+        .unwrap();
+    assert!(!models.contains("judge"));
+    assert_eq!(
+        call(&fixture.options, &[("show", "everything".into())])
+            .await
+            .unwrap_err(),
+        "show is profiles, models or all, not everything"
+    );
+}
+
+#[tokio::test]
+async fn a_profile_for_the_session_is_saved_without_asking() {
+    let fixture = fixture(ModelChoice::Agent, true);
+    let result = call(
+        &fixture.save,
+        &[
+            ("name", "reviewer".into()),
+            ("description", "Reviews a diff".into()),
+            ("model", "sol".into()),
+            ("effort", "high".into()),
+            ("instructions", "Review it against the rules.".into()),
+            ("isolated", true.into()),
+            ("cache", "1h".into()),
+        ],
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        result,
+        "Saved the worker profile reviewer for this session. start_agent takes it by name."
+    );
+    let found = profiles::read(&fixture.basis.roots, "reviewer").unwrap();
+    assert_eq!(found.place, Place::Session);
+    assert!(found.profile.made_by_agent() && found.profile.isolated);
+    assert_eq!(found.profile.model.as_deref(), Some("sol"));
+    assert_eq!(found.profile.effort, Some(Effort::High));
+    assert_eq!(found.profile.cache, Some(Cache::OneHour));
+    assert_eq!(found.profile.instructions, "Review it against the rules.");
+    assert!(
+        shown(&fixture.feed).contains(
+            &"The main agent saved the worker profile reviewer for this session.".to_string()
+        ),
+        "{:?}",
+        shown(&fixture.feed)
+    );
+    // It can be saved again, being the agent's own.
+    let again = call(
+        &fixture.save,
+        &[
+            ("name", "reviewer".into()),
+            ("description", "Reviews a diff again".into()),
+        ],
+    )
+    .await;
+    assert!(again.is_ok(), "{again:?}");
+}
+
+#[tokio::test]
+async fn a_profile_for_every_session_waits_for_the_users_yes() {
+    let mut fixture = fixture(ModelChoice::Agent, true);
+    let mut questions = fixture.questions.take().unwrap();
+    let parameters = [
+        ("name", "3d-judge".into()),
+        (
+            "description",
+            "Judges 3D results against a reference image".into(),
+        ),
+        ("model", "sol".into()),
+        ("effort", "high".into()),
+        ("instructions", "You judge 3D models.".into()),
+        ("scope", "user".into()),
+    ];
+    // "yes, but..." is the user's feedback, and saves nothing.
+    let asking = {
+        let save = fixture.save.clone();
+        let parameters = parameters.clone();
+        tokio::spawn(async move { call(&save, &parameters).await })
+    };
+    let question = questions.recv().await.unwrap();
+    assert!(
+        question.text.starts_with(
+            "The main agent wants to save the worker profile 3d-judge in your Arko folder, for every project.\n\nJudges 3D results against a reference image\nRuns on sol at high effort."
+        ),
+        "{}",
+        question.text
+    );
+    assert!(
+        question
+            .text
+            .ends_with("Reply yes to save it, or tell the agent what to change.")
+    );
+    question
+        .answer
+        .send("yes, but use medium effort".into())
+        .unwrap();
+    assert_eq!(
+        asking.await.unwrap().unwrap(),
+        "The user didn't save 3d-judge for every project and wrote \"yes, but use medium effort\". Change it and ask again, or save it for this session with scope session."
+    );
+    assert!(profiles::read(&fixture.basis.roots, "3d-judge").is_err());
+    assert!(shown(&fixture.feed).is_empty());
+
+    // A plain yes saves it, in the user's place.
+    let asking = {
+        let save = fixture.save.clone();
+        let parameters = parameters.clone();
+        tokio::spawn(async move { call(&save, &parameters).await })
+    };
+    questions
+        .recv()
+        .await
+        .unwrap()
+        .answer
+        .send("Yes.".into())
+        .unwrap();
+    let result = asking.await.unwrap().unwrap();
+    assert!(
+        result.starts_with("Saved the worker profile 3d-judge in the user's Arko folder, for every project. start_agent takes it by name."),
+        "{result}"
+    );
+    let found = profiles::read(&fixture.basis.roots, "3d-judge").unwrap();
+    assert_eq!(found.place, Place::User);
+    assert!(found.profile.made_by_agent());
+    assert!(
+        shown(&fixture.feed)[0].starts_with(
+            "The main agent saved the worker profile 3d-judge for every project. It is in "
+        ),
+        "{:?}",
+        shown(&fixture.feed)
+    );
+
+    // For the project, the same.
+    let asking = {
+        let save = fixture.save.clone();
+        tokio::spawn(async move {
+            call(
+                &save,
+                &[
+                    ("name", "audit".into()),
+                    ("description", "Audits".into()),
+                    ("scope", "project".into()),
+                ],
+            )
+            .await
+        })
+    };
+    let question = questions.recv().await.unwrap();
+    assert!(
+        question
+            .text
+            .contains("in this project's .agents/profiles folder")
+    );
+    question.answer.send("ok".into()).unwrap();
+    assert!(
+        asking
+            .await
+            .unwrap()
+            .unwrap()
+            .starts_with("Saved the worker profile audit for this project.")
+    );
+    assert_eq!(
+        profiles::read(&fixture.basis.roots, "audit").unwrap().place,
+        Place::Project
+    );
+}
+
+#[tokio::test]
+async fn an_empty_answer_or_no_one_to_ask_saves_nothing() {
+    let mut fixture = fixture(ModelChoice::Agent, true);
+    let mut questions = fixture.questions.take().unwrap();
+    let asking = {
+        let save = fixture.save.clone();
+        tokio::spawn(async move {
+            call(
+                &save,
+                &[
+                    ("name", "audit".into()),
+                    ("description", "Audits".into()),
+                    ("scope", "user".into()),
+                ],
+            )
+            .await
+        })
+    };
+    questions
+        .recv()
+        .await
+        .unwrap()
+        .answer
+        .send("  ".into())
+        .unwrap();
+    assert_eq!(
+        asking.await.unwrap().unwrap(),
+        "The user didn't save audit for every project. Change it and ask again, or save it for this session with scope session."
+    );
+    // A session no one can answer in (-p, a script) can't approve.
+    let alone = fixture_alone().await;
+    assert_eq!(
+        alone,
+        "No one can approve it in this session. Save it for the session, or tell the user the setup you want."
+    );
+}
+
+async fn fixture_alone() -> String {
+    let fixture = fixture(ModelChoice::Agent, false);
+    let refused = call(
+        &fixture.save,
+        &[
+            ("name", "audit".into()),
+            ("description", "Audits".into()),
+            ("scope", "project".into()),
+        ],
+    )
+    .await
+    .unwrap_err();
+    assert!(profiles::read(&fixture.basis.roots, "audit").is_err());
+    // For the session it needs no one.
+    assert!(
+        call(
+            &fixture.save,
+            &[("name", "audit".into()), ("description", "Audits".into())],
+        )
+        .await
+        .is_ok()
+    );
+    refused
+}
+
+/// The refusal of a save with a description and `pairs`.
+async fn refusal(tool: &Arc<dyn Tool>, pairs: Vec<(&str, Value)>) -> String {
+    let mut all = vec![("description", Value::from("Does it"))];
+    all.extend(pairs);
+    call(tool, &all).await.unwrap_err()
+}
+
+#[tokio::test]
+async fn a_profile_that_cant_work_is_refused_before_the_user_is_asked() {
+    let mut fixture = fixture(ModelChoice::Agent, true);
+    let mut questions = fixture.questions.take().unwrap();
+    assert_eq!(
+        refusal(
+            &fixture.save,
+            vec![("name", "Bad Name".into()), ("scope", "user".into())]
+        )
+        .await,
+        "`Bad Name` isn't a profile name. A name is lowercase letters, digits and hyphens, up to 32 characters, starting with a letter or a digit."
+    );
+    assert_eq!(
+        refusal(&fixture.save, vec![("name", "default".into())]).await,
+        "`default` is reserved. Choose another name for the profile."
+    );
+    assert!(
+        refusal(
+            &fixture.save,
+            vec![("name", "x".into()), ("model", "gpt9".into())]
+        )
+        .await
+        .starts_with("`gpt9` isn't a model Arko knows.")
+    );
+    assert_eq!(
+        refusal(
+            &fixture.save,
+            vec![
+                ("name", "x".into()),
+                ("model", "gpt-5.4-nano-2026-03-17".into()),
+                ("effort", "max".into()),
+            ]
+        )
+        .await,
+        "gpt-5.4-nano-2026-03-17 takes low, medium, high or xhigh effort, not max."
+    );
+    assert!(
+        refusal(
+            &fixture.save,
+            vec![("name", "x".into()), ("effort", "extreme".into())]
+        )
+        .await
+        .contains("`extreme` isn't an effort")
+    );
+    assert_eq!(
+        refusal(
+            &fixture.save,
+            vec![("name", "x".into()), ("cache", "2h".into())]
+        )
+        .await,
+        "cache is 5m or 1h, not 2h"
+    );
+    assert_eq!(
+        refusal(
+            &fixture.save,
+            vec![("name", "x".into()), ("scope", "everywhere".into())]
+        )
+        .await,
+        "scope is session, project or user, not everywhere"
+    );
+    assert_eq!(
+        refusal(
+            &fixture.save,
+            vec![("name", "x".into()), ("isolated", "maybe".into())]
+        )
+        .await,
+        "isolated is true or false"
+    );
+    assert_eq!(
+        refusal(
+            &fixture.save,
+            vec![
+                ("name", "x".into()),
+                ("instructions", "i".repeat(4001).into())
+            ]
+        )
+        .await,
+        "The instructions are 4,001 characters, and the limit is 4,000."
+    );
+    // A name the user's profile has, in any place.
+    write(
+        &fixture.basis,
+        Place::User,
+        "mine",
+        "---\ndescription: The user's\n---\n",
+    );
+    assert_eq!(
+        refusal(
+            &fixture.save,
+            vec![("name", "mine".into()), ("scope", "project".into())]
+        )
+        .await,
+        "There is already a profile `mine` made by the user. Choose another name."
+    );
+    let missing_name = {
+        let save = fixture.save.clone();
+        call(&save, &[("description", "x".into())])
+            .await
+            .unwrap_err()
+    };
+    assert_eq!(missing_name, "Give the profile a name.");
+    assert!(questions.try_recv().is_err(), "the user was asked nothing");
+}
+
+#[tokio::test]
+async fn the_settings_limit_who_saves_profiles() {
+    for (choice, said) in [
+        (
+            ModelChoice::Profiles,
+            "The user keeps the worker profiles themselves (/worker-models profiles). Tell them the setup you want, and they can save it with /profiles add.",
+        ),
+        (
+            ModelChoice::Session,
+            "The user has every worker run the session's worker model (/worker-models session), so a profile has no use here. Don't save one.",
+        ),
+    ] {
+        let fixture = fixture(choice, true);
+        let why = call(
+            &fixture.save,
+            &[("name", "x".into()), ("description", "Does it".into())],
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(why, said);
+        assert!(profiles::read(&fixture.basis.roots, "x").is_err());
+    }
+}
+
+#[tokio::test]
+async fn a_profile_on_a_model_the_session_cant_reach_is_saved_with_a_warning() {
+    let fixture = fixture(ModelChoice::Agent, true);
+    let result = call(
+        &fixture.save,
+        &[
+            ("name", "strong".into()),
+            ("description", "Thinks hard".into()),
+            ("model", "opus".into()),
+        ],
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        result,
+        "Saved the worker profile strong for this session. start_agent takes it by name. Workers on it can't start until the user adds ANTHROPIC_API_KEY with /keys."
+    );
+    assert!(profiles::read(&fixture.basis.roots, "strong").is_ok());
+    // Claude Code's login is told as it is gotten.
+    assert!(needs_warning("Claude Code signed in").contains("`claude auth login`"));
+    assert!(needs_warning("Claude Code installed").contains("installs Claude Code"));
+    // A profile that a nearer place hides says so.
+    write(
+        &fixture.basis,
+        Place::Session,
+        "strong",
+        "---\ndescription: Made by the agent\nmade_by: agent\n---\n",
+    );
+    drop(fixture.crew);
+}
+
+#[tokio::test]
+async fn a_saved_profile_hidden_by_a_nearer_one_says_so() {
+    let mut fixture = fixture(ModelChoice::Agent, true);
+    let mut questions = fixture.questions.take().unwrap();
+    write(
+        &fixture.basis,
+        Place::Session,
+        "judge",
+        "---\ndescription: Made by the agent\nmade_by: agent\n---\n",
+    );
+    let asking = {
+        let save = fixture.save.clone();
+        tokio::spawn(async move {
+            call(
+                &save,
+                &[
+                    ("name", "judge".into()),
+                    ("description", "For good".into()),
+                    ("scope", "user".into()),
+                ],
+            )
+            .await
+        })
+    };
+    questions
+        .recv()
+        .await
+        .unwrap()
+        .answer
+        .send("yes".into())
+        .unwrap();
+    let result = asking.await.unwrap().unwrap();
+    assert!(
+        result.contains(
+            "A profile of the same name for this session comes first, so start_agent takes that one instead."
+        ),
+        "{result}"
+    );
+}

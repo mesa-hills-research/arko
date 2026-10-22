@@ -1133,6 +1133,30 @@ mod tests {
         assert!(offers(&config, ASK_USER_TOOL_NAME));
     }
 
+    /// The main agent is offered the profile tools with the lead's tools.
+    /// A worker is offered neither them nor the start tools, whatever the
+    /// settings say: no worker starts workers yet.
+    #[test]
+    fn only_the_main_agent_is_offered_the_worker_tools() {
+        let opus = model("opus", false);
+        let main = main_config(&AgentSettings::for_test(&opus, &opus)).unwrap();
+        let worker = worker_config(&AgentSettings::for_test(&opus, &opus)).unwrap();
+        let offers = |config: &AgentConfig, tool: &str| {
+            config
+                .tool_config
+                .available_tool_names
+                .iter()
+                .any(|name| name == tool)
+        };
+        for tool in [crew::WORKER_OPTIONS, crew::SAVE_WORKER_PROFILE] {
+            assert!(offers(&main, tool), "{tool}");
+            assert!(!offers(&worker, tool), "{tool}");
+        }
+        for tool in crew::NESTED_TOOL_NAMES {
+            assert!(!offers(&worker, tool), "{tool}");
+        }
+    }
+
     /// The file tools' configuration lets them read and write anywhere:
     /// outside access decides their writes outside the working directory
     /// as the session runs (`outside`), so the configuration, which a

@@ -826,30 +826,7 @@ pub fn save(
     })?;
     let file = folder.join(Profile::file_name(&profile.name));
     if author == Author::Agent {
-        for other in Place::ALL {
-            let Some(other_folder) = roots.folder(other) else {
-                continue;
-            };
-            let existing = other_folder.join(Profile::file_name(&profile.name));
-            if !existing.is_file() {
-                continue;
-            }
-            match read_file(other, &existing, &profile.name) {
-                Ok(found) if found.profile.made_by_agent() => {}
-                Ok(_) => {
-                    return Err(format!(
-                        "There is already a profile `{}` made by the user. Choose another name.",
-                        profile.name
-                    ));
-                }
-                Err(problem) => {
-                    return Err(format!(
-                        "There is already a file {} that can't be read, so Arko won't replace it. Choose another name.",
-                        problem.file.display()
-                    ));
-                }
-            }
-        }
+        check_agent_save(roots, &profile.name)?;
     }
     let mut written = profile.clone();
     written.description = one_line(&profile.description);
@@ -876,6 +853,38 @@ pub fn save(
         replaced,
         hidden_by,
     })
+}
+
+/// Whether an agent may save a profile called `name`: not when a profile of
+/// that name that the user made is in any place (it would replace it, or
+/// hide it behind a nearer one), nor over a file that can't be read. A
+/// profile an agent made, in any place, may be replaced. [`save`] checks this
+/// itself, and a tool that asks the user first checks it before asking.
+pub fn check_agent_save(roots: &Roots, name: &str) -> Result<(), String> {
+    for place in Place::ALL {
+        let Some(folder) = roots.folder(place) else {
+            continue;
+        };
+        let existing = folder.join(Profile::file_name(name));
+        if !existing.is_file() {
+            continue;
+        }
+        match read_file(place, &existing, name) {
+            Ok(found) if found.profile.made_by_agent() => {}
+            Ok(_) => {
+                return Err(format!(
+                    "There is already a profile `{name}` made by the user. Choose another name."
+                ));
+            }
+            Err(problem) => {
+                return Err(format!(
+                    "There is already a file {} that can't be read, so Arko won't replace it. Choose another name.",
+                    problem.file.display()
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Deletes the profile `name` from `place`. Returns the file it removed.

@@ -74,6 +74,18 @@ fn line(tool: &str, parameters: &Parameters, running: &[String]) -> Option<Item>
         ),
         crew::START_AGENT => {
             let mut notes = Vec::new();
+            let profile = text(parameters, crew::PROFILE_PARAM).trim();
+            if !profile.is_empty() {
+                notes.push(format!("profile {profile}"));
+            }
+            let model = text(parameters, crew::MODEL_PARAM).trim();
+            if !model.is_empty() {
+                notes.push(model.to_string());
+            }
+            let effort = text(parameters, crew::EFFORT_PARAM).trim();
+            if !effort.is_empty() {
+                notes.push(format!("{effort} effort"));
+            }
             if flag(parameters, "isolated") {
                 notes.push("worktree".to_string());
             }
@@ -100,6 +112,17 @@ fn line(tool: &str, parameters: &Parameters, running: &[String]) -> Option<Item>
         }
         crew::WAIT_FOR_AGENTS => call(ui::waiting_for(parameters, running)),
         crew::LIST_AGENTS => call("list workers".into()),
+        crew::WORKER_OPTIONS => call("list worker options".into()),
+        crew::SAVE_WORKER_PROFILE => {
+            let scope = match text(parameters, "scope").trim() {
+                "" | "session" => String::new(),
+                scope => format!(" for the {scope}"),
+            };
+            call(format!(
+                "save worker profile {}{scope}",
+                text(parameters, "name").trim()
+            ))
+        }
         crew::STOP_AGENT => call(format!(
             "stop {}{}",
             text(parameters, "run").trim(),
@@ -579,6 +602,37 @@ mod tests {
                 .starts_with("start worker (worktree) “Fix the parser. Fix")
         );
         assert_eq!(item.detail.as_deref(), Some(task.trim()));
+        // The worker's profile, model and effort show on its call.
+        let item = call(
+            crew::START_AGENT,
+            &params(&[
+                ("task", "Judge it.".into()),
+                ("profile", "3d-judge".into()),
+                ("model", "sol".into()),
+                ("effort", "high".into()),
+                ("cache", "1h".into()),
+            ]),
+        )
+        .unwrap();
+        assert_eq!(
+            item.text,
+            "start worker (profile 3d-judge, sol, high effort, 1h cache) “Judge it.”"
+        );
+        let item = call(crew::WORKER_OPTIONS, &params(&[])).unwrap();
+        assert_eq!(item.text, "list worker options");
+        let save = |pairs: &[(&str, serde_json::Value)]| {
+            call(crew::SAVE_WORKER_PROFILE, &params(pairs))
+                .unwrap()
+                .text
+        };
+        assert_eq!(
+            save(&[("name", "judge".into())]),
+            "save worker profile judge"
+        );
+        assert_eq!(
+            save(&[("name", "judge".into()), ("scope", "user".into())]),
+            "save worker profile judge for the user"
+        );
         let item = call(
             SHELL_TOOL_NAME,
             &params(&[("command", "cd a\nmake".into()), ("cwd", "src".into())]),
