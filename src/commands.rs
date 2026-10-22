@@ -162,14 +162,14 @@ pub const COMMANDS: &[Command] = &[
     Command {
         name: "/profiles",
         args: "[NAME | add NAME MODEL [EFFORT] [DESCRIPTION] | remove NAME]",
-        about: "the worker profiles, which are named setups (a model, an effort and instructions) the main agent starts workers with. /profiles NAME shows one, /profiles add makes one for every project, and /profiles remove deletes one (/profiles add reviewer opus high Reviews a diff)",
+        about: "list, show, add and remove worker profiles, the named setups the main agent starts workers with (/profiles add reviewer opus high Reviews a diff)",
         aliases: &[],
         runs: Runs::Session,
     },
     Command {
         name: "/worker-models",
         args: "agent|profiles|session",
-        about: "who chooses the workers' models, the main agent (agent), the main agent from the profiles only (profiles), or no one, so every worker runs the session's worker model (session). It applies at once (/worker-models profiles)",
+        about: "who picks the workers' models. agent lets the main agent choose, profiles lets it use profiles only, and session runs every worker on the session's worker model (/worker-models profiles)",
         aliases: &[],
         runs: Runs::Session,
     },
