@@ -305,21 +305,22 @@ impl Keys {
     /// or Claude Code isn't installed and signed in. The text is written
     /// for the main agent, and says how to go on.
     pub fn refusal(&self, model: &Model) -> Option<String> {
-        self.refusal_with(model, &|claude| self.needs(claude).is_none())
+        self.refusal_with(model, &|claude| self.needs(claude))
     }
 
-    /// [`refusal`](Self::refusal) with `claude_code_works` telling whether
-    /// a `cc:` model can run, for the hint to use the user's Claude plan
-    /// when an Anthropic key is missing.
+    /// [`refusal`](Self::refusal) with `claude_code_needs` telling what a
+    /// `cc:` model needs that isn't there (`None` when it can run), for the
+    /// refusal of a `cc:` model and for the hint to use the user's Claude
+    /// plan when an Anthropic key is missing.
     fn refusal_with(
         &self,
         model: &Model,
-        claude_code_works: &dyn Fn(&Model) -> bool,
+        claude_code_needs: &dyn Fn(&Model) -> Option<String>,
     ) -> Option<String> {
         const USABLE: &str = "worker_options lists the models usable now.";
         let name = providers::model_name(model);
         if model.provider == Provider::ClaudeCode {
-            return providers::missing_credential(&name, None).map(|needs| {
+            return claude_code_needs(model).map(|needs| {
                 if needs == "Claude Code signed in" {
                     format!(
                         "Can't start a worker on {name}. It needs Claude Code signed in. The user signs in with `claude auth login`. {USABLE}"
@@ -360,7 +361,8 @@ impl Keys {
                     )
                 })
                 .filter(|cc| {
-                    providers::resolve_model(cc).is_ok_and(|claude| claude_code_works(&claude))
+                    providers::resolve_model(cc)
+                        .is_ok_and(|claude| claude_code_needs(&claude).is_none())
                 })
                 .map(|cc| format!(", start it as {cc} on the user's Claude plan"))
                 .unwrap_or_default();
@@ -692,8 +694,23 @@ mod tests {
         let model = |name: &str| providers::resolve_model(name).unwrap();
         assert_eq!(keys.refusal(&model("sol")), None);
         assert_eq!(
-            keys.refusal_with(&model("opus"), &|_| false).unwrap(),
+            keys.refusal_with(&model("opus"), &|_| Some("Claude Code installed".into()))
+                .unwrap(),
             "Can't start a worker on claude-opus-5-5. It needs ANTHROPIC_API_KEY, and this session has none. Ask the user to add it with /keys, or choose a model that worker_options lists as usable now."
+        );
+        // A Claude Code model says what Claude Code needs, and a ready one
+        // isn't refused.
+        let cc = model("cc:opus");
+        assert_eq!(keys.refusal_with(&cc, &|_| None), None);
+        assert_eq!(
+            keys.refusal_with(&cc, &|_| Some("Claude Code signed in".into()))
+                .unwrap(),
+            "Can't start a worker on cc:claude-opus-5-5. It needs Claude Code signed in. The user signs in with `claude auth login`. worker_options lists the models usable now."
+        );
+        assert_eq!(
+            keys.refusal_with(&cc, &|_| Some("Claude Code installed".into()))
+                .unwrap(),
+            "Can't start a worker on cc:claude-opus-5-5. It needs Claude Code installed. worker_options lists the models usable now."
         );
         // A ChatGPT login is not added with /keys.
         let none = Keys::new(Arc::new(LLMClient::new()), None, None, None);
@@ -703,7 +720,7 @@ mod tests {
         );
         // With Claude Code ready, the Claude plan is the next step.
         assert_eq!(
-            keys.refusal_with(&model("opus"), &|_| true).unwrap(),
+            keys.refusal_with(&model("opus"), &|_| None).unwrap(),
             "Can't start a worker on claude-opus-5-5. It needs ANTHROPIC_API_KEY, and this session has none. Ask the user to add it with /keys, start it as cc:opus on the user's Claude plan, or choose a model that worker_options lists as usable now."
         );
 
