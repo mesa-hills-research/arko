@@ -28,6 +28,7 @@
 
 mod agents;
 mod chat;
+mod chooser;
 mod claude_code;
 #[cfg(feature = "tui")]
 mod cli;

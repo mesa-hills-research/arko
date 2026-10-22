@@ -155,7 +155,7 @@ async fn a_key_added_while_arko_runs_reaches_new_workers_at_once() {
     ));
     let refused = bodies.lock().unwrap().iter().any(|body| {
         body.to_string()
-            .contains("New workers can't start on openrouter:anthropic/claude-opus-5.5: the user removed its API key (OPENROUTER_API_KEY) while Arko runs.")
+            .contains("Can't start a worker on openrouter:anthropic/claude-opus-5.5. The user removed its API key (OPENROUTER_API_KEY) while Arko runs.")
     });
     assert!(refused, "the main agent heard why");
     assert_eq!(on_openrouter(&bodies), before);

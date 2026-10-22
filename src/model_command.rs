@@ -14,7 +14,7 @@ use arko_ai::{Model, Provider};
 use arko_workflows::notes::{Note, NoteSource};
 
 use crate::agents::{self, AgentSettings, Effort, ExtraRules, MAIN, ModelSettings};
-use crate::crew::{NewWorkers, WorkerModel};
+use crate::crew::{NewWorkers, WorkerSetup};
 use crate::providers::{self, OpenAiAuth};
 use crate::remote::{self, Level, Source};
 use crate::session::Settings;
@@ -545,7 +545,11 @@ impl Harness {
         // The workers already started keep theirs, also those of Arko
         // before it recorded them.
         let started = crew.keep_started_models()?;
-        crew.set_new_workers(new_workers(&settings, &worker_config));
+        crew.set_new_workers(new_workers(
+            &settings,
+            &worker_config,
+            self.workers_basis(&settings, &setup),
+        ));
         self.settings = settings;
         self.providers = setup;
         self.worker_config = worker_config;
@@ -646,8 +650,49 @@ impl Harness {
     /// when it changed after the workers' configuration was saved.
     pub(crate) fn start_new_workers(&self) {
         if let Some(crew) = &self.crew {
-            crew.set_new_workers(new_workers(&self.settings, &self.worker_config));
+            crew.set_new_workers(new_workers(
+                &self.settings,
+                &self.worker_config,
+                self.workers_basis(&self.settings, &self.providers),
+            ));
         }
+    }
+
+    /// What the start hook chooses a worker's setup from, for `settings`
+    /// on `setup`: the session's worker model and the settings around it,
+    /// and where the profiles are.
+    pub(crate) fn workers_basis(
+        &self,
+        settings: &Settings,
+        setup: &providers::Setup,
+    ) -> std::sync::Arc<crate::chooser::Basis> {
+        let known = self
+            .indexes
+            .as_ref()
+            .map(|indexes| indexes.known(&settings.workspace))
+            .unwrap_or_default();
+        let agent_settings = AgentSettings {
+            index_tools: if self.indexes.is_some() {
+                index::TOOL_NAMES
+            } else {
+                &[]
+            },
+            indexes: &known,
+            ..AgentSettings::for_session(settings, setup)
+        };
+        std::sync::Arc::new(crate::chooser::Basis {
+            roots: crate::profiles::Roots::new(&self.root)
+                .workspace(&settings.workspace)
+                .session(&self.session.dir),
+            worker: settings.worker.clone(),
+            providers: setup.clone(),
+            thinking_text: !settings.hide_thinking,
+            cc_compact: !settings.cc_handover,
+            handover_at: settings.handover_at,
+            choice: settings.worker_models,
+            extra_rules: settings.extra_rules,
+            rules_text: agents::extra_rules(&agent_settings),
+        })
     }
 
     pub(crate) fn save_session(&self) {
@@ -734,18 +779,21 @@ fn switched(
 
 /// What new workers start on, from their configuration (`worker_config`,
 /// built from `settings`).
-fn new_workers(settings: &Settings, worker_config: &arko_agents::AgentConfig) -> NewWorkers {
+fn new_workers(
+    settings: &Settings,
+    worker_config: &arko_agents::AgentConfig,
+    basis: std::sync::Arc<crate::chooser::Basis>,
+) -> NewWorkers {
     let chatgpt = worker_config.llm_config.model.provider == Provider::OpenAI
         && settings.openai_auth != Some(OpenAiAuth::ApiKey);
     NewWorkers {
-        model: WorkerModel::of(worker_config),
-        cache_1h: settings.worker.cache_1h,
+        basis,
+        model: WorkerSetup::of(worker_config),
         cache_lifetime: arko_ai::prompt_cache::prompt_cache_lifetime(
             &worker_config.llm_config.model,
             &worker_config.llm_config.generation_config,
             chatgpt,
         ),
-        chatgpt,
     }
 }
 

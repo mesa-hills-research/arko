@@ -282,7 +282,7 @@ impl remote::Meter for Gauges {
                         handover_at: model.as_ref().and_then(|model| {
                             worker_at(&model.llm_config.model, model.handover.as_ref())
                         }),
-                        compacts: model.as_ref().is_some_and(crew::WorkerModel::compacts),
+                        compacts: model.as_ref().is_some_and(crew::WorkerSetup::compacts),
                         id: run.handle,
                     }
                 })

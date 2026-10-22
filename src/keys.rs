@@ -287,22 +287,49 @@ impl Keys {
             .filter(|_| !state.withdrawn.contains(&Provider::OpenAI))
     }
 
-    /// Why a new worker can't start on `model`, when its provider's key was
-    /// removed while Arko runs. The text is written for the main agent.
+    /// Why a new worker can't start on `model`, when it can't: its
+    /// provider's key isn't in this session or was removed while Arko runs,
+    /// or Claude Code isn't installed and signed in. The text is written
+    /// for the main agent, and says how to go on.
     pub fn refusal(&self, model: &Model) -> Option<String> {
-        if !self.state().withdrawn.contains(&model.provider) {
+        const USABLE: &str = "worker_options lists the models usable now.";
+        let name = providers::model_name(model);
+        if model.provider == Provider::ClaudeCode {
+            return providers::missing_credential(&name, None).map(|needs| {
+                if needs == "Claude Code signed in" {
+                    format!(
+                        "Can't start a worker on {name}. It needs Claude Code signed in. The user signs in with `claude auth login`. {USABLE}"
+                    )
+                } else {
+                    format!(
+                        "Can't start a worker on {name}. It needs {needs}. {USABLE}"
+                    )
+                }
+            });
+        }
+        if self.reaches(&model.provider) {
             return None;
         }
-        let name = match model.provider {
+        let key = match model.provider {
             Provider::Anthropic => credentials::ANTHROPIC_KEY,
             Provider::OpenAI => credentials::OPENAI_KEY,
             Provider::Google => credentials::GEMINI_KEY,
             _ => credentials::OPENROUTER_KEY,
         };
-        Some(format!(
-            "New workers can't start on {}: the user removed its API key ({name}) while Arko runs. Ask the user to add one with /keys, or to choose another worker model with /model worker.",
-            providers::model_name(model),
-        ))
+        let next = "Ask the user to add one with /keys, or choose a model that worker_options lists as usable now.";
+        Some(if self.state().withdrawn.contains(&model.provider) {
+            format!(
+                "Can't start a worker on {name}. The user removed its API key ({key}) while Arko runs. {next}"
+            )
+        } else if model.provider == Provider::OpenAI {
+            format!(
+                "Can't start a worker on {name}. It needs a ChatGPT login or {key}, and this session has neither. {next}"
+            )
+        } else {
+            format!(
+                "Can't start a worker on {name}. It needs {key}, and this session has none. {next}"
+            )
+        })
     }
 
     /// Adds `key` (or replaces it) with `value`, saved in Arko's `.env` and
@@ -614,6 +641,38 @@ mod tests {
         })
         .await
         .unwrap();
+    }
+
+    /// A model whose provider the session doesn't reach, or whose key was
+    /// removed, is refused with what it needs and how to go on. One it
+    /// reaches isn't refused.
+    #[test]
+    fn a_worker_is_refused_on_a_provider_the_session_does_not_reach() {
+        let client = LLMClient::new()
+            .with_openai_client(arko_ai::providers::openai::OpenAIClient::new("test-key"));
+        let keys = Keys::new(Arc::new(client), Some(OpenAiAuth::ApiKey), None, None);
+        let model = |name: &str| providers::resolve_model(name).unwrap();
+        assert_eq!(keys.refusal(&model("sol")), None);
+        assert_eq!(
+            keys.refusal(&model("opus")).unwrap(),
+            "Can't start a worker on claude-opus-5-5. It needs ANTHROPIC_API_KEY, and this session has none. Ask the user to add one with /keys, or choose a model that worker_options lists as usable now."
+        );
+        assert!(
+            keys.refusal(&model("gemini"))
+                .unwrap()
+                .contains("It needs GEMINI_API_KEY")
+        );
+        assert!(
+            keys.refusal(&model("openrouter:anthropic/claude-opus-5.5"))
+                .unwrap()
+                .contains("Can't start a worker on openrouter:anthropic/claude-opus-5.5. It needs OPENROUTER_API_KEY")
+        );
+        // A key removed while Arko runs says so.
+        keys.apply(&credentials::OPENAI, None);
+        assert_eq!(
+            keys.refusal(&model("sol")).unwrap(),
+            "Can't start a worker on gpt-6.1-sol. The user removed its API key (OPENAI_API_KEY) while Arko runs. Ask the user to add one with /keys, or choose a model that worker_options lists as usable now."
+        );
     }
 
     /// A key added in one session is used at once by the others open on the

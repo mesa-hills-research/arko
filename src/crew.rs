@@ -23,6 +23,7 @@ use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use crate::agents::NO_LIMIT;
+use crate::chooser;
 use crate::remote;
 use crate::ui::{self, Output};
 
@@ -40,7 +41,18 @@ pub const LEAD_TOOL_NAMES: &[&str] = &[
     "link_agents",
 ];
 pub const WORKER_TOOL_NAMES: &[&str] = &[MESSAGE_AGENT, WAIT_FOR_AGENTS];
+/// The tools that let a worker start workers of its own. Only a worker
+/// that nests has them, and the start hook gives them with the run's setup.
+pub const NESTED_TOOL_NAMES: &[&str] = &[START_AGENT, LIST_AGENTS, STOP_AGENT, "link_agents"];
+/// Whether a worker can start workers of its own. It can't yet, so no
+/// worker is offered [`NESTED_TOOL_NAMES`] whatever its start, its profile or
+/// `worker_depth` say, and the start tools offer no `nested` parameter.
+pub const NESTED_WORKERS: bool = false;
 pub const CACHE_PARAM: &str = "cache";
+/// `start_agent`'s parameters for choosing the worker's setup.
+pub const PROFILE_PARAM: &str = "profile";
+pub const MODEL_PARAM: &str = "model";
+pub const EFFORT_PARAM: &str = "effort";
 pub const LEGACY_TOOL_NAMES: &[&str] = &[
     "start_worker",
     "message_worker",
@@ -62,11 +74,12 @@ pub struct Setup {
     pub cache_lifetime: PromptCacheLifetime,
     pub feed: Option<remote::Feed>,
     /// Why new workers can't start on a model, when they can't: its
-    /// provider's key was removed while Arko runs.
+    /// provider has no key in this session (or its key was removed while
+    /// Arko runs), or Claude Code isn't installed and signed in.
     pub refuse: Option<Refuse>,
 }
 
-/// See [`Setup::refuse`].
+/// See [`Setup::refuse`]. The text is written for the main agent.
 pub type Refuse = Arc<dyn Fn(&arko_ai::Model) -> Option<String> + Send + Sync>;
 
 /// How long each worker of the session ran, by its handle (milliseconds),
@@ -100,25 +113,45 @@ pub struct WorkerFacts {
     pub report: Option<String>,
 }
 
-/// What a worker run starts with that the workers' model decides: the
-/// model with its generation settings (the prompt cache's lifetime too),
-/// Claude Code's settings, and the handover size.
+/// What a worker run starts with that its setup decides: the model with
+/// its generation settings (the prompt cache's lifetime too), Claude Code's
+/// settings, the handover size, and what its profile adds. The start hook
+/// works it out from the call, the profile and the session's settings,
+/// records it with the run, and gives the same again every time the run is
+/// resumed or continued.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WorkerModel {
+pub struct WorkerSetup {
     pub llm_config: AgentLLMConfig,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub claude_code: Option<ClaudeCodeSettings>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub handover: Option<HandoverConfig>,
+    /// Text for the top of the run's first message, after the project's
+    /// instructions: the profile's instructions, and the extra rules for a
+    /// small model that the registered worker didn't get. It is copied here
+    /// when the run starts, so an edit or the deletion of the profile's file
+    /// changes nothing for a run that exists.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_added: Option<String>,
+    /// Tools the run is offered besides the registered worker's (the start
+    /// tools, for a worker that nests).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tools_added: Vec<String>,
+    /// The profile the run started with, for the lists.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
 }
 
-impl WorkerModel {
+impl WorkerSetup {
     /// What `config` (a worker's configuration) starts a run with.
     pub fn of(config: &AgentConfig) -> Self {
         Self {
             llm_config: config.llm_config.clone(),
             claude_code: config.claude_code.clone(),
             handover: config.handover.clone(),
+            context_added: None,
+            tools_added: Vec::new(),
+            profile: None,
         }
     }
 
@@ -133,23 +166,33 @@ impl WorkerModel {
                 .is_some_and(|handover| handover.compact_in_claude_code)
     }
 
-    fn apply(&self, config: &mut AgentConfig) {
+    /// Gives `config` (the registered worker's, or the configuration another
+    /// run was saved with) this run's setup. The result depends on the
+    /// setup only, so the same run gets the same configuration every time.
+    pub(crate) fn apply(&self, config: &mut AgentConfig) {
         config.llm_config = self.llm_config.clone();
         config.claude_code = self.claude_code.clone();
         config.handover = self.handover.clone();
+        // The start tools are the run's own: none a configuration of
+        // another run had, and the ones this run's setup adds.
+        let tools = &mut config.tool_config.available_tool_names;
+        tools.retain(|name| !NESTED_TOOL_NAMES.contains(&name.as_str()));
+        for name in &self.tools_added {
+            if !tools.contains(name) {
+                tools.push(name.clone());
+            }
+        }
     }
 }
 
-/// The model new workers start on, with their default prompt cache (the
-/// 1-hour one or not) and its lifetime, for `/workers`.
+/// The model new workers start on and its prompt cache's lifetime, for
+/// `/workers`, and what the start hook chooses each worker's setup from.
 #[derive(Debug, Clone)]
 pub struct NewWorkers {
-    pub model: WorkerModel,
-    pub cache_1h: bool,
+    pub model: WorkerSetup,
     pub cache_lifetime: PromptCacheLifetime,
-    /// OpenAI models run on the ChatGPT login (whose prompt cache lives
-    /// differently).
-    pub chatgpt: bool,
+    /// What the start hook chooses a worker's setup from.
+    pub basis: std::sync::Arc<chooser::Basis>,
 }
 
 /// The workers' models: what new workers start on, and what each run
@@ -163,11 +206,11 @@ pub struct NewWorkers {
 /// resuming. So the hook records each run's configuration as the run
 /// starts (in the session's folder, before the run is saved), and gives
 /// the same again every time after.
-struct WorkerModels {
+struct WorkerRecords {
     /// The record, in the session's folder.
     path: PathBuf,
     new: Option<NewWorkers>,
-    runs: BTreeMap<Uuid, WorkerModel>,
+    runs: BTreeMap<Uuid, WorkerSetup>,
     /// The crew is attached to its workflow, whose start hook calls are
     /// starts. Before (while a checkpoint is read back), a call for a run
     /// without a record is the check of a run saved before records
@@ -178,7 +221,7 @@ struct WorkerModels {
 /// The file in the session's folder that holds each worker run's model.
 const WORKER_MODELS_FILE: &str = "worker-models.json";
 
-impl WorkerModels {
+impl WorkerRecords {
     fn load(session_dir: &Path) -> Self {
         let path = session_dir.join(WORKER_MODELS_FILE);
         let runs = std::fs::read_to_string(&path)
@@ -229,10 +272,109 @@ fn apply_cache(
     Ok(())
 }
 
+/// The start hook. A run seen before gets the setup it started with, always.
+/// A start works its setup out ([`chooser::choose`]) and records it before
+/// the run is saved. A run saved before records existed, checked as a
+/// checkpoint is read back, gets the registered worker's configuration with
+/// its prompt cache.
+fn prepare(
+    models: &Mutex<WorkerRecords>,
+    refuse: Option<&Refuse>,
+    default_1h: bool,
+    request: &StartRequest,
+    config: &mut AgentConfig,
+) -> Result<(), String> {
+    // (The lock is held briefly: choosing may read files, and Claude Code's
+    // login check runs a command.)
+    let (started, attached, new) = {
+        let models = models.lock().unwrap();
+        (
+            models.runs.get(&request.run_id).cloned(),
+            models.attached,
+            models.new.clone(),
+        )
+    };
+    if let Some(started) = started {
+        started.apply(config);
+        return Ok(());
+    }
+    if !attached {
+        return apply_cache(request, config, default_1h);
+    }
+    let setup = match new {
+        Some(new) => chooser::choose(&new.basis, request, refuse)?,
+        None => {
+            // Not told what new workers start on: the registered worker.
+            if let Some(why) = refuse.and_then(|refuse| refuse(&config.llm_config.model)) {
+                return Err(why);
+            }
+            apply_cache(request, config, default_1h)?;
+            WorkerSetup::of(config)
+        }
+    };
+    setup.apply(config);
+    let mut models = models.lock().unwrap();
+    models.runs.insert(request.run_id, setup);
+    models.save()
+}
+
+/// The text a run's first message opens with: the project's instructions,
+/// then what the run's setup adds (its profile's instructions).
+fn first_message_context(
+    project: &Mutex<Option<String>>,
+    records: &Mutex<WorkerRecords>,
+    request: &StartRequest,
+) -> Option<String> {
+    let project = project.lock().unwrap().clone();
+    let added = records
+        .lock()
+        .unwrap()
+        .runs
+        .get(&request.run_id)
+        .and_then(|setup| setup.context_added.clone());
+    match (project, added) {
+        (Some(project), Some(added)) => Some(format!("{}\n\n{added}", project.trim_end())),
+        (project, added) => project.or(added),
+    }
+}
+
+/// The parameters of the host's own that `start_agent` takes: the prompt
+/// cache, and the worker's profile, model and effort. (A worker's own
+/// workers come with [`NESTED_WORKERS`].)
+fn start_parameters() -> Vec<ToolParameterDefinition> {
+    let text = |name: &str, description: &str| ToolParameterDefinition {
+        name: name.into(),
+        description: description.into(),
+        param_type: ToolParameterType::String,
+        required: false,
+        is_path: false,
+        flag: None,
+        default_value: None,
+    };
+    vec![
+        text(
+            CACHE_PARAM,
+            "1h or 5m: how long the worker's prompt cache lasts after its last step. Only Claude workers on an API key or OpenRouter take it: ChatGPT keeps its own 30-minute cache, and Claude Code an hour.",
+        ),
+        text(
+            PROFILE_PARAM,
+            "Optional. A worker profile by name, which sets the model, effort and standing instructions the worker starts with. `default` is the session's worker model. worker_options lists the profiles.",
+        ),
+        text(
+            MODEL_PARAM,
+            "Optional. The model the worker runs, such as opus, sonnet, haiku, sol, luna, gemini, cc:opus or openrouter:<slug>. It overrides the profile's. worker_options lists the models you can use now.",
+        ),
+        text(
+            EFFORT_PARAM,
+            "Optional. low, medium, high, xhigh or max, as the model takes it. It overrides the profile's.",
+        ),
+    ]
+}
+
 /// A view of one workflow's subagents. It has no worker runtime or mailbox.
 pub struct Crew {
     setup: Setup,
-    models: Arc<Mutex<WorkerModels>>,
+    models: Arc<Mutex<WorkerRecords>>,
     /// The project's instructions new workers get in their first message,
     /// if any (see `project`).
     project: Arc<Mutex<Option<String>>>,
@@ -247,7 +389,7 @@ impl Crew {
         let (wake, woken) = mpsc::unbounded_channel();
         (
             Arc::new(Self {
-                models: Arc::new(Mutex::new(WorkerModels::load(&setup.session_dir))),
+                models: Arc::new(Mutex::new(WorkerRecords::load(&setup.session_dir))),
                 project: Arc::default(),
                 setup,
                 workflow: Mutex::new(Weak::new()),
@@ -262,50 +404,28 @@ impl Crew {
     pub fn config(&self) -> SubagentsConfig {
         let default_1h = self.setup.cache_1h;
         let models = self.models.clone();
+        let records = self.models.clone();
         let refuse = self.setup.refuse.clone();
         let project = self.project.clone();
         let mut config = SubagentsConfig::default()
             .offer_blocking_tool(false)
             .questions_to_lead(true)
-            .workspace_provider(Arc::new(GitWorktreeProvider::new(self.setup.session_dir.join("worktrees"))
-                .branch_prefix(format!("arko/{}/", self.setup.session_id))))
-            .hook(Arc::new(move |request: &StartRequest, config: &mut AgentConfig| {
-                let mut models = models.lock().unwrap();
-                // A run seen before: what it started with, always.
-                if let Some(started) = models.runs.get(&request.run_id) {
-                    started.apply(config);
-                    return Ok(());
-                }
-                if !models.attached {
-                    // A run saved before records existed, checked as a
-                    // checkpoint is read back.
-                    return apply_cache(request, config, default_1h);
-                }
-                // A start: on the model new workers start on, recorded
-                // before the run starts.
-                let mut one_hour = default_1h;
-                if let Some(new) = &models.new {
-                    new.model.apply(config);
-                    one_hour = new.cache_1h;
-                }
-                // Not on a provider whose key was removed.
-                if let Some(why) = refuse
-                    .as_ref()
-                    .and_then(|refuse| refuse(&config.llm_config.model))
-                {
-                    return Err(why);
-                }
-                apply_cache(request, config, one_hour)?;
-                models.runs.insert(request.run_id, WorkerModel::of(config));
-                models.save()
-            }))
+            .workspace_provider(Arc::new(
+                GitWorktreeProvider::new(self.setup.session_dir.join("worktrees"))
+                    .branch_prefix(format!("arko/{}/", self.setup.session_id)),
+            ))
+            .hook(Arc::new(
+                move |request: &StartRequest, config: &mut AgentConfig| {
+                    prepare(&models, refuse.as_ref(), default_1h, request, config)
+                },
+            ))
             // Asked as each worker starts: a run keeps its first message.
-            .start_context(Arc::new(move |_: &StartRequest| project.lock().unwrap().clone()))
-            .start_parameter(ToolParameterDefinition {
-                name: CACHE_PARAM.into(),
-                description: "1h or 5m: how long the worker's prompt cache lasts after its last step. Only Claude workers on an API key or OpenRouter take it: ChatGPT keeps its own 30-minute cache, and Claude Code an hour.".into(),
-                param_type: ToolParameterType::String, required: false, is_path: false, flag: None, default_value: None,
-            });
+            .start_context(Arc::new(move |request: &StartRequest| {
+                first_message_context(&project, &records, request)
+            }));
+        for parameter in start_parameters() {
+            config = config.start_parameter(parameter);
+        }
         config = if self.setup.max_running == NO_LIMIT {
             config.unlimited()
         } else {
@@ -320,6 +440,33 @@ impl Crew {
     /// The model new workers start on from now on.
     pub fn set_new_workers(&self, new: NewWorkers) {
         self.models.lock().unwrap().new = Some(new);
+    }
+
+    /// Why a call to `start_agent` with `parameters` can't go on as it is,
+    /// before the start hook sees it. The hook can't tell whether the call
+    /// asks for a worktree (the framework takes `isolated` itself), so a
+    /// profile that works in one is checked here: the call must say
+    /// `isolated: true`, or choose its own workspace, or say `isolated: false`
+    /// (the call's value beats the profile's).
+    pub fn check_start(&self, parameters: &HashMap<String, Value>) -> Option<String> {
+        let name = parameters.get(PROFILE_PARAM)?.as_str()?.trim();
+        if name.is_empty()
+            || name.eq_ignore_ascii_case(chooser::DEFAULT_PROFILE)
+            || parameters.contains_key("isolated")
+            || parameters
+                .get("workspace")
+                .and_then(Value::as_str)
+                .is_some_and(|workspace| !workspace.trim().is_empty())
+        {
+            return None;
+        }
+        let basis = self.new_workers()?.basis;
+        let found = crate::profiles::read(&basis.roots, name).ok()?;
+        found.profile.isolated.then(|| {
+            format!(
+                "The profile `{name}` works in a git worktree of its own, so start it with `isolated: true`."
+            )
+        })
     }
 
     /// The project's instructions new workers get in their first message
@@ -374,7 +521,7 @@ impl Crew {
                 parameters: run.parameters.clone(),
             };
             if apply_cache(&request, &mut config, self.setup.cache_1h).is_ok() {
-                models.runs.insert(run.run_id, WorkerModel::of(&config));
+                models.runs.insert(run.run_id, WorkerSetup::of(&config));
                 added = true;
             }
         }
@@ -385,7 +532,7 @@ impl Crew {
     }
 
     /// The model worker run `run` started on, when Arko recorded it.
-    pub fn run_model(&self, run: Uuid) -> Option<WorkerModel> {
+    pub fn run_model(&self, run: Uuid) -> Option<WorkerSetup> {
         self.models.lock().unwrap().runs.get(&run).cloned()
     }
 
@@ -669,21 +816,32 @@ impl Crew {
                     _ => None,
                 };
                 let mut lifetime = match (&started, &new) {
-                    (Some(started), Some(new)) => arko_ai::prompt_cache::prompt_cache_lifetime(
-                        &started.llm_config.model,
-                        &started.llm_config.generation_config,
-                        new.chatgpt,
-                    ),
+                    (Some(started), Some(new)) => {
+                        // (The ChatGPT login is the session's way to OpenAI
+                        // models, for every worker on one.)
+                        let model = &started.llm_config.model;
+                        let chatgpt = model.provider == arko_ai::Provider::OpenAI
+                            && new.basis.providers.openai_auth
+                                != Some(crate::providers::OpenAiAuth::ApiKey);
+                        arko_ai::prompt_cache::prompt_cache_lifetime(
+                            model,
+                            &started.llm_config.generation_config,
+                            chatgpt,
+                        )
+                    }
                     (None, Some(new)) => new.cache_lifetime,
                     _ => self.setup.cache_lifetime,
                 };
-                if workflow
-                    .context()
-                    .agent_configs
-                    .get(&run.agent)
-                    .is_some_and(|config| {
-                        crate::providers::takes_cache_ttl(&config.llm_config.model)
-                    })
+                // A run Arko didn't record: the cache it asked for, on the
+                // registered worker's model.
+                if started.is_none()
+                    && workflow
+                        .context()
+                        .agent_configs
+                        .get(&run.agent)
+                        .is_some_and(|config| {
+                            crate::providers::takes_cache_ttl(&config.llm_config.model)
+                        })
                 {
                     lifetime = match run.parameters.get(CACHE_PARAM).and_then(Value::as_str) {
                         Some("1h") => PromptCacheLifetime::Known(Duration::from_secs(3600)),
@@ -869,5 +1027,318 @@ mod tests {
         );
         request.parameters.insert(CACHE_PARAM.into(), "2h".into());
         assert!(hook.prepare(&request, &mut config).is_err());
+    }
+
+    /// A crew over `session_dir` whose workers run `worker` unless told
+    /// otherwise, attached as if its workflow were open. Profiles are in
+    /// `root`.
+    fn crew_for(
+        session_dir: &Path,
+        root: &Path,
+        worker: &crate::agents::ModelSettings,
+    ) -> (Arc<Crew>, AgentConfig) {
+        let (crew, _) = Crew::new(Setup {
+            session_id: "example".into(),
+            session_dir: session_dir.into(),
+            output: Arc::new(Output::new(None, true)),
+            max_running: 4,
+            cache_1h: false,
+            cache_lifetime: PromptCacheLifetime::Known(Duration::from_secs(300)),
+            feed: None,
+            refuse: None,
+        });
+        let registered =
+            crate::agents::worker_config(&crate::agents::AgentSettings::for_test(worker, worker))
+                .unwrap();
+        crew.set_new_workers(NewWorkers {
+            model: WorkerSetup::of(&registered),
+            cache_lifetime: PromptCacheLifetime::Known(Duration::from_secs(300)),
+            basis: Arc::new(chooser::Basis {
+                roots: crate::profiles::Roots::new(root).session(session_dir),
+                worker: worker.clone(),
+                providers: crate::providers::Setup::new(None),
+                thinking_text: true,
+                cc_compact: true,
+                handover_at: 200_000,
+                choice: crate::agents::ModelChoice::Agent,
+                extra_rules: crate::agents::ExtraRules::Off,
+                rules_text: None,
+            }),
+        });
+        crew.models.lock().unwrap().attached = true;
+        (crew, registered)
+    }
+
+    fn start(handle: &str, parameters: &[(&str, &str)]) -> StartRequest {
+        StartRequest {
+            workflow_run_id: Uuid::new_v4(),
+            run_id: Uuid::new_v4(),
+            handle: handle.into(),
+            agent: "worker".into(),
+            caller_run_id: Uuid::new_v4(),
+            caller_agent: MAIN.into(),
+            task: "Check it".into(),
+            parameters: parameters
+                .iter()
+                .map(|(name, value)| (name.to_string(), Value::String(value.to_string())))
+                .collect(),
+        }
+    }
+
+    fn luna() -> crate::agents::ModelSettings {
+        let model = crate::agents::resolve_model("luna").unwrap();
+        crate::agents::ModelSettings {
+            model: model.id.clone(),
+            effort: crate::agents::Effort::High,
+            fast: false,
+            cache_1h: false,
+            handover_at: Some(crate::agents::default_handover(&model, None)),
+        }
+    }
+
+    fn judge(root: &Path, text: &str) {
+        let folder = root.join("profiles");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join("judge.md"), text).unwrap();
+    }
+
+    /// The configuration a hook gives `request`, from `base`, as JSON.
+    fn prepared(crew: &Crew, request: &StartRequest, base: &AgentConfig) -> serde_json::Value {
+        let hook = crew.config().hook.unwrap();
+        let mut config = base.clone();
+        hook.prepare(request, &mut config).unwrap();
+        serde_json::to_value(&config).unwrap()
+    }
+
+    /// A worker's setup is worked out once, as it starts. The hook then
+    /// gives the same configuration for the run again and again, after its
+    /// profile's file is edited or deleted, from another run's saved
+    /// configuration as the registered one (as a resumed session has it),
+    /// and after Arko restarts, which is what lets a saved session resume.
+    #[test]
+    fn a_recorded_run_gets_the_same_configuration_after_its_profile_changes() {
+        let temp = tempfile::tempdir().unwrap();
+        let (session, root) = (temp.path().join("session"), temp.path().join("arko"));
+        std::fs::create_dir_all(&session).unwrap();
+        judge(
+            &root,
+            "---\ndescription: Judges\nmodel: sol\neffort: max\n---\nJudge version one.\n",
+        );
+        let (crew, registered) = crew_for(&session, &root, &luna());
+        let first = start("r1", &[("profile", "judge")]);
+        let before = prepared(&crew, &first, &registered);
+        assert_eq!(before["llm_config"]["model"]["id"], "gpt-6.1-sol");
+        let opening = |crew: &Crew, request: &StartRequest| {
+            let ask = crew.config().start_context.unwrap();
+            ask(request)
+        };
+        assert_eq!(
+            opening(&crew, &first).as_deref(),
+            Some("# Your profile (judge)\nJudge version one.")
+        );
+
+        // Edited: the run keeps what it started with.
+        judge(
+            &root,
+            "---\ndescription: Judges\nmodel: astra\neffort: low\n---\nJudge version two.\n",
+        );
+        assert_eq!(prepared(&crew, &first, &registered), before);
+        assert_eq!(
+            opening(&crew, &first).as_deref(),
+            Some("# Your profile (judge)\nJudge version one.")
+        );
+        // A worker started now gets the edit.
+        let second = start("r2", &[("profile", "judge")]);
+        let after = prepared(&crew, &second, &registered);
+        assert_eq!(after["llm_config"]["model"]["id"], "gpt-6-astra");
+        assert_eq!(
+            opening(&crew, &second).as_deref(),
+            Some("# Your profile (judge)\nJudge version two.")
+        );
+
+        // The registered worker is another run's saved configuration, as in
+        // a resumed session: the same result for each run.
+        let saved: AgentConfig = serde_json::from_value(after.clone()).unwrap();
+        assert_eq!(prepared(&crew, &first, &saved), before);
+        assert_eq!(prepared(&crew, &second, &saved), after);
+
+        // Deleted: the same.
+        std::fs::remove_file(root.join("profiles").join("judge.md")).unwrap();
+        assert_eq!(prepared(&crew, &first, &registered), before);
+        assert_eq!(prepared(&crew, &second, &registered), after);
+        let missing = start("r3", &[("profile", "judge")]);
+        let hook = crew.config().hook.unwrap();
+        let mut config = registered.clone();
+        assert!(
+            hook.prepare(&missing, &mut config)
+                .unwrap_err()
+                .starts_with("There is no worker profile `judge`.")
+        );
+
+        // Arko restarts, with the settings changed and the profile gone: a
+        // new crew on the same folder reads the record. Before its workflow
+        // is attached, the hook is only checking the saved runs.
+        let mut other = luna();
+        other.model = crate::agents::resolve_model("sol").unwrap().id;
+        let (crew, registered) = crew_for(&session, &root, &other);
+        crew.models.lock().unwrap().attached = false;
+        assert_eq!(prepared(&crew, &first, &registered), before);
+        assert_eq!(prepared(&crew, &second, &registered), after);
+        crew.models.lock().unwrap().attached = true;
+        assert_eq!(prepared(&crew, &first, &registered), before);
+        assert_eq!(
+            opening(&crew, &first).as_deref(),
+            Some("# Your profile (judge)\nJudge version one.")
+        );
+    }
+
+    /// A record from before profiles (a model, Claude Code's settings and
+    /// the handover size, nothing more) loads and gives the run the same
+    /// configuration as then.
+    #[test]
+    fn an_old_record_without_the_new_fields_is_applied_as_before() {
+        let temp = tempfile::tempdir().unwrap();
+        let (session, root) = (temp.path().join("session"), temp.path().join("arko"));
+        std::fs::create_dir_all(&session).unwrap();
+        let mut sol = luna();
+        sol.model = crate::agents::resolve_model("sol").unwrap().id;
+        let on_sol =
+            crate::agents::worker_config(&crate::agents::AgentSettings::for_test(&sol, &sol))
+                .unwrap();
+        let run = Uuid::new_v4();
+        let old = serde_json::json!({
+            run.to_string(): {
+                "llm_config": on_sol.llm_config,
+                "handover": on_sol.handover,
+            }
+        });
+        std::fs::write(
+            session.join(WORKER_MODELS_FILE),
+            serde_json::to_string_pretty(&old).unwrap(),
+        )
+        .unwrap();
+        let (crew, registered) = crew_for(&session, &root, &luna());
+        let recorded = crew.run_model(run).unwrap();
+        assert_eq!(recorded.context_added, None);
+        assert!(recorded.tools_added.is_empty());
+        assert_eq!(recorded.profile, None);
+        let mut request = start("r1", &[]);
+        request.run_id = run;
+        let applied = prepared(&crew, &request, &registered);
+        assert_eq!(applied["llm_config"]["model"]["id"], "gpt-6.1-sol");
+        let mut expected = registered.clone();
+        expected.llm_config = on_sol.llm_config.clone();
+        expected.handover = on_sol.handover.clone();
+        assert_eq!(applied, serde_json::to_value(&expected).unwrap());
+        assert_eq!(crew.config().start_context.unwrap()(&request), None);
+        // A record written now has only the old fields when nothing is
+        // added, so an older Arko reads it.
+        let mut fresh = start("r2", &[]);
+        fresh.run_id = Uuid::new_v4();
+        prepared(&crew, &fresh, &registered);
+        let written: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(session.join(WORKER_MODELS_FILE)).unwrap(),
+        )
+        .unwrap();
+        let keys: Vec<&String> = written[fresh.run_id.to_string()]
+            .as_object()
+            .unwrap()
+            .keys()
+            .collect();
+        assert_eq!(keys, ["handover", "llm_config"]);
+    }
+
+    /// The project's instructions come first in a worker's first message,
+    /// then what its profile adds.
+    #[test]
+    fn the_first_message_opens_with_the_project_and_then_the_profile() {
+        let temp = tempfile::tempdir().unwrap();
+        let (session, root) = (temp.path().join("session"), temp.path().join("arko"));
+        std::fs::create_dir_all(&session).unwrap();
+        judge(&root, "---\ndescription: Judges\n---\nJudge.\n");
+        let (crew, registered) = crew_for(&session, &root, &luna());
+        let with = start("r1", &[("profile", "judge")]);
+        let without = start("r2", &[]);
+        prepared(&crew, &with, &registered);
+        prepared(&crew, &without, &registered);
+        let ask = crew.config().start_context.unwrap();
+        assert_eq!(ask(&without), None);
+        crew.set_project(Some("# Project instructions\nUse tabs.\n".into()));
+        let ask = crew.config().start_context.unwrap();
+        assert_eq!(
+            ask(&without).as_deref(),
+            Some("# Project instructions\nUse tabs.\n")
+        );
+        assert_eq!(
+            ask(&with).as_deref(),
+            Some("# Project instructions\nUse tabs.\n\n# Your profile (judge)\nJudge.")
+        );
+    }
+
+    /// Start parameters for choosing the setup, without `nested`.
+    #[test]
+    fn start_agent_takes_a_profile_a_model_and_an_effort() {
+        let names: Vec<String> = start_parameters().into_iter().map(|p| p.name).collect();
+        assert_eq!(names, ["cache", "profile", "model", "effort"]);
+        assert!(
+            start_parameters()
+                .iter()
+                .all(|parameter| !parameter.required)
+        );
+        let temp = tempfile::tempdir().unwrap();
+        let (crew, _) = crew_for(&temp.path().join("s"), temp.path(), &luna());
+        let config = crew.config();
+        let offered: Vec<&str> = config
+            .start_parameters
+            .iter()
+            .map(|parameter| parameter.name.as_str())
+            .collect();
+        assert_eq!(offered, ["cache", "profile", "model", "effort"]);
+    }
+
+    /// A profile that works in a worktree needs the call to ask for one,
+    /// unless the call says otherwise itself.
+    #[test]
+    fn a_profile_in_a_worktree_asks_the_call_for_one() {
+        let temp = tempfile::tempdir().unwrap();
+        let (session, root) = (temp.path().join("session"), temp.path().join("arko"));
+        std::fs::create_dir_all(root.join("profiles")).unwrap();
+        std::fs::write(
+            root.join("profiles").join("tree.md"),
+            "---\ndescription: Works apart\nisolated: true\n---\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("profiles").join("plain.md"),
+            "---\ndescription: Works here\n---\n",
+        )
+        .unwrap();
+        let (crew, _) = crew_for(&session, &root, &luna());
+        let call = |pairs: &[(&str, Value)]| -> HashMap<String, Value> {
+            pairs
+                .iter()
+                .map(|(name, value)| (name.to_string(), value.clone()))
+                .collect()
+        };
+        let tree = Value::from("tree");
+        assert_eq!(
+            crew.check_start(&call(&[("profile", tree.clone())]))
+                .as_deref(),
+            Some(
+                "The profile `tree` works in a git worktree of its own, so start it with `isolated: true`."
+            )
+        );
+        for fine in [
+            call(&[("profile", tree.clone()), ("isolated", true.into())]),
+            call(&[("profile", tree.clone()), ("isolated", false.into())]),
+            call(&[("profile", tree.clone()), ("workspace", "sub".into())]),
+            call(&[("profile", "plain".into())]),
+            call(&[("profile", "default".into())]),
+            call(&[("profile", "nobody".into())]),
+            call(&[("model", "sol".into())]),
+            call(&[]),
+        ] {
+            assert_eq!(crew.check_start(&fine), None, "{fine:?}");
+        }
     }
 }

@@ -638,6 +638,33 @@ pub fn main_config(settings: &AgentSettings) -> Result<AgentConfig, String> {
     builder.build().map_err(|error| error.to_string())
 }
 
+/// What a worker run on `worker` starts with that its model decides: the
+/// model with its generation settings, Claude Code's settings, and the
+/// handover size (`handover_at` unless the model's settings give one).
+/// `worker_config` builds the session's worker model the same way.
+pub(crate) fn worker_setup(
+    worker: &ModelSettings,
+    providers: &providers::Setup,
+    thinking_text: bool,
+    handover_at: usize,
+    cc_compact: bool,
+) -> Result<crew::WorkerSetup, String> {
+    Ok(crew::WorkerSetup {
+        llm_config: worker.llm_config(thinking_text)?,
+        claude_code: worker
+            .in_claude_code()
+            .then(|| providers.claude_code.clone()),
+        handover: Some(handover(
+            worker,
+            worker.handover_at.unwrap_or(handover_at),
+            cc_compact,
+        )),
+        context_added: None,
+        tools_added: Vec::new(),
+        profile: None,
+    })
+}
+
 pub fn worker_config(settings: &AgentSettings) -> Result<AgentConfig, String> {
     let mut instructions = String::from(
         "# Your task\n\
@@ -849,7 +876,7 @@ fn worker_instructions(settings: &AgentSettings) -> String {
 /// any applies: short commands for what the large models do without being
 /// told. Each comes from a mistake the small models made in Arko's evals
 /// (`evals/`) that the large ones didn't.
-fn extra_rules(settings: &AgentSettings) -> Option<String> {
+pub(crate) fn extra_rules(settings: &AgentSettings) -> Option<String> {
     let mut rules: Vec<&str> = Vec::new();
     if !settings.index_tools.is_empty() {
         // luna searched anyway, and the search failed.

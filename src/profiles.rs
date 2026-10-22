@@ -483,15 +483,12 @@ fn one_line(text: &str) -> String {
 
 /// `4000` as `4,000`.
 fn thousands(number: usize) -> String {
-    let digits = number.to_string();
-    let mut out = String::new();
-    for (i, c) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i) % 3 == 0 {
-            out.push(',');
-        }
-        out.push(c);
-    }
-    out
+    let digits: Vec<char> = number.to_string().chars().rev().collect();
+    let groups: Vec<String> = digits
+        .chunks(3)
+        .map(|group| group.iter().rev().collect())
+        .collect();
+    groups.into_iter().rev().collect::<Vec<_>>().join(",")
 }
 
 /// What a profile name is.
