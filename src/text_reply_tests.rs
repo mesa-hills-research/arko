@@ -666,8 +666,8 @@ fn without_message_user(config: &arko_agents::AgentConfig) -> arko_agents::Agent
 /// What a context update with a note from the user ends with: for an agent
 /// that has `message_user` (with text replies or without), and for one saved
 /// with text replies before it had it.
-const TOOL_HINT: &str = "The user can't see your thinking. Answer a question in the notes above with `message_user` first, even if they cut a wait short, then carry on with your work.";
-const TEXT_HINT: &str = "The user can't see your thinking. Answer a question in the notes above in the text you write beside your next tool call.";
+const TOOL_HINT: &str = "Text you write only in your thinking may never reach the user, and a long wait is where that is most likely. Answer a question in the notes above with `message_user` first, even if they cut a wait short, then carry on with your work.";
+const TEXT_HINT: &str = "Text you write only in your thinking may never reach the user, and a long wait is where that is most likely. Answer a question in the notes above in the text you write beside your next tool call.";
 
 /// A model that notes a message at once, except "List the files.", where it
 /// lists them once `go` is notified. It ends its turns the way the main
@@ -792,7 +792,7 @@ async fn the_reminder_goes_with_the_users_notes_only() {
         let bodies = bodies.lock().unwrap().clone();
         assert!(bodies[1].contains("The build is slow."), "{text}");
         for body in &bodies {
-            assert!(!body.contains("can't see your thinking"), "{text}");
+            assert!(!body.contains("only in your thinking may never reach the user"), "{text}");
         }
     }
 }
@@ -897,5 +897,5 @@ async fn the_reminder_is_for_sessions_with_a_terminal_and_agents_with_calls() {
     assert!(matches!(end, TurnEnd::Answered));
     let bodies = bodies.lock().unwrap().clone();
     assert!(bodies[1].contains("progress?"));
-    assert!(!bodies[1].contains("can't see your thinking"));
+    assert!(!bodies[1].contains("only in your thinking may never reach the user"));
 }
