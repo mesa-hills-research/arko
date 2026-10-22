@@ -696,6 +696,7 @@ impl Harness {
             cc_compact: !settings.cc_handover,
             handover_at: settings.handover_at,
             choice: settings.worker_models,
+            worker_depth: settings.worker_depth,
             extra_rules: settings.extra_rules,
             rules_text: agents::extra_rules(&agent_settings),
         })

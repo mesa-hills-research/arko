@@ -29,6 +29,7 @@ fn basis(temp: &std::path::Path, choice: ModelChoice) -> Basis {
         cc_compact: true,
         handover_at: 200_000,
         choice,
+        worker_depth: 2,
         extra_rules: ExtraRules::Off,
         rules_text: None,
     }

@@ -635,16 +635,15 @@ async fn worker_models_sets_who_chooses_the_workers_models() {
 }
 
 /// `/worker-depth` says how many levels of workers the session allows and
-/// sets it from 1 to 4, saved with the session. Workers can't start workers
-/// yet, and it says so.
+/// sets it from 1 to 4, saved with the session.
 #[tokio::test]
-async fn worker_depth_is_kept_and_says_it_takes_effect_later() {
+async fn worker_depth_is_kept_and_says_what_it_allows() {
     let temp = tempfile::tempdir().unwrap();
     let (mut harness, _inputs, _sender, _server, _seen) = setup(temp.path()).await;
     assert!(harness.live_command("/worker-depth", Source::Terminal));
     assert_eq!(
         last_said(&harness.feed),
-        "Worker depth is 2. It takes effect once workers can start workers of their own, so for now only the main agent starts workers. /worker-depth 1 to 4 changes it."
+        "Worker depth is 2. Workers can go 2 levels deep. A worker the main agent starts can start workers of its own when the main agent allows it. /worker-depth 1 to 4 changes it."
     );
     for bad in ["0", "5", "deep"] {
         assert!(harness.live_command(&format!("/worker-depth {bad}"), Source::Terminal));
@@ -658,7 +657,7 @@ async fn worker_depth_is_kept_and_says_it_takes_effect_later() {
     assert!(harness.live_command("/worker-depth 3", Source::Terminal));
     assert_eq!(
         last_said(&harness.feed),
-        "Worker depth is now 3. It takes effect once workers can start workers of their own, so for now only the main agent starts workers."
+        "Worker depth is now 3. Workers can go 3 levels deep. A worker the main agent starts can start workers of its own when the main agent allows it."
     );
     assert_eq!(harness.settings.worker_depth, 3);
     assert_eq!(harness.session.load_settings().unwrap().worker_depth, 3);

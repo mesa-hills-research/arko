@@ -842,9 +842,7 @@ mod tests {
                 choice.about()
             );
         }
-        for nested in [false, true] {
-            assert!(CORE.contains(&format!("\"{}\"", workers::depth_about(nested))));
-        }
+        assert!(CORE.contains(&format!("\"{}\"", workers::depth_about())));
         // The markup names the settings and says what the first does.
         for name in [workers::MODELS_NAME, workers::DEPTH_NAME] {
             assert!(INDEX.contains(&format!(">{name}<")), "{name}");

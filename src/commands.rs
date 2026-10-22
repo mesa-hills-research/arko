@@ -176,11 +176,7 @@ pub const COMMANDS: &[Command] = &[
     Command {
         name: "/worker-depth",
         args: "1-4",
-        about: if crate::crew::NESTED_WORKERS {
-            "how many levels of workers the session allows, so that 1 lets only the main agent start workers and 2 lets a worker it starts begin workers of its own (/worker-depth 2)"
-        } else {
-            "how many levels of workers the session allows, from 1 to 4. It takes effect once workers can start workers of their own (/worker-depth 2)"
-        },
+        about: "how many levels of workers the session allows, so that 1 lets only the main agent start workers and 2 lets a worker it starts begin workers of its own (/worker-depth 2)",
         aliases: &[],
         runs: Runs::Session,
     },

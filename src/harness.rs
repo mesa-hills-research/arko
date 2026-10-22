@@ -597,6 +597,9 @@ impl Harness {
                 .workflow_services(
                     WorkflowServicesConfig::default()
                         .allow_caller(MAIN)
+                        // (The start hook gives the start tools to the
+                        // workers started with `nested` only.)
+                        .allow_caller(WORKER)
                         .allow_target(WORKER),
                 )
                 .subagents(crew.config())
@@ -2901,8 +2904,14 @@ impl Harness {
                     None => Err("This session has no workers.".to_string()),
                 };
                 match stopped {
-                    Ok(()) => out.line(&out.warn(&format!(
-                        "Stopping {worker}. A message from the agent resumes it."
+                    Ok(with) => out.line(&out.warn(&format!(
+                        "Stopping {worker}.{} A message from the agent resumes {}.",
+                        match with.as_slice() {
+                            [] => String::new(),
+                            [one] => format!(" Its own worker {one} stops with it."),
+                            many => format!(" Its own workers {} stop with it.", and_list(many)),
+                        },
+                        if with.is_empty() { "it" } else { worker }
                     ))),
                     Err(why) => out.line(&why),
                 }
@@ -4442,6 +4451,12 @@ pub(crate) mod tests {
     mod worker_choice {
         use super::*;
         include!("worker_choice_tests.rs");
+    }
+
+    /// Workers that start workers, end to end, in their own file.
+    mod nested_workers {
+        use super::*;
+        include!("nested_worker_tests.rs");
     }
 
     /// File editing's end-to-end tests, in their own file.

@@ -682,7 +682,7 @@ fn settings(frame: &mut Frame, app: &App, area: Rect, selected: usize) {
                     Span::styled(format!(" {} ", app.worker_depth()), theme.chosen()),
                     Span::styled(format!(" {}", glyphs::render("→")), theme.dim()),
                 ],
-                crate::workers::depth_about(crate::crew::NESTED_WORKERS).to_string(),
+                crate::workers::depth_about().to_string(),
             ),
             SettingsRow::Page => (
                 "Session",

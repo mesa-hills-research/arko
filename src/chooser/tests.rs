@@ -28,6 +28,7 @@ fn basis(temp: &std::path::Path, worker: ModelSettings) -> Basis {
         cc_compact: true,
         handover_at: 200_000,
         choice: ModelChoice::Agent,
+        worker_depth: 2,
         extra_rules: ExtraRules::Small,
         rules_text: Some("# Extra rules\n- Search with rg.\n".to_string()),
     }
@@ -570,41 +571,287 @@ fn a_model_the_session_cant_reach_is_refused_with_what_it_needs() {
     );
 }
 
-/// No worker is offered the start tools in this version, whatever the call,
-/// the profile or the depth say.
+/// A start at `depth` by a worker with `live` workers of its own.
+fn at(depth: u32, live: usize) -> Family {
+    Family { depth, live }
+}
+
+/// The call with `nested` set to `nested`.
+fn nesting(basis: &Basis, family: Family, nested: bool) -> Result<WorkerSetup, String> {
+    let mut call = request(&[]);
+    call.parameters.insert("nested".into(), Value::Bool(nested));
+    choose_in(basis, &call, None, family)
+}
+
+/// The start tools a setup gives a worker, and no others.
+fn start_tools(setup: &WorkerSetup) -> Vec<String> {
+    let registered = agents::worker_config(&AgentSettings::for_test(&luna(), &luna())).unwrap();
+    let mut config = registered.clone();
+    setup.apply(&mut config);
+    NESTED_TOOL_NAMES
+        .iter()
+        .filter(|name| {
+            config
+                .tool_config
+                .available_tool_names
+                .iter()
+                .any(|tool| tool == *name)
+        })
+        .map(|name| name.to_string())
+        .collect()
+}
+
+fn luna() -> ModelSettings {
+    settings("luna", Effort::High)
+}
+
+/// A worker is given the start tools and the paragraph about its own
+/// workers when the call or its profile says `nested`, the call winning,
+/// and not otherwise.
 #[test]
-fn no_worker_is_given_the_start_tools_yet() {
-    // (Whoever turns nesting on changes this test with it.)
-    assert!(!std::hint::black_box(NESTED_WORKERS));
+fn a_worker_that_nests_gets_the_start_tools_and_the_paragraph() {
     let temp = tempfile::tempdir().unwrap();
-    let basis = basis(temp.path(), settings("luna", Effort::High));
+    let basis = basis(temp.path(), luna());
+    let mut nests = profile("nests", None, None);
+    nests.nested = true;
+    nests.instructions = "Split the review by file.".into();
+    save(&basis, Place::User, nests);
+    save(&basis, Place::User, profile("plain", None, None));
+
+    // Nothing asked for, nothing given.
+    let plain = pick(&basis, &[]).unwrap();
+    assert!(plain.tools_added.is_empty() && plain.context_added.is_none());
+    assert!(start_tools(&plain).is_empty());
+    assert!(start_tools(&pick(&basis, &[("profile", "plain")]).unwrap()).is_empty());
+
+    // The call asks.
+    let asked = nesting(&basis, Family::MAIN, true).unwrap();
+    assert_eq!(start_tools(&asked), NESTED_TOOL_NAMES);
+    assert_eq!(asked.tools_added, NESTED_TOOL_NAMES);
+    assert_eq!(
+        asked.context_added.as_deref(),
+        Some(agents::NESTED_INSTRUCTIONS.trim())
+    );
+    // Not the tool that saves a profile, which stays with the main agent.
+    assert!(
+        !asked
+            .tools_added
+            .iter()
+            .any(|tool| tool == crate::crew::SAVE_WORKER_PROFILE)
+    );
+
+    // The profile asks, and its instructions come before the paragraph.
+    let profiled = pick(&basis, &[("profile", "nests")]).unwrap();
+    assert_eq!(start_tools(&profiled), NESTED_TOOL_NAMES);
+    let context = profiled.context_added.unwrap();
+    let profile_at = context.find("# Your profile (nests)\nSplit the review by file.");
+    let paragraph_at = context.find("# Workers of your own");
+    assert!(
+        profile_at.is_some() && profile_at < paragraph_at,
+        "{context}"
+    );
+
+    // The call beats the profile.
+    let mut call = request(&[("profile", "nests")]);
+    call.parameters.insert("nested".into(), Value::Bool(false));
+    let refused = choose_in(&basis, &call, None, Family::MAIN).unwrap();
+    assert!(start_tools(&refused).is_empty());
+    assert!(
+        !refused
+            .context_added
+            .unwrap()
+            .contains("Workers of your own")
+    );
+    // The extra rules for a small model come last.
+    let big = basis_with_worker(&basis, settings("opus", Effort::High));
+    let mut call = request(&[("model", "luna")]);
+    call.parameters.insert("nested".into(), Value::Bool(true));
+    let context = choose_in(&big, &call, None, Family::MAIN)
+        .unwrap()
+        .context_added
+        .unwrap();
+    let (paragraph, rules) = (
+        context.find("Workers of your own"),
+        context.find("Extra rules"),
+    );
+    assert!(
+        paragraph.is_some() && rules.is_some() && paragraph < rules,
+        "{context}"
+    );
+    // The paragraph is in the first message and not in the instructions,
+    // which a resumed conversation keeps as they were.
+    let worker = agents::worker_config(&AgentSettings::for_test(&luna(), &luna())).unwrap();
+    assert!(!format!("{worker:?}").contains("Workers of your own"));
+}
+
+/// How deep workers go, and how many a worker has, are held at each start.
+/// A worker at the deepest level is given no start tools, a start that asks
+/// for them there is refused with the reason, and a profile that says
+/// `nested` is started without them.
+#[test]
+fn the_depth_and_the_limit_are_held_at_each_start() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut basis = basis(temp.path(), luna());
     let mut nests = profile("nests", None, None);
     nests.nested = true;
     save(&basis, Place::User, nests);
-    let mut call = request(&[("profile", "nests")]);
-    call.parameters.insert("nested".into(), Value::Bool(true));
-    let setup = choose(&basis, &call, None).unwrap();
-    assert!(setup.tools_added.is_empty());
-    let registered =
-        agents::worker_config(&AgentSettings::for_test(&basis.worker, &basis.worker)).unwrap();
-    let mut config = registered.clone();
-    setup.apply(&mut config);
-    for name in NESTED_TOOL_NAMES {
-        assert!(
-            !config
-                .tool_config
-                .available_tool_names
-                .iter()
-                .any(|tool| tool == name)
-        );
-        assert!(
-            !registered
-                .tool_config
-                .available_tool_names
-                .iter()
-                .any(|tool| tool == name)
-        );
+
+    // Two levels (the default). The main agent's worker (level 1) may nest.
+    assert_eq!(
+        start_tools(&nesting(&basis, Family::MAIN, true).unwrap()),
+        NESTED_TOOL_NAMES
+    );
+    // Its worker is at level 2, the last, and can't start workers.
+    let refused = nesting(&basis, at(2, 0), true).unwrap_err();
+    assert_eq!(
+        refused,
+        "A worker started here is at level 2 and can't start workers of its own, because the user allows 2 levels of workers (/worker-depth). Start it without nested, or ask the user to allow more levels."
+    );
+    // A worker at level 1 starts workers at level 2, without start tools.
+    let plain = nesting(&basis, at(2, 0), false).unwrap();
+    assert!(plain.tools_added.is_empty() && plain.context_added.is_none());
+    // A profile that says `nested` is started without when it is at the last
+    // level, and the start goes on.
+    let profiled = choose_in(&basis, &request(&[("profile", "nests")]), None, at(2, 0)).unwrap();
+    assert!(profiled.tools_added.is_empty() && profiled.context_added.is_none());
+    // A worker at level 2 starting a level-3 worker is refused.
+    assert_eq!(
+        nesting(&basis, at(3, 0), false).unwrap_err(),
+        "Workers can't start workers here. The user allows 2 levels of workers (/worker-depth), and you are at level 2. Do the work yourself, or tell your lead what you need."
+    );
+
+    // One level turns nesting off. The main agent's `nested` is refused.
+    basis.worker_depth = 1;
+    let refused = nesting(&basis, Family::MAIN, true).unwrap_err();
+    assert!(
+        refused.contains("because the user allows 1 level of workers (/worker-depth)"),
+        "{refused}"
+    );
+    assert!(nesting(&basis, Family::MAIN, false).is_ok());
+    // A worker that was given the tools before the user lowered the depth.
+    assert_eq!(
+        nesting(&basis, at(2, 0), false).unwrap_err(),
+        "Workers can't start workers here. The user allows 1 level of workers (/worker-depth), and you are at level 1. Do the work yourself, or tell your lead what you need."
+    );
+
+    // Four levels, the most.
+    basis.worker_depth = 4;
+    assert!(nesting(&basis, at(3, 0), true).is_ok());
+    assert!(nesting(&basis, at(4, 0), true).is_err());
+    assert!(nesting(&basis, at(4, 0), false).is_ok());
+    assert!(nesting(&basis, at(5, 0), false).is_err());
+
+    // A worker has eight workers of its own at most, running or queued.
+    basis.worker_depth = 2;
+    assert!(nesting(&basis, at(2, 7), false).is_ok());
+    let full = nesting(&basis, at(2, 8), false).unwrap_err();
+    assert_eq!(
+        full,
+        "You already have 8 workers running or queued, the most one worker can have. Wait for some of them with wait_for_agents, or stop one you don't need with stop_agent, then start the next."
+    );
+    // The main agent has no such limit, only the places the session allows.
+    assert!(nesting(&basis, at(1, 40), false).is_ok());
+}
+
+/// What a worker that starts workers reads when a start is refused doesn't
+/// send it to `worker_options`, which it doesn't have.
+#[test]
+fn a_nested_worker_is_not_sent_to_worker_options() {
+    let temp = tempfile::tempdir().unwrap();
+    let basis = Basis {
+        worker_depth: 3,
+        ..basis(temp.path(), luna())
+    };
+    let refuse: Refuse = Arc::new(|model: &arko_ai::Model| {
+        Some(format!(
+            "Can't start a worker on {}. It needs a key, and this session has none. Ask the user to add it with /keys, or choose a model that worker_options lists as usable now.",
+            model.id
+        ))
+    });
+    let start = |parameters: &[(&str, &str)], refuse: Option<&Refuse>| {
+        choose_in(&basis, &request(parameters), refuse, at(2, 0)).unwrap_err()
+    };
+    let main = |parameters: &[(&str, &str)], refuse: Option<&Refuse>| {
+        choose_in(&basis, &request(parameters), refuse, Family::MAIN).unwrap_err()
+    };
+    type Case<'a> = (Vec<(&'a str, &'a str)>, Option<&'a Refuse>);
+    let cases: Vec<Case> = vec![
+        (vec![("model", "opus")], Some(&refuse)),
+        (vec![("model", "gpt9")], None),
+        (vec![("profile", "nobody")], None),
+    ];
+    for (parameters, refuse) in cases {
+        let for_main = main(&parameters, refuse);
+        assert!(for_main.contains("worker_options"), "{for_main}");
+        let for_worker = start(&parameters, refuse);
+        assert!(!for_worker.contains("worker_options"), "{for_worker}");
+        assert!(for_worker.contains("your lead"), "{for_worker}");
     }
+    let broken = {
+        write_file(&basis, Place::User, "broken", "no front matter");
+        start(&[("profile", "broken")], None)
+    };
+    assert!(!broken.contains("worker_options"), "{broken}");
+    let only = Basis {
+        choice: ModelChoice::Profiles,
+        ..basis.clone()
+    };
+    let text = choose_in(&only, &request(&[("model", "sol")]), None, at(2, 0)).unwrap_err();
+    assert!(
+        text.contains("/worker-models profiles") && !text.contains("worker_options"),
+        "{text}"
+    );
+}
+
+/// With every worker on the session's worker model, no worker starts
+/// workers, and a start that asks for it is told why.
+#[test]
+fn no_worker_nests_when_every_worker_runs_the_session_s_model() {
+    let temp = tempfile::tempdir().unwrap();
+    let basis = Basis {
+        choice: ModelChoice::Session,
+        ..basis(temp.path(), luna())
+    };
+    let refused = nesting(&basis, Family::MAIN, true).unwrap_err();
+    assert_eq!(
+        refused,
+        "The user has every worker run the session's worker model (/worker-models session), and no worker starts workers then. Start the worker without nested."
+    );
+    assert!(
+        nesting(&basis, Family::MAIN, false)
+            .unwrap()
+            .tools_added
+            .is_empty()
+    );
+    assert!(pick(&basis, &[]).unwrap().tools_added.is_empty());
+    // Profiles only still lets a worker nest, and the nested worker's own
+    // starts follow the same setting.
+    let profiles = Basis {
+        choice: ModelChoice::Profiles,
+        ..basis.clone()
+    };
+    assert_eq!(
+        start_tools(&nesting(&profiles, Family::MAIN, true).unwrap()),
+        NESTED_TOOL_NAMES
+    );
+    let refused = choose_in(&profiles, &request(&[("model", "sol")]), None, at(2, 0));
+    assert!(refused.unwrap_err().contains("(/worker-models profiles)"));
+}
+
+/// `nested` is true or false, not a guess.
+#[test]
+fn nested_must_be_true_or_false() {
+    let temp = tempfile::tempdir().unwrap();
+    let basis = basis(temp.path(), luna());
+    let mut call = request(&[]);
+    call.parameters
+        .insert("nested".into(), Value::String("yes".into()));
+    assert_eq!(
+        choose(&basis, &call, None).unwrap_err(),
+        "nested must be true or false"
+    );
+    call.parameters.insert("nested".into(), Value::Null);
+    assert!(choose(&basis, &call, None).is_ok());
 }
 
 /// The credential check may run a command, so it is made where blocking

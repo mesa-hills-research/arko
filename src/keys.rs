@@ -742,6 +742,36 @@ mod tests {
         );
     }
 
+    /// A worker that starts workers has no `worker_options`, so a refusal
+    /// sends it to its lead and not to the tool, whichever the cause.
+    #[test]
+    fn a_refusal_a_worker_reads_does_not_name_worker_options() {
+        let client = LLMClient::new()
+            .with_openai_client(arko_ai::providers::openai::OpenAIClient::new("test-key"));
+        let keys = Keys::new(Arc::new(client), Some(OpenAiAuth::ApiKey), None, None);
+        let none = Keys::new(Arc::new(LLMClient::new()), None, None, None);
+        let model = |name: &str| providers::resolve_model(name).unwrap();
+        let cc = model("cc:opus");
+        let mut refusals = vec![
+            keys.refusal_with(&model("opus"), &|_| None).unwrap(),
+            keys.refusal_with(&model("opus"), &|_| Some("Claude Code installed".into()))
+                .unwrap(),
+            keys.refusal_with(&cc, &|_| Some("Claude Code signed in".into()))
+                .unwrap(),
+            keys.refusal_with(&cc, &|_| Some("Claude Code installed".into()))
+                .unwrap(),
+            none.refusal(&model("sol")).unwrap(),
+        ];
+        keys.apply(&credentials::OPENAI, None);
+        refusals.push(keys.refusal(&model("sol")).unwrap());
+        for refusal in refusals {
+            assert!(refusal.contains("worker_options"), "{refusal}");
+            let read = crate::chooser::without_worker_options(&refusal);
+            assert!(!read.contains("worker_options"), "{read}");
+            assert!(read.contains("your lead"), "{read}");
+        }
+    }
+
     /// A key added in one session is used at once by the others open on the
     /// same Arko folder (not by those on another), and they say so. The one
     /// that added it has it already.

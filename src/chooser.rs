@@ -31,8 +31,8 @@ use serde_json::Value;
 
 use crate::agents::{self, Effort, ExtraRules, ModelChoice, ModelSettings};
 use crate::crew::{
-    CACHE_PARAM, EFFORT_PARAM, MODEL_PARAM, NESTED_TOOL_NAMES, NESTED_WORKERS, PROFILE_PARAM,
-    Refuse, WorkerSetup,
+    CACHE_PARAM, EFFORT_PARAM, MAX_OWN_WORKERS, MODEL_PARAM, NESTED_PARAM, NESTED_TOOL_NAMES,
+    PROFILE_PARAM, Refuse, WorkerSetup,
 };
 use crate::profiles::{self, Cache, Found};
 use crate::providers;
@@ -55,6 +55,8 @@ pub struct Basis {
     pub handover_at: usize,
     /// Who picks a worker's model.
     pub choice: ModelChoice,
+    /// How many levels of workers the session allows (`/worker-depth`).
+    pub worker_depth: u32,
     /// Which agents get the extra rules for small models, and their text
     /// (none when no rule applies to this session).
     pub extra_rules: ExtraRules,
@@ -64,6 +66,22 @@ pub struct Basis {
 /// The profile a start names. The built-in `default` is the session's worker
 /// model.
 pub const DEFAULT_PROFILE: &str = "default";
+
+/// Where in the tree of workers a start happens.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Family {
+    /// How deep the new worker is, 1 for a worker of the main agent and 2
+    /// for a worker of that worker.
+    pub depth: u32,
+    /// The workers its starter has running or queued, when the starter is a
+    /// worker.
+    pub live: usize,
+}
+
+impl Family {
+    /// A start by the main agent.
+    pub const MAIN: Self = Self { depth: 1, live: 0 };
+}
 
 /// What a call to `start_agent` asks for.
 #[derive(Debug, Default, PartialEq)]
@@ -91,18 +109,103 @@ impl Call {
             model: text(MODEL_PARAM)?,
             effort: text(EFFORT_PARAM)?,
             cache: text(CACHE_PARAM)?,
-            nested: parameters.get("nested").and_then(Value::as_bool),
+            nested: match parameters.get(NESTED_PARAM) {
+                None | Some(Value::Null) => None,
+                Some(Value::Bool(nested)) => Some(*nested),
+                Some(_) => return Err(format!("{NESTED_PARAM} must be true or false")),
+            },
         })
     }
 }
 
-/// The setup of the worker `request` starts, or why it can't start.
+/// The setup of the worker `request` starts when the main agent starts it,
+/// or why it can't start.
+#[cfg(test)]
 pub fn choose(
     basis: &Basis,
     request: &StartRequest,
     refuse: Option<&Refuse>,
 ) -> Result<WorkerSetup, String> {
+    choose_in(basis, request, refuse, Family::MAIN)
+}
+
+/// The setup of the worker `request` starts at `family`, or why it can't
+/// start.
+pub fn choose_in(
+    basis: &Basis,
+    request: &StartRequest,
+    refuse: Option<&Refuse>,
+    family: Family,
+) -> Result<WorkerSetup, String> {
+    let chosen = choose_at(basis, request, refuse, family);
+    if family.depth > 1 {
+        return chosen.map_err(|why| without_worker_options(&why));
+    }
+    chosen
+}
+
+/// A refusal as a worker reads it. A worker that starts workers has no
+/// `worker_options`, so the texts that send the main agent there send it to
+/// its lead instead.
+pub(crate) fn without_worker_options(why: &str) -> String {
+    why.replace(
+        ", or choose a model that worker_options lists as usable now.",
+        ", or ask your lead which model to use.",
+    )
+    .replace(
+        " worker_options lists the models usable now.",
+        " Ask your lead which model to use.",
+    )
+    .replace(
+        " worker_options lists the profiles.",
+        " Ask your lead which profile to use.",
+    )
+    .replace(
+        " worker_options lists them.",
+        " Ask your lead which one to use.",
+    )
+    .replace(
+        ", or use a profile worker_options lists.",
+        ", or use another profile.",
+    )
+}
+
+fn choose_at(
+    basis: &Basis,
+    request: &StartRequest,
+    refuse: Option<&Refuse>,
+    family: Family,
+) -> Result<WorkerSetup, String> {
     let call = Call::of(&request.parameters)?;
+    // A worker starts workers only as deep as the user allows, and no more
+    // than it can keep track of.
+    if family.depth > 1 {
+        let level = family.depth - 1;
+        if level >= basis.worker_depth {
+            return Err(format!(
+                "Workers can't start workers here. The user allows {} of workers (/worker-depth), and you are at level {level}. Do the work yourself, or tell your lead what you need.",
+                levels(basis.worker_depth)
+            ));
+        }
+        if family.live >= MAX_OWN_WORKERS {
+            return Err(format!(
+                "You already have {MAX_OWN_WORKERS} workers running or queued, the most one worker can have. Wait for some of them with wait_for_agents, or stop one you don't need with stop_agent, then start the next."
+            ));
+        }
+    }
+    // Whether the new worker is told to start workers of its own, and may.
+    let may_nest = family.depth < basis.worker_depth && basis.choice != ModelChoice::Session;
+    if call.nested == Some(true) && !may_nest {
+        return Err(if basis.choice == ModelChoice::Session {
+            "The user has every worker run the session's worker model (/worker-models session), and no worker starts workers then. Start the worker without nested.".to_string()
+        } else {
+            format!(
+                "A worker started here is at level {} and can't start workers of its own, because the user allows {} of workers (/worker-depth). Start it without nested, or ask the user to allow more levels.",
+                family.depth,
+                levels(basis.worker_depth)
+            )
+        });
+    }
     let named = call
         .profile
         .as_deref()
@@ -182,8 +285,14 @@ pub fn choose(
     })?;
 
     // What goes into the run's first message: the profile's instructions,
-    // and the extra rules for a small model when the registered worker (the
-    // session's) didn't get them.
+    // what it needs to know to start workers of its own, and the extra
+    // rules for a small model when the registered worker (the session's)
+    // didn't get them.
+    let nests = may_nest
+        && call
+            .nested
+            .or(profile.map(|profile| profile.nested))
+            .unwrap_or(false);
     let mut context: Vec<String> = Vec::new();
     if let Some(profile) = profile
         && !profile.instructions.trim().is_empty()
@@ -194,6 +303,13 @@ pub fn choose(
             profile.instructions.trim()
         ));
     }
+    if nests {
+        context.push(agents::NESTED_INSTRUCTIONS.trim().to_string());
+        setup.tools_added = NESTED_TOOL_NAMES
+            .iter()
+            .map(|name| name.to_string())
+            .collect();
+    }
     if let Some(rules) = &basis.rules_text
         && basis.extra_rules.for_model(&worker)
         && !basis.extra_rules.for_model(&basis.worker)
@@ -203,15 +319,12 @@ pub fn choose(
     setup.context_added = (!context.is_empty()).then(|| context.join("\n\n"));
     setup.profile = profile_name.map(str::to_string);
     setup.effort = (!takes_none(&model)).then_some(effort);
-    // A worker that nests gets the start tools. None yet.
-    let nested = call.nested.or(profile.map(|profile| profile.nested));
-    if NESTED_WORKERS && nested == Some(true) {
-        setup.tools_added = NESTED_TOOL_NAMES
-            .iter()
-            .map(|name| name.to_string())
-            .collect();
-    }
     Ok(setup)
+}
+
+/// "1 level" or "3 levels".
+fn levels(count: u32) -> String {
+    format!("{count} level{}", if count == 1 { "" } else { "s" })
 }
 
 /// The profiles in force as the main agent's instructions name them: each

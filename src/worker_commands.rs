@@ -5,7 +5,6 @@
 use arko_workflows::notes::{Note, NoteSource};
 
 use crate::agents::{self, ModelChoice};
-use crate::crew::NESTED_WORKERS;
 use crate::profiles::{self, Author, Place, Profile, Roots};
 use crate::remote::Source;
 use crate::ui;
@@ -155,7 +154,7 @@ impl Harness {
             return Ok(format!(
                 "{} is {now}. {} /worker-depth 1 to {} changes it.",
                 workers::DEPTH_NAME,
-                workers::depth_effect(now, NESTED_WORKERS),
+                workers::depth_effect(now),
                 workers::MAX_DEPTH
             ));
         }
@@ -164,19 +163,22 @@ impl Harness {
             return Ok(format!(
                 "{} is {depth} already. {}",
                 workers::DEPTH_NAME,
-                workers::depth_effect(depth, NESTED_WORKERS)
+                workers::depth_effect(depth)
             ));
         }
         self.settings.worker_depth = depth;
         self.save_session();
         self.start_new_workers();
         self.publish_models();
-        if NESTED_WORKERS
-            && self.conversation_started()
+        if self.conversation_started()
             && let Err(error) = self.workflow().post_note(
-                Note::new(format!(
-                    "The user now allows {depth} levels of workers. Workers you start with nested true can go that deep."
-                ))
+                Note::new(if depth <= 1 {
+                    "The user now allows 1 level of workers. A worker can't start workers of its own, so start workers without nested.".to_string()
+                } else {
+                    format!(
+                        "The user now allows {depth} levels of workers. A worker you start with nested true can start workers of its own, down to level {depth}."
+                    )
+                })
                 .source(NoteSource::Host)
                 .to([agents::MAIN]),
             )
@@ -186,7 +188,7 @@ impl Harness {
         Ok(format!(
             "{} is now {depth}. {}",
             workers::DEPTH_NAME,
-            workers::depth_effect(depth, NESTED_WORKERS)
+            workers::depth_effect(depth)
         ))
     }
 
@@ -369,8 +371,8 @@ impl Harness {
             text.push_str(&format!(" with a {} prompt cache", cache.as_str()));
         }
         text.push('.');
-        if NESTED_WORKERS && profile.nested {
-            text.push_str(" Its workers can start workers of their own.");
+        if profile.nested {
+            text.push_str(" A worker started with it can start workers of its own.");
         }
         if profile.made_by_agent() {
             text.push_str(" The main agent made it.");

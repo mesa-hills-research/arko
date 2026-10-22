@@ -1775,7 +1775,6 @@ mod tests {
             (live.worker_models, live.worker_depth),
             (ModelChoice::Profiles, 3)
         );
-        assert!(!live.nested_workers, "workers can't start workers yet");
         quit(seam, ended).await;
         // A new session takes them too.
         let (seam, ended) = open(SessionChoice::New, Some(ModelChoice::Session), Some(1)).await;

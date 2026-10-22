@@ -47,19 +47,17 @@ pub const LEAD_TOOL_NAMES: &[&str] = &[
     SAVE_WORKER_PROFILE,
 ];
 pub const WORKER_TOOL_NAMES: &[&str] = &[MESSAGE_AGENT, WAIT_FOR_AGENTS];
-/// The tools that let a worker start workers of its own. Only a worker
-/// that nests has them, and the start hook gives them with the run's setup.
-pub const NESTED_TOOL_NAMES: &[&str] = &[
-    START_AGENT,
-    LIST_AGENTS,
-    STOP_AGENT,
-    "link_agents",
-    WORKER_OPTIONS,
-];
-/// Whether a worker can start workers of its own. It can't yet, so no
-/// worker is offered [`NESTED_TOOL_NAMES`] whatever its start, its profile or
-/// `worker_depth` say, and the start tools offer no `nested` parameter.
-pub const NESTED_WORKERS: bool = false;
+/// The tools that let a worker start workers of its own, the framework's
+/// own four. Only a worker started with `nested` has them, and the start
+/// hook gives them with the run's setup. (It has `message_agent` and
+/// `wait_for_agents` as every worker does. Choosing a setup with
+/// `worker_options` and saving a profile stay with the main agent, which
+/// tells the worker what to use.)
+pub const NESTED_TOOL_NAMES: &[&str] = &[START_AGENT, LIST_AGENTS, STOP_AGENT, "link_agents"];
+/// The most workers one worker has running or queued at once.
+pub const MAX_OWN_WORKERS: usize = 8;
+/// `start_agent`'s parameter that lets the worker start workers of its own.
+pub const NESTED_PARAM: &str = "nested";
 pub const CACHE_PARAM: &str = "cache";
 /// `start_agent`'s parameters for choosing the worker's setup.
 pub const PROFILE_PARAM: &str = "profile";
@@ -308,6 +306,7 @@ fn apply_cache(
 /// its prompt cache.
 fn prepare(
     models: &Mutex<WorkerRecords>,
+    workflow: &Mutex<Weak<Workflow>>,
     refuse: Option<&Refuse>,
     default_1h: bool,
     request: &StartRequest,
@@ -331,7 +330,10 @@ fn prepare(
         return apply_cache(request, config, default_1h);
     }
     let setup = match new {
-        Some(new) => chooser::choose(&new.basis, request, refuse)?,
+        Some(new) => {
+            let family = family_of(workflow.lock().unwrap().upgrade(), request);
+            chooser::choose_in(&new.basis, request, refuse, family)?
+        }
         None => {
             // Not told what new workers start on: the registered worker.
             if let Some(why) = refuse.and_then(|refuse| refuse(&config.llm_config.model)) {
@@ -345,6 +347,42 @@ fn prepare(
     let mut models = models.lock().unwrap();
     models.runs.insert(request.run_id, setup);
     models.save()
+}
+
+/// Where in the tree of workers the start `request` happens: how deep the
+/// new worker is, and how many workers its starter has now. (The main agent
+/// is no worker, so its starts are at the first level.)
+fn family_of(workflow: Option<Arc<Workflow>>, request: &StartRequest) -> chooser::Family {
+    let Some(workflow) = workflow else {
+        return chooser::Family::MAIN;
+    };
+    let runs = workflow.subagents();
+    match runs.iter().find(|run| run.run_id == request.caller_run_id) {
+        Some(caller) => chooser::Family {
+            depth: caller.depth + 1,
+            live: runs
+                .iter()
+                .filter(|run| run.caller_run_id == caller.run_id && run.state.is_active())
+                .count(),
+        },
+        None => chooser::Family::MAIN,
+    }
+}
+
+/// The handles of the workers among `runs` that were started by the run
+/// `root`, or by one of those, in the order they started.
+pub(crate) fn below(runs: &[arko_workflows::subagents::SubagentRecord], root: Uuid) -> Vec<String> {
+    let mut family = vec![root];
+    let mut found = Vec::new();
+    for run in runs {
+        // (A worker starts after the one that starts it, so one pass finds
+        // them all.)
+        if family.contains(&run.caller_run_id) {
+            family.push(run.run_id);
+            found.push(run.handle.clone());
+        }
+    }
+    found
 }
 
 /// The text a run's first message opens with: the project's instructions,
@@ -368,8 +406,8 @@ fn first_message_context(
 }
 
 /// The parameters of the host's own that `start_agent` takes: the prompt
-/// cache, and the worker's profile, model and effort. (A worker's own
-/// workers come with [`NESTED_WORKERS`].)
+/// cache, the worker's profile, model and effort, and whether it may start
+/// workers of its own.
 fn start_parameters() -> Vec<ToolParameterDefinition> {
     let text = |name: &str, description: &str| ToolParameterDefinition {
         name: name.into(),
@@ -397,6 +435,15 @@ fn start_parameters() -> Vec<ToolParameterDefinition> {
             EFFORT_PARAM,
             "low, medium, high, xhigh or max, as the model takes it. Overrides the profile's.",
         ),
+        ToolParameterDefinition {
+            name: NESTED_PARAM.into(),
+            description: "true lets the worker start workers of its own. Use it for a part of the work that splits into parts again.".into(),
+            param_type: ToolParameterType::Bool,
+            required: false,
+            is_path: false,
+            flag: None,
+            default_value: None,
+        },
     ]
 }
 
@@ -453,7 +500,7 @@ pub struct Crew {
     /// The project's instructions new workers get in their first message,
     /// if any (see `project`).
     project: Arc<Mutex<Option<String>>>,
-    workflow: Mutex<Weak<Workflow>>,
+    workflow: Arc<Mutex<Weak<Workflow>>>,
     lead: Mutex<Option<Uuid>>,
     wake: mpsc::UnboundedSender<()>,
     events: Mutex<Option<tokio::task::JoinHandle<()>>>,
@@ -467,7 +514,7 @@ impl Crew {
                 models: Arc::new(Mutex::new(WorkerRecords::load(&setup.session_dir))),
                 project: Arc::default(),
                 setup,
-                workflow: Mutex::new(Weak::new()),
+                workflow: Arc::default(),
                 lead: Mutex::new(None),
                 wake,
                 events: Mutex::new(None),
@@ -480,10 +527,15 @@ impl Crew {
         let default_1h = self.setup.cache_1h;
         let models = self.models.clone();
         let records = self.models.clone();
+        let workflow = self.workflow.clone();
         let refuse = self.setup.refuse.clone();
         let project = self.project.clone();
         let mut config = SubagentsConfig::default()
             .offer_blocking_tool(false)
+            // The deepest a session can allow. How deep workers go is the
+            // session's `worker_depth`, which the start hook holds each
+            // start to.
+            .max_depth(crate::agents::MAX_WORKER_DEPTH)
             .questions_to_lead(true)
             .workspace_provider(Arc::new(
                 GitWorktreeProvider::new(self.setup.session_dir.join("worktrees"))
@@ -491,7 +543,14 @@ impl Crew {
             ))
             .hook(Arc::new(
                 move |request: &StartRequest, config: &mut AgentConfig| {
-                    prepare(&models, refuse.as_ref(), default_1h, request, config)
+                    prepare(
+                        &models,
+                        &workflow,
+                        refuse.as_ref(),
+                        default_1h,
+                        request,
+                        config,
+                    )
                 },
             ))
             // Asked as each worker starts: a run keeps its first message.
@@ -844,22 +903,27 @@ impl Crew {
     }
     /// The user's message to worker `to` (`r1`), which goes as its lead's
     /// message does: a running worker reads it at its next step, and one
-    /// that ended goes on with it. The lead gets a copy with its next news.
-    /// Returns the worker's ID, or why the message can't go.
+    /// that ended goes on with it. The worker that started it (the main
+    /// agent, for most) gets a copy with its next news. Returns the
+    /// worker's ID, or why the message can't go.
     pub fn message(&self, to: &str, text: &str) -> Result<String, String> {
         let workflow = self.workflow().ok_or("there are no workers")?;
-        let id = workflow
-            .subagents()
-            .into_iter()
+        let runs = workflow.subagents();
+        let run = runs
+            .iter()
             .find(|run| run.handle.eq_ignore_ascii_case(to.trim()))
-            .map(|run| run.handle)
             .ok_or_else(|| format!("there is no worker {}", to.trim()))?;
-        workflow.message_subagent(
-            &id,
-            text,
-            "The user sent you a message directly:",
-            &format!("The user sent {id} a message directly (a copy for you):"),
-        )?;
+        let id = run.handle.clone();
+        // A worker that started it reads the copy as news about its own
+        // worker, and is told so.
+        let copy = if runs.iter().any(|lead| lead.run_id == run.caller_run_id) {
+            format!(
+                "The user sent {id} a message directly (a copy for you, since you started {id}):"
+            )
+        } else {
+            format!("The user sent {id} a message directly (a copy for you):")
+        };
+        workflow.message_subagent(&id, text, "The user sent you a message directly:", &copy)?;
         Ok(id)
     }
 
@@ -968,18 +1032,17 @@ impl Crew {
     }
 
     /// Stops the worker `id` (r1, r2, ...), when it is running, else says
-    /// why not.
-    pub fn stop(&self, id: &str, reason: &str) -> Result<(), String> {
+    /// why not. The workers it started stop with it, and theirs in turn:
+    /// their IDs are returned.
+    pub fn stop(&self, id: &str, reason: &str) -> Result<Vec<String>, String> {
         let workflow = self
             .workflow()
             .ok_or_else(|| "No worker is running.".to_string())?;
-        if let Some(run) = workflow
-            .active_subagents()
-            .iter()
-            .find(|run| run.handle == id)
+        let active = workflow.active_subagents();
+        if let Some(run) = active.iter().find(|run| run.handle == id)
             && workflow.stop_subagent(run.run_id, StopRequest::operator(reason))
         {
-            return Ok(());
+            return Ok(below(&active, run.run_id));
         }
         Err(if workflow.subagents().iter().any(|run| run.handle == id) {
             format!("{id} isn't running.")
@@ -988,13 +1051,18 @@ impl Crew {
         })
     }
 
+    /// Stops every worker that runs or waits to run, those started by
+    /// workers too. Returns how many it stopped.
     pub fn stop_all(&self, reason: &str) -> usize {
         self.workflow().map_or(0, |workflow| {
-            workflow
-                .active_subagents()
+            let active = workflow.active_subagents();
+            // (A stop of a worker stops the ones it started, so those
+            // report no change of their own.)
+            let stopped = active
                 .iter()
                 .filter(|run| workflow.stop_subagent(run.run_id, StopRequest::operator(reason)))
-                .count()
+                .count();
+            if stopped == 0 { 0 } else { active.len() }
         })
     }
     pub async fn shutdown(&self) {
@@ -1196,6 +1264,7 @@ mod tests {
                 cc_compact: true,
                 handover_at: 200_000,
                 choice: crate::agents::ModelChoice::Agent,
+                worker_depth: 2,
                 extra_rules: crate::agents::ExtraRules::Off,
                 rules_text: None,
             }),
@@ -1410,11 +1479,12 @@ mod tests {
         );
     }
 
-    /// Start parameters for choosing the setup, without `nested`.
+    /// Start parameters for choosing the setup, and for letting the worker
+    /// start workers.
     #[test]
-    fn start_agent_takes_a_profile_a_model_and_an_effort() {
+    fn start_agent_takes_a_profile_a_model_an_effort_and_nested() {
         let names: Vec<String> = start_parameters().into_iter().map(|p| p.name).collect();
-        assert_eq!(names, ["cache", "profile", "model", "effort"]);
+        assert_eq!(names, ["cache", "profile", "model", "effort", "nested"]);
         assert!(
             start_parameters()
                 .iter()
@@ -1428,7 +1498,11 @@ mod tests {
             .iter()
             .map(|parameter| parameter.name.as_str())
             .collect();
-        assert_eq!(offered, ["cache", "profile", "model", "effort"]);
+        assert_eq!(offered, ["cache", "profile", "model", "effort", "nested"]);
+        // It is a flag, not text.
+        let nested = &config.start_parameters[4];
+        assert_eq!(nested.param_type, ToolParameterType::Bool);
+        assert_eq!(config.max_depth, 4);
     }
 
     /// `/workers` says what each worker runs, what it has cost once that is

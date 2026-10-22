@@ -897,6 +897,12 @@ const CHOOSING: &str = "A worker runs on the session's worker model unless you c
 /// What it is told of saving a profile.
 const SAVING: &str = "When several workers share a setup, save it once with `save_worker_profile` and start them by its name.";
 
+/// What a worker started with `nested` is told in its first message, after
+/// its profile's instructions. It is part of that message, not of the
+/// worker's instructions, so a worker that resumes keeps what it was told
+/// when it started.
+pub(crate) const NESTED_INSTRUCTIONS: &str = "# Workers of your own\nYou can start workers with `start_agent`. They report to you, and what your lead reads is your own report. Use them for parts of your task that can run apart, and do small things yourself. Start them on the profiles and models your task names, or leave that to the default. You can't report while they run, so wait for them with `wait_for_agents` or stop the ones you don't need with `stop_agent`. Stopping you stops them. Merge the branches of workers that worked in worktrees into yours before you report.";
+
 /// What it is told when the user lets it start workers with a profile only.
 const PROFILES_ONLY: &str = "A worker runs on the session's worker model unless you start it with a profile, a named setup the user saved. `worker_options` lists the profiles, which set each worker's model and effort, and what the models cost.";
 

@@ -324,7 +324,6 @@ impl remote::Meter for Gauges {
                 extra_rules: *lock(&self.extra_rules),
                 worker_models: *lock(&self.worker_models),
                 worker_depth: self.worker_depth.load(std::sync::atomic::Ordering::Relaxed),
-                nested_workers: crate::crew::NESTED_WORKERS,
                 project_instructions,
                 worker_project_instructions,
                 background_after: self.background.after().map_or(0, |after| after.as_secs()),

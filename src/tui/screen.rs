@@ -1531,7 +1531,7 @@ mod tests {
             (
                 SettingsRow::WorkerDepth,
                 workers::DEPTH_NAME,
-                workers::depth_about(false).to_string(),
+                workers::depth_about().to_string(),
             ),
         ] {
             let at = app

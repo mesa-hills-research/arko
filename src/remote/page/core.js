@@ -451,12 +451,10 @@
     session: { name: "Session's worker model", about: "Every worker runs the session's worker model." },
   };
 
-  /** What the worker depth setting does, from whether workers can start
-   * workers yet (`nests`, the settings' `nested_workers`). The library's
-   * `workers::depth_about` has the same sentences. */
-  function workerDepthAbout(nests) {
-    if (nests) return "How many levels of workers there can be, from 1 to 4. 1 means only the main agent starts workers. 2 lets a worker the main agent starts begin workers of its own, when the main agent allows it.";
-    return "How many levels of workers there can be, from 1 to 4. It takes effect once workers can start workers of their own, so for now only the main agent starts workers.";
+  /** What the worker depth setting does. The library's
+   * `workers::depth_about` has the same sentence. */
+  function workerDepthAbout() {
+    return "How many levels of workers there can be, from 1 to 4. 1 means only the main agent starts workers. 2 lets a worker the main agent starts begin workers of its own, when the main agent allows it.";
   }
 
   /** How long a worker has run at `now`, in all its runs (also those

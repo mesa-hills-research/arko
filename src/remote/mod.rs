@@ -393,9 +393,6 @@ pub struct LiveSettings {
     pub worker_models: crate::agents::ModelChoice,
     /// How many levels of workers the session allows (`/worker-depth`).
     pub worker_depth: u32,
-    /// Workers can start workers of their own. Until they can, the depth
-    /// takes effect later, and a client says so.
-    pub nested_workers: bool,
 }
 
 /// A random token of `bytes` bytes, in URL-safe base64.

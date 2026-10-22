@@ -441,9 +441,8 @@ test('the workers settings read as words', () => {
   assert.equal(core.WORKER_MODELS.agent.name, 'Main agent chooses');
   assert.equal(core.WORKER_MODELS.profiles.name, 'Profiles only');
   assert.equal(core.WORKER_MODELS.session.name, "Session's worker model");
-  // Until workers can start workers, the depth says it takes effect later.
-  assert.match(core.workerDepthAbout(false), /takes effect once workers can start workers of their own/);
-  assert.match(core.workerDepthAbout(true), /^How many levels of workers there can be, from 1 to 4\. 1 means only the main agent starts workers\./);
+  assert.match(core.workerDepthAbout(), /^How many levels of workers there can be, from 1 to 4\. 1 means only the main agent starts workers\./);
+  assert.doesNotMatch(core.workerDepthAbout(), /takes effect/);
 });
 
 // ----- the prompt cache's timer: the words the terminal and Arko Studio use -----
