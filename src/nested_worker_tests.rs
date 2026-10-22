@@ -609,9 +609,20 @@ async fn stopping_a_worker_stops_its_workers_and_a_message_to_one_is_copied_to_i
     harness.command("/stop-workers r1");
     assert_eq!(
         printed.0.lock().unwrap().last().unwrap(),
-        "Stopping r1. Its own worker r2 stops with it. A message from the agent resumes r1."
+        "Stopping r1. Its worker r2 stops with it. A message from the agent resumes r1."
     );
     until(|| crew.running().is_empty()).await;
+    // The main agent is told what stopped with r1, which its news of the
+    // stop doesn't say and it can't list.
+    let _ =
+        tokio::time::timeout(Duration::from_secs(20), harness.finish_workers(&mut inputs)).await;
+    assert!(
+        script
+            .requests("main")
+            .iter()
+            .any(|body| read(body).contains("The user stopped r1. Its worker r2 stopped with it.")),
+        "the main agent read no note of what stopped with r1"
+    );
     let states: Vec<(String, remote::WorkerState)> = harness
         .feed
         .worker_summaries()
@@ -1155,4 +1166,50 @@ async fn the_main_agent_hears_of_nested_workers_only_when_the_depth_allows_them(
     assert!(instructions(&script.requests("main")[0]).contains(sentence));
     harness.crew.as_ref().unwrap().stop_all("done");
     harness.crew.as_ref().unwrap().shutdown().await;
+}
+
+/// Stopping a worker that another worker started says who can restart it, and
+/// the main agent, which doesn't know that worker, is told nothing.
+#[tokio::test]
+async fn stopping_a_workers_worker_says_who_resumes_it() {
+    #[derive(Clone, Default)]
+    struct Printed(Arc<Mutex<Vec<String>>>);
+    impl ui::Printer for Printed {
+        fn print(&mut self, text: String) -> Result<(), ()> {
+            self.0
+                .lock()
+                .unwrap()
+                .extend(text.lines().map(str::to_string));
+            Ok(())
+        }
+    }
+    let script = Script::new(true);
+    let server = script.serve().await;
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, _sender) = open_session(temp.path(), &server);
+    turn(&mut harness, &mut inputs, "Review the files.").await;
+    tokio::time::timeout(Duration::from_secs(20), script.refused.notified())
+        .await
+        .expect("r1 asked to report early");
+    let crew = harness.crew.clone().unwrap();
+    until(|| crew.running() == ["r1", "r2"] && script.requests("r2").len() == 1).await;
+    assert_eq!(crew.starter("r2").as_deref(), Some("r1"));
+    assert_eq!(crew.starter("r1"), None);
+    let printed = Printed::default();
+    harness.output = Arc::new(Output::new(Some(Box::new(printed.clone())), false));
+    harness.command("/stop-workers r2");
+    assert_eq!(
+        printed.0.lock().unwrap().last().unwrap(),
+        "Stopping r2. A message from r1 resumes it."
+    );
+    until(|| crew.running() == ["r1"]).await;
+    assert!(
+        script
+            .requests("main")
+            .iter()
+            .all(|body| !read(body).contains("The user stopped")),
+        "the main agent was told of a worker it doesn't know"
+    );
+    crew.stop_all("done");
+    crew.shutdown().await;
 }

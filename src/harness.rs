@@ -2929,15 +2929,31 @@ impl Harness {
                     None => Err("This session has no workers.".to_string()),
                 };
                 match stopped {
-                    Ok(with) => out.line(&out.warn(&format!(
-                        "Stopping {worker}.{} A message from the agent resumes {}.",
-                        match with.as_slice() {
-                            [] => String::new(),
-                            [one] => format!(" Its own worker {one} stops with it."),
-                            many => format!(" Its own workers {} stop with it.", and_list(many)),
-                        },
-                        if with.is_empty() { "it" } else { worker }
-                    ))),
+                    Ok(with) => {
+                        let starter = self.crew.as_ref().and_then(|crew| crew.starter(worker));
+                        out.line(&out.warn(&crew::stopping_words(
+                            worker,
+                            starter.as_deref(),
+                            &with,
+                        )));
+                        // The main agent's own news of the stop doesn't say
+                        // what stopped with the worker, and the agent can't
+                        // list the workers of its workers.
+                        if starter.is_none()
+                            && !with.is_empty()
+                            && let Err(error) = self.workflow().post_note(
+                                Note::new(format!(
+                                    "The user stopped {worker}. Its worker{} {} stopped with it.",
+                                    if with.len() == 1 { "" } else { "s" },
+                                    and_list(&with)
+                                ))
+                                .source(NoteSource::Host)
+                                .to([MAIN]),
+                            )
+                        {
+                            log::warn!("could not tell the main agent what stopped with {worker}: {error}");
+                        }
+                    }
                     Err(why) => out.line(&why),
                 }
             }

@@ -461,6 +461,23 @@ pub(crate) fn below(runs: &[arko_workflows::subagents::SubagentRecord], root: Uu
     found
 }
 
+/// What `/stop-workers NAME` says once it stopped `worker`: the workers that
+/// stop with it, and who can restart it, the agent that started it. `starter`
+/// is the worker that started it, none for the main agent's workers, whose
+/// starter is the main agent.
+pub(crate) fn stopping_words(worker: &str, starter: Option<&str>, with: &[String]) -> String {
+    let with_it = match with {
+        [] => String::new(),
+        [one] => format!(" Its worker {one} stops with it."),
+        many => format!(" Its workers {} stop with it.", crate::and_list(many)),
+    };
+    format!(
+        "Stopping {worker}.{with_it} A message from {} resumes {}.",
+        starter.unwrap_or("the agent"),
+        if with.is_empty() { "it" } else { worker }
+    )
+}
+
 /// How many of the `active` workers stop when the stops of the workers
 /// `accepted` take effect: those, and the workers that they started, which
 /// stop with them and report no stop of their own.
@@ -1241,6 +1258,14 @@ impl Crew {
             .collect()
     }
 
+    /// The worker that started the worker `id`, when a worker did (and not
+    /// the main agent).
+    pub fn starter(&self, id: &str) -> Option<String> {
+        let runs = self.workflow()?.subagents();
+        let run = runs.iter().find(|run| run.handle == id)?;
+        started_by(&runs, run.run_id)
+    }
+
     /// Stops the worker `id` (r1, r2, ...), when it is running, else says
     /// why not. The workers it started stop with it, and theirs in turn:
     /// their IDs are returned.
@@ -1974,6 +1999,34 @@ mod tests {
         deeper.depth = 2;
         runs.push(deeper.clone());
         assert_eq!(family(&runs, &[], &asking(deeper.run_id)).0.depth, 3);
+    }
+
+    /// What `/stop-workers NAME` says: the workers that stop with the worker,
+    /// and who can restart it, which is the worker that started it.
+    #[test]
+    fn stopping_a_worker_says_what_stops_with_it_and_who_resumes_it() {
+        let with = |names: &[&str]| {
+            names
+                .iter()
+                .map(|name| name.to_string())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            stopping_words("r1", None, &[]),
+            "Stopping r1. A message from the agent resumes it."
+        );
+        assert_eq!(
+            stopping_words("r4", Some("r1"), &[]),
+            "Stopping r4. A message from r1 resumes it."
+        );
+        assert_eq!(
+            stopping_words("r1", None, &with(&["r2"])),
+            "Stopping r1. Its worker r2 stops with it. A message from the agent resumes r1."
+        );
+        assert_eq!(
+            stopping_words("r2", Some("r1"), &with(&["r3", "r4", "r5"])),
+            "Stopping r2. Its workers r3, r4, and r5 stop with it. A message from r1 resumes r2."
+        );
     }
 
     /// "Stopping N workers" counts the workers a stop reaches, those that
