@@ -1065,7 +1065,7 @@
       option.addEventListener('click', () => chooseWorkerDepth(level));
       depthOptions.append(option);
     }
-    $('worker-depth-about').textContent = C.workerDepthWords(depth, Boolean(settings.nested_workers));
+    $('worker-depth-about').textContent = C.workerDepthAbout(Boolean(settings.nested_workers));
     $('project-workers').hidden = !(status && status.models && status.models.has_workers);
     const toWorkers = $('project-workers-switch');
     const giving = pending && pending.workers !== undefined;

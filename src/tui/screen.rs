@@ -708,7 +708,7 @@ mod tests {
         println!("{}", rows.join("\n"));
         assert!(
             rows.iter()
-                .any(|row| row.contains("▸ API keys       3 of 5 set ›")),
+                .any(|row| row.contains("▸ API keys           3 of 5 set ›")),
             "{rows:#?}"
         );
         // A 24-row terminal scrolls the settings to show the row whole.
@@ -1016,12 +1016,12 @@ mod tests {
         println!("{}", rows.join("\n"));
         assert!(
             rows.iter()
-                .any(|row| row.contains("▸ Ask first      on   off")),
+                .any(|row| row.contains("▸ Ask first          on   off")),
             "{rows:#?}"
         );
         assert!(
             rows.iter()
-                .any(|row| row.contains("With background jobs running, quitting asks first")),
+                .any(|row| row.contains("With background jobs running, quitting asks")),
             "{rows:#?}"
         );
     }
@@ -1130,6 +1130,61 @@ mod tests {
         let rows = screen(&mut app, 50, 10);
         assert!(!rows.iter().any(|row| row.contains("Tabs or spaces?")));
         assert_eq!(rows[6], " ● asks you");
+    }
+
+    /// The settings rows for the workers carry the library's names and
+    /// sentences, as the web page and an app's settings page do.
+    #[test]
+    fn the_worker_settings_rows_read_as_the_library_words_them() {
+        use crate::tui::overlay::{Overlay, SettingsRow};
+        use crate::workers;
+        let mut app = app();
+        app.reading.models.has_workers = true;
+        for (row, name, about) in [
+            (
+                SettingsRow::WorkerModels,
+                workers::MODELS_NAME,
+                format!(
+                    "{} {} {}",
+                    workers::MODELS_ABOUT,
+                    app.worker_models().about(),
+                    workers::MODELS_APPLIES
+                ),
+            ),
+            (
+                SettingsRow::WorkerDepth,
+                workers::DEPTH_NAME,
+                workers::depth_about(false).to_string(),
+            ),
+        ] {
+            let at = app
+                .settings_rows()
+                .iter()
+                .position(|other| *other == row)
+                .unwrap();
+            app.overlay = Some(Overlay::Settings {
+                row: at,
+                picker: None,
+            });
+            let rows = screen(&mut app, 80, 40);
+            assert!(
+                rows.iter().any(|line| line.contains(&format!("▸ {name}"))),
+                "{name}\n{}",
+                rows.join("\n")
+            );
+            // The description wraps in the box, so compare it by its words.
+            let text = rows
+                .iter()
+                .map(|line| line.trim_matches(|c: char| c == '│' || c.is_whitespace()))
+                .collect::<Vec<_>>()
+                .join(" ");
+            let first_words = about
+                .split_whitespace()
+                .take(8)
+                .collect::<Vec<_>>()
+                .join(" ");
+            assert!(text.contains(&first_words), "{first_words}\n{text}");
+        }
     }
 
     /// The question to save a profile with long instructions is cut to fit

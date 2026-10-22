@@ -25,18 +25,11 @@ impl Harness {
     /// What the user is told about the workers' models once `choice` is set.
     fn models_sentence(&self, choice: ModelChoice) -> String {
         match choice {
-            ModelChoice::Agent => {
-                "The main agent chooses a profile, model and effort for each worker, and can save profiles."
-                    .to_string()
-            }
-            ModelChoice::Profiles => {
-                "The main agent starts workers with a profile only. It can't choose a model or effort by itself."
-                    .to_string()
-            }
             ModelChoice::Session => format!(
                 "Every worker runs the session's worker model, {}.",
                 self.settings.worker.describe()
             ),
+            other => other.about().to_string(),
         }
     }
 

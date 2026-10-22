@@ -823,6 +823,42 @@ async fn stop_job(
 mod tests {
     use super::*;
 
+    /// The words of the workers' settings on the page are the library's, the
+    /// ones the terminal and an app show: the page's script and markup hold
+    /// them as the library writes them.
+    #[test]
+    fn the_pages_worker_settings_use_the_librarys_words() {
+        use crate::workers::{self, ModelChoice};
+        // The script writes each choice as `name: "..."` and `about: "..."`.
+        for choice in ModelChoice::ALL {
+            assert!(
+                CORE.contains(&format!("name: \"{}\"", choice.label())),
+                "{}",
+                choice.label()
+            );
+            assert!(
+                CORE.contains(&format!("about: \"{}\"", choice.about())),
+                "{}",
+                choice.about()
+            );
+        }
+        for nested in [false, true] {
+            assert!(CORE.contains(&format!("\"{}\"", workers::depth_about(nested))));
+        }
+        // The markup names the settings and says what the first does.
+        for name in [workers::MODELS_NAME, workers::DEPTH_NAME] {
+            assert!(INDEX.contains(&format!(">{name}<")), "{name}");
+            assert!(INDEX.contains(&format!("aria-label=\"{name}\"")), "{name}");
+        }
+        assert!(INDEX.contains(&format!(
+            "{} {}",
+            workers::MODELS_ABOUT,
+            workers::MODELS_APPLIES
+        )));
+        // No curly apostrophe next to the straight ones.
+        assert!(!INDEX.contains("Session\u{2019}s"));
+    }
+
     #[test]
     fn cookies_and_bearer_tokens_are_read() {
         let mut headers = HeaderMap::new();

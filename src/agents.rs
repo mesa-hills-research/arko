@@ -191,7 +191,8 @@ impl ModelChoice {
             .find(|choice| choice.name().eq_ignore_ascii_case(text.trim()))
     }
 
-    /// The choice as a settings page labels it.
+    /// The choice as a settings page labels it. The terminal shows
+    /// [`name`](Self::name), the word its command takes, instead.
     pub fn label(self) -> &'static str {
         match self {
             ModelChoice::Agent => "Main agent chooses",
@@ -206,16 +207,17 @@ impl ModelChoice {
         format!("{} {}", crate::workers::MODELS_COMMAND, self.name())
     }
 
-    /// What the choice means, as Arko tells the user.
-    pub fn describe(self) -> &'static str {
+    /// What the choice means, as a sentence every screen shows under the
+    /// choice.
+    pub fn about(self) -> &'static str {
         match self {
             ModelChoice::Agent => {
-                "the main agent chooses a profile, model and effort for each worker"
+                "The main agent chooses a profile, model and effort for each worker, and can save profiles."
             }
             ModelChoice::Profiles => {
-                "the main agent starts workers with a profile only and can't choose a model or effort by itself"
+                "The main agent starts workers with a profile only. It can't choose a model or effort by itself."
             }
-            ModelChoice::Session => "every worker runs the session's worker model",
+            ModelChoice::Session => "Every worker runs the session's worker model.",
         }
     }
 }
@@ -1035,7 +1037,7 @@ mod tests {
                 ModelChoice::parse(&choice.name().to_uppercase()),
                 Some(choice)
             );
-            assert!(!choice.describe().is_empty());
+            assert!(choice.about().ends_with('.'));
         }
         assert_eq!(ModelChoice::parse("everyone"), None);
         assert_eq!(

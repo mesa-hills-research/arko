@@ -11,6 +11,12 @@ pub use crate::agents::ModelChoice;
 /// as the label.
 pub const MODELS_NAME: &str = "Models for workers";
 
+/// What the setting does, before what each value does ([`ModelChoice::about`]).
+pub const MODELS_ABOUT: &str = "Who picks a worker's model.";
+
+/// What happens to a worker already started when the setting changes.
+pub const MODELS_APPLIES: &str = "A change applies to the next worker started.";
+
 /// The command that sets it. It takes `agent`, `profiles` or `session`
 /// ([`ModelChoice::command`] writes it, [`ModelChoice::parse`] reads the
 /// word).
@@ -22,6 +28,13 @@ pub const DEPTH_NAME: &str = "Worker depth";
 /// The command that sets it, which takes a number from 1 to
 /// [`MAX_DEPTH`] ([`parse_depth`] reads it, [`depth_command`] writes it).
 pub const DEPTH_COMMAND: &str = "/worker-depth";
+
+/// A model as the terminal writes it in as few characters as still name it,
+/// such as `sol` or `cc:opus`, from its ID as [`WorkerSummary::model`] has
+/// it (`gpt-6.1-sol`, `cc:claude-opus-5-5`).
+///
+/// [`WorkerSummary::model`]: crate::WorkerSummary
+pub use crate::providers::short_model_name;
 
 /// The levels of workers a new session allows.
 pub use crate::agents::DEFAULT_WORKER_DEPTH as DEFAULT_DEPTH;

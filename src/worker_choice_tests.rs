@@ -838,7 +838,7 @@ async fn session_says_who_chooses_the_workers_models_and_how_deep_they_go() {
     harness.mirrored(|harness| harness.command("/session"));
     assert!(
         said(&harness.feed).contains(
-            "models for workers agent (the main agent chooses a profile, model and effort for each worker), worker depth 2"
+            "models for workers agent (main agent chooses), worker depth 2"
         ),
         "{}",
         said(&harness.feed)

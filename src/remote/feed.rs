@@ -431,7 +431,7 @@ pub struct WorkerSummary {
     /// The worker that started it, such as `r1`. None for a worker the main
     /// agent started.
     pub parent: Option<String>,
-    /// How far it is from the main agent: 1 for the main agent's workers.
+    /// How far it is from the main agent, 1 for the main agent's workers.
     pub depth: u32,
     /// What its model calls billed, in dollars.
     pub cost_billed: f64,

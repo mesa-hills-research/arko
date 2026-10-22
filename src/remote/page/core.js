@@ -442,20 +442,21 @@
     return 'For ' + time + ' after your last message';
   }
 
-  /** Who chooses the workers' models, as `/worker-models` takes it. */
+  /** Who chooses the workers' models, as `/worker-models` takes it. The
+   * names and sentences are the library's (`ModelChoice::label` and
+   * `about`), which a Rust test compares with these. */
   const WORKER_MODELS = {
-    agent: { name: 'Main agent chooses', about: 'The main agent chooses a profile, model and effort for each worker, and can save profiles.' },
-    profiles: { name: 'Profiles only', about: 'The main agent starts workers with a profile only. It can’t choose a model or effort by itself.' },
-    session: { name: 'Session’s worker model', about: 'Every worker runs the session’s worker model.' },
+    agent: { name: "Main agent chooses", about: "The main agent chooses a profile, model and effort for each worker, and can save profiles." },
+    profiles: { name: "Profiles only", about: "The main agent starts workers with a profile only. It can't choose a model or effort by itself." },
+    session: { name: "Session's worker model", about: "Every worker runs the session's worker model." },
   };
 
-  /** How many levels of workers the session allows, from the settings'
-   * `worker_depth`, and whether workers can start workers yet (`nests`):
-   * "Only the main agent starts workers." or "Workers can go 2 levels deep." */
-  function workerDepthWords(depth, nests) {
-    if (!nests) return 'Depth ' + depth + ' takes effect once workers can start workers of their own. For now only the main agent starts workers.';
-    if (depth <= 1) return 'Only the main agent starts workers.';
-    return 'Workers can go ' + depth + ' levels deep. A worker the main agent starts can start workers of its own when the main agent allows it.';
+  /** What the worker depth setting does, from whether workers can start
+   * workers yet (`nests`, the settings' `nested_workers`). The library's
+   * `workers::depth_about` has the same sentences. */
+  function workerDepthAbout(nests) {
+    if (nests) return "How many levels of workers there can be, from 1 to 4. 1 means only the main agent starts workers. 2 lets a worker the main agent starts begin workers of its own, when the main agent allows it.";
+    return "How many levels of workers there can be, from 1 to 4. It takes effect once workers can start workers of their own, so for now only the main agent starts workers.";
   }
 
   /** How long a worker has run at `now`, in all its runs (also those
@@ -778,7 +779,7 @@
     wakesWords,
     costWords,
     WORKER_MODELS,
-    workerDepthWords,
+    workerDepthAbout,
     workerWords,
     stateOf,
     figures,

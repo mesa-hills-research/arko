@@ -186,8 +186,8 @@ pub fn model_name(model: &Model) -> String {
 }
 
 /// `name` (a model as [`model_name`] writes it) in as few characters as
-/// still name it: its alias (`sol`, `cc:opus`), else a long OpenRouter slug
-/// cut short.
+/// still name it. That is its alias (`sol`, `cc:opus`), or else a long
+/// OpenRouter slug cut short.
 pub fn short_model_name(name: &str) -> String {
     let (prefix, id) = match name.strip_prefix(CLAUDE_CODE) {
         Some(id) => (CLAUDE_CODE, id),

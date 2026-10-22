@@ -2942,7 +2942,7 @@ impl Harness {
                     out.line(&out.dim(&format!(
                         "models for workers {} ({}), worker depth {}",
                         self.settings.worker_models.name(),
-                        self.settings.worker_models.describe(),
+                        self.settings.worker_models.label().to_lowercase(),
                         self.settings.worker_depth
                     )));
                 }
