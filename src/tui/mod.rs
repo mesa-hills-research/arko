@@ -27,6 +27,7 @@ mod screen;
 mod select;
 pub(crate) mod theme;
 mod transcript;
+mod working;
 mod wrap;
 
 use std::io::{IsTerminal, Stdout, Write};

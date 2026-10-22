@@ -173,11 +173,13 @@ struct Block {
     /// A blank line before it.
     gap: bool,
     lines: usize,
+    /// A blank line after it (the "Working…" line has one, at the end).
+    tail: bool,
 }
 
 impl Block {
     fn height(&self) -> usize {
-        self.lines + usize::from(self.gap)
+        self.lines + usize::from(self.gap) + usize::from(self.tail)
     }
 }
 
@@ -505,6 +507,15 @@ impl Transcript {
         self.drawn.counters.contains(&key)
     }
 
+    /// Makes the latest item's text look as if it stopped growing a while
+    /// ago (tests).
+    #[cfg(test)]
+    pub(super) fn quiet_text(&mut self) {
+        if let Some(entry) = self.entries.back_mut() {
+            entry.changed -= QUIET;
+        }
+    }
+
     /// Scrolls to the top at the next draw.
     pub fn top(&mut self) {
         self.pending_scroll = i64::MIN / 2;
@@ -590,6 +601,7 @@ impl Transcript {
                 shown: Shown::Banner,
                 gap: false,
                 lines: banner_lines(banner, theme, width).len(),
+                tail: false,
             });
         }
         if let Filter::Worker(id) = filter
@@ -600,6 +612,7 @@ impl Transcript {
                 shown: Shown::Heading(worker.id.clone()),
                 gap: false,
                 lines: heading_lines(worker, theme, width).len(),
+                tail: false,
             });
         }
         // The Messages view counts each turn's tool activity on one line,
@@ -687,6 +700,7 @@ impl Transcript {
                 shown,
                 gap,
                 lines,
+                tail: false,
             });
         }
         self.motion = self.motion(filter);
@@ -699,28 +713,44 @@ impl Transcript {
             {
                 at -= 1;
             }
-            let before = at.checked_sub(1).map(|last| self.group_of(&blocks[last]));
+            // It has as many blank lines below as above, whatever started the
+            // turn. Among the agent's own calls (a call, its result, its
+            // thinking, a worker's line) it is one more row of that list,
+            // which runs together and stands against the status line's rule,
+            // none on either side. After anything else (the user's message,
+            // the agent's text, a message, a notice, a command's output) it
+            // is a paragraph of its own, a blank line on each side. The notes
+            // it stands above (they wait at the end) set it apart below with
+            // their own blank line, so it has one above too.
+            let notes_below = at < blocks.len();
+            let among_calls = at
+                .checked_sub(1)
+                .is_some_and(|last| self.is_call_run(&blocks[last]));
+            let apart = at > 0 && (notes_below || !among_calls);
             blocks.insert(
                 at,
                 Block {
                     key: WORKING_KEY,
                     shown: Shown::Working,
-                    // It stands where the agent's thinking or calls would.
-                    gap: before.is_some_and(|before| before != Group::Activity),
+                    gap: apart,
                     lines: 1,
+                    tail: apart && !notes_below,
                 },
             );
         }
         blocks
     }
 
-    /// The kind of block `block` is, for the spacing.
-    fn group_of(&self, block: &Block) -> Group {
+    /// Whether `block` is part of the agent's run of calls: a call, its
+    /// result, its thinking, a worker's line or a turn's count of calls.
+    fn is_call_run(&self, block: &Block) -> bool {
         match &block.shown {
-            Shown::Banner | Shown::Heading(_) => Group::Prose,
-            Shown::Entry(index) if self.entries[*index].item.kind == Kind::Output => Group::Output,
-            Shown::Entry(index) => group(&self.entries[*index].item),
-            _ => Group::Activity,
+            Shown::Entry(index) => matches!(
+                self.entries[*index].item.kind,
+                Kind::Call | Kind::Result | Kind::Thinking
+            ),
+            Shown::Worker(_) | Shown::Counter { .. } => true,
+            _ => false,
         }
     }
 
@@ -925,7 +955,7 @@ impl Transcript {
                 }
                 if block.shown == Shown::Working {
                     // (Not text: the mouse finds the line above it.)
-                    if !gap {
+                    if line == usize::from(block.gap) {
                         let label = text_width(&glyphs::render(WORKING));
                         let x = area.x + WORKING_SPINNER as u16;
                         motion::paint(buffer, (x, row), label, theme, ms);
@@ -987,11 +1017,17 @@ impl Transcript {
     }
 
     fn block_rows(&self, block: &Block, theme: &Theme, width: usize) -> Vec<Wrapped> {
-        let mut rows = Vec::with_capacity(block.lines + 1);
+        let mut rows = Vec::with_capacity(block.height());
         if block.gap {
             rows.push(Wrapped::line(Vec::new()));
         }
         rows.extend(self.block_lines(block, theme, width));
+        if block.tail {
+            // (Not text: a copy leaves it out.)
+            let mut blank = Wrapped::line(Vec::new());
+            blank.bare = true;
+            rows.push(blank);
+        }
         rows
     }
 
@@ -2375,9 +2411,11 @@ mod tests {
         t.apply(Update::Item(user));
         assert_eq!(last(&mut t, View::Full), "▎ Fix the tests", "idle");
         t.working = Some(0);
-        let shown = rows(&mut t, &full(), 40, 3);
+        // A blank line on each side of it, after what was said.
+        let shown = rows(&mut t, &full(), 40, 4);
         assert_eq!(shown[..2], ["▎ Fix the tests", ""]);
         assert!(is_working(&shown[2]), "{shown:?}");
+        assert_eq!(shown[3], "");
 
         // Its thinking streams: the thinking shows it, its label moving, but
         // not in Messages.
@@ -2597,10 +2635,11 @@ mod tests {
         note.delivery = Some(Delivery::Note);
         note.pending = true;
         t.apply(Update::Item(note));
-        let shown = rows(&mut t, &full(), 40, 4);
-        assert_eq!(shown[0], "▸ $ make · ✓");
-        assert!(is_working(&shown[1]), "{shown:?}");
-        assert_eq!(shown[2..], ["", "▎ Use tabs.  pending"]);
+        // The note's blank line sets it apart below, so it has one above too.
+        let shown = rows(&mut t, &full(), 40, 5);
+        assert_eq!(shown[..2], ["▸ $ make · ✓", ""]);
+        assert!(is_working(&shown[2]), "{shown:?}");
+        assert_eq!(shown[3..], ["", "▎ Use tabs.  pending"]);
     }
 
     /// In a worker's own view, "Working…" says the worker waits on its
@@ -2616,10 +2655,11 @@ mod tests {
         };
         t.apply(Update::Worker(worker.clone()));
         let own = Filter::Worker("r1".into());
-        let shown = rows(&mut t, &own, 40, 3);
+        let shown = rows(&mut t, &own, 40, 4);
         assert!(shown[0].starts_with("  r1 Test it"), "{shown:?}");
         assert_eq!(shown[1], "");
         assert!(is_working(&shown[2]), "{shown:?}");
+        assert_eq!(shown[3], "");
         // The main agent doesn't work: its view has no such line.
         assert!(
             !rows(&mut t, &full(), 40, 3)
