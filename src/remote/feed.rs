@@ -2436,6 +2436,15 @@ impl Feed {
                 summary.running_since = Some(now);
                 summary.ended_at = None;
                 summary.report = None;
+                // A worker that goes on after a stop isn't doing what it did
+                // when it stopped.
+                if summary
+                    .last
+                    .as_deref()
+                    .is_some_and(|last| last.starts_with("stopped"))
+                {
+                    summary.last = None;
+                }
             }
             WorkerChange::Finished { report } => {
                 summary.stop_counting(now);
@@ -3264,6 +3273,35 @@ mod tests {
         assert_eq!((summary.cost_billed, summary.cost_list), (1.0, 3.0));
         assert_eq!(summary.model, None, "the info is whole each time");
         assert!(feed.worker_summary("nobody").is_none());
+    }
+
+    /// A worker that goes on after a stop (its lead messaged it) no longer
+    /// shows the stop as what it does.
+    #[test]
+    fn a_worker_that_goes_on_after_a_stop_drops_the_stop_from_what_it_does() {
+        let feed = Feed::new("main");
+        feed.worker("r1", "Review", WorkerChange::Started);
+        feed.event(&event("worker", shell(Uuid::new_v4(), "ls")), Some("r1"));
+        feed.worker(
+            "r1",
+            "Review",
+            WorkerChange::Stopped {
+                reason: "its lead was stopped",
+            },
+        );
+        assert_eq!(
+            feed.worker_summary("r1").unwrap().last.as_deref(),
+            Some("stopped (its lead was stopped)")
+        );
+        feed.worker("r1", "Review", WorkerChange::Started);
+        assert_eq!(feed.worker_summary("r1").unwrap().last, None);
+        // What it did in the run it goes on with is kept.
+        feed.event(
+            &event("worker", shell(Uuid::new_v4(), "cargo test")),
+            Some("r1"),
+        );
+        let last = feed.worker_summary("r1").unwrap().last;
+        assert!(last.is_some_and(|last| last.contains("cargo test")));
     }
 
     /// A worker that a worker started is placed in its parent's transcript
