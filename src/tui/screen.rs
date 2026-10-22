@@ -11,6 +11,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear};
 
 use super::app::{App, ListRow};
+use super::cache;
 use super::markdown;
 use super::overlay::{self, hints};
 use super::select::Docked;
@@ -480,6 +481,19 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
         left.push(Span::styled(
             text,
             if near { theme.warning() } else { theme.dim() },
+        ));
+    }
+    // How long the prompt cache has left while the agent waits, in the
+    // warning colour for its last minute.
+    if let Some(timer) = app.cache_timer(cache::now_ms()) {
+        left.push(sep());
+        left.push(Span::styled(
+            timer.label(),
+            if timer.warns() {
+                theme.warning()
+            } else {
+                theme.dim()
+            },
         ));
     }
     // On a plan, its usage, not dollars; what was billed, if anything;

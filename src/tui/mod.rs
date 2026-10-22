@@ -13,6 +13,7 @@
 
 mod app;
 mod backend;
+mod cache;
 mod clipboard;
 mod input;
 mod keys_menu;
@@ -327,6 +328,8 @@ async fn run(
     let mut title = String::new();
     let mut enter: Option<Instant> = None;
     let mut burst: Option<Burst> = None;
+    // The cache timer's words as last seen: drawn again when they change.
+    let mut cache_label = None;
     app.set_reading(setup.meter.read());
     loop {
         if draw_now {
@@ -399,7 +402,10 @@ async fn run(
                 let workers = app.list_ticks();
                 // (The quit popup's jobs show how long they have run.)
                 let quitting = matches!(app.overlay, Some(overlay::Overlay::Quit { .. }));
-                if reading != app.reading || app.activity.working || workers || app.hint.is_some() || quitting {
+                // (The prompt cache's timer counts down while the agent waits.)
+                let counting = cache_label != app.cache_label();
+                cache_label = app.cache_label();
+                if reading != app.reading || app.activity.working || workers || app.hint.is_some() || quitting || counting {
                     app.set_reading(reading);
                     dirty = true;
                     // Yes stops the jobs the popup shows: drawn before the
