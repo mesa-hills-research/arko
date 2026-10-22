@@ -27,7 +27,7 @@ materials. Say what is wrong, in order of how much it matters.
 | `effort` | `low`, `medium`, `high`, `xhigh` or `max`, as the model takes it |
 | `fast` | `true` for fast mode, where the model has it |
 | `cache` | `5m` or `1h`, the prompt cache of Claude workers that take a choice |
-| `nested` | `true` to let the worker start workers of its own, once workers can |
+| `nested` | `true` to let the worker start workers of its own, down to the session's worker depth |
 | `made_by` | `agent` when the main agent saved the profile |
 
 A name is lowercase letters, digits and hyphens, up to 32 characters, and starts with a letter
@@ -101,8 +101,38 @@ A session saved before the setting existed keeps `session`, which is how its wor
 
 `/worker-depth` (also `--worker-depth`) is saved with the session and defaults to 2. It is the
 "Worker depth" row in `/settings` and the setting of that name on the web page. It sets how many
-levels of workers the session allows, and it takes effect once workers can start workers of their
-own.
+levels of workers the session allows, and it applies to the next worker started. With 1 only the
+main agent starts workers, and with 2 a worker the main agent starts can start workers of its own.
+
+## Workers that start workers
+
+The main agent starts a worker with `nested: true` in `start_agent`, or with a profile that says
+`nested: true`, to let that worker start workers of its own. It is for a part of the work that
+splits into parts again. Without it a worker starts no workers.
+
+A worker started this way has `start_agent`, `list_agents`, `stop_agent` and `link_agents` besides
+the tools every worker has, and its first message ends with a short paragraph about its workers.
+Its workers report to it, and the main agent reads the worker's own report. The worker can't
+report while its workers are unfinished, and it is told which ones. Stopping a worker, or the worker
+ending, stops the workers under it too. The main agent chooses the profiles and models, and tells
+the worker which to use, since `worker_options` and `save_worker_profile` are the main agent's.
+
+| Limit | What it is |
+|---|---|
+| Worker depth | The levels of workers the session allows, 2 by default and 4 at most. A worker at the last level starts no workers, and a start that asks for `nested` there is refused with the reason. A profile that says `nested` is started without it there |
+| Workers of one worker | At most 8 running or queued at once |
+| Models for workers | With `session`, every worker runs the session's worker model and none starts workers. With `profiles`, a worker starts its workers with a profile only |
+
+A worker's workers are listed under it in the agent list, `/workers` and the web page, and a
+notice says "r2 (under r1) reported". The user's message to a worker is copied to the worker that
+started it, as news that doesn't start a turn. A worker reaches the one that started it with
+`message_agent` to `lead`, and `link_agents` lets a worker's own workers message each other.
+Workers of different workers don't know each other. Each worker's cost counts once in `/cost`, and
+a worker's row also gives what it cost with its workers.
+
+A session that closed with a tree of workers running continues it, each worker with the setup it
+started with. A worker whose starter can't run again, because it failed, is stopped instead of
+relaunched, and its starter can restart it with a message.
 
 ## For apps
 
@@ -128,3 +158,8 @@ takes. `profiles::folders` gives the folders for an "open the folder" button, an
 the user and the rule for its answer. `arko::workers` has the names, commands and sentences of the
 two settings, and `ModelChoice::label` and `about` the words for each value, so an app labels and
 sets them as the terminal and the web page do.
+
+A worker's summary (`WorkerSummary`) names the worker that started it in `parent`, its `depth`
+(1 for the main agent's workers), and what it and the workers under it cost in
+`family_cost_billed` and `family_cost_list`. `arko::remote::family_order` puts a list of summaries
+in the order a list shows a family, with each worker's workers after it.
