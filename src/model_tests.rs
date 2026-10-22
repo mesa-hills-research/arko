@@ -293,14 +293,15 @@ async fn a_worker_keeps_the_model_it_started_on_and_new_ones_start_on_the_new_on
     let _ = tokio::time::timeout(Duration::from_secs(20), harness.finish_workers(&mut inputs)).await;
     harness.crew.as_ref().unwrap().shutdown().await;
     harness.open(true).unwrap();
-    // `/workers` says which run another model than new workers'.
+    // `/workers` says what each runs, those on another model than new
+    // workers' too.
     assert!(
         harness
             .crew
             .as_ref()
             .unwrap()
             .describe()
-            .contains("runs gpt-6-luna, the setup it started with")
+            .contains("runs gpt-6-luna")
     );
     // The others say what they run, with the effort they started at.
     assert!(

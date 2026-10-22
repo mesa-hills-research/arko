@@ -126,7 +126,8 @@ pub struct WorkerFacts {
     /// What its model calls billed and would cost at API list prices, in
     /// dollars, when the session counted them.
     pub cost: Option<(f64, f64)>,
-    /// The model it started on, when new workers start on another.
+    /// The model it started on, when new workers start on another. Apps can
+    /// show it. `/workers` says what every worker runs, so it doesn't.
     pub other_model: Option<String>,
     /// How long its prompt cache lasts, when that is known.
     pub cache_lifetime: Option<Duration>,
@@ -414,9 +415,6 @@ pub(crate) fn describe_worker(worker: &WorkerFacts) -> String {
         }
         if let Some(profile) = &worker.profile {
             line.push_str(&format!(", profile {profile}"));
-        }
-        if worker.other_model.is_some() {
-            line.push_str(", the setup it started with");
         }
     }
     // What it has cost, once it has cost something.
@@ -1422,7 +1420,9 @@ mod tests {
         worker.profile = None;
         let text = describe_worker(&worker);
         assert!(
-            text.contains("\n  runs gpt-6.1-sol at high effort, the setup it started with\n  ≈ $0.31 at API prices, $0.00 billed\n"),
+            text.contains(
+                "\n  runs gpt-6.1-sol at high effort\n  ≈ $0.31 at API prices, $0.00 billed\n"
+            ),
             "{text}"
         );
         // Under half a cent is no line, and a worker with no record names no
