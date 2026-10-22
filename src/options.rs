@@ -51,7 +51,8 @@ pub struct Options {
     /// session, and a resumed session's own.
     pub worker_models: Option<crate::agents::ModelChoice>,
     /// How many levels of workers the session allows, from 1 to 4, by
-    /// default 2 in a new session, and a resumed session's own.
+    /// default 2 in a new session, and a resumed session's own. A session
+    /// isn't opened with another number.
     pub worker_depth: Option<u32>,
     /// The 1-hour prompt cache, by default as `ARKO_CACHE_1H` says.
     pub cache_1h: Option<bool>,

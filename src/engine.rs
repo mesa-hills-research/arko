@@ -527,9 +527,13 @@ impl Engine {
                 let choice = options.worker_models.is_some_and(|choice| {
                     std::mem::replace(&mut settings.worker_models, choice) != choice
                 });
-                let depth = options.worker_depth.is_some_and(|depth| {
-                    std::mem::replace(&mut settings.worker_depth, depth) != depth
-                });
+                let depth = match options.worker_depth {
+                    Some(depth) => {
+                        let depth = crate::workers::check_depth(depth)?;
+                        std::mem::replace(&mut settings.worker_depth, depth) != depth
+                    }
+                    None => false,
+                };
                 if project_from_options(&options, &mut settings)
                     | background
                     | wakes
@@ -1707,7 +1711,7 @@ mod tests {
         let (server, _bodies) = counting_server().await;
         let (root, project) = (temp.path().join("arko"), temp.path().join("project"));
         std::fs::create_dir_all(&project).unwrap();
-        let open = |session: SessionChoice, choice: Option<ModelChoice>, depth: Option<u32>| {
+        let try_open = |session: SessionChoice, choice: Option<ModelChoice>, depth: Option<u32>| {
             let running = spawn(
                 Options {
                     root: Some(root.clone()),
@@ -1724,12 +1728,18 @@ mod tests {
                 Arc::new(NoPrompter),
             );
             async move {
-                let seam = tokio::time::timeout(Duration::from_secs(30), running.opened)
+                let opened = tokio::time::timeout(Duration::from_secs(30), running.opened)
                     .await
                     .unwrap()
-                    .unwrap()
                     .unwrap();
-                (seam, running.ended)
+                (opened, running.ended)
+            }
+        };
+        let open = |session: SessionChoice, choice: Option<ModelChoice>, depth: Option<u32>| {
+            let opening = try_open(session, choice, depth);
+            async move {
+                let (opened, ended) = opening.await;
+                (opened.ok().expect("the session opens"), ended)
             }
         };
         let saved = |id: &str| {
@@ -1767,7 +1777,24 @@ mod tests {
         // A new session takes them too.
         let (seam, ended) = open(SessionChoice::New, Some(ModelChoice::Session), Some(1)).await;
         assert_eq!(saved(&seam.session.id), (ModelChoice::Session, 1));
+        let id = seam.session.id.clone();
         quit(seam, ended).await;
+        // A depth outside 1 to 4 (an app can pass one) opens nothing, new or
+        // resumed, and leaves the saved depth as it was.
+        for depth in [0, 5, 99] {
+            for session in [SessionChoice::New, SessionChoice::Resume(id.clone())] {
+                let (opened, _ended) = try_open(session, None, Some(depth)).await;
+                match opened {
+                    Err(OpenError::Failed(why)) => assert_eq!(
+                        why,
+                        format!("the worker depth is a number from 1 to 4, not {depth}")
+                    ),
+                    Err(_) => panic!("expected a refusal of the depth"),
+                    Ok(_) => panic!("a depth of {depth} opened a session"),
+                }
+            }
+        }
+        assert_eq!(saved(&id), (ModelChoice::Session, 1));
     }
 
     /// A process opens one session without `spawn`: it reads the process's

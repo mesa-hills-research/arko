@@ -37,6 +37,19 @@ pub fn depth_command(depth: u32) -> String {
     format!("{DEPTH_COMMAND} {depth}")
 }
 
+/// `depth` if it is a depth a session can have, 1 to [`MAX_DEPTH`]. An app
+/// that sets `Options::worker_depth` is held to the same range as the
+/// command and the flag, so a saved depth is always one the settings show.
+pub fn check_depth(depth: u32) -> Result<u32, String> {
+    if (1..=MAX_DEPTH).contains(&depth) {
+        Ok(depth)
+    } else {
+        Err(format!(
+            "the worker depth is a number from 1 to {MAX_DEPTH}, not {depth}"
+        ))
+    }
+}
+
 /// Reads `text` as `/worker-depth` takes it: a whole number from 1 to
 /// [`MAX_DEPTH`]. 1 allows only the main agent to start workers.
 pub fn parse_depth(text: &str) -> Result<u32, String> {
@@ -72,6 +85,11 @@ mod tests {
         );
         assert_eq!(depth_command(3), "/worker-depth 3");
         assert_eq!(parse_depth(" 4 "), Ok(4));
+        assert_eq!(check_depth(1), Ok(1));
+        assert_eq!(check_depth(4), Ok(4));
+        for bad in [0, 5, u32::MAX] {
+            assert!(check_depth(bad).unwrap_err().contains("from 1 to 4"));
+        }
         assert_eq!(DEFAULT_DEPTH, 2);
         for bad in ["0", "5", "two", "", "-1", "2.5"] {
             let error = parse_depth(bad).unwrap_err();

@@ -249,7 +249,10 @@ pub(crate) fn new_settings(
         background_after: background_after_for(options, shell::DEFAULT_BACKGROUND_AFTER),
         monitor_wakes: options.monitor_wakes.unwrap_or_default(),
         worker_models: options.worker_models.unwrap_or_default(),
-        worker_depth: options.worker_depth.unwrap_or(DEFAULT_WORKER_DEPTH),
+        worker_depth: match options.worker_depth {
+            Some(depth) => crate::workers::check_depth(depth)?,
+            None => DEFAULT_WORKER_DEPTH,
+        },
     };
     project_from_options(options, &mut settings);
     if settings.mode == crate::session::Mode::Chat {
