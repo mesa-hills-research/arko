@@ -216,14 +216,6 @@
 
   // ----- rows -----
 
-  const DELIVERY = {
-    note: 'added to the task',
-    answer: 'answer',
-    command: 'command',
-    queued: 'waits for its turn',
-    refresh: 'kept the cache warm',
-  };
-
   const CHEVRON = 'M8 5l5 5-5 5';
 
   /** A worker's live line; `main` makes the sheet's "Main" entry. */
@@ -312,7 +304,8 @@
       case 'user': {
         box.append(element('div', 'bubble', item.text));
         const tags = [];
-        if (DELIVERY[item.delivery]) tags.push(DELIVERY[item.delivery]);
+        const delivery = C.deliveryTag(item);
+        if (delivery) tags.push(delivery);
         if (item.source === 'terminal') tags.push('typed in the terminal');
         if (item.source === 'app') {
           const app = (status && status.info && status.info.app) || 'an app';

@@ -493,6 +493,26 @@
     return { title: summary.title || summary.id, meta: parts.join(' · '), last: last.trim() };
   }
 
+  /** The word on a user's message for what became of it, when that isn't
+   * the usual (a new turn): "pending" for a note the agent hasn't read, and
+   * once it has, none, as for a command. An answer says "answer", a line
+   * waiting for its turn "queued", and a refresh says it kept the cache
+   * warm. */
+  function deliveryTag(item) {
+    switch (item.delivery) {
+      case 'note':
+        return item.pending ? 'pending' : null;
+      case 'answer':
+        return 'answer';
+      case 'queued':
+        return 'queued';
+      case 'refresh':
+        return 'kept the cache warm';
+      default:
+        return null;
+    }
+  }
+
   /** The header's state: `{ key, label }`. While a worker's own view shows,
    * `viewing` is its summary (or `{ id }` before the summary comes), and the
    * state is the worker's: "r2 working", "r2 finished". The main agent's
@@ -924,6 +944,7 @@
     workerDepthAbout,
     workerWords,
     stateOf,
+    deliveryTag,
     figures,
     contextTitle,
     cacheTimer,

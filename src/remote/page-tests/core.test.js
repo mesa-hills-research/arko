@@ -523,3 +523,17 @@ test('the cache timer\'s token counts are short', () => {
     assert.equal(counted(count), text);
   }
 });
+
+test('a user message is tagged only for what is unusual', () => {
+  const tag = (delivery, pending) => core.deliveryTag({ kind: 'user', delivery, pending });
+  // A note waits as "pending", and once the agent read it, it is a message
+  // like any other.
+  assert.equal(tag('note', true), 'pending');
+  assert.equal(tag('note', false), null);
+  assert.equal(tag('note', undefined), null);
+  assert.equal(tag('answer', false), 'answer');
+  assert.equal(tag('queued', false), 'queued');
+  assert.equal(tag('refresh', false), 'kept the cache warm');
+  // A turn, a command, and a delivery a later Arko adds have none.
+  for (const delivery of ['turn', 'command', 'later', undefined]) assert.equal(tag(delivery, false), null);
+});

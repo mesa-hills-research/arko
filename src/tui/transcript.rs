@@ -1935,12 +1935,14 @@ fn cut_middle(text: &str, width: usize) -> String {
     format!("{start}{}{end}", glyphs::render("…"))
 }
 
-/// What the user's text became, when it isn't the usual (a new turn).
+/// What the user's text became, when it isn't the usual (a new turn). A
+/// note the agent hasn't read is "pending", and once it has, it is a message
+/// like any other. A command reads as one by itself.
 fn user_tag(item: &Item) -> Option<String> {
     let delivery = match item.delivery {
-        Some(Delivery::Note) => Some("added to the task"),
+        Some(Delivery::Note) if item.pending => Some("pending"),
         Some(Delivery::Answer) => Some("answer"),
-        Some(Delivery::Queued) => Some("waits for its turn"),
+        Some(Delivery::Queued) => Some("queued"),
         _ => None,
     };
     let web = (item.source == Some(Source::Web)).then_some("from the web page");
@@ -2491,6 +2493,49 @@ mod tests {
         assert!(!t.drawn.moving, "{shown:?}");
     }
 
+    /// A user's words carry a tag only for what isn't the usual. A note the
+    /// agent hasn't read is "pending", and once it has, it is a message like
+    /// any other. An answer, a line waiting for its turn and a message from
+    /// the web page say so, and a command or a refresh has none.
+    #[test]
+    fn a_user_message_is_tagged_only_for_what_is_unusual() {
+        let tag = |delivery: Option<Delivery>, pending: bool, source: Option<Source>| {
+            let mut user = item(1, Kind::User, "Hi.");
+            user.delivery = delivery;
+            user.pending = pending;
+            user.source = source;
+            user_tag(&user)
+        };
+        let said = |tag: Option<String>| tag.unwrap_or_default();
+        assert_eq!(said(tag(None, false, None)), "");
+        assert_eq!(said(tag(Some(Delivery::Turn), false, None)), "");
+        assert_eq!(said(tag(Some(Delivery::Note), true, None)), "pending");
+        assert_eq!(said(tag(Some(Delivery::Note), false, None)), "");
+        assert_eq!(said(tag(Some(Delivery::Answer), false, None)), "answer");
+        assert_eq!(said(tag(Some(Delivery::Queued), false, None)), "queued");
+        assert_eq!(said(tag(Some(Delivery::Command), false, None)), "");
+        assert_eq!(said(tag(Some(Delivery::Refresh), false, None)), "");
+        let web = Some(Source::Web);
+        assert_eq!(
+            said(tag(Some(Delivery::Turn), false, web)),
+            "from the web page"
+        );
+        assert_eq!(
+            said(tag(Some(Delivery::Note), true, web)),
+            "pending · from the web page"
+        );
+        assert_eq!(
+            said(tag(Some(Delivery::Note), false, web)),
+            "from the web page"
+        );
+        // Without the symbols' middle dot.
+        let _ascii = crate::glyphs::tests::choose_symbols(glyphs::Symbols::Ascii);
+        assert_eq!(
+            said(tag(Some(Delivery::Queued), false, web)),
+            "queued | from the web page"
+        );
+    }
+
     /// "Working…" stands where the agent's output comes next: above a
     /// note the agent hasn't read, which waits at the end.
     #[test]
@@ -2507,7 +2552,7 @@ mod tests {
         let shown = rows(&mut t, &full(), 40, 4);
         assert_eq!(shown[0], "▸ $ make · ✓");
         assert!(is_working(&shown[1]), "{shown:?}");
-        assert_eq!(shown[2..], ["", "▎ Use tabs.  added to the task"]);
+        assert_eq!(shown[2..], ["", "▎ Use tabs.  pending"]);
     }
 
     /// In a worker's own view, "Working…" says the worker waits on its
@@ -2651,7 +2696,7 @@ mod tests {
             [
                 "  It turned out to be a kit fix, so that went to the kit.",
                 "",
-                "▎ Keep the old name.  added to the task",
+                "▎ Keep the old name.  pending",
             ]
         );
         assert_eq!(colours, Some((theme.dim, theme.dim)));
@@ -2670,7 +2715,7 @@ mod tests {
             [
                 "  It turned out to be a kit fix, so that went to the kit.",
                 "",
-                "▎ Keep the old name.  added to the task",
+                "▎ Keep the old name.",
                 "",
                 "  Renamed it back.",
             ]
