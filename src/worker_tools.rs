@@ -188,6 +188,12 @@ pub(crate) fn runs_text(model: Option<&str>, effort: Option<Effort>) -> String {
     }
 }
 
+/// The most profiles `worker_options` lists, and the most that can't be
+/// read. A project's folder can hold any number of files, and the agent
+/// reads this text each time it asks.
+const MAX_PROFILES_LISTED: usize = 40;
+const MAX_UNREADABLE_LISTED: usize = 10;
+
 fn profiles_text(basis: &Basis, needs: &dyn Fn(&Model) -> Option<String>) -> String {
     let listed = profiles::list(&basis.roots);
     let worker = &basis.worker;
@@ -198,7 +204,7 @@ fn profiles_text(basis: &Basis, needs: &dyn Fn(&Model) -> Option<String>) -> Str
         "- default · {} · the session's worker model (/model worker)",
         runs_text(Some(&worker.model), reasons.then_some(worker.effort))
     ));
-    for found in &listed.active {
+    for found in listed.active.iter().take(MAX_PROFILES_LISTED) {
         let profile = &found.profile;
         let mut details = runs_text(profile.model.as_deref(), profile.effort);
         if profile.fast {
@@ -224,14 +230,26 @@ fn profiles_text(basis: &Basis, needs: &dyn Fn(&Model) -> Option<String>) -> Str
             text.push_str(&format!(" · can't start yet, {blocked}"));
         }
     }
+    if listed.active.len() > MAX_PROFILES_LISTED {
+        text.push_str(&format!(
+            "\n- and {} more, which start_agent takes by name",
+            listed.active.len() - MAX_PROFILES_LISTED
+        ));
+    }
     if !listed.unreadable.is_empty() {
         text.push_str("\nCan't be read");
-        for problem in &listed.unreadable {
+        for problem in listed.unreadable.iter().take(MAX_UNREADABLE_LISTED) {
             text.push_str(&format!(
                 "\n- {} ({}) · {}",
                 problem.name,
                 problem.place.name(),
                 problem.reason
+            ));
+        }
+        if listed.unreadable.len() > MAX_UNREADABLE_LISTED {
+            text.push_str(&format!(
+                "\n- and {} more",
+                listed.unreadable.len() - MAX_UNREADABLE_LISTED
             ));
         }
     }

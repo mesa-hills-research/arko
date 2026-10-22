@@ -788,3 +788,37 @@ async fn a_saved_profile_hidden_by_a_nearer_one_says_so() {
         "{result}"
     );
 }
+
+#[test]
+fn worker_options_lists_the_first_profiles_and_counts_the_rest() {
+    let temp = tempfile::tempdir().unwrap();
+    let basis = basis(temp.path(), ModelChoice::Agent);
+    for number in 0..55 {
+        write(
+            &basis,
+            Place::Project,
+            &format!("p{number:02}"),
+            "---\ndescription: One of many\n---\n",
+        );
+    }
+    for number in 0..14 {
+        write(
+            &basis,
+            Place::Project,
+            &format!("bad{number:02}"),
+            "no front matter",
+        );
+    }
+    let text = options_text(&basis, Show::Profiles, &needs, &plans());
+    assert!(text.contains("\n- p39 (project)"), "{text}");
+    assert!(!text.contains("p40"), "{text}");
+    assert!(
+        text.contains("\n- and 15 more, which start_agent takes by name"),
+        "{text}"
+    );
+    assert!(text.contains("\n- bad09 (project)"), "{text}");
+    assert!(!text.contains("bad10"), "{text}");
+    assert!(text.ends_with("\n- and 4 more"), "{text}");
+    // Some profiles and no more than the cap stay as they were.
+    assert!(text.lines().count() < 70, "{}", text.lines().count());
+}

@@ -261,16 +261,25 @@ fn profile(basis: &Basis, name: &str) -> Result<Found, String> {
 }
 
 /// The names of the profiles in force, with `default`, as a sentence's list.
+/// The first [`MAX_NAMED`] of them when there are many.
 pub fn names(basis: &Basis) -> String {
     let mut names = vec![DEFAULT_PROFILE.to_string()];
+    let listed = profiles::list(&basis.roots).active;
+    let more = listed.len().saturating_sub(MAX_NAMED);
     names.extend(
-        profiles::list(&basis.roots)
-            .active
+        listed
             .into_iter()
+            .take(MAX_NAMED)
             .map(|found| found.profile.name),
     );
+    if more > 0 {
+        return format!("{}, and {more} more", names.join(", "));
+    }
     crate::and_list(&names)
 }
+
+/// The most profile names a refusal lists.
+const MAX_NAMED: usize = 20;
 
 /// Whether `model` doesn't reason, so takes no effort.
 fn takes_none(model: &Model) -> bool {

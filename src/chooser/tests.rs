@@ -636,3 +636,28 @@ fn the_credential_check_runs_on_any_kind_of_runtime() {
         assert_eq!(from_a_task, "Checked.");
     }
 }
+
+/// A refusal names the profiles there are, and the first few when a
+/// project's folder holds hundreds.
+#[test]
+fn a_refusal_names_at_most_twenty_profiles() {
+    let temp = tempfile::tempdir().unwrap();
+    let basis = basis(temp.path(), settings("luna", Effort::High));
+    for number in 0..25 {
+        save(
+            &basis,
+            Place::User,
+            profile(&format!("p{number:02}"), None, None),
+        );
+    }
+    let why = pick(&basis, &[("profile", "nobody")]).unwrap_err();
+    assert!(
+        why.starts_with("There is no worker profile `nobody`. The profiles are default, p00, p01,"),
+        "{why}"
+    );
+    assert!(
+        why.contains(", p19, and 5 more. worker_options lists them."),
+        "{why}"
+    );
+    assert!(!why.contains("p20"), "{why}");
+}
