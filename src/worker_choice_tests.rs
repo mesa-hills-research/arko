@@ -754,6 +754,20 @@ Can't be read
     );
     assert!(harness.live_command("/profiles notes", Source::Terminal));
     assert!(last_said(&harness.feed).contains("can't be used (line 2 isn't `key: value`)"));
+    // A file that can't be read is removed by its name too.
+    assert!(harness.live_command("/profiles remove notes", Source::Terminal));
+    let removed = last_said(&harness.feed);
+    assert!(
+        removed.starts_with("Removed ")
+            && removed.ends_with("notes.md for this project, which couldn't be read."),
+        "{removed}"
+    );
+    assert!(!project.join("notes.md").exists());
+    assert!(harness.live_command("/profiles notes", Source::Terminal));
+    assert_eq!(
+        last_said(&harness.feed),
+        "There is no worker profile `notes`. /profiles lists them."
+    );
 
     // Removing deletes the one shown, which brings the next into force.
     assert!(harness.live_command("/profiles remove reviewer", Source::Terminal));

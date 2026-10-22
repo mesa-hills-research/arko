@@ -388,17 +388,31 @@ impl Harness {
     /// shows under that name.
     fn profiles_remove(&self, name: &str) -> Result<String, String> {
         let roots = self.profile_roots();
-        let found = profiles::read(&roots, name).map_err(|error| match error {
-            profiles::ReadError::Missing => {
-                format!("There is no worker profile `{name}`. /profiles lists them.")
+        // A file that can't be read is removed too, since the user has no
+        // other way to clear it from the list.
+        let (place, unreadable) = match profiles::read(&roots, name) {
+            Ok(found) => (found.place, false),
+            Err(profiles::ReadError::Unreadable(problem)) => (problem.place, true),
+            Err(profiles::ReadError::Missing) => {
+                return Err(format!(
+                    "There is no worker profile `{name}`. /profiles lists them."
+                ));
             }
-            other => other.to_string(),
-        })?;
-        let file = profiles::delete(&roots, found.place, name)?;
-        Ok(format!(
-            "Removed the worker profile {name} for {} ({}). The workers started with it keep their setup.",
-            found.place.reach(),
-            file.display()
-        ))
+            Err(other) => return Err(other.to_string()),
+        };
+        let file = profiles::delete(&roots, place, name)?;
+        Ok(if unreadable {
+            format!(
+                "Removed {} for {}, which couldn't be read.",
+                file.display(),
+                place.reach()
+            )
+        } else {
+            format!(
+                "Removed the worker profile {name} for {} ({}). The workers started with it keep their setup.",
+                place.reach(),
+                file.display()
+            )
+        })
     }
 }
