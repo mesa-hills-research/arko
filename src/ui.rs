@@ -508,13 +508,7 @@ pub async fn print_events(
                     };
                     if let Some(label) = &label {
                         printer.workers.insert(event.agent_run_id, label.clone());
-                        // The worker's context, for the status.
-                        if let AgentEvent::ModelCallUsageReported(usage) = &event.event {
-                            printer.stats.lock().unwrap().workers.insert(
-                                label.clone(),
-                                (usage.input_tokens, usage.max_input_tokens),
-                            );
-                        }
+                        record_worker_context(&printer.stats, label, &event.event);
                     }
                     if event.agent_name == MAIN
                         && let AgentEvent::ToolCallFormatted { tool_name, .. } = &event.event
@@ -551,6 +545,20 @@ pub async fn print_events(
         }
     }
     printer.flush();
+}
+
+/// Keeps the worker's context for the status: the input of its latest model
+/// request and what its model accepts. The requests Claude Code's subagents
+/// make aren't the worker's conversation, so they leave it as it was.
+fn record_worker_context(stats: &Mutex<Stats>, worker: &str, event: &AgentEvent) {
+    if let AgentEvent::ModelCallUsageReported(usage) = event
+        && usage.subagent.is_none()
+    {
+        stats.lock().unwrap().workers.insert(
+            worker.to_string(),
+            (usage.input_tokens, usage.max_input_tokens),
+        );
+    }
 }
 
 struct EventPrinter {
@@ -1831,6 +1839,33 @@ mod tests {
         let stats = stats.lock().unwrap();
         assert_eq!(stats.context_tokens, Some(500));
         assert_eq!(stats.cache_use, Some((500, 0)));
+    }
+
+    /// A worker's context follows its own requests. The requests of the
+    /// subagents Claude Code runs for it leave it as it was.
+    #[test]
+    fn a_workers_context_follows_its_own_requests_not_its_subagents() {
+        let stats: Mutex<Stats> = Mutex::default();
+        let usage = |input: usize, window: Option<usize>, subagent: Option<&str>| {
+            AgentEvent::ModelCallUsageReported(
+                serde_json::from_value::<arko_ai::ModelCallUsage>(serde_json::json!({
+                    "call_id": "c", "provider": "anthropic", "model": "claude-opus-5-5",
+                    "input_tokens": input, "output_tokens": 1, "subagent": subagent,
+                    "max_input_tokens": window,
+                }))
+                .unwrap(),
+            )
+        };
+        record_worker_context(&stats, "r1", &usage(40_000, Some(200_000), None));
+        record_worker_context(&stats, "r1", &usage(9_000, Some(200_000), Some("call-1")));
+        record_worker_context(&stats, "r2", &usage(5_000, None, None));
+        let other = AgentEvent::UsageReported(arko_ai::UsageInfo::default());
+        record_worker_context(&stats, "r1", &other);
+        let workers = stats.lock().unwrap().workers.clone();
+        assert_eq!(workers["r1"], (40_000, Some(200_000)));
+        assert_eq!(workers["r2"], (5_000, None));
+        record_worker_context(&stats, "r1", &usage(41_000, Some(200_000), None));
+        assert_eq!(stats.lock().unwrap().workers["r1"], (41_000, Some(200_000)));
     }
 
     /// A response that fails after it streamed takes back what it added
