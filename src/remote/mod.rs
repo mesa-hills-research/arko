@@ -38,7 +38,7 @@ use tokio::sync::mpsc;
 pub use feed::{
     Activity, Batches, CallStatus, Delivery, Feed, Item, JobKind, JobStart, JobState, JobSummary,
     Kind, Level, MAIN_AGENT, Question, REFRESH_MESSAGE, Snapshot, Source, Update, WorkerChange,
-    WorkerState, WorkerSummary,
+    WorkerInfo, WorkerState, WorkerSummary,
 };
 pub(crate) use history::all_items;
 pub use history::items as history;

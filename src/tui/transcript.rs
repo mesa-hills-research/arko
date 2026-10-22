@@ -2517,16 +2517,9 @@ mod tests {
     fn working_shows_in_a_workers_view_and_is_not_text() {
         let mut t = Transcript::new();
         let mut worker = WorkerSummary {
-            id: "r1".into(),
             title: "Test it".into(),
             state: WorkerState::Running,
-            tool_calls: 0,
-            started_at: None,
-            ended_at: None,
-            last: None,
-            report: None,
-            ran_ms: 0,
-            running_since: None,
+            ..WorkerSummary::new("r1")
         };
         t.apply(Update::Worker(worker.clone()));
         let own = Filter::Worker("r1".into());
@@ -2910,16 +2903,11 @@ mod tests {
             item(6, Kind::Text, "Thinking about it").agent("r1"),
         ));
         t.apply(Update::Worker(WorkerSummary {
-            id: "r1".into(),
             title: "Test it".into(),
             state: WorkerState::Running,
             tool_calls: 1,
-            started_at: None,
-            ended_at: None,
             last: Some("cargo test".into()),
-            report: None,
-            ran_ms: 0,
-            running_since: None,
+            ..WorkerSummary::new("r1")
         }));
         let mut reply = item(7, Kind::Reply, "Done.");
         reply.turn = Some(1);
@@ -2978,17 +2966,15 @@ mod tests {
     fn a_worker_s_time_counts_all_its_runs() {
         let now = chrono::Utc::now().timestamp_millis();
         let summary = |state, ran_ms, running_since: Option<i64>| WorkerSummary {
-            id: "r1".into(),
             title: "Test it".into(),
             state,
             tool_calls: 2,
             // Its latest run began five minutes ago.
             started_at: Some(now - 300_000),
             ended_at: (state != WorkerState::Running).then_some(now),
-            last: None,
-            report: None,
             ran_ms,
             running_since,
+            ..WorkerSummary::new("r1")
         };
         // Two hours in earlier runs, five minutes in the one going on.
         let running = summary(WorkerState::Running, 7_200_000, Some(now - 300_000));

@@ -393,6 +393,7 @@ impl WorkerState {
 /// A worker, as a line such as
 /// `r2 · Fix flaky test · 18 tool calls · 2m · running`.
 #[derive(Debug, Clone, PartialEq, Serialize)]
+#[non_exhaustive]
 pub struct WorkerSummary {
     /// Its ID, such as `r1` or `r2` (as `/workers` says).
     pub id: String,
@@ -420,9 +421,51 @@ pub struct WorkerSummary {
     /// While it runs, when its current run started (Unix milliseconds), to
     /// add to `ran_ms` ([`run_time_ms`](Self::run_time_ms)).
     pub running_since: Option<i64>,
+    /// The model it runs, as the session names it (such as `gpt-6.1-sol`),
+    /// once the session has recorded it.
+    pub model: Option<String>,
+    /// The reasoning effort it runs at, when its model reasons.
+    pub effort: Option<String>,
+    /// The profile it started with, if any.
+    pub profile: Option<String>,
+    /// The worker that started it, such as `r1`. None for a worker the main
+    /// agent started.
+    pub parent: Option<String>,
+    /// How far it is from the main agent: 1 for the main agent's workers.
+    pub depth: u32,
+    /// What its model calls billed, in dollars.
+    pub cost_billed: f64,
+    /// What its model calls would cost at API list prices. That is the
+    /// billed amount, plus the estimate for the calls a plan covered (Claude
+    /// Code, the ChatGPT login).
+    pub cost_list: f64,
 }
 
 impl WorkerSummary {
+    /// A summary of the worker `id` that waits to run, with nothing known of
+    /// it yet. Set the fields it has.
+    pub fn new(id: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            title: String::new(),
+            state: WorkerState::Queued,
+            tool_calls: 0,
+            started_at: None,
+            ended_at: None,
+            last: None,
+            report: None,
+            ran_ms: 0,
+            running_since: None,
+            model: None,
+            effort: None,
+            profile: None,
+            parent: None,
+            depth: 1,
+            cost_billed: 0.0,
+            cost_list: 0.0,
+        }
+    }
+
     /// How long it has run in all its runs at `now` (Unix milliseconds),
     /// the runs that ended and the current one so far.
     pub fn run_time_ms(&self, now: i64) -> u64 {
@@ -436,6 +479,37 @@ impl WorkerSummary {
     fn stop_counting(&mut self, now: i64) {
         self.ran_ms = self.run_time_ms(now);
         self.running_since = None;
+    }
+}
+
+/// What a worker started with and what it has cost, for its summary
+/// ([`Feed::worker_info`]).
+#[derive(Debug, Clone, Default, PartialEq)]
+#[non_exhaustive]
+pub struct WorkerInfo {
+    /// The model it runs, as the session names it.
+    pub model: Option<String>,
+    /// Its reasoning effort.
+    pub effort: Option<String>,
+    /// The profile it started with.
+    pub profile: Option<String>,
+    /// The worker that started it.
+    pub parent: Option<String>,
+    /// How far it is from the main agent (0 is taken as 1).
+    pub depth: u32,
+    /// What it has billed and would cost at API list prices, when the
+    /// session knows (a resumed session reads them from its saved runs).
+    /// Without them, the costs the events add up stay as they are.
+    pub costs: Option<(f64, f64)>,
+}
+
+impl WorkerInfo {
+    /// Nothing known yet, for a worker of the main agent.
+    pub fn new() -> Self {
+        Self {
+            depth: 1,
+            ..Self::default()
+        }
     }
 }
 
@@ -1504,6 +1578,17 @@ impl Feed {
                 );
                 self.push(&mut state, notice(text, Level::Warn));
             }
+            // What a worker's model calls cost.
+            AgentEvent::UsageReported(usage) if !main => {
+                self.saw_worker(&mut state, &agent);
+                let billed = usage.billed();
+                let list = crate::providers::at_api_prices(usage, billed);
+                if let Some(worker) = state.worker(&agent) {
+                    worker.summary.cost_billed += billed;
+                    worker.summary.cost_list += list;
+                }
+                self.worker_changed(&mut state, &agent, false);
+            }
             AgentEvent::UsageLimitReached { error_message, .. } => {
                 let text = format!("usage limit reached ({})", render::cut(error_message, 300));
                 self.push(&mut state, notice(text, Level::Warn));
@@ -2320,19 +2405,16 @@ impl Feed {
             return;
         }
         let summary = WorkerSummary {
-            id: id.to_string(),
             title: title(task),
             state: was,
-            tool_calls: 0,
             started_at: was.is_active().then_some(since),
             ended_at: (!was.is_active()).then_some(since),
-            last: None,
             report: report
                 .map(str::trim)
                 .filter(|report| !report.is_empty())
                 .map(str::to_string),
             ran_ms,
-            running_since: None,
+            ..WorkerSummary::new(id)
         };
         state.workers.push(Worker {
             summary,
@@ -2343,6 +2425,45 @@ impl Feed {
         self.worker_changed(&mut state, id, true);
     }
 
+    /// Tells the feed what the worker `id` started with (its model, effort,
+    /// profile and place in the family) and, when the session knows, what
+    /// it has cost. The summary goes out when something changed.
+    pub fn worker_info(&self, id: &str, info: WorkerInfo) {
+        let mut state = self.lock();
+        self.known_worker(&mut state, id);
+        let Some(worker) = state.worker(id) else {
+            return;
+        };
+        let summary = &mut worker.summary;
+        let before = summary.clone();
+        summary.model = info.model;
+        summary.effort = info.effort;
+        summary.profile = info.profile;
+        summary.parent = info.parent;
+        summary.depth = info.depth.max(1);
+        if let Some((billed, list)) = info.costs {
+            summary.cost_billed = billed;
+            summary.cost_list = list;
+        }
+        if *summary != before {
+            self.worker_changed(&mut state, id, false);
+        }
+    }
+
+    /// The summaries of all the workers, as the clients have them.
+    pub fn worker_summaries(&self) -> Vec<WorkerSummary> {
+        self.lock()
+            .workers
+            .iter()
+            .map(|worker| worker.summary.clone())
+            .collect()
+    }
+
+    /// The summary of the worker `id`, as the clients have it.
+    pub fn worker_summary(&self, id: &str) -> Option<WorkerSummary> {
+        self.lock().worker(id).map(|worker| worker.summary.clone())
+    }
+
     /// Makes sure the worker `id` has a summary; true when it is new.
     fn known_worker(&self, state: &mut State, id: &str) -> bool {
         if state.worker(id).is_some() {
@@ -2350,16 +2471,10 @@ impl Feed {
         }
         state.workers.push(Worker {
             summary: WorkerSummary {
-                id: id.to_string(),
-                title: String::new(),
                 state: WorkerState::Running,
-                tool_calls: 0,
                 started_at: Some(now_ms()),
-                ended_at: None,
-                last: None,
-                report: None,
-                ran_ms: 0,
                 running_since: Some(now_ms()),
+                ..WorkerSummary::new(id)
             },
             placed: None,
             sent: None,
@@ -2556,16 +2671,9 @@ mod tests {
         );
 
         let summary = |state: WorkerState| WorkerSummary {
-            id: "r1".into(),
             title: "Count the files.".into(),
             state,
-            tool_calls: 0,
-            started_at: None,
-            ended_at: None,
-            last: None,
-            report: None,
-            ran_ms: 0,
-            running_since: None,
+            ..WorkerSummary::new("r1")
         };
         let mut changed = Item::new(Kind::Text, "0x").agent("main");
         changed.id = id;
@@ -2937,6 +3045,73 @@ mod tests {
             Some("finished in the background")
         );
         assert!(feed.moved_jobs().is_empty());
+    }
+
+    /// A worker's summary says what it started with, who started it and what
+    /// its model calls cost. The cost adds up from the worker's events, a
+    /// call a plan covered counting at its list price only, and a resumed
+    /// session sets it from the saved runs.
+    #[test]
+    fn a_workers_summary_keeps_its_setup_and_what_its_calls_cost() {
+        use arko_ai::{BillingKind, UsageInfo};
+        let feed = Feed::new("main");
+        feed.worker("r2", "Judge the render", WorkerChange::Started);
+        let mut info = WorkerInfo::new();
+        info.model = Some("gpt-6.1-sol".into());
+        info.effort = Some("high".into());
+        info.profile = Some("3d-judge".into());
+        info.parent = Some("r1".into());
+        info.depth = 2;
+        feed.worker_info("r2", info);
+        let summary = feed.worker_summary("r2").unwrap();
+        assert_eq!(summary.model.as_deref(), Some("gpt-6.1-sol"));
+        assert_eq!(summary.effort.as_deref(), Some("high"));
+        assert_eq!(summary.profile.as_deref(), Some("3d-judge"));
+        assert_eq!((summary.parent.as_deref(), summary.depth), (Some("r1"), 2));
+        assert_eq!((summary.cost_billed, summary.cost_list), (0.0, 0.0));
+        // A new summary starts with nothing known, one level down.
+        let fresh = WorkerSummary::new("r9");
+        assert_eq!((fresh.parent, fresh.depth, fresh.model), (None, 1, None));
+
+        let usage = |billing, total, billed| {
+            AgentEvent::UsageReported(UsageInfo {
+                billing,
+                total_cost: total,
+                billed_cost: Some(billed),
+                ..UsageInfo::default()
+            })
+        };
+        let from = |agent: &str, usage| event(agent, usage);
+        feed.event(
+            &from("worker", usage(BillingKind::Metered, 0.25, 0.25)),
+            Some("r2"),
+        );
+        feed.event(
+            &from("worker", usage(BillingKind::Subscription, 0.5, 0.0)),
+            Some("r2"),
+        );
+        // The main agent's usage is not a worker's.
+        feed.event(&from("main", usage(BillingKind::Metered, 9.0, 9.0)), None);
+        let summary = feed.worker_summary("r2").unwrap();
+        assert!((summary.cost_billed - 0.25).abs() < 1e-9, "{summary:?}");
+        assert!((summary.cost_list - 0.75).abs() < 1e-9, "{summary:?}");
+        // The summary went out with the cost.
+        let (snapshot, _) = feed.subscribe();
+        assert!(
+            snapshot
+                .workers
+                .iter()
+                .any(|worker| worker.id == "r2" && worker.cost_list > 0.7)
+        );
+        // A session that resumes sets what the saved runs cost, and then
+        // leaves it to the events.
+        let mut info = WorkerInfo::new();
+        info.costs = Some((1.0, 3.0));
+        feed.worker_info("r2", info);
+        let summary = feed.worker_summary("r2").unwrap();
+        assert_eq!((summary.cost_billed, summary.cost_list), (1.0, 3.0));
+        assert_eq!(summary.model, None, "the info is whole each time");
+        assert!(feed.worker_summary("nobody").is_none());
     }
 
     /// A job a command started (terminal_start) keeps its call's own line,

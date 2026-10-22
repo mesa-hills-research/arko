@@ -2471,16 +2471,10 @@ pub(super) mod tests {
         app.update(Update::Item(line), Activity::default);
         app.update(
             Update::Worker(crate::remote::WorkerSummary {
-                id: "r1".into(),
                 title: "Test it".into(),
                 state: crate::remote::WorkerState::Running,
-                tool_calls: 0,
                 started_at: Some(chrono::Utc::now().timestamp_millis()),
-                ended_at: None,
-                last: None,
-                report: None,
-                ran_ms: 0,
-                running_since: None,
+                ..crate::remote::WorkerSummary::new("r1")
             }),
             Activity::default,
         );
@@ -2535,16 +2529,12 @@ pub(super) mod tests {
     pub fn worker(id: &str, state: crate::remote::WorkerState) -> crate::remote::WorkerSummary {
         let now = chrono::Utc::now().timestamp_millis();
         crate::remote::WorkerSummary {
-            id: id.into(),
             title: format!("Task of {id}"),
             state,
             tool_calls: 3,
             started_at: Some(now - 60_000),
             ended_at: (!state.is_active()).then_some(now),
-            last: None,
-            report: None,
-            ran_ms: 0,
-            running_since: None,
+            ..crate::remote::WorkerSummary::new(id)
         }
     }
 

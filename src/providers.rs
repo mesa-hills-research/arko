@@ -1228,7 +1228,7 @@ pub fn plan_name(plan: Option<SubscriptionPlan>) -> &'static str {
 
 /// What a call would have cost at API list prices: its estimate when a
 /// plan covered it, else what it was billed.
-fn at_api_prices(usage: &UsageInfo, billed: f64) -> f64 {
+pub(crate) fn at_api_prices(usage: &UsageInfo, billed: f64) -> f64 {
     if usage.billing == BillingKind::Subscription {
         usage.total_cost
     } else {

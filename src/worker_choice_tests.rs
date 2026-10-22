@@ -253,6 +253,19 @@ async fn a_worker_runs_the_model_effort_and_profile_the_main_agent_chose() {
         .expect("the profile's instructions");
     let task_at = opening.find("# Your task").unwrap();
     assert!(project_at < profile_at && profile_at < task_at, "{opening}");
+    // The worker's summary, which the clients list, says what it runs and
+    // what its calls cost so far.
+    let summary = harness
+        .feed
+        .worker_summaries()
+        .into_iter()
+        .find(|summary| summary.title.contains("Start with the judge."))
+        .expect("the judge's summary");
+    assert_eq!(summary.model.as_deref(), Some("gpt-6.1-sol"));
+    assert_eq!(summary.effort.as_deref(), Some("xhigh"));
+    assert_eq!(summary.profile.as_deref(), Some("judge"));
+    assert_eq!((summary.parent.as_deref(), summary.depth), (None, 1));
+    assert!(summary.cost_billed > 0.0 && summary.cost_list >= summary.cost_billed);
     // A profile that works in a worktree asks the call for one, and the
     // call's own `isolated` beats it.
     std::fs::write(
@@ -839,5 +852,34 @@ async fn session_says_who_chooses_the_workers_models_and_how_deep_they_go() {
         "{}",
         said(&harness.feed)
     );
+    harness.crew.as_ref().unwrap().shutdown().await;
+}
+
+/// A session that resumes reads what each worker cost from the runs it
+/// saved, and the worker's summary keeps the setup it started with.
+#[tokio::test]
+async fn a_resumed_session_reads_what_its_workers_cost_from_their_saved_runs() {
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, _sender, _server, _seen) = setup(temp.path()).await;
+    start_worker(&mut harness, &mut inputs, "Start on a model.").await;
+    let summary = |harness: &Harness| harness.feed.worker_summary("r1").unwrap();
+    let before = summary(&harness);
+    assert!(before.cost_billed > 0.0, "{before:?}");
+    assert_eq!(before.model.as_deref(), Some("gpt-6-astra"));
+
+    // As if the page and the cost had been lost: the saved runs say it.
+    let mut lost = crate::remote::WorkerInfo::new();
+    lost.model = before.model.clone();
+    lost.costs = Some((0.0, 0.0));
+    harness.feed.worker_info("r1", lost);
+    assert_eq!(summary(&harness).cost_billed, 0.0);
+    harness.crew.as_ref().unwrap().shutdown().await;
+    harness.open(true).unwrap();
+    harness.start_new_workers();
+    let after = summary(&harness);
+    assert!((after.cost_billed - before.cost_billed).abs() < 1e-12, "{after:?}");
+    assert!((after.cost_list - before.cost_list).abs() < 1e-12, "{after:?}");
+    assert_eq!(after.model, before.model);
+    assert_eq!(after.effort.as_deref(), Some("low"));
     harness.crew.as_ref().unwrap().shutdown().await;
 }

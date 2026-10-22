@@ -630,6 +630,8 @@ impl Crew {
                     run.since.timestamp_millis(),
                     ran.get(&run.handle).copied().unwrap_or(0),
                 );
+                // What it started with and what it cost before.
+                feed.worker_info(&run.handle, self.worker_info(workflow, &run, true));
             }
         }
         if self.has_mail() {
@@ -699,16 +701,17 @@ impl Crew {
             }
             _ => return,
         };
-        let task = self
-            .workflow()
-            .and_then(|workflow| {
-                workflow
-                    .subagents()
-                    .into_iter()
-                    .find(|record| record.run_id == run)
-            })
-            .map(|record| record.task)
-            .unwrap_or_default();
+        let workflow = self.workflow();
+        let record = workflow.as_ref().and_then(|workflow| {
+            workflow
+                .subagents()
+                .into_iter()
+                .find(|record| record.run_id == run)
+        });
+        if let (Some(workflow), Some(record)) = (&workflow, &record) {
+            feed.worker_info(handle, self.worker_info(workflow, record, false));
+        }
+        let task = record.map(|record| record.task).unwrap_or_default();
         let ended = matches!(
             change,
             WorkerChange::Finished { .. }
@@ -719,6 +722,51 @@ impl Crew {
         if ended {
             self.save_run_times();
         }
+    }
+
+    /// What a worker's summary says of it: the setup it started with, its
+    /// place in the family, and (`with_costs`) what its saved runs cost, for
+    /// a session that resumes. The costs of a worker that starts add up from
+    /// its events.
+    fn worker_info(
+        &self,
+        workflow: &Workflow,
+        run: &arko_workflows::subagents::SubagentRecord,
+        with_costs: bool,
+    ) -> remote::WorkerInfo {
+        let setup = self.run_model(run.run_id);
+        let parent = workflow
+            .subagents()
+            .into_iter()
+            .find(|other| other.run_id == run.caller_run_id)
+            .map(|other| other.handle);
+        let costs = with_costs.then(|| {
+            let results = workflow.context().agent_results.read();
+            results
+                .iter()
+                .filter(|result| result.agent_run_id == run.run_id)
+                .flat_map(|result| result.task.usage_history.iter())
+                .fold((0.0, 0.0), |(billed, list), usage| {
+                    let paid = usage.billed();
+                    (
+                        billed + paid,
+                        list + crate::providers::at_api_prices(usage, paid),
+                    )
+                })
+        });
+        let mut info = remote::WorkerInfo::new();
+        info.model = setup
+            .as_ref()
+            .map(|setup| crate::providers::model_name(&setup.llm_config.model));
+        info.effort = setup
+            .as_ref()
+            .and_then(|setup| setup.effort)
+            .map(|effort| effort.to_string());
+        info.profile = setup.and_then(|setup| setup.profile);
+        info.parent = parent;
+        info.depth = run.depth;
+        info.costs = costs;
+        info
     }
 
     /// Keeps how long each worker ran with the session, to go on from when
