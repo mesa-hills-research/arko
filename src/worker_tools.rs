@@ -26,7 +26,7 @@ use crate::chooser::Basis;
 use crate::crew::{Crew, SAVE_WORKER_PROFILE, WORKER_OPTIONS};
 use crate::inputs::Asker;
 use crate::keys::Keys;
-use crate::profiles::{self, Author, Cache, Place, Profile};
+use crate::profiles::{self, Author, Place, Profile};
 use crate::providers;
 use crate::remote::Level;
 use crate::ui::Stats;
@@ -104,11 +104,11 @@ impl Tool for WorkerOptions {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: WORKER_OPTIONS.into(),
-            description: "Lists the worker profiles you can start workers with, and the models workers can run on now, with their efforts, prices and limits.".into(),
+            description: "Lists the worker profiles and the models usable now, with their efforts, prices and handover sizes.".into(),
             output_based_example: None,
             parameters: vec![text_parameter(
                 "show",
-                "Optional. profiles, models or all (default all).",
+                "profiles, models or all (default all).",
                 false,
             )],
             parallel_safe: true,
@@ -213,7 +213,7 @@ fn profiles_text(basis: &Basis, needs: &dyn Fn(&Model) -> Option<String>) -> Str
     let worker = &basis.worker;
     let reasons = providers::resolve_model(&worker.model)
         .map_or(true, |model| !providers::efforts(&model).is_empty());
-    let mut text = String::from("Worker profiles (start_agent's profile)\n");
+    let mut text = String::from("Worker profiles (pass one as start_agent's profile)\n");
     text.push_str(&format!(
         "- default · {} · the session's worker model (/model worker)",
         runs_text(Some(&worker.model), reasons.then_some(worker.effort))
@@ -360,9 +360,9 @@ fn model_line(
     if providers::takes_cache_ttl(model) {
         line.push_str(" · cache 5m or 1h (1h costs twice the input price to write)");
     } else if chatgpt {
-        line.push_str(" · cache 30 min, fixed");
+        line.push_str(" · cache 30m, fixed");
     } else if model.provider == Provider::ClaudeCode {
-        line.push_str(" · cache 1 h, fixed");
+        line.push_str(" · cache 1h, fixed");
     }
     line
 }
@@ -382,7 +382,7 @@ fn models_text(
         &[basis.worker.model.as_str()],
     );
     let mut usable = String::from(
-        "Models usable now (price per million input and output tokens, handover size)",
+        "Models usable now (price per million input and output tokens, and the size where a worker hands over to a fresh conversation)",
     );
     let mut unusable = String::new();
     for group in &menu {
@@ -454,13 +454,6 @@ impl SaveWorkerProfile {
         if let Some(effort) = text("effort")? {
             profile.effort = Some(providers::parse_effort(&effort).map_err(refused)?);
         }
-        if let Some(cache) = text("cache")? {
-            profile.cache = Some(
-                cache
-                    .parse::<Cache>()
-                    .map_err(|_| refused(format!("cache is 5m or 1h, not {cache}")))?,
-            );
-        }
         profile.check().map_err(|why| {
             // A model Arko doesn't know is told where the right ones are.
             let unknown = profile
@@ -501,7 +494,7 @@ impl Tool for SaveWorkerProfile {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: SAVE_WORKER_PROFILE.into(),
-            description: "Saves a worker profile, a named setup for workers (model, effort and standing instructions) that start_agent takes by name. By default it is kept for this session. With scope user or project it is kept for good, and the user is asked first.".into(),
+            description: "Saves a worker profile that start_agent takes by name. It is kept for this session. With scope project or user it is kept for later sessions, and the user is asked first.".into(),
             output_based_example: None,
             parameters: vec![
                 text_parameter(
@@ -511,32 +504,27 @@ impl Tool for SaveWorkerProfile {
                 ),
                 text_parameter(
                     "description",
-                    "One line, up to 120 characters, saying what the profile is for. Whoever starts workers reads it.",
+                    "One line, up to 120 characters, saying what the profile is for.",
                     true,
                 ),
                 text_parameter(
                     "model",
-                    "Optional. A model as start_agent takes it. Without one, the profile uses the session's worker model.",
+                    "A model as start_agent takes it. Without one, the session's worker model.",
                     false,
                 ),
                 text_parameter(
                     "effort",
-                    "Optional. low, medium, high, xhigh or max, as the model takes it.",
+                    "low, medium, high, xhigh or max, as the model takes it.",
                     false,
                 ),
                 text_parameter(
                     "instructions",
-                    "Optional. Standing instructions for every worker started with this profile, up to 4000 characters. The task itself still goes in start_agent's task.",
-                    false,
-                ),
-                text_parameter(
-                    "cache",
-                    "Optional. 5m or 1h, the prompt cache of workers on Claude models that take one.",
+                    "Standing instructions for every worker with this profile, up to 4000 characters. The task goes in start_agent's task.",
                     false,
                 ),
                 text_parameter(
                     "scope",
-                    "Optional. session (the default), project or user.",
+                    "session (the default), project or user (every project).",
                     false,
                 ),
             ],

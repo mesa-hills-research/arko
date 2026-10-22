@@ -88,7 +88,7 @@ fn the_options_list_the_profiles_and_the_models_usable_now() {
     let text = options_text(&basis, Show::All, &needs, &plans());
 
     assert!(
-        text.starts_with("Worker profiles (start_agent's profile)\n- default · gpt-6-luna, high effort · the session's worker model (/model worker)\n"),
+        text.starts_with("Worker profiles (pass one as start_agent's profile)\n- default · gpt-6-luna, high effort · the session's worker model (/model worker)\n"),
         "{text}"
     );
     assert!(text.contains(
@@ -107,10 +107,10 @@ fn the_options_list_the_profiles_and_the_models_usable_now() {
     // The models: what the session reaches, with plan usage for the
     // ChatGPT login, and what it doesn't with how to get it.
     assert!(text.contains(
-        "\n\nModels usable now (price per million input and output tokens, handover size)\n"
+        "\n\nModels usable now (price per million input and output tokens, and the size where a worker hands over to a fresh conversation)\n"
     ));
     assert!(
-        text.contains("\n- sol · efforts low to max · ChatGPT plan 5 h 12%, 7 d 40%, shared with the user's own use · hands over at 250k · cache 30 min, fixed"),
+        text.contains("\n- sol · efforts low to max · ChatGPT plan 5 h 12%, 7 d 40%, shared with the user's own use · hands over at 250k · cache 30m, fixed"),
         "{text}"
     );
     assert!(text.contains("\n- luna · efforts low to max · "));
@@ -163,7 +163,7 @@ fn a_claude_model_by_key_shows_its_prices_and_cache_and_a_plan_model_its_usage()
         )
     );
     assert!(text.contains(
-        "\n- cc:opus · efforts low to max · Claude plan 5 h 62%, 7 d 31%, shared with the user's own use · hands over at 950k, Claude Code compacts · cache 1 h, fixed"
+        "\n- cc:opus · efforts low to max · Claude plan 5 h 62%, 7 d 31%, shared with the user's own use · hands over at 950k, Claude Code compacts · cache 1h, fixed"
     ), "{text}");
     assert!(text.contains("\n- gemini · efforts low to high · $"));
     assert!(
@@ -173,7 +173,7 @@ fn a_claude_model_by_key_shows_its_prices_and_cache_and_a_plan_model_its_usage()
     // A session that hands over in Claude Code says so.
     basis.cc_compact = false;
     let text = options_text(&basis, Show::Models, &everything, &plans);
-    assert!(text.contains("hands over at 950k · cache 1 h, fixed"));
+    assert!(text.contains("hands over at 950k · cache 1h, fixed"));
 }
 
 #[test]
@@ -327,7 +327,6 @@ fn the_tools_are_defined_for_the_main_agent() {
             ("model", false),
             ("effort", false),
             ("instructions", false),
-            ("cache", false),
             ("scope", false),
         ]
     );
@@ -379,7 +378,6 @@ async fn a_profile_for_the_session_is_saved_without_asking() {
             ("model", "sol".into()),
             ("effort", "high".into()),
             ("instructions", "Review it against the rules.".into()),
-            ("cache", "1h".into()),
         ],
     )
     .await
@@ -393,7 +391,6 @@ async fn a_profile_for_the_session_is_saved_without_asking() {
     assert!(found.profile.made_by_agent());
     assert_eq!(found.profile.model.as_deref(), Some("sol"));
     assert_eq!(found.profile.effort, Some(Effort::High));
-    assert_eq!(found.profile.cache, Some(Cache::OneHour));
     assert_eq!(found.profile.instructions, "Review it against the rules.");
     assert!(
         shown(&fixture.feed).contains(
@@ -641,14 +638,6 @@ async fn a_profile_that_cant_work_is_refused_before_the_user_is_asked() {
         )
         .await
         .contains("`extreme` isn't an effort")
-    );
-    assert_eq!(
-        refusal(
-            &fixture.save,
-            vec![("name", "x".into()), ("cache", "2h".into())]
-        )
-        .await,
-        "cache is 5m or 1h, not 2h"
     );
     assert_eq!(
         refusal(

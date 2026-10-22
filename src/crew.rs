@@ -386,15 +386,15 @@ fn start_parameters() -> Vec<ToolParameterDefinition> {
         ),
         text(
             PROFILE_PARAM,
-            "Optional. A worker profile by name, which sets the model, effort and standing instructions the worker starts with. `default` is the session's worker model. worker_options lists the profiles.",
+            "A worker profile by name. `default` is the session's worker model.",
         ),
         text(
             MODEL_PARAM,
-            "Optional. The model the worker runs, such as opus, sonnet, haiku, sol, luna, gemini, cc:opus or openrouter:<slug>. It overrides the profile's. worker_options lists the models you can use now.",
+            "A model such as opus, sonnet, haiku, sol, luna, gemini, cc:opus or openrouter:<slug>. Overrides the profile's.",
         ),
         text(
             EFFORT_PARAM,
-            "Optional. low, medium, high, xhigh or max, as the model takes it. It overrides the profile's.",
+            "low, medium, high, xhigh or max, as the model takes it. Overrides the profile's.",
         ),
     ]
 }

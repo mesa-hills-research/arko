@@ -874,13 +874,13 @@ fn known_indexes(indexes: &[index::Known]) -> String {
 
 /// What the main agent is told of choosing a worker's model (see
 /// `worker_options`).
-const CHOOSING: &str = "A worker runs on the session's worker model unless you choose otherwise. Choose with `profile` (a named setup the user or you saved) or with `model` and `effort`. Match the model to the job. A small one reads and searches well, a strong one does hard reasoning, and a model from another maker gives a second opinion or a comparison. Call `worker_options` to see the profiles and the models usable now, with their efforts, prices, prompt caches and handover sizes. A stronger model costs more, so pick the weakest one that does the job.";
+const CHOOSING: &str = "A worker runs on the session's worker model unless you choose otherwise. Choose with `profile` (a named setup the user or you saved) or with `model` and `effort`. Match the model to the job. A small one reads and searches well, a strong one does hard reasoning, and a model from another maker gives a second opinion or a comparison. `worker_options` lists the profiles and the models usable now with their prices. A stronger model costs more, so pick the weakest one that does the job. Set `cache` to `1h` for a worker you will send more work to after it reports, and to `5m` for a one-off.";
 
 /// What it is told of saving a profile.
-const SAVING: &str = "When several workers share a setup, save it once with `save_worker_profile` and start them by its name. A profile saved for this session needs no approval. Keeping one for every session or for this project asks the user first.";
+const SAVING: &str = "When several workers share a setup, save it once with `save_worker_profile` and start them by its name.";
 
 /// What it is told when the user lets it start workers with a profile only.
-const PROFILES_ONLY: &str = "A worker runs on the session's worker model unless you start it with a profile, a named setup the user saved. Call `worker_options` to see the profiles, which set each worker's model and effort, and what the models cost.";
+const PROFILES_ONLY: &str = "A worker runs on the session's worker model unless you start it with a profile, a named setup the user saved. `worker_options` lists the profiles, which set each worker's model and effort, and what the models cost.";
 
 /// The profiles when the session started, as a sentence. Nothing when
 /// there were none.
@@ -1092,7 +1092,13 @@ mod tests {
         }
         let main = main_config(&with).unwrap();
         assert_eq!(main.llm_config.model.id, "claude-opus-5-5");
-        assert!(!main.instructions.contains("`cache`"));
+        // (The main agent that chooses the models hears when to pick which
+        // cache, and `worker_options` tells it each model's.)
+        assert!(
+            main.instructions
+                .contains("Set `cache` to `1h` for a worker")
+        );
+        assert!(!main.instructions.contains("an hour after"));
         // With every worker on the session's model, the main agent hears of
         // its cache.
         let session = AgentSettings {
@@ -1190,11 +1196,10 @@ mod tests {
             };
             let text = main_config(&with).unwrap().instructions;
             assert!(
-                !text.contains("`cache`")
-                    && !text.contains("30 minutes")
-                    && !text.contains("an hour after"),
+                !text.contains("30 minutes") && !text.contains("an hour after"),
                 "{text}"
             );
+            assert!(text.contains("Set `cache` to `1h` for a worker"));
             assert!(text.contains("`worker_options`"));
         }
     }

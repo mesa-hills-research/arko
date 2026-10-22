@@ -456,7 +456,7 @@ async fn the_main_agent_lists_the_options_saves_a_profile_and_starts_a_worker_wi
 
     start_worker(&mut harness, &mut inputs, "Start by listing the options.").await;
     let options = last_result(&seen);
-    assert!(options.starts_with("Worker profiles (start_agent's profile)\n- default · gpt-6-luna, high effort · the session's worker model (/model worker)\n\nModels usable now"), "{options}");
+    assert!(options.starts_with("Worker profiles (pass one as start_agent's profile)\n- default · gpt-6-luna, high effort · the session's worker model (/model worker)\n\nModels usable now"), "{options}");
     assert!(options.contains("\n- sol · efforts low to max · "), "{options}");
     assert!(options.contains("Not usable now"), "{options}");
 

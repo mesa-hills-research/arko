@@ -23,10 +23,6 @@ pub const DEPTH_NAME: &str = "Worker depth";
 /// [`MAX_DEPTH`] ([`parse_depth`] reads it, [`depth_command`] writes it).
 pub const DEPTH_COMMAND: &str = "/worker-depth";
 
-/// The name of the setting for the model workers use when the main agent
-/// doesn't choose one (`/model worker`, `--worker-model`).
-pub const DEFAULT_MODEL_NAME: &str = "Default workers\u{2019} model";
-
 /// The levels of workers a new session allows.
 pub use crate::agents::DEFAULT_WORKER_DEPTH as DEFAULT_DEPTH;
 /// The most levels of workers a session can allow.
@@ -73,7 +69,6 @@ mod tests {
     fn an_app_names_and_sets_the_settings_with_the_librarys_words() {
         assert_eq!(MODELS_NAME, "Models for workers");
         assert_eq!(DEPTH_NAME, "Worker depth");
-        assert_eq!(DEFAULT_MODEL_NAME, "Default workers\u{2019} model");
         assert_eq!(ModelChoice::Profiles.command(), "/worker-models profiles");
         assert_eq!(
             ModelChoice::ALL.map(ModelChoice::label),
