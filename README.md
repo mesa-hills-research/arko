@@ -12,6 +12,8 @@ models, and on your Claude plan through an installed Claude Code.
 - Search indexes of code and docs (`arko index`), kept current while Arko runs
 - A web page for following a session and taking part from a browser, such as a phone's
   (`--remote`)
+- A model and effort for each worker, which the agent chooses or takes from
+  [worker profiles](docs/worker-profiles.md) you write
 - MCP servers in Claude Code's `.mcp.json` format, and skills from `.agents/skills` or
   `.claude/skills`
 - Themes for the full-screen view, and your own in GPUI Kit's format
@@ -66,7 +68,8 @@ arko-tui = { version = "0.3.1", default-features = false, features = ["remote"] 
 ```
 
 `cargo doc --open` builds the API docs. See
-[listing extensions and managing project approvals](docs/extensions.md) for settings pages.
+[listing extensions and managing project approvals](docs/extensions.md) and
+[worker profiles](docs/worker-profiles.md) for settings pages.
 
 ## Tests
 
