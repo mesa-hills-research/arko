@@ -1091,7 +1091,7 @@ pub fn approval_text(profile: &Profile, place: Place) -> String {
     text.push('\n');
     let instructions = profile.instructions.trim();
     if instructions.is_empty() {
-        text.push_str("\nIt has no standing instructions.\n");
+        text.push_str("\nIt has no instructions.\n");
     } else {
         // Right after the model, where a short view of the question still
         // shows it, so the user knows how much there is to read.

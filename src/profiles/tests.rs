@@ -535,7 +535,7 @@ fn the_approval_question_shows_the_whole_profile() {
         "{text}"
     );
     assert!(text.contains("A worker started with it can start workers of its own."));
-    assert!(text.contains("It has no standing instructions."));
+    assert!(text.contains("It has no instructions."));
 }
 
 #[test]

@@ -1168,12 +1168,12 @@ fn monitor_outcome(job: &JobSummary) -> (CallStatus, String) {
                 None => format!("ended{alerts}"),
             },
         ),
-        JobState::Finished => (CallStatus::Ok, format!("its command exited{alerts}")),
+        JobState::Finished => (CallStatus::Ok, format!("command exited{alerts}")),
         JobState::Failed => (
             CallStatus::Failed,
             match &job.outcome {
-                Some(how) => format!("its command exited ({how}){alerts}"),
-                None => format!("its command exited{alerts}"),
+                Some(how) => format!("command exited ({how}){alerts}"),
+                None => format!("command exited{alerts}"),
             },
         ),
         JobState::Interrupted => (CallStatus::Failed, "interrupted".to_string()),
@@ -1917,8 +1917,8 @@ impl Feed {
         }
         let (status, text) = match ended {
             JobState::Interrupted => (CallStatus::Failed, "interrupted"),
-            JobState::Failed => (CallStatus::Failed, "its command exited"),
-            JobState::Finished => (CallStatus::Ok, "its command exited"),
+            JobState::Failed => (CallStatus::Failed, "command exited"),
+            JobState::Finished => (CallStatus::Ok, "command exited"),
             JobState::Stopped => (CallStatus::Ok, "stopped"),
             _ => (CallStatus::Ok, "ended"),
         };
@@ -2110,8 +2110,8 @@ impl Feed {
 
     /// The call `item` of `agent`, if its line says it started the monitor
     /// `job` and is monitoring, says how the monitor is doing: "monitoring ·
-    /// 3 alerts", "ended after 30 min · 4 alerts", "stopped", "its command
-    /// exited (exit 1)".
+    /// 3 alerts", "ended after 30 min · 4 alerts", "stopped", "command exited
+    /// (exit 1)".
     fn follow_monitor(&self, state: &mut State, agent: &str, item: u64, job: &JobSummary) {
         let (lane, _) = state.lane(agent);
         let Some(call) = lane.find(item) else {
@@ -2966,10 +2966,7 @@ mod tests {
         let ended = line(&feed);
         assert_eq!(
             (ended.status, ended.outcome.as_deref()),
-            (
-                Some(CallStatus::Failed),
-                Some("its command exited (exit 1)")
-            )
+            (Some(CallStatus::Failed), Some("command exited (exit 1)"))
         );
         let feed = Feed::new("main");
         let (call, job) = (Uuid::new_v4(), Uuid::new_v4());
