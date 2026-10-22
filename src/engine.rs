@@ -21,8 +21,8 @@ use crate::remote::Level;
 use crate::session::{Holder, LockError, Session, SessionLock};
 use crate::shell::{Shell, WindowsShell};
 use crate::start::{
-    background_after_for, client_asking, default_model, new_settings, project_from_options,
-    workspace,
+    background_after_for, builtin_skills_resumed, client_asking, default_model, new_settings,
+    project_from_options, workspace,
 };
 use crate::status::Gauges;
 use crate::ui::{Input, Output, Stats};
@@ -534,11 +534,21 @@ impl Engine {
                     }
                     None => false,
                 };
+                // So can the built-in skills, for the conversations that start
+                // after it.
+                let skills = match builtin_skills_resumed(&options, &settings.builtin_skills)? {
+                    Some(skills) => {
+                        settings.builtin_skills = skills;
+                        true
+                    }
+                    None => false,
+                };
                 if project_from_options(&options, &mut settings)
                     | background
                     | wakes
                     | choice
                     | depth
+                    | skills
                 {
                     session
                         .save_settings(&settings)
@@ -1703,6 +1713,178 @@ mod tests {
             crate::monitors::Wakes(Some(1_800))
         );
         quit(seam, ended).await;
+    }
+
+    /// The built-in skills a session leaves out are chosen by its options,
+    /// else by ARKO_BUILTIN_SKILLS and ARKO_BUILTIN_SKILLS_OFF in a `.env`
+    /// file. The session keeps the choice, and a resume changes it only for
+    /// what it names.
+    #[tokio::test]
+    async fn built_in_skills_are_chosen_for_a_new_session_and_on_resume() {
+        use crate::builtin_skills::BuiltinSkills;
+        let temp = tempfile::tempdir().unwrap();
+        let (server, _bodies) = counting_server().await;
+        let (root, project) = (temp.path().join("arko"), temp.path().join("project"));
+        std::fs::create_dir_all(&project).unwrap();
+        let open = |session: SessionChoice, options: Options| {
+            let running = spawn(
+                Options {
+                    root: Some(root.clone()),
+                    session,
+                    workspace: Some(project.clone()),
+                    model: Some("luna".into()),
+                    openai_auth: Some(OpenAiAuth::ApiKey),
+                    cache_1h: Some(false),
+                    client: Some(GivenClient(Arc::new(server.client()))),
+                    ..options
+                },
+                Arc::new(NoPrompter),
+            );
+            async move {
+                let seam = tokio::time::timeout(Duration::from_secs(30), running.opened)
+                    .await
+                    .unwrap()
+                    .unwrap();
+                (seam, running.ended)
+            }
+        };
+        let choice = |id: &str| {
+            Session::open(&root, id)
+                .unwrap()
+                .load_settings()
+                .unwrap()
+                .builtin_skills
+        };
+        let off = |names: &[&str]| BuiltinSkills {
+            none: false,
+            off: names.iter().map(|name| name.to_string()).collect(),
+        };
+        // By default a session has them all.
+        let (seam, ended) = open(SessionChoice::New, Options::default()).await;
+        let seam = seam.unwrap();
+        let id = seam.session.id.clone();
+        assert_eq!(choice(&id), BuiltinSkills::default());
+        assert!(seam.details.skills().unwrap().builtin_off.is_empty());
+        quit(seam, ended).await;
+        // A `.env` file sets the default of a new session.
+        std::fs::write(
+            project.join(".env"),
+            "ARKO_BUILTIN_SKILLS_OFF=\"repo-docs-style, user-facing-prose\"\n",
+        )
+        .unwrap();
+        let (seam, ended) = open(SessionChoice::New, Options::default()).await;
+        let seam = seam.unwrap();
+        assert_eq!(
+            choice(&seam.session.id),
+            off(&["repo-docs-style", "user-facing-prose"])
+        );
+        assert_eq!(
+            seam.details.skills().unwrap().builtin_off,
+            ["user-facing-prose", "repo-docs-style"]
+        );
+        quit(seam, ended).await;
+        std::fs::write(
+            project.join(".env"),
+            "ARKO_BUILTIN_SKILLS_OFF=repo-docs-style,user-facing-prose\n",
+        )
+        .unwrap();
+        let (seam, ended) = open(SessionChoice::New, Options::default()).await;
+        let seam = seam.unwrap();
+        assert_eq!(
+            choice(&seam.session.id),
+            off(&["repo-docs-style", "user-facing-prose"])
+        );
+        quit(seam, ended).await;
+        std::fs::write(project.join(".env"), "ARKO_BUILTIN_SKILLS=0\n").unwrap();
+        let (seam, ended) = open(SessionChoice::New, Options::default()).await;
+        let seam = seam.unwrap();
+        let none = BuiltinSkills {
+            none: true,
+            off: Vec::new(),
+        };
+        assert_eq!(choice(&seam.session.id), none);
+        quit(seam, ended).await;
+        // The options come before the file.
+        let options = Options {
+            builtin_skills: Some(true),
+            builtin_skills_off: Some(vec!["repo-docs-style".into()]),
+            ..Options::default()
+        };
+        let (seam, ended) = open(SessionChoice::New, options).await;
+        let seam = seam.unwrap();
+        let id = seam.session.id.clone();
+        assert_eq!(choice(&id), off(&["repo-docs-style"]));
+        quit(seam, ended).await;
+        // A resume without options keeps the session's, even when the file
+        // says otherwise.
+        let (seam, ended) = open(SessionChoice::Resume(id.clone()), Options::default()).await;
+        assert_eq!(choice(&id), off(&["repo-docs-style"]));
+        quit(seam.unwrap(), ended).await;
+        // With options, it changes what they name.
+        let options = Options {
+            builtin_skills_off: Some(vec!["user-facing-prose".into()]),
+            ..Options::default()
+        };
+        let (seam, ended) = open(SessionChoice::Resume(id.clone()), options).await;
+        assert_eq!(choice(&id), off(&["user-facing-prose"]));
+        quit(seam.unwrap(), ended).await;
+        let options = Options {
+            builtin_skills: Some(false),
+            ..Options::default()
+        };
+        let (seam, ended) = open(SessionChoice::Resume(id.clone()), options).await;
+        let seam = seam.unwrap();
+        assert_eq!(
+            choice(&id),
+            BuiltinSkills {
+                none: true,
+                off: vec!["user-facing-prose".into()]
+            }
+        );
+        assert_eq!(seam.details.skills().unwrap().builtin_off.len(), 2);
+        quit(seam, ended).await;
+        let options = Options {
+            builtin_skills: Some(true),
+            builtin_skills_off: Some(Vec::new()),
+            ..Options::default()
+        };
+        let (seam, ended) = open(SessionChoice::Resume(id.clone()), options).await;
+        assert_eq!(choice(&id), BuiltinSkills::default());
+        quit(seam.unwrap(), ended).await;
+    }
+
+    /// A name that isn't a built-in skill keeps the session from opening,
+    /// since a typo would leave the skill on.
+    #[tokio::test]
+    async fn a_built_in_skill_that_does_not_exist_cannot_be_left_out() {
+        let temp = tempfile::tempdir().unwrap();
+        let (server, _bodies) = counting_server().await;
+        let project = temp.path().join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        let running = spawn(
+            Options {
+                root: Some(temp.path().join("arko")),
+                workspace: Some(project),
+                model: Some("luna".into()),
+                openai_auth: Some(OpenAiAuth::ApiKey),
+                cache_1h: Some(false),
+                builtin_skills_off: Some(vec!["repo-doc-style".into()]),
+                client: Some(GivenClient(Arc::new(server.client()))),
+                ..Options::default()
+            },
+            Arc::new(NoPrompter),
+        );
+        let opened = tokio::time::timeout(Duration::from_secs(30), running.opened)
+            .await
+            .unwrap()
+            .unwrap();
+        let error = opened.err().expect("the session does not open");
+        assert!(
+            error
+                .to_string()
+                .contains("names `repo-doc-style`, which isn't a built-in skill"),
+            "{error}"
+        );
     }
 
     /// Who chooses the workers' models and how deep workers go can be set

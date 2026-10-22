@@ -4,6 +4,7 @@
 use std::path::PathBuf;
 
 use crate::agents::{DEFAULT_WORKER_DEPTH, ExtraRules, ModelSettings, NO_LIMIT, resolve_model};
+use crate::builtin_skills::BuiltinSkills;
 use crate::credentials::Need;
 use crate::options::Options;
 use crate::prompter::Prompter;
@@ -55,6 +56,40 @@ pub(crate) fn background_after_for(options: &Options, saved: u64) -> u64 {
 /// small models.
 pub(crate) fn extra_rules_for(options: &Options) -> ExtraRules {
     options.extra_rules.unwrap_or(ExtraRules::Small)
+}
+
+/// The built-in skills a new session gives its agents: as the options say,
+/// else as ARKO_BUILTIN_SKILLS (1 or 0) and ARKO_BUILTIN_SKILLS_OFF (names
+/// separated by commas) do, else all of them.
+pub(crate) fn builtin_skills_for(options: &Options) -> Result<BuiltinSkills, String> {
+    let none = match options.builtin_skills {
+        Some(on) => !on,
+        None => credentials::switch(credentials::BUILTIN_SKILLS)?.is_some_and(|on| !on),
+    };
+    match &options.builtin_skills_off {
+        Some(names) => BuiltinSkills::new(none, names, "builtin_skills_off"),
+        None => {
+            let named: Vec<String> = credentials::var(credentials::BUILTIN_SKILLS_OFF)
+                .map(|text| text.split(',').map(str::to_string).collect())
+                .unwrap_or_default();
+            BuiltinSkills::new(none, &named, credentials::BUILTIN_SKILLS_OFF)
+        }
+    }
+}
+
+/// A resumed session's built-in skills with the options over its own, for
+/// the conversations that start from now on. `None` when they don't change.
+pub(crate) fn builtin_skills_resumed(
+    options: &Options,
+    saved: &BuiltinSkills,
+) -> Result<Option<BuiltinSkills>, String> {
+    if options.builtin_skills.is_none() && options.builtin_skills_off.is_none() {
+        return Ok(None);
+    }
+    let none = options.builtin_skills.map_or(saved.none, |on| !on);
+    let off = options.builtin_skills_off.as_ref().unwrap_or(&saved.off);
+    let chosen = BuiltinSkills::new(none, off, "builtin_skills_off")?;
+    Ok(Some(chosen).filter(|chosen| chosen != saved))
 }
 
 /// The project's instructions as the options choose them, over `settings`'
@@ -254,7 +289,7 @@ pub(crate) fn new_settings(
             None => DEFAULT_WORKER_DEPTH,
         },
         nested_start: true,
-        builtin_skills: Default::default(),
+        builtin_skills: builtin_skills_for(options)?,
     };
     project_from_options(options, &mut settings);
     if settings.mode == crate::session::Mode::Chat {

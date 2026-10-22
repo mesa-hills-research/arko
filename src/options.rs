@@ -26,7 +26,8 @@ pub enum SessionChoice {
 /// settings it was started with. The options it can change as it resumes
 /// are the project instructions, when commands move to the background, how
 /// long monitors' warnings wake the agent (`monitor_wakes`), outside
-/// access, the handover size and the MCP config files.
+/// access, the handover size, the built-in skills (for the conversations
+/// that start after) and the MCP config files.
 #[derive(Debug, Clone)]
 pub struct Options {
     /// Arko's folder, by default `ARKO_HOME`, else `arko` in the data
@@ -66,6 +67,15 @@ pub struct Options {
     pub cc_compact: Option<bool>,
     /// Who gets the extra rules, by default the agents on small models.
     pub extra_rules: Option<ExtraRules>,
+    /// Whether the agents get Arko's built-in skills, by default as
+    /// `ARKO_BUILTIN_SKILLS` says (on unless it is 0). With `Some(false)`
+    /// they get none. A resumed session takes it for its new conversations.
+    pub builtin_skills: Option<bool>,
+    /// The built-in skills to leave out, by name (`user-facing-prose`,
+    /// `repo-docs-style`), by default as `ARKO_BUILTIN_SKILLS_OFF` says. A
+    /// name that isn't a built-in skill keeps the session from opening. A
+    /// resumed session takes it for its new conversations.
+    pub builtin_skills_off: Option<Vec<String>>,
     /// The project instructions, by default a new session's default, or a
     /// resumed session's own.
     pub project_instructions: Option<project::Files>,
@@ -194,6 +204,8 @@ impl Default for Options {
             text_replies: None,
             cc_compact: None,
             extra_rules: None,
+            builtin_skills: None,
+            builtin_skills_off: None,
             project_instructions: None,
             worker_project_instructions: None,
             workers: None,

@@ -75,7 +75,8 @@ pub struct Extensions {
 /// with the MCP config files `mcp_config` (an app's, as
 /// [`Options::mcp_config`](crate::Options::mcp_config) gives them), would
 /// get. With no workspace it lists the given MCP files, Arko's `mcp.json`,
-/// and the shared skill folders only. The built-in skills come last. It
+/// and the shared skill folders only. The built-in skills come last, those
+/// that `ARKO_BUILTIN_SKILLS` and `ARKO_BUILTIN_SKILLS_OFF` leave on. It
 /// reads the files, so call it off a UI thread.
 pub fn list(root: &Path, workspace: Option<&Path>, mcp_config: &[PathBuf]) -> Extensions {
     let mut extensions = Extensions::default();
@@ -152,7 +153,10 @@ pub fn list(root: &Path, workspace: Option<&Path>, mcp_config: &[PathBuf]) -> Ex
         }
     }
     let folders = skills::folders_for(workspace, root);
-    extensions.skills = skills::scan(&folders, &Default::default(), workspace.unwrap_or(root))
+    // A new session has the built-in skills as ARKO_BUILTIN_SKILLS and
+    // ARKO_BUILTIN_SKILLS_OFF say.
+    let builtin = crate::start::builtin_skills_for(&crate::Options::default()).unwrap_or_default();
+    extensions.skills = skills::scan(&folders, &builtin, workspace.unwrap_or(root))
         .into_iter()
         .map(|skill| SkillEntry {
             path: skill.path,

@@ -59,6 +59,10 @@ pub const CODEX_AUTH: &str = "ARKO_CODEX_AUTH";
 pub const OPENAI_AUTH: &str = "ARKO_OPENAI_AUTH";
 /// Anthropic's 1-hour prompt cache for new sessions: `1` or `0`.
 pub const CACHE_1H: &str = "ARKO_CACHE_1H";
+/// Whether new sessions have Arko's built-in skills: `1` or `0`.
+pub const BUILTIN_SKILLS: &str = "ARKO_BUILTIN_SKILLS";
+/// The built-in skills new sessions leave out, by name, separated by commas.
+pub const BUILTIN_SKILLS_OFF: &str = "ARKO_BUILTIN_SKILLS_OFF";
 /// The shell new sessions run commands in on Windows: `cmd` or `powershell`.
 pub const SHELL: &str = "ARKO_SHELL";
 /// The Voyage API key, for the search indexes' embeddings.
@@ -67,7 +71,7 @@ pub const VOYAGE_KEY: &str = "VOYAGE_API_KEY";
 pub const THEME: &str = "ARKO_THEME";
 /// The settings a `.env` file can hold; it may set others, which are left
 /// alone.
-const DOTENV_KEYS: [&str; 13] = [
+const DOTENV_KEYS: [&str; 15] = [
     ANTHROPIC_KEY,
     OPENAI_KEY,
     GEMINI_KEY,
@@ -76,6 +80,8 @@ const DOTENV_KEYS: [&str; 13] = [
     CODEX_AUTH,
     OPENAI_AUTH,
     CACHE_1H,
+    BUILTIN_SKILLS,
+    BUILTIN_SKILLS_OFF,
     SHELL,
     VOYAGE_KEY,
     crate::glyphs::SYMBOLS,

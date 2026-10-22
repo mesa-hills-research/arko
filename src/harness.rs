@@ -4602,6 +4602,55 @@ pub(crate) mod tests {
         assert!(luna < Some(950_000));
     }
 
+    /// `--no-builtin-skills` and `--no-builtin-skill` become the options that
+    /// leave out the built-in skills, and a name no skill has is refused
+    /// with the names there are.
+    #[test]
+    fn the_flags_leave_out_built_in_skills() {
+        let parse = |words: &[&str]| {
+            Args::try_parse_from(std::iter::once("arko").chain(words.iter().copied()))
+        };
+        let plain = parse(&[]).unwrap().options().unwrap();
+        assert_eq!(
+            (plain.builtin_skills, plain.builtin_skills_off),
+            (None, None)
+        );
+        let all = parse(&["--no-builtin-skills"]).unwrap().options().unwrap();
+        assert_eq!(
+            (all.builtin_skills, all.builtin_skills_off),
+            (Some(false), None)
+        );
+        let both = [
+            "repo-docs-style".to_string(),
+            "user-facing-prose".to_string(),
+        ];
+        for words in [
+            vec![
+                "--no-builtin-skill",
+                "repo-docs-style",
+                "--no-builtin-skill",
+                "user-facing-prose",
+            ],
+            vec!["--no-builtin-skill=repo-docs-style,user-facing-prose"],
+        ] {
+            let some = parse(&words).unwrap().options().unwrap();
+            assert_eq!(some.builtin_skills, None);
+            assert_eq!(
+                some.builtin_skills_off.as_deref(),
+                Some(&both[..]),
+                "{words:?}"
+            );
+        }
+        let error = parse(&["--no-builtin-skill", "repo-doc-style"])
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("repo-doc-style"), "{error}");
+        assert!(
+            error.contains("user-facing-prose") && error.contains("repo-docs-style"),
+            "{error}"
+        );
+    }
+
     /// The flags become the session's options: which session, each pair of
     /// flags as yes, no or neither, -p's message as a new session's title,
     /// and whether someone takes part at the terminal.

@@ -1,7 +1,8 @@
 //! The skills built into Arko: general advice on writing, held in the
 //! program so no file is needed. They are listed with the skills of the
-//! skill folders, and a skill of the same name in those folders replaces one.
-//! A session can leave some or all of them out (see [`BuiltinSkills`]).
+//! skill folders, a skill of the same name in those folders replaces one, and
+//! `ARKO_BUILTIN_SKILLS`, `ARKO_BUILTIN_SKILLS_OFF` and their flags leave
+//! them out (see [`BuiltinSkills`]).
 //!
 //! Each is the `SKILL.md` in its folder here, and `BUILTIN` below lists them.
 //! A skill is loaded on demand unless its `pre_loaded` is true, which puts
@@ -54,15 +55,26 @@ impl Builtin {
     }
 }
 
+/// The built-in skills' names.
+pub(crate) fn names() -> [&'static str; BUILTIN.len()] {
+    BUILTIN.map(|skill| skill.name)
+}
+
+/// The name of the built-in skill `name`, if there is one.
+pub(crate) fn find(name: &str) -> Option<&'static Builtin> {
+    BUILTIN.iter().find(|skill| skill.name == name)
+}
+
 /// Which built-in skills a session gives its agents: all but those turned
 /// off. It is a session setting, kept with the session.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct BuiltinSkills {
-    /// None of them.
+    /// None of them (`ARKO_BUILTIN_SKILLS=0`, `--no-builtin-skills`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub none: bool,
-    /// These by name. A name no skill has, such as one a later version
-    /// dropped, is passed over.
+    /// These by name (`ARKO_BUILTIN_SKILLS_OFF`, `--no-builtin-skill`). A
+    /// name no skill has, such as one a later version dropped, is passed
+    /// over.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub off: Vec<String>,
 }
@@ -71,6 +83,29 @@ impl BuiltinSkills {
     /// Every built-in skill on.
     pub fn is_all(&self) -> bool {
         *self == Self::default()
+    }
+
+    /// The setting `none` and `off` make of `from`'s words. A name no
+    /// built-in skill has is an error that says where it came from, since a
+    /// typo would leave the skill on.
+    pub fn new(none: bool, off: &[String], from: &str) -> Result<Self, String> {
+        let mut kept: Vec<String> = Vec::new();
+        for name in off
+            .iter()
+            .map(|name| name.trim())
+            .filter(|name| !name.is_empty())
+        {
+            if find(name).is_none() {
+                return Err(format!(
+                    "{from} names `{name}`, which isn't a built-in skill. They are {}",
+                    crate::and_list(&names())
+                ));
+            }
+            if !kept.iter().any(|seen| seen == name) {
+                kept.push(name.to_string());
+            }
+        }
+        Ok(Self { none, off: kept })
     }
 
     /// Whether the agents get the built-in skill `name`.
@@ -221,19 +256,28 @@ mod tests {
         assert!(all.is_all());
         assert!(all.left_out().is_empty());
         assert_eq!(all.given().count(), BUILTIN.len());
-        let none = BuiltinSkills {
-            none: true,
-            off: Vec::new(),
-        };
+        let none = BuiltinSkills::new(true, &[], "x").unwrap();
         assert!(!none.is_all());
         assert_eq!(none.left_out(), ["user-facing-prose", "repo-docs-style"]);
         assert!(!none.gives("repo-docs-style"));
-        let one = BuiltinSkills {
-            none: false,
-            off: vec!["repo-docs-style".into()],
-        };
+        let one = BuiltinSkills::new(
+            false,
+            &[
+                " repo-docs-style".into(),
+                "repo-docs-style".into(),
+                "".into(),
+            ],
+            "x",
+        )
+        .unwrap();
+        assert_eq!(one.off, ["repo-docs-style"]);
         assert_eq!(one.left_out(), ["repo-docs-style"]);
         assert!(one.gives("user-facing-prose") && !one.gives("repo-docs-style"));
+        let typo = BuiltinSkills::new(false, &["repo-doc-style".into()], "--no-builtin-skill");
+        assert_eq!(
+            typo.unwrap_err(),
+            "--no-builtin-skill names `repo-doc-style`, which isn't a built-in skill. They are user-facing-prose and repo-docs-style"
+        );
     }
 
     #[test]
