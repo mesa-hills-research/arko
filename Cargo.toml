@@ -2,7 +2,7 @@
 # The command and the library are both `arko`. The name `arko` on crates.io
 # belongs to another project.
 name = "arko-tui"
-version = "0.3.0"
+version = "0.3.1"
 edition = "2024"
 rust-version = "1.89"
 description = "A general-purpose agent for the terminal, with a shell, background jobs, file tools and workers that run in parallel"
