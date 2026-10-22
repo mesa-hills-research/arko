@@ -701,6 +701,11 @@ async fn profiles_lists_shows_adds_and_removes() {
             .unwrap()
             .contains("description: Describe what this profile is for")
     );
+    // Without a description, the reply says the main agent reads the
+    // placeholder until it is edited.
+    assert!(last_said(&harness.feed).ends_with(
+        "Until you do, the main agent reads \"Describe what this profile is for\" as its description."
+    ));
 
     // The project's and the session's, a hidden one and one that can't be
     // read.
@@ -719,23 +724,49 @@ async fn profiles_lists_shows_adds_and_removes() {
     let listed = last_said(&harness.feed);
     let expected = format!(
         "Worker profiles
-  default   luna, high effort                     the session's worker model
-  3d-judge  sol, high effort   for every project  Judges 3D results against a reference image
-  quick     luna               for every project  Describe what this profile is for
-  reviewer  sol                for this session   Reviews a diff (made by the main agent)
+  default   luna, high effort
+      the session's worker model
+  3d-judge  sol, high effort   every project
+      Judges 3D results against a reference image
+  quick     luna               every project
+      Describe what this profile is for
+  reviewer  sol                this session
+      Reviews a diff (made by the main agent)
 Hidden by a nearer profile of the same name
-  reviewer  for this project
+  reviewer                     this project
 Can't be read
-  notes  this project  line 2 isn't `key: value`
+  notes                        this project
+      line 2 isn't `key: value`
 /profiles NAME shows one. The files are in
-  {} (this session)
-  {} (this project)
-  {} (every project)",
+  this session
+    {}
+  this project
+    {}
+  every project
+    {}",
         session.display(),
         project.display(),
         harness.root.join("profiles").display()
     );
     assert_eq!(listed, expected);
+    // What a profile is for wraps under its row, so an 80-column screen
+    // wraps no line of the list but a folder's path.
+    std::fs::write(
+        harness.root.join("profiles").join("long.md"),
+        format!(
+            "---\ndescription: {}\nmodel: gpt9\n---\n",
+            "Reads every file in the repository and says what each one is for, in a line"
+        ),
+    )
+    .unwrap();
+    std::fs::write(project.join("x".repeat(60) + ".md"), "no front matter").unwrap();
+    assert!(harness.live_command("/profiles", Source::Terminal));
+    let wide = last_said(&harness.feed);
+    for line in wide.lines().filter(|line| !line.starts_with("    /")) {
+        assert!(line.chars().count() <= 76, "{} columns: {line}", line.chars().count());
+    }
+    assert!(wide.contains("\n      Reads every file in the repository"), "{wide}");
+    assert!(wide.contains("(can't start, `gpt9` isn't a model Arko knows.)"), "{wide}");
 
     assert!(harness.live_command("/profiles reviewer", Source::Terminal));
     assert_eq!(

@@ -6,10 +6,38 @@ use arko_workflows::notes::{Note, NoteSource};
 
 use crate::agents::{self, ModelChoice};
 use crate::crew::NESTED_WORKERS;
-use crate::profiles::{self, Author, Found, Place, Profile, Roots};
+use crate::profiles::{self, Author, Place, Profile, Roots};
 use crate::remote::Source;
+use crate::ui;
 use crate::workers;
 use crate::{Harness, providers};
+
+/// The most profiles `/profiles` lists, and the most that can't be read or
+/// are hidden, since a project's folder can hold any number of files.
+const MAX_ROWS: usize = 100;
+const MAX_UNREADABLE_ROWS: usize = 20;
+
+/// The width of what a profile is for in `/profiles`, under its row, so a
+/// screen of 80 columns wraps nothing of it.
+const ABOUT_WIDTH: usize = 68;
+
+/// `text` in lines of at most `width` characters, cut between words.
+fn wrap_words(text: &str, width: usize) -> Vec<String> {
+    let mut lines: Vec<String> = Vec::new();
+    for word in text.split_whitespace() {
+        match lines.last_mut() {
+            Some(line) if line.chars().count() + 1 + word.chars().count() <= width => {
+                line.push(' ');
+                line.push_str(word);
+            }
+            _ => lines.push(word.to_string()),
+        }
+    }
+    lines
+}
+
+/// What a profile made with `/profiles add` and no description says it is for.
+const PLACEHOLDER: &str = "Describe what this profile is for";
 
 /// How `/profiles` is used.
 const PROFILES_USAGE: &str = "/profiles lists the worker profiles, /profiles NAME shows one, /profiles add NAME MODEL [EFFORT] [DESCRIPTION] makes one for every project, and /profiles remove NAME deletes one.";
@@ -194,77 +222,119 @@ impl Harness {
         let worker = &self.settings.worker;
         let reasons = providers::resolve_model(&worker.model)
             .map_or(true, |model| !providers::efforts(&model).is_empty());
-        let mut rows: Vec<(String, String, String, String)> = vec![(
-            "default".into(),
-            crate::worker_tools::runs_text(
+        // Each profile is a line with its name, what it runs and where it
+        // is, and under it what it is for, so a narrow screen wraps only
+        // the words.
+        struct Row {
+            name: String,
+            runs: String,
+            place: String,
+            about: String,
+        }
+        let mut rows = vec![Row {
+            name: "default".into(),
+            runs: crate::worker_tools::runs_text(
                 Some(&providers::short_model_name(&worker.model)),
                 reasons.then_some(worker.effort),
             ),
-            String::new(),
-            "the session's worker model".into(),
-        )];
-        let mut row = |found: &Found| {
+            place: String::new(),
+            about: "the session's worker model".into(),
+        }];
+        rows.extend(listed.active.iter().take(MAX_ROWS).map(|found| {
             let profile = &found.profile;
-            let mut description = profile.description.clone();
+            let mut about = profile.description.clone();
             if profile.made_by_agent() {
-                description.push_str(" (made by the main agent)");
+                about.push_str(" (made by the main agent)");
             }
             if let Some(note) = &found.note {
-                description.push_str(&format!(" (can't start, {note})"));
+                about.push_str(&format!(" (can't start, {note})"));
             }
-            (
-                profile.name.clone(),
-                crate::worker_tools::runs_text(profile.model.as_deref(), profile.effort),
-                format!("for {}", found.place.reach()),
-                description,
-            )
+            Row {
+                name: profile.name.clone(),
+                runs: crate::worker_tools::runs_text(profile.model.as_deref(), profile.effort),
+                place: found.place.reach().to_string(),
+                about,
+            }
+        }));
+        let problems: Vec<Row> = listed
+            .unreadable
+            .iter()
+            .take(MAX_UNREADABLE_ROWS)
+            .map(|problem| Row {
+                name: ui::cut(&problem.name, profiles::MAX_NAME),
+                runs: String::new(),
+                place: problem.place.reach().to_string(),
+                about: problem.reason.clone(),
+            })
+            .collect();
+        let hidden: Vec<Row> = listed
+            .hidden
+            .iter()
+            .take(MAX_UNREADABLE_ROWS)
+            .map(|found| Row {
+                name: found.profile.name.clone(),
+                runs: String::new(),
+                place: found.place.reach().to_string(),
+                about: String::new(),
+            })
+            .collect();
+        // (A file with a name that isn't a profile's can be any length, so
+        // it doesn't make the columns wider.)
+        let width = |pick: fn(&Row) -> &str| {
+            rows.iter()
+                .chain(&hidden)
+                .map(|row| pick(row).chars().count())
+                .max()
+                .unwrap_or(0)
         };
-        rows.extend(listed.active.iter().map(&mut row));
-        let widths = |pick: fn(&(String, String, String, String)) -> usize| {
-            rows.iter().map(pick).max().unwrap_or(0)
-        };
-        let (name_width, run_width, place_width) = (
-            widths(|row| row.0.chars().count()),
-            widths(|row| row.1.chars().count()),
-            widths(|row| row.2.chars().count()),
-        );
-        let line = |row: &(String, String, String, String)| {
-            format!(
-                "  {:name_width$}  {:run_width$}  {:place_width$}  {}",
-                row.0, row.1, row.2, row.3
-            )
-            .trim_end()
-            .to_string()
+        let (name_width, runs_width) = (width(|row| &row.name), width(|row| &row.runs));
+        let write = |text: &mut String, row: &Row| {
+            let line = if row.name.chars().count() > name_width {
+                format!("  {}  {}", row.name, row.place)
+            } else {
+                format!(
+                    "  {:name_width$}  {:runs_width$}  {}",
+                    row.name, row.runs, row.place
+                )
+            };
+            text.push('\n');
+            text.push_str(line.trim_end());
+            for line in wrap_words(&row.about, ABOUT_WIDTH) {
+                text.push_str(&format!("\n      {line}"));
+            }
         };
         let mut text = String::from("Worker profiles");
-        for found in &rows {
-            text.push('\n');
-            text.push_str(&line(found));
+        for row in &rows {
+            write(&mut text, row);
         }
-        if !listed.hidden.is_empty() {
+        if listed.active.len() > MAX_ROWS {
+            text.push_str(&format!(
+                "\n  and {} more, which /profiles NAME shows",
+                listed.active.len() - MAX_ROWS
+            ));
+        }
+        if !hidden.is_empty() {
             text.push_str("\nHidden by a nearer profile of the same name");
-            for found in &listed.hidden {
-                text.push_str(&format!(
-                    "\n  {}  for {}",
-                    found.profile.name,
-                    found.place.reach()
-                ));
+            for row in &hidden {
+                write(&mut text, row);
             }
         }
-        if !listed.unreadable.is_empty() {
+        if !problems.is_empty() {
             text.push_str("\nCan't be read");
-            for problem in &listed.unreadable {
+            for row in &problems {
+                write(&mut text, row);
+            }
+            if listed.unreadable.len() > MAX_UNREADABLE_ROWS {
                 text.push_str(&format!(
-                    "\n  {}  {}  {}",
-                    problem.name,
-                    problem.place.reach(),
-                    problem.reason
+                    "\n  and {} more",
+                    listed.unreadable.len() - MAX_UNREADABLE_ROWS
                 ));
             }
         }
+        // (A path on its own line, since it is longer than a screen can be.)
         text.push_str("\n/profiles NAME shows one. The files are in");
         for (place, folder) in profiles::folders(&roots) {
-            text.push_str(&format!("\n  {} ({})", folder.display(), place.reach()));
+            text.push_str(&format!("\n  {}\n    {}", place.reach(), folder.display()));
         }
         text
     }
@@ -329,10 +399,11 @@ impl Harness {
             _ => (None, rest),
         };
         let description = description.join(" ");
+        let placeholder = description.is_empty();
         let mut profile = Profile::new(
             name,
-            if description.is_empty() {
-                "Describe what this profile is for".to_string()
+            if placeholder {
+                PLACEHOLDER.to_string()
             } else {
                 description
             },
@@ -355,6 +426,11 @@ impl Harness {
             "Saved the worker profile {name} for every project in {}. Edit the file to write its description and instructions.",
             saved.file.display()
         );
+        if placeholder {
+            text.push_str(&format!(
+                " Until you do, the main agent reads \"{PLACEHOLDER}\" as its description."
+            ));
+        }
         if let Some(nearer) = saved.hidden_by {
             text.push_str(&format!(
                 " A profile of the same name for {} comes first, so it hides this one.",
