@@ -717,7 +717,7 @@ fn settings(frame: &mut Frame, app: &App, area: Rect, selected: usize) {
                 ),
                 match app.project_instructions() {
                     project::Files::One => {
-                        "The agents get AGENTS.md, or CLAUDE.md when there is no AGENTS.md. The main agent gets it once per conversation, in its first message. A change reaches the conversations and workers that start after it."
+                        "The agents get AGENTS.md, or CLAUDE.md when there is none. The main agent gets it once per conversation, in its first message. A change reaches the conversations and workers that start after it."
                     }
                     project::Files::Both => {
                         "The agents get AGENTS.md and CLAUDE.md, each under its own name. The main agent gets them once per conversation, in its first message. A change reaches the conversations and workers that start after it."
@@ -737,9 +737,9 @@ fn settings(frame: &mut Frame, app: &App, area: Rect, selected: usize) {
                     usize::from(!app.worker_project_instructions()),
                 ),
                 if app.worker_project_instructions() {
-                    "Each worker gets the same files once, in its first message. A change reaches the workers started after it."
+                    "Each worker gets the same files once, in its first message."
                 } else {
-                    "Workers don't get the files. Only the main agent does."
+                    "Only the main agent gets the files."
                 }
                 .to_string(),
             ),

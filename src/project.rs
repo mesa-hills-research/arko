@@ -70,7 +70,7 @@ impl Files {
     /// The files the agents get, as Arko tells the user.
     pub fn describe(self) -> &'static str {
         match self {
-            Files::One => "AGENTS.md, or CLAUDE.md when there is no AGENTS.md",
+            Files::One => "AGENTS.md, or CLAUDE.md when there is none",
             Files::Both => "AGENTS.md and CLAUDE.md, each under its own name",
             Files::Off => "neither AGENTS.md nor CLAUDE.md",
         }
@@ -264,13 +264,13 @@ impl crate::Harness {
         }
         let it = if names.len() == 1 { "it" } else { "them" };
         text.push_str(&format!(
-            " Here the agents get {}. The main agent gets {it} once per conversation, in its first message",
+            " Here they get {}. The main agent gets {it} once per conversation, in its first message",
             listed(&names)
         ));
         if !self.has_workers() {
             text.push('.');
         } else if self.settings.worker_project_instructions {
-            text.push_str(", and each worker once, in its first message.");
+            text.push_str(", and so does each worker.");
         } else {
             text.push_str(&format!(". Workers don't get {it}."));
         }

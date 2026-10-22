@@ -256,7 +256,7 @@ async fn the_command_says_and_changes_the_choices() {
 
     harness.project_command("", Source::Terminal);
     assert!(output(&harness).contains(
-        &"Project instructions are set to one, so the agents get AGENTS.md, or CLAUDE.md when there is no AGENTS.md. Here the agents get AGENTS.md. The main agent gets it once per conversation, in its first message. Workers don't get it. /project-instructions one, both or off changes which files, and /project-instructions workers on or off whether workers get them."
+        &"Project instructions are set to one, so the agents get AGENTS.md, or CLAUDE.md when there is none. Here they get AGENTS.md. The main agent gets it once per conversation, in its first message. Workers don't get it. /project-instructions one, both or off changes which files, and /project-instructions workers on or off whether workers get them."
             .to_string()
     ));
     harness.project_command("workers on", Source::Terminal);
@@ -285,7 +285,7 @@ async fn the_command_says_and_changes_the_choices() {
     );
     harness.project_command("both", Source::Web);
     assert!(texts(&harness.feed, "notice").contains(
-        &"Changed from the web page. Project instructions are set to both, so the agents get AGENTS.md and CLAUDE.md, each under its own name. Here the agents get AGENTS.md. The main agent gets it once per conversation, in its first message, and each worker once, in its first message."
+        &"Changed from the web page. Project instructions are set to both, so the agents get AGENTS.md and CLAUDE.md, each under its own name. Here they get AGENTS.md. The main agent gets it once per conversation, in its first message, and so does each worker."
             .to_string()
     ));
     assert_eq!(harness.settings.project_instructions, project::Files::Both);
@@ -312,7 +312,7 @@ async fn the_command_says_and_changes_the_choices() {
     harness.project = project::Found::default();
     harness.project_command("one", Source::Terminal);
     assert!(output(&harness).contains(
-        &"Project instructions are set to one, so the agents get AGENTS.md, or CLAUDE.md when there is no AGENTS.md. The working directory has neither."
+        &"Project instructions are set to one, so the agents get AGENTS.md, or CLAUDE.md when there is none. The working directory has neither."
             .to_string()
     ));
 
