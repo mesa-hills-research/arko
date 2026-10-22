@@ -379,6 +379,10 @@ fn help(frame: &mut Frame, app: &App, area: Rect, scroll: usize) {
             glyphs::render(command.about).into_owned(),
             theme.text(),
         ));
+        // What may follow it, as the menu shows it on the row chosen.
+        if !command.args.is_empty() {
+            spans.push(Span::styled(format!("  {}", command.args), theme.dim()));
+        }
         for line in wrap::wrap(&spans, inner_width, 14) {
             lines.push(Line::from(line));
         }

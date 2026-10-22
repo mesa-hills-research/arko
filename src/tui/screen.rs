@@ -2156,6 +2156,34 @@ mod tests {
         );
     }
 
+    /// The help lists what each command takes after what it does, as the menu
+    /// does for the row chosen, so a description needn't give an example.
+    #[test]
+    fn the_help_lists_what_a_command_takes() {
+        use crate::tui::overlay::Overlay;
+        let mut app = app();
+        app.overlay = Some(Overlay::Help { scroll: 0 });
+        // The box wraps the lines, so read the words in order.
+        let text = screen(&mut app, 140, 120)
+            .iter()
+            .map(|row| row.trim_matches(|c: char| c == '│' || c.is_whitespace()))
+            .collect::<Vec<_>>()
+            .join(" ")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        for (command, takes) in [("/worker-depth", " 1-4 "), ("/message-copies", " on|off ")] {
+            let at = text.find(command).unwrap_or_else(|| panic!("{text}"));
+            let next = text[at + command.len()..]
+                .find(" /")
+                .map_or(text.len(), |end| at + command.len() + end);
+            assert!(
+                format!("{} ", &text[at..next]).contains(takes),
+                "{command}\n{text}"
+            );
+        }
+    }
+
     /// The menu line of `/message-copies` says in its first columns what it
     /// sets, which an 80-column screen cuts the rest of.
     #[test]

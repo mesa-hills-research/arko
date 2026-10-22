@@ -377,12 +377,18 @@ pub fn choices(name: &str, before: &[&str]) -> &'static [&'static str] {
 }
 
 /// The help's lines for the session's commands, as the line prompt shows
-/// them, with each name, padded, then what it does.
+/// them, with each name, padded, then what it does and what may follow it.
 pub fn help_lines() -> Vec<String> {
     COMMANDS
         .iter()
         .filter(|command| command.runs == Runs::Session)
-        .map(|command| format!("{:<14} {}", command.name, command.about))
+        .map(|command| {
+            let line = format!("{:<14} {}", command.name, command.about);
+            match command.args {
+                "" => line,
+                args => format!("{line}  {args}"),
+            }
+        })
         .collect()
 }
 
@@ -462,6 +468,11 @@ mod tests {
         assert!(
             help.iter()
                 .any(|line| line.starts_with("/new           start"))
+        );
+        // What a command takes follows what it does.
+        assert!(
+            help.iter()
+                .any(|line| line.starts_with("/worker-depth ") && line.ends_with("  1-4"))
         );
         assert!(!help.iter().any(|line| line.starts_with("/copy")));
         // Every name is unique, including the aliases.
