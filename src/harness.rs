@@ -5331,16 +5331,14 @@ pub(crate) mod tests {
         crew.shutdown().await;
     }
 
-    /// The status gives what the main agent's model accepts from the start,
-    /// and each worker's context, as its latest request reported it, with
-    /// its handover size.
-    #[tokio::test]
-    async fn the_status_reports_the_models_room_and_each_workers_context() {
+    /// A mock model for a main agent that starts the worker r1 to count the
+    /// files, and for r1, whose request reports `input` tokens.
+    async fn worker_counting_server(input: usize) -> crate::mock_model::ModelServer {
         use crate::mock_model::{ModelServer, complete, tool_call, with_input};
-        let server = ModelServer::start(Arc::new(move |_, body: String| {
+        ModelServer::start(Arc::new(move |_, body: String| {
             Box::pin(async move {
                 if body.contains("You are agent run r1") {
-                    with_input(complete("w", "There are 3 files."), 7_777)
+                    with_input(complete("w", "There are 3 files."), input)
                 } else if body.contains("There are 3 files.") {
                     complete("m3", "Final: 3 files.")
                 } else if body.contains("Started r1") {
@@ -5354,7 +5352,15 @@ pub(crate) mod tests {
                 }
             })
         }))
-        .await;
+        .await
+    }
+
+    /// The status gives what the main agent's model accepts from the start,
+    /// and each worker's context, as its latest request reported it, with
+    /// its handover size.
+    #[tokio::test]
+    async fn the_status_reports_the_models_room_and_each_workers_context() {
+        let server = worker_counting_server(7_777).await;
         let temp = tempfile::tempdir().unwrap();
         let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), false);
         let luna = resolve_model("luna").unwrap();
@@ -5389,6 +5395,31 @@ pub(crate) mod tests {
         assert_eq!(r1.handover_at, Some(200_000), "luna's own size");
         assert!(!r1.compacts);
         harness.crew.as_ref().unwrap().shutdown().await;
+    }
+
+    /// A session whose main agent started the worker r1 on the mock model,
+    /// which reported `input` tokens in its latest request and finished. Gives
+    /// the status and the feed's snapshot a front end starts from.
+    pub(crate) async fn session_with_a_worker_that_ran(
+        input: usize,
+    ) -> (remote::Reading, remote::Snapshot) {
+        let server = worker_counting_server(input).await;
+        let temp = tempfile::tempdir().unwrap();
+        let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), false);
+        let end = harness
+            .turn(Prompt::User("How many files?".into()), &mut inputs)
+            .await;
+        assert!(matches!(end, TurnEnd::Answered));
+        let end =
+            tokio::time::timeout(Duration::from_secs(30), harness.finish_workers(&mut inputs))
+                .await
+                .unwrap();
+        assert!(matches!(end, TurnEnd::Answered));
+        harness.flush_printer().await;
+        let reading = remote::Meter::read(harness.gauges.as_ref());
+        let (snapshot, _updates) = harness.feed.subscribe();
+        harness.crew.as_ref().unwrap().shutdown().await;
+        (reading, snapshot)
     }
 
     /// What /session, /mcp and /skills say is there as data too, as the

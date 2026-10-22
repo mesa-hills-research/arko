@@ -18,6 +18,7 @@ use super::theme::Theme;
 use super::transcript::{self, View};
 use super::wrap::{self, width as text_width};
 use crate::glyphs;
+use crate::remote::{AgentStatus, WorkerState, WorkerSummary};
 
 /// The input box grows to this many lines, then scrolls.
 const INPUT_LINES: usize = 8;
@@ -347,14 +348,75 @@ fn draw_list(frame: &mut Frame, app: &mut App, area: Rect, rows: Vec<ListRow>) {
     }
 }
 
+/// The worker whose own transcript is shown, with what the session knows of
+/// it, which the status line shows in place of the main agent's figures.
+struct Watched<'a> {
+    /// What the feed keeps of it (its state, run time and cost), once its
+    /// summary has come.
+    worker: Option<&'a WorkerSummary>,
+    /// Its context and the size it hands over at, once a request reported
+    /// them.
+    context: Option<&'a AgentStatus>,
+}
+
+impl<'a> Watched<'a> {
+    fn of(app: &'a App) -> Option<Self> {
+        let id = app.watching.as_deref()?;
+        Some(Self {
+            worker: app.transcript.worker(id),
+            context: app.reading.agents.iter().find(|agent| agent.id == id),
+        })
+    }
+
+    /// Its context in tokens and the size it hands over at (0 where not
+    /// known).
+    fn context(&self) -> (Option<usize>, usize) {
+        (
+            self.context.and_then(|agent| agent.context_tokens),
+            self.context
+                .and_then(|agent| agent.handover_at)
+                .unwrap_or(0),
+        )
+    }
+
+    /// What its model calls billed, and what they would cost at API list
+    /// prices where a plan covered some.
+    fn cost(&self) -> (f64, Option<f64>) {
+        self.worker.map_or((0.0, None), |worker| {
+            let covered = worker.cost_list > worker.cost_billed + 1e-9;
+            (worker.cost_billed, covered.then_some(worker.cost_list))
+        })
+    }
+
+    /// Whether it works, or how it ended, with how long it has run (in all
+    /// its runs, as the agent list says) at `now` in Unix milliseconds. A
+    /// worker that isn't in the list yet has nothing to say.
+    fn state(&self, theme: &Theme, dot: &str, now: i64) -> Vec<Span<'static>> {
+        let Some(worker) = self.worker else {
+            return Vec::new();
+        };
+        let time = transcript::run_time(worker, now).map(|ms| clock(ms.max(0) as u64 / 1000));
+        let (word, style) = transcript::state(worker, theme);
+        let mut spans = if worker.state == WorkerState::Running {
+            vec![Span::styled(format!("{dot} working"), theme.accent())]
+        } else {
+            vec![Span::styled(word.to_string(), style)]
+        };
+        spans.extend(time.map(|time| Span::styled(format!(" {time}"), theme.dim())));
+        spans
+    }
+}
+
 /// The status line: is it working (or how long the last turn ran), how
 /// close is a handover, what does it cost; what is unusual (outside access, a worker watched, a view other
-/// than the full one); and the key that matters now.
+/// than the full one); and the key that matters now. While a worker is
+/// watched, the figures are the worker's own.
 fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
     let theme = &app.theme;
     let dot = glyphs::render("●").into_owned();
     let mut left: Vec<Span<'static>> = vec![Span::raw(" ")];
     let sep = || Span::styled(glyphs::render(" · ").into_owned(), theme.dim());
+    let watched = Watched::of(app);
     if let Some(worker) = &app.watching {
         left.push(Span::styled(
             format!("viewing {worker}"),
@@ -362,8 +424,24 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
         ));
         left.push(sep());
     }
+    let worker_state = watched
+        .as_ref()
+        .map(|watched| watched.state(theme, &dot, chrono::Utc::now().timestamp_millis()));
     if app.activity.question.is_some() {
-        left.push(Span::styled(format!("{dot} asks you"), theme.accent()));
+        // (A worker's view leaves the main agent's question open, and the
+        // box answers it.)
+        let asks = if watched.is_some() {
+            "main asks you"
+        } else {
+            "asks you"
+        };
+        left.push(Span::styled(format!("{dot} {asks}"), theme.accent()));
+        if let Some(state) = worker_state.filter(|state| !state.is_empty()) {
+            left.push(sep());
+            left.extend(state);
+        }
+    } else if let Some(state) = worker_state {
+        left.extend(state);
     } else if app.activity.working {
         let time = app
             .working_since
@@ -387,8 +465,11 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
         left.push(sep());
         left.push(Span::styled("outside access".to_string(), theme.warning()));
     }
-    if let Some(tokens) = reading.context_tokens {
-        let handover = app.handover_at();
+    let (tokens, handover) = match &watched {
+        Some(watched) => watched.context(),
+        None => (reading.context_tokens, app.handover_at()),
+    };
+    if let Some(tokens) = tokens {
         let near = handover > 0 && tokens * 10 >= handover * 9;
         left.push(sep());
         let text = if handover > 0 {
@@ -413,11 +494,15 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
         left.push(sep());
         left.push(Span::styled(windows.to_string(), theme.dim()));
     }
-    if reading.cost >= 0.005 {
+    let (cost, api_price) = match &watched {
+        Some(watched) => watched.cost(),
+        None => (reading.cost, reading.api_price),
+    };
+    if cost >= 0.005 {
         left.push(sep());
-        left.push(Span::styled(format!("${:.2}", reading.cost), theme.dim()));
+        left.push(Span::styled(format!("${cost:.2}"), theme.dim()));
     }
-    if let Some(api) = reading.api_price.filter(|api| *api >= 0.005) {
+    if let Some(api) = api_price.filter(|api| *api >= 0.005) {
         left.push(sep());
         left.push(Span::styled(
             format!("{} ${api:.2}", glyphs::render("≈")),
@@ -637,7 +722,7 @@ fn draw_menu(frame: &mut Frame, app: &App, above: Rect) -> u16 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::remote::{Activity, Item, Kind, Question, Update};
+    use crate::remote::{Activity, AgentStatus, Item, Kind, Question, Update, WorkerState};
     use crate::tui::app::App;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use ratatui::Terminal;
@@ -1105,6 +1190,287 @@ mod tests {
         );
     }
 
+    /// The status line row of `rows`, which is two rows above the box's
+    /// first line.
+    fn status_row(rows: &[String]) -> &str {
+        let at = rows
+            .iter()
+            .position(|row| row.starts_with(" › ") || row.starts_with(" > "))
+            .expect("the box");
+        &rows[at - 2]
+    }
+
+    /// A worker's context, as the status reports it.
+    fn context_of(id: &str, tokens: usize, handover: usize) -> AgentStatus {
+        AgentStatus {
+            id: id.into(),
+            context_tokens: Some(tokens),
+            context_window: Some(1_000_000),
+            handover_at: Some(handover),
+            compacts: false,
+        }
+    }
+
+    /// While a worker is watched, the status line shows the worker's run
+    /// time, its context against the size it hands over at, and its cost,
+    /// under its name. The main agent's figures are back when the view is.
+    #[test]
+    fn the_status_line_shows_the_figures_of_the_worker_watched() {
+        use crate::tui::app::tests::worker;
+        let mut app = app();
+        app.set_activity(Activity {
+            working: true,
+            since: None,
+            question: None,
+        });
+        app.reading.context_tokens = Some(142_000);
+        app.reading.cost = 3.2;
+        let mut r1 = worker("r1", WorkerState::Running);
+        r1.running_since = Some(chrono::Utc::now().timestamp_millis() - 134_100);
+        r1.cost_billed = 0.12;
+        r1.cost_list = 0.12;
+        app.update(Update::Worker(r1), Activity::default);
+        app.reading.agents = vec![context_of("r1", 88_000, 190_000)];
+
+        let main = " ● working 0s · 142k/250k · $3.20 · 1 worker";
+        let rows = screen(&mut app, 100, 12);
+        assert!(status_row(&rows).starts_with(main), "{rows:#?}");
+        app.watch(Some("r1".into()));
+        let rows = screen(&mut app, 100, 12);
+        let status = status_row(&rows);
+        assert!(
+            status.starts_with(" viewing r1 · ● working 2m14s · 88k/190k · $0.12 · 1 worker"),
+            "{status}"
+        );
+        assert!(status.ends_with("Esc  back"), "{status}");
+        assert!(
+            !status.contains("142k") && !status.contains("$3.20"),
+            "{status}"
+        );
+        app.watch(None);
+        let rows = screen(&mut app, 100, 12);
+        assert!(status_row(&rows).starts_with(main), "{rows:#?}");
+    }
+
+    /// A worker that ended shows its final figures, with its state and how
+    /// long it ran, also while the main agent is idle or its turn ended
+    /// long ago.
+    #[test]
+    fn the_status_line_shows_the_final_figures_of_a_worker_that_ended() {
+        use crate::tui::app::tests::worker;
+        let mut app = app();
+        app.last_turn = Some(std::time::Duration::from_secs(5));
+        app.reading.context_tokens = Some(142_000);
+        app.reading.cost = 3.2;
+        for (id, state, word) in [
+            ("r1", WorkerState::Finished, "finished"),
+            ("r2", WorkerState::Failed, "failed"),
+            ("r3", WorkerState::Stopped, "stopped"),
+        ] {
+            let mut summary = worker(id, state);
+            summary.ran_ms = 134_000;
+            summary.cost_billed = 0.4;
+            summary.cost_list = 0.4;
+            app.update(Update::Worker(summary), Activity::default);
+            app.reading.agents.push(context_of(id, 181_000, 190_000));
+            app.watch(Some(id.into()));
+            let rows = screen(&mut app, 100, 14);
+            let status = status_row(&rows);
+            let line = format!(" viewing {id} · {word} 2m14s · 181k/190k · $0.40");
+            assert!(status.starts_with(&line), "{status}");
+            assert!(!status.contains("last turn"), "{status}");
+        }
+        // A worker on a plan: the API price of its calls, besides what it
+        // billed.
+        let mut plan = worker("r4", WorkerState::Finished);
+        plan.ran_ms = 3_725_000;
+        plan.cost_list = 0.31;
+        app.update(Update::Worker(plan), Activity::default);
+        app.watch(Some("r4".into()));
+        let rows = screen(&mut app, 100, 14);
+        assert!(
+            status_row(&rows).starts_with(" viewing r4 · finished 1h02m · ≈ $0.31"),
+            "{rows:#?}"
+        );
+    }
+
+    /// A worker that has no figures yet says only what it does, and the
+    /// main agent's don't stand in for them.
+    #[test]
+    fn the_status_line_of_a_worker_without_figures_shows_none_of_the_main_agents() {
+        use crate::tui::app::tests::worker;
+        let mut app = app();
+        app.set_activity(Activity {
+            working: true,
+            since: None,
+            question: None,
+        });
+        app.reading.context_tokens = Some(142_000);
+        app.reading.cost = 3.2;
+        let mut queued = worker("r1", WorkerState::Queued);
+        queued.started_at = None;
+        app.update(Update::Worker(queued), Activity::default);
+        let mut started = worker("r2", WorkerState::Running);
+        started.started_at = None;
+        app.update(Update::Worker(started), Activity::default);
+        app.watch(Some("r1".into()));
+        let rows = screen(&mut app, 100, 14);
+        assert_eq!(
+            status_row(&rows).trim_end().split("   ").next().unwrap(),
+            " viewing r1 · queued · 2 workers",
+            "{rows:#?}"
+        );
+        app.watch(Some("r2".into()));
+        let rows = screen(&mut app, 100, 14);
+        assert_eq!(
+            status_row(&rows).trim_end().split("   ").next().unwrap(),
+            " viewing r2 · ● working · 2 workers",
+            "{rows:#?}"
+        );
+        // A context without a handover size shows alone.
+        app.reading.agents = vec![AgentStatus {
+            handover_at: None,
+            ..context_of("r2", 12_000, 0)
+        }];
+        let rows = screen(&mut app, 100, 14);
+        assert!(
+            status_row(&rows).starts_with(" viewing r2 · ● working · 12k · 2 workers"),
+            "{rows:#?}"
+        );
+    }
+
+    /// The main agent's question stays in sight in a worker's view, named,
+    /// and a context near the handover size is a warning there as it is
+    /// for the main agent.
+    #[test]
+    fn a_worker_s_view_keeps_the_main_agents_question_and_warns_near_its_handover() {
+        use crate::tui::app::tests::worker;
+        let mut app = app();
+        let mut r1 = worker("r1", WorkerState::Running);
+        r1.running_since = Some(chrono::Utc::now().timestamp_millis() - 65_100);
+        app.update(Update::Worker(r1), Activity::default);
+        app.reading.agents = vec![context_of("r1", 171_000, 190_000)];
+        app.watch(Some("r1".into()));
+        app.set_activity(Activity {
+            working: true,
+            since: None,
+            question: Some(Question {
+                id: 1,
+                text: "Tabs or spaces?".into(),
+            }),
+        });
+        let rows = screen(&mut app, 100, 14);
+        assert!(
+            status_row(&rows)
+                .starts_with(" viewing r1 · ● main asks you · ● working 1m05s · 171k/190k"),
+            "{rows:#?}"
+        );
+        let mut terminal = Terminal::new(TestBackend::new(100, 14)).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        let row = (0..14u16)
+            .find(|y| {
+                (0..100u16)
+                    .map(|x| buffer[(x, *y)].symbol())
+                    .collect::<String>()
+                    .contains("viewing r1")
+            })
+            .unwrap();
+        let at = (0..100u16)
+            .find(|x| buffer[(*x, row)].symbol() == "1" && buffer[(*x + 1, row)].symbol() == "7")
+            .unwrap();
+        assert_eq!(buffer[(at, row)].fg, app.theme.warning().fg.unwrap());
+        // Below nine tenths it isn't one.
+        app.reading.agents = vec![context_of("r1", 170_000, 190_000)];
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        assert_ne!(buffer[(at, row)].fg, app.theme.warning().fg.unwrap());
+    }
+
+    /// A session on the mock model whose main agent started a worker that
+    /// finished. The screen watching the worker shows the context its latest
+    /// request reported against the handover size of its model, and the
+    /// main agent's own figures once the view goes back.
+    #[tokio::test]
+    async fn the_screen_of_a_session_shows_the_context_of_a_worker_that_ran() {
+        use crate::tui::app::Info;
+        use crate::tui::input::{Editor, History};
+        use crate::tui::theme::{Catalog, Depth};
+        let (reading, snapshot) =
+            crate::harness::tests::session_with_a_worker_that_ran(7_777).await;
+        let mut app = App::new(
+            snapshot,
+            Editor::new(History::load(None)),
+            Info {
+                workspace: "work".into(),
+                ..Info::default()
+            },
+            Catalog::load(None),
+            Depth::Rgb,
+        );
+        app.set_reading(reading);
+        let main_tokens = app
+            .reading
+            .context_tokens
+            .expect("the main agent's context");
+        assert!(main_tokens < 7_000, "{main_tokens}");
+
+        app.watch(Some("r1".into()));
+        let rows = screen(&mut app, 100, 20);
+        let status = status_row(&rows);
+        assert!(status.starts_with(" viewing r1 · finished"), "{status}");
+        assert!(status.contains(" · 7k/200k"), "{status}");
+
+        app.watch(None);
+        let rows = screen(&mut app, 100, 20);
+        let status = status_row(&rows);
+        assert!(!status.contains("viewing"), "{status}");
+        assert!(
+            status.contains(&format!(" {}k/200k", main_tokens / 1000)),
+            "{status}"
+        );
+    }
+
+    /// At 80 columns the watched worker's line fits with its hint, and in
+    /// plain ASCII it has nothing else.
+    #[test]
+    fn the_status_line_of_a_watched_worker_fits_80_columns_in_ascii() {
+        use crate::glyphs::Symbols;
+        use crate::glyphs::tests::choose_symbols;
+        use crate::tui::app::tests::worker;
+        let _chosen = choose_symbols(Symbols::Ascii);
+        let mut app = app();
+        let mut r1 = worker("r1", WorkerState::Running);
+        r1.running_since = Some(chrono::Utc::now().timestamp_millis() - 134_100);
+        r1.cost_billed = 0.12;
+        r1.cost_list = 0.31;
+        app.update(Update::Worker(r1), Activity::default);
+        app.reading.agents = vec![context_of("r1", 88_000, 190_000)];
+        app.reading.commands = vec!["r1".into()];
+        app.watch(Some("r1".into()));
+        let rows = screen(&mut app, 80, 14);
+        let status = status_row(&rows);
+        assert!(
+            status.starts_with(
+                " viewing r1 | * working 2m14s | 88k/190k | $0.12 | ~ $0.31 | 1 worker"
+            ),
+            "{status}"
+        );
+        assert!(status.is_ascii(), "{status}");
+        assert!(status.chars().count() <= 80, "{status}");
+        // Without the cost, the hints have room beside the figures.
+        app.update(
+            Update::Worker(crate::remote::WorkerSummary::new("r1")),
+            Activity::default,
+        );
+        let rows = screen(&mut app, 80, 14);
+        let status = status_row(&rows);
+        assert!(
+            status.ends_with("Ctrl+B  background   Esc  back") && status.is_ascii(),
+            "{status}"
+        );
+    }
+
     #[test]
     fn the_question_docks_above_the_status_line() {
         let mut app = app();
@@ -1297,7 +1663,11 @@ mod tests {
             }
             let mut summary = worker("r1", WorkerState::Running);
             summary.last = Some("cargo test".into());
+            summary.running_since = Some(now - 134_100);
+            summary.cost_billed = 0.12;
+            summary.cost_list = 0.31;
             app.update(Update::Worker(summary), Activity::default);
+            app.reading.agents = vec![context_of("r1", 171_000, 190_000)];
             app.reading.context_tokens = Some(142_000);
             app.reading.cost = 3.2;
             app.set_activity(Activity {
