@@ -883,3 +883,47 @@ async fn a_resumed_session_reads_what_its_workers_cost_from_their_saved_runs() {
     assert_eq!(after.effort.as_deref(), Some("low"));
     harness.crew.as_ref().unwrap().shutdown().await;
 }
+
+/// The `start_agent` the model is offered names the profile, model and
+/// effort in a session that resumes, also one the main agent's saved
+/// configuration doesn't list the profile tools for: the definitions are
+/// made when a request is.
+#[tokio::test]
+async fn a_resumed_session_offers_start_agent_with_its_new_parameters() {
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, _sender, _server, seen) = setup(temp.path()).await;
+    start_worker(&mut harness, &mut inputs, "Start plainly.").await;
+    harness.crew.as_ref().unwrap().shutdown().await;
+    harness.open(true).unwrap();
+    harness.start_new_workers();
+    start_worker(&mut harness, &mut inputs, "Start again plainly.").await;
+    let tools = |body: &str| -> Vec<(String, Vec<String>)> {
+        let body: serde_json::Value = serde_json::from_str(body).unwrap();
+        body["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|tool| {
+                let properties = tool["parameters"]["properties"]
+                    .as_object()
+                    .map(|properties| properties.keys().cloned().collect())
+                    .unwrap_or_default();
+                (tool["name"].as_str().unwrap().to_string(), properties)
+            })
+            .collect()
+    };
+    let last = seen
+        .lock()
+        .unwrap()
+        .iter()
+        .rev()
+        .find(|(who, ..)| who == "main")
+        .map(|(_, _, _, body)| tools(body))
+        .unwrap();
+    let start = last.iter().find(|(name, _)| name == "start_agent").unwrap();
+    for parameter in ["profile", "model", "effort", "cache"] {
+        assert!(start.1.iter().any(|name| name == parameter), "{start:?}");
+    }
+    assert!(last.iter().any(|(name, _)| name == "worker_options"));
+    harness.crew.as_ref().unwrap().shutdown().await;
+}
