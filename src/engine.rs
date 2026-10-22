@@ -800,7 +800,10 @@ impl Engine {
         let interactive = options.interactive;
         // The front end attaches a printer, or a feed, once the session is open.
         let output = Arc::new(Output::new(None, one_shot));
-        let stats = Arc::new(Mutex::new(Stats::default()));
+        let stats = Arc::new(Mutex::new(Stats {
+            cache_memory: Some(Arc::new(crate::cache_memory::Memory::open(&session.dir))),
+            ..Stats::default()
+        }));
         let (remote_actions, remote_input) = mpsc::unbounded_channel();
         let handover = Arc::new(handover::Handover::new(
             runs,
@@ -4035,4 +4038,6 @@ mod tests {
                 .is_some()
         );
     }
+
+    include!("cache_tests.rs");
 }

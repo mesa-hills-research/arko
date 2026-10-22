@@ -112,15 +112,12 @@ fn minutes_left(expires_at: std::time::SystemTime) -> u64 {
     }
 }
 
-/// When the main agent's prompt cache expires: its latest request, or the
-/// latest refresh that kept it warm, plus its lifetime, as the status line
-/// counts them. `None` while either is unknown.
+/// When the main agent's prompt cache expires: its latest request, the
+/// latest refresh that kept it warm, or (resumed) what the session's record
+/// says of them, plus its lifetime, as the status line counts them. `None`
+/// while either is unknown.
 pub(crate) fn cache_expiry(stats: &crate::ui::Stats) -> Option<std::time::SystemTime> {
-    let used = stats
-        .last_request
-        .as_ref()
-        .map(|request| request.at)
-        .max(stats.cache_refreshed_at)?;
+    let used = stats.cache_refreshed_at?;
     let used = std::time::UNIX_EPOCH + Duration::from_millis(u64::try_from(used).ok()?);
     Some(used + stats.cache_lifetime?)
 }
@@ -675,6 +672,7 @@ impl Harness {
                 && self.settings.openai_auth == Some(providers::OpenAiAuth::ChatGpt);
             let mut stats = lock(&self.stats);
             stats.context_window = arko_ai::input_limit::effective_max_input_tokens(model, chatgpt);
+            stats.main_model = Some(model.id.clone());
             // How long its prompt cache lasts, as the provider says. Claude
             // Code's shows in its cache writes.
             let lifetime = arko_ai::prompt_cache::prompt_cache_lifetime(
@@ -694,9 +692,14 @@ impl Harness {
                 Conversation::Stopped(run) => Some(&run.result.task),
                 Conversation::New => None,
             };
-            if let Some(size) = task.and_then(|task| task.current_conversation_context_size()) {
+            let size = task.and_then(|task| task.current_conversation_context_size());
+            if let Some(size) = size {
                 stats.context_tokens = Some(size);
             }
+            drop(stats);
+            // And how long its prompt cache has left, as the session's
+            // record has it.
+            self.restore_cache(size.is_some());
         }
         if let Some(crew) = &self.crew {
             crew.attach(&workflow, lead);
@@ -1905,10 +1908,18 @@ impl Harness {
                     usage.cached_tokens.unwrap_or(0),
                     usage.cache_write_tokens.unwrap_or(0),
                 );
-                {
+                let kept = {
                     let mut stats = lock(&self.stats);
                     stats.cache_refreshed_at = Some(started);
                     stats.cache_use = Some((read, written));
+                    stats
+                        .cache_memory
+                        .clone()
+                        .zip(stats.cache_entry(result.agent_run_id))
+                };
+                // For a resume.
+                if let Some((memory, entry)) = kept {
+                    memory.put(entry);
                 }
                 self.tell_monitors_of_the_cache();
                 self.gauges.touch();

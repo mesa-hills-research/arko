@@ -463,8 +463,16 @@ pub struct Stats {
     /// What the main agent's latest request read from the cache and wrote
     /// to it, in tokens.
     pub cache_use: Option<(usize, usize)>,
-    /// When the cache was last kept warm out of band (Unix milliseconds).
+    /// When the conversation's prompt cache was last used (Unix
+    /// milliseconds): its latest request's start, a refresh that kept it
+    /// warm, or what a resumed session's record says of it.
     pub cache_refreshed_at: Option<i64>,
+    /// The session's record of its prompt cache, kept as the main agent's
+    /// requests end. None where nothing is kept (tests).
+    pub(crate) cache_memory: Option<Arc<crate::cache_memory::Memory>>,
+    /// The main agent's model, as the session runs it (its id in the
+    /// configuration). The record of the cache names it.
+    pub(crate) main_model: Option<String>,
 }
 
 /// A request to the event printer.
@@ -822,6 +830,8 @@ impl EventPrinter {
                 )));
             }
             AgentEvent::ConversationHandedOver { .. } if main => {
+                // The conversation is a fresh one: nothing of it is cached.
+                self.forget_cache(event.agent_run_id);
                 // The report's last line has no newline after it.
                 self.flush();
                 self.output.echo(&self.output.dim(
@@ -832,6 +842,8 @@ impl EventPrinter {
                 input_tokens,
                 compacted_tokens,
             } if main => {
+                // Its summary starts the cache over.
+                self.forget_cache(event.agent_run_id);
                 self.flush();
                 self.output.echo(&self.output.dim(&format!(
                     "  ⟳ {}",
@@ -861,7 +873,10 @@ impl EventPrinter {
                 self.request_start = (self.text.len(), self.thinking.len());
                 self.printed_since_request = (false, false);
                 self.subagent_request = false;
-                self.stats.lock().unwrap().last_request = Some(remote::LastRequest {
+                let mut stats = self.stats.lock().unwrap();
+                // The cache lasts from the request's start.
+                stats.cache_refreshed_at = Some(at);
+                stats.last_request = Some(remote::LastRequest {
                     at,
                     model,
                     sizes,
@@ -875,16 +890,27 @@ impl EventPrinter {
             }
             // The conversation's own usage: its size and its cache.
             AgentEvent::UsageReported(usage) if main && !self.subagent_request => {
-                let mut stats = self.stats.lock().unwrap();
-                let written = usage.cache_write_tokens.unwrap_or(0);
-                stats.cache_use = Some((usage.cached_tokens.unwrap_or(0), written));
-                if stats.learns_cache_lifetime && written > 0 {
-                    let hour = usage.cache_write_1h_tokens.unwrap_or(0) > 0;
-                    stats.cache_lifetime = Some(if hour {
-                        arko_ai::prompt_cache::ANTHROPIC_EXTENDED_PROMPT_CACHE_LIFETIME
-                    } else {
-                        arko_ai::prompt_cache::ANTHROPIC_PROMPT_CACHE_LIFETIME
-                    });
+                let kept = {
+                    let mut stats = self.stats.lock().unwrap();
+                    let written = usage.cache_write_tokens.unwrap_or(0);
+                    stats.cache_use = Some((usage.cached_tokens.unwrap_or(0), written));
+                    if stats.learns_cache_lifetime && written > 0 {
+                        let hour = usage.cache_write_1h_tokens.unwrap_or(0) > 0;
+                        stats.cache_lifetime = Some(if hour {
+                            arko_ai::prompt_cache::ANTHROPIC_EXTENDED_PROMPT_CACHE_LIFETIME
+                        } else {
+                            arko_ai::prompt_cache::ANTHROPIC_PROMPT_CACHE_LIFETIME
+                        });
+                    }
+                    // The request ended: the session keeps when its cache
+                    // lapses, for a resume (outside the lock).
+                    stats
+                        .cache_memory
+                        .clone()
+                        .zip(stats.cache_entry(event.agent_run_id))
+                };
+                if let Some((memory, entry)) = kept {
+                    memory.put(entry);
                 }
             }
             AgentEvent::ModelCallUsageReported(usage) if main && usage.subagent.is_none() => {
@@ -906,6 +932,19 @@ impl EventPrinter {
                 }
             }
             _ => {}
+        }
+    }
+
+    /// The main agent's conversation was replaced, so no cache holds it:
+    /// the status counts none, and the session keeps none of `run`.
+    fn forget_cache(&mut self, run: Uuid) {
+        let memory = {
+            let mut stats = self.stats.lock().unwrap();
+            stats.set_cache(None);
+            stats.cache_memory.clone()
+        };
+        if let Some(memory) = memory {
+            memory.forget(run);
         }
     }
 
@@ -1839,6 +1878,105 @@ mod tests {
         let stats = stats.lock().unwrap();
         assert_eq!(stats.context_tokens, Some(500));
         assert_eq!(stats.cache_use, Some((500, 0)));
+    }
+
+    /// The session keeps when its prompt cache lapses as each request ends,
+    /// not as it starts: a request that was running when Arko stopped counts
+    /// from the last one that ended. A handover or a compaction starts the
+    /// conversation over, so nothing of the cache is kept for it.
+    #[tokio::test]
+    async fn the_cache_is_kept_as_requests_end_and_dropped_with_the_conversation() {
+        let temp = tempfile::tempdir().unwrap();
+        let memory = Arc::new(crate::cache_memory::Memory::open(temp.path()));
+        let stats: Arc<Mutex<Stats>> = Arc::new(Mutex::new(Stats {
+            cache_lifetime: Some(std::time::Duration::from_secs(300)),
+            cache_memory: Some(memory.clone()),
+            main_model: Some("claude-opus-5-5".into()),
+            ..Stats::default()
+        }));
+        let output = Arc::new(Output::new(None, true));
+        let mut printer = EventPrinter::new(output, stats.clone(), false, None);
+        let run = Uuid::from_u128(7);
+        let at = |millis: i64| chrono::DateTime::from_timestamp_millis(millis).unwrap();
+        let event = |millis: i64, event: AgentEvent| WorkflowEvent {
+            timestamp: at(millis),
+            workflow_run_id: Uuid::nil(),
+            agent_name: MAIN.into(),
+            agent_run_id: run,
+            event,
+        };
+        let started = || AgentEvent::ModelRequestStarted {
+            model: "claude-opus-5-5".into(),
+            subagent: None,
+            sizes: None,
+            bytes_per_token: 3.0,
+        };
+        let read = |tokens: usize| {
+            AgentEvent::UsageReported(arko_ai::UsageInfo {
+                input_tokens: tokens,
+                cached_tokens: Some(tokens),
+                ..arko_ai::UsageInfo::default()
+            })
+        };
+        let kept = || memory.find(&[run]).map(|entry| (entry.at, entry.read));
+        assert_eq!(kept(), None);
+        // The request is running: the status counts from its start, and the
+        // session keeps nothing yet.
+        printer.event(event(1_000, started()));
+        assert_eq!(stats.lock().unwrap().cache_refreshed_at, Some(1_000));
+        assert_eq!(kept(), None);
+        printer.event(event(1_500, read(400)));
+        assert_eq!(kept(), Some((1_000, 400)));
+        // The next one starts, and Arko stops before it ends.
+        printer.event(event(60_000, started()));
+        assert_eq!(stats.lock().unwrap().cache_refreshed_at, Some(60_000));
+        assert_eq!(kept(), Some((1_000, 400)));
+        printer.event(event(61_000, read(500)));
+        assert_eq!(kept(), Some((60_000, 500)));
+        // The kept entry has the model and the lifetime.
+        let entry = memory.find(&[run]).unwrap();
+        assert_eq!(
+            (entry.model.as_str(), entry.lifetime),
+            ("claude-opus-5-5", 300)
+        );
+        // A subagent's request of Claude Code's isn't the conversation's.
+        let subagent = AgentEvent::ModelRequestStarted {
+            model: "claude-haiku-5".into(),
+            subagent: Some("call-1".into()),
+            sizes: None,
+            bytes_per_token: 3.0,
+        };
+        printer.event(event(90_000, subagent));
+        printer.event(event(91_000, read(9_000)));
+        assert_eq!(kept(), Some((60_000, 500)));
+        assert_eq!(stats.lock().unwrap().cache_refreshed_at, Some(60_000));
+        // A handover and a compaction replace the conversation.
+        let handed_over = AgentEvent::ConversationHandedOver {
+            report: "Report.".into(),
+            input_tokens: 500,
+            handovers: 1,
+        };
+        printer.event(event(120_000, handed_over));
+        assert_eq!(kept(), None);
+        {
+            let stats = stats.lock().unwrap();
+            assert_eq!((stats.cache_refreshed_at, stats.cache_use), (None, None));
+        }
+        printer.event(event(130_000, started()));
+        printer.event(event(131_000, read(10)));
+        assert_eq!(kept(), Some((130_000, 10)));
+        let compacted = AgentEvent::ConversationCompacted {
+            input_tokens: 900,
+            compacted_tokens: Some(100),
+        };
+        printer.event(event(200_000, compacted));
+        assert_eq!(kept(), None);
+        assert_eq!(stats.lock().unwrap().cache_refreshed_at, None);
+        // What was kept is gone from the session's folder too.
+        assert_eq!(
+            crate::cache_memory::Memory::open(temp.path()).find(&[run]),
+            None
+        );
     }
 
     /// A worker's context follows its own requests. The requests of the

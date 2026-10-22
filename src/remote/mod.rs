@@ -177,8 +177,12 @@ pub struct CacheStatus {
     /// where the provider doesn't say (Gemini, OpenRouter models other than
     /// Claude, Claude Code until it writes the cache) or nothing is cached.
     pub lifetime: Option<std::time::Duration>,
-    /// When the latest request went out (Unix milliseconds). The cache
-    /// lasts `lifetime` from then.
+    /// When the latest request went out, or the refresh that kept the cache
+    /// warm (Unix milliseconds). The cache lasts `lifetime` from then. A
+    /// session resumed after Arko closed has the time its latest finished
+    /// request left, so the cache may have lapsed meanwhile. `None` for a
+    /// new conversation, and for one whose cache the session can't vouch for
+    /// (another model, a handover or a compaction since).
     pub refreshed_at: Option<i64>,
     /// The conversation's input at its latest request, in tokens, which a
     /// miss writes to the cache again.

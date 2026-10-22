@@ -379,7 +379,12 @@ impl Harness {
         self.conversations.current = None;
         self.conversation = Conversation::New;
         self.handover.switch(None, None);
-        lock(&self.stats).context_tokens = None;
+        {
+            // Nothing of the new conversation is cached yet.
+            let mut stats = lock(&self.stats);
+            stats.context_tokens = None;
+            stats.set_cache(None);
+        }
         if !self.conversations.list.is_empty() {
             self.save_conversations();
         }
@@ -475,6 +480,8 @@ impl Harness {
             .and_then(|result| result.task.current_conversation_context_size());
         self.handover.switch(run, input);
         lock(&self.stats).context_tokens = input;
+        // Its prompt cache, as the session's record has it.
+        self.restore_cache(input.is_some());
         self.conversation = conversation_of(&workflow, run);
         self.save_conversations();
         self.publish_conversations();
