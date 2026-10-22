@@ -3604,7 +3604,7 @@ pub(super) mod tests {
         assert_eq!(
             app.hint.as_ref().map(|(text, _)| text.as_str()),
             Some(
-                "Workers started from now on without a profile or a model of their own run gpt-6-astra at high effort"
+                "Workers that get no profile or model of their own now run gpt-6-astra at high effort"
             )
         );
     }

@@ -202,7 +202,7 @@ impl ModelPicker {
             Target::Workers => Outcome::Apply {
                 line: format!("/model worker {model}{effort_words}"),
                 said: format!(
-                    "Workers started from now on without a profile or a model of their own run {model}{effort_said}"
+                    "Workers that get no profile or model of their own now run {model}{effort_said}"
                 ),
             },
         }

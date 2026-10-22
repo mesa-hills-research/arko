@@ -580,7 +580,7 @@ impl Harness {
                 shown(&self.settings.worker)
             ),
             false => format!(
-                "Workers started from now on without a profile or a model of their own run {}. The main agent keeps {} for this session{before}.",
+                "Workers that get no profile or model of their own now run {}. The main agent keeps {} for this session{before}.",
                 shown(&self.settings.worker),
                 shown(&self.settings.main)
             ),

@@ -231,7 +231,7 @@ async fn a_worker_keeps_the_model_it_started_on_and_new_ones_start_on_the_new_on
     // Workers started from now on run sol.
     assert!(harness.live_command("/model worker sol high", Source::Terminal));
     assert!(said(&harness.feed).contains(
-        "Workers started from now on without a profile or a model of their own run gpt-6.1-sol (high effort). The main agent keeps gpt-6-luna (high effort) for this session, and the workers started before keep theirs."
+        "Workers that get no profile or model of their own now run gpt-6.1-sol (high effort). The main agent keeps gpt-6-luna (high effort) for this session, and the workers started before keep theirs."
     ));
     assert_eq!(harness.session.load_settings().unwrap().worker.model, "gpt-6.1-sol");
     let reading = remote::Meter::read(harness.gauges.as_ref());
