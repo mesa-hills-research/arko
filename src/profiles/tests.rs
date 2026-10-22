@@ -750,3 +750,25 @@ fn a_cache_that_is_not_read_says_what_it_takes() {
     let why = "2h".parse::<Cache>().unwrap_err();
     assert!(why.contains("5m or 1h"), "{why}");
 }
+
+#[test]
+fn a_branch_gets_the_profiles_of_its_session_and_nothing_else() {
+    let temp = tempfile::tempdir().unwrap();
+    let (from, to) = (temp.path().join("from"), temp.path().join("to"));
+    // A session without profiles leaves the branch without a folder.
+    std::fs::create_dir_all(&from).unwrap();
+    std::fs::create_dir_all(&to).unwrap();
+    copy_session_profiles(&from, &to).unwrap();
+    assert!(!to.join("profiles").exists());
+    let folder = from.join("profiles");
+    std::fs::create_dir_all(folder.join("sub.md")).unwrap();
+    std::fs::write(folder.join("reviewer.md"), "---\ndescription: R\n---\n").unwrap();
+    std::fs::write(folder.join("notes.txt"), "not a profile").unwrap();
+    copy_session_profiles(&from, &to).unwrap();
+    let mut copied: Vec<_> = std::fs::read_dir(to.join("profiles"))
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    copied.sort();
+    assert_eq!(copied, ["reviewer.md"]);
+}

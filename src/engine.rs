@@ -2991,7 +2991,25 @@ mod tests {
 
         // Closed, the session is branched from what it saved, as its own
         // request branches all of it.
+        // The profiles the session saved go with the branch.
+        let profiles = root.join("sessions").join(&id).join("profiles");
+        std::fs::create_dir_all(&profiles).unwrap();
+        std::fs::write(
+            profiles.join("reviewer.md"),
+            "---\ndescription: Reviews\n---\n",
+        )
+        .unwrap();
         let saved = crate::sessions::branch(&root, &id).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(
+                root.join("sessions")
+                    .join(&saved)
+                    .join("profiles")
+                    .join("reviewer.md")
+            )
+            .unwrap(),
+            "---\ndescription: Reviews\n---\n"
+        );
         let settings = Session::open(&root, &saved)
             .unwrap()
             .load_settings()

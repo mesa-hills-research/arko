@@ -430,9 +430,11 @@ pub(crate) fn write_branch(
     if real(&settings.workspace) == real(&from.dir) {
         settings.workspace = session.dir.clone();
     }
+    // (The branch's conversation can name a profile the session saved.)
     let written = session
         .save_settings(&settings)
-        .and_then(|()| std::fs::write(session.dir.join(session::SEED_FILE), seed));
+        .and_then(|()| std::fs::write(session.dir.join(session::SEED_FILE), seed))
+        .and_then(|()| crate::profiles::copy_session_profiles(&from.dir, &session.dir));
     if let Err(error) = written {
         let _ = std::fs::remove_dir_all(&session.dir);
         return Err(format!("could not save the branch ({error})"));

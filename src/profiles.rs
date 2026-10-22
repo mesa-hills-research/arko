@@ -1009,6 +1009,25 @@ pub fn delete(roots: &Roots, place: Place, name: &str) -> Result<PathBuf, String
     Ok(file)
 }
 
+/// Copies the profiles in the session folder `from` to the session folder
+/// `to`, for a branch of the session, whose conversation can name them.
+pub(crate) fn copy_session_profiles(from: &Path, to: &Path) -> std::io::Result<()> {
+    let Ok(entries) = std::fs::read_dir(from.join(FOLDER)) else {
+        return Ok(());
+    };
+    let target = to.join(FOLDER);
+    for entry in entries.flatten() {
+        let file = entry.path();
+        if entry.file_type().is_ok_and(|kind| kind.is_file())
+            && file.extension().is_some_and(|ext| ext == EXTENSION)
+        {
+            std::fs::create_dir_all(&target)?;
+            std::fs::copy(&file, target.join(entry.file_name()))?;
+        }
+    }
+    Ok(())
+}
+
 /// "812 characters" or "812 characters (28 lines)".
 fn size_of(text: &str) -> String {
     let characters = text.chars().count();
