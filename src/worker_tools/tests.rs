@@ -458,10 +458,16 @@ async fn a_profile_for_every_session_waits_for_the_users_yes() {
         .unwrap();
     assert_eq!(
         asking.await.unwrap().unwrap(),
-        "The user didn't save 3d-judge for every project and wrote \"yes, but use medium effort\". Change it and ask again, or save it for this session with scope session."
+        "The user didn't save 3d-judge for every project and answered \"yes, but use medium effort\". Only a plain yes saves it. If they asked for a change, make it and ask again. If they meant yes, ask again and tell them to answer yes. Or save it for this session with scope session."
     );
     assert!(profiles::read(&fixture.basis.roots, "3d-judge").is_err());
-    assert!(shown(&fixture.feed).is_empty());
+    // The user is told in the transcript that nothing was saved.
+    assert_eq!(
+        shown(&fixture.feed),
+        [
+            "Nothing was saved. Answer yes to save the profile as it is. Any other answer goes to the agent to change it."
+        ]
+    );
 
     // A plain yes saves it, in the user's place.
     let asking = {
@@ -485,7 +491,7 @@ async fn a_profile_for_every_session_waits_for_the_users_yes() {
     assert_eq!(found.place, Place::User);
     assert!(found.profile.made_by_agent());
     assert!(
-        shown(&fixture.feed)[0].starts_with(
+        shown(&fixture.feed)[1].starts_with(
             "The main agent saved the worker profile 3d-judge for every project. It is in "
         ),
         "{:?}",

@@ -544,7 +544,18 @@ fn the_approval_question_shows_the_whole_profile() {
 #[test]
 fn only_a_plain_yes_approves() {
     for yes in [
-        "yes", "Yes", "YES.", "y", "ok", "OK!", " okay ", "allow", "yes\n",
+        "yes",
+        "Yes",
+        "YES.",
+        "y",
+        "ok",
+        "OK!",
+        " okay ",
+        "allow",
+        "yes\n",
+        "Yes, please!",
+        "yes thanks",
+        "ok, please. thanks",
     ] {
         assert!(is_approval(yes), "{yes:?}");
     }

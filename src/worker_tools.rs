@@ -579,6 +579,12 @@ impl Tool for SaveWorkerProfile {
                 .await
                 .map_err(refused)?;
             if !profiles::is_approval(&answer) {
+                // The user sees the answer didn't save it, since what they
+                // meant by "yes please, but..." is only the agent's to read.
+                self.0.crew.notice(
+                    Level::Info,
+                    "Nothing was saved. Answer yes to save the profile as it is. Any other answer goes to the agent to change it.",
+                );
                 let said = answer.trim();
                 return Ok(if said.is_empty() {
                     format!(
@@ -588,7 +594,7 @@ impl Tool for SaveWorkerProfile {
                     )
                 } else {
                     format!(
-                        "The user didn't save {} for {} and wrote \"{}\". Change it and ask again, or save it for this session with scope session.",
+                        "The user didn't save {} for {} and answered \"{}\". Only a plain yes saves it. If they asked for a change, make it and ask again. If they meant yes, ask again and tell them to answer yes. Or save it for this session with scope session.",
                         profile.name,
                         place.reach(),
                         cut(said, 500)

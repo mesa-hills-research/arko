@@ -550,7 +550,7 @@ async fn a_profile_for_every_session_is_put_to_the_user_as_a_question() {
     start_worker(&mut harness, &mut inputs, "Start by saving a profile for everyone.").await;
     assert_eq!(
         last_result(&seen),
-        "The user didn't save 3d-judge for every project and wrote \"no, use medium effort\". Change it and ask again, or save it for this session with scope session."
+        "The user didn't save 3d-judge for every project and answered \"no, use medium effort\". Only a plain yes saves it. If they asked for a change, make it and ask again. If they meant yes, ask again and tell them to answer yes. Or save it for this session with scope session."
     );
     assert!(!saved.exists());
     start_worker(&mut harness, &mut inputs, "Start by saving a profile for everyone.").await;
