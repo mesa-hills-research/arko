@@ -110,10 +110,11 @@ pub struct Settings {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub own_worker_model: bool,
     /// The main agent ends its turns with a reply in plain text, instead of
-    /// a `complete_task` call, and answers what the user types meanwhile
-    /// in text beside its tool calls instead of with `message_user`. False
-    /// in sessions saved before it existed, whose main agent calls
-    /// `complete_task`, as their saved configuration says.
+    /// a `complete_task` call. It answers what the user types meanwhile
+    /// with `message_user`, except in a session saved before it had that
+    /// (its saved configuration says), which answers in text beside its
+    /// tool calls. False in sessions saved before text replies existed,
+    /// whose main agent calls `complete_task`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub text_replies: bool,
     /// The agents on `cc:` models hand over at the handover size, as on the

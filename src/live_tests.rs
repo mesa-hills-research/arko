@@ -1507,6 +1507,60 @@ async fn a_main_agent_in_claude_code_shows_its_thinking_and_text_beside_its_call
     }
 }
 
+/// A main agent in Claude Code with text replies answers with `message_user`
+/// mid-turn, as it does without them: Arko's tool is served to the CLI (the
+/// model sees it as `mcp__arko__message_user`, and the instructions name it
+/// `message_user`), the message shows in its order, and the turn ends with
+/// the plain reply.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_main_agent_in_claude_code_with_text_replies_answers_with_message_user() {
+    let temp = tempfile::tempdir().unwrap();
+    let script = serde_json::json!([[
+        {"text": "Looking at it.", "continues": true},
+        {"tool": "mcp__arko__message_user", "input": {"message": "Halfway: two files to go."}, "continues": true},
+        {"text": "Done: nothing left to do."},
+    ]]);
+    let (mut harness, mut inputs, _sender, managers, fake) = in_claude_code(temp.path(), script);
+    harness.text_replies_command("on", Source::Terminal);
+    assert!(harness.main_config.tool_config.ends_task_with_text());
+    let end = tokio::time::timeout(
+        Duration::from_secs(60),
+        harness.turn(Prompt::User("Check the files.".into()), &mut inputs),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(end, TurnEnd::Answered));
+    assert_eq!(summary(&harness), "Done: nothing left to do.");
+    let shown: Vec<(String, String)> = shown(&harness.feed)
+        .into_iter()
+        .filter(|(kind, _, _)| ["text", "message", "call", "reply"].contains(&kind.as_str()))
+        .map(|(kind, text, _)| (kind, text))
+        .collect();
+    let item = |kind: &str, text: &str| (kind.to_string(), text.to_string());
+    assert_eq!(
+        shown,
+        [
+            item("text", "Looking at it."),
+            item("message", "Halfway: two files to go."),
+            item("reply", "Done: nothing left to do."),
+        ]
+    );
+    let (log, argv) = fake_log(&fake);
+    let served: Vec<String> = log.iter().find(|entry| entry["event"] == "tools").unwrap()["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|tool| tool["name"].as_str().unwrap().to_string())
+        .collect();
+    assert!(served.contains(&message::MESSAGE_USER.to_string()), "{served:?}");
+    assert!(!served.contains(&"complete_task".to_string()), "{served:?}");
+    let prompt = after(&argv, "--system-prompt").unwrap();
+    assert!(prompt.contains("answer it with `message_user` and carry on with your work"));
+    harness.crew.as_ref().unwrap().shutdown().await;
+    managers.shutdown().await;
+}
+
 /// A worker in Claude Code that was running when Arko closed goes on when
 /// the session resumes: its Claude Code session resumes, without a message
 /// from the lead, and its report reaches the lead.

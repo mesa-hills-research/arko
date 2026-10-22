@@ -537,3 +537,18 @@ test('a user message is tagged only for what is unusual', () => {
   // A turn, a command, and a delivery a later Arko adds have none.
   for (const delivery of ['turn', 'command', 'later', undefined]) assert.equal(tag(delivery, false), null);
 });
+
+test('text beside a wait and a message from the agent show in every view, in order', () => {
+  next = 0;
+  const items = [
+    item('user'),
+    item('text', { text: 'Looking at it.' }),
+    item('message', { text: 'Halfway.' }),
+    item('text', { text: 'Waiting for the check.' }),
+    item('call', { status: 'running', tool: 'wait_for_agents', text: 'waiting for r1' }),
+  ];
+  const kinds = (rows) => rows.map((row) => (row.count ? 'count' : row.item.kind));
+  assert.deepEqual(kinds(core.layout(items, 'full')), ['user', 'text', 'message', 'text', 'call']);
+  assert.deepEqual(kinds(core.layout(items, 'quiet')), ['user', 'text', 'message', 'text', 'call']);
+  assert.deepEqual(kinds(core.layout(items, 'messages')), ['user', 'text', 'message', 'text', 'count']);
+});

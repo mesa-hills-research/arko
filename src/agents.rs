@@ -585,19 +585,25 @@ pub fn replies_text(text_replies: bool) -> &'static str {
 /// What ends a context update that gives the main agent a note the user
 /// typed, where the agent answers it. The user never sees its thinking, and
 /// the rule that says so in its instructions is far from the note. The
-/// agent answers in text beside its next call with text replies, else with
-/// `message_user`. A chat has no calls to answer beside, and so no hint.
+/// agent answers with `message_user`, also when the note cut a wait short.
+/// An agent without it (a session saved when a main agent that replies in
+/// text had none) answers in text beside its next call. A chat has no calls
+/// to answer beside, and so no hint.
 pub fn operator_note_hint(config: &AgentConfig) -> Option<&'static str> {
     let tools = &config.tool_config;
     if tools.chat {
         None
-    } else if tools.ends_task_with_text() {
+    } else if tools
+        .available_tool_names
+        .iter()
+        .any(|name| name == crate::message::MESSAGE_USER)
+    {
         Some(
-            "The user can't see your thinking. Answer a question in the notes above in the text you write beside your next tool call.",
+            "The user can't see your thinking. Answer a question in the notes above with `message_user` first, even if they cut a wait short, then carry on with your work.",
         )
     } else {
         Some(
-            "The user can't see your thinking. Answer a question in the notes above with `message_user`, then carry on with your work.",
+            "The user can't see your thinking. Answer a question in the notes above in the text you write beside your next tool call.",
         )
     }
 }
@@ -613,20 +619,18 @@ pub fn cc_text(cc_compact: bool) -> &'static str {
 }
 
 /// The main agent's configuration. With `text_replies` it ends its turns
-/// with a reply in plain text (`text_reply_ends_task`), and answers what
-/// the user types meanwhile in text beside its calls: it has neither
-/// `complete_task` nor `message_user`. Without, it ends them with
-/// `complete_task`, whose summary is its reply, and answers with
-/// `message_user`.
+/// with a reply in plain text (`text_reply_ends_task`), without
+/// `complete_task`. Without, it ends them with `complete_task`, whose
+/// summary is its reply. Either way it answers what the user types
+/// meanwhile with `message_user`, which shows a message without ending the
+/// turn.
 pub fn main_config(settings: &AgentSettings) -> Result<AgentConfig, String> {
     if settings.mode == crate::session::Mode::Chat {
         return crate::chat::config(settings);
     }
     let mut tools = shared_tool_names(settings);
     tools.push(ASK_USER_TOOL_NAME.into());
-    if !settings.text_replies {
-        tools.push(crate::message::MESSAGE_USER.into());
-    }
+    tools.push(crate::message::MESSAGE_USER.into());
     if settings.max_workers > 0 {
         tools.extend(crew::LEAD_TOOL_NAMES.iter().map(|name| name.to_string()));
     }
@@ -748,20 +752,32 @@ pub fn worker_config(settings: &AgentSettings) -> Result<AgentConfig, String> {
 }
 
 fn main_instructions(settings: &AgentSettings) -> String {
-    if settings.text_replies {
-        return "# How this conversation works\n\
-         The user talks with you in a terminal. Each of their messages starts a turn: work on it with your tools for as long as it takes. When you're done, reply without calling a tool. That reply ends your turn, and the user reads it as your message, so write your answer there in full. Text you write beside tool calls is shown to the user as you work: keep it to short progress notes.\n\n\
+    // How a turn goes and ends.
+    let turns = if settings.text_replies {
+        "The user talks with you in a terminal. Each of their messages starts a turn: work on it with your tools for as long as it takes. When you're done, reply without calling a tool. That reply ends your turn, and the user reads it as your message, so write your answer there in full. Text you write beside tool calls is shown to the user as you work: keep it to short progress notes."
+    } else {
+        "The user talks with you in a terminal. Each of their messages starts a turn: work on it with your tools for as long as it takes, then end the turn by calling `complete_task`, whose summary is your reply. Text you write outside tool calls is shown to the user as you work; keep it to short progress notes, and don't repeat your reply in it."
+    };
+    // A note can end a wait for the workers early, and the agent has
+    // answered such a note in its thinking and waited again.
+    let waiting = if settings.max_workers > 0 {
+        " A note can also end a `wait_for_agents` call early. Answer it with `message_user` before you wait again, as waiting again without answering is a mistake."
+    } else {
+        ""
+    };
+    // What ends a turn, as a note's answer must not.
+    let ending = if settings.text_replies {
+        "Only a response without a tool call ends your turn, so don't answer a note that way unless you're done."
+    } else {
+        "Every response of yours must call a tool: a reply in plain text, without one, is an error."
+    };
+    format!(
+        "# How this conversation works\n\
+         {turns}\n\n\
          When a step doesn't need the user, keep going. End the turn to ask only when you can't continue without them, or before something destructive or hard to undo that they didn't ask for: deleting data they may want, force-pushing, publishing, or changing things outside the working directory.\n\n\
-         The user can type while you work. What they type reaches you as a note from the operator: take it into account in the work you're doing. When a note asks you something or needs an answer before you finish (a question, \"progress?\"), answer it in text beside your next tool call and carry on with your work. The user never sees your thinking. In Claude Code (cc: models) and on the ChatGPT login they see none of it, and through the providers' APIs at most a summary. So every answer, question or progress note meant for them goes in the text you write, as one written only in your thinking never reaches them. Only a response without a tool call ends your turn, so don't answer a note that way unless you're done.\n\n\
+         The user can type while you work. What they type reaches you as a note from the operator: take it into account in the work you're doing. When a note asks you something or needs an answer before you finish (a question, \"progress?\"), answer it with `message_user` and carry on with your work.{waiting} Use `message_user` too for anything they must know before you finish. The user never sees your thinking. In Claude Code (cc: models) and on the ChatGPT login they see none of it, and through the providers' APIs at most a summary. So every answer, question or progress note meant for them goes in what you write (your text, `message_user` or your reply), as one written only in your thinking never reaches them. {ending}\n\n\
          When you need the user to decide something before you can go on (a choice between approaches with real trade-offs, missing information only they have), ask with `ask_user`. If they can't be asked (Arko runs without a terminal), it says so, and you decide.\n"
-            .to_string();
-    }
-    "# How this conversation works\n\
-     The user talks with you in a terminal. Each of their messages starts a turn: work on it with your tools for as long as it takes, then end the turn by calling `complete_task`, whose summary is your reply. Text you write outside tool calls is shown to the user as you work; keep it to short progress notes, and don't repeat your reply in it.\n\n\
-     When a step doesn't need the user, keep going. End the turn to ask only when you can't continue without them, or before something destructive or hard to undo that they didn't ask for: deleting data they may want, force-pushing, publishing, or changing things outside the working directory.\n\n\
-     The user can type while you work. What they type reaches you as a note from the operator: take it into account in the work you're doing. When a note asks you something or needs an answer before you finish (a question, \"progress?\"), answer it with `message_user` and carry on with your work. Use `message_user` too for anything they must know before you finish. The user never sees your thinking. In Claude Code (cc: models) and on the ChatGPT login they see none of it, and through the providers' APIs at most a summary. So every answer, question or progress note meant for them goes in what you write (your text, `message_user` or your reply), as one written only in your thinking never reaches them. Every response of yours must call a tool: a reply in plain text, without one, is an error.\n\n\
-     When you need the user to decide something before you can go on (a choice between approaches with real trade-offs, missing information only they have), ask with `ask_user`. If they can't be asked (Arko runs without a terminal), it says so, and you decide.\n"
-        .to_string()
+    )
 }
 
 /// The Tools section and the sections of the tools the session has, for
@@ -1890,9 +1906,9 @@ mod tests {
     }
 
     /// With text replies, the lead ends its turns with a reply in text: it
-    /// has neither `complete_task` nor `message_user`, nor the summary's
-    /// description, and its instructions say how its turn ends and how it
-    /// answers mid-turn. The workers keep `complete_task`.
+    /// has no `complete_task`, nor the summary's description, and its
+    /// instructions say how its turn ends. It answers mid-turn with
+    /// `message_user`, as without them. The workers keep `complete_task`.
     #[test]
     fn with_text_replies_the_lead_ends_its_turns_with_a_reply() {
         let opus = model("opus", false);
@@ -1904,22 +1920,19 @@ mod tests {
         assert!(config.tool_config.text_reply_ends_task);
         assert!(config.tool_config.ends_task_with_text());
         let offered = config.tool_config.offered_tool_names();
-        for absent in [
-            arko_agents::builtins::COMPLETE_TASK_TOOL_NAME,
-            crate::message::MESSAGE_USER,
-        ] {
-            assert!(!offered.contains(absent), "{absent}");
+        assert!(!offered.contains(arko_agents::builtins::COMPLETE_TASK_TOOL_NAME));
+        for present in [ASK_USER_TOOL_NAME, crate::message::MESSAGE_USER] {
+            assert!(offered.contains(present), "{present}");
         }
-        assert!(offered.contains(ASK_USER_TOOL_NAME));
         assert!(config.complete_task_summary_prompt_override.is_none());
         let instructions = &config.instructions;
         assert!(instructions.contains("When you're done, reply without calling a tool."));
-        assert!(instructions.contains("answer it in text beside your next tool call"));
+        assert!(instructions.contains("answer it with `message_user` and carry on with your work"));
         assert!(instructions.contains("Only a response without a tool call ends your turn"));
         for gone in [
-            "message_user",
             "complete_task",
             "Every response of yours must call a tool",
+            "in text beside your next tool call",
         ] {
             assert!(!instructions.contains(gone), "{gone}");
         }
@@ -1944,8 +1957,8 @@ mod tests {
     }
 
     /// Both ways of replying tell the lead that the user sees only what it
-    /// writes, never its thinking: an answer to a note goes in text (or
-    /// `message_user`). A lead in Claude Code once answered notes in its
+    /// writes, never its thinking: an answer to a note goes in
+    /// `message_user`. A lead in Claude Code once answered notes in its
     /// thinking alone.
     #[test]
     fn the_lead_is_told_the_user_never_sees_its_thinking() {
@@ -1956,15 +1969,12 @@ mod tests {
         })
         .unwrap();
         let never = "The user never sees your thinking. In Claude Code (cc: models) and on the ChatGPT login they see none of it, and through the providers' APIs at most a summary.";
+        let goes = "goes in what you write (your text, `message_user` or your reply), as one written only in your thinking never reaches them.";
         assert!(replying.instructions.contains(never));
-        assert!(replying.instructions.contains(
-            "every answer, question or progress note meant for them goes in the text you write, as one written only in your thinking never reaches them."
-        ));
+        assert!(replying.instructions.contains(goes));
         let calling = main_config(&AgentSettings::for_test(&opus, &opus)).unwrap();
         assert!(calling.instructions.contains(never));
-        assert!(calling.instructions.contains(
-            "goes in what you write (your text, `message_user` or your reply), as one written only in your thinking never reaches them."
-        ));
+        assert!(calling.instructions.contains(goes));
         // Workers answer the lead, which sees their messages and reports.
         let worker = worker_config(&AgentSettings::for_test(&opus, &opus)).unwrap();
         assert!(
@@ -1975,6 +1985,37 @@ mod tests {
         assert!(worker.instructions.contains(
             "The lead sees only your messages to it and your report, never your thinking"
         ));
+    }
+
+    /// A note can end the lead's `wait_for_agents` early, and the lead is told
+    /// to answer it before it waits again, in both modes. Without workers
+    /// there is no wait to tell it of.
+    #[test]
+    fn the_lead_is_told_to_answer_a_note_that_cut_a_wait_short() {
+        let opus = model("opus", false);
+        let said = "A note can also end a `wait_for_agents` call early. Answer it with `message_user` before you wait again, as waiting again without answering is a mistake.";
+        for text_replies in [true, false] {
+            let settings = AgentSettings {
+                text_replies,
+                max_workers: NO_LIMIT,
+                ..AgentSettings::for_test(&opus, &opus)
+            };
+            let config = main_config(&settings).unwrap();
+            assert_eq!(
+                config.instructions.matches(said).count(),
+                1,
+                "{text_replies}"
+            );
+            let alone = AgentSettings {
+                max_workers: 0,
+                ..settings
+            };
+            let config = main_config(&alone).unwrap();
+            assert!(
+                !config.instructions.contains("wait_for_agents"),
+                "{text_replies}"
+            );
+        }
     }
 
     #[test]

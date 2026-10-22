@@ -2493,6 +2493,54 @@ mod tests {
         assert!(!t.drawn.moving, "{shown:?}");
     }
 
+    /// Text the agent writes beside a `wait_for_agents` call, and a message
+    /// it shows with `message_user`, are drawn in the order they came in
+    /// every view: not folded into the waiting row, and not dropped in the
+    /// quiet view. The messages view counts the call.
+    #[test]
+    fn text_beside_a_wait_and_a_message_show_in_every_view() {
+        let mut t = Transcript::new();
+        t.apply(Update::Item(item(1, Kind::User, "Check the files.")));
+        t.apply(Update::Item(item(2, Kind::Text, "Looking at it.")));
+        t.apply(Update::Item(item(
+            3,
+            Kind::Message,
+            "Halfway: two files to go.",
+        )));
+        t.apply(Update::Item(item(4, Kind::Text, "Waiting for the check.")));
+        let mut waiting = item(5, Kind::Call, "waiting for r1");
+        waiting.status = Some(CallStatus::Running);
+        t.apply(Update::Item(waiting));
+        for (filter, last) in [
+            (full(), "waiting for r1"),
+            (Filter::Main(View::Quiet), "waiting for r1"),
+            (Filter::Main(View::Messages), "1 tool call"),
+        ] {
+            let shown = rows(&mut t, &filter, 50, 12);
+            let at = |text: &str| {
+                shown
+                    .iter()
+                    .position(|row| row.contains(text))
+                    .unwrap_or_else(|| panic!("{text:?} not drawn: {shown:?}"))
+            };
+            let order = [
+                "Check the files.",
+                "Looking at it.",
+                "Halfway: two files to go.",
+                "Waiting for the check.",
+                last,
+            ];
+            for pair in order.windows(2) {
+                assert!(at(pair[0]) < at(pair[1]), "{pair:?} in {shown:?}");
+            }
+            // The text is its own row, not part of the waiting row.
+            assert!(
+                !shown[at(last)].contains("Waiting for the check."),
+                "{shown:?}"
+            );
+        }
+    }
+
     /// A user's words carry a tag only for what isn't the usual. A note the
     /// agent hasn't read is "pending", and once it has, it is a message like
     /// any other. An answer, a line waiting for its turn and a message from

@@ -175,16 +175,11 @@ pub(crate) fn unoffered(
         };
         let offered = &saved.tool_config.available_tool_names;
         for name in &fresh.tool_config.available_tool_names {
-            // An agent that ends its turns with a reply in text answers in
-            // text beside its calls instead, and one saved before edit_file
-            // edits files with apply_diff.
-            let answers_in_text =
-                name == message::MESSAGE_USER && saved.tool_config.ends_task_with_text();
+            // One saved before edit_file edits files with apply_diff.
             let edits_with_apply_diff = name == EDIT_FILE_TOOL_NAME
                 && offered.iter().any(|name| name == APPLY_DIFF_TOOL_NAME);
             if !offered.contains(name)
                 && !missing.contains(&name.as_str())
-                && !answers_in_text
                 && !edits_with_apply_diff
             {
                 missing.push(name);
@@ -506,12 +501,6 @@ impl Harness {
         } else {
             config(MAIN, &self.main_config)
         };
-        // A main agent that ends its turns with a reply in text answers in
-        // text beside its calls: it has no `message_user`. One that calls
-        // `complete_task` (as every session saved before text replies
-        // does) keeps it, and so may a saved conversation that keeps its
-        // configuration.
-        let answers_with_tool = keep || !main_config.tool_config.ends_task_with_text();
         let mut builder = Workflow::builder()
             .name(name)
             .workspace(&self.settings.workspace)
@@ -540,7 +529,17 @@ impl Harness {
         for tool in &self.tools {
             builder = builder.agent_tool(MAIN, tool.clone());
         }
-        if answers_with_tool {
+        // Registering a tool offers it, so a session saved before a main
+        // agent with text replies had `message_user` (its saved
+        // configuration lists none) doesn't register it. One that keeps its
+        // runs' configurations does, for the next conversation to have it.
+        if keep
+            || main_config
+                .tool_config
+                .available_tool_names
+                .iter()
+                .any(|name| name == message::MESSAGE_USER)
+        {
             builder = builder.agent_tool(MAIN, Arc::new(message::MessageUser));
         }
         builder = builder.user_input_handler(self.asker.clone());

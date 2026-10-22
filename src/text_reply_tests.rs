@@ -151,7 +151,7 @@ fn the_mode_is_saved_with_the_session_and_old_sessions_load_with_it_off() {
 }
 
 /// A reply in text ends the turn, with the reply as the turn's answer. The
-/// agent is offered neither `complete_task` nor `message_user`, and its
+/// agent is offered `message_user` and no `complete_task`, and its
 /// instructions say how its turn ends. The reply shows once, as the reply:
 /// in the feed (the full screen and the web page), and at the line prompt.
 #[tokio::test]
@@ -178,12 +178,15 @@ async fn a_reply_in_text_ends_the_turn_and_shows_once() {
 
     let body = bodies.lock().unwrap()[0].clone();
     let tools = tools_of(&body);
-    assert!(tools.contains(&ASK_USER_TOOL_NAME.to_string()), "{tools:?}");
-    for absent in ["complete_task", message::MESSAGE_USER] {
-        assert!(!tools.contains(&absent.to_string()), "{absent}: {tools:?}");
+    for offered in [ASK_USER_TOOL_NAME, message::MESSAGE_USER] {
+        assert!(tools.contains(&offered.to_string()), "{offered}: {tools:?}");
     }
+    assert!(
+        !tools.contains(&"complete_task".to_string()),
+        "no complete_task: {tools:?}"
+    );
     assert!(body.contains("When you're done, reply without calling a tool."));
-    assert!(!body.contains("message_user"));
+    assert!(body.contains("answer it with `message_user` and carry on with your work"));
 
     // Once in the feed, as the reply.
     assert_eq!(items_with(&harness.feed, "17 * 23 is 391."), 1);
@@ -276,6 +279,84 @@ async fn text_beside_a_call_is_progress_and_answers_a_note_mid_turn() {
         "Listing the files.",
         "Halfway: the files are listed.",
         "Done: the workspace is empty.",
+    ] {
+        assert_eq!(lines.count(line), 1, "{line}");
+    }
+}
+
+/// With text replies the agent answers mid-turn with `message_user`, as
+/// without them: the message shows now, in its order among the agent's text
+/// and calls, the turn goes on, and it ends with a plain reply. Text beside
+/// a `wait_for_agents` call shows too, before the waiting row, and nothing
+/// shows twice.
+#[tokio::test]
+async fn message_user_answers_mid_turn_and_the_turn_ends_with_a_reply() {
+    let bodies: Bodies = Arc::default();
+    let server = ModelServer::start(Arc::new({
+        let bodies = bodies.clone();
+        move |_, body: String| {
+            bodies.lock().unwrap().push(body.clone());
+            Box::pin(async move {
+                if body.contains("call_m2") {
+                    reply("m3", "Done: nothing left to do.")
+                } else if body.contains("call_m1") {
+                    say_and_call(
+                        "m2",
+                        "Waiting for the check.",
+                        crate::crew::WAIT_FOR_AGENTS,
+                        serde_json::json!({}),
+                    )
+                } else {
+                    say_and_call(
+                        "m1",
+                        "Looking at it.",
+                        message::MESSAGE_USER,
+                        serde_json::json!({"message": "Halfway: two files to go."}),
+                    )
+                }
+            })
+        }
+    }))
+    .await;
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
+    replying(&mut harness);
+    let lines = recording(&mut harness, false);
+    let end = harness
+        .turn(Prompt::User("Check the files.".into()), &mut inputs)
+        .await;
+    assert!(matches!(end, TurnEnd::Answered));
+    assert_eq!(summary(&harness), "Done: nothing left to do.");
+    let bodies = bodies.lock().unwrap().clone();
+    assert_eq!(bodies.len(), 3, "the message didn't end the turn");
+    assert!(tools_of(&bodies[0]).contains(&message::MESSAGE_USER.to_string()));
+    assert!(bodies[1].contains("The user has your message. Carry on with your work."));
+
+    // In the feed, in the order the agent wrote them.
+    let order: Vec<(String, String)> = shown(&harness.feed)
+        .into_iter()
+        .map(|(kind, text, _)| (kind, text))
+        .filter(|(kind, _)| ["text", "message", "call", "reply"].contains(&kind.as_str()))
+        .collect();
+    let item = |kind: &str, text: &str| (kind.to_string(), text.to_string());
+    assert_eq!(
+        order,
+        [
+            item("text", "Looking at it."),
+            item("message", "Halfway: two files to go."),
+            item("text", "Waiting for the check."),
+            item("call", "waiting for a message"),
+            item("reply", "Done: nothing left to do."),
+        ]
+    );
+    assert_eq!(items_with(&harness.feed, "Halfway: two files to go."), 1);
+    assert_eq!(items_with(&harness.feed, "Done: nothing left to do."), 1);
+    harness.flush_printer().await;
+    for line in [
+        "Looking at it.",
+        "✉ Halfway: two files to go.",
+        "Waiting for the check.",
+        "Done: nothing left to do.",
     ] {
         assert_eq!(lines.count(line), 1, "{line}");
     }
@@ -525,11 +606,12 @@ async fn a_session_saved_before_text_replies_resumes_with_complete_task() {
     assert_eq!(texts(&harness.feed, "reply").last().unwrap(), "Pears noted.");
 }
 
-/// The fresh configuration a resumed session with text replies would have
-/// without them isn't a reason to say it lacks `message_user`: it answers
-/// in text.
+/// The main agent has `message_user` with text replies and without. A
+/// session saved with text replies before it did resumes with its saved
+/// configuration, which has none, and is told so. One saved after, and one
+/// saved without text replies, miss nothing.
 #[test]
-fn a_text_reply_session_is_not_told_it_lacks_message_user() {
+fn a_session_saved_before_text_replies_had_message_user_is_told_it_lacks_it() {
     let model = ModelSettings {
         model: resolve_model("luna").unwrap().id,
         effort: Effort::High,
@@ -544,24 +626,48 @@ fn a_text_reply_session_is_not_told_it_lacks_message_user() {
     };
     let replying = agents::main_config(&settings(true)).unwrap();
     let calling = agents::main_config(&settings(false)).unwrap();
-    let saved = SavedSetup {
+    for config in [&replying, &calling] {
+        assert!(
+            config
+                .tool_config
+                .available_tool_names
+                .contains(&message::MESSAGE_USER.to_string())
+        );
+    }
+    let saved = |config: &arko_agents::AgentConfig| SavedSetup {
         name: WORKFLOW_NAME.into(),
-        configs: [(MAIN.to_string(), replying.clone())].into(),
+        configs: [(MAIN.to_string(), config.clone())].into(),
     };
-    assert_eq!(unoffered(&saved, &[(MAIN, &calling)]), None);
-    let saved = SavedSetup {
-        name: WORKFLOW_NAME.into(),
-        configs: [(MAIN.to_string(), calling)].into(),
-    };
-    assert_eq!(unoffered(&saved, &[(MAIN, &replying)]), None);
+    assert_eq!(unoffered(&saved(&replying), &[(MAIN, &calling)]), None);
+    assert_eq!(unoffered(&saved(&calling), &[(MAIN, &replying)]), None);
+    assert_eq!(unoffered(&saved(&replying), &[(MAIN, &replying)]), None);
+    let before = without_message_user(&replying);
+    assert_eq!(
+        unoffered(&saved(&before), &[(MAIN, &replying)]).as_deref(),
+        Some(
+            "This session started without answers to you while it works (message_user), so its agents don't get them. A new session does."
+        )
+    );
+}
+
+/// `config` as a main agent with text replies was saved before it had
+/// `message_user`.
+fn without_message_user(config: &arko_agents::AgentConfig) -> arko_agents::AgentConfig {
+    let mut config = config.clone();
+    config
+        .tool_config
+        .available_tool_names
+        .retain(|name| name != message::MESSAGE_USER);
+    config
 }
 
 // ----- where the agent answers a note the user typed -----
 
-/// What a context update with a note from the user ends with, with text
-/// replies and without.
+/// What a context update with a note from the user ends with: for an agent
+/// that has `message_user` (with text replies or without), and for one saved
+/// with text replies before it had it.
+const TOOL_HINT: &str = "The user can't see your thinking. Answer a question in the notes above with `message_user` first, even if they cut a wait short, then carry on with your work.";
 const TEXT_HINT: &str = "The user can't see your thinking. Answer a question in the notes above in the text you write beside your next tool call.";
-const TOOL_HINT: &str = "The user can't see your thinking. Answer a question in the notes above with `message_user`, then carry on with your work.";
 
 /// A model that notes a message at once, except "List the files.", where it
 /// lists them once `go` is notified. It ends its turns the way the main
@@ -630,9 +736,8 @@ async fn turn_with_a_typed_note(
 }
 
 /// A note the user types while the main agent works ends in a reminder to
-/// answer where the user reads it. With text replies, that is the text
-/// beside its next call. Without, it is `message_user`. The first request,
-/// before any note, has none.
+/// answer where the user reads it, with `message_user`, with text replies
+/// and without. The first request, before any note, has none.
 #[tokio::test]
 async fn a_note_the_user_types_comes_with_where_to_answer_it() {
     for text in [true, false] {
@@ -645,11 +750,7 @@ async fn a_note_the_user_types_comes_with_where_to_answer_it() {
         let bodies =
             turn_with_a_typed_note(&mut harness, &mut inputs, sender, (bodies, go), "progress?")
                 .await;
-        let (hint, other) = if text {
-            (TEXT_HINT, TOOL_HINT)
-        } else {
-            (TOOL_HINT, TEXT_HINT)
-        };
+        let (hint, other) = (TOOL_HINT, TEXT_HINT);
         assert!(!bodies[0].contains(hint), "no note yet");
         assert!(!bodies[0].contains(other));
         assert_eq!(bodies[1].matches(hint).count(), 1, "text replies {text}");
@@ -697,18 +798,24 @@ async fn the_reminder_goes_with_the_users_notes_only() {
 }
 
 /// The reminder follows the configuration the session's main agent has,
-/// also after a resume. A session saved with text replies is reminded to
-/// answer in text. One saved without them goes on with its saved
-/// configuration (`message_user`), also where a new session would reply in
-/// text.
+/// also after a resume. A session saved with `message_user` (with text
+/// replies or without) is reminded to answer with it. One saved with text
+/// replies before the agent had it goes on with its saved configuration, is
+/// offered no such tool, and is reminded to answer in text beside its calls,
+/// also where a new session would have the tool.
 #[tokio::test]
-async fn the_reminder_follows_the_saved_mode_after_a_resume() {
-    for saved_text in [true, false] {
+async fn the_reminder_follows_the_saved_configuration_after_a_resume() {
+    // (saved with text replies, saved with `message_user`)
+    for (saved_text, saved_tool) in [(true, true), (true, false), (false, true)] {
         let (server, bodies, go) = listing_model(saved_text).await;
         let temp = tempfile::tempdir().unwrap();
         let (mut harness, mut inputs, sender) = harness(temp.path(), server.client(), true);
         if saved_text {
             replying(&mut harness);
+        }
+        if !saved_tool {
+            harness.main_config = without_message_user(&harness.main_config);
+            harness.open(false).unwrap();
         }
         harness
             .turn(Prompt::User("Hello.".into()), &mut inputs)
@@ -723,17 +830,28 @@ async fn the_reminder_follows_the_saved_mode_after_a_resume() {
         };
         harness.main_config = agents::main_config(&settings).unwrap();
         harness.open(true).unwrap();
+        // What a session saved without the tool lacks, it says.
+        assert_eq!(
+            harness.unoffered.is_some(),
+            !saved_tool,
+            "{:?}",
+            harness.unoffered
+        );
         bodies.lock().unwrap().clear();
         let bodies =
             turn_with_a_typed_note(&mut harness, &mut inputs, sender, (bodies, go), "progress?")
                 .await;
-        let (hint, other) = if saved_text {
-            (TEXT_HINT, TOOL_HINT)
-        } else {
+        let (hint, other) = if saved_tool {
             (TOOL_HINT, TEXT_HINT)
+        } else {
+            (TEXT_HINT, TOOL_HINT)
         };
-        assert_eq!(bodies[1].matches(hint).count(), 1, "saved with text {saved_text}");
-        assert!(!bodies[1].contains(other), "saved with text {saved_text}");
+        let case = format!("saved with text {saved_text}, with the tool {saved_tool}");
+        assert_eq!(bodies[1].matches(hint).count(), 1, "{case}");
+        assert!(!bodies[1].contains(other), "{case}");
+        // The tool is offered only where the saved configuration has it.
+        let tools = tools_of(&bodies[1]);
+        assert_eq!(tools.contains(&message::MESSAGE_USER.to_string()), saved_tool, "{case}: {tools:?}");
     }
 }
 
@@ -753,7 +871,7 @@ async fn the_reminder_is_for_sessions_with_a_terminal_and_agents_with_calls() {
         };
         agents::operator_note_hint(&agents::main_config(&settings).unwrap())
     };
-    assert_eq!(hint(true, Mode::Agent), Some(TEXT_HINT));
+    assert_eq!(hint(true, Mode::Agent), Some(TOOL_HINT));
     assert_eq!(hint(false, Mode::Agent), Some(TOOL_HINT));
     assert_eq!(hint(true, Mode::Chat), None);
     assert_eq!(hint(false, Mode::Chat), None);
