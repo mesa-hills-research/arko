@@ -297,7 +297,7 @@ fn draw_list(frame: &mut Frame, app: &mut App, area: Rect, rows: Vec<ListRow>) {
                 };
                 left.push(Span::styled(
                     match tag {
-                        Some(tag) => format!("  {tag} {} {doing}", glyphs::render("·")),
+                        Some(tag) => format!("  {tag}  {doing}"),
                         None => format!("  {doing}"),
                     },
                     theme.dim(),
@@ -959,11 +959,8 @@ mod tests {
         let rows = screen(&mut app, 100, 30);
         let list = &rows[rows.len() - 4..];
         assert!(list[0].contains("r1    Task of r1"), "{list:#?}");
-        assert!(
-            list[1].contains("r2    sol xhigh · Task of r2"),
-            "{list:#?}"
-        );
-        assert!(list[2].contains("r3    cc:haiku · Task of r3"), "{list:#?}");
+        assert!(list[1].contains("r2    sol xhigh  Task of r2"), "{list:#?}");
+        assert!(list[2].contains("r3    cc:haiku  Task of r3"), "{list:#?}");
         assert!(list[3].contains("r4    Task of r4"), "{list:#?}");
     }
 
