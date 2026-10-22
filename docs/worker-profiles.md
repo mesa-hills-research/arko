@@ -57,8 +57,9 @@ profile, then the session's worker model, which `/model worker` and `--worker-mo
 
 - A model without an effort keeps the nearest effort it takes to the one that would have applied.
 - An effort the model doesn't take is refused, and the main agent is told which ones it takes.
-- Fast mode is on only when the profile says `fast: true`, or when the worker runs the session's
-  worker model and the session has fast mode on.
+- Fast mode is on when the worker runs the session's worker model and the session has fast mode
+  on, whether it has a profile or not. A worker on another model is fast only when its profile says
+  `fast: true`.
 - Each worker hands over at the size of its own model, and `/handover-at workers SIZE` still
   applies to all of them, each up to what its model leaves room for.
 - A profile's instructions open the worker's first message, after the project's instructions.

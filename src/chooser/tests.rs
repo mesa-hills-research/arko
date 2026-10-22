@@ -245,8 +245,9 @@ fn a_model_that_does_not_reason_ignores_the_effort() {
     assert_eq!(model_of(&setup), name);
 }
 
-/// Fast mode is on for the profile that says so, and for the session's own
-/// worker model when the session has it on, and nowhere else.
+/// Fast mode is on for the session's own worker model when the session has
+/// it on, with a profile or without one, and for the profile that says so.
+/// It is off for a worker on another model otherwise.
 #[test]
 fn fast_mode_is_off_unless_the_profile_asks_or_the_session_s_model_has_it() {
     let temp = tempfile::tempdir().unwrap();
@@ -262,8 +263,14 @@ fn fast_mode_is_off_unless_the_profile_asks_or_the_session_s_model_has_it() {
     assert!(is_fast(&pick(&basis, &[("effort", "low")]).unwrap()));
     // Another model is a deliberate setup, and not fast.
     assert!(!is_fast(&pick(&basis, &[("model", "fable")]).unwrap()));
-    // A profile says it itself.
-    let mut quick = profile("quick", Some("opus"), None);
+    // A profile that keeps the session's worker model, by not naming one or
+    // by naming it, keeps its fast mode.
+    save(&basis, Place::User, profile("notes", None, None));
+    assert!(is_fast(&pick(&basis, &[("profile", "notes")]).unwrap()));
+    save(&basis, Place::User, profile("same", Some("opus"), None));
+    assert!(is_fast(&pick(&basis, &[("profile", "same")]).unwrap()));
+    // A profile for another model is fast only when it says so.
+    let mut quick = profile("quick", Some("claude-opus-4-8"), None);
     save(&basis, Place::User, quick.clone());
     assert!(!is_fast(&pick(&basis, &[("profile", "quick")]).unwrap()));
     quick.fast = true;

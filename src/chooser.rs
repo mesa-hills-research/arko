@@ -14,9 +14,10 @@
 //! becomes the nearest effort the model takes, as `/model worker MODEL`
 //! does.
 //!
-//! Fast mode is on only for the profile that says `fast: true`, or when the
-//! worker runs the session's own worker model and the session has fast mode
-//! on, because a worker on another model is a deliberate setup and fast mode
+//! Fast mode is on when the worker runs the session's own worker model and
+//! the session has fast mode on, with a profile or without one, and for a
+//! profile that says `fast: true`. A worker on another model is a deliberate
+//! setup, so it is not fast unless its profile says so, because fast mode
 //! costs more.
 //!
 //! The start hook ([`crate::crew`]) calls [`choose`] for each start and
@@ -144,10 +145,7 @@ pub fn choose(
     }
 
     let effort = effort_for(basis, &call, profile, &model, same_model)?;
-    let fast = match profile {
-        Some(profile) => profile.fast,
-        None => same_model && basis.worker.fast,
-    };
+    let fast = profile.is_some_and(|profile| profile.fast) || (same_model && basis.worker.fast);
     let cache_1h = cache_for(&call, profile)?.unwrap_or(basis.worker.cache_1h);
     let worker = ModelSettings {
         model: model_name,
