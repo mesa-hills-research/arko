@@ -82,6 +82,20 @@ fn refused(why: impl Into<String>) -> ToolError {
     ToolError::ExecutionFailed(why.into())
 }
 
+/// The text parameter `key`, trimmed. `None` when it is left out, null or
+/// blank. A value of another type is refused, so a wrong guess is not read
+/// as the default.
+fn optional_text<'a>(
+    params: &'a HashMap<String, Value>,
+    key: &str,
+) -> Result<Option<&'a str>, ToolError> {
+    match params.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(value)) => Ok(Some(value.trim()).filter(|value| !value.is_empty())),
+        Some(_) => Err(refused(format!("{key} must be text"))),
+    }
+}
+
 #[derive(Debug)]
 struct WorkerOptions(Arc<Context>);
 
@@ -112,8 +126,8 @@ impl Tool for WorkerOptions {
         _context: &TaskContext<'_>,
         params: HashMap<String, Value>,
     ) -> Result<String, ToolError> {
-        let show = match params.get("show").and_then(Value::as_str).map(str::trim) {
-            None | Some("") | Some("all") => Show::All,
+        let show = match optional_text(&params, "show")? {
+            None | Some("all") => Show::All,
             Some("profiles") => Show::Profiles,
             Some("models") => Show::Models,
             Some(other) => {
@@ -427,7 +441,7 @@ impl SaveWorkerProfile {
                 Some(Value::String(value)) => {
                     Ok(Some(value.trim().to_string()).filter(|value| !value.is_empty()))
                 }
-                Some(_) => Err(refused(format!("{name} is text"))),
+                Some(_) => Err(refused(format!("{name} must be text"))),
             }
         };
         let name = text("name")?.ok_or_else(|| refused("Give the profile a name."))?;
@@ -564,12 +578,28 @@ impl Tool for SaveWorkerProfile {
         // Checked before the user is asked, so they are never asked about a
         // profile that can't work.
         let profile = Self::profile_of(&params)?;
-        let place = match params.get("scope").and_then(Value::as_str).map(str::trim) {
-            None | Some("") => Place::Session,
+        let place = match optional_text(&params, "scope")? {
+            None => Place::Session,
             Some(scope) => Place::parse(scope).ok_or_else(|| {
                 refused(format!("scope is session, project or user, not {scope}"))
             })?,
         };
+        // A profile with an effort and no model runs on the session's worker
+        // model, so the effort has to suit that one.
+        if profile.model.is_none()
+            && let Some(effort) = profile.effort
+            && let Ok(model) = providers::resolve_model(&basis.worker.model)
+            && let takes = providers::efforts(&model)
+            && !takes.is_empty()
+            && !takes.contains(&effort)
+        {
+            return Err(refused(format!(
+                "{} takes {} effort, not {effort}, and a profile with no model runs on it. Give the profile a model, or an effort that {} takes.",
+                providers::model_name(&model),
+                providers::efforts_text(&model),
+                providers::model_name(&model)
+            )));
+        }
         profiles::check_agent_save(&basis.roots, &profile.name).map_err(refused)?;
         if place != Place::Session {
             if !self.0.asker.can_ask() {

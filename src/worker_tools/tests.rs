@@ -822,3 +822,62 @@ fn worker_options_lists_the_first_profiles_and_counts_the_rest() {
     // Some profiles and no more than the cap stay as they were.
     assert!(text.lines().count() < 70, "{}", text.lines().count());
 }
+
+#[tokio::test]
+async fn a_value_of_the_wrong_type_is_refused_and_not_read_as_the_default() {
+    let fixture = fixture(ModelChoice::Agent, true);
+    assert_eq!(
+        refusal(
+            &fixture.save,
+            vec![("name", "x".into()), ("scope", serde_json::json!(["user"]))]
+        )
+        .await,
+        "scope must be text"
+    );
+    assert_eq!(
+        call(&fixture.options, &[("show", 5.into())])
+            .await
+            .unwrap_err(),
+        "show must be text"
+    );
+    assert_eq!(
+        refusal(&fixture.save, vec![("name", 3.into())]).await,
+        "name must be text"
+    );
+}
+
+#[tokio::test]
+async fn an_effort_the_session_s_model_does_not_take_is_refused_for_a_profile_with_no_model() {
+    let fixture = fixture(ModelChoice::Agent, true);
+    let mut nano = (*fixture.basis).clone();
+    nano.worker = settings("gpt-5.4-nano-2026-03-17", Effort::High);
+    let worker = settings("luna", Effort::High);
+    let config =
+        crate::agents::worker_config(&crate::agents::AgentSettings::for_test(&worker, &worker))
+            .unwrap();
+    fixture.crew.set_new_workers(NewWorkers {
+        model: WorkerSetup::of(&config),
+        cache_lifetime: arko_ai::prompt_cache::PromptCacheLifetime::Known(Duration::from_secs(300)),
+        basis: Arc::new(nano),
+    });
+    assert_eq!(
+        refusal(
+            &fixture.save,
+            vec![("name", "hot".into()), ("effort", "max".into())]
+        )
+        .await,
+        "gpt-5.4-nano-2026-03-17 takes low, medium, high or xhigh effort, not max, and a profile with no model runs on it. Give the profile a model, or an effort that gpt-5.4-nano-2026-03-17 takes."
+    );
+    // With a model of its own, the profile is fine.
+    let saved = call(
+        &fixture.save,
+        &[
+            ("name", "hot".into()),
+            ("description", "Thinks hard".into()),
+            ("model", "sol".into()),
+            ("effort", "max".into()),
+        ],
+    )
+    .await;
+    assert!(saved.is_ok(), "{saved:?}");
+}
