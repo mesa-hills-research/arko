@@ -28,6 +28,7 @@
 
 mod agents;
 mod cache_memory;
+pub mod cache_timer;
 mod chat;
 mod chooser;
 mod claude_code;

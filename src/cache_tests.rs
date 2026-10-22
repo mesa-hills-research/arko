@@ -104,9 +104,19 @@ async fn a_resumed_session_counts_its_cache_from_the_wall_clock() {
     assert_eq!(restored.lifetime, Some(FIVE_MINUTES));
     assert_eq!((restored.read, restored.written), (Some(900), Some(0)));
     assert_eq!(restored.tokens, first.tokens);
-    let expires = at + 300_000;
-    assert_eq!(expires - (at + 108_000), 192_000, "3:12 left at 1:48");
-    assert!(expires - now_ms() > 0, "a minute after it, not expired");
+    // For two clocks, 1:48 and a little over five minutes after the
+    // request.
+    use crate::cache_timer::CacheTimer;
+    let timer = |cache: &crate::remote::CacheStatus, now: i64| CacheTimer::of(cache, false, now);
+    let counting = timer(&restored, at + 108_000).unwrap();
+    assert_eq!(counting.label(), "cache 3:12");
+    assert!(!counting.warns());
+    assert!(timer(&restored, at + 250_000).unwrap().warns());
+    assert_eq!(timer(&restored, at + 301_000), Some(CacheTimer::Expired));
+    assert!(
+        CacheTimer::of(&restored, false, now_ms())
+            .is_some_and(|timer| timer != CacheTimer::Expired)
+    );
     quit(seam, ended).await;
 
     // Closed for ten minutes: the record's request is that old now, so the
@@ -117,7 +127,10 @@ async fn a_resumed_session_counts_its_cache_from_the_wall_clock() {
     let (seam, ended) = open_app(&root, &project, &server, SessionChoice::Resume(id.clone())).await;
     let expired = seam.meter.read().cache;
     assert_eq!(expired.refreshed_at, Some(at - 600_000));
-    assert!(expired.refreshed_at.unwrap() + 300_000 < now_ms());
+    assert_eq!(
+        CacheTimer::of(&expired, false, now_ms()),
+        Some(CacheTimer::Expired)
+    );
     assert_eq!(expired.tokens, first.tokens, "what a miss writes again");
 
     // The next message misses the cache, and the time starts over.
@@ -125,7 +138,8 @@ async fn a_resumed_session_counts_its_cache_from_the_wall_clock() {
     let before = now_ms();
     let fresh = say_and_wait(&seam, "Two.", |cache| cache.read == Some(0)).await;
     assert!(fresh.refreshed_at.unwrap() >= before);
-    assert!(fresh.refreshed_at.unwrap() + 300_000 > now_ms());
+    let counting = CacheTimer::of(&fresh, false, now_ms()).unwrap();
+    assert!(matches!(counting, CacheTimer::Counting { left } if left > 290_000));
     assert_eq!((fresh.read, fresh.written), (Some(0), Some(0)), "a miss");
     quit(seam, ended).await;
     assert_eq!(
@@ -159,7 +173,8 @@ async fn a_record_that_cannot_be_trusted_shows_no_time() {
     change_record(&root, &id, |entry| entry["at"] = ahead.into());
     let cache = resume().await;
     assert!(cache.refreshed_at.unwrap() <= now_ms());
-    assert!(cache.refreshed_at.unwrap() + 300_000 > now_ms() - 5_000);
+    let timer = crate::cache_timer::CacheTimer::of(&cache, false, now_ms()).unwrap();
+    assert!(matches!(timer, crate::cache_timer::CacheTimer::Counting { left } if left <= 300_000));
     // (The resume kept the record as it was: it saves at the next request.)
 
     change_record(&root, &id, |entry| {
