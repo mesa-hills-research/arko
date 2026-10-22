@@ -207,6 +207,12 @@ fn list_time(ms: i64) -> String {
     format!("{}h {:02}m", seconds / 3600, seconds % 3600 / 60)
 }
 
+/// How far a worker is indented in the agent list: two columns for each
+/// level it is below the main agent's workers.
+fn indent(worker: &WorkerSummary) -> usize {
+    2 * worker.depth.saturating_sub(1) as usize
+}
+
 /// The agent list, below the input: `● main` and a row for each worker
 /// running or waiting and each that ended in the last five minutes, the one
 /// shown marked, up to five workers, with a count of the workers above them
@@ -219,9 +225,10 @@ fn draw_list(frame: &mut Frame, app: &mut App, area: Rect, rows: Vec<ListRow>) {
     let theme = &app.theme;
     let list = app.list();
     let now = chrono::Utc::now().timestamp_millis();
+    // The ID column holds the indent of the workers a worker started.
     let id_width = list
         .iter()
-        .map(|row| row.map_or(4, |w| w.id.len()))
+        .map(|row| row.map_or(4, |w| indent(w) + w.id.len()))
         .max()
         .unwrap_or(4);
     for (line, row) in rows.iter().enumerate() {
@@ -275,7 +282,10 @@ fn draw_list(frame: &mut Frame, app: &mut App, area: Rect, rows: Vec<ListRow>) {
             None => left.push(Span::styled(format!("{:<id_width$}", "main"), name_style)),
             Some(worker) => {
                 left.push(Span::styled(
-                    format!("{:<id_width$}", worker.id),
+                    format!(
+                        "{:<id_width$}",
+                        format!("{}{}", " ".repeat(indent(worker)), worker.id)
+                    ),
                     name_style,
                 ));
                 let doing = if worker.state == crate::remote::WorkerState::Running {
@@ -419,8 +429,15 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
     let sep = || Span::styled(glyphs::render(" · ").into_owned(), theme.dim());
     let watched = Watched::of(app);
     if let Some(worker) = &app.watching {
+        // A worker's worker says whose it is.
+        let under = watched
+            .as_ref()
+            .and_then(|watched| watched.worker)
+            .and_then(|worker| worker.parent.as_deref())
+            .map(|parent| format!(" (under {parent})"))
+            .unwrap_or_default();
         left.push(Span::styled(
-            format!("viewing {worker}"),
+            format!("viewing {worker}{under}"),
             theme.accent().add_modifier(Modifier::BOLD),
         ));
         left.push(sep());
@@ -1035,6 +1052,77 @@ mod tests {
         assert!(calls.iter().all(|at| *at == calls[0]), "{list:#?}");
     }
 
+    /// A worker's workers follow it in the agent list, indented two columns
+    /// for each level, with their IDs lined up in one column. The family is
+    /// listed together whatever order the workers started in.
+    #[test]
+    fn the_agent_list_shows_a_workers_workers_under_it() {
+        use crate::remote::WorkerState::Running;
+        use crate::tui::app::tests::worker;
+        let mut app = app();
+        for (id, parent, depth) in [
+            ("r1", None, 1),
+            ("r2", None, 1),
+            ("r3", Some("r1"), 2),
+            ("r4", Some("r3"), 3),
+            ("r5", Some("r2"), 2),
+        ] {
+            let mut summary = worker(id, Running);
+            summary.parent = parent.map(str::to_string);
+            summary.depth = depth;
+            app.update(Update::Worker(summary), Activity::default);
+        }
+        for width in [100, 80] {
+            let rows = screen(&mut app, width, 40);
+            let list = &rows[rows.len() - 6..];
+            let ids: Vec<&str> = list
+                .iter()
+                .map(|row| row.split_whitespace().nth(1).unwrap_or_default())
+                .collect();
+            assert_eq!(ids, ["main", "r1", "r3", "r4", "r2", "r5"], "{list:#?}");
+            // The IDs start at the main agent's column plus the indent.
+            let at = |row: &String| row.chars().position(|c| c == 'm' || c == 'r').unwrap();
+            let columns: Vec<usize> = list.iter().map(at).collect();
+            assert_eq!(columns, [3, 3, 5, 7, 3, 5], "{width}: {list:#?}");
+        }
+        // Tab goes through the family in the list's order.
+        let order: Vec<String> = app
+            .list()
+            .into_iter()
+            .map(|row| row.map_or("main".to_string(), |worker| worker.id.clone()))
+            .collect();
+        assert_eq!(order, ["main", "r1", "r3", "r4", "r2", "r5"]);
+        // The counts above and below count rows of the family order.
+        let mut crowded = self::app();
+        for (id, parent, depth) in [
+            ("r1", None, 1),
+            ("r2", None, 1),
+            ("r3", Some("r1"), 2),
+            ("r4", Some("r3"), 3),
+            ("r5", Some("r2"), 2),
+            ("r6", Some("r4"), 4),
+            ("r7", Some("r4"), 4),
+            ("r8", Some("r2"), 2),
+        ] {
+            let mut summary = worker(id, Running);
+            summary.parent = parent.map(str::to_string);
+            summary.depth = depth;
+            crowded.update(Update::Worker(summary), Activity::default);
+        }
+        let rows = screen(&mut crowded, 80, 40);
+        let list = &rows[rows.len() - 7..];
+        let ids: Vec<&str> = list
+            .iter()
+            .map(|row| row.split_whitespace().nth(1).unwrap_or_default())
+            .collect();
+        assert_eq!(
+            ids,
+            ["main", "r1", "r3", "r4", "r6", "r7", "3"],
+            "{list:#?}"
+        );
+        assert_eq!(list[6], "   … 3 more");
+    }
+
     /// A worker on another model than the session's workers say so on its
     /// row, with its effort, and one on that model says nothing.
     #[test]
@@ -1264,6 +1352,36 @@ mod tests {
         app.watch(None);
         let rows = screen(&mut app, 100, 12);
         assert!(status_row(&rows).starts_with(main), "{rows:#?}");
+    }
+
+    /// While a worker that a worker started is watched, the status line
+    /// says whose it is.
+    #[test]
+    fn the_status_line_names_the_parent_of_a_watched_nested_worker() {
+        use crate::tui::app::tests::worker;
+        let mut app = app();
+        app.update(
+            Update::Worker(worker("r1", WorkerState::Running)),
+            Activity::default,
+        );
+        let mut nested = worker("r2", WorkerState::Running);
+        nested.parent = Some("r1".into());
+        nested.depth = 2;
+        app.update(Update::Worker(nested), Activity::default);
+        app.watch(Some("r2".into()));
+        let rows = screen(&mut app, 100, 12);
+        assert!(
+            status_row(&rows).starts_with(" viewing r2 (under r1) · "),
+            "{rows:#?}"
+        );
+        let rows = screen(&mut app, 80, 12);
+        assert!(
+            status_row(&rows).starts_with(" viewing r2 (under r1) · "),
+            "{rows:#?}"
+        );
+        app.watch(Some("r1".into()));
+        let rows = screen(&mut app, 100, 12);
+        assert!(status_row(&rows).starts_with(" viewing r1 · "), "{rows:#?}");
     }
 
     /// A worker that ended shows its final figures, with its state and how

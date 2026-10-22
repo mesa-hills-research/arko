@@ -1062,14 +1062,15 @@ impl App {
 
     /// The agent list below the input: the main agent, then the workers
     /// running or waiting to run, those that ended in the last five minutes
-    /// ([`LIST_ENDED_MS`]), and the one shown when it ended before. Empty
-    /// when there are none, so it takes no room. (The workers that ended
-    /// are in `/workers`, and `/watch` still shows them.)
+    /// ([`LIST_ENDED_MS`]), and the one shown when it ended before. A
+    /// worker's workers follow it, so Tab goes through a family. Empty when
+    /// there are none, so it takes no room. (The workers that ended are in
+    /// `/workers`, and `/watch` still shows them.)
     pub fn list(&self) -> Vec<Option<&crate::remote::WorkerSummary>> {
-        let workers: Vec<Option<&crate::remote::WorkerSummary>> = self
-            .transcript
-            .workers()
-            .iter()
+        let all = self.transcript.workers();
+        let workers: Vec<Option<&crate::remote::WorkerSummary>> = crate::remote::family_order(all)
+            .into_iter()
+            .map(|at| &all[at])
             .filter(|worker| {
                 worker.state.is_active()
                     || ended_lately(worker, self.list_now)

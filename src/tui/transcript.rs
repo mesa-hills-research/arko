@@ -1449,16 +1449,20 @@ impl Filter {
     fn show(&self, item: &Item) -> Show {
         let worker_line = || item.worker.clone().map_or(Show::Hidden, Show::Worker);
         match self {
-            Filter::Worker(id) => {
-                if &item.agent == id && item.kind != Kind::WorkerLine {
-                    Show::Item
-                } else {
-                    Show::Hidden
-                }
-            }
+            Filter::Worker(id) => match (&item.agent == id, item.kind) {
+                // The lines of the workers it started.
+                (true, Kind::WorkerLine) => worker_line(),
+                (true, _) => Show::Item,
+                (false, _) => Show::Hidden,
+            },
             Filter::Main(view) => {
                 if item.kind == Kind::WorkerLine {
-                    return worker_line();
+                    // (Those of a worker's workers are in its own.)
+                    return if item.is_main() {
+                        worker_line()
+                    } else {
+                        Show::Hidden
+                    };
                 }
                 if !item.is_main() {
                     // A worker's calls and what went wrong show in Full. Its
@@ -3091,6 +3095,48 @@ mod tests {
         // The agent's text stays, as on the web page.
         assert!(messages.iter().any(|r| r.contains("Thinking.")));
         assert_eq!(t.item(1).unwrap().agent, MAIN_AGENT);
+    }
+
+    /// The line of a worker that a worker started is in its parent's own
+    /// transcript, where the parent started it, and not in the main one.
+    #[test]
+    fn a_workers_worker_has_its_line_in_the_parents_transcript() {
+        let mut t = Transcript::new();
+        let mut user = item(1, Kind::User, "Review it");
+        user.turn = Some(1);
+        t.apply(Update::Item(user));
+        let mut first = item(2, Kind::WorkerLine, "Review the files");
+        first.worker = Some("r1".into());
+        first.turn = Some(1);
+        t.apply(Update::Item(first));
+        let mut second = item(3, Kind::WorkerLine, "Count the files").agent("r1");
+        second.worker = Some("r2".into());
+        t.apply(Update::Item(second));
+        t.apply(Update::Worker(WorkerSummary {
+            title: "Review the files".into(),
+            state: WorkerState::Running,
+            ..WorkerSummary::new("r1")
+        }));
+        t.apply(Update::Worker(WorkerSummary {
+            title: "Count the files".into(),
+            state: WorkerState::Running,
+            parent: Some("r1".into()),
+            depth: 2,
+            ..WorkerSummary::new("r2")
+        }));
+        for view in [View::Full, View::Quiet, View::Messages] {
+            let main = rows(&mut t, &Filter::Main(view), 70, 10);
+            assert!(
+                main.iter().any(|r| r.contains("r1 Review the files")),
+                "{main:?}"
+            );
+            assert!(!main.iter().any(|r| r.contains("r2")), "{main:?}");
+        }
+        let own = rows(&mut t, &Filter::Worker("r1".into()), 70, 10);
+        assert!(
+            own.iter().any(|r| r.contains("r2 Count the files")),
+            "{own:?}"
+        );
     }
 
     /// A worker's time is the total of its runs, also those before Arko
