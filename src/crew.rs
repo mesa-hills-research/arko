@@ -109,12 +109,20 @@ fn load_run_times(dir: &std::path::Path) -> BTreeMap<String, u64> {
 
 /// A worker, as `/workers` tells it.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct WorkerFacts {
     /// Its ID, such as r1 or r2.
     pub id: String,
     /// Its run's state, such as running, finished, failed or stopped.
     pub state: String,
     pub task: String,
+    /// The model it started on, when Arko recorded it.
+    pub model: Option<String>,
+    /// The reasoning effort it started at, when it reasons and Arko recorded
+    /// it.
+    pub effort: Option<String>,
+    /// The profile it started with, if any.
+    pub profile: Option<String>,
     /// The model it started on, when new workers start on another.
     pub other_model: Option<String>,
     /// How long its prompt cache lasts, when that is known.
@@ -152,6 +160,10 @@ pub struct WorkerSetup {
     /// The profile the run started with, for the lists.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub profile: Option<String>,
+    /// The reasoning effort the run started at, for the lists (none for a
+    /// model that doesn't reason, and for a run recorded before it was kept).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<crate::agents::Effort>,
 }
 
 impl WorkerSetup {
@@ -164,6 +176,7 @@ impl WorkerSetup {
             context_added: None,
             tools_added: Vec::new(),
             profile: None,
+            effort: None,
         }
     }
 
@@ -795,8 +808,17 @@ impl Crew {
                     worker.state,
                     ui::cut(&worker.task, 100)
                 );
-                if let Some(model) = &worker.other_model {
-                    line.push_str(&format!("\n  runs {model}, the model it started on"));
+                if let Some(model) = &worker.model {
+                    line.push_str(&format!("\n  runs {model}"));
+                    if let Some(effort) = &worker.effort {
+                        line.push_str(&format!(" at {effort} effort"));
+                    }
+                    if let Some(profile) = &worker.profile {
+                        line.push_str(&format!(", profile {profile}"));
+                    }
+                    if worker.other_model.is_some() {
+                        line.push_str(", the setup it started with");
+                    }
                 }
                 if let Some(lifetime) = worker.cache_lifetime {
                     line.push_str(&format!(
@@ -877,6 +899,14 @@ impl Crew {
                 WorkerFacts {
                     state: format!("{:?}", run.state).to_lowercase(),
                     task: run.task.clone(),
+                    model: started
+                        .as_ref()
+                        .map(|started| crate::providers::model_name(&started.llm_config.model)),
+                    effort: started
+                        .as_ref()
+                        .and_then(|started| started.effort)
+                        .map(|effort| effort.to_string()),
+                    profile: started.as_ref().and_then(|started| started.profile.clone()),
                     other_model,
                     cache_lifetime: match lifetime {
                         PromptCacheLifetime::Known(lifetime) => Some(lifetime),
@@ -1256,8 +1286,8 @@ mod tests {
         expected.handover = on_sol.handover.clone();
         assert_eq!(applied, serde_json::to_value(&expected).unwrap());
         assert_eq!(crew.config().start_context.unwrap()(&request), None);
-        // A record written now has only the old fields when nothing is
-        // added, so an older Arko reads it.
+        // A record written now has the old fields and the effort, which an
+        // older Arko ignores, when nothing else is added.
         let mut fresh = start("r2", &[]);
         fresh.run_id = Uuid::new_v4();
         prepared(&crew, &fresh, &registered);
@@ -1270,7 +1300,7 @@ mod tests {
             .unwrap()
             .keys()
             .collect();
-        assert_eq!(keys, ["handover", "llm_config"]);
+        assert_eq!(keys, ["effort", "handover", "llm_config"]);
     }
 
     /// The project's instructions come first in a worker's first message,

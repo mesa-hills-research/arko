@@ -111,7 +111,10 @@ fn a_start_with_no_choice_runs_the_session_s_worker_model_as_registered() {
         let basis = basis(temp.path(), worker.clone());
         let agent_settings = AgentSettings::for_test(&worker, &worker);
         let registered = agents::worker_config(&agent_settings).unwrap();
-        let chosen = pick(&basis, &[]).unwrap();
+        let mut chosen = pick(&basis, &[]).unwrap();
+        // (It also keeps the effort, for the lists.)
+        assert_eq!(chosen.effort, Some(worker.effort), "{}", worker.model);
+        chosen.effort = None;
         assert_eq!(
             json(&chosen),
             json(&WorkerSetup::of(&registered)),
@@ -119,10 +122,9 @@ fn a_start_with_no_choice_runs_the_session_s_worker_model_as_registered() {
             worker.model
         );
         // Naming `default`, or the session's own model, is the same.
-        assert_eq!(
-            json(&pick(&basis, &[("profile", "default")]).unwrap()),
-            json(&chosen)
-        );
+        let mut named = pick(&basis, &[("profile", "default")]).unwrap();
+        named.effort = None;
+        assert_eq!(json(&named), json(&chosen));
         assert_eq!(chosen.context_added, None);
         assert_eq!(chosen.profile, None);
     }

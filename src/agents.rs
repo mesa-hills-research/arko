@@ -698,6 +698,7 @@ pub(crate) fn worker_setup(
         context_added: None,
         tools_added: Vec::new(),
         profile: None,
+        effort: None,
     })
 }
 

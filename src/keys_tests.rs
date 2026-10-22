@@ -117,7 +117,9 @@ async fn a_key_added_while_arko_runs_reaches_new_workers_at_once() {
     assert_eq!(reachable(&harness), ["openai", "openrouter"]);
     assert!(harness.live_command(&format!("/model worker {openrouter}"), Source::Terminal));
     assert!(
-        last_said(&harness.feed).starts_with(&format!("Workers started from now on run {openrouter}")),
+        last_said(&harness.feed).starts_with(&format!(
+            "Workers started from now on without a profile or a model of their own run {openrouter}"
+        )),
         "{}",
         last_said(&harness.feed)
     );

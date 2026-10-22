@@ -231,7 +231,7 @@ async fn a_worker_keeps_the_model_it_started_on_and_new_ones_start_on_the_new_on
     // Workers started from now on run sol.
     assert!(harness.live_command("/model worker sol high", Source::Terminal));
     assert!(said(&harness.feed).contains(
-        "Workers started from now on run gpt-6.1-sol (high effort). The main agent keeps gpt-6-luna (high effort) for this session, and the workers started before keep theirs."
+        "Workers started from now on without a profile or a model of their own run gpt-6.1-sol (high effort). The main agent keeps gpt-6-luna (high effort) for this session, and the workers started before keep theirs."
     ));
     assert_eq!(harness.session.load_settings().unwrap().worker.model, "gpt-6.1-sol");
     let reading = remote::Meter::read(harness.gauges.as_ref());
@@ -300,7 +300,16 @@ async fn a_worker_keeps_the_model_it_started_on_and_new_ones_start_on_the_new_on
             .as_ref()
             .unwrap()
             .describe()
-            .contains("runs gpt-6-luna, the model it started on")
+            .contains("runs gpt-6-luna, the setup it started with")
+    );
+    // The others say what they run, with the effort they started at.
+    assert!(
+        harness
+            .crew
+            .as_ref()
+            .unwrap()
+            .describe()
+            .contains("runs gpt-6.1-sol at high effort\n")
     );
     // `/model worker main`: new workers follow the main agent again.
     assert!(harness.live_command("/model worker main", Source::Terminal));
@@ -322,7 +331,7 @@ async fn before_the_start_model_worker_sets_the_workers_own_model() {
     let temp = tempfile::tempdir().unwrap();
     let (mut harness, _inputs, _sender) = harness(temp.path(), server.client(), true);
     assert!(harness.live_command("/model worker astra", Source::Terminal));
-    assert!(said(&harness.feed).contains("Workers now start on gpt-6-astra (high effort)."));
+    assert!(said(&harness.feed).contains("Workers without a profile or a model of their own now run gpt-6-astra (high effort)."));
     assert!(!harness.settings.workers_follow_main());
     assert_eq!(
         harness.worker_config.llm_config.model.id, "gpt-6-astra",
@@ -339,7 +348,7 @@ async fn before_the_start_model_worker_sets_the_workers_own_model() {
     // The line prompt's forms without a model say the setting and the use.
     assert!(harness.live_command("/model worker", Source::Terminal));
     assert!(said(&harness.feed).contains(
-        "Workers start on the main agent's model, gpt-6.1-sol (high effort). /model worker MODEL [EFFORT] sets"
+        "Workers without a profile or a model of their own run the main agent's model, gpt-6.1-sol (high effort). /model worker MODEL [EFFORT] sets"
     ));
     assert!(harness.live_command("/model", Source::Terminal));
     assert!(said(&harness.feed).contains("The main agent runs gpt-6.1-sol (high effort). /model MODEL [EFFORT]"));
@@ -347,13 +356,13 @@ async fn before_the_start_model_worker_sets_the_workers_own_model() {
     assert!(harness.live_command("/model worker astra low", Source::Web));
     assert!(
         said(&harness.feed)
-            .contains("Changed from the web page. Workers now start on gpt-6-astra (low effort).")
+            .contains("Changed from the web page. Workers without a profile or a model of their own now run gpt-6-astra (low effort).")
     );
     assert_eq!(harness.settings.worker.effort, Effort::Low);
     assert!(harness.live_command("/model worker astra low", Source::Web));
     assert!(
         said(&harness.feed)
-            .contains("From the web page. Workers now start on gpt-6-astra (low effort).")
+            .contains("From the web page. Workers without a profile or a model of their own now run gpt-6-astra (low effort).")
     );
     harness.crew.as_ref().unwrap().shutdown().await;
 }

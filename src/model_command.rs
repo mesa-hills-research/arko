@@ -431,11 +431,14 @@ impl Harness {
         }
         if self.settings.workers_follow_main() {
             format!(
-                "Workers start on the main agent's model, {}.",
+                "Workers without a profile or a model of their own run the main agent's model, {}.",
                 shown(&self.settings.worker)
             )
         } else {
-            format!("Workers start on {}.", shown(&self.settings.worker))
+            format!(
+                "Workers without a profile or a model of their own run {}.",
+                shown(&self.settings.worker)
+            )
         }
     }
 
@@ -527,7 +530,10 @@ impl Harness {
                     "Workers follow the main agent's model, {}.",
                     shown(&self.settings.worker)
                 ),
-                false => format!("Workers now start on {}.", shown(&self.settings.worker)),
+                false => format!(
+                    "Workers without a profile or a model of their own now run {}.",
+                    shown(&self.settings.worker)
+                ),
             });
         }
         let setup = providers::Setup {
@@ -550,7 +556,7 @@ impl Harness {
         self.save_session();
         self.publish_models();
         let mut text = format!(
-            "From now on, the workers you start run {}.",
+            "From now on, the workers you start without a profile or a model of their own run {}.",
             shown(&self.settings.worker)
         );
         if started > 0 {
@@ -574,7 +580,7 @@ impl Harness {
                 shown(&self.settings.worker)
             ),
             false => format!(
-                "Workers started from now on run {}. The main agent keeps {} for this session{before}.",
+                "Workers started from now on without a profile or a model of their own run {}. The main agent keeps {} for this session{before}.",
                 shown(&self.settings.worker),
                 shown(&self.settings.main)
             ),

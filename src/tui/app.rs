@@ -3613,7 +3613,9 @@ pub(super) mod tests {
         assert_eq!(sent(&mut app), ["/model worker gpt-6-astra high"]);
         assert_eq!(
             app.hint.as_ref().map(|(text, _)| text.as_str()),
-            Some("Workers started from now on run gpt-6-astra at high effort")
+            Some(
+                "Workers started from now on without a profile or a model of their own run gpt-6-astra at high effort"
+            )
         );
     }
 

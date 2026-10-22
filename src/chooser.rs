@@ -198,6 +198,7 @@ pub fn choose(
     }
     setup.context_added = (!context.is_empty()).then(|| context.join("\n\n"));
     setup.profile = profile_name.map(str::to_string);
+    setup.effort = (!takes_none(&model)).then_some(effort);
     // A worker that nests gets the start tools. None yet.
     let nested = call.nested.or(profile.map(|profile| profile.nested));
     if NESTED_WORKERS && nested == Some(true) {
@@ -269,6 +270,11 @@ pub fn names(basis: &Basis) -> String {
 /// A profile file's problem as a sentence.
 fn unusable(reason: &str, file: &std::path::Path) -> String {
     format!("{} can't be used ({reason}).", file.display())
+}
+
+/// Whether `model` doesn't reason, so takes no effort.
+fn takes_none(model: &Model) -> bool {
+    providers::efforts(model).is_empty()
 }
 
 /// The effort: the call's, else the profile's, else the session's. The
