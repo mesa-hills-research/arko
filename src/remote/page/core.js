@@ -474,13 +474,15 @@
     return '$' + billed.toFixed(2);
   }
 
-  /** What a worker and the workers under it cost, as "with its workers $0.50",
-   * once they cost more than the worker alone (the summary's
+  /** What a worker and the workers under it cost, as "$0.50 with its
+   * workers" ("≈ $0.90 with its workers" where a plan covered calls), once
+   * they cost more than the worker alone (the summary's
    * `family_cost_billed` and `family_cost_list`). */
   function familyCostWords(summary) {
     const list = summary.family_cost_list || 0;
     if (!(list >= (summary.cost_list || 0) + 0.005)) return '';
-    return 'with its workers ' + costWords(summary.family_cost_billed || 0, list);
+    const billed = summary.family_cost_billed || 0;
+    return (list > billed + 0.005 ? '≈ $' + list.toFixed(2) : '$' + billed.toFixed(2)) + ' with its workers';
   }
 
   /** What a worker's notice is labelled with: its ID, and the worker that
@@ -530,15 +532,16 @@
 
   /** A worker's summary in words: `{ title, meta, last }`, where meta is
    * "18 calls · 2m14s · running · under r1 · gpt-6.1-sol, high · profile
-   * judge · $0.12" (who started it when a worker did, the model, the
-   * profile and the cost once the summary has them, and what it cost with
-   * its workers). */
-  function workerWords(summary, now) {
+   * judge · $0.12" (who started it when a worker did, unless `viewing` is
+   * that worker's own view, the model, the profile and the cost once the
+   * summary has them, and what it cost with its workers). */
+  function workerWords(summary, now, viewing) {
     const parts = [plural(summary.tool_calls, 'call', 'calls')];
     const ran = runTime(summary, now);
     if (ran != null) parts.push(duration(ran));
     parts.push(summary.state);
-    if (summary.parent) parts.push('under ' + summary.parent);
+    // (Not in the view of the worker that started it, which says it already.)
+    if (summary.parent && summary.parent !== viewing) parts.push('under ' + summary.parent);
     if (summary.model) parts.push(summary.effort ? summary.model + ', ' + summary.effort : summary.model);
     if (summary.profile) parts.push('profile ' + summary.profile);
     const cost = costWords(summary.cost_billed || 0, summary.cost_list || 0);

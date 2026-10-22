@@ -222,7 +222,7 @@
    * worker started are indented under it. */
   function workerCard(id, listed) {
     const summary = store.workers.get(id) || { id, title: '', state: 'running', tool_calls: 0 };
-    const words = C.workerWords(summary, serverNow());
+    const words = C.workerWords(summary, serverNow(), listed ? null : worker);
     const card = element('button', 'wcard ' + summary.state);
     card.type = 'button';
     card.dataset.worker = id;

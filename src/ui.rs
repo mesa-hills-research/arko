@@ -1253,6 +1253,12 @@ pub fn brief_waiting_for(
             format!("{verb} {detail}")
         }
         crew::MESSAGE_AGENT => format!("message to {}", text("to")),
+        // A worker that starts workers makes these calls, which read as the
+        // main agent's own do.
+        crew::START_AGENT => format!("start worker “{}”", cut(text("task"), 80)),
+        crew::STOP_AGENT => format!("stop {}", text("run")),
+        crew::LIST_AGENTS => "list workers".to_string(),
+        "link_agents" => "link workers".to_string(),
         HANDOVER_REPORT_TOOL_NAME => "handover report".to_string(),
         crew::WAIT_FOR_AGENTS => waiting_for(parameters, own),
         "terminal_start" => format!("background {}", command_line(text("command"))),
@@ -1634,6 +1640,24 @@ mod tests {
                 .unwrap(),
             "● waiting for r1, r2"
         );
+        // A worker's calls to start, stop and list workers read as the main
+        // agent's do.
+        assert_eq!(
+            brief(
+                crew::START_AGENT,
+                &params(&[
+                    ("agent", "worker".into()),
+                    ("task", "Count the files.".into())
+                ])
+            ),
+            "start worker “Count the files.”"
+        );
+        assert_eq!(
+            brief(crew::STOP_AGENT, &params(&[("run", "r4".into())])),
+            "stop r4"
+        );
+        assert_eq!(brief(crew::LIST_AGENTS, &params(&[])), "list workers");
+        assert_eq!(brief("link_agents", &params(&[])), "link workers");
         // A worker that started workers waits for those, and names them.
         assert_eq!(
             brief_waiting_for(crew::WAIT_FOR_AGENTS, &params(&[]), &["r4".into()]),

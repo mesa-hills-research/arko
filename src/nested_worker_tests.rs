@@ -962,7 +962,7 @@ async fn a_nested_workers_cost_counts_once() {
     // `/workers` gives r1's cost with its workers, and r2's own only.
     let described = harness.crew.as_ref().unwrap().describe();
     let (r1_lines, r2_lines) = described.split_once("\nr2 ").unwrap();
-    assert!(r1_lines.contains("\n  with its workers $"), "{described}");
+    assert!(r1_lines.contains(" with its workers"), "{described}");
     assert!(!r2_lines.contains("with its workers"), "{described}");
     harness.crew.as_ref().unwrap().shutdown().await;
 }

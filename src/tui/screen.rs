@@ -436,10 +436,11 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
             .and_then(|worker| worker.parent.as_deref())
             .map(|parent| format!(" (under {parent})"))
             .unwrap_or_default();
-        left.push(Span::styled(
-            format!("viewing {worker}{under}"),
-            theme.accent().add_modifier(Modifier::BOLD),
-        ));
+        let bold = theme.accent().add_modifier(Modifier::BOLD);
+        left.push(Span::styled(format!("viewing {worker}"), bold));
+        if !under.is_empty() {
+            left.push(Span::styled(under, bold));
+        }
         left.push(sep());
     }
     let worker_state = watched
@@ -584,6 +585,15 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
         }
         spans
     };
+    // The worker's starter goes first when the row is too wide, before the
+    // figures at its end are cut.
+    if left.iter().map(|span| span.width()).sum::<usize>() > area.width as usize
+        && let Some(at) = left
+            .iter()
+            .position(|span| span.content.starts_with(" (under "))
+    {
+        left.remove(at);
+    }
     // Nothing before the first item: no separator before it either.
     if left
         .get(1)
@@ -1382,6 +1392,44 @@ mod tests {
         app.watch(Some("r1".into()));
         let rows = screen(&mut app, 100, 12);
         assert!(status_row(&rows).starts_with(" viewing r1 · "), "{rows:#?}");
+    }
+
+    /// A watched worker's starter is named in the status line while the row
+    /// has room, and goes before the count of workers and the plan's usage are
+    /// cut.
+    #[test]
+    fn the_status_line_drops_the_starter_before_it_cuts_a_figure() {
+        use crate::tui::app::tests::worker;
+        let mut app = app();
+        app.reading.plan_usage = Some("Claude plan 5 h 54%, 7 d 58%".into());
+        app.update(
+            Update::Worker(worker("r2", WorkerState::Running)),
+            Activity::default,
+        );
+        let mut nested = worker("r4", WorkerState::Running);
+        nested.parent = Some("r2".into());
+        nested.depth = 2;
+        nested.running_since = Some(chrono::Utc::now().timestamp_millis() - 43_000);
+        app.update(Update::Worker(nested), Activity::default);
+        app.reading.agents = vec![context_of("r4", 12_000, 950_000)];
+        app.watch(Some("r4".into()));
+        let status = |app: &mut App, width: u16| status_row(&screen(app, width, 12)).to_string();
+        let wide = status(&mut app, 80);
+        assert!(
+            wide.starts_with(" viewing r4 (under r2) · ● working ")
+                && wide.contains("5 h 54%, 7 d 58%")
+                && wide.contains("2 workers"),
+            "{wide}"
+        );
+        // At 72 columns the usage and the count would be cut: the starter
+        // goes instead.
+        let narrow = status(&mut app, 72);
+        assert!(
+            narrow.starts_with(" viewing r4 · ● working ")
+                && narrow.contains("5 h 54%, 7 d 58%")
+                && narrow.contains("2 workers"),
+            "{narrow}"
+        );
     }
 
     /// A worker that ended shows its final figures, with its state and how

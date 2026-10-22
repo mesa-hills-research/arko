@@ -442,9 +442,12 @@ test('a worker that a worker started says whose it is and what the family cost',
   assert.equal(core.workerWords(nested, 60_000).meta, '4 calls · 1m00s · running · under r1 · gpt-6.1-sol · $0.10');
   // A worker with workers under it says what they cost together, once that is more.
   const parent = { ...base, id: 'r1', cost_billed: 0.1, cost_list: 0.1, family_cost_billed: 0.6, family_cost_list: 0.6 };
-  assert.equal(core.workerWords(parent, 60_000).meta, '4 calls · 1m00s · running · $0.10 · with its workers $0.60');
+  assert.equal(core.workerWords(parent, 60_000).meta, '4 calls · 1m00s · running · $0.10 · $0.60 with its workers');
   const plan = { ...parent, cost_billed: 0, cost_list: 0.2, family_cost_billed: 0, family_cost_list: 0.9 };
-  assert.equal(core.workerWords(plan, 60_000).meta, '4 calls · 1m00s · running · ≈ $0.20 at API prices · with its workers ≈ $0.90 at API prices');
+  assert.equal(core.workerWords(plan, 60_000).meta, '4 calls · 1m00s · running · ≈ $0.20 at API prices · ≈ $0.90 with its workers');
+  // In the view of the worker that started it, a card doesn't say so again.
+  assert.equal(core.workerWords(nested, 60_000, 'r1').meta, '4 calls · 1m00s · running · gpt-6.1-sol · $0.10');
+  assert.equal(core.workerWords(nested, 60_000, 'r7').meta, '4 calls · 1m00s · running · under r1 · gpt-6.1-sol · $0.10');
   const alone = { ...parent, family_cost_billed: 0.1, family_cost_list: 0.1 };
   assert.equal(core.workerWords(alone, 60_000).meta, '4 calls · 1m00s · running · $0.10');
 });

@@ -660,9 +660,9 @@ pub(crate) fn describe_worker(worker: &WorkerFacts) -> String {
         .filter(|(_, list)| *list >= worker.cost.map_or(0.0, |(_, own)| own) + 0.005)
     {
         line.push_str(&format!(
-            "\n  with its workers {}",
+            "\n  {} with its workers",
             if list > billed + 0.005 {
-                format!("≈ ${list:.2} at API prices")
+                format!("≈ ${list:.2}")
             } else {
                 format!("${billed:.2}")
             }
@@ -1911,14 +1911,14 @@ mod tests {
         worker.cost = Some((0.12, 0.12));
         worker.family_cost = Some((0.62, 0.62));
         assert!(
-            describe_worker(&worker).contains("\n  cost $0.12\n  with its workers $0.62"),
+            describe_worker(&worker).contains("\n  cost $0.12\n  $0.62 with its workers"),
             "{}",
             describe_worker(&worker)
         );
         worker.family_cost = Some((0.0, 0.9));
         worker.cost = Some((0.0, 0.31));
         assert!(
-            describe_worker(&worker).contains("\n  with its workers ≈ $0.90 at API prices"),
+            describe_worker(&worker).contains("\n  ≈ $0.90 with its workers"),
             "{}",
             describe_worker(&worker)
         );
