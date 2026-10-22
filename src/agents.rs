@@ -914,13 +914,13 @@ fn cache_paragraph(settings: &AgentSettings) -> String {
     let openai = settings.worker.provider() == Ok(Provider::OpenAI);
     if settings.worker.takes_cache_ttl() {
         format!(
-            "\nA worker keeps a prompt cache of its conversation. Set `start_agent`'s `cache` to `1h` for a worker you expect to send messages or follow-up work after it reports, so continuing it reuses its cache, and to `5m` for a quick one-off such as a research task (a 1h cache costs more to write: twice the input price instead of 1.25 times). The default is `{}`. Continuing a worker after its cache has expired rereads its whole conversation at full price: if it finished more than an hour ago, start a fresh worker instead, unless its context is worth that.\n",
+            "\nA worker keeps a prompt cache of its conversation. Set `start_agent`'s `cache` to `1h` for a worker you expect to send messages or follow-up work after it reports, so continuing it reuses its cache, and to `5m` for a quick one-off such as a research task (a 1h cache costs more to write, twice the input price instead of 1.25 times). The default is `{}`. Continuing a worker after its cache has expired rereads its whole conversation at full price. If it finished more than an hour ago, start a fresh worker instead, unless its context is worth that.\n",
             if settings.worker.cache_1h { "1h" } else { "5m" }
         )
     } else if openai && settings.providers.openai_auth != Some(OpenAiAuth::ApiKey) {
-        "\nA worker keeps a prompt cache of its conversation for 30 minutes after its last step (ChatGPT's cache, which no setting changes). Continuing a worker after its cache has expired rereads its whole conversation uncached, which uses more of the ChatGPT plan's limits: if it finished more than 30 minutes ago, start a fresh worker instead, unless its context is worth that.\n".to_string()
+        "\nA worker keeps a prompt cache of its conversation for 30 minutes after its last step (ChatGPT's cache, which no setting changes). Continuing a worker after its cache has expired rereads its whole conversation uncached, which uses more of the ChatGPT plan's limits. If it finished more than 30 minutes ago, start a fresh worker instead, unless its context is worth that.\n".to_string()
     } else if settings.worker.in_claude_code() {
-        "\nA worker runs in Claude Code, which keeps a prompt cache of its conversation for an hour after its last step on a Claude plan (no setting changes it). Continuing a worker after its cache has expired rereads its whole conversation uncached, which uses more of the plan's limits: if it finished more than an hour ago, start a fresh worker instead, unless its context is worth that.\n".to_string()
+        "\nA worker runs in Claude Code, which keeps a prompt cache of its conversation for an hour after its last step on a Claude plan (no setting changes it). Continuing a worker after its cache has expired rereads its whole conversation uncached, which uses more of the plan's limits. If it finished more than an hour ago, start a fresh worker instead, unless its context is worth that.\n".to_string()
     } else {
         String::new()
     }

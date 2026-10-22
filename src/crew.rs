@@ -383,7 +383,7 @@ fn start_parameters() -> Vec<ToolParameterDefinition> {
     vec![
         text(
             CACHE_PARAM,
-            "1h or 5m: how long the worker's prompt cache lasts after its last step. Only Claude workers on an API key or OpenRouter take it: ChatGPT keeps its own 30-minute cache, and Claude Code an hour.",
+            "1h or 5m, how long the worker's prompt cache lasts after its last step. Only Claude workers on an API key or OpenRouter take it. ChatGPT keeps its own 30-minute cache, and Claude Code an hour.",
         ),
         text(
             PROFILE_PARAM,
