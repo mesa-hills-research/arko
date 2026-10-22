@@ -1482,6 +1482,14 @@ impl App {
                 rows.push(SettingsRow::ProjectWorkers);
             }
         }
+        if self.reading.models.has_workers {
+            if commands::find("/worker-models agent").is_some() {
+                rows.push(SettingsRow::WorkerModels);
+            }
+            if commands::find("/worker-depth 2").is_some() {
+                rows.push(SettingsRow::WorkerDepth);
+            }
+        }
         rows.push(SettingsRow::Keys);
         rows
     }
@@ -1699,6 +1707,21 @@ impl App {
                         "/project-instructions workers on"
                     });
                 }
+                SettingsRow::WorkerModels => {
+                    let all = crate::agents::ModelChoice::ALL;
+                    let index = all
+                        .iter()
+                        .position(|choice| *choice == self.worker_models());
+                    let next = (index.unwrap_or(0) as i32 + step).rem_euclid(all.len() as i32);
+                    self.send(&all[next as usize].command());
+                }
+                SettingsRow::WorkerDepth => {
+                    let most = crate::workers::MAX_DEPTH as i32;
+                    let next = (self.worker_depth() as i32 + step).clamp(1, most) as u32;
+                    if next != self.worker_depth() {
+                        self.send(&crate::workers::depth_command(next));
+                    }
+                }
                 SettingsRow::Page => {
                     if self.reading.page.is_some() {
                         self.send("/remote off");
@@ -1780,6 +1803,16 @@ impl App {
     /// Which agents get the extra rules for small models.
     pub fn extra_rules(&self) -> ExtraRules {
         self.reading.settings.extra_rules
+    }
+
+    /// Who chooses the workers' models.
+    pub fn worker_models(&self) -> crate::agents::ModelChoice {
+        self.reading.settings.worker_models
+    }
+
+    /// How many levels of workers the session allows.
+    pub fn worker_depth(&self) -> u32 {
+        self.reading.settings.worker_depth
     }
 
     /// Which of the project's instruction files the agents get.
@@ -3069,6 +3102,58 @@ pub(super) mod tests {
         app.reading.settings.monitor_wakes = crate::monitors::Wakes(Some(1800));
         press(&mut app, KeyCode::Left, KeyModifiers::NONE);
         assert_eq!(sent(&mut app), ["/monitor-wakes off"]);
+    }
+
+    /// Who chooses the workers' models and how deep workers go are the last
+    /// session settings, with the workers. The rows step with
+    /// `/worker-models` and `/worker-depth`, and a session with no workers
+    /// has neither.
+    #[test]
+    fn the_worker_rows_send_the_commands() {
+        let mut app = app();
+        assert!(
+            !app.settings_rows().contains(&SettingsRow::WorkerModels),
+            "no workers, no rows"
+        );
+        app.reading.models.has_workers = true;
+        let rows = app.settings_rows();
+        let models = rows
+            .iter()
+            .position(|row| *row == SettingsRow::WorkerModels)
+            .unwrap();
+        assert_eq!(rows[models + 1], SettingsRow::WorkerDepth);
+        assert_eq!(rows[models + 2], SettingsRow::Keys);
+        app.overlay = Some(Overlay::Settings {
+            row: models,
+            picker: None,
+        });
+        // The main agent chooses by default: right goes to profiles, left
+        // round to the session's model.
+        assert_eq!(app.worker_models(), crate::agents::ModelChoice::Agent);
+        press(&mut app, KeyCode::Right, KeyModifiers::NONE);
+        press(&mut app, KeyCode::Left, KeyModifiers::NONE);
+        assert_eq!(
+            sent(&mut app),
+            ["/worker-models profiles", "/worker-models session"]
+        );
+        app.reading.settings.worker_models = crate::agents::ModelChoice::Session;
+        press(&mut app, KeyCode::Right, KeyModifiers::NONE);
+        assert_eq!(sent(&mut app), ["/worker-models agent"]);
+        // The depth steps by one, from 1 to 4.
+        app.overlay = Some(Overlay::Settings {
+            row: models + 1,
+            picker: None,
+        });
+        app.reading.settings.worker_depth = 2;
+        press(&mut app, KeyCode::Right, KeyModifiers::NONE);
+        press(&mut app, KeyCode::Left, KeyModifiers::NONE);
+        assert_eq!(sent(&mut app), ["/worker-depth 3", "/worker-depth 1"]);
+        app.reading.settings.worker_depth = 4;
+        press(&mut app, KeyCode::Right, KeyModifiers::NONE);
+        assert!(sent(&mut app).is_empty(), "4 is the most");
+        app.reading.settings.worker_depth = 1;
+        press(&mut app, KeyCode::Left, KeyModifiers::NONE);
+        assert!(sent(&mut app).is_empty(), "1 is the least");
     }
 
     /// Text replies are a session setting: the row turns them on or off with

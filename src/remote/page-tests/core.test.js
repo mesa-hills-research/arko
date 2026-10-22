@@ -367,3 +367,17 @@ test('the monitor wakes setting reads as words', () => {
   assert.equal(core.wakesWords(null), 'Always');
   assert.equal(core.wakesWords(0), 'Never');
 });
+
+test('the workers settings read as words', () => {
+  assert.deepEqual(Object.keys(core.WORKER_MODELS), ['agent', 'profiles', 'session']);
+  assert.equal(core.WORKER_MODELS.agent.name, 'Main agent chooses');
+  assert.equal(core.WORKER_MODELS.profiles.name, 'Profiles only');
+  assert.equal(core.WORKER_MODELS.session.name, 'Session’s worker model');
+  // Until workers can start workers, the depth says it takes effect later.
+  assert.equal(
+    core.workerDepthWords(2, false),
+    'Depth 2 takes effect once workers can start workers of their own. For now only the main agent starts workers.',
+  );
+  assert.equal(core.workerDepthWords(1, true), 'Only the main agent starts workers.');
+  assert.match(core.workerDepthWords(3, true), /^Workers can go 3 levels deep\./);
+});

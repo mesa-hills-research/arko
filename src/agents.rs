@@ -154,6 +154,7 @@ impl ExtraRules {
 /// Who picks the model of a worker (the `worker_models` setting). The hook
 /// that starts each worker enforces it, so it changes at any time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "tui", derive(clap::ValueEnum))]
 #[serde(rename_all = "lowercase")]
 pub enum ModelChoice {
     /// The main agent chooses a profile, model and effort for each worker,
@@ -189,6 +190,21 @@ impl ModelChoice {
             .find(|choice| choice.name().eq_ignore_ascii_case(text.trim()))
     }
 
+    /// The choice as a settings page labels it.
+    pub fn label(self) -> &'static str {
+        match self {
+            ModelChoice::Agent => "Main agent chooses",
+            ModelChoice::Profiles => "Profiles only",
+            ModelChoice::Session => "Session's worker model",
+        }
+    }
+
+    /// The command that sets the choice, such as `/worker-models profiles`.
+    /// An app sends it to the session as the user's input.
+    pub fn command(self) -> String {
+        format!("{} {}", crate::workers::MODELS_COMMAND, self.name())
+    }
+
     /// What the choice means, as Arko tells the user.
     pub fn describe(self) -> &'static str {
         match self {
@@ -210,6 +226,8 @@ impl ModelChoice {
 /// The deepest level of workers a session allows unless it says otherwise:
 /// the main agent's workers, and the workers those start.
 pub const DEFAULT_WORKER_DEPTH: u32 = 2;
+/// The most levels of workers a session can allow.
+pub const MAX_WORKER_DEPTH: u32 = 4;
 
 /// Models are named and resolved by [`crate::providers`].
 pub use crate::providers::resolve_model;

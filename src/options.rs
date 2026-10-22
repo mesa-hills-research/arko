@@ -47,6 +47,12 @@ pub struct Options {
     /// The workers' effort, by default the main agent's.
     pub worker_effort: Option<Effort>,
     pub worker_fast: bool,
+    /// Who chooses the workers' models, by default the main agent in a new
+    /// session, and a resumed session's own.
+    pub worker_models: Option<crate::agents::ModelChoice>,
+    /// How many levels of workers the session allows, from 1 to 4, by
+    /// default 2 in a new session, and a resumed session's own.
+    pub worker_depth: Option<u32>,
     /// The 1-hour prompt cache, by default as `ARKO_CACHE_1H` says.
     pub cache_1h: Option<bool>,
     /// The main agent ends its turns with a plain reply. By default it does
@@ -181,6 +187,8 @@ impl Default for Options {
             worker_model: None,
             worker_effort: None,
             worker_fast: false,
+            worker_models: None,
+            worker_depth: None,
             cache_1h: None,
             text_replies: None,
             cc_compact: None,

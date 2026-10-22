@@ -529,7 +529,8 @@ async fn a_profile_for_every_session_is_put_to_the_user_as_a_question() {
                     text: reply.into(),
                 })
                 .unwrap();
-            until(|| feed.activity().question.is_none()).await;
+            // (The next question may be up before this one is seen gone.)
+            until(|| feed.activity().question.map(|asked| asked.id) != Some(question.id)).await;
         }
     });
     let saved = harness.root.join("profiles").join("3d-judge.md");
@@ -547,5 +548,181 @@ async fn a_profile_for_every_session_is_put_to_the_user_as_a_question() {
     );
     assert!(std::fs::read_to_string(&saved).unwrap().contains("made_by: agent"));
     answers.await.unwrap();
+    harness.crew.as_ref().unwrap().shutdown().await;
+}
+
+/// The commands' output the feed shows, joined.
+fn said(feed: &remote::Feed) -> String {
+    shown(feed)
+        .into_iter()
+        .filter(|(kind, _, _)| kind == "output" || kind == "notice")
+        .map(|(_, text, _)| text)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// What the last command said.
+fn last_said(feed: &remote::Feed) -> String {
+    shown(feed)
+        .into_iter()
+        .rev()
+        .find(|(kind, _, _)| kind == "output" || kind == "notice")
+        .map(|(_, text, _)| text)
+        .unwrap_or_default()
+}
+
+/// `/worker-models` says who chooses the workers' models and changes it at
+/// any time. Before the conversation starts the agents are built again with
+/// what the main agent may choose in their instructions. After, the main
+/// agent reads a note, and the start hook enforces the new choice.
+#[tokio::test]
+async fn worker_models_sets_who_chooses_the_workers_models() {
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, _sender, _server, seen) = setup(temp.path()).await;
+    assert!(harness.live_command("/worker-models", Source::Terminal));
+    assert_eq!(
+        last_said(&harness.feed),
+        "Models for workers is set to agent. The main agent chooses a profile, model and effort for each worker, and can save profiles. /worker-models agent, profiles or session changes that."
+    );
+    assert!(harness.live_command("/worker-models everyone", Source::Terminal));
+    assert_eq!(
+        last_said(&harness.feed),
+        "/worker-models takes agent, profiles or session (/worker-models profiles)."
+    );
+    assert!(harness.live_command("/worker-models agent", Source::Terminal));
+    assert!(last_said(&harness.feed).starts_with("Models for workers is set to agent already."));
+
+    // Before the conversation starts, the agents are built again.
+    assert!(harness.main_config.instructions.contains("`save_worker_profile`"));
+    assert!(harness.live_command("/worker-models profiles", Source::Terminal));
+    assert_eq!(
+        last_said(&harness.feed),
+        "The main agent starts workers with a profile only. It can't choose a model or effort by itself."
+    );
+    assert_eq!(harness.settings.worker_models, crate::agents::ModelChoice::Profiles);
+    assert!(!harness.main_config.instructions.contains("`save_worker_profile`"));
+    assert!(harness.main_config.instructions.contains("with a profile, a named setup the user saved"));
+    assert_eq!(
+        harness.session.load_settings().unwrap().worker_models,
+        crate::agents::ModelChoice::Profiles
+    );
+    start_worker(&mut harness, &mut inputs, "Start on a model.").await;
+    assert!(last_result(&seen).contains("(/worker-models profiles)"));
+
+    // From the page, it says where it came from. After the start, the main
+    // agent is told, and the hook goes by the new choice at once.
+    assert!(harness.live_command("/worker-models session", Source::Web));
+    assert_eq!(
+        last_said(&harness.feed),
+        "Changed from the web page. Every worker runs the session's worker model, gpt-6-luna (high effort)."
+    );
+    assert!(harness.conversation_started());
+    start_worker(&mut harness, &mut inputs, "Start with the judge.").await;
+    assert!(last_result(&seen).contains("(/worker-models session)"));
+    let told = seen
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(who, ..)| who == "main")
+        .any(|(_, _, _, body)| {
+            body.contains("The user now has every worker run the session's worker model, gpt-6-luna (high effort). Start workers without a profile, model or effort.")
+        });
+    assert!(told, "the main agent read a note");
+    assert!(harness.live_command("/worker-models agent", Source::Terminal));
+    start_worker(&mut harness, &mut inputs, "Start on a model.").await;
+    assert!(worker_with(&seen, "Start on a model.").is_some_and(|(model, ..)| model == "gpt-6-astra"));
+    harness.crew.as_ref().unwrap().shutdown().await;
+}
+
+/// `/worker-depth` says how many levels of workers the session allows and
+/// sets it from 1 to 4, saved with the session. Workers can't start workers
+/// yet, and it says so.
+#[tokio::test]
+async fn worker_depth_is_kept_and_says_it_takes_effect_later() {
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, _inputs, _sender, _server, _seen) = setup(temp.path()).await;
+    assert!(harness.live_command("/worker-depth", Source::Terminal));
+    assert_eq!(
+        last_said(&harness.feed),
+        "Worker depth is 2. Worker depth is 2. It takes effect when workers can start workers of their own, which they can't yet. For now only the main agent starts workers. /worker-depth 1 to 4 changes that."
+    );
+    for bad in ["0", "5", "deep"] {
+        assert!(harness.live_command(&format!("/worker-depth {bad}"), Source::Terminal));
+        assert!(
+            last_said(&harness.feed).contains("from 1 to 4"),
+            "{bad}: {}",
+            last_said(&harness.feed)
+        );
+    }
+    assert_eq!(harness.settings.worker_depth, 2);
+    assert!(harness.live_command("/worker-depth 3", Source::Terminal));
+    assert_eq!(
+        last_said(&harness.feed),
+        "Worker depth is 3. It takes effect when workers can start workers of their own, which they can't yet. For now only the main agent starts workers."
+    );
+    assert_eq!(harness.settings.worker_depth, 3);
+    assert_eq!(harness.session.load_settings().unwrap().worker_depth, 3);
+    assert!(harness.live_command("/worker-depth 3", Source::Terminal));
+    assert!(last_said(&harness.feed).starts_with("Worker depth is 3 already."));
+    harness.crew.as_ref().unwrap().shutdown().await;
+}
+
+fn args(words: &[&str]) -> Options {
+    Args::parse_from(std::iter::once("arko").chain(words.iter().copied()))
+        .options()
+        .unwrap()
+}
+
+/// `--worker-models` and `--worker-depth` set a new session's choice and
+/// depth. Without them a new session has the main agent choose, two levels
+/// deep.
+#[test]
+fn the_flags_set_who_chooses_and_how_deep_for_a_new_session() {
+    let temp = tempfile::tempdir().unwrap();
+    let dir = temp.path().to_str().unwrap();
+    let new = |words: &[&str]| {
+        let mut all = vec!["-m", "opus", "--no-cache-1h", "-C", dir];
+        all.extend(words);
+        new_settings(&args(&all), &NoPrompter).unwrap().0
+    };
+    let default = new(&[]);
+    assert_eq!(default.worker_models, crate::agents::ModelChoice::Agent);
+    assert_eq!(default.worker_depth, 2);
+    let set = new(&["--worker-models", "profiles", "--worker-depth", "3"]);
+    assert_eq!(set.worker_models, crate::agents::ModelChoice::Profiles);
+    assert_eq!(set.worker_depth, 3);
+    for (word, choice) in [
+        ("agent", crate::agents::ModelChoice::Agent),
+        ("session", crate::agents::ModelChoice::Session),
+    ] {
+        assert_eq!(new(&["--worker-models", word]).worker_models, choice);
+    }
+    for depth in 1..=4 {
+        assert_eq!(new(&["--worker-depth", &depth.to_string()]).worker_depth, depth);
+    }
+    for bad in [
+        ["--worker-models", "everyone"],
+        ["--worker-depth", "0"],
+        ["--worker-depth", "5"],
+        ["--worker-depth", "deep"],
+    ] {
+        assert!(Args::try_parse_from(["arko", bad[0], bad[1]]).is_err(), "{bad:?}");
+    }
+}
+
+/// `/session` says who chooses the workers' models and how deep workers go,
+/// in a session that has workers.
+#[tokio::test]
+async fn session_says_who_chooses_the_workers_models_and_how_deep_they_go() {
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, _inputs, _sender, _server, _seen) = setup(temp.path()).await;
+    harness.mirrored(|harness| harness.command("/session"));
+    assert!(
+        said(&harness.feed).contains(
+            "models for workers agent (the main agent chooses a profile, model and effort for each worker), worker depth 2"
+        ),
+        "{}",
+        said(&harness.feed)
+    );
     harness.crew.as_ref().unwrap().shutdown().await;
 }

@@ -1036,6 +1036,36 @@
       option.addEventListener('click', () => chooseProject(key));
       project.append(option);
     }
+    // Who chooses the workers' models and how deep workers go, with workers.
+    const withWorkers = Boolean(status && status.models && status.models.has_workers);
+    $('worker-settings').hidden = !withWorkers;
+    const pickingModels = pending && pending.workerModels !== undefined;
+    const modelChoice = pickingModels ? pending.workerModels : (settings.worker_models || 'agent');
+    const modelOptions = $('worker-models-options');
+    modelOptions.replaceChildren();
+    for (const [key, about] of Object.entries(C.WORKER_MODELS)) {
+      const option = element('button', 'option');
+      option.type = 'button';
+      option.setAttribute('role', 'radio');
+      option.setAttribute('aria-checked', String(key === modelChoice));
+      option.append(element('span', 'check', key === modelChoice ? '✓' : ''), element('span', 'name', about.name), element('span', 'about', about.about));
+      option.addEventListener('click', () => chooseWorkerModels(key));
+      modelOptions.append(option);
+    }
+    const pickingDepth = pending && pending.workerDepth !== undefined;
+    const depth = pickingDepth ? pending.workerDepth : (settings.worker_depth || 2);
+    const depthOptions = $('worker-depth-options');
+    depthOptions.replaceChildren();
+    for (const level of [1, 2, 3, 4]) {
+      const option = element('button', 'option');
+      option.type = 'button';
+      option.setAttribute('role', 'radio');
+      option.setAttribute('aria-checked', String(level === depth));
+      option.append(element('span', 'check', level === depth ? '✓' : ''), element('span', 'name', String(level)));
+      option.addEventListener('click', () => chooseWorkerDepth(level));
+      depthOptions.append(option);
+    }
+    $('worker-depth-about').textContent = C.workerDepthWords(depth, Boolean(settings.nested_workers));
     $('project-workers').hidden = !(status && status.models && status.models.has_workers);
     const toWorkers = $('project-workers-switch');
     const giving = pending && pending.workers !== undefined;
@@ -1160,6 +1190,20 @@
     const now = (status && status.settings && status.settings.extra_rules) || 'off';
     if (key === now) return;
     command('/extra-rules ' + key, 'rules-note', (settings) => settings.extra_rules === key, { rules: key });
+  }
+
+  function chooseWorkerModels(key) {
+    if (pending) return;
+    const now = (status && status.settings && status.settings.worker_models) || 'agent';
+    if (key === now) return;
+    command('/worker-models ' + key, 'worker-note', (settings) => settings.worker_models === key, { workerModels: key });
+  }
+
+  function chooseWorkerDepth(level) {
+    if (pending) return;
+    const now = (status && status.settings && status.settings.worker_depth) || 2;
+    if (level === now) return;
+    command('/worker-depth ' + level, 'worker-note', (settings) => settings.worker_depth === level, { workerDepth: level });
   }
 
   function chooseProject(key) {

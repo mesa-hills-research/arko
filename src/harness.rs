@@ -1587,6 +1587,8 @@ impl Harness {
             "/project-instructions" => self.project_command(argument, source),
             "/background-after" => self.background_after_command(argument, source),
             "/monitor-wakes" => self.monitor_wakes_command(argument, source),
+            "/worker-models" => self.worker_models_command(argument, source),
+            "/worker-depth" => self.worker_depth_command(argument, source),
             "/jobs" => self.jobs_command(argument),
             _ => self.handover_at_command(argument, source),
         }
@@ -2944,6 +2946,14 @@ impl Harness {
                     &facts.handover,
                     facts.workers.is_some(),
                 )));
+                if facts.workers.is_some() {
+                    out.line(&out.dim(&format!(
+                        "models for workers {} ({}), worker depth {}",
+                        self.settings.worker_models.name(),
+                        self.settings.worker_models.describe(),
+                        self.settings.worker_depth
+                    )));
+                }
                 out.line(&out.dim(&format!(
                     "text replies {} ({})",
                     if facts.text_replies { "on" } else { "off" },
@@ -4253,7 +4263,7 @@ pub(crate) fn place(link: &remote::Link) -> String {
 /// The commands that change a setting while the session runs, which take
 /// an argument: `/outside`, `/model`, `/handover`, `/handover-at`, `/keys`.
 /// And `/message`, which works while the agent works too.
-pub(crate) const LIVE_COMMANDS: [&str; 13] = [
+pub(crate) const LIVE_COMMANDS: [&str; 15] = [
     "/outside",
     "/model",
     "/handover",
@@ -4265,6 +4275,8 @@ pub(crate) const LIVE_COMMANDS: [&str; 13] = [
     "/project-instructions",
     "/background-after",
     "/monitor-wakes",
+    "/worker-models",
+    "/worker-depth",
     "/jobs",
     "/message",
 ];
@@ -5112,6 +5124,8 @@ pub(crate) mod tests {
             text_replies: Default::default(),
             cc_compact: Default::default(),
             extra_rules: Default::default(),
+            worker_models: Default::default(),
+            worker_depth: Default::default(),
             project: Default::default(),
             background: background.clone(),
             feed: Some(feed.clone()),

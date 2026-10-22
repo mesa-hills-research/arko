@@ -523,7 +523,19 @@ impl Engine {
                 let wakes = options.monitor_wakes.is_some_and(|wakes| {
                     std::mem::replace(&mut settings.monitor_wakes, wakes) != wakes
                 });
-                if project_from_options(&options, &mut settings) | background | wakes {
+                // So can who chooses the workers' models and how deep they go.
+                let choice = options.worker_models.is_some_and(|choice| {
+                    std::mem::replace(&mut settings.worker_models, choice) != choice
+                });
+                let depth = options.worker_depth.is_some_and(|depth| {
+                    std::mem::replace(&mut settings.worker_depth, depth) != depth
+                });
+                if project_from_options(&options, &mut settings)
+                    | background
+                    | wakes
+                    | choice
+                    | depth
+                {
                     session
                         .save_settings(&settings)
                         .map_err(|error| format!("could not save the session ({error})"))?;
@@ -805,6 +817,8 @@ impl Engine {
             text_replies: Default::default(),
             cc_compact: Default::default(),
             extra_rules: Default::default(),
+            worker_models: Default::default(),
+            worker_depth: Default::default(),
             project: Default::default(),
             background: managers.background.clone(),
             feed: Some(feed.clone()),
@@ -1681,6 +1695,78 @@ mod tests {
             seam.meter.read().settings.monitor_wakes,
             crate::monitors::Wakes(Some(1_800))
         );
+        quit(seam, ended).await;
+    }
+
+    /// Who chooses the workers' models and how deep workers go can be set
+    /// for a new session, which keeps them, and again as it resumes.
+    #[tokio::test]
+    async fn worker_settings_are_set_for_a_new_session_and_on_resume() {
+        use crate::agents::ModelChoice;
+        let temp = tempfile::tempdir().unwrap();
+        let (server, _bodies) = counting_server().await;
+        let (root, project) = (temp.path().join("arko"), temp.path().join("project"));
+        std::fs::create_dir_all(&project).unwrap();
+        let open = |session: SessionChoice, choice: Option<ModelChoice>, depth: Option<u32>| {
+            let running = spawn(
+                Options {
+                    root: Some(root.clone()),
+                    session,
+                    workspace: Some(project.clone()),
+                    model: Some("luna".into()),
+                    openai_auth: Some(OpenAiAuth::ApiKey),
+                    cache_1h: Some(false),
+                    worker_models: choice,
+                    worker_depth: depth,
+                    client: Some(GivenClient(Arc::new(server.client()))),
+                    ..Options::default()
+                },
+                Arc::new(NoPrompter),
+            );
+            async move {
+                let seam = tokio::time::timeout(Duration::from_secs(30), running.opened)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .unwrap();
+                (seam, running.ended)
+            }
+        };
+        let saved = |id: &str| {
+            let settings = Session::open(&root, id).unwrap().load_settings().unwrap();
+            (settings.worker_models, settings.worker_depth)
+        };
+        let (seam, ended) = open(SessionChoice::New, None, None).await;
+        let id = seam.session.id.clone();
+        assert_eq!(saved(&id), (ModelChoice::Agent, 2));
+        let live = seam.meter.read().settings;
+        assert_eq!(
+            (live.worker_models, live.worker_depth),
+            (ModelChoice::Agent, 2)
+        );
+        quit(seam, ended).await;
+        // A resume without the options keeps the session's, and with them
+        // changes and saves them.
+        let (seam, ended) = open(SessionChoice::Resume(id.clone()), None, None).await;
+        assert_eq!(saved(&id), (ModelChoice::Agent, 2));
+        quit(seam, ended).await;
+        let (seam, ended) = open(
+            SessionChoice::Resume(id.clone()),
+            Some(ModelChoice::Profiles),
+            Some(3),
+        )
+        .await;
+        assert_eq!(saved(&id), (ModelChoice::Profiles, 3));
+        let live = seam.meter.read().settings;
+        assert_eq!(
+            (live.worker_models, live.worker_depth),
+            (ModelChoice::Profiles, 3)
+        );
+        assert!(!live.nested_workers, "workers can't start workers yet");
+        quit(seam, ended).await;
+        // A new session takes them too.
+        let (seam, ended) = open(SessionChoice::New, Some(ModelChoice::Session), Some(1)).await;
+        assert_eq!(saved(&seam.session.id), (ModelChoice::Session, 1));
         quit(seam, ended).await;
     }
 

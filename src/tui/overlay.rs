@@ -73,6 +73,10 @@ pub enum SettingsRow {
     Compact,
     ProjectFiles,
     ProjectWorkers,
+    /// Who chooses the workers' models.
+    WorkerModels,
+    /// How many levels of workers there can be.
+    WorkerDepth,
     Keys,
 }
 
@@ -650,6 +654,40 @@ fn settings(frame: &mut Frame, app: &App, area: Rect, selected: usize) {
                     } else {
                         format!("{mode} It changes before the conversation starts.")
                     }
+                },
+            ),
+            SettingsRow::WorkerModels => (
+                "Workers",
+                "Models",
+                choices(
+                    theme,
+                    &crate::agents::ModelChoice::ALL.map(crate::agents::ModelChoice::name),
+                    crate::agents::ModelChoice::ALL
+                        .iter()
+                        .position(|choice| *choice == app.worker_models())
+                        .unwrap_or(0),
+                ),
+                format!(
+                    "Who picks a worker's model. {} A change applies to the next worker started.",
+                    {
+                        let mut sentence = app.worker_models().describe().to_string();
+                        sentence[..1].make_ascii_uppercase();
+                        format!("{sentence}.")
+                    }
+                ),
+            ),
+            SettingsRow::WorkerDepth => (
+                "Workers",
+                "Depth",
+                vec![
+                    Span::styled(format!("{} ", glyphs::render("←")), theme.dim()),
+                    Span::styled(format!(" {} ", app.worker_depth()), theme.chosen()),
+                    Span::styled(format!(" {}", glyphs::render("→")), theme.dim()),
+                ],
+                if crate::crew::NESTED_WORKERS {
+                    "How many levels of workers there can be. 1 means only the main agent starts workers. 2 lets a worker the main agent starts begin workers of its own, when the main agent allows it.".to_string()
+                } else {
+                    "How many levels of workers there can be, from 1 to 4. It takes effect once workers can start workers of their own.".to_string()
                 },
             ),
             SettingsRow::Page => (

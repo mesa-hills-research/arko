@@ -39,6 +39,10 @@ pub(crate) struct Gauges {
     /// Which agents get the extra rules for small models, as the harness
     /// last published it.
     pub(crate) extra_rules: Mutex<ExtraRules>,
+    /// Who chooses the workers' models, and how many levels of workers the
+    /// session allows, as the harness last published them.
+    pub(crate) worker_models: Mutex<crate::agents::ModelChoice>,
+    pub(crate) worker_depth: std::sync::atomic::AtomicU32,
     /// Which of the project's instruction files the agents get, and whether
     /// workers do, as the harness last published them.
     pub(crate) project: Mutex<(project::Files, bool)>,
@@ -318,6 +322,9 @@ impl remote::Meter for Gauges {
                 text_replies: self.text_replies.load(std::sync::atomic::Ordering::Relaxed),
                 cc_compact: self.cc_compact.load(std::sync::atomic::Ordering::Relaxed),
                 extra_rules: *lock(&self.extra_rules),
+                worker_models: *lock(&self.worker_models),
+                worker_depth: self.worker_depth.load(std::sync::atomic::Ordering::Relaxed),
+                nested_workers: crate::crew::NESTED_WORKERS,
                 project_instructions,
                 worker_project_instructions,
                 background_after: self.background.after().map_or(0, |after| after.as_secs()),

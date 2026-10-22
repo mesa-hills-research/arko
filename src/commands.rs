@@ -105,7 +105,7 @@ pub const COMMANDS: &[Command] = &[
     Command::screen(
         "/settings",
         "",
-        "the view, theme, mouse, outside access, handover size, background jobs, monitor wakes, text replies, extra rules, Claude Code compaction, project instructions, web page and API keys",
+        "the view, theme, mouse, outside access, handover size, background jobs, monitor wakes, models for workers, worker depth, text replies, extra rules, Claude Code compaction, project instructions, web page and API keys",
     ),
     Command {
         name: "/model",
@@ -156,6 +156,24 @@ pub const COMMANDS: &[Command] = &[
         name: "/monitor-wakes",
         args: "DURATION|always|off",
         about: "how long after your last message a monitor's warning before it ends still wakes the agent, so it can keep the monitor (/monitor-wakes 30m, /monitor-wakes always, /monitor-wakes off)",
+        aliases: &[],
+        runs: Runs::Session,
+    },
+    Command {
+        name: "/worker-models",
+        args: "agent|profiles|session",
+        about: "who chooses the workers' models, the main agent (agent), the main agent from the profiles only (profiles), or no one, so every worker runs the session's worker model (session). It applies at once (/worker-models profiles)",
+        aliases: &[],
+        runs: Runs::Session,
+    },
+    Command {
+        name: "/worker-depth",
+        args: "1-4",
+        about: if crate::crew::NESTED_WORKERS {
+            "how many levels of workers the session allows, so that 1 lets only the main agent start workers and 2 lets a worker it starts begin workers of its own (/worker-depth 2)"
+        } else {
+            "how many levels of workers the session allows, from 1 to 4. It takes effect once workers can start workers of their own (/worker-depth 2)"
+        },
         aliases: &[],
         runs: Runs::Session,
     },
@@ -243,6 +261,7 @@ const CHOICES: &[(&str, &[&str], &[&str])] = &[
     ("/outside", &[], ON_OFF),
     ("/background-after", &[], &["off"]),
     ("/monitor-wakes", &[], &["always", "off"]),
+    ("/worker-models", &[], &["agent", "profiles", "session"]),
     ("/jobs", &[], &["stop"]),
     ("/jobs", &["stop"], &["all"]),
     ("/text-replies", &[], ON_OFF),

@@ -70,6 +70,20 @@ pub(crate) struct Args {
     #[arg(long, value_enum)]
     pub(crate) worker_effort: Option<Effort>,
 
+    /// Who chooses the workers' models. With agent, the default, the main
+    /// agent chooses a profile, model and effort for each worker and can
+    /// save profiles. With profiles, it starts workers with a profile only.
+    /// With session, every worker runs the session's worker model. For a
+    /// new or resumed session, which keeps it, and /worker-models changes
+    /// it at any time.
+    #[arg(long, value_enum, value_name = "agent|profiles|session")]
+    pub(crate) worker_models: Option<crate::agents::ModelChoice>,
+
+    /// How many levels of workers the session allows, from 1 to 4. The
+    /// default is 2. For a new or resumed session, which keeps it.
+    #[arg(long, value_name = "1-4", value_parser = clap::value_parser!(u32).range(1..=4))]
+    pub(crate) worker_depth: Option<u32>,
+
     /// Fast mode for workers on another model than the main one.
     #[arg(long)]
     pub(crate) worker_fast: bool,
@@ -308,6 +322,8 @@ impl Args {
             worker_model: self.worker_model.clone(),
             worker_effort: self.worker_effort,
             worker_fast: self.worker_fast,
+            worker_models: self.worker_models,
+            worker_depth: self.worker_depth,
             cache_1h: flag(self.cache_1h, self.no_cache_1h),
             text_replies: flag(self.text_replies, self.no_text_replies),
             cc_compact: flag(self.cc_compact, self.no_cc_compact),

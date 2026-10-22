@@ -82,11 +82,13 @@ pub mod testing;
 #[cfg(feature = "tui")]
 mod tui;
 mod ui;
+mod worker_commands;
 mod worker_tools;
+pub mod workers;
 
 use std::sync::Mutex;
 
-pub use crate::agents::{Effort, ExtraRules};
+pub use crate::agents::{Effort, ExtraRules, ModelChoice};
 #[cfg(feature = "tui")]
 pub use crate::cli::cli_main;
 pub use crate::credentials::{Env, Need};

@@ -442,6 +442,22 @@
     return 'For ' + time + ' after your last message';
   }
 
+  /** Who chooses the workers' models, as `/worker-models` takes it. */
+  const WORKER_MODELS = {
+    agent: { name: 'Main agent chooses', about: 'The main agent chooses a profile, model and effort for each worker, and can save profiles.' },
+    profiles: { name: 'Profiles only', about: 'The main agent starts workers with a profile only. It can’t choose a model or effort by itself.' },
+    session: { name: 'Session’s worker model', about: 'Every worker runs the session’s worker model.' },
+  };
+
+  /** How many levels of workers the session allows, from the settings'
+   * `worker_depth`, and whether workers can start workers yet (`nests`):
+   * "Only the main agent starts workers." or "Workers can go 2 levels deep." */
+  function workerDepthWords(depth, nests) {
+    if (!nests) return 'Depth ' + depth + ' takes effect once workers can start workers of their own. For now only the main agent starts workers.';
+    if (depth <= 1) return 'Only the main agent starts workers.';
+    return 'Workers can go ' + depth + ' levels deep. A worker the main agent starts can start workers of its own when the main agent allows it.';
+  }
+
   /** How long a worker has run at `now`, in all its runs (also those
    * before the session was opened again), or null until it has run. */
   function runTime(summary, now) {
@@ -746,6 +762,8 @@
     tokens,
     plural,
     wakesWords,
+    WORKER_MODELS,
+    workerDepthWords,
     workerWords,
     stateOf,
     figures,

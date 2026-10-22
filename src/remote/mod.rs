@@ -350,6 +350,14 @@ pub struct LiveSettings {
     /// How long after the user's last message a monitor's warning before it
     /// ends still wakes the agent (`/monitor-wakes`).
     pub monitor_wakes: crate::monitors::Wakes,
+    /// Who chooses the workers' models (`/worker-models`). It applies to the
+    /// next worker started.
+    pub worker_models: crate::agents::ModelChoice,
+    /// How many levels of workers the session allows (`/worker-depth`).
+    pub worker_depth: u32,
+    /// Workers can start workers of their own. Until they can, the depth
+    /// takes effect later, and a client says so.
+    pub nested_workers: bool,
 }
 
 /// A random token of `bytes` bytes, in URL-safe base64.
