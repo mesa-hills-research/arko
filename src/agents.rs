@@ -910,13 +910,13 @@ const SAVING: &str = "When several workers share a setup, save it once with `sav
 /// What the main agent is told of workers that start workers (the `nested`
 /// parameter of `start_agent`), when the session's depth and its way of
 /// choosing the workers' models let them.
-pub(crate) const NESTING: &str = "A worker you start with `nested: true` can start workers of its own, for a part of the work that splits into parts again.";
+pub(crate) const NESTING: &str = "A worker you start with `nested: true` can start workers of its own, for a part of the work that splits again.";
 
 /// What a worker started with `nested` is told in its first message, after
 /// its profile's instructions. It is part of that message, not of the
 /// worker's instructions, so a worker that resumes keeps what it was told
 /// when it started.
-pub(crate) const NESTED_INSTRUCTIONS: &str = "# Workers of your own\nYou can start workers with `start_agent`. They report to you, and what your lead reads is your own report. Use them for parts of your task that can run apart, and do small things yourself. Start them on the profiles and models your task names, or leave that to the default. You can't report while they run, so wait for them with `wait_for_agents` or stop the ones you don't need with `stop_agent`. Stopping you stops them. Merge the branches of workers that worked in worktrees into yours before you report.";
+pub(crate) const NESTED_INSTRUCTIONS: &str = "# Workers of your own\nYou can start workers with `start_agent`. They report to you, and what your lead reads is your own report. Use them for parts of your task that can run apart, and do small things yourself. Start them on the profiles and models your task names. You can't report while they run, so wait for them with `wait_for_agents` or stop the ones you don't need with `stop_agent`. Stopping you stops them. If a worker of yours works in a worktree (`isolated: true`), commit what it needs first and merge its branch into yours before you report.";
 
 /// What it is told when the user lets it start workers with a profile only.
 const PROFILES_ONLY: &str = "A worker runs on the session's worker model unless you start it with a profile, a named setup the user saved. `worker_options` lists the profiles, which set each worker's model and effort, and what the models cost.";
@@ -1356,6 +1356,29 @@ mod tests {
             let instructions = main_config(&with).unwrap().instructions;
             assert_eq!(instructions.contains(NESTING), told, "depth {depth}");
         }
+    }
+
+    /// What a worker that starts workers is told: who reports to whom, when
+    /// to wait and stop, that stopping it stops them, and what to do about
+    /// worktrees. It names no tool the worker doesn't have.
+    #[test]
+    fn a_worker_that_starts_workers_is_told_what_it_needs() {
+        let text = NESTED_INSTRUCTIONS;
+        for needed in [
+            "`start_agent`",
+            "`wait_for_agents`",
+            "`stop_agent`",
+            "what your lead reads is your own report",
+            "You can't report while they run",
+            "Stopping you stops them.",
+            "(`isolated: true`), commit what it needs first and merge its branch into yours before you report.",
+        ] {
+            assert!(text.contains(needed), "{needed}");
+        }
+        for tool in ["worker_options", "save_worker_profile"] {
+            assert!(!text.contains(tool), "{tool}");
+        }
+        assert!(text.starts_with("# Workers of your own\n"));
     }
 
     /// The main agent is offered the profile tools with the lead's tools.
