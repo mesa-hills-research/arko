@@ -116,7 +116,10 @@ fn line(tool: &str, parameters: &Parameters, running: &[String]) -> Option<Item>
         crew::SAVE_WORKER_PROFILE => {
             let scope = match text(parameters, "scope").trim() {
                 "" | "session" => String::new(),
-                scope => format!(" for the {scope}"),
+                scope => match crate::profiles::Place::parse(scope) {
+                    Some(place) => format!(" for {}", place.reach()),
+                    None => format!(" for the {scope}"),
+                },
             };
             call(format!(
                 "save worker profile {}{scope}",
@@ -631,7 +634,7 @@ mod tests {
         );
         assert_eq!(
             save(&[("name", "judge".into()), ("scope", "user".into())]),
-            "save worker profile judge for the user"
+            "save worker profile judge for every project"
         );
         let item = call(
             SHELL_TOOL_NAME,

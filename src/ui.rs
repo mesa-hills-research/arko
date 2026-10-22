@@ -999,7 +999,10 @@ impl EventPrinter {
                 text("name").trim(),
                 match text("scope").trim() {
                     "" | "session" => String::new(),
-                    scope => format!(" for the {scope}"),
+                    scope => match crate::profiles::Place::parse(scope) {
+                        Some(place) => format!(" for {}", place.reach()),
+                        None => format!(" for the {scope}"),
+                    },
                 }
             ),
             crew::STOP_AGENT => format!(
@@ -1532,7 +1535,7 @@ mod tests {
                 &[("name", "judge".into()), ("scope", "project".into())]
             )
             .unwrap(),
-            "● save worker profile judge for the project"
+            "● save worker profile judge for this project"
         );
         // A wait for no run in particular waits for a message when the
         // agent has no runs, and names the runs it has going.
