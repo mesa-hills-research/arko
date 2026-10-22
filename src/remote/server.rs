@@ -859,6 +859,20 @@ mod tests {
         assert!(!INDEX.contains("Session\u{2019}s"));
     }
 
+    /// A worker's meta line holds its model, profile and cost, which a phone
+    /// would cut at the end if the line couldn't wrap.
+    #[test]
+    fn a_workers_meta_line_wraps_on_a_narrow_screen() {
+        let rule = STYLE
+            .lines()
+            .find(|line| line.starts_with(".wcard .wmeta {"))
+            .expect("the meta line's rule");
+        assert!(
+            !rule.contains("nowrap") && !rule.contains("ellipsis"),
+            "{rule}"
+        );
+    }
+
     #[test]
     fn cookies_and_bearer_tokens_are_read() {
         let mut headers = HeaderMap::new();
