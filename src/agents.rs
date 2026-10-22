@@ -156,6 +156,7 @@ impl ExtraRules {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "tui", derive(clap::ValueEnum))]
 #[serde(rename_all = "lowercase")]
+#[non_exhaustive]
 pub enum ModelChoice {
     /// The main agent chooses a profile, model and effort for each worker,
     /// and may save profiles. New sessions start with this.

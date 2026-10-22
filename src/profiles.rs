@@ -78,8 +78,9 @@ const FOLDER: &str = "profiles";
 const EXTENSION: &str = "md";
 
 /// Where a profile lives. The places are listed nearest first, and the
-/// nearest wins when a name is in more than one.
+/// nearest wins when a name is in more than one. They sort in that order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[non_exhaustive]
 pub enum Place {
     /// The session's own folder. An agent saves here without asking.
     Session,
@@ -124,6 +125,7 @@ impl Place {
 /// How long a worker's prompt cache lasts, for the Claude models on an API
 /// key or OpenRouter that take a choice.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Cache {
     FiveMinutes,
     OneHour,
@@ -140,13 +142,13 @@ impl Cache {
 }
 
 impl std::str::FromStr for Cache {
-    type Err = ();
+    type Err = String;
 
-    fn from_str(text: &str) -> Result<Self, ()> {
+    fn from_str(text: &str) -> Result<Self, String> {
         match text.trim().to_ascii_lowercase().as_str() {
             "5m" => Ok(Cache::FiveMinutes),
             "1h" => Ok(Cache::OneHour),
-            _ => Err(()),
+            _ => Err("the cache is 5m or 1h".to_string()),
         }
     }
 }
@@ -271,7 +273,7 @@ impl Profile {
                 "cache" => {
                     profile.cache = match value.as_str() {
                         "" => None,
-                        other => Some(other.parse::<Cache>().map_err(|()| {
+                        other => Some(other.parse::<Cache>().map_err(|_| {
                             format!(
                                 "`cache: {}` isn't a prompt cache (5m or 1h)",
                                 cut(other, 40)
@@ -712,6 +714,7 @@ impl Profiles {
 
 /// Why [`read`] found no profile.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ReadError {
     /// `name` is not a valid profile name.
     BadName(String),
@@ -887,6 +890,7 @@ fn reason_of(error: &std::io::Error) -> String {
 /// Who writes a profile. A user's edit takes the file whole. An agent's
 /// can't replace what a user made.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Author {
     /// The user, in an app or a command.
     User,

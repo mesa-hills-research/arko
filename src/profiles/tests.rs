@@ -731,3 +731,11 @@ fn quotes_that_are_not_a_pair_stay_and_a_delete_takes_no_path() {
         assert!(delete(&roots, Place::User, bad).is_err(), "{bad}");
     }
 }
+
+#[test]
+fn a_cache_that_is_not_read_says_what_it_takes() {
+    assert_eq!(" 5M ".parse::<Cache>(), Ok(Cache::FiveMinutes));
+    assert_eq!("1h".parse::<Cache>(), Ok(Cache::OneHour));
+    let why = "2h".parse::<Cache>().unwrap_err();
+    assert!(why.contains("5m or 1h"), "{why}");
+}

@@ -429,7 +429,7 @@ impl SaveWorkerProfile {
             profile.cache = Some(
                 cache
                     .parse::<Cache>()
-                    .map_err(|()| refused(format!("cache is 5m or 1h, not {cache}")))?,
+                    .map_err(|_| refused(format!("cache is 5m or 1h, not {cache}")))?,
             );
         }
         profile.isolated = match params.get("isolated") {
