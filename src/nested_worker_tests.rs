@@ -407,7 +407,7 @@ async fn a_worker_started_to_nest_starts_a_worker_whose_report_reaches_it() {
     // /workers lists r2 after r1 and says who started it.
     let described = harness.crew.as_ref().unwrap().describe();
     assert!(
-        described.contains("r2  finished  Count the files in src.\n  started by r1\n"),
+        described.contains("\n  r2  finished  Count the files in src.\n    started by r1\n"),
         "{described}"
     );
 
@@ -961,7 +961,7 @@ async fn a_nested_workers_cost_counts_once() {
     );
     // `/workers` gives r1's cost with its workers, and r2's own only.
     let described = harness.crew.as_ref().unwrap().describe();
-    let (r1_lines, r2_lines) = described.split_once("\nr2 ").unwrap();
+    let (r1_lines, r2_lines) = described.split_once("\n  r2 ").unwrap();
     assert!(r1_lines.contains(" with its workers"), "{described}");
     assert!(!r2_lines.contains("with its workers"), "{described}");
     harness.crew.as_ref().unwrap().shutdown().await;

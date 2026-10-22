@@ -669,8 +669,18 @@ fn runs_words(model: &str, effort: Option<&str>, profile: Option<&str>) -> Strin
     text
 }
 
-/// A worker's lines for `/workers`.
+/// A worker's lines for `/workers`, indented two columns for each level it is
+/// below the main agent's workers, as the agent list is.
 pub(crate) fn describe_worker(worker: &WorkerFacts) -> String {
+    let indent = "  ".repeat(worker.depth.saturating_sub(1) as usize);
+    describe_lines(worker)
+        .lines()
+        .map(|line| format!("{indent}{line}"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn describe_lines(worker: &WorkerFacts) -> String {
     let mut line = format!(
         "{}  {}  {}",
         worker.id,
@@ -1959,7 +1969,7 @@ mod tests {
         worker.depth = 2;
         assert!(
             describe_worker(&worker)
-                .starts_with("r2  running  Judge the render\n  started by r1\n"),
+                .starts_with("  r2  running  Judge the render\n    started by r1\n"),
             "{}",
             describe_worker(&worker)
         );
