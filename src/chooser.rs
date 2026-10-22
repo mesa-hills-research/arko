@@ -223,7 +223,14 @@ pub fn named_profiles(roots: &profiles::Roots) -> Vec<agents::ProfileName> {
         .into_iter()
         .map(|found| agents::ProfileName {
             model: found.profile.model.filter(|model| {
-                providers::resolve_model(model).is_ok() && model.chars().count() <= 40
+                // Only what a model's name is made of, so a file's own
+                // text can't reach the agent's instructions this way.
+                model.chars().count() <= 40
+                    && model.chars().all(|c| {
+                        c.is_ascii_alphanumeric()
+                            || matches!(c, '.' | '_' | ':' | '/' | '~' | '+' | '-')
+                    })
+                    && providers::resolve_model(model).is_ok()
             }),
             name: found.profile.name,
         })

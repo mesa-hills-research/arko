@@ -661,3 +661,44 @@ fn a_refusal_names_at_most_twenty_profiles() {
     );
     assert!(!why.contains("p20"), "{why}");
 }
+
+/// The profile names the main agent's instructions carry are valid ones, and
+/// a model only when it resolves and is short, so no text a file made up
+/// reaches the cached prompt.
+#[test]
+fn the_instructions_name_profiles_and_only_short_known_models() {
+    let temp = tempfile::tempdir().unwrap();
+    let basis = basis(temp.path(), settings("luna", Effort::High));
+    let long = format!("openrouter:{}", "a".repeat(60));
+    for (name, model) in [
+        ("short", "sol"),
+        ("long", long.as_str()),
+        ("tick", "openrouter:a`b"),
+        ("slug", "openrouter:anthropic/claude-opus-5.5"),
+        ("unknown", "gpt9"),
+    ] {
+        write_file(
+            &basis,
+            Place::User,
+            name,
+            &format!("---\ndescription: D\nmodel: {model}\n---\n"),
+        );
+    }
+    let named: Vec<(String, Option<String>)> = named_profiles(&basis.roots)
+        .into_iter()
+        .map(|profile| (profile.name, profile.model))
+        .collect();
+    assert_eq!(
+        named,
+        [
+            ("long".to_string(), None),
+            ("short".to_string(), Some("sol".to_string())),
+            (
+                "slug".to_string(),
+                Some("openrouter:anthropic/claude-opus-5.5".to_string())
+            ),
+            ("tick".to_string(), None),
+            ("unknown".to_string(), None),
+        ]
+    );
+}
