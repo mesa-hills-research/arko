@@ -237,16 +237,35 @@ pub struct Session {
 }
 
 impl Session {
-    /// A new, empty session folder.
+    /// A new, empty session folder. Two sessions made in the same second
+    /// don't share one, since the folder is taken only if it is new.
     pub fn create(root: &Path) -> std::io::Result<Self> {
-        let id = format!(
-            "{}-{}",
-            Local::now().format("%Y%m%d-%H%M%S"),
-            &uuid::Uuid::new_v4().simple().to_string()[..4]
-        );
-        let dir = root.join("sessions").join(&id);
-        std::fs::create_dir_all(&dir)?;
-        Ok(Self { id, dir })
+        Self::create_named(root, || {
+            format!(
+                "{}-{}",
+                Local::now().format("%Y%m%d-%H%M%S"),
+                &uuid::Uuid::new_v4().simple().to_string()[..4]
+            )
+        })
+    }
+
+    /// [`create`](Self::create) with the IDs it tries. A folder that exists
+    /// already is left as it is and the next ID is tried.
+    fn create_named(root: &Path, mut next_id: impl FnMut() -> String) -> std::io::Result<Self> {
+        let sessions = root.join("sessions");
+        std::fs::create_dir_all(&sessions)?;
+        let mut taken = 0;
+        loop {
+            let id = next_id();
+            let dir = sessions.join(&id);
+            match std::fs::create_dir(&dir) {
+                Ok(()) => return Ok(Self { id, dir }),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists && taken < 100 => {
+                    taken += 1;
+                }
+                Err(error) => return Err(error),
+            }
+        }
     }
 
     pub fn open(root: &Path, id: &str) -> Result<Self, String> {
@@ -921,6 +940,36 @@ mod tests {
         let file = std::fs::File::create(run.join("checkpoint-1.json")).unwrap();
         file.set_modified(std::time::SystemTime::now() - ago)
             .unwrap();
+    }
+
+    #[test]
+    fn two_sessions_made_in_the_same_second_keep_their_own_folders() {
+        let temp = tempfile::tempdir().unwrap();
+        let first =
+            Session::create_named(temp.path(), || "20261022-101010-aaaa".to_string()).unwrap();
+        std::fs::write(first.dir.join("conversation.json"), "the first one's").unwrap();
+        // The same ID again, as a clock and a short random part can give,
+        // moves on to the next ID and doesn't touch the first folder.
+        let mut ids = [
+            "20261022-101010-aaaa",
+            "20261022-101010-aaaa",
+            "20261022-101010-bbbb",
+        ]
+        .into_iter();
+        let second =
+            Session::create_named(temp.path(), || ids.next().unwrap().to_string()).unwrap();
+        assert_eq!(second.id, "20261022-101010-bbbb");
+        assert_ne!(first.dir, second.dir);
+        assert_eq!(
+            std::fs::read_to_string(first.dir.join("conversation.json")).unwrap(),
+            "the first one's"
+        );
+        assert!(std::fs::read_dir(&second.dir).unwrap().next().is_none());
+        // A real run of many in one second all differ.
+        let made: std::collections::HashSet<_> = (0..40)
+            .map(|_| Session::create(temp.path()).unwrap().id)
+            .collect();
+        assert_eq!(made.len(), 40);
     }
 
     #[test]
