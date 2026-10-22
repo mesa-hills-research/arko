@@ -324,6 +324,20 @@ pub struct AgentSettings<'a> {
     /// The agents have the monitor tools. Not with -p, where Arko ends with
     /// the agent's turn and no one would hear the alerts.
     pub monitors: bool,
+    /// Who picks the model of a worker. The main agent's instructions tell
+    /// it only what it may choose.
+    pub worker_models: ModelChoice,
+    /// The worker profiles when the session started, each with the model it
+    /// names, which the main agent's instructions list.
+    pub profiles: &'a [ProfileName],
+}
+
+/// A worker profile as the main agent's instructions name it: its name and
+/// the model it runs, when it names one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProfileName {
+    pub name: String,
+    pub model: Option<String>,
 }
 
 impl<'a> AgentSettings<'a> {
@@ -349,6 +363,8 @@ impl<'a> AgentSettings<'a> {
             mode: settings.mode,
             chat_instructions: settings.chat_instructions.as_deref(),
             monitors: true,
+            worker_models: settings.worker_models,
+            profiles: &[],
         }
     }
 
@@ -374,6 +390,8 @@ impl<'a> AgentSettings<'a> {
             mode: crate::session::Mode::Agent,
             chat_instructions: None,
             monitors: true,
+            worker_models: ModelChoice::Agent,
+            profiles: &[],
         }
     }
 }
@@ -838,6 +856,58 @@ fn known_indexes(indexes: &[index::Known]) -> String {
     text
 }
 
+/// What the main agent is told of choosing a worker's model (see
+/// `worker_options`).
+const CHOOSING: &str = "A worker runs on the session's worker model unless you choose otherwise. Choose with `profile` (a named setup the user or you saved) or with `model` and `effort`. Match the model to the job. A small one reads and searches well, a strong one does hard reasoning, and a model from another maker gives a second opinion or a comparison. Call `worker_options` to see the profiles and the models usable now, with their efforts, prices, prompt caches and handover sizes. A stronger model costs more, so pick the weakest one that does the job.";
+
+/// What it is told of saving a profile.
+const SAVING: &str = "When several workers share a setup, save it once with `save_worker_profile` and start them by its name. A profile saved for this session needs no approval. Keeping one for every session or for this project asks the user first.";
+
+/// What it is told when the user lets it start workers with a profile only.
+const PROFILES_ONLY: &str = "A worker runs on the session's worker model unless you start it with a profile, a named setup the user saved. Call `worker_options` to see the profiles, which set each worker's model and effort, and what the models cost.";
+
+/// The profiles when the session started, as a sentence. Nothing when
+/// there were none.
+fn profile_names(profiles: &[ProfileName]) -> String {
+    if profiles.is_empty() {
+        return String::new();
+    }
+    let named: Vec<String> = profiles
+        .iter()
+        .take(INDEXES_NAMED)
+        .map(|profile| match &profile.model {
+            Some(model) => format!("`{}` ({model})", profile.name),
+            None => format!("`{}`", profile.name),
+        })
+        .collect();
+    let more = match profiles.len().saturating_sub(INDEXES_NAMED) {
+        0 => String::new(),
+        more => format!(", and {more} more"),
+    };
+    format!(
+        "\nThe profiles when this session started were {}{more}. `worker_options` lists the current ones.\n",
+        crate::and_list(&named)
+    )
+}
+
+/// How a worker's prompt cache works on the session's worker model, for
+/// the main agent that chooses `start_agent`'s `cache`.
+fn cache_paragraph(settings: &AgentSettings) -> String {
+    let openai = settings.worker.provider() == Ok(Provider::OpenAI);
+    if settings.worker.takes_cache_ttl() {
+        format!(
+            "\nA worker keeps a prompt cache of its conversation. Set `start_agent`'s `cache` to `1h` for a worker you expect to send messages or follow-up work after it reports, so continuing it reuses its cache, and to `5m` for a quick one-off such as a research task (a 1h cache costs more to write: twice the input price instead of 1.25 times). The default is `{}`. Continuing a worker after its cache has expired rereads its whole conversation at full price: if it finished more than an hour ago, start a fresh worker instead, unless its context is worth that.\n",
+            if settings.worker.cache_1h { "1h" } else { "5m" }
+        )
+    } else if openai && settings.providers.openai_auth != Some(OpenAiAuth::ApiKey) {
+        "\nA worker keeps a prompt cache of its conversation for 30 minutes after its last step (ChatGPT's cache, which no setting changes). Continuing a worker after its cache has expired rereads its whole conversation uncached, which uses more of the ChatGPT plan's limits: if it finished more than 30 minutes ago, start a fresh worker instead, unless its context is worth that.\n".to_string()
+    } else if settings.worker.in_claude_code() {
+        "\nA worker runs in Claude Code, which keeps a prompt cache of its conversation for an hour after its last step on a Claude plan (no setting changes it). Continuing a worker after its cache has expired rereads its whole conversation uncached, which uses more of the plan's limits: if it finished more than an hour ago, start a fresh worker instead, unless its context is worth that.\n".to_string()
+    } else {
+        String::new()
+    }
+}
+
 fn worker_instructions(settings: &AgentSettings) -> String {
     let limit = if settings.max_workers == NO_LIMIT {
         "There is no limit on how many run at once.".to_string()
@@ -854,20 +924,22 @@ fn worker_instructions(settings: &AgentSettings) -> String {
          Workers report on their own: a worker's report, and its messages to you, reach you as notes from its run (`r1` and so on) while you work, and start a new turn for you if you have ended yours. So don't wait idly: do other work, and end your turn when you have something to tell the user, saying which workers are still running. Use `wait_for_agents` only when you can't go on without their results. Give follow-up work to the worker that already knows the code, with `message_agent`. Once you have merged an isolated worker's branch, remove its worktree with `stop_agent` and `remove_workspace: true`.\n\n\
          Use workers for independent parts of a large task (exploring separate areas of a codebase, an audit split by area, changes in separate worktrees), or to keep a long investigation out of your own context. Do small things yourself. Check what a worker reports before you rely on it.\n"
     );
-    let openai = settings.worker.provider() == Ok(Provider::OpenAI);
-    if settings.worker.takes_cache_ttl() {
-        text.push_str(&format!(
-            "\nA worker keeps a prompt cache of its conversation. Set `start_agent`'s `cache` to `1h` for a worker you expect to send messages or follow-up work after it reports, so continuing it reuses its cache, and to `5m` for a quick one-off such as a research task (a 1h cache costs more to write: twice the input price instead of 1.25 times). The default is `{}`. Continuing a worker after its cache has expired rereads its whole conversation at full price: if it finished more than an hour ago, start a fresh worker instead, unless its context is worth that.\n",
-            if settings.worker.cache_1h { "1h" } else { "5m" }
-        ));
-    } else if openai && settings.providers.openai_auth != Some(OpenAiAuth::ApiKey) {
-        text.push_str(
-            "\nA worker keeps a prompt cache of its conversation for 30 minutes after its last step (ChatGPT's cache, which no setting changes). Continuing a worker after its cache has expired rereads its whole conversation uncached, which uses more of the ChatGPT plan's limits: if it finished more than 30 minutes ago, start a fresh worker instead, unless its context is worth that.\n",
-        );
-    } else if settings.worker.in_claude_code() {
-        text.push_str(
-            "\nA worker runs in Claude Code, which keeps a prompt cache of its conversation for an hour after its last step on a Claude plan (no setting changes it). Continuing a worker after its cache has expired rereads its whole conversation uncached, which uses more of the plan's limits: if it finished more than an hour ago, start a fresh worker instead, unless its context is worth that.\n",
-        );
+    match settings.worker_models {
+        ModelChoice::Agent => {
+            text.push_str(&format!(
+                "\n{CHOOSING}\n\n{SAVING}\n{}",
+                profile_names(settings.profiles)
+            ));
+        }
+        ModelChoice::Profiles => {
+            text.push_str(&format!(
+                "\n{PROFILES_ONLY}\n{}",
+                profile_names(settings.profiles)
+            ));
+        }
+        // Every worker runs the session's worker model, so its prompt cache
+        // is the one thing left to choose.
+        ModelChoice::Session => text.push_str(&cache_paragraph(settings)),
     }
     text
 }
@@ -1004,12 +1076,19 @@ mod tests {
         }
         let main = main_config(&with).unwrap();
         assert_eq!(main.llm_config.model.id, "claude-opus-5-5");
+        assert!(!main.instructions.contains("`cache`"));
+        // With every worker on the session's model, the main agent hears of
+        // its cache.
+        let session = AgentSettings {
+            worker_models: ModelChoice::Session,
+            ..AgentSettings::for_test(&opus, &fable)
+        };
+        let main = main_config(&session).unwrap();
         assert!(
             main.instructions.contains("A worker runs in Claude Code"),
             "{}",
             main.instructions
         );
-        assert!(!main.instructions.contains("`cache`"));
         let worker = worker_config(&with).unwrap();
         assert_eq!(worker.llm_config.model.id, "claude-fable-5-1");
 
@@ -1054,9 +1133,11 @@ mod tests {
         }
     }
 
-    /// Each worker provider's cache gets its own paragraph: the `cache`
-    /// choice where Anthropic's cache lifetimes apply, ChatGPT's 30
-    /// minutes, Claude Code's hour, and nothing where Arko can't tell.
+    /// With every worker on the session's worker model, its provider's cache
+    /// gets a paragraph: the `cache` choice where Anthropic's cache
+    /// lifetimes apply, ChatGPT's 30 minutes, Claude Code's hour, and
+    /// nothing where Arko can't tell. Where the main agent chooses the
+    /// models, `worker_options` tells it each model's cache instead.
     #[test]
     fn the_lead_hears_about_its_workers_caches_by_provider() {
         let lead = model("opus", false);
@@ -1064,6 +1145,7 @@ mod tests {
             let setup = providers::Setup::new(auth);
             let with = AgentSettings {
                 providers: &setup,
+                worker_models: ModelChoice::Session,
                 ..AgentSettings::for_test(&lead, worker)
             };
             main_config(&with).unwrap().instructions
@@ -1083,6 +1165,22 @@ mod tests {
                 && !text.contains("30 minutes")
                 && !text.contains("an hour after")
         );
+        // The main agent that chooses the models hears none of it.
+        for worker in [&openrouter_claude, &sol, &model("cc:opus", false)] {
+            let setup = providers::Setup::new(None);
+            let with = AgentSettings {
+                providers: &setup,
+                ..AgentSettings::for_test(&lead, worker)
+            };
+            let text = main_config(&with).unwrap().instructions;
+            assert!(
+                !text.contains("`cache`")
+                    && !text.contains("30 minutes")
+                    && !text.contains("an hour after"),
+                "{text}"
+            );
+            assert!(text.contains("`worker_options`"));
+        }
     }
 
     #[test]
@@ -1133,6 +1231,58 @@ mod tests {
         assert!(offers(&config, ASK_USER_TOOL_NAME));
     }
 
+    /// The main agent hears how to choose a worker's model as the setting
+    /// lets it, and the profiles the session started with by name.
+    #[test]
+    fn the_lead_is_told_what_it_may_choose_for_its_workers() {
+        let opus = model("opus", false);
+        let profiles = vec![
+            ProfileName {
+                name: "3d-judge".into(),
+                model: Some("sol".into()),
+            },
+            ProfileName {
+                name: "plain".into(),
+                model: None,
+            },
+        ];
+        let text = |choice: ModelChoice, profiles: &[ProfileName]| {
+            let with = AgentSettings {
+                worker_models: choice,
+                profiles,
+                ..AgentSettings::for_test(&opus, &opus)
+            };
+            main_config(&with).unwrap().instructions
+        };
+        let agent = text(ModelChoice::Agent, &profiles);
+        assert!(agent.contains(CHOOSING) && agent.contains(SAVING));
+        assert!(agent.contains(
+            "The profiles when this session started were `3d-judge` (sol) and `plain`. `worker_options` lists the current ones."
+        ));
+        let chosen = text(ModelChoice::Profiles, &profiles);
+        assert!(chosen.contains(PROFILES_ONLY) && !chosen.contains(CHOOSING));
+        assert!(!chosen.contains("save_worker_profile") && chosen.contains("`3d-judge` (sol)"));
+        let session = text(ModelChoice::Session, &profiles);
+        assert!(!session.contains("worker_options") && !session.contains("`3d-judge`"));
+        // No profiles, nothing said of them.
+        assert!(!text(ModelChoice::Agent, &[]).contains("The profiles when"));
+        // The names are capped, as the indexes are.
+        let many: Vec<ProfileName> = (0..23)
+            .map(|n| ProfileName {
+                name: format!("p{n}"),
+                model: None,
+            })
+            .collect();
+        let capped = text(ModelChoice::Agent, &many);
+        assert!(capped.contains("`p19`, and 3 more. `worker_options` lists"));
+        assert!(!capped.contains("`p20`"));
+        // The section reads the same whatever the models: nothing here
+        // says a worker is nested.
+        for text in [&agent, &chosen, &session] {
+            assert!(!text.contains("nested") && !text.contains("workers of your own"));
+        }
+    }
+
     /// The main agent is offered the profile tools with the lead's tools.
     /// A worker is offered neither them nor the start tools, whatever the
     /// settings say: no worker starts workers yet.
@@ -1155,6 +1305,14 @@ mod tests {
         for tool in crew::NESTED_TOOL_NAMES {
             assert!(!offers(&worker, tool), "{tool}");
         }
+        let mut deeper = AgentSettings::for_test(&opus, &opus);
+        deeper.worker_models = ModelChoice::Agent;
+        let worker = worker_config(&deeper).unwrap();
+        assert!(
+            crew::NESTED_TOOL_NAMES
+                .iter()
+                .all(|tool| !offers(&worker, tool))
+        );
     }
 
     /// The file tools' configuration lets them read and write anywhere:
@@ -1808,8 +1966,13 @@ mod tests {
                 .any(|name| name == crate::message::MESSAGE_USER)
         );
         assert!(config.instructions.contains("`message_user`"));
+        let session = |worker| AgentSettings {
+            worker_models: ModelChoice::Session,
+            ..AgentSettings::for_test(&opus, worker)
+        };
+        let config = main_config(&session(&opus)).unwrap();
         assert!(config.instructions.contains("`cache`"), "Claude workers");
-        let config = main_config(&AgentSettings::for_test(&sol, &sol)).unwrap();
+        let config = main_config(&session(&sol)).unwrap();
         assert!(!config.instructions.contains("`cache`"), "OpenAI workers");
         assert!(
             config

@@ -209,6 +209,22 @@ pub fn choose(
     Ok(setup)
 }
 
+/// The profiles in force as the main agent's instructions name them: each
+/// name (a valid one, nothing a file could make up) with the model it names
+/// when Arko knows that model.
+pub fn named_profiles(roots: &profiles::Roots) -> Vec<agents::ProfileName> {
+    profiles::list(roots)
+        .active
+        .into_iter()
+        .map(|found| agents::ProfileName {
+            model: found.profile.model.filter(|model| {
+                providers::resolve_model(model).is_ok() && model.chars().count() <= 40
+            }),
+            name: found.profile.name,
+        })
+        .collect()
+}
+
 /// Runs `work`, which may block (Claude Code's login check runs a command),
 /// so that it holds up no other task on the runtime thread where the
 /// runtime can move them.

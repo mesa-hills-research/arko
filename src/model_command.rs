@@ -595,7 +595,13 @@ impl Harness {
             .as_ref()
             .map(|indexes| indexes.known(&settings.workspace))
             .unwrap_or_default();
+        let profile_names = crate::chooser::named_profiles(
+            &crate::profiles::Roots::new(&self.root)
+                .workspace(&settings.workspace)
+                .session(&self.session.dir),
+        );
         let agent_settings = AgentSettings {
+            profiles: &profile_names,
             mcp_tools: &mcp_tools,
             mcp_servers: &mcp_servers,
             skill_folders: &self.skill_folders,

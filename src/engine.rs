@@ -27,8 +27,8 @@ use crate::start::{
 use crate::status::Gauges;
 use crate::ui::{Input, Output, Stats};
 use crate::{
-    agents, credentials, crew, handover, index, keys, mcp, outside, project, providers, remote,
-    session, skills,
+    agents, chooser, credentials, crew, handover, index, keys, mcp, outside, profiles, project,
+    providers, remote, session, skills,
 };
 
 /// Why a session didn't open.
@@ -738,7 +738,13 @@ impl Engine {
             .as_ref()
             .map(|indexes| indexes.known(&settings.workspace))
             .unwrap_or_default();
+        let profile_names = chooser::named_profiles(
+            &profiles::Roots::new(&root)
+                .workspace(&settings.workspace)
+                .session(&session.dir),
+        );
         let agent_settings = AgentSettings {
+            profiles: &profile_names,
             mcp_tools: &mcp_tools,
             mcp_servers: &mcp_started,
             skill_folders: &skill_folders,
