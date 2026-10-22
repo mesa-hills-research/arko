@@ -134,6 +134,10 @@ A session that closed with a tree of workers running continues it, each worker w
 started with. A worker whose starter can't run again, because it failed, is stopped instead of
 relaunched, and its starter can restart it with a message.
 
+A conversation in Claude Code keeps the tools it started with. A session on Claude Code that was
+saved before workers could start workers resumes without `nested` in `start_agent`, and Arko says so
+when it opens. A new session has it.
+
 ## For apps
 
 `arko::profiles` reads and writes the files without a session, as `arko::extensions` does for

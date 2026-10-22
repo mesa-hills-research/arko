@@ -897,6 +897,12 @@ const CHOOSING: &str = "A worker runs on the session's worker model unless you c
 /// What it is told of saving a profile.
 const SAVING: &str = "When several workers share a setup, save it once with `save_worker_profile` and start them by its name.";
 
+/// What the main agent is told of workers that start workers (the `nested`
+/// parameter of `start_agent`). A session whose main agent runs in Claude
+/// Code keeps the tools it started with, so a saved conversation without
+/// this sentence is one that lacks the parameter ([`crate::harness::unoffered`]).
+pub(crate) const NESTING: &str = "A worker you start with `nested: true` can start workers of its own, for a part of the work that splits into parts again.";
+
 /// What a worker started with `nested` is told in its first message, after
 /// its profile's instructions. It is part of that message, not of the
 /// worker's instructions, so a worker that resumes keeps what it was told
@@ -964,6 +970,10 @@ fn worker_instructions(settings: &AgentSettings) -> String {
          Workers report on their own: a worker's report, and its messages to you, reach you as notes from its run (`r1` and so on) while you work, and start a new turn for you if you have ended yours. So don't wait idly: do other work, and end your turn when you have something to tell the user, saying which workers are still running. Use `wait_for_agents` only when you can't go on without their results. Give follow-up work to the worker that already knows the code, with `message_agent`. Once you have merged an isolated worker's branch, remove its worktree with `stop_agent` and `remove_workspace: true`.\n\n\
          Use workers for independent parts of a large task (exploring separate areas of a codebase, an audit split by area, changes in separate worktrees), or to keep a long investigation out of your own context. Do small things yourself. Check what a worker reports before you rely on it.\n"
     );
+    // With every worker on the session's model, none starts workers.
+    if settings.worker_models != ModelChoice::Session {
+        text.push_str(&format!("\n{NESTING}\n"));
+    }
     match settings.worker_models {
         ModelChoice::Agent => {
             text.push_str(&format!(
@@ -1321,11 +1331,12 @@ mod tests {
         let capped = text(ModelChoice::Agent, &many);
         assert!(capped.contains("`p19`, and 3 more. `worker_options` lists"));
         assert!(!capped.contains("`p20`"));
-        // The section reads the same whatever the models: nothing here
-        // says a worker is nested.
-        for text in [&agent, &chosen, &session] {
-            assert!(!text.contains("nested") && !text.contains("workers of your own"));
+        // The main agent is told once that a worker can start workers, unless
+        // every worker runs the session's model, which leaves them out.
+        for text in [&agent, &chosen] {
+            assert_eq!(text.matches(NESTING).count(), 1);
         }
+        assert!(!session.contains("nested"));
     }
 
     /// The main agent is offered the profile tools with the lead's tools.

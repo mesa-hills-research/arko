@@ -503,7 +503,7 @@ fn start_parameters() -> Vec<ToolParameterDefinition> {
         ),
         ToolParameterDefinition {
             name: NESTED_PARAM.into(),
-            description: "true lets the worker start workers of its own. Use it for a part of the work that splits into parts again.".into(),
+            description: "true lets the worker start workers of its own.".into(),
             param_type: ToolParameterType::Bool,
             required: false,
             is_path: false,
