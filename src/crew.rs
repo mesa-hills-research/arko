@@ -633,7 +633,8 @@ impl Crew {
             // The workers of a resumed session, for the clients' lists, with
             // how long they ran before.
             let ran = load_run_times(&self.setup.session_dir);
-            for run in workflow.subagents() {
+            let runs = workflow.subagents();
+            for run in &runs {
                 let state = match run.state {
                     SubagentState::Queued => remote::WorkerState::Queued,
                     SubagentState::Running => remote::WorkerState::Running,
@@ -654,7 +655,7 @@ impl Crew {
                     ran.get(&run.handle).copied().unwrap_or(0),
                 );
                 // What it started with and what it cost before.
-                feed.worker_info(&run.handle, self.worker_info(workflow, &run, true));
+                feed.worker_info(&run.handle, self.worker_info(workflow, run, &runs, true));
             }
         }
         if self.has_mail() {
@@ -725,16 +726,15 @@ impl Crew {
             _ => return,
         };
         let workflow = self.workflow();
-        let record = workflow.as_ref().and_then(|workflow| {
-            workflow
-                .subagents()
-                .into_iter()
-                .find(|record| record.run_id == run)
-        });
-        if let (Some(workflow), Some(record)) = (&workflow, &record) {
-            feed.worker_info(handle, self.worker_info(workflow, record, false));
+        let runs = workflow
+            .as_ref()
+            .map(|workflow| workflow.subagents())
+            .unwrap_or_default();
+        let record = runs.iter().find(|record| record.run_id == run);
+        if let (Some(workflow), Some(record)) = (&workflow, record) {
+            feed.worker_info(handle, self.worker_info(workflow, record, &runs, false));
         }
-        let task = record.map(|record| record.task).unwrap_or_default();
+        let task = record.map(|record| record.task.clone()).unwrap_or_default();
         let ended = matches!(
             change,
             WorkerChange::Finished { .. }
@@ -751,18 +751,21 @@ impl Crew {
     /// place in the family, and (`with_costs`) what its saved runs cost, for
     /// a session that resumes. The costs of a worker that starts add up from
     /// its events.
+    ///
+    /// `runs` are all the session's workers, which the caller reads once, so
+    /// a long list isn't read again for each of its workers.
     fn worker_info(
         &self,
         workflow: &Workflow,
         run: &arko_workflows::subagents::SubagentRecord,
+        runs: &[arko_workflows::subagents::SubagentRecord],
         with_costs: bool,
     ) -> remote::WorkerInfo {
         let setup = self.run_model(run.run_id);
-        let parent = workflow
-            .subagents()
-            .into_iter()
+        let parent = runs
+            .iter()
             .find(|other| other.run_id == run.caller_run_id)
-            .map(|other| other.handle);
+            .map(|other| other.handle.clone());
         let costs = with_costs.then(|| {
             let results = workflow.context().agent_results.read();
             results
