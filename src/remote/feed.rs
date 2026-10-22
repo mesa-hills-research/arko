@@ -1351,7 +1351,21 @@ impl Feed {
                 tool_name,
                 parameters,
             } => {
-                let Some(mut item) = render::call(tool_name, parameters) else {
+                // The runs the main agent has going are what a wait without
+                // ids waits for.
+                let running = if main && tool_name == crate::crew::WAIT_FOR_AGENTS {
+                    crate::ui::sorted_runs(
+                        state
+                            .workers
+                            .iter()
+                            .filter(|worker| worker.summary.state.is_active())
+                            .map(|worker| worker.summary.id.clone())
+                            .collect(),
+                    )
+                } else {
+                    Vec::new()
+                };
+                let Some(mut item) = render::call(tool_name, parameters, &running) else {
                     // A call the feed doesn't draw (`ask_user`,
                     // `complete_task`) still ends the agent's text: the
                     // next response's text doesn't run on into it.
@@ -3091,6 +3105,77 @@ mod tests {
         assert_eq!(summaries[0].state, WorkerState::Running);
         assert_eq!(feed.workers()[0].tool_calls, 1);
         assert_eq!(feed.workers()[0].last.as_deref(), Some("read src/a.rs"));
+    }
+
+    /// A wait for no run in particular waits for a message when the main
+    /// agent has no runs going, and for the runs it has going otherwise, a
+    /// few by name and many as a count. A run that ended isn't waited for,
+    /// and a worker has no runs of its own. The worker's summary keeps the
+    /// words as what it did last.
+    #[test]
+    fn a_wait_names_the_runs_the_agent_has_going() {
+        let feed = Feed::new("main");
+        let wait = |agent: &str, label: Option<&str>, parameters: serde_json::Value| {
+            let parameters: HashMap<String, serde_json::Value> =
+                serde_json::from_value(parameters).unwrap();
+            feed.event(
+                &event(
+                    agent,
+                    AgentEvent::ToolCallFormatted {
+                        tool_call_id: Uuid::new_v4(),
+                        tool_name: crate::crew::WAIT_FOR_AGENTS.into(),
+                        parameters,
+                    },
+                ),
+                label,
+            );
+            items(&feed)
+                .into_iter()
+                .rfind(|item| item.kind == Kind::Call)
+                .unwrap()
+                .text
+        };
+        let main = |parameters| wait("main", None, parameters);
+        // No runs.
+        assert_eq!(main(serde_json::json!({})), "waiting for a message");
+        assert_eq!(
+            main(serde_json::json!({"all": true, "timeout_seconds": 60})),
+            "waiting for a message"
+        );
+        // One run, several, and many.
+        feed.worker("r1", "Count the files.", WorkerChange::Started);
+        assert_eq!(main(serde_json::json!({})), "waiting for r1");
+        feed.worker("r2", "Read the docs.", WorkerChange::Queued);
+        assert_eq!(main(serde_json::json!({})), "waiting for r1, r2");
+        for id in ["r3", "r4", "r5"] {
+            feed.worker(id, "More.", WorkerChange::Started);
+        }
+        assert_eq!(main(serde_json::json!({})), "waiting for r1, r2 and 3 more");
+        // A run that ended isn't waited for, and the runs go by number.
+        feed.worker("r1", "", WorkerChange::Finished { report: "Done." });
+        feed.worker("r4", "", WorkerChange::Stopped { reason: "" });
+        feed.worker("r5", "", WorkerChange::Failed { error: "oops" });
+        assert_eq!(main(serde_json::json!({})), "waiting for r2, r3");
+        // The ids a call names are what it waits for, also those that ended.
+        assert_eq!(
+            main(serde_json::json!({"runs": "r1, r4"})),
+            "waiting for r1, r4"
+        );
+        assert_eq!(
+            main(serde_json::json!({"runs": ["r1", "r2"]})),
+            "waiting for r1, r2"
+        );
+        // A worker has no runs of its own, and the agent list shows its
+        // words.
+        assert_eq!(
+            wait("worker", Some("r2"), serde_json::json!({})),
+            "waiting for a message"
+        );
+        let r2 = feed.workers().into_iter().find(|w| w.id == "r2").unwrap();
+        assert_eq!(r2.last.as_deref(), Some("waiting for a message"));
+        feed.worker("r2", "", WorkerChange::Finished { report: "Done." });
+        feed.worker("r3", "", WorkerChange::Finished { report: "Done." });
+        assert_eq!(main(serde_json::json!({})), "waiting for a message");
     }
 
     /// A text item goes on with its own agent's chunks, whatever the other

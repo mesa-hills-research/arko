@@ -5645,6 +5645,103 @@ pub(crate) mod tests {
         harness.crew.as_ref().unwrap().shutdown().await;
     }
 
+    /// A wait says what it waits for. With no runs going, the main agent
+    /// waits for a message. With runs, it names them, and counts them when
+    /// there are many. A worker has no runs and waits for a message.
+    #[tokio::test]
+    async fn a_wait_says_what_it_waits_for() {
+        use crate::mock_model::{ModelServer, complete, tool_call};
+        let server = ModelServer::start(Arc::new(move |_, body: String| {
+            Box::pin(async move {
+                let wait = |step| {
+                    tool_call(
+                        step,
+                        crew::WAIT_FOR_AGENTS,
+                        serde_json::json!({"timeout_seconds": 1}),
+                    )
+                };
+                let start = |step| {
+                    tool_call(
+                        step,
+                        crew::START_AGENT,
+                        serde_json::json!({"agent": WORKER, "task": "Hold on."}),
+                    )
+                };
+                if body.contains("You are agent run r1") && !body.contains("call_w1") {
+                    tool_call(
+                        "w1",
+                        crew::WAIT_FOR_AGENTS,
+                        serde_json::json!({"timeout_seconds": 1}),
+                    )
+                } else if body.contains("You are agent run") {
+                    std::future::pending::<String>().await
+                } else if body.contains("call_m9") {
+                    complete("m10", "Done.")
+                } else if body.contains("call_m8") {
+                    wait("m9")
+                } else if body.contains("call_m7") {
+                    start("m8")
+                } else if body.contains("call_m6") {
+                    start("m7")
+                } else if body.contains("call_m5") {
+                    wait("m6")
+                } else if body.contains("call_m4") {
+                    start("m5")
+                } else if body.contains("call_m3") {
+                    start("m4")
+                } else if body.contains("call_m2") {
+                    wait("m3")
+                } else if body.contains("call_m1") {
+                    start("m2")
+                } else {
+                    wait("m1")
+                }
+            })
+        }))
+        .await;
+        let temp = tempfile::tempdir().unwrap();
+        let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
+        let end = tokio::time::timeout(
+            Duration::from_secs(60),
+            harness.turn(Prompt::User("Wait for things.".into()), &mut inputs),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(end, TurnEnd::Answered));
+        harness.flush_printer().await;
+        let (snapshot, _) = harness.feed.subscribe();
+        let waits = |agent: &str| -> Vec<String> {
+            snapshot
+                .items
+                .iter()
+                .filter(|item| {
+                    item.kind == remote::Kind::Call
+                        && item.agent == agent
+                        && item.text.starts_with("waiting for")
+                })
+                .map(|item| item.text.clone())
+                .collect()
+        };
+        assert_eq!(
+            waits(MAIN),
+            [
+                "waiting for a message",
+                "waiting for r1",
+                "waiting for r1, r2, r3",
+                "waiting for r1, r2 and 3 more",
+            ]
+        );
+        // The worker has no runs, and the agent list shows what it does.
+        assert_eq!(waits("r1"), ["waiting for a message"]);
+        let r1 = snapshot
+            .workers
+            .iter()
+            .find(|worker| worker.id == "r1")
+            .unwrap();
+        assert_eq!(r1.last.as_deref(), Some("waiting for a message"));
+        harness.crew.as_ref().unwrap().shutdown().await;
+    }
+
     /// Ctrl-C preserves the worker and the workflow; /new transfers its ownership.
     #[tokio::test]
     async fn a_lead_stop_and_new_conversation_keep_workers_alive() {

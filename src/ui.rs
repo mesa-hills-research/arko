@@ -516,6 +516,24 @@ pub async fn print_events(
                             );
                         }
                     }
+                    if event.agent_name == MAIN
+                        && let AgentEvent::ToolCallFormatted { tool_name, .. } = &event.event
+                        && tool_name == crew::WAIT_FOR_AGENTS
+                    {
+                        printer.running_runs = sorted_runs(
+                            workflow
+                                .as_ref()
+                                .and_then(std::sync::Weak::upgrade)
+                                .map(|workflow| {
+                                    workflow
+                                        .active_subagents()
+                                        .into_iter()
+                                        .map(|run| run.handle)
+                                        .collect()
+                                })
+                                .unwrap_or_default(),
+                        );
+                    }
                     if let Some(feed) = &feed {
                         feed.event(&event, label.as_deref());
                     }
@@ -552,6 +570,10 @@ struct EventPrinter {
     workers: HashMap<Uuid, String>,
     /// The label of every run that isn't the main agent's.
     label: Option<String>,
+    /// The runs the main agent has going, which its `wait_for_agents` call
+    /// waits for when it names none. [`print_events`] sets them as the call
+    /// comes.
+    running_runs: Vec<String>,
     /// Shell commands the main agent is running, by call ID.
     commands: HashMap<Uuid, String>,
     /// The provider's refusal of reasoning summaries was told.
@@ -583,6 +605,7 @@ impl EventPrinter {
             thinking: String::new(),
             workers: HashMap::new(),
             label,
+            running_runs: Vec::new(),
             commands: HashMap::new(),
             thinking_refused: false,
             request_start: (0, 0),
@@ -949,17 +972,11 @@ impl EventPrinter {
                 worker(),
                 cut(text("message"), 160)
             ),
-            crew::WAIT_FOR_AGENTS => {
-                let which = text("runs").trim();
-                format!(
-                    "{bullet} {}",
-                    self.output.bold(&if which.is_empty() {
-                        "waiting for the workers".to_string()
-                    } else {
-                        format!("waiting for {which}")
-                    })
-                )
-            }
+            crew::WAIT_FOR_AGENTS => format!(
+                "{bullet} {}",
+                self.output
+                    .bold(&waiting_for(parameters, &self.running_runs))
+            ),
             crew::LIST_AGENTS => format!("{bullet} {}", self.output.bold("list workers")),
             crew::STOP_AGENT => format!(
                 "{bullet} {} {}{}",
@@ -1070,6 +1087,60 @@ fn command_line(command: &str) -> String {
     }
 }
 
+/// The runs after which a call's words count the rest.
+const RUNS_NAMED: usize = 3;
+
+/// Run ids in order of their numbers (`r2` before `r10`).
+pub fn sorted_runs(mut runs: Vec<String>) -> Vec<String> {
+    runs.sort_by_key(|run| {
+        let number = run.trim_start_matches(|c: char| !c.is_ascii_digit());
+        (number.parse::<u64>().unwrap_or(u64::MAX), run.clone())
+    });
+    runs
+}
+
+/// The runs a `wait_for_agents` call names in `runs`, as the tool reads
+/// them, a text with commas or spaces between the ids, or a list of them.
+fn named_runs(parameters: &HashMap<String, serde_json::Value>) -> Vec<String> {
+    let split = |text: &str| -> Vec<String> {
+        text.split([',', ' ', '\n'])
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .map(str::to_string)
+            .collect()
+    };
+    match parameters.get("runs") {
+        Some(serde_json::Value::String(text)) => split(text),
+        Some(serde_json::Value::Array(items)) => items
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .flat_map(split)
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// What a `wait_for_agents` call waits for, in words. It waits for the
+/// runs it names, else for `own`, the runs its agent has going, and with
+/// none it waits for a message. A few runs are named ("waiting for r1, r2")
+/// and many are counted ("waiting for r1, r2 and 3 more").
+pub fn waiting_for(parameters: &HashMap<String, serde_json::Value>, own: &[String]) -> String {
+    let named = named_runs(parameters);
+    let runs: &[String] = if named.is_empty() { own } else { &named };
+    if runs.is_empty() {
+        "waiting for a message".to_string()
+    } else if runs.len() <= RUNS_NAMED {
+        format!("waiting for {}", runs.join(", "))
+    } else {
+        format!(
+            "waiting for {}, {} and {} more",
+            runs[0],
+            runs[1],
+            runs.len() - 2
+        )
+    }
+}
+
 /// A worker's call, briefly.
 pub fn brief(tool: &str, parameters: &HashMap<String, serde_json::Value>) -> String {
     let text = |name: &str| {
@@ -1087,7 +1158,7 @@ pub fn brief(tool: &str, parameters: &HashMap<String, serde_json::Value>) -> Str
         }
         crew::MESSAGE_AGENT => format!("message to {}", text("to")),
         HANDOVER_REPORT_TOOL_NAME => "handover report".to_string(),
-        crew::WAIT_FOR_AGENTS => "waiting for messages".to_string(),
+        crew::WAIT_FOR_AGENTS => waiting_for(parameters, &[]),
         "terminal_start" => format!("background {}", command_line(text("command"))),
         tool if TerminalTool::NAMES.contains(&tool) => tool.replace('_', " "),
         "monitor_start" => format!("monitor {}", command_line(text("command"))),
@@ -1378,6 +1449,11 @@ mod tests {
             ),
             "message to lead"
         );
+        // A worker has no runs, so its wait is for a message.
+        assert_eq!(
+            brief(crew::WAIT_FOR_AGENTS, &params(&[])),
+            "waiting for a message"
+        );
 
         let printer = EventPrinter::new(
             Arc::new(Output::new(None, true)),
@@ -1409,9 +1485,33 @@ mod tests {
             .unwrap(),
             "● message w2 “Use plan B.”"
         );
+        // A wait for no run in particular waits for a message when the
+        // agent has no runs, and names the runs it has going.
         assert_eq!(
             line(crew::WAIT_FOR_AGENTS, &[]).unwrap(),
-            "● waiting for the workers"
+            "● waiting for a message"
+        );
+        assert_eq!(
+            line(
+                crew::WAIT_FOR_AGENTS,
+                &[("runs", "r2, r3".into()), ("all", true.into())]
+            )
+            .unwrap(),
+            "● waiting for r2, r3"
+        );
+        let mut running = EventPrinter::new(
+            Arc::new(Output::new(None, true)),
+            Arc::default(),
+            false,
+            None,
+        );
+        running.running_runs = vec!["r1".into(), "r2".into()];
+        assert_eq!(
+            running
+                .call_line(crew::WAIT_FOR_AGENTS, &params(&[]))
+                .map(|line| strip_styles(&line))
+                .unwrap(),
+            "● waiting for r1, r2"
         );
         assert_eq!(
             line(
@@ -1479,6 +1579,61 @@ mod tests {
                 &params(&[("report", "x".into())])
             ),
             "handover report"
+        );
+    }
+
+    /// A wait with no runs waits for a message. With runs it names them, a
+    /// few in full and many as a count. The runs it names win over the ones
+    /// its agent has going, and a list of ids reads like a text.
+    #[test]
+    fn a_wait_says_what_it_waits_for() {
+        let words = |pairs: &[(&str, serde_json::Value)], own: &[&str]| {
+            let parameters: HashMap<String, serde_json::Value> = pairs
+                .iter()
+                .map(|(key, value)| (key.to_string(), value.clone()))
+                .collect();
+            let own: Vec<String> = own.iter().map(|run| run.to_string()).collect();
+            waiting_for(&parameters, &own)
+        };
+        // No runs.
+        assert_eq!(words(&[], &[]), "waiting for a message");
+        assert_eq!(words(&[("runs", "".into())], &[]), "waiting for a message");
+        assert_eq!(words(&[("all", true.into())], &[]), "waiting for a message");
+        // One run, several, and many.
+        assert_eq!(words(&[], &["r1"]), "waiting for r1");
+        assert_eq!(words(&[], &["r1", "r2"]), "waiting for r1, r2");
+        assert_eq!(words(&[], &["r1", "r2", "r3"]), "waiting for r1, r2, r3");
+        assert_eq!(
+            words(&[], &["r1", "r2", "r3", "r4"]),
+            "waiting for r1, r2 and 2 more"
+        );
+        assert_eq!(
+            words(&[], &["r1", "r2", "r3", "r4", "r5"]),
+            "waiting for r1, r2 and 3 more"
+        );
+        // The runs a call names are the ones it waits for, as the tool reads
+        // them, a text with commas or spaces or a list.
+        assert_eq!(
+            words(&[("runs", "r2".into())], &["r1", "r2"]),
+            "waiting for r2"
+        );
+        assert_eq!(
+            words(&[("runs", "r2,r3 r4".into())], &[]),
+            "waiting for r2, r3, r4"
+        );
+        assert_eq!(
+            words(
+                &[("runs", serde_json::json!(["r2", "r3, r4", "r5", "r6"]))],
+                &[]
+            ),
+            "waiting for r2, r3 and 3 more"
+        );
+        // A run that already finished is named all the same.
+        assert_eq!(words(&[("runs", "r1".into())], &[]), "waiting for r1");
+        // The runs go by their numbers.
+        assert_eq!(
+            sorted_runs(vec!["r10".into(), "r2".into(), "r1".into()]),
+            ["r1", "r2", "r10"]
         );
     }
 

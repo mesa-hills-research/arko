@@ -47,8 +47,11 @@ fn flag(parameters: &Parameters, name: &str) -> bool {
 /// calls not shown (a question is shown as Arko asks it, a reply or a
 /// worker's report as it ends). A call's item names its tool and keeps its
 /// parameters, for an app's view of it.
-pub fn call(tool: &str, parameters: &Parameters) -> Option<Item> {
-    let mut item = line(tool, parameters)?;
+///
+/// `running` are the runs the calling agent has going, which a
+/// `wait_for_agents` call that names none waits for.
+pub fn call(tool: &str, parameters: &Parameters, running: &[String]) -> Option<Item> {
+    let mut item = line(tool, parameters, running)?;
     if item.kind == Kind::Call {
         item.tool = Some(tool.to_string());
         // (In the order of their names: a `HashMap` has none.)
@@ -59,7 +62,7 @@ pub fn call(tool: &str, parameters: &Parameters) -> Option<Item> {
 }
 
 /// A call's item, as the terminal shows it.
-fn line(tool: &str, parameters: &Parameters) -> Option<Item> {
+fn line(tool: &str, parameters: &Parameters, running: &[String]) -> Option<Item> {
     let call = |line: String| Item::new(Kind::Call, line);
     Some(match tool {
         "complete_task" | ASK_USER_TOOL_NAME => return None,
@@ -95,14 +98,7 @@ fn line(tool: &str, parameters: &Parameters) -> Option<Item> {
             ))
             .detail(long(message, 160))
         }
-        crew::WAIT_FOR_AGENTS => {
-            let which = text(parameters, "runs").trim();
-            call(if which.is_empty() {
-                "waiting for the workers".to_string()
-            } else {
-                format!("waiting for {which}")
-            })
-        }
+        crew::WAIT_FOR_AGENTS => call(ui::waiting_for(parameters, running)),
         crew::LIST_AGENTS => call("list workers".into()),
         crew::STOP_AGENT => call(format!(
             "stop {}{}",
@@ -522,6 +518,52 @@ mod tests {
             .iter()
             .map(|(key, value)| (key.to_string(), value.clone()))
             .collect()
+    }
+
+    /// A call of an agent with no runs going.
+    fn call(tool: &str, parameters: &Parameters) -> Option<Item> {
+        super::call(tool, parameters, &[])
+    }
+
+    /// A wait says what it waits for, with the runs its agent has going
+    /// when it names none (for no runs, a message).
+    #[test]
+    fn a_wait_names_the_runs_it_waits_for() {
+        let wait = |pairs: &[(&str, Value)], running: &[&str]| {
+            let running: Vec<String> = running.iter().map(|run| run.to_string()).collect();
+            let item = super::call(crew::WAIT_FOR_AGENTS, &params(pairs), &running).unwrap();
+            assert_eq!(item.kind, Kind::Call);
+            assert_eq!(item.tool.as_deref(), Some(crew::WAIT_FOR_AGENTS));
+            item.text
+        };
+        assert_eq!(wait(&[], &[]), "waiting for a message");
+        assert_eq!(wait(&[("all", true.into())], &[]), "waiting for a message");
+        assert_eq!(wait(&[], &["r1"]), "waiting for r1");
+        assert_eq!(wait(&[], &["r1", "r2"]), "waiting for r1, r2");
+        assert_eq!(
+            wait(&[], &["r1", "r2", "r3", "r4", "r5"]),
+            "waiting for r1, r2 and 3 more"
+        );
+        // The ids a call names are what it waits for, also when they ended.
+        assert_eq!(
+            wait(&[("runs", "r3, r4".into())], &["r1", "r2"]),
+            "waiting for r3, r4"
+        );
+        assert_eq!(
+            wait(&[("runs", serde_json::json!(["r1", "r2"]))], &[]),
+            "waiting for r1, r2"
+        );
+        // The result of such a wait says the run is over.
+        let outcome = outcome(
+            crew::WAIT_FOR_AGENTS,
+            "Nothing to wait for: r1 is finished. Reports that came earlier reached you already.",
+        );
+        assert_eq!(outcome.status, CallStatus::Ok);
+        assert!(
+            outcome
+                .text
+                .is_some_and(|text| text.starts_with("Nothing to wait for: r1 is finished."))
+        );
     }
 
     #[test]

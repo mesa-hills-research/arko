@@ -11,6 +11,7 @@ use arko_ai::{Content, Message, Role};
 
 use super::feed::{Delivery, Item, Kind, Source};
 use super::render;
+use crate::crew;
 use crate::images::Images;
 use crate::openings::Opening;
 
@@ -66,6 +67,10 @@ fn items_from(
     };
     let mut turn: Option<u64> = None;
     let mut ended = true;
+    // The runs the agent started and hasn't been told are over, which a
+    // wait without ids waits for. (A run that reported in a note, between
+    // two waits, stays in until a wait's result lists what still runs.)
+    let mut running: Vec<String> = Vec::new();
     for (index, message) in messages.iter().enumerate() {
         let start = items.len();
         if starts_turn(message)
@@ -104,6 +109,9 @@ fn items_from(
                             } else {
                                 render::outcome(&tool, &result.output)
                             };
+                            if !result.is_error {
+                                track_runs(&mut running, &tool, &result.output);
+                            }
                             let call = &mut items[index];
                             call.status = Some(outcome.status);
                             call.outcome = outcome.text;
@@ -178,8 +186,12 @@ fn items_from(
                     let item = match call.name.as_str() {
                         "complete_task" => Some(Item::new(Kind::Reply, text("summary"))),
                         ASK_USER_TOOL_NAME => Some(Item::new(Kind::Question, text("questions"))),
-                        name => render::call(name, &parameters),
+                        name => render::call(name, &parameters, &running),
                     };
+                    if call.name == crew::STOP_AGENT {
+                        let stopped = text("run");
+                        running.retain(|run| !run.eq_ignore_ascii_case(&stopped));
+                    }
                     let Some(mut item) = item else {
                         continue;
                     };
@@ -210,6 +222,36 @@ fn items_from(
         }
     }
     items
+}
+
+/// Follows the runs the agent has going through the results of its calls.
+/// `start_agent` names the run it started, and `wait_for_agents` ends with
+/// the runs that still go.
+fn track_runs(running: &mut Vec<String>, tool: &str, output: &str) {
+    if tool == crew::START_AGENT {
+        // "Started r2 (agent `worker`)." or "Queued r2 ...".
+        let mut words = output.split_whitespace();
+        if let (Some("Started" | "Queued"), Some(run)) = (words.next(), words.next())
+            && !running.iter().any(|known| known == run)
+        {
+            running.push(run.to_string());
+        }
+    } else if tool == crew::WAIT_FOR_AGENTS {
+        for line in output.lines() {
+            if let Some(rest) = line.trim().strip_prefix("Still running: ") {
+                *running = rest
+                    .trim_end_matches('.')
+                    .split(", ")
+                    .map(str::to_string)
+                    .collect();
+            } else if line
+                .trim()
+                .starts_with("None of your agent runs is running")
+            {
+                running.clear();
+            }
+        }
+    }
 }
 
 /// A stopped run gets this notice inside a context update when it restarts.
@@ -588,6 +630,81 @@ mod tests {
         );
         assert_eq!(items[2].outcome.as_deref(), Some("12 passed"));
         assert_eq!(items[3].call, Some(items[2].id));
+    }
+
+    /// A wait without ids waited for a message before the agent started
+    /// any run, then for the runs it started that no result told to be
+    /// over, and for a message again once a wait's result says none go.
+    #[test]
+    fn a_reopened_wait_names_the_runs_the_agent_had_going() {
+        let steps = [
+            (
+                crew::WAIT_FOR_AGENTS,
+                serde_json::json!({}),
+                "Nothing to wait for: none of your agent runs is running. Reports that came earlier reached you already.",
+                "waiting for a message",
+            ),
+            (
+                crew::START_AGENT,
+                serde_json::json!({"task": "A"}),
+                "Started r1 (agent `worker`).",
+                "start worker “A”",
+            ),
+            (
+                crew::START_AGENT,
+                serde_json::json!({"task": "B"}),
+                "Queued r2 (agent `worker`).",
+                "start worker “B”",
+            ),
+            (
+                crew::WAIT_FOR_AGENTS,
+                serde_json::json!({}),
+                "[mail 1] r1 (agent `worker`) finished. Its report:\n\nA.\n\nStill running: r2.",
+                "waiting for r1, r2",
+            ),
+            (
+                crew::WAIT_FOR_AGENTS,
+                serde_json::json!({"timeout_seconds": 5}),
+                "Still running: r2.",
+                "waiting for r2",
+            ),
+            (
+                crew::STOP_AGENT,
+                serde_json::json!({"run": "r2"}),
+                "Stopped r2.",
+                "stop r2",
+            ),
+            (
+                crew::WAIT_FOR_AGENTS,
+                serde_json::json!({}),
+                "None of your agent runs is running now.",
+                "waiting for a message",
+            ),
+            (
+                crew::WAIT_FOR_AGENTS,
+                serde_json::json!({"runs": "r1"}),
+                "Nothing to wait for: r1 is finished.",
+                "waiting for r1",
+            ),
+        ];
+        let mut messages = vec![Message::new_user("Go.")];
+        for (index, (tool, arguments, output, _)) in steps.iter().enumerate() {
+            let id = format!("call_{index}");
+            let mut ask = Message::new_assistant("");
+            ask.tool_calls = vec![call(&id, tool, arguments.clone())];
+            messages.push(ask);
+            messages.push(Message::new_user_with_contents(vec![Content::ToolResult(
+                ToolResult::new(Some(id), tool, output),
+            )]));
+        }
+        let items = all_items(&messages, false, &Images::default());
+        let calls: Vec<&str> = items
+            .iter()
+            .filter(|item| item.kind == Kind::Call)
+            .map(|item| item.text.as_str())
+            .collect();
+        let expected: Vec<&str> = steps.iter().map(|step| step.3).collect();
+        assert_eq!(calls, expected);
     }
 
     /// A call that moved to the background names its job, which may have
