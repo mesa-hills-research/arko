@@ -66,7 +66,7 @@ front ends, and add the `remote` feature for the web page. The library's name is
 
 ```toml
 [dependencies]
-arko-tui = { version = "0.4.3", default-features = false, features = ["remote"] }
+arko-tui = { version = "0.5.0", default-features = false, features = ["remote"] }
 ```
 
 `cargo doc --open` builds the API docs. See
