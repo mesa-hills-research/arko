@@ -577,7 +577,7 @@ async fn worker_models_sets_who_chooses_the_workers_models() {
     assert!(harness.live_command("/worker-models everyone", Source::Terminal));
     assert_eq!(
         last_said(&harness.feed),
-        "/worker-models takes agent, profiles or session (/worker-models profiles)."
+        "`everyone` isn't one of agent, profiles or session, such as /worker-models profiles."
     );
     assert!(harness.live_command("/worker-models agent", Source::Terminal));
     assert!(last_said(&harness.feed).starts_with("Models for workers is set to agent already."));
@@ -634,7 +634,7 @@ async fn worker_depth_is_kept_and_says_it_takes_effect_later() {
     assert!(harness.live_command("/worker-depth", Source::Terminal));
     assert_eq!(
         last_said(&harness.feed),
-        "Worker depth is 2. Worker depth is 2. It takes effect when workers can start workers of their own, which they can't yet. For now only the main agent starts workers. /worker-depth 1 to 4 changes that."
+        "Worker depth is 2. It takes effect once workers can start workers of their own, so for now only the main agent starts workers. /worker-depth 1 to 4 changes it."
     );
     for bad in ["0", "5", "deep"] {
         assert!(harness.live_command(&format!("/worker-depth {bad}"), Source::Terminal));
@@ -648,7 +648,7 @@ async fn worker_depth_is_kept_and_says_it_takes_effect_later() {
     assert!(harness.live_command("/worker-depth 3", Source::Terminal));
     assert_eq!(
         last_said(&harness.feed),
-        "Worker depth is 3. It takes effect when workers can start workers of their own, which they can't yet. For now only the main agent starts workers."
+        "Worker depth is now 3. It takes effect once workers can start workers of their own, so for now only the main agent starts workers."
     );
     assert_eq!(harness.settings.worker_depth, 3);
     assert_eq!(harness.session.load_settings().unwrap().worker_depth, 3);

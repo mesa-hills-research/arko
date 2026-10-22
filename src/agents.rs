@@ -159,7 +159,7 @@ impl ExtraRules {
 #[non_exhaustive]
 pub enum ModelChoice {
     /// The main agent chooses a profile, model and effort for each worker,
-    /// and may save profiles. New sessions start with this.
+    /// and can save profiles. New sessions start with this.
     #[default]
     Agent,
     /// The main agent starts workers with a profile only. A start with a

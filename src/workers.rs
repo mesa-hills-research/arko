@@ -33,6 +33,30 @@ pub fn depth_command(depth: u32) -> String {
     format!("{DEPTH_COMMAND} {depth}")
 }
 
+/// The line under the depth setting, saying what it does. `nested` is whether
+/// workers can start workers yet (`LiveSettings::nested_workers`).
+pub fn depth_about(nested: bool) -> &'static str {
+    if nested {
+        "How many levels of workers there can be, from 1 to 4. 1 means only the main agent starts workers. 2 lets a worker the main agent starts begin workers of its own, when the main agent allows it."
+    } else {
+        "How many levels of workers there can be, from 1 to 4. It takes effect once workers can start workers of their own, so for now only the main agent starts workers."
+    }
+}
+
+/// What a worker depth of `depth` means for the session now, as a sentence
+/// to follow "Worker depth is 2."
+pub fn depth_effect(depth: u32, nested: bool) -> String {
+    if !nested {
+        "It takes effect once workers can start workers of their own, so for now only the main agent starts workers.".to_string()
+    } else if depth <= 1 {
+        "Only the main agent starts workers.".to_string()
+    } else {
+        format!(
+            "Workers can go {depth} levels deep. A worker the main agent starts can start workers of its own when the main agent allows it."
+        )
+    }
+}
+
 /// `depth` if it is a depth a session can have, 1 to [`MAX_DEPTH`]. An app
 /// that sets `Options::worker_depth` is held to the same range as the
 /// command and the flag, so a saved depth is always one the settings show.
@@ -55,7 +79,7 @@ pub fn parse_depth(text: &str) -> Result<u32, String> {
         .filter(|depth| (1..=MAX_DEPTH).contains(depth))
         .ok_or_else(|| {
             format!(
-                "`{}` isn't a depth. Give a number from 1 to {MAX_DEPTH}, such as {DEPTH_COMMAND} {DEFAULT_DEPTH}",
+                "`{}` isn't a depth. Give a number from 1 to {MAX_DEPTH}, such as {DEPTH_COMMAND} {DEFAULT_DEPTH}.",
                 text.trim()
             )
         })
@@ -79,6 +103,15 @@ mod tests {
             ]
         );
         assert_eq!(depth_command(3), "/worker-depth 3");
+        // The sentences an app shows say the value once, and that nothing
+        // nests yet when that is so.
+        assert!(
+            depth_effect(2, false).starts_with("It takes effect once workers can start workers")
+        );
+        assert_eq!(depth_effect(1, true), "Only the main agent starts workers.");
+        assert!(depth_effect(3, true).starts_with("Workers can go 3 levels deep."));
+        assert!(depth_about(false).contains("takes effect once workers can start workers"));
+        assert!(depth_about(true).contains("1 means only the main agent starts workers"));
         assert_eq!(parse_depth(" 4 "), Ok(4));
         assert_eq!(check_depth(1), Ok(1));
         assert_eq!(check_depth(4), Ok(4));

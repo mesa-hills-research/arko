@@ -67,10 +67,10 @@ impl Harness {
             ));
         }
         let Some(choice) = ModelChoice::parse(argument) else {
-            return Err(
-                "/worker-models takes agent, profiles or session (/worker-models profiles)."
-                    .to_string(),
-            );
+            return Err(format!(
+                "`{}` isn't one of agent, profiles or session, such as /worker-models profiles.",
+                argument.trim()
+            ));
         };
         if choice == now {
             return Ok(format!(
@@ -115,23 +115,6 @@ impl Harness {
         Ok(sentence)
     }
 
-    /// What `/worker-depth` says of a depth of `depth`.
-    fn depth_sentence(depth: u32) -> String {
-        if NESTED_WORKERS {
-            if depth == 1 {
-                "Only the main agent starts workers.".to_string()
-            } else {
-                format!(
-                    "Workers can go {depth} levels deep. A worker the main agent starts can start workers of its own when the main agent allows it."
-                )
-            }
-        } else {
-            format!(
-                "Worker depth is {depth}. It takes effect when workers can start workers of their own, which they can't yet. For now only the main agent starts workers."
-            )
-        }
-    }
-
     /// `/worker-depth`, typed at the prompt, sent from the page or chosen in
     /// the settings: says how many levels of workers the session allows, or
     /// sets it, from 1 to 4.
@@ -149,9 +132,9 @@ impl Harness {
         let now = self.settings.worker_depth;
         if argument.is_empty() {
             return Ok(format!(
-                "{} is {now}. {} /worker-depth 1 to {} changes that.",
+                "{} is {now}. {} /worker-depth 1 to {} changes it.",
                 workers::DEPTH_NAME,
-                Self::depth_sentence(now),
+                workers::depth_effect(now, NESTED_WORKERS),
                 workers::MAX_DEPTH
             ));
         }
@@ -160,7 +143,7 @@ impl Harness {
             return Ok(format!(
                 "{} is {depth} already. {}",
                 workers::DEPTH_NAME,
-                Self::depth_sentence(depth)
+                workers::depth_effect(depth, NESTED_WORKERS)
             ));
         }
         self.settings.worker_depth = depth;
@@ -179,7 +162,11 @@ impl Harness {
         {
             log::warn!("could not tell the main agent how deep workers can go: {error}");
         }
-        Ok(Self::depth_sentence(depth))
+        Ok(format!(
+            "{} is now {depth}. {}",
+            workers::DEPTH_NAME,
+            workers::depth_effect(depth, NESTED_WORKERS)
+        ))
     }
 
     /// `/profiles`, typed at the prompt or sent from the page: the worker
