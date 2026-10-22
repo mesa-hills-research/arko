@@ -93,6 +93,12 @@ pub struct Setup {
 /// See [`Setup::refuse`]. The text is written for the main agent.
 pub type Refuse = Arc<dyn Fn(&arko_ai::Model) -> Option<String> + Send + Sync>;
 
+/// What opens the user's message to a worker in the worker's mail. Like the
+/// main agent's notes (see `agents::operator_note_hint`) it says text written
+/// only in thinking may never reach the user. The user watches the worker's
+/// own view, which shows the text it writes and its report.
+pub const USER_MESSAGE_HEADING: &str = "The user sent you a message directly. Text you write only in your thinking may never reach them, so answer in your text or in your report:";
+
 /// How long each worker of the session ran, by its handle (milliseconds),
 /// in its folder.
 const RUN_TIMES_FILE: &str = "worker-times.json";
@@ -1174,7 +1180,7 @@ impl Crew {
         } else {
             format!("The user sent {id} a message directly (a copy for you):")
         };
-        workflow.message_subagent(&id, text, "The user sent you a message directly:", &copy)?;
+        workflow.message_subagent(&id, text, USER_MESSAGE_HEADING, &copy)?;
         Ok(id)
     }
 

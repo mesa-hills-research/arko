@@ -1852,7 +1852,7 @@ async fn a_message_to_a_running_worker_reaches_it_at_its_next_step() {
     assert_eq!(summary(&harness), "All done.");
     let worker = body(&bodies, "call_w1", "");
     assert!(
-        worker.contains("The user sent you a message directly:\\n  Use tabs."),
+        worker.contains("The user sent you a message directly. Text you write only in your thinking may never reach them, so answer in your text or in your report:\\n  Use tabs."),
         "{worker}"
     );
     let lead = body(&bodies, "Used tabs.", "You are agent run r1");
@@ -2054,7 +2054,7 @@ async fn the_users_message_to_a_worker_reaches_that_worker_only() {
     let read = r1.last().unwrap();
     for text in SENT {
         assert!(
-            read.contains(&format!("The user sent you a message directly:\\n  {text}")),
+            read.contains(&format!("{}\\n  {text}", crew::USER_MESSAGE_HEADING)),
             "{read}"
         );
     }
