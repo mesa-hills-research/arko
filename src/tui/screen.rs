@@ -1132,6 +1132,39 @@ mod tests {
         assert_eq!(rows[6], " ● asks you");
     }
 
+    /// The question to save a profile with long instructions is cut to fit
+    /// the dock, and what is left still says how much is cut.
+    #[test]
+    fn a_cut_approval_question_still_says_how_long_the_instructions_are() {
+        use crate::profiles::{Place, Profile};
+        let mut profile = Profile::new("judge", "Judges renders against a reference image");
+        profile.model = Some("sol".into());
+        profile.instructions = (1..=30)
+            .map(|line| format!("Check point {line} of the render."))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut app = app();
+        app.set_activity(Activity {
+            working: true,
+            since: None,
+            question: Some(Question {
+                id: 1,
+                text: crate::profiles::approval_text(&profile, Place::User),
+            }),
+        });
+        for (width, height) in [(80, 24), (100, 24), (120, 30)] {
+            let rows = screen(&mut app, width, height).join("\n");
+            assert!(
+                rows.contains("whole question is in the transcript"),
+                "{rows}"
+            );
+            assert!(
+                rows.contains("Its instructions are 890 characters (30 lines)"),
+                "{width}x{height}\n{rows}"
+            );
+        }
+    }
+
     /// With the symbols of the classic Windows console's fonts (`basic`) and
     /// with plain ASCII (`ascii`), the whole screen is drawn in characters
     /// those fonts have: the banner, every kind of item, the separators

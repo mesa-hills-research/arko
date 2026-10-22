@@ -520,7 +520,7 @@ fn the_approval_question_shows_the_whole_profile() {
     let question = approval_text(&profile, Place::User);
     assert_eq!(
         question,
-        "The main agent wants to save the worker profile 3d-judge in your Arko folder, for every project.\n\nJudges 3D results against a reference image\nRuns on sol at high effort.\n\nInstructions\nYou judge 3D models.\n\nCompare the render with the reference image.\n\nReply yes to save it, or tell the agent what to change."
+        "The main agent wants to save the worker profile 3d-judge in your Arko folder, for every project.\n\nJudges 3D results against a reference image\nRuns on sol at high effort.\nIts instructions are 66 characters (3 lines).\n\nInstructions\nYou judge 3D models.\n\nCompare the render with the reference image.\n\nReply yes to save it, or tell the agent what to change."
     );
     let project = approval_text(&profile, Place::Project);
     assert!(

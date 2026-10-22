@@ -1009,6 +1009,15 @@ pub fn delete(roots: &Roots, place: Place, name: &str) -> Result<PathBuf, String
     Ok(file)
 }
 
+/// "812 characters" or "812 characters (28 lines)".
+fn size_of(text: &str) -> String {
+    let characters = text.chars().count();
+    match text.lines().count() {
+        0 | 1 => format!("{characters} characters"),
+        lines => format!("{characters} characters ({lines} lines)"),
+    }
+}
+
 /// The question that asks the user to approve the main agent's save of
 /// `profile` in `place`. It reads the same in the terminal, on the web page
 /// and in an app, and carries the whole profile so the user judges its
@@ -1043,7 +1052,12 @@ pub fn approval_text(profile: &Profile, place: Place) -> String {
     if instructions.is_empty() {
         text.push_str("\nIt has no standing instructions.\n");
     } else {
-        text.push_str(&format!("\nInstructions\n{instructions}\n"));
+        // Right after the model, where a short view of the question still
+        // shows it, so the user knows how much there is to read.
+        text.push_str(&format!(
+            "Its instructions are {}.\n\nInstructions\n{instructions}\n",
+            size_of(instructions)
+        ));
     }
     text.push_str("\nReply yes to save it, or tell the agent what to change.");
     text
