@@ -715,9 +715,8 @@ pub fn format_status(reports: &[IndexReport], spent: Option<(u64, f64)>) -> Stri
             }
         }
         let mut monitor = format!(
-            "  monitor: {}, {}",
-            if manifest.monitor { "on" } else { "off" },
-            report.watch.describe()
+            "  monitor: {}",
+            engine::monitor_words(manifest.monitor, &report.watch)
         );
         if report.pending_changes > 0 {
             monitor.push_str(", with changes waiting for a rebuild");
@@ -795,7 +794,7 @@ pub fn format_create(outcome: &CreateOutcome) -> String {
     out.push_str(&format!(
         "Monitor: {}.\n",
         if manifest.monitor {
-            outcome.watch.describe()
+            engine::monitor_words(true, &outcome.watch)
         } else {
             "off (brought up to date when searched)".to_string()
         }

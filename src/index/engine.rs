@@ -115,7 +115,7 @@ pub enum WatchState {
 impl WatchState {
     pub fn describe(&self) -> String {
         match self {
-            WatchState::Off => "not watched by this Arko".into(),
+            WatchState::Off => "not watching it now".into(),
             WatchState::Starting => "watcher starting".into(),
             WatchState::Watching { polling: false } => "watching (inotify)".into(),
             WatchState::Watching { polling: true } => "watching (polling)".into(),
@@ -125,6 +125,20 @@ impl WatchState {
     }
     pub fn active(&self) -> bool {
         matches!(self, WatchState::Starting | WatchState::Watching { .. })
+    }
+}
+
+/// What an index's monitor setting and this process's watcher say of it
+/// together, as `index_status` words it. A monitored index that this process
+/// doesn't watch is brought up to date when an agent searches it.
+pub fn monitor_words(monitor: bool, watch: &WatchState) -> String {
+    match (monitor, watch) {
+        (false, _) => "off".into(),
+        (true, WatchState::Off) => format!(
+            "on, {} (brought up to date when an agent searches it)",
+            watch.describe()
+        ),
+        (true, watch) => format!("on, {}", watch.describe()),
     }
 }
 

@@ -18,7 +18,7 @@ use super::cli::{IndexCommand, run_command_with};
 use super::embed::{self, Backend};
 use super::engine::{
     Action, CreateArgs, CreateOutcome, EmbedPlan, Hit, Indexes, ModeArg, SearchArgs, SearchOutput,
-    Timing, WatchState,
+    Timing, WatchState, monitor_words,
 };
 use super::store::{self, Kind, Layout, Manifest, Rules};
 use super::tools::{self, TOOL_NAMES};
@@ -983,7 +983,10 @@ fn monitoring_picks_up_edits(force_polling: bool) {
         .unwrap();
     assert_eq!(hit_files(&output)[0], "src/queue.rs", "{output:?}");
     let reports = other.status_blocking(Some("proj"), &root).unwrap();
-    assert!(tools::format_status(&reports, None).contains("another Arko process"));
+    assert!(
+        tools::format_status(&reports, None)
+            .contains("monitor: on, watched by another Arko process")
+    );
 
     // When the first Arko exits (shutdown joins its threads), the second takes over.
     let started = Instant::now();
@@ -1475,6 +1478,54 @@ fn search_and_status_formatting() {
 
     let text = tools::format_status(&[], None);
     assert!(text.contains("no indexes"), "{text}");
+}
+
+/// The status line for the monitor says what the setting and the watcher
+/// mean together. A monitored index this process doesn't watch is brought up
+/// to date when an agent searches it, which is not the same as another Arko
+/// watching it.
+#[test]
+fn the_monitor_line_says_who_keeps_the_index_current() {
+    let fixture = Fixture::new();
+    let root = fixture.code_project();
+    let work = fixture.base.join("work");
+    std::fs::create_dir_all(&work).unwrap();
+    // The words alone.
+    let on = "on, not watching it now (brought up to date when an agent searches it)";
+    assert_eq!(monitor_words(true, &WatchState::Off), on);
+    assert_eq!(monitor_words(false, &WatchState::Off), "off");
+    assert_eq!(
+        monitor_words(true, &WatchState::Elsewhere),
+        "on, watched by another Arko process"
+    );
+    assert_eq!(
+        monitor_words(true, &WatchState::Watching { polling: true }),
+        "on, watching (polling)"
+    );
+    // An index made by a one-shot Arko, which watches nothing.
+    let created = fixture.open(&root, Backend::Hash, false, fast(false));
+    let outcome = created.create_blocking(&create_args(&root, None)).unwrap();
+    let text = tools::format_create(&outcome);
+    assert!(text.contains(&format!("Monitor: {on}.")), "{text}");
+    fixture.shutdown(&created);
+    // An Arko working elsewhere watches no index outside its workspace, and
+    // no other Arko watches this one.
+    let indexes = fixture.open(&work, Backend::Hash, true, fast(false));
+    let status = |indexes: &Indexes| {
+        let reports = indexes.status_blocking(Some("proj"), &work).unwrap();
+        let text = tools::format_status(&reports, None);
+        text.lines()
+            .find(|line| line.trim_start().starts_with("monitor:"))
+            .unwrap()
+            .to_string()
+    };
+    assert_eq!(status(&indexes), format!("  monitor: {on}"));
+    // Turned off, it says only that.
+    indexes
+        .manage_blocking("proj", &Action::Monitor(false), &work)
+        .unwrap();
+    assert_eq!(status(&indexes), "  monitor: off");
+    fixture.shutdown(&indexes);
 }
 
 #[test]
