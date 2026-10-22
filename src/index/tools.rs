@@ -808,8 +808,8 @@ pub fn format_create(outcome: &CreateOutcome) -> String {
 // ----- the tools -----
 
 const SEARCH_DESCRIPTION: &str = "Searches Arko's indexes of code and docs by meaning and by words (syntax-aware chunks, keyword BM25 plus Voyage embeddings). \
-Prefer it to rg whenever you look for code or docs to read: for concept or behaviour questions (\"where are failed requests retried\", \"how is the session saved to disk\", \"code that validates config paths\"), and for names you know (\"Session::save\"), whose definitions come back whole where rg gives one line. One search often replaces several rounds of rg, sed and read_file. \
-Use rg/grep to list every occurrence of a name, for regexes, and for exact strings in files no index covers. \
+Before you commit to grep or rg, ask whether you already know the symbols or exact strings you're looking for. If you don't, describe the behaviour you want (\"where are failed requests retried\", \"code that validates config paths\") and search with mode `semantic`. A name's definition or an exact string takes `hybrid`. Results come back whole where rg gives one line, so one search often replaces several rounds of rg, sed and read_file. \
+Use rg/grep for every use of a name, for regexes, and for exact strings in files no index covers. \
 Returns ranked `path:start-end · scope` results. The top ones come whole: the entire function, type or doc section, with line numbers as read_file shows them, so there's no need to read them again or grep around them; the rest show their first lines (read those with read_file if they look promising). detail=brief returns only locations and short snippets: more results in less space. \
 Works for any directory with an index, not just the current one: name it in `index` (an index name, or any directory or file inside it) or give a `path_prefix` inside it. Without either, searches the indexes covering the current directory; index_status lists them all.";
 
@@ -847,7 +847,7 @@ impl Tool for SearchTool {
                 ),
                 param(
                     "mode",
-                    "Pick it from what you're looking for. `semantic`: you're describing behaviour, what code does or where something happens, in your own words (\"where is the session saved to disk\"). `lexical`: the callers or uses of a name you know (\"callers of Session::save\"), or anything in the docs and Markdown files of a code index. `hybrid`: where a name is defined (`ARKO_HOME`), an exact string such as an error message, or a name together with words about it (\"Session::save error handling\"). An index without embeddings always searches by words.",
+                    "Pick it from what you're looking for. `semantic` when you don't know the symbols or strings and describe the behaviour in your own words (\"where is the session saved to disk\"). `hybrid` for where an exact name is defined (`ARKO_HOME`), an exact string such as an error message, or a name together with words about it (\"Session::save error handling\"). `lexical` is rarely needed because rg does the same, but the docs and Markdown files of a code index are found by words, so use it for those. An index without embeddings always searches by words.",
                     ToolParameterType::String,
                     true,
                 ),
