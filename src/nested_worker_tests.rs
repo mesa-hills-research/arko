@@ -49,6 +49,19 @@ fn tool_names(body: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// What a request says of the parameter `parameter` of its tool `tool`.
+fn parameter_text(body: &str, tool: &str, parameter: &str) -> String {
+    let body: serde_json::Value = serde_json::from_str(body).unwrap();
+    body["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|offered| offered["name"] == tool)
+        .and_then(|offered| offered["parameters"]["properties"][parameter]["description"].as_str())
+        .unwrap_or_default()
+        .to_string()
+}
+
 /// A request's first user message.
 fn first_message(body: &str) -> String {
     let body: serde_json::Value = serde_json::from_str(body).unwrap();
@@ -376,7 +389,6 @@ async fn a_worker_started_to_nest_starts_a_worker_whose_report_reaches_it() {
 /// and the user's depth lets it start workers, so r2 (at the last level)
 /// and a worker started plainly are not.
 #[tokio::test]
-#[ignore = "needs the framework to leave the start tools off a worker the hook says may not start workers"]
 async fn only_a_worker_started_to_nest_below_the_depth_is_offered_the_start_tools() {
     let tools = |script: &Script, who: &str| tool_names(&script.requests(who)[0]);
     let starts = |tools: &[String]| {
@@ -403,6 +415,11 @@ async fn only_a_worker_started_to_nest_below_the_depth_is_offered_the_start_tool
         assert!(r1.iter().any(|name| name == tool), "{tool}");
     }
     assert!(!first_message(&plain.requests("r1")[0]).contains("Workers of your own"));
+    // Its `message_agent` reaches its lead and its peers, not its workers.
+    assert_eq!(
+        parameter_text(&plain.requests("r1")[0], crew::MESSAGE_AGENT, "to"),
+        "`lead` for the agent that started you, or the run id of another agent run your lead linked you with."
+    );
     harness.crew.as_ref().unwrap().shutdown().await;
 
     // One started with `nested` has them, and the worker it starts, at
@@ -417,6 +434,14 @@ async fn only_a_worker_started_to_nest_below_the_depth_is_offered_the_start_tool
     assert_eq!(
         starts(&tools(&nesting, "r1")),
         crew::NESTED_TOOL_NAMES.len()
+    );
+    assert!(
+        parameter_text(&nesting.requests("r1")[0], crew::MESSAGE_AGENT, "to")
+            .starts_with("The run id of one of your agent runs"),
+    );
+    assert!(
+        parameter_text(&nesting.requests("r2")[0], crew::MESSAGE_AGENT, "to")
+            .starts_with("`lead` for the agent that started you"),
     );
     let r2 = tools(&nesting, "r2");
     assert_eq!(starts(&r2), 0, "{r2:?}");

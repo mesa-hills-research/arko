@@ -14,7 +14,8 @@ use arko_ai::AnthropicCacheTtl;
 use arko_ai::prompt_cache::PromptCacheLifetime;
 use arko_workflows::prelude::*;
 use arko_workflows::subagents::{
-    GitWorktreeProvider, StartRequest, SubagentEventKind, SubagentState, SubagentsConfig,
+    GitWorktreeProvider, StartRequest, SubagentEventKind, SubagentHook, SubagentRecord,
+    SubagentState, SubagentsConfig,
 };
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -413,6 +414,43 @@ pub(crate) fn below(runs: &[arko_workflows::subagents::SubagentRecord], root: Uu
     found
 }
 
+/// The start hook: a worker's setup as it starts, and which workers may
+/// start workers.
+struct StartHook {
+    models: Arc<Mutex<WorkerRecords>>,
+    workflow: Arc<Mutex<Weak<Workflow>>>,
+    feed: Option<remote::Feed>,
+    refuse: Option<Refuse>,
+    default_1h: bool,
+}
+
+impl SubagentHook for StartHook {
+    fn prepare(&self, request: &StartRequest, config: &mut AgentConfig) -> Result<(), String> {
+        prepare(
+            &self.models,
+            &self.workflow,
+            self.feed.as_ref(),
+            self.refuse.as_ref(),
+            self.default_1h,
+            request,
+            config,
+        )
+    }
+
+    /// Only a worker whose setup, as recorded when it started, gives it the
+    /// start tools, so the answer is the same each time for a run, also when
+    /// the session resumes and whatever the settings are by then. A run
+    /// recorded before nesting, or not at all, starts no workers.
+    fn offers_start_tools(&self, record: &SubagentRecord) -> bool {
+        self.models
+            .lock()
+            .unwrap()
+            .runs
+            .get(&record.run_id)
+            .is_some_and(|setup| setup.tools_added.iter().any(|tool| tool == START_AGENT))
+    }
+}
+
 /// The text a run's first message opens with: the project's instructions,
 /// then what the run's setup adds (its profile's instructions).
 fn first_message_context(
@@ -573,19 +611,13 @@ impl Crew {
                 GitWorktreeProvider::new(self.setup.session_dir.join("worktrees"))
                     .branch_prefix(format!("arko/{}/", self.setup.session_id)),
             ))
-            .hook(Arc::new(
-                move |request: &StartRequest, config: &mut AgentConfig| {
-                    prepare(
-                        &models,
-                        &workflow,
-                        feed.as_ref(),
-                        refuse.as_ref(),
-                        default_1h,
-                        request,
-                        config,
-                    )
-                },
-            ))
+            .hook(Arc::new(StartHook {
+                models,
+                workflow,
+                feed,
+                refuse,
+                default_1h,
+            }))
             // Asked as each worker starts: a run keeps its first message.
             .start_context(Arc::new(move |request: &StartRequest| {
                 first_message_context(&project, &records, request)
@@ -1353,6 +1385,35 @@ mod tests {
         }
     }
 
+    /// A record of a worker `handle`, started by the run `caller`.
+    fn record(handle: &str, caller: Uuid) -> arko_workflows::subagents::SubagentRecord {
+        let now = chrono::Utc::now();
+        arko_workflows::subagents::SubagentRecord {
+            run_id: Uuid::new_v4(),
+            handle: handle.to_string(),
+            agent: "worker".into(),
+            caller_run_id: caller,
+            caller_agent: "main".into(),
+            depth: 1,
+            task: String::new(),
+            workspace: PathBuf::new(),
+            isolated: None,
+            parameters: Default::default(),
+            peers: Vec::new(),
+            all_peers: false,
+            state: SubagentState::Running,
+            created: now,
+            since: now,
+            report: None,
+            error: None,
+            pending: None,
+            stopped_by_caller: None,
+            stop_requested: None,
+            asking: false,
+            detached: false,
+        }
+    }
+
     fn luna() -> crate::agents::ModelSettings {
         let model = crate::agents::resolve_model("luna").unwrap();
         crate::agents::ModelSettings {
@@ -1376,6 +1437,88 @@ mod tests {
         let mut config = base.clone();
         hook.prepare(request, &mut config).unwrap();
         serde_json::to_value(&config).unwrap()
+    }
+
+    /// A worker that starts workers keeps that, and the paragraph about them,
+    /// whatever happens to its profile or to the settings, and is the only
+    /// run the hook says may start workers. This is what lets a saved
+    /// session with a tree of workers resume.
+    #[test]
+    fn a_recorded_nesting_run_gets_the_same_configuration_after_its_profile_changes() {
+        let temp = tempfile::tempdir().unwrap();
+        let (session, root) = (temp.path().join("session"), temp.path().join("arko"));
+        std::fs::create_dir_all(&session).unwrap();
+        judge(
+            &root,
+            "---\ndescription: Judges\nnested: true\n---\nJudge it in parts.\n",
+        );
+        let (crew, registered) = crew_for(&session, &root, &luna());
+        let nests = start("r1", &[("profile", "judge")]);
+        let plain = start("r2", &[]);
+        let before = prepared(&crew, &nests, &registered);
+        let plain_before = prepared(&crew, &plain, &registered);
+        let tools = |config: &serde_json::Value| -> Vec<String> {
+            config["tool_config"]["available_tool_names"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|name| name.as_str().unwrap().to_string())
+                .collect()
+        };
+        for tool in NESTED_TOOL_NAMES {
+            assert!(tools(&before).iter().any(|name| name == tool), "{tool}");
+            assert!(
+                !tools(&plain_before).iter().any(|name| name == tool),
+                "{tool}"
+            );
+        }
+        let ask = crew.config().start_context.unwrap();
+        assert!(ask(&nests).unwrap().contains("# Workers of your own"));
+        assert_eq!(ask(&plain), None);
+        // Only the run that nests may start workers.
+        let hook = crew.config().hook.unwrap();
+        let record = |request: &StartRequest| {
+            let mut record = record(&request.handle, request.caller_run_id);
+            record.run_id = request.run_id;
+            record
+        };
+        assert!(hook.offers_start_tools(&record(&nests)));
+        assert!(!hook.offers_start_tools(&record(&plain)));
+        assert!(!hook.offers_start_tools(&record(&start("r9", &[]))));
+
+        // The profile is edited and deleted, a Claude Code login changes
+        // nothing: the same configuration, from the registered worker and
+        // from another run's saved one, and the same answer.
+        judge(&root, "---\ndescription: Judges\n---\nJudge it alone.\n");
+        assert_eq!(prepared(&crew, &nests, &registered), before);
+        std::fs::remove_file(root.join("profiles").join("judge.md")).unwrap();
+        assert_eq!(prepared(&crew, &nests, &registered), before);
+        let saved: AgentConfig = serde_json::from_value(before.clone()).unwrap();
+        assert_eq!(prepared(&crew, &nests, &saved), before);
+        assert_eq!(prepared(&crew, &plain, &saved), plain_before);
+        assert!(ask(&nests).unwrap().contains("Judge it in parts."));
+        assert!(hook.offers_start_tools(&record(&nests)));
+
+        // Arko restarts: a new crew on the same folder reads the record.
+        let (again, _) = crew_for(&session, &root, &luna());
+        let hook = again.config().hook.unwrap();
+        assert!(hook.offers_start_tools(&record(&nests)));
+        assert!(!hook.offers_start_tools(&record(&plain)));
+        // A run recorded before nesting has no start tools.
+        let old = std::fs::read_to_string(session.join("worker-models.json")).unwrap();
+        let mut old: serde_json::Value = serde_json::from_str(&old).unwrap();
+        for setup in old.as_object_mut().unwrap().values_mut() {
+            setup.as_object_mut().unwrap().remove("tools_added");
+        }
+        std::fs::write(session.join("worker-models.json"), old.to_string()).unwrap();
+        let (older, _) = crew_for(&session, &root, &luna());
+        assert!(
+            !older
+                .config()
+                .hook
+                .unwrap()
+                .offers_start_tools(&record(&nests))
+        );
     }
 
     /// A worker's setup is worked out once, as it starts. The hook then
@@ -1622,35 +1765,6 @@ mod tests {
             "{}",
             describe_worker(&worker)
         );
-    }
-
-    /// A record of a worker `handle`, started by the run `caller`.
-    fn record(handle: &str, caller: Uuid) -> arko_workflows::subagents::SubagentRecord {
-        let now = chrono::Utc::now();
-        arko_workflows::subagents::SubagentRecord {
-            run_id: Uuid::new_v4(),
-            handle: handle.to_string(),
-            agent: "worker".into(),
-            caller_run_id: caller,
-            caller_agent: "main".into(),
-            depth: 1,
-            task: String::new(),
-            workspace: PathBuf::new(),
-            isolated: None,
-            parameters: Default::default(),
-            peers: Vec::new(),
-            all_peers: false,
-            state: SubagentState::Running,
-            created: now,
-            since: now,
-            report: None,
-            error: None,
-            pending: None,
-            stopped_by_caller: None,
-            stop_requested: None,
-            asking: false,
-            detached: false,
-        }
     }
 
     /// The worker that started a worker is known from the records, and the
