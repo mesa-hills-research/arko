@@ -941,8 +941,22 @@ pub fn save(
     let replaced = file.is_file();
     std::fs::create_dir_all(&folder)
         .map_err(|error| format!("Couldn't make {} ({})", folder.display(), reason_of(&error)))?;
-    crate::session::write_whole(&file, written.render().as_bytes())
-        .map_err(|error| format!("Couldn't write {} ({})", file.display(), reason_of(&error)))?;
+    let text = written.render();
+    let write = if author == Author::Agent && !replaced {
+        // The check above and this write are two steps. Someone who wrote
+        // the same name between them keeps their file, and the agent is
+        // refused as if it had been there.
+        match crate::session::write_new(&file, text.as_bytes()) {
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                check_agent_save(roots, &profile.name)?;
+                crate::session::write_whole(&file, text.as_bytes())
+            }
+            other => other,
+        }
+    } else {
+        crate::session::write_whole(&file, text.as_bytes())
+    };
+    write.map_err(|error| format!("Couldn't write {} ({})", file.display(), reason_of(&error)))?;
     let hidden_by = Place::ALL
         .into_iter()
         .take_while(|nearer| *nearer < place)

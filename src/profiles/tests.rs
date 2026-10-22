@@ -821,3 +821,28 @@ fn a_reason_or_a_name_from_a_file_has_no_control_characters() {
         effort.reason
     );
 }
+
+/// Of an agent's first save and a user's file written in between, the
+/// user's stays.
+#[test]
+fn an_agents_first_write_never_replaces_a_file_that_appeared_meanwhile() {
+    let temp = tempfile::tempdir().unwrap();
+    let roots = roots(temp.path());
+    let folder = roots.folder(Place::User).unwrap();
+    std::fs::create_dir_all(&folder).unwrap();
+    // The file is there when the write comes, as if made after the check.
+    let file = folder.join("judge.md");
+    std::fs::write(&file, "---\ndescription: The user's own\n---\n").unwrap();
+    let error = crate::session::write_new(&file, b"agent").unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+    // Saved through the library, the agent is refused outright.
+    let mut profile = Profile::new("judge", "Judges");
+    profile.model = Some("sol".into());
+    let why = save(&roots, Place::User, &profile, Author::Agent).unwrap_err();
+    assert!(why.contains("made by the user"), "{why}");
+    assert!(
+        std::fs::read_to_string(&file)
+            .unwrap()
+            .contains("The user's own")
+    );
+}
