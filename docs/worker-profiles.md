@@ -72,9 +72,15 @@ profile, then the session's worker model, which `/model worker` and `--worker-mo
 Two tools help it choose. `worker_options` lists the profiles and the models usable now, with
 each model's efforts, price, handover size and prompt cache, and the plan usage next to models on
 a plan. `save_worker_profile` saves a setup under a name. A profile for the session needs no
-approval. One for the project or for every project is put to you as a question that shows the
-whole profile, and only a plain yes saves it. Anything else you write goes back to the agent as
-your feedback. The agent can't replace a profile you made.
+approval. Before Arko saves one for the project or for every project, it puts you a question that
+shows the whole profile, and only a plain yes saves it (a "please" or "thanks" after the yes is
+fine). Anything else you write goes back to the agent as your feedback, and the transcript says
+nothing was saved. The agent can't replace a profile you made.
+
+The question guards what Arko writes for the agent. The agent's own file tools and shell can write
+a file in the project's `.agents/profiles` folder as they can write any file in the project, and
+in your Arko folder once you turn outside access on. So treat a project's profiles as you treat its
+`AGENTS.md`, as text the project's authors and the agent can change.
 
 ## Commands and settings
 
@@ -87,15 +93,16 @@ your feedback. The agent can't replace a profile you made.
 | `/worker-models agent`, `profiles` or `session` | Who chooses the workers' models. See below |
 | `/worker-depth 1` to `4` | How many levels of workers the session allows |
 
-`/worker-models` (also `--worker-models`, and a row in `/settings` and on the web page) takes
-three values. With `agent`, the default, the main agent chooses a profile, model and effort for
+`/worker-models` (also `--worker-models`) takes three values. It is the "Models for workers" row in
+`/settings` and the setting of that name on the web page. With `agent`, the default, the main agent chooses a profile, model and effort for
 each worker and can save profiles. With `profiles`, it starts workers with a profile only. With
 `session`, every worker runs the session's worker model. The setting applies to the next start.
 A session saved before the setting existed keeps `session`, which is how its workers always ran.
 
-`/worker-depth` (also `--worker-depth`) is saved with the session and defaults to 2. It sets how
-many levels of workers the session allows, and it takes effect once workers can start workers of
-their own.
+`/worker-depth` (also `--worker-depth`) is saved with the session and defaults to 2. It is the
+"Worker depth" row in `/settings` and the setting of that name on the web page. It sets how many
+levels of workers the session allows, and it takes effect once workers can start workers of their
+own.
 
 ## For apps
 
@@ -118,5 +125,6 @@ profiles::delete(&roots, Place::User, "3d-judge")?;
 `Profile::check` tells whether a profile can be saved, with a model Arko knows and an effort it
 takes. `profiles::folders` gives the folders for an "open the folder" button, and
 `profiles::approval_text` and `profiles::is_approval` are the question the agent's save puts to
-the user and the rule for its answer. `arko::workers` has the names and commands of the two
-settings, so an app labels and sets them as the terminal does.
+the user and the rule for its answer. `arko::workers` has the names, commands and sentences of the
+two settings, and `ModelChoice::label` and `about` the words for each value, so an app labels and
+sets them as the terminal and the web page do.
