@@ -570,6 +570,100 @@
     return 'Context ' + tokens(context) + ' tokens' + (handover ? ', handover size ' + tokens(handover) : '');
   }
 
+  // ----- the prompt cache's timer -----
+
+  /** The last minute of the cache, when its timer warns (milliseconds). */
+  const CACHE_WARNING_MS = 60000;
+
+  /** The prompt cache's timer at `now` (Unix milliseconds): `{ expired:
+   * false, left }` while it counts down, `{ expired: true, left: 0 }` once
+   * it lapsed, or null where it is hidden: while requests run (`running`,
+   * each one refreshes the cache) and where the status doesn't say the
+   * cache's lifetime and last use. The time left is never more than the
+   * lifetime, whatever the clock did. The words are the terminal's and
+   * Arko Studio's. */
+  function cacheTimer(cache, running, now) {
+    if (running || !cache || cache.lifetime == null || cache.refreshed_at == null) return null;
+    const left = Math.min(cache.refreshed_at + cache.lifetime - now, cache.lifetime);
+    return left > 0 ? { expired: false, left } : { expired: true, left: 0 };
+  }
+
+  /** A length of time on a clock: 0:05, 3:12, 1:02:03. */
+  function clock(ms) {
+    const s = Math.max(0, Math.floor(ms / 1000));
+    const h = Math.floor(s / 3600);
+    const m = Math.floor(s / 60) % 60;
+    const pad = (n) => String(n).padStart(2, '0');
+    return h > 0 ? h + ':' + pad(m) + ':' + pad(s % 60) : m + ':' + pad(s % 60);
+  }
+
+  /** "cache 3:12", counted up to the next second so it reads 0:01 until the
+   * moment it lapses, or "cache expired". */
+  function cacheLabel(timer) {
+    return timer.expired ? 'cache expired' : 'cache ' + clock(timer.left + 999);
+  }
+
+  /** Whether the timer is in its last minute. */
+  function cacheWarns(timer) {
+    return !timer.expired && timer.left <= CACHE_WARNING_MS;
+  }
+
+  /** A token count, short: 820, 8.2k, 142k, 1.02M. */
+  function cacheTokens(count) {
+    const trimmed = (value, decimals) => {
+      const text = value.toFixed(decimals);
+      return text.includes('.') ? text.replace(/0+$/, '').replace(/\.$/, '') : text;
+    };
+    if (count < 1000) return String(count);
+    const thousands = count / 1000;
+    if (Math.round(thousands * 10) / 10 < 10) return trimmed(thousands, 1) + 'k';
+    if (Math.round(thousands) < 1000) return Math.round(thousands) + 'k';
+    return trimmed(count / 1e6, 2) + 'M';
+  }
+
+  /** What a miss writes again: "about 180k tokens, ≈ $0.90", "about 180k
+   * tokens of your Claude plan", or null before a request reported a size. */
+  function cacheRecache(cache) {
+    if (cache.tokens == null) return null;
+    let text = 'about ' + cacheTokens(cache.tokens) + ' tokens';
+    if (cache.miss_cost != null) text += ', ≈ ' + dollars(cache.miss_cost);
+    else if (cache.on_plan) text += ' of ' + cache.on_plan;
+    return text;
+  }
+
+  function dollars(amount) {
+    return amount > 0 && amount < 0.005 ? '< $0.01' : '$' + amount.toFixed(2);
+  }
+
+  const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+  /** A local time for `at` (Unix milliseconds): "14:00" today, "Mon 09:00"
+   * within a week, else "Oct 20" (with the year, for another one). */
+  function whenWords(at, now) {
+    const then = new Date(at);
+    const today = new Date(now);
+    const midnight = (date) => new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+    const days = Math.round((midnight(then) - midnight(today)) / 86400000);
+    const time = String(then.getHours()).padStart(2, '0') + ':' + String(then.getMinutes()).padStart(2, '0');
+    if (days === 0) return time;
+    if (days >= 1 && days < 7) return WEEKDAYS[then.getDay()] + ' ' + time;
+    const day = MONTHS[then.getMonth()] + ' ' + then.getDate();
+    return then.getFullYear() === today.getFullYear() ? day : day + ', ' + then.getFullYear();
+  }
+
+  /** What the timer means, for its tooltip. */
+  function cacheTitle(timer, cache, now) {
+    const recache = cacheRecache(cache);
+    if (timer.expired) {
+      return recache ? 'The next message re-caches ' + recache + '.' : 'The prompt cache has expired.';
+    }
+    const until = whenWords(Math.floor((cache.refreshed_at + cache.lifetime) / 1000) * 1000, now);
+    let text = 'The prompt cache keeps this conversation until ' + until + '.';
+    if (recache) text += ' Letting it expire re-caches ' + recache + '.';
+    return text;
+  }
+
   // ----- markdown -----
 
   const SAFE_LINK = /^(https?:|mailto:)/i;
@@ -832,6 +926,11 @@
     stateOf,
     figures,
     contextTitle,
+    cacheTimer,
+    cacheLabel,
+    cacheWarns,
+    cacheTitle,
+    CACHE_WARNING_MS,
     runTime,
     firstLine,
     markdown,

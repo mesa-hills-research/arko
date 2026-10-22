@@ -162,6 +162,10 @@ kbd {
 .outside { color: var(--warn); font-weight: 600; }
 .outside:not([hidden]) + span:not(:empty)::before { content: " · "; color: var(--muted); font-weight: 400; }
 
+/* The prompt cache's timer follows the figures, and warns in its last minute. */
+#figures:not(:empty) + .cache:not([hidden])::before { content: " · "; color: var(--muted); }
+.cache.warn { color: var(--warn); font-weight: 600; }
+
 .actions { display: flex; align-items: center; gap: 4px; flex: none; }
 
 .tool {

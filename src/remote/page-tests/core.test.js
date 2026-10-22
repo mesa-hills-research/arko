@@ -445,3 +445,81 @@ test('the workers settings read as words', () => {
   assert.match(core.workerDepthAbout(false), /takes effect once workers can start workers of their own/);
   assert.match(core.workerDepthAbout(true), /^How many levels of workers there can be, from 1 to 4\. 1 means only the main agent starts workers\./);
 });
+
+// ----- the prompt cache's timer: the words the terminal and Arko Studio use -----
+
+const cache = (minutes, refreshedAt) => ({
+  lifetime: minutes * 60000,
+  refreshed_at: refreshedAt,
+  tokens: 180000,
+  miss_cost: 0.9,
+});
+
+test('the cache timer counts down while idle and warns in the last minute', () => {
+  const idle = cache(5, 0);
+  const timer = (now, running = false) => core.cacheTimer(idle, running, now);
+  // 3:12 left.
+  assert.equal(core.cacheLabel(timer(300000 - 192000)), 'cache 3:12');
+  assert.equal(core.cacheWarns(timer(300000 - 192000)), false);
+  // Half a second left reads 0:01, and it warns.
+  assert.equal(core.cacheLabel(timer(299500)), 'cache 0:01');
+  assert.equal(core.cacheWarns(timer(299500)), true);
+  // The last minute warns from its first moment.
+  assert.equal(core.cacheWarns(timer(240000)), true);
+  assert.equal(core.cacheWarns(timer(239999)), false);
+  assert.equal(core.cacheLabel(timer(300000)), 'cache expired');
+  assert.equal(core.cacheWarns(timer(300000)), false);
+  assert.equal(core.cacheLabel(timer(9e9)), 'cache expired');
+  // Hidden while requests run, and where the lifetime or last use isn't
+  // known.
+  assert.equal(timer(1000, true), null);
+  assert.equal(core.cacheTimer({ ...idle, lifetime: undefined }, false, 1000), null);
+  assert.equal(core.cacheTimer({ ...idle, refreshed_at: undefined }, false, 1000), null);
+  assert.equal(core.cacheTimer(undefined, false, 1000), null);
+});
+
+test('the cache timer never shows more than the lifetime', () => {
+  assert.equal(core.cacheLabel(core.cacheTimer(cache(60, 0), false, 1000)), 'cache 59:59');
+  // The last use is dated ten minutes after now.
+  assert.equal(core.cacheLabel(core.cacheTimer(cache(5, 600000), false, 0)), 'cache 5:00');
+  // An hour or more reads with hours.
+  assert.equal(core.cacheLabel({ expired: false, left: 3723000 - 999 }), 'cache 1:02:03');
+});
+
+test('the cache timer\'s tooltip says when it lapses and what a miss re-caches', () => {
+  const at = new Date(2026, 9, 22, 14, 0, 0).getTime();
+  // Used at 13:55 with five minutes: it lapses at 14:00.
+  const used = cache(5, at - 5 * 60000);
+  const counting = core.cacheTimer(used, false, at - 120000);
+  assert.equal(
+    core.cacheTitle(counting, used, at - 120000),
+    'The prompt cache keeps this conversation until 14:00. Letting it expire re-caches about 180k tokens, ≈ $0.90.',
+  );
+  const expired = core.cacheTimer(used, false, at + 1000);
+  assert.equal(core.cacheTitle(expired, used, at + 1000), 'The next message re-caches about 180k tokens, ≈ $0.90.');
+  const plan = { ...used, miss_cost: undefined, on_plan: 'your Claude plan' };
+  assert.equal(
+    core.cacheTitle(expired, plan, at + 1000),
+    'The next message re-caches about 180k tokens of your Claude plan.',
+  );
+  const unsized = { ...used, tokens: undefined };
+  assert.equal(core.cacheTitle(expired, unsized, at + 1000), 'The prompt cache has expired.');
+  assert.equal(
+    core.cacheTitle(counting, unsized, at - 120000),
+    'The prompt cache keeps this conversation until 14:00.',
+  );
+  // Another day, within a week and beyond it.
+  const tomorrow = { ...used, refreshed_at: at + 86400000 - 300000 };
+  assert.match(core.cacheTitle(core.cacheTimer(tomorrow, false, at), tomorrow, at), /until [A-Z][a-z]{2} 14:00\./);
+  const later = { ...used, refreshed_at: new Date(2026, 10, 21, 14, 0, 0).getTime() - 300000 };
+  assert.match(core.cacheTitle(core.cacheTimer(later, false, at), later, at), /until Nov 21\./);
+  assert.equal(core.CACHE_WARNING_MS, 60000);
+});
+
+test('the cache timer\'s token counts are short', () => {
+  const counted = (tokens) =>
+    core.cacheTitle({ expired: true }, { ...cache(5, 0), tokens, miss_cost: undefined }, 0).replace(/^.*about | tokens\.$/g, '');
+  for (const [count, text] of [[820, '820'], [8200, '8.2k'], [9960, '10k'], [142000, '142k'], [999600, '1M'], [1020000, '1.02M']]) {
+    assert.equal(counted(count), text);
+  }
+});

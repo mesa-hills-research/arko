@@ -1386,6 +1386,50 @@ mod tests {
         );
     }
 
+    /// The status carries the main agent's prompt cache once its lifetime
+    /// and last use are known (the lifetime in milliseconds), which the
+    /// page counts down in its header. Until then it carries none.
+    #[tokio::test]
+    async fn the_status_carries_the_prompt_cache_once_it_is_known() {
+        let feed = Feed::new("main");
+        let meter = Arc::new(Moving(Mutex::new(Reading::default())));
+        let served = serve_with(&feed, "127.0.0.1:0", Info::default(), meter.clone());
+        let cookie = served.login().await;
+        let mut stream = served.get("/api/events", Some(&cookie)).await;
+        let mut buffer = String::new();
+        let events = read_until(&mut stream, &mut buffer, |name, _| name == "reset").await;
+        assert!(events.last().unwrap().1["status"].get("cache").is_none());
+
+        lock(&meter.0).cache = super::super::CacheStatus {
+            lifetime: Some(Duration::from_secs(300)),
+            tokens: Some(180_000),
+            miss_cost: Some(0.9),
+            ..Default::default()
+        };
+        // (The last use isn't known: no timer to count.)
+        lock(&meter.0).context_tokens = Some(1);
+        let events = read_until(&mut stream, &mut buffer, |name, data| {
+            name == "status" && data["context_tokens"] == 1
+        })
+        .await;
+        assert!(events.last().unwrap().1.get("cache").is_none());
+
+        lock(&meter.0).cache.refreshed_at = Some(1_800_000_000_000);
+        let events = read_until(&mut stream, &mut buffer, |name, data| {
+            name == "status" && data.get("cache").is_some()
+        })
+        .await;
+        assert_eq!(
+            events.last().unwrap().1["cache"],
+            serde_json::json!({
+                "lifetime": 300_000,
+                "refreshed_at": 1_800_000_000_000_i64,
+                "tokens": 180_000,
+                "miss_cost": 0.9,
+            })
+        );
+    }
+
     /// The page's Model row names the model the session runs now, not the
     /// one it ran as the server started: `/model` before the conversation
     /// starts changes it then. A page open gets it with the next status,

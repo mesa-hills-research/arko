@@ -161,8 +161,10 @@ pub struct Reading {
     /// worker's own view.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub agents: Vec<AgentStatus>,
-    /// The main agent's prompt cache, as its latest request left it.
-    #[serde(skip)]
+    /// The main agent's prompt cache, as its latest request left it. The
+    /// page counts it down, and the status leaves it out until the cache's
+    /// lifetime and last use are known.
+    #[serde(skip_serializing_if = "CacheStatus::is_unknown")]
     pub cache: CacheStatus,
     /// The main agent's latest model request.
     #[serde(skip)]
@@ -171,11 +173,16 @@ pub struct Reading {
 
 /// The main agent's prompt cache, as its latest request left it, with when
 /// it lapses and what a miss and keeping it warm cost.
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct CacheStatus {
     /// How long the cache keeps the conversation after a request. `None`
     /// where the provider doesn't say (Gemini, OpenRouter models other than
     /// Claude, Claude Code until it writes the cache) or nothing is cached.
+    /// The page's status has it in milliseconds.
+    #[serde(
+        serialize_with = "milliseconds",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub lifetime: Option<std::time::Duration>,
     /// When the latest request went out, or the refresh that kept the cache
     /// warm (Unix milliseconds). The cache lasts `lifetime` from then. A
@@ -183,22 +190,48 @@ pub struct CacheStatus {
     /// request left, so the cache may have lapsed meanwhile. `None` for a
     /// new conversation, and for one whose cache the session can't vouch for
     /// (another model, a handover or a compaction since).
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub refreshed_at: Option<i64>,
     /// The conversation's input at its latest request, in tokens, which a
     /// miss writes to the cache again.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub tokens: Option<usize>,
     /// What the latest request read from the cache and wrote to it, in
     /// tokens.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub read: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub written: Option<usize>,
     /// What a miss costs, with `tokens` written again at the model's price.
     /// `None` on a plan.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub miss_cost: Option<f64>,
     /// What keeping it warm costs, with `tokens` read from the cache at the
     /// model's price. `None` on a plan.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub refresh_cost: Option<f64>,
     /// The plan that pays instead ("your Claude plan").
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub on_plan: Option<&'static str>,
+}
+
+impl CacheStatus {
+    /// Whether the cache can't be timed yet: its lifetime or its last use
+    /// is not known.
+    fn is_unknown(&self) -> bool {
+        self.lifetime.is_none() || self.refreshed_at.is_none()
+    }
+}
+
+/// A duration in milliseconds, which is how the page counts.
+fn milliseconds<S: serde::Serializer>(
+    duration: &Option<std::time::Duration>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    match duration {
+        Some(duration) => serializer.serialize_u64(duration.as_millis() as u64),
+        None => serializer.serialize_none(),
+    }
 }
 
 /// The main agent's latest model request.

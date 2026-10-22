@@ -755,6 +755,7 @@
     } else {
       time.textContent = '';
     }
+    renderCache();
     for (const node of document.querySelectorAll('.wcard.running .wmeta')) {
       const summary = store.workers.get(node.parentElement.dataset.worker);
       if (summary) node.textContent = C.workerWords(summary, serverNow()).meta;
@@ -764,6 +765,22 @@
     followMotion();
   }
   setInterval(tick, 1000);
+
+  /** The prompt cache's timer, in the header while the agent waits for the
+   * user: the time left, in the warning colour for the last minute, then
+   * "cache expired". Hidden while requests run (each one refreshes the
+   * cache), in a worker's view, and where the lifetime isn't known. */
+  function renderCache() {
+    const node = $('cache');
+    const running = Boolean(status && status.working && !status.question);
+    const now = serverNow();
+    const timer = status && connection === 'live' && !viewing() ? C.cacheTimer(status.cache, running, now) : null;
+    node.hidden = !timer;
+    if (!timer) return;
+    node.textContent = C.cacheLabel(timer);
+    node.classList.toggle('warn', C.cacheWarns(timer));
+    node.title = C.cacheTitle(timer, status.cache, now);
+  }
 
   function placeholder() {
     if (asking()) text.placeholder = 'Your answer';
