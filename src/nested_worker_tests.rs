@@ -3,7 +3,7 @@
 // r1. Also what a stop, a message, a resume and a cut-back do to the tree.
 // (Included in `main`'s tests, whose helpers they use.)
 
-use crate::mock_model::{ModelServer, complete, tool_call};
+use crate::mock_model::{ModelServer, complete, tool_call, tool_calls};
 
 /// The requests the model server got: (the agent run that sent it, its
 /// body).
@@ -123,6 +123,10 @@ struct Script {
     r1_plain: bool,
     /// r2 starts a monitor of a command that runs on, before it waits.
     r2_monitors: bool,
+    /// r1's first response starts this many workers at once, in worktrees
+    /// of their own when the flag is set, and every worker stays on its
+    /// request.
+    r1_together: Option<(usize, bool)>,
     /// The main agent's turn goes on after it started r1, until the user
     /// stops it, and says when it is there.
     main_waits: Option<Arc<tokio::sync::Notify>>,
@@ -139,6 +143,7 @@ impl Script {
             r2_start: serde_json::json!({}),
             r1_plain: false,
             r2_monitors: false,
+            r1_together: None,
             main_waits: None,
             seen: Arc::default(),
         }
@@ -158,6 +163,7 @@ impl Script {
         let plain = self.r1_plain;
         let main_waits = self.main_waits.clone();
         let monitors = self.r2_monitors;
+        let together = self.r1_together;
         ModelServer::start(Arc::new(move |index, body: String| {
             let who = sender(&body);
             seen.lock().unwrap().push((who.clone(), body.clone()));
@@ -195,6 +201,26 @@ impl Script {
                         tool_call(&format!("m{index}"), crew::START_AGENT, call)
                     }
                     "main" => complete(&format!("m{index}"), "Started."),
+                    "r1" if together.is_some() && done.is_empty() => {
+                        let (count, isolated) = together.unwrap();
+                        let calls: Vec<(&str, serde_json::Value)> = (1..=count)
+                            .map(|part| {
+                                (
+                                    crew::START_AGENT,
+                                    serde_json::json!({
+                                        "agent": WORKER,
+                                        "task": format!("Part {part}."),
+                                        "isolated": isolated,
+                                    }),
+                                )
+                            })
+                            .collect();
+                        tool_calls(&format!("a{index}"), &calls)
+                    }
+                    // Everyone waits, so the workers stay running.
+                    _ if together.is_some() && who != "main" => {
+                        return std::future::pending::<String>().await;
+                    }
                     "r1" if plain => complete(&format!("a{index}"), "Nothing to split."),
                     "r1" => match done.len() {
                         0 => {
@@ -983,4 +1009,60 @@ async fn the_depth_and_the_models_setting_apply_to_the_next_start() {
         assert!(start(false).is_ok(), "{command}");
     }
     harness.crew.as_ref().unwrap().shutdown().await;
+}
+
+/// A worker that starts many workers at once, each in a worktree of its own,
+/// stays within its eight. The starts pass the hook together, before any
+/// worktree exists, so each has to find its place taken.
+#[tokio::test]
+async fn a_worker_starting_many_isolated_workers_together_stays_within_its_limit() {
+    let mut script = Script::new(true);
+    script.r1_together = Some((12, true));
+    let server = script.serve().await;
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, _sender) = open_session(temp.path(), &server);
+    let work = harness.settings.workspace.clone();
+    let git = |args: &[&str]| {
+        let done = std::process::Command::new("git")
+            .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+            .args(args)
+            .current_dir(&work)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_INDEX_FILE")
+            .env_remove("GIT_WORK_TREE")
+            .status()
+            .unwrap();
+        assert!(done.success(), "git {args:?}");
+    };
+    std::fs::write(work.join("a.txt"), "one\n").unwrap();
+    git(&["init", "-q"]);
+    git(&["add", "a.txt"]);
+    git(&["commit", "-q", "-m", "one"]);
+    turn(&mut harness, &mut inputs, "Review the files.").await;
+    until(|| script.requests("r1").len() >= 2).await;
+    let answers = results(&script.requests("r1")[1]);
+    assert_eq!(answers.len(), 12, "{answers:?}");
+    let started = answers
+        .iter()
+        .filter(|answer| answer.contains("in an isolated workspace"))
+        .count();
+    let refused = answers
+        .iter()
+        .filter(|answer| {
+            answer.contains(
+                "You already have 8 workers running or queued, the most one worker can have.",
+            )
+        })
+        .count();
+    assert_eq!((started, refused), (8, 4), "{answers:?}");
+    let own = harness
+        .workflow()
+        .subagents()
+        .into_iter()
+        .filter(|run| run.handle != "r1")
+        .count();
+    assert_eq!(own, 8);
+    let crew = harness.crew.clone().unwrap();
+    crew.stop_all("done");
+    crew.shutdown().await;
 }

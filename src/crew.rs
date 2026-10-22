@@ -4,7 +4,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, Weak};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use arko_agents::{
     AgentConfig, AgentLLMConfig, ClaudeCodeSettings, HandoverConfig, TaskContext, Tool,
@@ -312,6 +312,7 @@ fn apply_cache(
 fn prepare(
     models: &Mutex<WorkerRecords>,
     workflow: &Mutex<Weak<Workflow>>,
+    flight: &Mutex<HashMap<Uuid, (Uuid, Instant)>>,
     feed: Option<&remote::Feed>,
     refuse: Option<&Refuse>,
     default_1h: bool,
@@ -337,8 +338,37 @@ fn prepare(
     }
     let setup = match new {
         Some(new) => {
-            let (family, parent) = family_of(workflow.lock().unwrap().upgrade(), request);
-            let setup = chooser::choose_in(&new.basis, request, refuse, family)?;
+            let runs = workflow
+                .lock()
+                .unwrap()
+                .upgrade()
+                .map(|workflow| workflow.subagents())
+                .unwrap_or_default();
+            // Counting and keeping a place for this start are one step, so
+            // starts made together can't each find a free place.
+            let (family, parent) = {
+                let mut flight = flight.lock().unwrap();
+                flight.retain(|run, (_, since)| {
+                    since.elapsed() < FLIGHT_LIMIT && !runs.iter().any(|other| other.run_id == *run)
+                });
+                let held: Vec<(Uuid, Uuid)> = flight
+                    .iter()
+                    .map(|(run, (caller, _))| (*run, *caller))
+                    .collect();
+                let found = family_of(&runs, &held, request);
+                if found.1.is_some() {
+                    flight.insert(request.run_id, (request.caller_run_id, Instant::now()));
+                }
+                found
+            };
+            let setup = chooser::choose_in(&new.basis, request, refuse, family);
+            let setup = match setup {
+                Ok(setup) => setup,
+                Err(why) => {
+                    flight.lock().unwrap().remove(&request.run_id);
+                    return Err(why);
+                }
+            };
             // The clients put its line where its parent is.
             if let (Some(feed), Some(parent)) = (feed, parent) {
                 feed.worker_under(&request.handle, &parent);
@@ -360,30 +390,44 @@ fn prepare(
     models.save()
 }
 
-/// Where in the tree of workers the start `request` happens: how deep the
-/// new worker is, and how many workers its starter has now. (The main agent
-/// is no worker, so its starts are at the first level.)
-fn family_of(
-    workflow: Option<Arc<Workflow>>,
+/// How long a start that passed the hook keeps its place while its record
+/// isn't there. A start that fails after the hook leaves no record, so its
+/// place is given back by the time.
+const FLIGHT_LIMIT: Duration = Duration::from_secs(30);
+
+/// Where in the tree of workers the start `request` happens, and the handle
+/// of its starter when a worker started it: how deep the new worker is, and
+/// how many workers its starter has running or queued. `runs` are the
+/// session's workers, and `held` the starts (their run and their starter)
+/// that passed the hook and have no record yet, which count as running.
+/// (The main agent is no worker, so its starts are at the first level.)
+pub(crate) fn family_of(
+    runs: &[SubagentRecord],
+    held: &[(Uuid, Uuid)],
     request: &StartRequest,
 ) -> (chooser::Family, Option<String>) {
-    let Some(workflow) = workflow else {
+    let Some(caller) = runs.iter().find(|run| run.run_id == request.caller_run_id) else {
         return (chooser::Family::MAIN, None);
     };
-    let runs = workflow.subagents();
-    match runs.iter().find(|run| run.run_id == request.caller_run_id) {
-        Some(caller) => (
-            chooser::Family {
-                depth: caller.depth + 1,
-                live: runs
-                    .iter()
-                    .filter(|run| run.caller_run_id == caller.run_id && run.state.is_active())
-                    .count(),
-            },
-            Some(caller.handle.clone()),
-        ),
-        None => (chooser::Family::MAIN, None),
-    }
+    let running = runs
+        .iter()
+        .filter(|run| run.caller_run_id == caller.run_id && run.state.is_active())
+        .count();
+    let starting = held
+        .iter()
+        .filter(|(run, starter)| {
+            *starter == caller.run_id
+                && *run != request.run_id
+                && !runs.iter().any(|other| other.run_id == *run)
+        })
+        .count();
+    (
+        chooser::Family {
+            depth: caller.depth + 1,
+            live: running + starting,
+        },
+        Some(caller.handle.clone()),
+    )
 }
 
 /// The handle of the worker among `runs` that started the worker `run`,
@@ -419,6 +463,9 @@ pub(crate) fn below(runs: &[arko_workflows::subagents::SubagentRecord], root: Uu
 struct StartHook {
     models: Arc<Mutex<WorkerRecords>>,
     workflow: Arc<Mutex<Weak<Workflow>>>,
+    /// The starts that passed the hook and have no record yet, by run, with
+    /// their starter and since when.
+    flight: Mutex<HashMap<Uuid, (Uuid, Instant)>>,
     feed: Option<remote::Feed>,
     refuse: Option<Refuse>,
     default_1h: bool,
@@ -429,6 +476,7 @@ impl SubagentHook for StartHook {
         prepare(
             &self.models,
             &self.workflow,
+            &self.flight,
             self.feed.as_ref(),
             self.refuse.as_ref(),
             self.default_1h,
@@ -614,6 +662,7 @@ impl Crew {
             .hook(Arc::new(StartHook {
                 models,
                 workflow,
+                flight: Mutex::default(),
                 feed,
                 refuse,
                 default_1h,
@@ -1765,6 +1814,71 @@ mod tests {
             "{}",
             describe_worker(&worker)
         );
+    }
+
+    /// How many workers a starter has counts only those running or waiting
+    /// to run, with the starts that passed the hook and have no record yet,
+    /// and a start at the first level is the main agent's.
+    #[test]
+    fn a_starters_workers_count_only_while_they_run_or_wait() {
+        let main = Uuid::new_v4();
+        let mut r1 = record("r1", main);
+        r1.depth = 1;
+        let mut children = Vec::new();
+        for n in 0..8 {
+            let mut child = record(&format!("r{}", n + 2), r1.run_id);
+            child.depth = 2;
+            child.state = SubagentState::Finished;
+            children.push(child);
+        }
+        let mut other = record("r10", main);
+        other.depth = 1;
+        let asking = |starter: Uuid| StartRequest {
+            caller_run_id: starter,
+            ..start("r11", &[])
+        };
+        let family = |runs: &[arko_workflows::subagents::SubagentRecord],
+                      held: &[(Uuid, Uuid)],
+                      request: &StartRequest| family_of(runs, held, request);
+        let mut runs = vec![r1.clone(), other.clone()];
+        runs.extend(children.clone());
+        // Eight finished workers count for nothing, and the new one is at
+        // the level below its starter's.
+        let (found, parent) = family(&runs, &[], &asking(r1.run_id));
+        assert_eq!((found.depth, found.live), (2, 0));
+        assert_eq!(parent.as_deref(), Some("r1"));
+        // A running one and a queued one count, a stopped one doesn't.
+        runs[2].state = SubagentState::Running;
+        runs[3].state = SubagentState::Queued;
+        runs[4].state = SubagentState::Stopped;
+        runs[5].state = SubagentState::Failed;
+        runs[6].state = SubagentState::Interrupted;
+        assert_eq!(family(&runs, &[], &asking(r1.run_id)).0.live, 2);
+        // Starts that passed the hook and have no record count too, those of
+        // another starter don't, and neither does the start being asked.
+        let request = asking(r1.run_id);
+        let held = [
+            (Uuid::new_v4(), r1.run_id),
+            (Uuid::new_v4(), r1.run_id),
+            (Uuid::new_v4(), other.run_id),
+            (request.run_id, r1.run_id),
+            // (Its record is there already, so it counts once.)
+            (children[0].run_id, r1.run_id),
+        ];
+        assert_eq!(family(&runs, &held, &request).0.live, 4);
+        // The main agent's start, and a starter no record names, are at the
+        // first level and have no starter.
+        let (found, parent) = family(&runs, &held, &asking(main));
+        assert_eq!((found, parent), (chooser::Family::MAIN, None));
+        assert_eq!(
+            family(&[], &[], &asking(r1.run_id)).0,
+            chooser::Family::MAIN
+        );
+        // A deeper worker's starts are one level further.
+        let mut deeper = record("r12", r1.run_id);
+        deeper.depth = 2;
+        runs.push(deeper.clone());
+        assert_eq!(family(&runs, &[], &asking(deeper.run_id)).0.depth, 3);
     }
 
     /// The worker that started a worker is known from the records, and the

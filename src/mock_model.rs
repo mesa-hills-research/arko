@@ -141,6 +141,30 @@ pub fn tool_call(id: &str, name: &str, arguments: Value) -> String {
     .collect()
 }
 
+/// A model turn calling several tools at once, each `(name, arguments)`.
+pub fn tool_calls(id: &str, calls: &[(&str, Value)]) -> String {
+    let mut events: Vec<Value> = calls
+        .iter()
+        .enumerate()
+        .map(|(at, (name, arguments))| {
+            let item = serde_json::json!({
+                "type": "function_call", "id": format!("fc_{id}_{at}"), "call_id": format!("call_{id}_{at}"),
+                "name": name, "arguments": arguments.to_string(), "status": "completed",
+            });
+            serde_json::json!({"type": "response.output_item.done", "output_index": at, "item": item})
+        })
+        .collect();
+    events.push(serde_json::json!({"type": "response.completed", "response": {
+        "id": format!("resp_{id}"), "object": "response", "created_at": 0, "status": "completed",
+        "model": "gpt-6-luna", "output": [], "usage": {"input_tokens": 10, "output_tokens": 5},
+        "metadata": {},
+    }}));
+    events
+        .iter()
+        .map(|event| format!("data: {event}\n\n"))
+        .collect()
+}
+
 /// `turn` (a model turn), reporting `tokens` of input. (Only the live
 /// tests that run on Unix use it.)
 #[cfg_attr(not(unix), allow(dead_code))]
