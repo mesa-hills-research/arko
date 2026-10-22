@@ -15,8 +15,10 @@ files, `mcp.json` in Arko's folder, and skills in Arko's `skills`, `~/.agents/sk
 `~/.claude/skills`. A project's config and skill folders are included only with a workspace.
 
 `Extensions` holds `servers`, `skills` and `notes`. Each server and skill names its source and
-has a `skipped` reason when it would be left out. Each `ExtensionNote` has a `file: PathBuf`
-and a `message: String`, so a settings page can attach a read error to its file.
+has a `skipped` reason when it would be left out. The built-in skills come after the folders'
+skills, with `builtin` set and an empty `path`, and one is skipped when a skill of the same name is
+in a folder. Each `ExtensionNote` has a `file: PathBuf` and a `message: String`, so a settings page
+can attach a read error to its file.
 
 `project_mcp_approval` returns the remembered answer for the current `.mcp.json` servers.
 `Some(true)` means approved, `Some(false)` means declined, and `None` means there is no

@@ -16,8 +16,8 @@ models, and on your Claude plan through an installed Claude Code.
   [worker profiles](docs/worker-profiles.md) you write
 - Workers that start workers of their own, down to a depth you set
   ([docs](docs/worker-profiles.md#workers-that-start-workers))
-- MCP servers in Claude Code's `.mcp.json` format, and skills from `.agents/skills` or
-  `.claude/skills`
+- MCP servers in Claude Code's `.mcp.json` format, and [skills](docs/skills.md) from
+  `.agents/skills` or `.claude/skills`, with two for writing built in
 - Themes for the full-screen view, and your own in GPUI Kit's format
 - A library for apps with front ends of their own
 
@@ -70,8 +70,8 @@ arko-tui = { version = "0.5.0", default-features = false, features = ["remote"] 
 ```
 
 `cargo doc --open` builds the API docs. See
-[listing extensions and managing project approvals](docs/extensions.md) and
-[worker profiles](docs/worker-profiles.md) for settings pages.
+[listing extensions and managing project approvals](docs/extensions.md),
+[worker profiles](docs/worker-profiles.md) and [skills](docs/skills.md) for settings pages.
 
 ## Tests
 

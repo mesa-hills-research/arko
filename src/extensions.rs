@@ -29,7 +29,7 @@ pub struct McpServerEntry {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SkillEntry {
     /// Where it is, a skill's folder or its file (a `.md`, or a `.skill`
-    /// bundle).
+    /// bundle). Empty for a built-in skill, which is held in the program.
     pub path: PathBuf,
     /// Its name as the agents load it (a name an earlier skill has is
     /// renamed `name-2`). One that can't be read goes by its folder's or
@@ -40,9 +40,12 @@ pub struct SkillEntry {
     /// It is always in the agents' instructions, not loaded on demand.
     pub auto_load: bool,
     /// Why the agents don't get it, if they don't. That may be why it can't
-    /// be read (such as its front matter), or a skill with the same content
-    /// before it.
+    /// be read (such as its front matter), a skill with the same content
+    /// before it, or, for a built-in skill, a skill of the folders with its
+    /// name.
     pub skipped: Option<String>,
+    /// It is one of Arko's built-in skills.
+    pub builtin: bool,
 }
 
 /// A config file that could not be read.
@@ -72,8 +75,8 @@ pub struct Extensions {
 /// with the MCP config files `mcp_config` (an app's, as
 /// [`Options::mcp_config`](crate::Options::mcp_config) gives them), would
 /// get. With no workspace it lists the given MCP files, Arko's `mcp.json`,
-/// and the shared skill folders only. It reads the files, so call it off a
-/// UI thread.
+/// and the shared skill folders only. The built-in skills come last. It
+/// reads the files, so call it off a UI thread.
 pub fn list(root: &Path, workspace: Option<&Path>, mcp_config: &[PathBuf]) -> Extensions {
     let mut extensions = Extensions::default();
     let normal = |file: &Path| {
@@ -149,7 +152,7 @@ pub fn list(root: &Path, workspace: Option<&Path>, mcp_config: &[PathBuf]) -> Ex
         }
     }
     let folders = skills::folders_for(workspace, root);
-    extensions.skills = skills::scan(&folders, workspace.unwrap_or(root))
+    extensions.skills = skills::scan(&folders, &Default::default(), workspace.unwrap_or(root))
         .into_iter()
         .map(|skill| SkillEntry {
             path: skill.path,
@@ -157,6 +160,7 @@ pub fn list(root: &Path, workspace: Option<&Path>, mcp_config: &[PathBuf]) -> Ex
             description: skill.description,
             auto_load: skill.auto_load,
             skipped: skill.skipped,
+            builtin: skill.embedded,
         })
         .collect();
     extensions
@@ -463,7 +467,12 @@ mod tests {
         assert_eq!(ours[3].0, "unread");
         assert!(ours[3].1.is_some(), "{ours:?}");
         // As a session loads them: the one that can't be read is skipped.
-        let loaded = skills::list(&skills::folders(&workspace, &root), &workspace).unwrap();
+        let loaded = skills::list(
+            &skills::folders(&workspace, &root),
+            &Default::default(),
+            &workspace,
+        )
+        .unwrap();
         assert!(
             loaded
                 .on_demand_skills

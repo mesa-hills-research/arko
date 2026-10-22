@@ -197,7 +197,14 @@ pub(crate) fn unoffered_with(
                 missing.push(name);
             }
         }
-        skills |= fresh.skills_config.is_some() && saved.skills_config.is_none();
+        // (The built-in skills are not the user's: a session saved without
+        // them is not told so.)
+        let folders = |config: &arko_agents::AgentConfig| {
+            config.skills_config.as_ref().is_some_and(|skills| {
+                skills.workspace_source.is_some() || !skills.global_sources.is_empty()
+            })
+        };
+        skills |= folders(fresh) && !folders(saved);
     }
     let mut parts = Vec::new();
     if missing.contains(&crew::START_AGENT) {
@@ -743,6 +750,19 @@ impl Harness {
         Ok(())
     }
 
+    /// How many skills of the user's own the agents have, in the skill
+    /// folders. The built-in ones every session has aren't counted.
+    fn own_skills(&self) -> usize {
+        skills::scan(
+            &self.skill_folders,
+            &self.settings.builtin_skills,
+            &self.settings.workspace,
+        )
+        .iter()
+        .filter(|skill| skill.skipped.is_none() && !skill.embedded)
+        .count()
+    }
+
     /// What the full-screen view's banner shows: the session's top-level
     /// facts, and its notes (`notes` first: what Arko said before the
     /// session started).
@@ -750,20 +770,12 @@ impl Harness {
         let mut tools = Vec::new();
         tools.extend(self.mcp.summary());
         let mut notes: Vec<(String, Option<Level>)> = Vec::new();
-        match skills::list(&self.skill_folders, &self.settings.workspace) {
-            Ok(skills) => {
-                let count = skills.on_demand_skills.len() + skills.auto_loaded_skills.len();
-                if count > 0 {
-                    tools.push(format!(
-                        "{count} skill{}",
-                        if count == 1 { "" } else { "s" }
-                    ));
-                }
-            }
-            Err(error) => notes.push((
-                format!("The skills couldn't be read ({error})."),
-                Some(Level::Warn),
-            )),
+        let count = self.own_skills();
+        if count > 0 {
+            tools.push(format!(
+                "{count} skill{}",
+                if count == 1 { "" } else { "s" }
+            ));
         }
         tools.extend(self.indexes.as_ref().and_then(|indexes| indexes.summary()));
         if let Some(crew) = &self.crew
@@ -826,17 +838,12 @@ impl Harness {
         )));
         let mut extras = Vec::new();
         extras.extend(self.mcp.summary());
-        match skills::list(&self.skill_folders, &self.settings.workspace) {
-            Ok(skills) => {
-                let count = skills.on_demand_skills.len() + skills.auto_loaded_skills.len();
-                if count > 0 {
-                    extras.push(format!(
-                        "{count} skill{}",
-                        if count == 1 { "" } else { "s" }
-                    ));
-                }
-            }
-            Err(error) => out.line(&out.warn(&format!("The skills couldn't be read ({error})."))),
+        let count = self.own_skills();
+        if count > 0 {
+            extras.push(format!(
+                "{count} skill{}",
+                if count == 1 { "" } else { "s" }
+            ));
         }
         extras.extend(self.indexes.as_ref().and_then(|indexes| indexes.summary()));
         if !extras.is_empty() {
@@ -3097,31 +3104,56 @@ impl Harness {
                 "No skills. Arko reads them (folders with a SKILL.md) from the project's .agents/skills, .claude/skills and .skills, from {}, and from ~/.agents/skills and ~/.claude/skills.",
                 skills.own_folder.display()
             ));
-            return;
         }
-        for skill in skills.skills.iter().filter(|skill| !skill.always) {
-            out.line(&format!(
-                "{}  {}",
-                out.bold(&skill.name),
+        // What sets a skill apart: it is built in, or replaces a built-in
+        // one, or is always in the instructions.
+        let marks = |skill: &details::SkillFacts| {
+            let mut said = Vec::new();
+            if skill.builtin {
+                said.push("built in".to_string());
+            }
+            if let Some(path) = &skill.replaces_builtin {
+                said.push(format!(
+                    "replaces the built-in skill, from {}",
+                    path.display()
+                ));
+            }
+            if skill.always {
+                said.push("always in the agents' instructions".to_string());
+            }
+            (!said.is_empty()).then(|| out.dim(&format!("({})", said.join(", "))))
+        };
+        for skill in &skills.skills {
+            let rest = if skill.always {
+                String::new()
+            } else {
                 ui::cut(&skill.description, 160)
-            ));
-        }
-        for skill in skills.skills.iter().filter(|skill| skill.always) {
-            out.line(&format!(
-                "{}  {}",
-                out.bold(&skill.name),
-                out.dim("(always in the agents' instructions)")
-            ));
-        }
-        out.line(&out.dim(&format!(
-            "From {}",
-            skills
-                .folders
-                .iter()
-                .map(|folder| folder.display().to_string())
+            };
+            let line = [Some(rest), marks(skill)]
+                .into_iter()
+                .flatten()
+                .filter(|part| !part.is_empty())
                 .collect::<Vec<_>>()
-                .join(", ")
-        )));
+                .join("  ");
+            out.line(&format!("{}  {line}", out.bold(&skill.name)));
+        }
+        if !skills.folders.is_empty() {
+            out.line(&out.dim(&format!(
+                "From {}",
+                skills
+                    .folders
+                    .iter()
+                    .map(|folder| folder.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )));
+        }
+        if !skills.builtin_off.is_empty() {
+            out.line(&out.dim(&format!(
+                "Built-in skills left out ({}).",
+                skills.builtin_off.join(", ")
+            )));
+        }
     }
 
     /// One turn: the message goes to the main agent, and its reply is
@@ -4463,6 +4495,12 @@ pub(crate) mod tests {
     mod resume {
         use super::*;
         include!("resume_tests.rs");
+    }
+
+    /// The built-in skills' end-to-end tests, in their own file.
+    mod built_in_skills {
+        use super::*;
+        include!("builtin_skill_tests.rs");
     }
 
     /// Text replies' end-to-end tests, in their own file.

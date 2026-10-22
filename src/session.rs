@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use crate::agents::{
     DEFAULT_WORKER_DEPTH, ExtraRules, MAX_WORKER_DEPTH, ModelChoice, ModelSettings,
 };
+use crate::builtin_skills::BuiltinSkills;
 use crate::project;
 use crate::providers::OpenAiAuth;
 use crate::shell::WindowsShell;
@@ -164,6 +165,10 @@ pub struct Settings {
     /// in a session made before has no `nested` whatever the settings are.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub nested_start: bool,
+    /// Which of Arko's built-in skills the agents get, all unless some are
+    /// turned off. All in sessions saved before they existed.
+    #[serde(default, skip_serializing_if = "BuiltinSkills::is_all")]
+    pub builtin_skills: BuiltinSkills,
 }
 
 fn default_background_after() -> u64 {
@@ -184,8 +189,8 @@ fn is_default_worker_depth(depth: &u32) -> bool {
 
 impl Settings {
     /// Settings for tests: a session in `workspace` with both agents on
-    /// `model`, no limit on workers, and nothing else on. Tests change what
-    /// they test.
+    /// `model`, no limit on workers, and nothing else on (not the built-in
+    /// skills either). Tests change what they test.
     #[cfg(test)]
     pub fn for_test(workspace: &Path, model: &ModelSettings) -> Self {
         Self {
@@ -218,6 +223,10 @@ impl Settings {
             worker_models: ModelChoice::default(),
             worker_depth: DEFAULT_WORKER_DEPTH,
             nested_start: true,
+            builtin_skills: BuiltinSkills {
+                none: true,
+                off: Vec::new(),
+            },
         }
     }
 

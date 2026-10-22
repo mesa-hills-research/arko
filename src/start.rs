@@ -254,6 +254,7 @@ pub(crate) fn new_settings(
             None => DEFAULT_WORKER_DEPTH,
         },
         nested_start: true,
+        builtin_skills: Default::default(),
     };
     project_from_options(options, &mut settings);
     if settings.mode == crate::session::Mode::Chat {

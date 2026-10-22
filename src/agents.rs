@@ -16,6 +16,7 @@ use arko_ai::input_limit::effective_max_input_tokens;
 use arko_ai::{AnthropicReasoningEffort, Model, OpenAIEffort, Provider};
 use serde::{Deserialize, Serialize};
 
+use crate::builtin_skills::BuiltinSkills;
 use crate::crew;
 use crate::index;
 use crate::providers::{self, OpenAiAuth};
@@ -321,6 +322,9 @@ pub struct AgentSettings<'a> {
     pub mcp_servers: &'a [String],
     /// The skill folders, read at the start of each run.
     pub skill_folders: &'a [std::path::PathBuf],
+    /// Which of Arko's built-in skills the agents get, beside those in the
+    /// folders.
+    pub builtin_skills: &'a BuiltinSkills,
     /// The search index tools, offered to both agents.
     pub index_tools: &'a [&'a str],
     /// The indexes when the session started, named in the instructions
@@ -380,6 +384,7 @@ impl<'a> AgentSettings<'a> {
             mcp_tools: &[],
             mcp_servers: &[],
             skill_folders: &[],
+            builtin_skills: &settings.builtin_skills,
             index_tools: &[],
             indexes: &[],
             text_replies: settings.text_replies,
@@ -408,6 +413,7 @@ impl<'a> AgentSettings<'a> {
             mcp_tools: &[],
             mcp_servers: &[],
             skill_folders: &[],
+            builtin_skills: &NO_BUILTIN_SKILLS,
             index_tools: &[],
             indexes: &[],
             text_replies: false,
@@ -422,6 +428,13 @@ impl<'a> AgentSettings<'a> {
         }
     }
 }
+
+/// The choice of tests that look at what the built-in skills don't touch.
+#[cfg(test)]
+static NO_BUILTIN_SKILLS: BuiltinSkills = BuiltinSkills {
+    none: true,
+    off: Vec::new(),
+};
 
 /// How many indexes the instructions name; `index_status` lists the rest.
 const INDEXES_NAMED: usize = 20;
@@ -678,7 +691,7 @@ pub fn main_config(settings: &AgentSettings) -> Result<AgentConfig, String> {
                 .into(),
         );
     }
-    if let Some(skills) = skills::config(settings.skill_folders) {
+    if let Some(skills) = skills::config(settings.skill_folders, settings.builtin_skills) {
         builder = builder.skills_config(skills);
     }
     if settings.main.in_claude_code() {
@@ -752,7 +765,7 @@ pub fn worker_config(settings: &AgentSettings) -> Result<AgentConfig, String> {
         settings.worker.handover_at.unwrap_or(settings.handover_at),
         settings.cc_compact,
     ));
-    if let Some(skills) = skills::config(settings.skill_folders) {
+    if let Some(skills) = skills::config(settings.skill_folders, settings.builtin_skills) {
         builder = builder.skills_config(skills);
     }
     if settings.worker.in_claude_code() {
@@ -853,16 +866,31 @@ fn tool_instructions(settings: &AgentSettings, worker: bool) -> String {
                 .join(", ")
         ));
     }
-    if !settings.skill_folders.is_empty() {
+    let builtin = settings.builtin_skills.given().next().is_some();
+    if !settings.skill_folders.is_empty() || builtin {
+        let folders = settings
+            .skill_folders
+            .iter()
+            .map(|folder| format!("`{}`", folder.display()))
+            .collect::<Vec<_>>()
+            .join(", ");
+        // Where the skills are, and where a skill's other files are.
+        let (from, files) = match (folders.is_empty(), builtin) {
+            (false, false) => (format!(", from these folders: {folders}"), true),
+            (false, true) => (
+                format!(", built into Arko and from these folders: {folders}"),
+                true,
+            ),
+            (true, _) => (", built into Arko".to_string(), false),
+        };
+        let files = if files {
+            " A skill's other files, such as scripts and templates, are in its folder (usually named after the skill) in one of these, and the paths a skill gives are relative to that folder."
+        } else {
+            ""
+        };
         text.push_str(&format!(
             "\n# Skills\n\
-             Skills are instructions for particular kinds of work, from these folders: {}. When a skill's description fits your task, load it with `load_skill` before you start, and follow it. A skill's other files, such as scripts and templates, are in its folder (usually named after the skill) in one of these, and the paths a skill gives are relative to that folder.\n",
-            settings
-                .skill_folders
-                .iter()
-                .map(|folder| format!("`{}`", folder.display()))
-                .collect::<Vec<_>>()
-                .join(", ")
+             Skills are instructions for particular kinds of work{from}. When a skill's description fits your task, load it with `load_skill` before you start, and follow it.{files}\n"
         ));
     }
     text

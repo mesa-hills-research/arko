@@ -27,6 +27,7 @@
 //! Arko with `default-features = false` and adds `remote` for the web page.
 
 mod agents;
+mod builtin_skills;
 mod cache_memory;
 pub mod cache_timer;
 mod chat;

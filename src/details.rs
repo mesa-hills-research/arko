@@ -10,6 +10,7 @@ use std::sync::{Arc, Mutex};
 use chrono::{DateTime, Utc};
 
 use crate::agents::{Effort, ExtraRules};
+use crate::builtin_skills::BuiltinSkills;
 pub use crate::crew::WorkerFacts;
 pub use crate::providers::CostShare;
 use crate::session::Settings;
@@ -404,16 +405,27 @@ pub struct SkillFacts {
     /// It is always in the agents' instructions (else they load it when
     /// they need it).
     pub always: bool,
+    /// It is one of Arko's built-in skills, held in the program and not in
+    /// a folder.
+    pub builtin: bool,
+    /// It is a skill of the user's with the name of a built-in one, which it
+    /// replaces. This is where it is, its folder or its file.
+    pub replaces_builtin: Option<PathBuf>,
 }
 
 /// What `/skills` says.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SkillsFacts {
+    /// The skills the agents have: those of the folders, then the built-in
+    /// ones that no skill of the folders replaces.
     pub skills: Vec<SkillFacts>,
     /// The folders skills are read from.
     pub folders: Vec<PathBuf>,
     /// Arko's own skills folder.
     pub own_folder: PathBuf,
+    /// The built-in skills the session leaves out, by name (see
+    /// [`Options::builtin_skills`](crate::Options::builtin_skills)).
+    pub builtin_off: Vec<String>,
 }
 
 impl Details {
@@ -534,29 +546,50 @@ impl Details {
         lock(&self.mcp).clone()
     }
 
+    /// The built-in skills the session gives its agents.
+    pub(crate) fn builtin_skills(&self) -> BuiltinSkills {
+        lock(&self.session)
+            .as_ref()
+            .map(|(_, settings)| settings.builtin_skills.clone())
+            .unwrap_or_default()
+    }
+
     /// The skills the agents have.
     pub fn skills(&self) -> Result<SkillsFacts, String> {
         let workspace = self.session().workspace;
-        let found =
-            skills::list(&self.skill_folders, &workspace).map_err(|error| error.to_string())?;
-        let mut skills: Vec<SkillFacts> = found
-            .on_demand_skills
-            .iter()
-            .map(|skill| SkillFacts {
-                name: skill.name.clone(),
-                description: skill.description.clone(),
-                always: false,
-            })
-            .collect();
-        skills.extend(found.auto_loaded_skills.iter().map(|skill| SkillFacts {
+        let builtin = self.builtin_skills();
+        let scanned = skills::scan(&self.skill_folders, &builtin, &workspace);
+        let loaded = || scanned.iter().filter(|skill| skill.skipped.is_none());
+        let facts = |skill: &arko_agents::skill::SkillScan| SkillFacts {
             name: skill.name.clone(),
-            description: String::new(),
-            always: true,
-        }));
+            description: skill.description.clone(),
+            always: skill.auto_load,
+            builtin: skill.embedded,
+            // The built-in skill of its name is among the skills scanned,
+            // and has left the loaded ones.
+            replaces_builtin: (!skill.embedded
+                && scanned
+                    .iter()
+                    .any(|other| other.embedded && other.name == skill.name))
+            .then(|| skill.path.clone()),
+        };
+        let mut skills: Vec<SkillFacts> = loaded()
+            .filter(|skill| !skill.auto_load)
+            .map(facts)
+            .collect();
+        skills.extend(
+            loaded()
+                .filter(|skill| skill.auto_load)
+                .map(|skill| SkillFacts {
+                    description: String::new(),
+                    ..facts(skill)
+                }),
+        );
         Ok(SkillsFacts {
             skills,
             folders: self.skill_folders.clone(),
             own_folder: self.root.join("skills"),
+            builtin_off: builtin.left_out().into_iter().map(String::from).collect(),
         })
     }
 
