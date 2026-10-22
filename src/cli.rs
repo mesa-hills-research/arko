@@ -224,10 +224,10 @@ pub(crate) struct Args {
     #[arg(long, value_name = "DURATION|off", value_parser = shell::parse_background_after)]
     pub(crate) background_after: Option<u64>,
 
-    /// How long after your last message a monitor's warning before it ends
-    /// still wakes the agent, so it can keep the monitor (30m or 2h, at most
-    /// 24h, always, or off). The default is 2h. Later the warning goes with
-    /// your next message. For a new or resumed session, which keeps it.
+    /// How long after your last message a monitor's warning still wakes the
+    /// agent, so it can keep the monitor (30m or 2h, at most 24h, always, or
+    /// off). The default is 2h. Later the warning goes with your next
+    /// message. For a new or resumed session, which keeps it.
     #[arg(long, value_name = "DURATION|always|off", value_parser = crate::monitors::parse_wakes)]
     pub(crate) monitor_wakes: Option<crate::monitors::Wakes>,
 

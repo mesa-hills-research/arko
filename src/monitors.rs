@@ -57,10 +57,14 @@ impl Wakes {
     /// What it means, in a sentence.
     pub fn sentence(self) -> String {
         match self.0 {
-            None => "A monitor's warning before it ends always wakes the agent, so it can keep the monitor.".into(),
-            Some(0) => "A monitor's warning before it ends never wakes the agent. It goes with your next message.".into(),
+            None => {
+                "A monitor's warning always wakes the agent, so it can keep the monitor.".into()
+            }
+            Some(0) => {
+                "A monitor's warning never wakes the agent. It goes with your next message.".into()
+            }
             Some(seconds) => format!(
-                "A monitor's warning before it ends wakes the agent for {} after your last message, so it can keep the monitor. Later it goes with your next message.",
+                "A monitor's warning wakes the agent for {} after your last message, so it can keep the monitor. Later it goes with your next message.",
                 crate::shell::background_after_words(seconds)
             ),
         }
@@ -189,7 +193,7 @@ mod tests {
         assert_eq!(Wakes(Some(0)).shown(), "off");
         assert_eq!(
             Wakes::default().sentence(),
-            "A monitor's warning before it ends wakes the agent for 2 hours after your last message, so it can keep the monitor. Later it goes with your next message."
+            "A monitor's warning wakes the agent for 2 hours after your last message, so it can keep the monitor. Later it goes with your next message."
         );
         assert_eq!(
             Wakes::default().within(),

@@ -155,7 +155,7 @@ pub const COMMANDS: &[Command] = &[
     Command {
         name: "/monitor-wakes",
         args: "DURATION|always|off",
-        about: "how long after your last message a monitor's warning before it ends still wakes the agent, so it can keep the monitor (/monitor-wakes 30m, /monitor-wakes always, /monitor-wakes off)",
+        about: "how long after your last message a monitor's warning still wakes the agent, so it can keep the monitor",
         aliases: &[],
         runs: Runs::Session,
     },

@@ -1784,11 +1784,11 @@ async fn the_monitor_wakes_command_sets_and_keeps() {
             .any(|(kind, text, _)| (kind == "output" || kind == "notice") && text.contains(start))
     };
     assert!(said(
-        "A monitor's warning before it ends wakes the agent for 2 hours after your last message"
+        "A monitor's warning wakes the agent for 2 hours after your last message"
     ));
     assert!(said("isn't a time"));
     assert!(said("Monitor wakes was set to 30m from the web page."));
-    assert!(said("No change. A monitor's warning before it ends always wakes the agent"));
+    assert!(said("No change. A monitor's warning always wakes the agent"));
     managers.shutdown().await;
 }
 
