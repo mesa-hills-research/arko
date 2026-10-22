@@ -814,7 +814,7 @@ pub fn read(roots: &Roots, name: &str) -> Result<Found, ReadError> {
             continue;
         };
         let file = folder.join(Profile::file_name(name));
-        if !file.is_file() {
+        if !file.is_file() || !has_entry(&folder, &Profile::file_name(name)) {
             continue;
         }
         match read_file(place, &file, name) {
@@ -825,6 +825,18 @@ pub fn read(roots: &Roots, name: &str) -> Result<Found, ReadError> {
         }
     }
     Err(problem.map_or(ReadError::Missing, ReadError::Unreadable))
+}
+
+/// Whether `folder` has an entry called exactly `name`. A file system that
+/// ignores case (macOS, Windows) finds `Reviewer.md` for `reviewer.md`, and
+/// `list` calls that file unreadable for its name, so a lookup by name must
+/// not find it either.
+fn has_entry(folder: &Path, name: &str) -> bool {
+    std::fs::read_dir(folder).is_ok_and(|entries| {
+        entries
+            .flatten()
+            .any(|entry| entry.file_name() == std::ffi::OsStr::new(name))
+    })
 }
 
 /// A name that can be a file's name here: the file name rules without the
@@ -983,7 +995,7 @@ pub fn check_agent_save(roots: &Roots, name: &str) -> Result<(), String> {
             continue;
         };
         let existing = folder.join(Profile::file_name(name));
-        if !existing.is_file() {
+        if !existing.is_file() || !has_entry(&folder, &Profile::file_name(name)) {
             continue;
         }
         match read_file(place, &existing, name) {
@@ -1011,7 +1023,7 @@ pub fn delete(roots: &Roots, place: Place, name: &str) -> Result<PathBuf, String
         .folder(place)
         .ok_or_else(|| format!("There is no {} to delete a profile from.", place.name()))?;
     let file = folder.join(Profile::file_name(name));
-    if !file.is_file() {
+    if !file.is_file() || !has_entry(&folder, &Profile::file_name(name)) {
         return Err(format!(
             "There is no profile `{name}` for {}.",
             place.reach()

@@ -822,6 +822,19 @@ fn a_reason_or_a_name_from_a_file_has_no_control_characters() {
     );
 }
 
+/// A name finds a file by its exact name, so a file system that ignores case
+/// can't find `Reviewer.md` for `reviewer`, which the list calls unreadable.
+#[test]
+fn a_lookup_by_name_matches_the_files_exact_name() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(temp.path().join("Reviewer.md"), "x").unwrap();
+    std::fs::write(temp.path().join("judge.md"), "x").unwrap();
+    assert!(has_entry(temp.path(), "judge.md"));
+    assert!(has_entry(temp.path(), "Reviewer.md"));
+    assert!(!has_entry(temp.path(), "reviewer.md"));
+    assert!(!has_entry(&temp.path().join("nowhere"), "judge.md"));
+}
+
 /// Of an agent's first save and a user's file written in between, the
 /// user's stays.
 #[test]
