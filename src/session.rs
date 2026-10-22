@@ -144,9 +144,10 @@ pub struct Settings {
     /// hours in sessions saved before it.
     #[serde(default)]
     pub monitor_wakes: crate::monitors::Wakes,
-    /// Who picks the model of a worker (`/worker-models`). The main agent
-    /// does in sessions saved before it existed.
-    #[serde(default, skip_serializing_if = "ModelChoice::is_default")]
+    /// Who picks the model of a worker (`/worker-models`). Every worker runs
+    /// the session's worker model in sessions saved before it existed, as
+    /// those sessions always did and their agents were told.
+    #[serde(default = "default_worker_models")]
     pub worker_models: ModelChoice,
     /// How many levels of workers the session allows (`/worker-depth`).
     /// Two in sessions saved before it existed.
@@ -159,6 +160,10 @@ pub struct Settings {
 
 fn default_background_after() -> u64 {
     crate::shell::DEFAULT_BACKGROUND_AFTER
+}
+
+fn default_worker_models() -> ModelChoice {
+    ModelChoice::Session
 }
 
 fn default_worker_depth() -> u32 {
@@ -764,20 +769,28 @@ mod tests {
         session
     }
 
-    /// A session saved before workers' models could be chosen loads with the
-    /// main agent choosing and two levels of workers, and a session that
-    /// keeps the defaults writes neither, so its file is as it was.
+    /// A session saved before workers' models could be chosen keeps every
+    /// worker on the session's worker model, as it always did, and has two
+    /// levels of workers. A session made since writes who chooses, and
+    /// writes the depth only when it isn't the default.
     #[test]
-    fn a_session_saved_before_worker_choices_loads_with_the_defaults() {
+    fn a_session_saved_before_worker_choices_loads_as_it_always_worked() {
         let temp = tempfile::tempdir().unwrap();
         let session = test_session(temp.path());
-        let text = std::fs::read_to_string(session.dir.join(SETTINGS_FILE)).unwrap();
-        assert!(
-            !text.contains("worker_models") && !text.contains("worker_depth"),
-            "{text}"
+        let file = session.dir.join(SETTINGS_FILE);
+        let text = std::fs::read_to_string(&file).unwrap();
+        assert!(text.contains("\"worker_models\": \"agent\""), "{text}");
+        assert!(!text.contains("worker_depth"), "{text}");
+        assert_eq!(
+            session.load_settings().unwrap().worker_models,
+            ModelChoice::Agent
         );
+        // The file of a session from before has neither.
+        let mut old: serde_json::Value = serde_json::from_str(&text).unwrap();
+        old.as_object_mut().unwrap().remove("worker_models");
+        std::fs::write(&file, serde_json::to_string_pretty(&old).unwrap()).unwrap();
         let loaded = session.load_settings().unwrap();
-        assert_eq!(loaded.worker_models, ModelChoice::Agent);
+        assert_eq!(loaded.worker_models, ModelChoice::Session);
         assert_eq!(loaded.worker_depth, 2);
 
         let mut settings = loaded;

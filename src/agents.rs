@@ -218,10 +218,6 @@ impl ModelChoice {
             ModelChoice::Session => "every worker runs the session's worker model",
         }
     }
-
-    pub fn is_default(&self) -> bool {
-        *self == ModelChoice::Agent
-    }
 }
 
 /// The deepest level of workers a session allows unless it says otherwise:

@@ -90,6 +90,7 @@ your feedback. The agent can't replace a profile you made.
 three values. With `agent`, the default, the main agent chooses a profile, model and effort for
 each worker and can save profiles. With `profiles`, it starts workers with a profile only. With
 `session`, every worker runs the session's worker model. The setting applies to the next start.
+A session saved before the setting existed keeps `session`, which is how its workers always ran.
 
 `/worker-depth` (also `--worker-depth`) is saved with the session and defaults to 2. It sets how
 many levels of workers the session allows, and it takes effect once workers can start workers of
