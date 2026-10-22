@@ -730,6 +730,10 @@ impl Harness {
             self.settings.worker_depth,
             std::sync::atomic::Ordering::Relaxed,
         );
+        self.gauges.message_copies.store(
+            self.settings.message_copies,
+            std::sync::atomic::Ordering::Relaxed,
+        );
         *lock(&self.gauges.project) = (
             self.settings.project_instructions,
             self.settings.worker_project_instructions,

@@ -543,12 +543,16 @@ impl Engine {
                     }
                     None => false,
                 };
+                let copies = options.message_copies.is_some_and(|copies| {
+                    std::mem::replace(&mut settings.message_copies, copies) != copies
+                });
                 if project_from_options(&options, &mut settings)
                     | background
                     | wakes
                     | choice
                     | depth
                     | skills
+                    | copies
                 {
                     session
                         .save_settings(&settings)
@@ -836,6 +840,7 @@ impl Engine {
             extra_rules: Default::default(),
             worker_models: Default::default(),
             worker_depth: Default::default(),
+            message_copies: Default::default(),
             project: Default::default(),
             background: managers.background.clone(),
             feed: Some(feed.clone()),
@@ -1885,6 +1890,72 @@ mod tests {
                 .contains("names `repo-doc-style`, which isn't a built-in skill"),
             "{error}"
         );
+    }
+
+    /// Whether the agent that started a worker gets a copy of the user's
+    /// messages to it can be set for a new session, which keeps it, and again
+    /// as it resumes. A new session has copies on, and a resume without the
+    /// option keeps the session's.
+    #[tokio::test]
+    async fn message_copies_are_set_for_a_new_session_and_on_resume() {
+        let temp = tempfile::tempdir().unwrap();
+        let (server, _bodies) = counting_server().await;
+        let (root, project) = (temp.path().join("arko"), temp.path().join("project"));
+        std::fs::create_dir_all(&project).unwrap();
+        let open = |session: SessionChoice, copies: Option<bool>| {
+            let running = spawn(
+                Options {
+                    root: Some(root.clone()),
+                    session,
+                    workspace: Some(project.clone()),
+                    model: Some("luna".into()),
+                    openai_auth: Some(OpenAiAuth::ApiKey),
+                    cache_1h: Some(false),
+                    message_copies: copies,
+                    client: Some(GivenClient(Arc::new(server.client()))),
+                    ..Options::default()
+                },
+                Arc::new(NoPrompter),
+            );
+            async move {
+                let seam = tokio::time::timeout(Duration::from_secs(30), running.opened)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .unwrap();
+                (seam, running.ended)
+            }
+        };
+        let saved = |id: &str| {
+            Session::open(&root, id)
+                .unwrap()
+                .load_settings()
+                .unwrap()
+                .message_copies
+        };
+        let (seam, ended) = open(SessionChoice::New, None).await;
+        let id = seam.session.id.clone();
+        assert!(saved(&id), "a new session has copies on");
+        assert!(seam.meter.read().settings.message_copies);
+        quit(seam, ended).await;
+        // A resume with the option turns them off and saves that.
+        let (seam, ended) = open(SessionChoice::Resume(id.clone()), Some(false)).await;
+        assert!(!saved(&id));
+        assert!(!seam.meter.read().settings.message_copies);
+        quit(seam, ended).await;
+        // Without it, a resume keeps the session's.
+        let (seam, ended) = open(SessionChoice::Resume(id.clone()), None).await;
+        assert!(!saved(&id));
+        assert!(!seam.meter.read().settings.message_copies);
+        quit(seam, ended).await;
+        let (seam, ended) = open(SessionChoice::Resume(id.clone()), Some(true)).await;
+        assert!(saved(&id));
+        assert!(seam.meter.read().settings.message_copies);
+        quit(seam, ended).await;
+        // A new session takes it too.
+        let (seam, ended) = open(SessionChoice::New, Some(false)).await;
+        assert!(!saved(&seam.session.id));
+        quit(seam, ended).await;
     }
 
     /// Who chooses the workers' models and how deep workers go can be set

@@ -1,6 +1,7 @@
-//! `/worker-models`, `/worker-depth` and `/profiles`: who chooses the
-//! workers' models, how deep workers go, and the worker profiles the user
-//! keeps.
+//! `/worker-models`, `/worker-depth`, `/message-copies` and `/profiles`: who
+//! chooses the workers' models, how deep workers go, whether the agent that
+//! started a worker gets a copy of the user's messages to it, and the worker
+//! profiles the user keeps.
 
 use arko_workflows::notes::{Note, NoteSource};
 
@@ -224,6 +225,60 @@ impl Harness {
             "{} is now {depth}. {}",
             workers::DEPTH_NAME,
             workers::depth_effect(depth)
+        ))
+    }
+
+    /// `/message-copies`, typed at the prompt, sent from the page or chosen
+    /// in the settings: says whether the agent that started a worker gets a
+    /// copy of the user's messages to it, or with `on` or `off` sets that.
+    /// It applies from the next message, and the agents aren't told.
+    pub(crate) fn message_copies_command(&mut self, argument: &str, source: Source) {
+        let before = self.settings.message_copies;
+        let result = self.message_copies_request(argument);
+        let changed = before != self.settings.message_copies;
+        self.setting_reply(result, source, changed);
+    }
+
+    fn message_copies_request(&mut self, argument: &str) -> Result<String, String> {
+        if self.settings.max_workers == 0 || self.crew.is_none() {
+            return Err("This session has no workers (it started with --workers 0, or with the old worker tools).".to_string());
+        }
+        let now = self.settings.message_copies;
+        let on = match argument {
+            "" => {
+                return Ok(format!(
+                    "{} are {}. {} {} changes that.",
+                    workers::COPIES_NAME,
+                    workers::copies_state(now),
+                    workers::copies_about(now),
+                    workers::copies_command(!now)
+                ));
+            }
+            "on" => true,
+            "off" => false,
+            _ => {
+                return Err(format!(
+                    "{} takes on or off, such as {}.",
+                    workers::COPIES_COMMAND,
+                    workers::copies_command(false)
+                ));
+            }
+        };
+        if on == now {
+            return Ok(format!(
+                "{} are {} already.",
+                workers::COPIES_NAME,
+                workers::copies_state(on)
+            ));
+        }
+        self.settings.message_copies = on;
+        self.save_session();
+        self.publish_models();
+        Ok(format!(
+            "{} are now {}. {}",
+            workers::COPIES_NAME,
+            workers::copies_state(on),
+            workers::copies_about(on)
         ))
     }
 

@@ -1619,6 +1619,7 @@ impl Harness {
             "/monitor-wakes" => self.monitor_wakes_command(argument, source),
             "/worker-models" => self.worker_models_command(argument, source),
             "/worker-depth" => self.worker_depth_command(argument, source),
+            "/message-copies" => self.message_copies_command(argument, source),
             "/profiles" => self.profiles_command(argument),
             "/jobs" => self.jobs_command(argument),
             _ => self.handover_at_command(argument, source),
@@ -2264,7 +2265,8 @@ impl Harness {
     }
 
     /// `/message WORKER TEXT`: the user's message goes to the worker as its
-    /// lead's would, and the lead gets a copy with its next news.
+    /// lead's would, and the lead gets a copy with its next news unless
+    /// `/message-copies` is off.
     pub(crate) fn message_command(&mut self, argument: &str, source: Source) {
         let (to, text) = argument
             .split_once(char::is_whitespace)
@@ -2277,7 +2279,7 @@ impl Harness {
             return;
         }
         let sent = match &self.crew {
-            Some(crew) => crew.message(to, text),
+            Some(crew) => crew.message(to, text, self.settings.message_copies),
             None => Err("this session has no workers".to_string()),
         };
         match sent {
@@ -3009,10 +3011,11 @@ impl Harness {
                 )));
                 if facts.workers.is_some() {
                     out.line(&out.dim(&format!(
-                        "models for workers {} ({}), worker depth {}",
+                        "models for workers {} ({}), worker depth {}, message copies {}",
                         self.settings.worker_models.name(),
                         self.settings.worker_models.label().to_lowercase(),
-                        self.settings.worker_depth
+                        self.settings.worker_depth,
+                        crate::workers::copies_state(self.settings.message_copies)
                     )));
                 }
                 out.line(&out.dim(&format!(
@@ -4349,7 +4352,7 @@ pub(crate) fn place(link: &remote::Link) -> String {
 /// The commands that change a setting while the session runs, which take
 /// an argument: `/outside`, `/model`, `/handover`, `/handover-at`, `/keys`.
 /// And `/message`, which works while the agent works too.
-pub(crate) const LIVE_COMMANDS: [&str; 16] = [
+pub(crate) const LIVE_COMMANDS: [&str; 17] = [
     "/outside",
     "/model",
     "/handover",
@@ -4363,6 +4366,7 @@ pub(crate) const LIVE_COMMANDS: [&str; 16] = [
     "/monitor-wakes",
     "/worker-models",
     "/worker-depth",
+    "/message-copies",
     "/profiles",
     "/jobs",
     "/message",
@@ -5341,6 +5345,7 @@ pub(crate) mod tests {
             extra_rules: Default::default(),
             worker_models: Default::default(),
             worker_depth: Default::default(),
+            message_copies: Default::default(),
             project: Default::default(),
             background: background.clone(),
             feed: Some(feed.clone()),

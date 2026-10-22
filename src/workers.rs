@@ -1,8 +1,10 @@
-//! The session settings for who chooses the workers' models and how deep
-//! workers go, with the words and commands every front end uses for them
-//! (`/worker-models`, `/worker-depth`, `--worker-models`, `--worker-depth`).
-//! The terminal's settings, the web page and an app's settings page name and
-//! set them alike.
+//! The session settings for who chooses the workers' models, how deep
+//! workers go and whether the agent that started a worker gets a copy of the
+//! user's messages to it, with the words and commands every front end uses
+//! for them (`/worker-models`, `/worker-depth`, `/message-copies`, and the
+//! flags `--worker-models`, `--worker-depth`, `--message-copies`). The
+//! terminal's settings, the web page and an app's settings page name and set
+//! them alike.
 
 pub use crate::agents::ModelChoice;
 
@@ -28,6 +30,35 @@ pub const DEPTH_NAME: &str = "Worker depth";
 /// The command that sets it, which takes a number from 1 to
 /// [`MAX_DEPTH`] ([`parse_depth`] reads it, [`depth_command`] writes it).
 pub const DEPTH_COMMAND: &str = "/worker-depth";
+
+/// The name of the setting for whether the agent that started a worker gets
+/// a copy of the messages the user sends the worker.
+pub const COPIES_NAME: &str = "Message copies";
+
+/// The command that sets it, which takes `on` or `off` ([`copies_command`]
+/// writes it).
+pub const COPIES_COMMAND: &str = "/message-copies";
+
+/// The command that turns message copies on or off, such as
+/// `/message-copies off`.
+pub fn copies_command(on: bool) -> String {
+    format!("{COPIES_COMMAND} {}", copies_state(on))
+}
+
+/// `on` or `off`, as the command takes it.
+pub fn copies_state(on: bool) -> &'static str {
+    if on { "on" } else { "off" }
+}
+
+/// The line under the message copies setting, saying what it does with
+/// `on` as the setting is.
+pub fn copies_about(on: bool) -> &'static str {
+    if on {
+        "The agent that started a worker gets a copy of each message you send the worker, with its next news."
+    } else {
+        "The agent that started a worker doesn't see the messages you send the worker."
+    }
+}
 
 /// A model as the terminal writes it in as few characters as still name it,
 /// such as `sol` or `cc:opus`, from its ID as [`WorkerSummary::model`] has
@@ -109,6 +140,10 @@ mod tests {
             ]
         );
         assert_eq!(depth_command(3), "/worker-depth 3");
+        assert_eq!(COPIES_NAME, "Message copies");
+        assert_eq!(copies_command(true), "/message-copies on");
+        assert_eq!(copies_command(false), "/message-copies off");
+        assert_ne!(copies_about(true), copies_about(false));
         // Choosing the session's model says that no worker starts workers.
         assert_eq!(
             ModelChoice::Session.about(),

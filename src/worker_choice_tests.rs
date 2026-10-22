@@ -666,6 +666,63 @@ async fn worker_depth_is_kept_and_says_what_it_allows() {
     harness.crew.as_ref().unwrap().shutdown().await;
 }
 
+/// `/message-copies` says whether the agent that started a worker gets a copy
+/// of the user's messages to it, and sets it on or off, saved with the
+/// session. Without workers there is nothing to set.
+#[tokio::test]
+async fn message_copies_are_on_by_default_and_the_command_sets_them() {
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, _inputs, _sender, _server, _seen) = setup(temp.path()).await;
+    assert!(harness.settings.message_copies, "on by default");
+    assert!(harness.live_command("/message-copies", Source::Terminal));
+    assert_eq!(
+        last_said(&harness.feed),
+        "Message copies are on. The agent that started a worker gets a copy of each message you send the worker, with its next news. /message-copies off changes that."
+    );
+    assert!(harness.live_command("/message-copies off", Source::Terminal));
+    assert_eq!(
+        last_said(&harness.feed),
+        "Message copies are now off. The agent that started a worker doesn't see the messages you send the worker."
+    );
+    assert!(!harness.settings.message_copies);
+    assert!(!harness.session.load_settings().unwrap().message_copies);
+    // The clients read it from the status.
+    assert!(
+        !remote::Meter::read(harness.gauges.as_ref())
+            .settings
+            .message_copies
+    );
+    assert!(harness.live_command("/message-copies off", Source::Terminal));
+    assert_eq!(last_said(&harness.feed), "Message copies are off already.");
+    assert!(harness.live_command("/message-copies", Source::Terminal));
+    assert!(last_said(&harness.feed).ends_with("/message-copies on changes that."));
+    // From the page, it says where it came from.
+    assert!(harness.live_command("/message-copies on", Source::Web));
+    assert!(
+        last_said(&harness.feed)
+            .starts_with("Changed from the web page. Message copies are now on."),
+        "{}",
+        last_said(&harness.feed)
+    );
+    assert!(harness.session.load_settings().unwrap().message_copies);
+    for bad in ["maybe", "1", "off please"] {
+        assert!(harness.live_command(&format!("/message-copies {bad}"), Source::Terminal));
+        assert_eq!(
+            last_said(&harness.feed),
+            "/message-copies takes on or off, such as /message-copies off.",
+            "{bad}"
+        );
+    }
+    assert!(harness.settings.message_copies);
+    harness.mirrored(|harness| harness.command("/session"));
+    assert!(
+        said(&harness.feed).contains("worker depth 2, message copies on"),
+        "{}",
+        said(&harness.feed)
+    );
+    harness.crew.as_ref().unwrap().shutdown().await;
+}
+
 /// `/profiles` lists the profiles of the three places with where each is,
 /// what hides what and what can't be read, shows one whole, makes one for
 /// every project and deletes one.
@@ -847,6 +904,13 @@ fn the_flags_set_who_chooses_and_how_deep_for_a_new_session() {
     let default = new(&[]);
     assert_eq!(default.worker_models, crate::agents::ModelChoice::Agent);
     assert_eq!(default.worker_depth, 2);
+    assert!(default.message_copies, "copies are on by default");
+    assert!(new(&["--message-copies"]).message_copies);
+    assert!(!new(&["--no-message-copies"]).message_copies);
+    assert!(
+        Args::try_parse_from(["arko", "--message-copies", "--no-message-copies"]).is_err(),
+        "the two flags conflict"
+    );
     let set = new(&["--worker-models", "profiles", "--worker-depth", "3"]);
     assert_eq!(set.worker_models, crate::agents::ModelChoice::Profiles);
     assert_eq!(set.worker_depth, 3);
@@ -878,7 +942,7 @@ async fn session_says_who_chooses_the_workers_models_and_how_deep_they_go() {
     harness.mirrored(|harness| harness.command("/session"));
     assert!(
         said(&harness.feed).contains(
-            "models for workers agent (main agent chooses), worker depth 2"
+            "models for workers agent (main agent chooses), worker depth 2, message copies on"
         ),
         "{}",
         said(&harness.feed)

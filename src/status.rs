@@ -43,6 +43,9 @@ pub(crate) struct Gauges {
     /// session allows, as the harness last published them.
     pub(crate) worker_models: Mutex<crate::agents::ModelChoice>,
     pub(crate) worker_depth: std::sync::atomic::AtomicU32,
+    /// The agent that started a worker gets a copy of the user's messages to
+    /// it, as the harness last published it.
+    pub(crate) message_copies: std::sync::atomic::AtomicBool,
     /// Which of the project's instruction files the agents get, and whether
     /// workers do, as the harness last published them.
     pub(crate) project: Mutex<(project::Files, bool)>,
@@ -324,6 +327,9 @@ impl remote::Meter for Gauges {
                 extra_rules: *lock(&self.extra_rules),
                 worker_models: *lock(&self.worker_models),
                 worker_depth: self.worker_depth.load(std::sync::atomic::Ordering::Relaxed),
+                message_copies: self
+                    .message_copies
+                    .load(std::sync::atomic::Ordering::Relaxed),
                 project_instructions,
                 worker_project_instructions,
                 background_after: self.background.after().map_or(0, |after| after.as_secs()),

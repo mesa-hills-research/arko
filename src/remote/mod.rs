@@ -394,6 +394,9 @@ pub struct LiveSettings {
     pub worker_models: crate::agents::ModelChoice,
     /// How many levels of workers the session allows (`/worker-depth`).
     pub worker_depth: u32,
+    /// The agent that started a worker gets a copy of the user's messages to
+    /// it (`/message-copies`). It applies from the next message.
+    pub message_copies: bool,
 }
 
 /// A random token of `bytes` bytes, in URL-safe base64.

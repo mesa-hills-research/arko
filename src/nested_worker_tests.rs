@@ -547,6 +547,69 @@ async fn a_worker_cant_start_a_worker_that_nests_past_the_depth() {
     harness.crew.as_ref().unwrap().shutdown().await;
 }
 
+/// With message copies off, the message the user sends r2 reaches r2 and
+/// nobody gets a copy, not r1, which started it, and a message to r1 is not
+/// copied to the main agent. Turned on again, the copies go as before.
+#[tokio::test]
+async fn with_message_copies_off_the_message_reaches_the_worker_and_no_copy_goes_to_its_starter() {
+    let script = Script::new(true);
+    let server = script.serve().await;
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, _sender) = open_session(temp.path(), &server);
+    turn(&mut harness, &mut inputs, "Review the files.").await;
+    tokio::time::timeout(Duration::from_secs(20), script.refused.notified())
+        .await
+        .expect("r1 asked to report early");
+    let crew = harness.crew.clone().unwrap();
+    until(|| crew.running() == ["r1", "r2"] && script.requests("r2").len() == 1).await;
+    let workflow = harness.workflow().clone();
+    let run = |handle: &str| {
+        workflow
+            .subagents()
+            .into_iter()
+            .find(|run| run.handle == handle)
+            .unwrap()
+    };
+    let (r1, r2) = (run("r1"), run("r2"));
+    let main = r1.caller_run_id;
+    // What a run's mailbox holds that mentions `text`, by its heading.
+    let mail = |run: uuid::Uuid, text: &str| -> Vec<String> {
+        workflow
+            .pending_news(run)
+            .iter()
+            .filter(|item| item.body.contains(text))
+            .map(|item| item.heading.clone())
+            .collect()
+    };
+
+    assert!(harness.live_command("/message-copies off", Source::Terminal));
+    assert!(harness.live_command("/message r2 Skip the tests folder.", Source::Terminal));
+    assert!(harness.live_command("/message r1 Hurry.", Source::Terminal));
+    // r2 read it as the user's, and r1 and the main agent got nothing.
+    assert_eq!(
+        mail(r2.run_id, "Skip the tests folder."),
+        [crew::USER_MESSAGE_HEADING]
+    );
+    assert_eq!(mail(r1.run_id, "Hurry."), [crew::USER_MESSAGE_HEADING]);
+    assert!(mail(r1.run_id, "Skip the tests folder.").is_empty());
+    assert!(mail(main, "Hurry.").is_empty());
+    assert!(mail(main, "Skip the tests folder.").is_empty());
+
+    // On again, the copy goes to the worker that started it.
+    assert!(harness.live_command("/message-copies on", Source::Terminal));
+    assert!(harness.live_command("/message r2 Skip the docs too.", Source::Terminal));
+    assert!(harness.live_command("/message r1 Hurry up.", Source::Terminal));
+    assert_eq!(
+        mail(r1.run_id, "Skip the docs too."),
+        ["The user sent r2 a message directly (a copy for you, since you started r2):"]
+    );
+    assert_eq!(
+        mail(main, "Hurry up."),
+        ["The user sent r1 a message directly (a copy for you):"]
+    );
+    crew.shutdown().await;
+}
+
 /// Stopping r1 stops r2 with it, the command says so, and the message the
 /// user sends r2 reaches r2 and is copied to r1, which started it.
 #[tokio::test]
@@ -575,7 +638,10 @@ async fn stopping_a_worker_stops_its_workers_and_a_message_to_one_is_copied_to_i
 
     // The user's message to r2 reaches r2, and r1 (which started it) gets
     // a copy it knows is its own.
-    assert_eq!(crew.message("r2", "Skip the tests folder.").unwrap(), "r2");
+    assert_eq!(
+        crew.message("r2", "Skip the tests folder.", true).unwrap(),
+        "r2"
+    );
     let workflow = harness.workflow().clone();
     let r1 = workflow
         .subagents()
@@ -591,7 +657,7 @@ async fn stopping_a_worker_stops_its_workers_and_a_message_to_one_is_copied_to_i
         news.iter().map(|item| item.text()).collect::<Vec<_>>()
     );
     // A message to r1 is copied to the main agent as before.
-    assert_eq!(crew.message("r1", "Hurry.").unwrap(), "r1");
+    assert_eq!(crew.message("r1", "Hurry.", true).unwrap(), "r1");
     let main = workflow
         .subagents()
         .into_iter()

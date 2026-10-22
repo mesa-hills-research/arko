@@ -93,6 +93,7 @@ in your Arko folder once you turn outside access on. So treat a project's profil
 | `/profiles remove NAME` | Deletes the profile `/profiles` shows under that name |
 | `/worker-models agent`, `profiles` or `session` | Who chooses the workers' models. See below |
 | `/worker-depth 1` to `4` | How many levels of workers the session allows |
+| `/message-copies on` or `off` | Whether the agent that started a worker gets a copy of the messages you send the worker |
 
 `/worker-models` (also `--worker-models`) takes three values. It is the "Models for workers" row in
 `/settings` and the setting of that name on the web page. With `agent`, the default, the main agent chooses a profile, model and effort for
@@ -105,6 +106,11 @@ A session saved before the setting existed keeps `session`, which is how its wor
 levels of workers the session allows, and it applies to the next worker started. With 1 only the
 main agent starts workers. With 2 or more, a worker can start workers of its own when the agent
 that starts it says so, down to that level.
+
+`/message-copies` (also `--message-copies` and `--no-message-copies`) is saved with the session and
+is on by default. The agent that started a worker gets a copy of each message you send the worker,
+with its next news and without a turn of its own. With it off, that agent doesn't see your messages.
+A change applies from the next message, and a session saved before the setting existed has it on.
 
 ## Workers that start workers
 
@@ -134,10 +140,10 @@ say "r2 (under r1) reported". `/workers` and the web page's cards give what a wo
 workers, and `/cost` counts each worker once.
 
 The user's message to a worker is copied to the worker that started it, as news that doesn't start
-a turn. A worker reaches the one that started it with `message_agent` to `lead`, and `link_agents`
-lets a worker's own workers message each other. A worker can't message another worker's workers.
-`/stop-workers r1` stops r1 and the workers under it, and only the worker that started a worker can
-restart it with a message.
+a turn, unless message copies are off. A worker reaches the one that started it with `message_agent`
+to `lead`, and `link_agents` lets a worker's own workers message each other. A worker can't message
+another worker's workers. `/stop-workers r1` stops r1 and the workers under it, and only the worker
+that started a worker can restart it with a message.
 
 A session that closed with a tree of workers running continues it, each worker with the setup it
 started with. A worker whose starter can't run again, because it failed, is stopped instead of

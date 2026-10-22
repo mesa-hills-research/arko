@@ -55,6 +55,10 @@ pub struct Options {
     /// default 2 in a new session, and a resumed session's own. A session
     /// isn't opened with another number.
     pub worker_depth: Option<u32>,
+    /// Whether the agent that started a worker gets a copy of the user's
+    /// messages to the worker, by default yes in a new session, and a
+    /// resumed session's own. It can change as a session resumes.
+    pub message_copies: Option<bool>,
     /// The 1-hour prompt cache, by default as `ARKO_CACHE_1H` says.
     pub cache_1h: Option<bool>,
     /// The main agent ends its turns with a plain reply. By default it does
@@ -200,6 +204,7 @@ impl Default for Options {
             worker_fast: false,
             worker_models: None,
             worker_depth: None,
+            message_copies: None,
             cache_1h: None,
             text_replies: None,
             cc_compact: None,

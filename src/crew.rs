@@ -1160,10 +1160,11 @@ impl Crew {
     }
     /// The user's message to worker `to` (`r1`), which goes as its lead's
     /// message does: a running worker reads it at its next step, and one
-    /// that ended goes on with it. The worker that started it (the main
-    /// agent, for most) gets a copy with its next news. Returns the
-    /// worker's ID, or why the message can't go.
-    pub fn message(&self, to: &str, text: &str) -> Result<String, String> {
+    /// that ended goes on with it. With `copy`, the worker that started it
+    /// (the main agent, for most) gets a copy with its next news, and
+    /// without, nothing reaches it. Returns the worker's ID, or why the
+    /// message can't go.
+    pub fn message(&self, to: &str, text: &str, copy: bool) -> Result<String, String> {
         let workflow = self.workflow().ok_or("there are no workers")?;
         let runs = workflow.subagents();
         let run = runs
@@ -1172,8 +1173,10 @@ impl Crew {
             .ok_or_else(|| format!("there is no worker {}", to.trim()))?;
         let id = run.handle.clone();
         // A worker that started it reads the copy as news about its own
-        // worker, and is told so.
-        let copy = if runs.iter().any(|lead| lead.run_id == run.caller_run_id) {
+        // worker, and is told so. (An empty heading sends no copy.)
+        let copy = if !copy {
+            String::new()
+        } else if runs.iter().any(|lead| lead.run_id == run.caller_run_id) {
             format!(
                 "The user sent {id} a message directly (a copy for you, since you started {id}):"
             )

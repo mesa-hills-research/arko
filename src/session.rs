@@ -160,6 +160,11 @@ pub struct Settings {
         skip_serializing_if = "is_default_worker_depth"
     )]
     pub worker_depth: u32,
+    /// The agent that started a worker gets a copy of the user's messages to
+    /// it (`/message-copies`). On in sessions saved before it existed, as
+    /// they always did.
+    #[serde(default = "default_message_copies", skip_serializing_if = "is_on")]
+    pub message_copies: bool,
     /// The session was made by an Arko whose `start_agent` takes `nested`.
     /// A conversation in Claude Code keeps the tools it started with, so one
     /// in a session made before has no `nested` whatever the settings are.
@@ -185,6 +190,14 @@ fn default_worker_depth() -> u32 {
 
 fn is_default_worker_depth(depth: &u32) -> bool {
     *depth == DEFAULT_WORKER_DEPTH
+}
+
+fn default_message_copies() -> bool {
+    true
+}
+
+fn is_on(on: &bool) -> bool {
+    *on
 }
 
 impl Settings {
@@ -222,6 +235,7 @@ impl Settings {
             monitor_wakes: Default::default(),
             worker_models: ModelChoice::default(),
             worker_depth: DEFAULT_WORKER_DEPTH,
+            message_copies: true,
             nested_start: true,
             builtin_skills: BuiltinSkills {
                 none: true,
@@ -846,6 +860,34 @@ mod tests {
         let loaded = session.load_settings().unwrap();
         assert_eq!(loaded.worker_models, ModelChoice::Profiles);
         assert_eq!(loaded.worker_depth, 3);
+    }
+
+    /// A session saved before message copies could be turned off has them on,
+    /// as it always did. A session made now writes the setting only when it
+    /// is off.
+    #[test]
+    fn a_session_saved_before_message_copies_loads_with_them_on() {
+        let temp = tempfile::tempdir().unwrap();
+        let session = test_session(temp.path());
+        let file = session.dir.join(SETTINGS_FILE);
+        let text = std::fs::read_to_string(&file).unwrap();
+        assert!(!text.contains("message_copies"), "{text}");
+        let mut settings = session.load_settings().unwrap();
+        assert!(settings.message_copies, "on without the setting");
+        settings.message_copies = false;
+        session.save_settings(&settings).unwrap();
+        let text = std::fs::read_to_string(&file).unwrap();
+        assert!(text.contains("\"message_copies\": false"), "{text}");
+        assert!(!session.load_settings().unwrap().message_copies);
+        // Turned on again, the file is as it was.
+        settings.message_copies = true;
+        session.save_settings(&settings).unwrap();
+        assert!(
+            !std::fs::read_to_string(&file)
+                .unwrap()
+                .contains("message_copies")
+        );
+        assert!(session.load_settings().unwrap().message_copies);
     }
 
     /// A session made now says its `start_agent` took `nested`, and one saved

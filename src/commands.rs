@@ -181,6 +181,13 @@ pub const COMMANDS: &[Command] = &[
         runs: Runs::Session,
     },
     Command {
+        name: "/message-copies",
+        args: "on|off",
+        about: "copies of your messages to a worker for the agent that started it, on or off (/message-copies off)",
+        aliases: &[],
+        runs: Runs::Session,
+    },
+    Command {
         name: "/text-replies",
         args: "on|off",
         about: "whether the main agent ends its turns with a plain reply (on) or by calling complete_task (off). It changes before the conversation starts (/text-replies off)",
@@ -265,6 +272,7 @@ const CHOICES: &[(&str, &[&str], &[&str])] = &[
     ("/background-after", &[], &["off"]),
     ("/monitor-wakes", &[], &["always", "off"]),
     ("/worker-models", &[], &["agent", "profiles", "session"]),
+    ("/message-copies", &[], ON_OFF),
     ("/profiles", &[], &["add", "remove"]),
     ("/jobs", &[], &["stop"]),
     ("/jobs", &["stop"], &["all"]),
