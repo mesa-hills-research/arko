@@ -30,7 +30,12 @@ use super::{Action, Info, Meter, Reading};
 const INDEX: &str = include_str!("page/index.html");
 const SCRIPT: &str = include_str!("page/app.js");
 const STYLE: &str = include_str!("page/app.css");
+/// The mark, for the lock screen.
 const ICON: &str = include_str!("page/icon.svg");
+/// The mark drawn for 16 to 32 pixels, for the tab's icon.
+const ICON_SMALL: &str = include_str!("page/icon-small.svg");
+/// The mark on a tile, at 180 pixels, for a phone's home screen.
+const APPLE_ICON: &[u8] = include_bytes!("page/apple-touch-icon.png");
 const CORE: &str = include_str!("page/core.js");
 /// The page's monospace font, the same on every device (SIL Open Font
 /// License 1.1; see NOTICE).
@@ -175,6 +180,14 @@ fn router(app: Arc<App>) -> Router {
             get(|| async { file(STYLE, "text/css; charset=utf-8") }),
         )
         .route("/icon.svg", get(|| async { file(ICON, "image/svg+xml") }))
+        .route(
+            "/icon-small.svg",
+            get(|| async { file(ICON_SMALL, "image/svg+xml") }),
+        )
+        .route(
+            "/apple-touch-icon.png",
+            get(|| async { ([(header::CONTENT_TYPE, "image/png")], APPLE_ICON).into_response() }),
+        )
         .route("/api/session", get(session_check).post(session_open))
         .route("/api/events", get(events))
         .route("/api/message", axum::routing::post(message))
@@ -1100,6 +1113,37 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(cross.status(), StatusCode::FORBIDDEN);
+    }
+
+    /// The tab's icon, the lock screen's mark and the phone's home screen
+    /// icon load before the key is entered, as what the page links to. The
+    /// home screen icon is the 180 pixel PNG iOS asks for.
+    #[tokio::test]
+    async fn the_pages_icons_load_without_the_key() {
+        let feed = Feed::new("main");
+        let served = serve(&feed);
+        for (path, kind) in [
+            ("/icon.svg", "image/svg+xml"),
+            ("/icon-small.svg", "image/svg+xml"),
+            ("/apple-touch-icon.png", "image/png"),
+        ] {
+            let response = served.get(path, None).await;
+            assert_eq!(response.status(), StatusCode::OK, "{path}");
+            assert_eq!(response.headers()[header::CONTENT_TYPE], kind, "{path}");
+            let body = response.bytes().await.unwrap();
+            assert!(!body.is_empty() && body.len() < 8 * 1024, "{path}");
+            if kind == "image/png" {
+                // The header's width and height, after the 8 byte signature
+                // and the chunk's length and name.
+                assert_eq!(&body[..8], b"\x89PNG\r\n\x1a\n");
+                assert_eq!(&body[16..24], [0, 0, 0, 180, 0, 0, 0, 180]);
+            } else {
+                assert!(body.starts_with(b"<svg"), "{path}");
+            }
+        }
+        assert!(INDEX.contains(r#"<link rel="icon" href="/icon-small.svg""#));
+        assert!(INDEX.contains(r#"<link rel="apple-touch-icon" href="/apple-touch-icon.png">"#));
+        assert!(INDEX.contains(r#"<img src="/icon.svg""#));
     }
 
     /// The page is open to all; the API answers 401 without the key, and

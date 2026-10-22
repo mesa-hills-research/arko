@@ -734,7 +734,6 @@ details.more > summary { color: var(--accent-text); cursor: pointer; padding: 6p
 /* ----- the lock ----- */
 
 .lock { max-width: 380px; margin: 0 auto; padding: 18vh var(--gutter) 0; text-align: center; }
-.lock-icon { border-radius: 12px; }
 .lock h1 { margin: 10px 0 6px; font-size: 22px; }
 .lock p { color: var(--muted); margin: 0; }
 .lock form { display: flex; flex-direction: column; gap: 8px; margin-top: 28px; text-align: left; }

@@ -1,3 +1,5 @@
+<img src="src/remote/page/icon.svg" alt="" width="96" align="right">
+
 # Arko
 
 Arko is a general-purpose agent for the terminal. It works in your project with a shell, background
