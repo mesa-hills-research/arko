@@ -108,6 +108,11 @@ struct Script {
     r2_start: serde_json::Value,
     /// r1 reports at once and starts nothing.
     r1_plain: bool,
+    /// r2 starts a monitor of a command that runs on, before it waits.
+    r2_monitors: bool,
+    /// The main agent's turn goes on after it started r1, until the user
+    /// stops it, and says when it is there.
+    main_waits: Option<Arc<tokio::sync::Notify>>,
     seen: Seen,
 }
 
@@ -120,6 +125,8 @@ impl Script {
             r1_start: serde_json::json!({"nested": true}),
             r2_start: serde_json::json!({}),
             r1_plain: false,
+            r2_monitors: false,
+            main_waits: None,
             seen: Arc::default(),
         }
     }
@@ -136,14 +143,34 @@ impl Script {
             self.r2_start.clone(),
         );
         let plain = self.r1_plain;
+        let main_waits = self.main_waits.clone();
+        let monitors = self.r2_monitors;
         ModelServer::start(Arc::new(move |index, body: String| {
             let who = sender(&body);
             seen.lock().unwrap().push((who.clone(), body.clone()));
             let (gate, refused, stays) = (gate.clone(), refused.clone(), stays.clone());
             let (r1_start, r2_start) = (r1_start.clone(), r2_start.clone());
+            let main_waits = main_waits.clone();
             Box::pin(async move {
                 let done = results(&body);
-                match who.as_str() {
+                let response = match who.as_str() {
+                    // The main agent's turn goes on until the user stops it.
+                    "main"
+                        if !done.is_empty()
+                            && main_waits.is_some()
+                            && !body.contains("Fresh lead") =>
+                    {
+                        main_waits.unwrap().notify_one();
+                        return std::future::pending::<String>().await;
+                    }
+                    "main" if body.contains("Fresh lead") && done.is_empty() => tool_call(
+                        &format!("m{index}"),
+                        crew::LIST_AGENTS,
+                        serde_json::json!({}),
+                    ),
+                    "main" if body.contains("Fresh lead") => {
+                        complete(&format!("m{index}"), "Listed.")
+                    }
                     "main" if done.is_empty() => {
                         let mut call = serde_json::json!({
                             "agent": WORKER,
@@ -187,6 +214,11 @@ impl Script {
                         ),
                         _ => complete(&format!("a{index}"), "Reviewed. r2 said: Counted 41 files."),
                     },
+                    "r2" if monitors && done.is_empty() => tool_call(
+                        &format!("b{index}"),
+                        "monitor_start",
+                        serde_json::json!({"command": "sleep 60", "pattern": "ERROR"}),
+                    ),
                     "r2" => {
                         if stays.load(std::sync::atomic::Ordering::SeqCst) {
                             return std::future::pending::<String>().await;
@@ -195,6 +227,11 @@ impl Script {
                         complete(&format!("b{index}"), "Counted 41 files.")
                     }
                     other => panic!("an unexpected agent {other}"),
+                };
+                // The workers' requests are big enough to cost something.
+                match who.as_str() {
+                    "main" => response,
+                    _ => crate::mock_model::with_input(response, 50_000),
                 }
             })
         }))
@@ -755,4 +792,170 @@ async fn quitting_counts_the_workers_of_the_whole_tree() {
     let live = remote::Meter::read(harness.gauges.as_ref());
     assert_eq!(live.workers_running, ["r1", "r2"]);
     crew.shutdown().await;
+}
+
+/// Esc on the main agent stops its turn and leaves the whole tree going. A
+/// fresh conversation then owns r1 and r1 keeps r2.
+#[tokio::test]
+async fn stopping_the_main_agents_turn_leaves_the_tree_going() {
+    let mut script = Script::new(true);
+    script.main_waits = Some(Arc::default());
+    let at_the_wait = script.main_waits.clone().unwrap();
+    let server = script.serve().await;
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, sender) = open_session(temp.path(), &server);
+    let interrupt = tokio::spawn(async move {
+        at_the_wait.notified().await;
+        sender.send(Input::Interrupt).unwrap();
+        sender
+    });
+    let end = tokio::time::timeout(
+        Duration::from_secs(25),
+        harness.turn(Prompt::User("Review the files.".into()), &mut inputs),
+    )
+    .await
+    .unwrap();
+    let _sender = interrupt.await.unwrap();
+    assert!(matches!(end, TurnEnd::Stopped));
+    let crew = harness.crew.clone().unwrap();
+    until(|| crew.running() == ["r1", "r2"] && script.requests("r2").len() == 1).await;
+
+    // A fresh conversation owns r1, which keeps r2.
+    let workflow = harness.workflow().clone();
+    let before = workflow.subagents();
+    harness.conversation = Conversation::New;
+    let end = tokio::time::timeout(
+        Duration::from_secs(15),
+        harness.turn(Prompt::User("Fresh lead".into()), &mut inputs),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(end, TurnEnd::Answered));
+    let after = workflow.subagents();
+    assert_ne!(after[0].caller_run_id, before[0].caller_run_id);
+    assert_eq!(after[1].caller_run_id, after[0].run_id);
+    assert_eq!(crew.running(), ["r1", "r2"]);
+    // It lists r1 and not r2, which is not its worker.
+    let listed = results(script.requests("main").last().unwrap())
+        .pop()
+        .unwrap();
+    assert!(
+        listed.contains("r1 · agent `worker` · running")
+            && listed.contains("waiting for r2")
+            && !listed.contains("r2 ·"),
+        "{listed}"
+    );
+    crew.stop_all("done");
+    crew.shutdown().await;
+}
+
+/// What the tree cost is counted once: the workers' figure is r1's plus
+/// r2's, and the family total of r1 is the same.
+#[tokio::test]
+async fn a_nested_workers_cost_counts_once() {
+    let script = Script::new(false);
+    let server = script.serve().await;
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, _sender) = open_session(temp.path(), &server);
+    turn(&mut harness, &mut inputs, "Review the files.").await;
+    let _ =
+        tokio::time::timeout(Duration::from_secs(30), harness.finish_workers(&mut inputs)).await;
+    let summaries = harness.feed.worker_summaries();
+    let own = |id: &str| summaries.iter().find(|summary| summary.id == id).unwrap();
+    let (r1, r2) = (own("r1"), own("r2"));
+    assert!(
+        r1.cost_billed > 0.0 && r2.cost_billed > 0.0,
+        "{r1:?} {r2:?}"
+    );
+    // The session's figures split the main agent from the workers.
+    let reading = remote::Meter::read(harness.gauges.as_ref());
+    let workers = reading.costs.workers.billed;
+    assert!(
+        (workers - (r1.cost_billed + r2.cost_billed)).abs() < 1e-9,
+        "{workers} against {} and {}",
+        r1.cost_billed,
+        r2.cost_billed
+    );
+    // r1's family is r1 and r2 once each, and r2's is its own.
+    assert!((r1.family_cost_billed - workers).abs() < 1e-9, "{r1:?}");
+    assert!(
+        (r2.family_cost_billed - r2.cost_billed).abs() < 1e-9,
+        "{r2:?}"
+    );
+    harness.crew.as_ref().unwrap().shutdown().await;
+}
+
+/// A monitor of a nested worker's stops when the worker is stopped, with
+/// the worker above it, as the workers under it do.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_nested_workers_monitor_stops_with_it() {
+    // r2 stays on its second request, after its monitor started.
+    let mut script = Script::new(true);
+    script.r2_monitors = true;
+    let server = script.serve().await;
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
+    let shell = Shell::detect(WindowsShell::Cmd);
+    let managers = Managers::open(&harness.session, &shell).unwrap();
+    harness.tools = managers.tools(&shell, harness.handover.runs());
+    harness.background = managers.background.clone();
+    harness.open(false).unwrap();
+    harness.start_new_workers();
+    turn(&mut harness, &mut inputs, "Review the files.").await;
+    let crew = harness.crew.clone().unwrap();
+    until(|| crew.running() == ["r1", "r2"] && harness.background.jobs().len() == 1).await;
+    let jobs = harness.background.jobs();
+    assert!(
+        jobs[0].command.contains("sleep 60"),
+        "{:?}",
+        jobs[0].command
+    );
+
+    // Stopping r1 stops r2, which stops its monitor.
+    assert_eq!(crew.stop("r1", "test").unwrap(), ["r2"]);
+    until(|| crew.running().is_empty() && harness.background.jobs().is_empty()).await;
+    crew.shutdown().await;
+    managers.shutdown().await;
+}
+
+/// `/worker-depth` and `/worker-models` apply to the next start at once:
+/// the same start is refused and then goes through as the user changes
+/// them.
+#[tokio::test]
+async fn the_depth_and_the_models_setting_apply_to_the_next_start() {
+    let script = Script::new(false);
+    let server = script.serve().await;
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, _inputs, _sender) = open_session(temp.path(), &server);
+    let hook = harness.crew.as_ref().unwrap().config().hook.unwrap();
+    let registered = harness.worker_config.clone();
+    let start = |nested: bool| {
+        let mut request = StartRequest {
+            workflow_run_id: uuid::Uuid::nil(),
+            run_id: uuid::Uuid::new_v4(),
+            handle: "r1".into(),
+            agent: WORKER.into(),
+            caller_run_id: uuid::Uuid::new_v4(),
+            caller_agent: MAIN.into(),
+            task: "Count".into(),
+            parameters: Default::default(),
+        };
+        request.parameters.insert("nested".into(), nested.into());
+        let mut config = registered.clone();
+        hook.prepare(&request, &mut config).map(|()| config)
+    };
+    assert!(start(true).is_ok());
+    for (command, nested_allowed) in [
+        ("/worker-depth 1", false),
+        ("/worker-depth 3", true),
+        ("/worker-models session", false),
+        ("/worker-models agent", true),
+        ("/worker-depth 2", true),
+    ] {
+        assert!(harness.live_command(command, Source::Terminal), "{command}");
+        assert_eq!(start(true).is_ok(), nested_allowed, "{command}");
+        assert!(start(false).is_ok(), "{command}");
+    }
+    harness.crew.as_ref().unwrap().shutdown().await;
 }
