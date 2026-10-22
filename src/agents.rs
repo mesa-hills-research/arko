@@ -151,6 +151,66 @@ impl ExtraRules {
     }
 }
 
+/// Who picks the model of a worker (the `worker_models` setting). The hook
+/// that starts each worker enforces it, so it changes at any time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ModelChoice {
+    /// The main agent chooses a profile, model and effort for each worker,
+    /// and may save profiles. New sessions start with this.
+    #[default]
+    Agent,
+    /// The main agent starts workers with a profile only. A start with a
+    /// model or an effort is refused.
+    Profiles,
+    /// Every worker runs the session's worker model.
+    Session,
+}
+
+impl ModelChoice {
+    pub const ALL: [ModelChoice; 3] = [
+        ModelChoice::Agent,
+        ModelChoice::Profiles,
+        ModelChoice::Session,
+    ];
+
+    /// The name `/worker-models` takes and shows.
+    pub fn name(self) -> &'static str {
+        match self {
+            ModelChoice::Agent => "agent",
+            ModelChoice::Profiles => "profiles",
+            ModelChoice::Session => "session",
+        }
+    }
+
+    pub fn parse(text: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|choice| choice.name().eq_ignore_ascii_case(text.trim()))
+    }
+
+    /// What the choice means, as Arko tells the user.
+    pub fn describe(self) -> &'static str {
+        match self {
+            ModelChoice::Agent => {
+                "the main agent chooses a profile, model and effort for each worker"
+            }
+            ModelChoice::Profiles => {
+                "the main agent starts workers with a profile only and can't choose a model or effort by itself"
+            }
+            ModelChoice::Session => "every worker runs the session's worker model",
+        }
+    }
+
+    pub fn is_default(&self) -> bool {
+        *self == ModelChoice::Agent
+    }
+}
+
+/// The deepest level of workers a session allows unless it says otherwise:
+/// the main agent's workers, and the workers those start.
+pub const DEFAULT_WORKER_DEPTH: u32 = 2;
+
 /// Models are named and resolved by [`crate::providers`].
 pub use crate::providers::resolve_model;
 
@@ -849,6 +909,24 @@ mod tests {
             Some(AnthropicCacheTtl::OneHour)
         );
         assert_eq!(opus.describe(), "claude-opus-5-5 (xhigh effort, 1h cache)");
+    }
+
+    #[test]
+    fn who_chooses_the_workers_models_has_three_names() {
+        assert_eq!(ModelChoice::default(), ModelChoice::Agent);
+        for choice in ModelChoice::ALL {
+            assert_eq!(ModelChoice::parse(choice.name()), Some(choice));
+            assert_eq!(
+                ModelChoice::parse(&choice.name().to_uppercase()),
+                Some(choice)
+            );
+            assert!(!choice.describe().is_empty());
+        }
+        assert_eq!(ModelChoice::parse("everyone"), None);
+        assert_eq!(
+            serde_json::to_string(&ModelChoice::Profiles).unwrap(),
+            "\"profiles\""
+        );
     }
 
     #[test]

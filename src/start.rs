@@ -3,7 +3,9 @@
 
 use std::path::PathBuf;
 
-use crate::agents::{ExtraRules, ModelSettings, NO_LIMIT, resolve_model};
+use crate::agents::{
+    DEFAULT_WORKER_DEPTH, ExtraRules, ModelChoice, ModelSettings, NO_LIMIT, resolve_model,
+};
 use crate::credentials::Need;
 use crate::options::Options;
 use crate::prompter::Prompter;
@@ -248,6 +250,8 @@ pub(crate) fn new_settings(
         own_worker_model,
         background_after: background_after_for(options, shell::DEFAULT_BACKGROUND_AFTER),
         monitor_wakes: options.monitor_wakes.unwrap_or_default(),
+        worker_models: ModelChoice::default(),
+        worker_depth: DEFAULT_WORKER_DEPTH,
     };
     project_from_options(options, &mut settings);
     if settings.mode == crate::session::Mode::Chat {

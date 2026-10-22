@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use chrono::{DateTime, Local, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::agents::{ExtraRules, ModelSettings};
+use crate::agents::{DEFAULT_WORKER_DEPTH, ExtraRules, ModelChoice, ModelSettings};
 use crate::project;
 use crate::providers::OpenAiAuth;
 use crate::shell::WindowsShell;
@@ -144,10 +144,29 @@ pub struct Settings {
     /// hours in sessions saved before it.
     #[serde(default)]
     pub monitor_wakes: crate::monitors::Wakes,
+    /// Who picks the model of a worker (`/worker-models`). The main agent
+    /// does in sessions saved before it existed.
+    #[serde(default, skip_serializing_if = "ModelChoice::is_default")]
+    pub worker_models: ModelChoice,
+    /// How many levels of workers the session allows (`/worker-depth`).
+    /// Two in sessions saved before it existed.
+    #[serde(
+        default = "default_worker_depth",
+        skip_serializing_if = "is_default_worker_depth"
+    )]
+    pub worker_depth: u32,
 }
 
 fn default_background_after() -> u64 {
     crate::shell::DEFAULT_BACKGROUND_AFTER
+}
+
+fn default_worker_depth() -> u32 {
+    DEFAULT_WORKER_DEPTH
+}
+
+fn is_default_worker_depth(depth: &u32) -> bool {
+    *depth == DEFAULT_WORKER_DEPTH
 }
 
 impl Settings {
@@ -183,6 +202,8 @@ impl Settings {
             worker_project_instructions: false,
             background_after: 0,
             monitor_wakes: Default::default(),
+            worker_models: ModelChoice::default(),
+            worker_depth: DEFAULT_WORKER_DEPTH,
         }
     }
 
@@ -722,6 +743,34 @@ mod tests {
             .save_settings(&Settings::for_test(root, &model))
             .unwrap();
         session
+    }
+
+    /// A session saved before workers' models could be chosen loads with the
+    /// main agent choosing and two levels of workers, and a session that
+    /// keeps the defaults writes neither, so its file is as it was.
+    #[test]
+    fn a_session_saved_before_worker_choices_loads_with_the_defaults() {
+        let temp = tempfile::tempdir().unwrap();
+        let session = test_session(temp.path());
+        let text = std::fs::read_to_string(session.dir.join(SETTINGS_FILE)).unwrap();
+        assert!(
+            !text.contains("worker_models") && !text.contains("worker_depth"),
+            "{text}"
+        );
+        let loaded = session.load_settings().unwrap();
+        assert_eq!(loaded.worker_models, ModelChoice::Agent);
+        assert_eq!(loaded.worker_depth, 2);
+
+        let mut settings = loaded;
+        settings.worker_models = ModelChoice::Profiles;
+        settings.worker_depth = 3;
+        session.save_settings(&settings).unwrap();
+        let text = std::fs::read_to_string(session.dir.join(SETTINGS_FILE)).unwrap();
+        assert!(text.contains("\"worker_models\": \"profiles\""), "{text}");
+        assert!(text.contains("\"worker_depth\": 3"), "{text}");
+        let loaded = session.load_settings().unwrap();
+        assert_eq!(loaded.worker_models, ModelChoice::Profiles);
+        assert_eq!(loaded.worker_depth, 3);
     }
 
     /// Two that rename a session at once (an app and the session itself)
