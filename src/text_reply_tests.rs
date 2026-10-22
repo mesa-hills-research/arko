@@ -555,3 +555,229 @@ fn a_text_reply_session_is_not_told_it_lacks_message_user() {
     };
     assert_eq!(unoffered(&saved, &[(MAIN, &replying)]), None);
 }
+
+// ----- where the agent answers a note the user typed -----
+
+/// What a context update with a note from the user ends with, with text
+/// replies and without.
+const TEXT_HINT: &str = "The user can't see your thinking. Answer a question in the notes above in the text you write beside your next tool call.";
+const TOOL_HINT: &str = "The user can't see your thinking. Answer a question in the notes above with `message_user`, then carry on with your work.";
+
+/// A model that notes a message at once, except "List the files.", where it
+/// lists them once `go` is notified. It ends its turns the way the main
+/// agent does with `text` replies. The requests it got are in the bodies.
+async fn listing_model(text: bool) -> (ModelServer, Bodies, Arc<Notify>) {
+    let bodies: Bodies = Arc::default();
+    let go = Arc::new(Notify::new());
+    let server = ModelServer::start(Arc::new({
+        let (bodies, go) = (bodies.clone(), go.clone());
+        move |_, body: String| {
+            bodies.lock().unwrap().push(body.clone());
+            let go = go.clone();
+            Box::pin(async move {
+                let finish = |id, answer| {
+                    if text {
+                        reply(id, answer)
+                    } else {
+                        complete(id, answer)
+                    }
+                };
+                if body.contains("call_m1") {
+                    finish("m2", "Done.")
+                } else if body.contains("List the files.") {
+                    go.notified().await;
+                    tool_call("m1", "list_files", serde_json::json!({"path": "."}))
+                } else {
+                    finish("m0", "Noted.")
+                }
+            })
+        }
+    }))
+    .await;
+    (server, bodies, go)
+}
+
+/// A turn in which the user types `note` while the agent works, and the
+/// agent reads it at its next request. Returns the requests' bodies.
+async fn turn_with_a_typed_note(
+    harness: &mut Harness,
+    inputs: &mut Inputs,
+    sender: mpsc::UnboundedSender<Input>,
+    (bodies, go): (Bodies, Arc<Notify>),
+    note: &str,
+) -> Vec<String> {
+    let feed = harness.feed.clone();
+    let note = note.to_string();
+    let typing = tokio::spawn(async move {
+        until(|| feed.activity().working).await;
+        sender.send(Input::Line(note.clone())).unwrap();
+        until(|| has(&feed, "user", &note, "note")).await;
+        go.notify_one();
+        sender
+    });
+    let end = tokio::time::timeout(
+        Duration::from_secs(30),
+        harness.turn(Prompt::User("List the files.".into()), inputs),
+    )
+    .await
+    .unwrap();
+    let _sender = typing.await.unwrap();
+    assert!(matches!(end, TurnEnd::Answered));
+    assert_eq!(summary(harness), "Done.");
+    let bodies = bodies.lock().unwrap().clone();
+    assert_eq!(bodies.len(), 2);
+    bodies
+}
+
+/// A note the user types while the main agent works ends in a reminder to
+/// answer where the user reads it. With text replies, that is the text
+/// beside its next call. Without, it is `message_user`. The first request,
+/// before any note, has none.
+#[tokio::test]
+async fn a_note_the_user_types_comes_with_where_to_answer_it() {
+    for text in [true, false] {
+        let (server, bodies, go) = listing_model(text).await;
+        let temp = tempfile::tempdir().unwrap();
+        let (mut harness, mut inputs, sender) = harness(temp.path(), server.client(), true);
+        if text {
+            replying(&mut harness);
+        }
+        let bodies =
+            turn_with_a_typed_note(&mut harness, &mut inputs, sender, (bodies, go), "progress?")
+                .await;
+        let (hint, other) = if text {
+            (TEXT_HINT, TOOL_HINT)
+        } else {
+            (TOOL_HINT, TEXT_HINT)
+        };
+        assert!(!bodies[0].contains(hint), "no note yet");
+        assert!(!bodies[0].contains(other));
+        assert_eq!(bodies[1].matches(hint).count(), 1, "text replies {text}");
+        assert!(!bodies[1].contains(other), "text replies {text}");
+        // After the note, in a paragraph of its own.
+        let note = bodies[1].find("progress?").unwrap();
+        assert!(bodies[1].find(hint).unwrap() > note);
+    }
+}
+
+/// A note from Arko alone (the agents are told something), and a turn
+/// without a note, have no such reminder.
+#[tokio::test]
+async fn the_reminder_goes_with_the_users_notes_only() {
+    for text in [true, false] {
+        let (server, bodies, go) = listing_model(text).await;
+        let temp = tempfile::tempdir().unwrap();
+        let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
+        if text {
+            replying(&mut harness);
+        }
+        let workflow = harness.workflow().clone();
+        let feed = harness.feed.clone();
+        let telling = tokio::spawn(async move {
+            until(|| feed.activity().working).await;
+            workflow
+                .post_note(Note::new("The build is slow.").source(NoteSource::Host))
+                .unwrap();
+            go.notify_one();
+        });
+        let end = tokio::time::timeout(
+            Duration::from_secs(30),
+            harness.turn(Prompt::User("List the files.".into()), &mut inputs),
+        )
+        .await
+        .unwrap();
+        telling.await.unwrap();
+        assert!(matches!(end, TurnEnd::Answered));
+        let bodies = bodies.lock().unwrap().clone();
+        assert!(bodies[1].contains("The build is slow."), "{text}");
+        for body in &bodies {
+            assert!(!body.contains("can't see your thinking"), "{text}");
+        }
+    }
+}
+
+/// The reminder follows the configuration the session's main agent has,
+/// also after a resume. A session saved with text replies is reminded to
+/// answer in text. One saved without them goes on with its saved
+/// configuration (`message_user`), also where a new session would reply in
+/// text.
+#[tokio::test]
+async fn the_reminder_follows_the_saved_mode_after_a_resume() {
+    for saved_text in [true, false] {
+        let (server, bodies, go) = listing_model(saved_text).await;
+        let temp = tempfile::tempdir().unwrap();
+        let (mut harness, mut inputs, sender) = harness(temp.path(), server.client(), true);
+        if saved_text {
+            replying(&mut harness);
+        }
+        harness
+            .turn(Prompt::User("Hello.".into()), &mut inputs)
+            .await;
+        assert_eq!(summary(&harness), "Noted.");
+        // Arko builds its main agent with text replies now, and the session
+        // is resumed.
+        harness.settings = harness.session.load_settings().unwrap();
+        let settings = AgentSettings {
+            text_replies: true,
+            ..agent_settings_of(&harness)
+        };
+        harness.main_config = agents::main_config(&settings).unwrap();
+        harness.open(true).unwrap();
+        bodies.lock().unwrap().clear();
+        let bodies =
+            turn_with_a_typed_note(&mut harness, &mut inputs, sender, (bodies, go), "progress?")
+                .await;
+        let (hint, other) = if saved_text {
+            (TEXT_HINT, TOOL_HINT)
+        } else {
+            (TOOL_HINT, TEXT_HINT)
+        };
+        assert_eq!(bodies[1].matches(hint).count(), 1, "saved with text {saved_text}");
+        assert!(!bodies[1].contains(other), "saved with text {saved_text}");
+    }
+}
+
+/// Without a terminal (with -p) what the user types waits for a turn of its
+/// own and no note comes, so the agent has no reminder to answer one. Nor
+/// does a chat, which has no calls to answer beside.
+#[tokio::test]
+async fn the_reminder_is_for_sessions_with_a_terminal_and_agents_with_calls() {
+    let (server, bodies, go) = listing_model(false).await;
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), false);
+    let hint = |text_replies: bool, mode: Mode| {
+        let settings = AgentSettings {
+            text_replies,
+            mode,
+            ..agent_settings_of(&harness)
+        };
+        agents::operator_note_hint(&agents::main_config(&settings).unwrap())
+    };
+    assert_eq!(hint(true, Mode::Agent), Some(TEXT_HINT));
+    assert_eq!(hint(false, Mode::Agent), Some(TOOL_HINT));
+    assert_eq!(hint(true, Mode::Chat), None);
+    assert_eq!(hint(false, Mode::Chat), None);
+
+    // With -p a note posted all the same (the web page can't send one)
+    // reaches the agent without it.
+    let workflow = harness.workflow().clone();
+    let feed = harness.feed.clone();
+    let posting = tokio::spawn(async move {
+        until(|| feed.activity().working).await;
+        workflow
+            .post_note(Note::new("progress?").to([MAIN]).once())
+            .unwrap();
+        go.notify_one();
+    });
+    let end = tokio::time::timeout(
+        Duration::from_secs(30),
+        harness.turn(Prompt::User("List the files.".into()), &mut inputs),
+    )
+    .await
+    .unwrap();
+    posting.await.unwrap();
+    assert!(matches!(end, TurnEnd::Answered));
+    let bodies = bodies.lock().unwrap().clone();
+    assert!(bodies[1].contains("progress?"));
+    assert!(!bodies[1].contains("can't see your thinking"));
+}

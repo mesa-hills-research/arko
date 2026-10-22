@@ -487,6 +487,26 @@ pub fn replies_text(text_replies: bool) -> &'static str {
     }
 }
 
+/// What ends a context update that gives the main agent a note the user
+/// typed, where the agent answers it. The user never sees its thinking, and
+/// the rule that says so in its instructions is far from the note. The
+/// agent answers in text beside its next call with text replies, else with
+/// `message_user`. A chat has no calls to answer beside, and so no hint.
+pub fn operator_note_hint(config: &AgentConfig) -> Option<&'static str> {
+    let tools = &config.tool_config;
+    if tools.chat {
+        None
+    } else if tools.ends_task_with_text() {
+        Some(
+            "The user can't see your thinking. Answer a question in the notes above in the text you write beside your next tool call.",
+        )
+    } else {
+        Some(
+            "The user can't see your thinking. Answer a question in the notes above with `message_user`, then carry on with your work.",
+        )
+    }
+}
+
 /// What agents on `cc:` models do at the handover size: with `cc_compact`,
 /// Claude Code compacts their conversation, else they hand over.
 pub fn cc_text(cc_compact: bool) -> &'static str {

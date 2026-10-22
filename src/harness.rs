@@ -528,6 +528,14 @@ impl Harness {
         if keep {
             builder = builder.keep_saved_configs([MAIN]);
         }
+        // What the user types while the agent works reaches it as a note,
+        // and it answers where they read it. (Without a terminal, lines
+        // wait for their own turn and no note comes.)
+        if !self.queue_lines
+            && let Some(hint) = agents::operator_note_hint(&main_config)
+        {
+            builder = builder.notes_reply_hint(MAIN, hint);
+        }
         for tool in &self.tools {
             builder = builder.agent_tool(MAIN, tool.clone());
         }
