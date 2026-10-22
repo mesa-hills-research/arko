@@ -1739,7 +1739,7 @@ mod tests {
             let opening = try_open(session, choice, depth);
             async move {
                 let (opened, ended) = opening.await;
-                (opened.ok().expect("the session opens"), ended)
+                (opened.unwrap(), ended)
             }
         };
         let saved = |id: &str| {
