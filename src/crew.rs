@@ -678,10 +678,14 @@ impl Crew {
         *self.workflow.lock().unwrap() = Arc::downgrade(workflow);
         self.models.lock().unwrap().attached = true;
         // A crash before the fresh lead's first tool can leave its workers
-        // owned by the previous lead. Keep that owner until lead_run transfers it.
-        *self.lead.lock().unwrap() = workflow
-            .subagents()
-            .last()
+        // owned by the previous lead. Keep that owner until lead_run transfers
+        // it. (The lead is the main agent's: the owner of the latest worker
+        // that no worker started.)
+        let started = workflow.subagents();
+        *self.lead.lock().unwrap() = started
+            .iter()
+            .rev()
+            .find(|run| !started.iter().any(|other| other.run_id == run.caller_run_id))
             .map(|run| run.caller_run_id)
             .or(lead);
         if let Some(old) = self.events.lock().unwrap().take() {

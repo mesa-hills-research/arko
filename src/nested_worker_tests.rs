@@ -100,8 +100,8 @@ struct Script {
     r2_may_go: Arc<tokio::sync::Notify>,
     /// Opened by r1's second request, so the test knows the refusal came.
     refused: Arc<tokio::sync::Notify>,
-    /// r2 never reports: it stays on its first request.
-    r2_stays: bool,
+    /// r2 never reports: it stays on its request. (A test lets it go.)
+    r2_stays: Arc<std::sync::atomic::AtomicBool>,
     /// What r1's start call carries besides the agent and the task.
     r1_start: serde_json::Value,
     /// What r1 asks of r2's start besides the agent and the task.
@@ -116,7 +116,7 @@ impl Script {
         Self {
             r2_may_go: Arc::default(),
             refused: Arc::default(),
-            r2_stays,
+            r2_stays: Arc::new(std::sync::atomic::AtomicBool::new(r2_stays)),
             r1_start: serde_json::json!({"nested": true}),
             r2_start: serde_json::json!({}),
             r1_plain: false,
@@ -130,13 +130,16 @@ impl Script {
             self.r2_may_go.clone(),
             self.refused.clone(),
         );
-        let (stays, r1_start, r2_start) =
-            (self.r2_stays, self.r1_start.clone(), self.r2_start.clone());
+        let (stays, r1_start, r2_start) = (
+            self.r2_stays.clone(),
+            self.r1_start.clone(),
+            self.r2_start.clone(),
+        );
         let plain = self.r1_plain;
         ModelServer::start(Arc::new(move |index, body: String| {
             let who = sender(&body);
             seen.lock().unwrap().push((who.clone(), body.clone()));
-            let (gate, refused) = (gate.clone(), refused.clone());
+            let (gate, refused, stays) = (gate.clone(), refused.clone(), stays.clone());
             let (r1_start, r2_start) = (r1_start.clone(), r2_start.clone());
             Box::pin(async move {
                 let done = results(&body);
@@ -175,16 +178,17 @@ impl Script {
                                 serde_json::json!({}),
                             )
                         }
-                        _ => complete(
+                        // Waits again until r2's report is there (a wait
+                        // that was cut short by Arko closing says so).
+                        _ if !done.last().unwrap().contains("Counted 41 files.") => tool_call(
                             &format!("a{index}"),
-                            &format!(
-                                "Reviewed. r2 said: {}",
-                                done[2].lines().last().unwrap_or_default()
-                            ),
+                            crew::WAIT_FOR_AGENTS,
+                            serde_json::json!({}),
                         ),
+                        _ => complete(&format!("a{index}"), "Reviewed. r2 said: Counted 41 files."),
                     },
                     "r2" => {
-                        if stays {
+                        if stays.load(std::sync::atomic::Ordering::SeqCst) {
                             return std::future::pending::<String>().await;
                         }
                         gate.notified().await;
@@ -485,6 +489,199 @@ async fn stopping_a_worker_stops_its_workers_and_a_message_to_one_is_copied_to_i
             ("r1".to_string(), remote::WorkerState::Stopped),
             ("r2".to_string(), remote::WorkerState::Stopped)
         ]
+    );
+    crew.shutdown().await;
+}
+
+/// A session saved while a tree runs resumes: the workflow's check of the
+/// saved runs passes though the profile that made r1 a worker that nests
+/// was edited and then deleted, both workers go on where they were with
+/// the setup they started with, and r2's report reaches r1 and r1's the
+/// main agent.
+#[tokio::test]
+async fn a_tree_that_was_running_resumes_with_the_setups_it_started_with() {
+    let mut script = Script::new(true);
+    script.r1_start = serde_json::json!({"profile": "coordinator"});
+    let server = script.serve().await;
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, _sender) = open_session(temp.path(), &server);
+    let folder = harness.session.dir.join("profiles");
+    std::fs::create_dir_all(&folder).unwrap();
+    let file = folder.join("coordinator.md");
+    std::fs::write(
+        &file,
+        "---\ndescription: Splits a review\nmodel: sol\neffort: medium\nnested: true\n---\nCoordinate it, version one.\n",
+    )
+    .unwrap();
+    turn(&mut harness, &mut inputs, "Review the files.").await;
+    tokio::time::timeout(Duration::from_secs(20), script.refused.notified())
+        .await
+        .expect("r1 asked to report early");
+    let crew = harness.crew.clone().unwrap();
+    until(|| crew.running() == ["r1", "r2"] && script.requests("r2").len() == 1).await;
+    let before = (
+        script.requests("r1")[0].clone(),
+        script.requests("r2")[0].clone(),
+    );
+    assert!(
+        first_message(&before.0)
+            .contains("# Your profile (coordinator)\nCoordinate it, version one.")
+    );
+    assert!(first_message(&before.0).contains("# Workers of your own"));
+
+    // What each run started with is kept with the session.
+    let workflow = harness.workflow().clone();
+    let runs = workflow.subagents();
+    let (r1, r2) = (runs[0].clone(), runs[1].clone());
+    assert_eq!((r1.depth, r2.depth, r2.caller_run_id), (1, 2, r1.run_id));
+    let kept = crew.run_model(r1.run_id).unwrap();
+    assert_eq!(kept.tools_added, crew::NESTED_TOOL_NAMES);
+    assert!(
+        kept.context_added
+            .unwrap()
+            .contains("Coordinate it, version one.")
+    );
+    assert!(crew.run_model(r2.run_id).unwrap().tools_added.is_empty());
+    let record = std::fs::read_to_string(harness.session.dir.join("worker-models.json")).unwrap();
+    assert!(record.contains("start_agent") && record.contains("Workers of your own"));
+
+    // Arko stops. The profile is edited, then deleted.
+    crew.shutdown().await;
+    std::fs::write(
+        &file,
+        "---\ndescription: Splits a review\nmodel: opus\neffort: low\n---\nCoordinate it, version two.\n",
+    )
+    .unwrap();
+    std::fs::remove_file(&file).unwrap();
+    script
+        .r2_stays
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+
+    // The session resumes, and passes the check of its saved runs.
+    harness.open(true).unwrap();
+    harness.start_new_workers();
+    until(|| script.requests("r2").len() >= 2).await;
+    let after = script.requests("r2")[1].clone();
+    assert_eq!(first_message(&after), first_message(&before.1));
+    assert_eq!(tool_names(&after), tool_names(&before.1));
+    let _ =
+        tokio::time::timeout(Duration::from_secs(30), harness.finish_workers(&mut inputs)).await;
+
+    // r2's report reached r1, which was waiting, and r1's reached the main
+    // agent. The family is as it was.
+    let r1_last = script.requests("r1").last().unwrap().clone();
+    assert!(read(&r1_last).contains("Counted 41 files."));
+    assert_eq!(first_message(&r1_last), first_message(&before.0));
+    assert_eq!(tool_names(&r1_last), tool_names(&before.0));
+    let main = script.requests("main");
+    assert!(
+        main.iter()
+            .any(|body| read(body).contains("Reviewed. r2 said:"))
+    );
+    let summaries = harness.feed.worker_summaries();
+    let family: Vec<_> = summaries
+        .iter()
+        .map(|summary| {
+            (
+                summary.id.as_str(),
+                summary.parent.as_deref(),
+                summary.depth,
+                summary.state,
+            )
+        })
+        .collect();
+    assert_eq!(
+        family,
+        [
+            ("r1", None, 1, remote::WorkerState::Finished),
+            ("r2", Some("r1"), 2, remote::WorkerState::Finished)
+        ]
+    );
+    harness.crew.as_ref().unwrap().shutdown().await;
+}
+
+/// A worker whose lead won't run again when the session resumes is stopped
+/// and not relaunched, and the clients list it as stopped under its lead.
+#[tokio::test]
+async fn a_worker_whose_lead_failed_is_stopped_when_the_session_resumes() {
+    let script = Script::new(true);
+    let server = script.serve().await;
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, _sender) = open_session(temp.path(), &server);
+    turn(&mut harness, &mut inputs, "Review the files.").await;
+    tokio::time::timeout(Duration::from_secs(20), script.refused.notified())
+        .await
+        .expect("r1 asked to report early");
+    let crew = harness.crew.clone().unwrap();
+    until(|| crew.running() == ["r1", "r2"] && script.requests("r2").len() == 1).await;
+    crew.shutdown().await;
+
+    // As if r1 had failed and Arko had ended with r2 running.
+    let run_dir = harness.session.run_dir();
+    let latest = harness.session.latest_checkpoint().unwrap();
+    let mut saved: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&latest).unwrap()).unwrap();
+    saved["subagents"]["runs"][0]["state"] = "failed".into();
+    saved["subagents"]["runs"][1]["state"] = "interrupted".into();
+    std::fs::write(run_dir.join("edited-checkpoint.json"), saved.to_string()).unwrap();
+    std::fs::write(run_dir.join("latest-checkpoint"), "edited-checkpoint.json").unwrap();
+
+    harness.open(true).unwrap();
+    harness.start_new_workers();
+    let facts = harness.crew.as_ref().unwrap().facts();
+    let state = |id: &str| {
+        facts
+            .iter()
+            .find(|fact| fact.id == id)
+            .map(|fact| fact.state.clone())
+            .unwrap()
+    };
+    assert_eq!(
+        (state("r1").as_str(), state("r2").as_str()),
+        ("failed", "stopped")
+    );
+    let workers = harness.workflow().subagents();
+    assert_eq!(
+        workers[1].error.as_deref(),
+        Some("its lead r1 isn't running")
+    );
+    // It was not relaunched.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(script.requests("r2").len(), 1);
+    assert!(harness.crew.as_ref().unwrap().running().is_empty());
+    harness.crew.as_ref().unwrap().shutdown().await;
+}
+
+/// The conversation can't be edited while a worker of the tree runs, so a
+/// cut back never reaches a running tree. The refusal names a worker.
+#[tokio::test]
+async fn an_edit_is_refused_while_a_nested_worker_runs() {
+    let script = Script::new(true);
+    let server = script.serve().await;
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, _sender) = open_session(temp.path(), &server);
+    turn(&mut harness, &mut inputs, "Review the files.").await;
+    tokio::time::timeout(Duration::from_secs(20), script.refused.notified())
+        .await
+        .expect("r1 asked to report early");
+    let crew = harness.crew.clone().unwrap();
+    until(|| crew.running() == ["r1", "r2"]).await;
+    // (A message of the conversation; the refusal comes before it is looked up.)
+    let item = 1;
+    assert_eq!(
+        harness
+            .edit(item, "Review fewer files.".into())
+            .unwrap_err(),
+        "r1 is running. Wait for the workers or stop them first."
+    );
+    // With the tree stopped, the refusal is gone.
+    assert_eq!(crew.stop_all("test"), 2);
+    until(|| crew.running().is_empty()).await;
+    assert_eq!(
+        harness
+            .edit(item, "Review fewer files.".into())
+            .unwrap_err(),
+        "This message can't be edited."
     );
     crew.shutdown().await;
 }
