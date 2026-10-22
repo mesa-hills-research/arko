@@ -906,9 +906,8 @@ const CHOOSING: &str = "A worker runs on the session's worker model unless you c
 const SAVING: &str = "When several workers share a setup, save it once with `save_worker_profile` and start them by its name.";
 
 /// What the main agent is told of workers that start workers (the `nested`
-/// parameter of `start_agent`). A session whose main agent runs in Claude
-/// Code keeps the tools it started with, so a saved conversation without
-/// this sentence is one that lacks the parameter ([`crate::harness::unoffered`]).
+/// parameter of `start_agent`), when the session's depth and its way of
+/// choosing the workers' models let them.
 pub(crate) const NESTING: &str = "A worker you start with `nested: true` can start workers of its own, for a part of the work that splits into parts again.";
 
 /// What a worker started with `nested` is told in its first message, after

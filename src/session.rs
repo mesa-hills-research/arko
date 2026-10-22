@@ -159,6 +159,11 @@ pub struct Settings {
         skip_serializing_if = "is_default_worker_depth"
     )]
     pub worker_depth: u32,
+    /// The session was made by an Arko whose `start_agent` takes `nested`.
+    /// A conversation in Claude Code keeps the tools it started with, so one
+    /// in a session made before has no `nested` whatever the settings are.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub nested_start: bool,
 }
 
 fn default_background_after() -> u64 {
@@ -212,6 +217,7 @@ impl Settings {
             monitor_wakes: Default::default(),
             worker_models: ModelChoice::default(),
             worker_depth: DEFAULT_WORKER_DEPTH,
+            nested_start: true,
         }
     }
 
@@ -831,6 +837,25 @@ mod tests {
         let loaded = session.load_settings().unwrap();
         assert_eq!(loaded.worker_models, ModelChoice::Profiles);
         assert_eq!(loaded.worker_depth, 3);
+    }
+
+    /// A session made now says its `start_agent` took `nested`, and one saved
+    /// before doesn't.
+    #[test]
+    fn a_session_says_whether_its_start_agent_took_nested() {
+        let temp = tempfile::tempdir().unwrap();
+        let session = test_session(temp.path());
+        assert!(session.load_settings().unwrap().nested_start);
+        let file = session.dir.join(SETTINGS_FILE);
+        let mut old: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        old.as_object_mut().unwrap().remove("nested_start");
+        std::fs::write(&file, serde_json::to_string_pretty(&old).unwrap()).unwrap();
+        let loaded = session.load_settings().unwrap();
+        assert!(!loaded.nested_start);
+        // Saving it again doesn't make it a session of today.
+        session.save_settings(&loaded).unwrap();
+        assert!(!session.load_settings().unwrap().nested_start);
     }
 
     /// A worker depth edited by hand to 0 or past 4 loads as the nearest depth

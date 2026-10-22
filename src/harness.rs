@@ -167,6 +167,16 @@ pub(crate) fn unoffered(
     saved: &SavedSetup,
     fresh: &[(&str, &arko_agents::AgentConfig)],
 ) -> Option<String> {
+    unoffered_with(saved, fresh, true)
+}
+
+/// [`unoffered`], where `nested_known` is whether the session was made by an
+/// Arko whose `start_agent` takes `nested` ([`Settings::nested_start`]).
+pub(crate) fn unoffered_with(
+    saved: &SavedSetup,
+    fresh: &[(&str, &arko_agents::AgentConfig)],
+    nested_known: bool,
+) -> Option<String> {
     let mut missing: Vec<&str> = Vec::new();
     let mut skills = false;
     for (agent, fresh) in fresh {
@@ -196,16 +206,17 @@ pub(crate) fn unoffered(
         parts.push("the worker profile tools (worker_options and save_worker_profile)".to_string());
     }
     // An agent in Claude Code keeps the tools its conversation started with,
-    // so one saved before a worker could start workers can't pass `nested`.
-    // (The other models are offered the tool as it is now.)
-    let nesting = fresh.iter().any(|(agent, fresh)| {
-        *agent == MAIN
-            && fresh.instructions.contains(agents::NESTING)
-            && saved.configs.get(MAIN).is_some_and(|saved| {
-                saved.llm_config.model.provider == arko_ai::Provider::ClaudeCode
-                    && !saved.instructions.contains(agents::NESTING)
-            })
-    });
+    // so one in a session made before a worker could start workers can't
+    // pass `nested`, whatever the settings are now. (The other models are
+    // offered the tool as it is now.)
+    let nesting = !nested_known
+        && fresh.iter().any(|(agent, fresh)| {
+            *agent == MAIN
+                && fresh.instructions.contains(agents::NESTING)
+                && saved.configs.get(MAIN).is_some_and(|saved| {
+                    saved.llm_config.model.provider == arko_ai::Provider::ClaudeCode
+                })
+        });
     if nesting && !missing.contains(&crew::START_AGENT) {
         parts.push("workers that start workers of their own (nested)".to_string());
     }
@@ -507,7 +518,7 @@ impl Harness {
             if main_resumes && self.settings.mode == Mode::Agent {
                 fresh.insert(0, (MAIN, &self.main_config));
             }
-            self.unoffered = unoffered(saved, &fresh);
+            self.unoffered = unoffered_with(saved, &fresh, self.settings.nested_start);
         }
         let name = saved.as_ref().map_or(WORKFLOW_NAME, |saved| &saved.name);
         let main_config = if keep {
@@ -4792,10 +4803,11 @@ pub(crate) mod tests {
         );
     }
 
-    /// A session whose main agent runs in Claude Code and was saved before a
+    /// A session whose main agent runs in Claude Code and was made before a
     /// worker could start workers says so when it resumes, since the
-    /// conversation keeps its tools. One on another model, which is offered
-    /// the tool as it is now, and one saved since, say nothing.
+    /// conversation keeps its tools, whatever the worker settings were when
+    /// it was saved and are now. One on another model, which is offered the
+    /// tool as it is now, and one made since, say nothing.
     #[test]
     fn a_claude_code_session_from_before_nested_workers_says_it_lacks_them() {
         let model = |name: &str| ModelSettings {
@@ -4806,44 +4818,54 @@ pub(crate) mod tests {
             handover_at: None,
         };
         let (cc, opus) = (model("cc:haiku"), model("opus"));
-        let saved_as_of_before = |settings: &AgentSettings| {
-            let mut old = agents::main_config(settings).unwrap();
-            old.instructions = old.instructions.replace(agents::NESTING, "");
-            SavedSetup {
-                name: WORKFLOW_NAME.into(),
-                configs: [(MAIN.to_string(), old)].into(),
-            }
+        let saved = |settings: &AgentSettings| SavedSetup {
+            name: WORKFLOW_NAME.into(),
+            configs: [(MAIN.to_string(), agents::main_config(settings).unwrap())].into(),
         };
-        let now = |main: &ModelSettings| {
-            let settings = AgentSettings::for_test(main, main);
-            (
-                agents::main_config(&settings).unwrap(),
-                saved_as_of_before(&settings),
-            )
-        };
-        let (main, saved) = now(&cc);
+        let now = AgentSettings::for_test(&cc, &cc);
+        let main = agents::main_config(&now).unwrap();
+        let lacks = unoffered_with(&saved(&now), &[(MAIN, &main)], false);
         assert_eq!(
-            unoffered(&saved, &[(MAIN, &main)]).unwrap(),
+            lacks.unwrap(),
             "This session started without workers that start workers of their own (nested), so its agents don't get them. A new session does."
         );
+        // A session made since has it.
+        assert_eq!(unoffered_with(&saved(&now), &[(MAIN, &main)], true), None);
         // Another model is offered the tool as it is.
-        let (main, saved) = now(&opus);
-        assert_eq!(unoffered(&saved, &[(MAIN, &main)]), None);
-        // A session saved with the sentence, and one with every worker on the
-        // session's model, which has none, lack nothing.
-        let (main, _) = now(&cc);
-        let current = SavedSetup {
-            name: WORKFLOW_NAME.into(),
-            configs: [(MAIN.to_string(), main.clone())].into(),
-        };
-        assert_eq!(unoffered(&current, &[(MAIN, &main)]), None);
+        let on_opus = AgentSettings::for_test(&opus, &opus);
+        let main_opus = agents::main_config(&on_opus).unwrap();
+        assert_eq!(
+            unoffered_with(&saved(&on_opus), &[(MAIN, &main_opus)], false),
+            None
+        );
+        // Nothing is said when the instructions say nothing of workers that
+        // start workers now (every worker on the session's model, one
+        // level), since the user can't use it anyway.
+        for quiet in [
+            AgentSettings {
+                worker_models: agents::ModelChoice::Session,
+                ..AgentSettings::for_test(&cc, &cc)
+            },
+            AgentSettings {
+                worker_depth: 1,
+                ..AgentSettings::for_test(&cc, &cc)
+            },
+        ] {
+            let main = agents::main_config(&quiet).unwrap();
+            assert_eq!(
+                unoffered_with(&saved(&quiet), &[(MAIN, &main)], false),
+                None
+            );
+        }
+        // A session made since, saved with every worker on the session's
+        // model and changed to the main agent's choice, lacks nothing: the
+        // tool had `nested` all along.
         let session = AgentSettings {
             worker_models: agents::ModelChoice::Session,
             ..AgentSettings::for_test(&cc, &cc)
         };
-        let main = agents::main_config(&session).unwrap();
         assert_eq!(
-            unoffered(&saved_as_of_before(&session), &[(MAIN, &main)]),
+            unoffered_with(&saved(&session), &[(MAIN, &main)], true),
             None
         );
     }

@@ -253,6 +253,7 @@ pub(crate) fn new_settings(
             Some(depth) => crate::workers::check_depth(depth)?,
             None => DEFAULT_WORKER_DEPTH,
         },
+        nested_start: true,
     };
     project_from_options(options, &mut settings);
     if settings.mode == crate::session::Mode::Chat {
