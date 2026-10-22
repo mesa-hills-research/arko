@@ -76,7 +76,7 @@ fn the_options_list_the_profiles_and_the_models_usable_now() {
         &basis,
         Place::Session,
         "reviewer",
-        "---\ndescription: Reviews a diff\nmodel: luna\nisolated: true\nmade_by: agent\nfast: true\n---\n",
+        "---\ndescription: Reviews a diff\nmodel: luna\nmade_by: agent\nfast: true\n---\n",
     );
     write(&basis, Place::Project, "notes", "---\nmodel sol\n---\n");
     write(
@@ -97,9 +97,7 @@ fn the_options_list_the_profiles_and_the_models_usable_now() {
     assert!(text.contains(
         "\n- quick-read (project) · haiku, low effort, 5m cache · Reads files and answers short questions · can't start yet, needs ANTHROPIC_API_KEY"
     ));
-    assert!(text.contains(
-        "\n- reviewer (session, made by you) · luna, fast, in a worktree of its own (start it with isolated: true) · Reviews a diff"
-    ));
+    assert!(text.contains("\n- reviewer (session, made by you) · luna, fast · Reviews a diff"));
     assert!(
         text.contains("\n- future (user) · gpt9 · From a newer Arko · can't start yet, `gpt9` isn't a model Arko knows."),
         "{text}"
@@ -329,7 +327,6 @@ fn the_tools_are_defined_for_the_main_agent() {
             ("model", false),
             ("effort", false),
             ("instructions", false),
-            ("isolated", false),
             ("cache", false),
             ("scope", false),
         ]
@@ -382,7 +379,6 @@ async fn a_profile_for_the_session_is_saved_without_asking() {
             ("model", "sol".into()),
             ("effort", "high".into()),
             ("instructions", "Review it against the rules.".into()),
-            ("isolated", true.into()),
             ("cache", "1h".into()),
         ],
     )
@@ -394,7 +390,7 @@ async fn a_profile_for_the_session_is_saved_without_asking() {
     );
     let found = profiles::read(&fixture.basis.roots, "reviewer").unwrap();
     assert_eq!(found.place, Place::Session);
-    assert!(found.profile.made_by_agent() && found.profile.isolated);
+    assert!(found.profile.made_by_agent());
     assert_eq!(found.profile.model.as_deref(), Some("sol"));
     assert_eq!(found.profile.effort, Some(Effort::High));
     assert_eq!(found.profile.cache, Some(Cache::OneHour));
@@ -661,14 +657,6 @@ async fn a_profile_that_cant_work_is_refused_before_the_user_is_asked() {
         )
         .await,
         "scope is session, project or user, not everywhere"
-    );
-    assert_eq!(
-        refusal(
-            &fixture.save,
-            vec![("name", "x".into()), ("isolated", "maybe".into())]
-        )
-        .await,
-        "isolated is true or false"
     );
     assert_eq!(
         refusal(

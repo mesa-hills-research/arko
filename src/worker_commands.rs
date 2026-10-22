@@ -319,9 +319,6 @@ impl Harness {
             text.push_str(&format!(" with a {} prompt cache", cache.as_str()));
         }
         text.push('.');
-        if profile.isolated {
-            text.push_str(" It works in a git worktree of its own.");
-        }
         if NESTED_WORKERS && profile.nested {
             text.push_str(" Its workers can start workers of their own.");
         }

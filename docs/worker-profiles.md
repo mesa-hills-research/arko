@@ -27,7 +27,6 @@ materials. Say what is wrong, in order of how much it matters.
 | `effort` | `low`, `medium`, `high`, `xhigh` or `max`, as the model takes it |
 | `fast` | `true` for fast mode, where the model has it |
 | `cache` | `5m` or `1h`, the prompt cache of Claude workers that take a choice |
-| `isolated` | `true` to start the worker in a git worktree of its own |
 | `nested` | `true` to let the worker start workers of its own, once workers can |
 | `made_by` | `agent` when the main agent saved the profile |
 
@@ -35,7 +34,9 @@ A name is lowercase letters, digits and hyphens, up to 32 characters, and starts
 or a digit. `default`, `main`, `worker`, `lead` and `all` are taken. The instructions can run to
 4,000 characters, and a file over 16 KB is left out. A file that can't be read shows in
 `/profiles` with the reason and hides no other profile. Windows line endings and a byte order
-mark are fine.
+mark are fine. A profile doesn't say whether a worker works in a git worktree. The main agent
+chooses that for each worker with `isolated` in `start_agent`. A key Arko doesn't know, such as
+`isolated` in a file from an earlier version, is kept when Arko rewrites the file.
 
 ## Where profiles live
 

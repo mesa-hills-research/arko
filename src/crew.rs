@@ -532,33 +532,6 @@ impl Crew {
         }
     }
 
-    /// Why a call to `start_agent` with `parameters` can't go on as it is,
-    /// before the start hook sees it. The hook can't tell whether the call
-    /// asks for a worktree (the framework takes `isolated` itself), so a
-    /// profile that works in one is checked here: the call must say
-    /// `isolated: true`, or choose its own workspace, or say `isolated: false`
-    /// (the call's value beats the profile's).
-    pub fn check_start(&self, parameters: &HashMap<String, Value>) -> Option<String> {
-        let name = parameters.get(PROFILE_PARAM)?.as_str()?.trim();
-        if name.is_empty()
-            || name.eq_ignore_ascii_case(chooser::DEFAULT_PROFILE)
-            || parameters.contains_key("isolated")
-            || parameters
-                .get("workspace")
-                .and_then(Value::as_str)
-                .is_some_and(|workspace| !workspace.trim().is_empty())
-        {
-            return None;
-        }
-        let basis = self.new_workers()?.basis;
-        let found = crate::profiles::read(&basis.roots, name).ok()?;
-        found.profile.isolated.then(|| {
-            format!(
-                "The profile `{name}` works in a git worktree of its own, so start it with `isolated: true`."
-            )
-        })
-    }
-
     /// The project's instructions new workers get in their first message
     /// from now on, if any.
     pub fn set_project(&self, text: Option<String>) {
@@ -1419,52 +1392,6 @@ mod tests {
             .map(|parameter| parameter.name.as_str())
             .collect();
         assert_eq!(offered, ["cache", "profile", "model", "effort"]);
-    }
-
-    /// A profile that works in a worktree needs the call to ask for one,
-    /// unless the call says otherwise itself.
-    #[test]
-    fn a_profile_in_a_worktree_asks_the_call_for_one() {
-        let temp = tempfile::tempdir().unwrap();
-        let (session, root) = (temp.path().join("session"), temp.path().join("arko"));
-        std::fs::create_dir_all(root.join("profiles")).unwrap();
-        std::fs::write(
-            root.join("profiles").join("tree.md"),
-            "---\ndescription: Works apart\nisolated: true\n---\n",
-        )
-        .unwrap();
-        std::fs::write(
-            root.join("profiles").join("plain.md"),
-            "---\ndescription: Works here\n---\n",
-        )
-        .unwrap();
-        let (crew, _) = crew_for(&session, &root, &luna());
-        let call = |pairs: &[(&str, Value)]| -> HashMap<String, Value> {
-            pairs
-                .iter()
-                .map(|(name, value)| (name.to_string(), value.clone()))
-                .collect()
-        };
-        let tree = Value::from("tree");
-        assert_eq!(
-            crew.check_start(&call(&[("profile", tree.clone())]))
-                .as_deref(),
-            Some(
-                "The profile `tree` works in a git worktree of its own, so start it with `isolated: true`."
-            )
-        );
-        for fine in [
-            call(&[("profile", tree.clone()), ("isolated", true.into())]),
-            call(&[("profile", tree.clone()), ("isolated", false.into())]),
-            call(&[("profile", tree.clone()), ("workspace", "sub".into())]),
-            call(&[("profile", "plain".into())]),
-            call(&[("profile", "default".into())]),
-            call(&[("profile", "nobody".into())]),
-            call(&[("model", "sol".into())]),
-            call(&[]),
-        ] {
-            assert_eq!(crew.check_start(&fine), None, "{fine:?}");
-        }
     }
 
     /// `/workers` says what each worker runs, what it has cost once that is

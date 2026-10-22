@@ -21,7 +21,6 @@ fn full() -> Profile {
     profile.fast = true;
     profile.cache = Some(Cache::OneHour);
     profile.nested = true;
-    profile.isolated = true;
     profile.made_by = Some(MADE_BY_AGENT.into());
     profile.instructions =
         "You judge 3D models.\n\nCompare the render with the reference image.".into();
@@ -516,7 +515,6 @@ fn the_approval_question_shows_the_whole_profile() {
     profile.nested = false;
     profile.fast = false;
     profile.cache = None;
-    profile.isolated = false;
     let question = approval_text(&profile, Place::User);
     assert_eq!(
         question,
@@ -528,7 +526,6 @@ fn the_approval_question_shows_the_whole_profile() {
     );
     let mut plain = Profile::new("quick", "Reads");
     plain.nested = true;
-    plain.isolated = true;
     plain.fast = true;
     plain.cache = Some(Cache::FiveMinutes);
     let text = approval_text(&plain, Place::User);
@@ -536,7 +533,6 @@ fn the_approval_question_shows_the_whole_profile() {
         text.contains("Runs on the session's worker model in fast mode with a 5m prompt cache."),
         "{text}"
     );
-    assert!(text.contains("Its workers work in a worktree of their own."));
     assert!(text.contains("Its workers can start workers of their own."));
     assert!(text.contains("It has no standing instructions."));
 }
@@ -771,4 +767,20 @@ fn a_branch_gets_the_profiles_of_its_session_and_nothing_else() {
         .collect();
     copied.sort();
     assert_eq!(copied, ["reviewer.md"]);
+}
+
+/// An earlier file can say `isolated`, which a profile no longer sets. It
+/// reads as a key this version doesn't know and survives a rewrite.
+#[test]
+fn an_isolated_key_from_an_earlier_file_is_kept_and_means_nothing() {
+    let file = "---\ndescription: Works apart\nmodel: sol\nisolated: true\n---\nWork.\n";
+    let profile = Profile::parse("tree", file).unwrap();
+    assert_eq!(
+        profile.extra,
+        [("isolated".to_string(), "true".to_string())]
+    );
+    assert!(!approval_text(&profile, Place::User).contains("worktree"));
+    assert!(profile.render().contains("isolated: true"));
+    let again = Profile::parse("tree", &profile.render()).unwrap();
+    assert_eq!(again, profile);
 }

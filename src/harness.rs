@@ -613,15 +613,6 @@ impl Harness {
                         {
                             crew.lead_run(run);
                         }
-                        // A profile that works in a worktree needs the call
-                        // to ask for one.
-                        if hook.tool_name.as_deref() == Some(crew::START_AGENT)
-                            && let Some(parameters) = &hook.tool_params
-                            && let Some(why) =
-                                weak.upgrade().and_then(|crew| crew.check_start(parameters))
-                        {
-                            return HookResult::Reject(why);
-                        }
                         HookResult::Continue
                     }),
                 );

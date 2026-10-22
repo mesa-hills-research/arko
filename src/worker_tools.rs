@@ -207,9 +207,6 @@ fn profiles_text(basis: &Basis, needs: &dyn Fn(&Model) -> Option<String>) -> Str
         if let Some(cache) = profile.cache {
             details.push_str(&format!(", {} cache", cache.as_str()));
         }
-        if profile.isolated {
-            details.push_str(", in a worktree of its own (start it with isolated: true)");
-        }
         let place = if profile.made_by_agent() {
             format!("{}, made by you", found.place.name())
         } else {
@@ -432,13 +429,6 @@ impl SaveWorkerProfile {
                     .map_err(|_| refused(format!("cache is 5m or 1h, not {cache}")))?,
             );
         }
-        profile.isolated = match params.get("isolated") {
-            None | Some(Value::Null) => false,
-            Some(Value::Bool(value)) => *value,
-            Some(Value::String(value)) if value.trim().eq_ignore_ascii_case("true") => true,
-            Some(Value::String(value)) if value.trim().eq_ignore_ascii_case("false") => false,
-            Some(_) => return Err(refused("isolated is true or false")),
-        };
         profile.check().map_err(refused)?;
         Ok(profile)
     }
@@ -496,14 +486,6 @@ impl Tool for SaveWorkerProfile {
                     "Optional. Standing instructions for every worker started with this profile, up to 4000 characters. The task itself still goes in start_agent's task.",
                     false,
                 ),
-                ToolParameterDefinition {
-                    param_type: ToolParameterType::Bool,
-                    ..text_parameter(
-                        "isolated",
-                        "Optional. true makes workers of this profile work in a git worktree of their own. Default false.",
-                        false,
-                    )
-                },
                 text_parameter(
                     "cache",
                     "Optional. 5m or 1h, the prompt cache of workers on Claude models that take one.",

@@ -132,11 +132,6 @@ fn lead(body: &str, step: &str) -> String {
         ),
         "Start with a missing profile." => with(object, &[("profile", "nobody")]),
         "Start with a cache." => with(object, &[("cache", "1h")]),
-        "Start with the worktree profile." => with(object, &[("profile", "tree")]),
-        "Start with the worktree profile and no worktree." => {
-            with(object, &[("profile", "tree")]);
-            object.insert("isolated".into(), false.into());
-        }
         _ => {}
     }
     tool_call(step, crew::START_AGENT, parameters)
@@ -266,26 +261,6 @@ async fn a_worker_runs_the_model_effort_and_profile_the_main_agent_chose() {
     assert_eq!(summary.profile.as_deref(), Some("judge"));
     assert_eq!((summary.parent.as_deref(), summary.depth), (None, 1));
     assert!(summary.cost_billed > 0.0 && summary.cost_list >= summary.cost_billed);
-    // A profile that works in a worktree asks the call for one, and the
-    // call's own `isolated` beats it.
-    std::fs::write(
-        folder.join("tree.md"),
-        "---\ndescription: Works apart\nisolated: true\n---\n",
-    )
-    .unwrap();
-    start_worker(&mut harness, &mut inputs, "Start with the worktree profile.").await;
-    assert_eq!(
-        last_result(&seen),
-        "The profile `tree` works in a git worktree of its own, so start it with `isolated: true`."
-    );
-    assert!(worker_with(&seen, "Start with the worktree profile.").is_none());
-    start_worker(
-        &mut harness,
-        &mut inputs,
-        "Start with the worktree profile and no worktree.",
-    )
-    .await;
-    assert!(worker_with(&seen, "Start with the worktree profile and no worktree.").is_some());
     // The call's model beats the profile's.
     start_worker(&mut harness, &mut inputs, "Start with the judge on a model.").await;
     let (model, effort, _) = worker_with(&seen, "Start with the judge on a model.").unwrap();

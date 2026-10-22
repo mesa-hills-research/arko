@@ -28,9 +28,9 @@ fn an_app_makes_lists_edits_and_deletes_profiles_without_a_session() {
     // The page edits what it read, and saves it again.
     let mut edited = profiles::read(&roots, "3d-judge").unwrap().profile;
     edited.description = "Judges renders".into();
-    edited.isolated = true;
+    edited.nested = true;
     profiles::save(&roots, Place::User, &edited, Author::User).unwrap();
-    assert!(profiles::read(&roots, "3d-judge").unwrap().profile.isolated);
+    assert!(profiles::read(&roots, "3d-judge").unwrap().profile.nested);
 
     // The question the agent's save puts to the user, and the rule for the
     // answer.

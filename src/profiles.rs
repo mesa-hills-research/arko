@@ -36,7 +36,6 @@
 //! | `fast` | `true` for fast mode where the model has it. Off by default |
 //! | `cache` | `5m` or `1h`, the prompt cache of Claude workers on an API key |
 //! | `nested` | `true` lets the worker start workers of its own |
-//! | `isolated` | `true` has the worker work in a git worktree of its own |
 //! | `made_by` | `agent` when an agent wrote the profile |
 //!
 //! A name is lowercase letters, digits and hyphens, up to 32 characters,
@@ -174,8 +173,6 @@ pub struct Profile {
     pub cache: Option<Cache>,
     /// The worker may start workers of its own.
     pub nested: bool,
-    /// The worker works in a git worktree of its own.
-    pub isolated: bool,
     /// Who wrote the file when it isn't the user: [`MADE_BY_AGENT`].
     pub made_by: Option<String>,
     /// The standing instructions, up to [`MAX_INSTRUCTIONS`] characters.
@@ -195,7 +192,6 @@ impl Profile {
             fast: false,
             cache: None,
             nested: false,
-            isolated: false,
             made_by: None,
             instructions: String::new(),
             extra: Vec::new(),
@@ -282,7 +278,6 @@ impl Profile {
                     }
                 }
                 "nested" => profile.nested = boolean("nested", &value)?,
-                "isolated" => profile.isolated = boolean("isolated", &value)?,
                 "made_by" => profile.made_by = Some(value).filter(|value| !value.is_empty()),
                 _ => profile.extra.push((key.to_string(), value)),
             }
@@ -348,9 +343,6 @@ impl Profile {
         }
         if self.nested {
             put("nested", "true");
-        }
-        if self.isolated {
-            put("isolated", "true");
         }
         if let Some(made_by) = &self.made_by {
             put("made_by", made_by);
@@ -455,14 +447,13 @@ impl Profile {
     }
 }
 
-const KNOWN_KEYS: [&str; 8] = [
+const KNOWN_KEYS: [&str; 7] = [
     "description",
     "model",
     "effort",
     "fast",
     "cache",
     "nested",
-    "isolated",
     "made_by",
 ];
 
@@ -1060,9 +1051,6 @@ pub fn approval_text(profile: &Profile, place: Place) -> String {
         text.push_str(&format!(" with a {} prompt cache", cache.as_str()));
     }
     text.push('.');
-    if profile.isolated {
-        text.push_str(" Its workers work in a worktree of their own.");
-    }
     if profile.nested {
         text.push_str(" Its workers can start workers of their own.");
     }
