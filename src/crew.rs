@@ -313,15 +313,19 @@ fn apply_cache(
 /// checkpoint is read back, gets the registered worker's configuration with
 /// its prompt cache.
 fn prepare(
-    models: &Mutex<WorkerRecords>,
-    workflow: &Mutex<Weak<Workflow>>,
-    flight: &Mutex<HashMap<Uuid, (Uuid, Instant)>>,
-    feed: Option<&remote::Feed>,
-    refuse: Option<&Refuse>,
-    default_1h: bool,
+    hook: &StartHook,
     request: &StartRequest,
     config: &mut AgentConfig,
 ) -> Result<(), String> {
+    let StartHook {
+        models,
+        workflow,
+        flight,
+        feed,
+        refuse,
+        default_1h,
+    } = hook;
+    let (feed, refuse, default_1h) = (feed.as_ref(), refuse.as_ref(), *default_1h);
     // (The lock is held briefly: choosing may read files, and Claude Code's
     // login check runs a command.)
     let (started, attached, new) = {
@@ -556,16 +560,7 @@ struct StartHook {
 
 impl SubagentHook for StartHook {
     fn prepare(&self, request: &StartRequest, config: &mut AgentConfig) -> Result<(), String> {
-        prepare(
-            &self.models,
-            &self.workflow,
-            &self.flight,
-            self.feed.as_ref(),
-            self.refuse.as_ref(),
-            self.default_1h,
-            request,
-            config,
-        )
+        prepare(self, request, config)
     }
 
     /// What the worker runs and its profile, for its starter: the start's

@@ -159,10 +159,9 @@ pub(crate) fn saved_setup(checkpoint: &Path, run_dir: &Path) -> Result<SavedSetu
     })
 }
 
-/// What a resumed session's agents aren't offered, as they started without
-/// it: the tools Arko has now that their saved tool lists leave out, and
-/// skills. A resumed conversation keeps the configuration it was saved
-/// with.
+/// [`unoffered_with`] for a session made by an Arko whose `start_agent`
+/// takes `nested`.
+#[cfg(test)]
 pub(crate) fn unoffered(
     saved: &SavedSetup,
     fresh: &[(&str, &arko_agents::AgentConfig)],
@@ -170,8 +169,11 @@ pub(crate) fn unoffered(
     unoffered_with(saved, fresh, true)
 }
 
-/// [`unoffered`], where `nested_known` is whether the session was made by an
-/// Arko whose `start_agent` takes `nested` ([`Settings::nested_start`]).
+/// What a resumed session's agents aren't offered, as they started without
+/// it: the tools Arko has now that their saved tool lists leave out, and
+/// skills. A resumed conversation keeps the configuration it was saved
+/// with. `nested_known` is whether the session was made by an Arko whose
+/// `start_agent` takes `nested` ([`Settings::nested_start`]).
 pub(crate) fn unoffered_with(
     saved: &SavedSetup,
     fresh: &[(&str, &arko_agents::AgentConfig)],
