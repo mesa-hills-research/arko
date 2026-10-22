@@ -439,6 +439,13 @@ pub struct WorkerSummary {
     /// billed amount, plus the estimate for the calls a plan covered (Claude
     /// Code, the ChatGPT login).
     pub cost_list: f64,
+    /// What it and the workers under it (and theirs) billed. The feed adds
+    /// it up as the costs change, so a client shows a family's cost without
+    /// following [`parent`](Self::parent) itself. A worker with none under it
+    /// has its own.
+    pub family_cost_billed: f64,
+    /// What it and the workers under it would cost at API list prices.
+    pub family_cost_list: f64,
 }
 
 impl WorkerSummary {
@@ -463,6 +470,8 @@ impl WorkerSummary {
             depth: 1,
             cost_billed: 0.0,
             cost_list: 0.0,
+            family_cost_billed: 0.0,
+            family_cost_list: 0.0,
         }
     }
 
@@ -480,6 +489,94 @@ impl WorkerSummary {
         self.ran_ms = self.run_time_ms(now);
         self.running_since = None;
     }
+}
+
+/// The workers in the order a list shows a family: each worker that no
+/// worker in `workers` started, then the workers it started, depth first, in
+/// the order they started. The result holds the index of each of `workers`,
+/// which is given in the order they started. A worker whose parent isn't in
+/// `workers` comes among the first.
+pub fn family_order(workers: &[WorkerSummary]) -> Vec<usize> {
+    family_order_of(
+        workers
+            .iter()
+            .map(|worker| (worker.id.as_str(), worker.parent.as_deref())),
+    )
+}
+
+/// [`family_order`] for workers given as their ID and their parent's.
+pub(crate) fn family_order_of<'a>(
+    links: impl IntoIterator<Item = (&'a str, Option<&'a str>)>,
+) -> Vec<usize> {
+    let links: Vec<(&str, Option<&str>)> = links.into_iter().collect();
+    let index: HashMap<&str, usize> = links
+        .iter()
+        .enumerate()
+        .map(|(at, (id, _))| (*id, at))
+        .collect();
+    // Each worker's own workers in the order they started, and the workers
+    // no listed worker started.
+    let mut under: Vec<Vec<usize>> = vec![Vec::new(); links.len()];
+    let mut roots = Vec::new();
+    for (at, (_, parent)) in links.iter().enumerate() {
+        match parent.and_then(|parent| index.get(parent)) {
+            Some(&parent) if parent != at => under[parent].push(at),
+            _ => roots.push(at),
+        }
+    }
+    let mut order = Vec::with_capacity(links.len());
+    let mut pending: Vec<usize> = Vec::new();
+    for root in roots {
+        pending.push(root);
+        while let Some(at) = pending.pop() {
+            order.push(at);
+            // (The earliest of its workers comes out first.)
+            pending.extend(under[at].iter().rev());
+        }
+    }
+    // (A loop of parents, which no session makes, would leave some out.)
+    if order.len() < links.len() {
+        let mut placed = vec![false; links.len()];
+        for at in &order {
+            placed[*at] = true;
+        }
+        order.extend((0..links.len()).filter(|at| !placed[*at]));
+    }
+    order
+}
+
+/// What each of `workers` and the workers under it (and theirs) cost, as
+/// (billed, at API list prices), in their order.
+fn family_costs<'a>(workers: impl Iterator<Item = &'a WorkerSummary>) -> Vec<(f64, f64)> {
+    let workers: Vec<&WorkerSummary> = workers.collect();
+    let index: HashMap<&str, usize> = workers
+        .iter()
+        .enumerate()
+        .map(|(at, worker)| (worker.id.as_str(), at))
+        .collect();
+    let mut totals: Vec<(f64, f64)> = workers
+        .iter()
+        .map(|worker| (worker.cost_billed, worker.cost_list))
+        .collect();
+    // In the family's order a worker comes before its workers, so from the
+    // end each worker's total is whole when it is added to its parent's.
+    let order = family_order_of(
+        workers
+            .iter()
+            .map(|worker| (worker.id.as_str(), worker.parent.as_deref())),
+    );
+    for at in order.into_iter().rev() {
+        let parent = workers[at]
+            .parent
+            .as_deref()
+            .and_then(|parent| index.get(parent).copied())
+            .filter(|parent| *parent != at);
+        if let Some(parent) = parent {
+            totals[parent].0 += totals[at].0;
+            totals[parent].1 += totals[at].1;
+        }
+    }
+    totals
 }
 
 /// What a worker started with and what it has cost, for its summary
@@ -1004,6 +1101,9 @@ struct State {
     /// Images that came before their call's item, by call.
     early_images: VecDeque<(Uuid, Vec<crate::images::ImageRef>)>,
     workers: Vec<Worker>,
+    /// The worker that started each worker that a worker started, by ID.
+    /// Known from the start hook, before the worker's first event.
+    parents: HashMap<String, String>,
     /// The user's notes the main agent hasn't read, by their numbers on the
     /// workflow's note board, with their items.
     unread_notes: Vec<(u64, u64)>,
@@ -1425,14 +1525,19 @@ impl Feed {
                 tool_name,
                 parameters,
             } => {
-                // The runs the main agent has going are what a wait without
-                // ids waits for.
-                let running = if main && tool_name == crate::crew::WAIT_FOR_AGENTS {
+                // The runs the agent has going are what a wait without ids
+                // waits for: the workers it started, which are the main
+                // agent's for the main agent.
+                let running = if tool_name == crate::crew::WAIT_FOR_AGENTS {
+                    let starter = (!main).then_some(agent.as_str());
                     crate::ui::sorted_runs(
                         state
                             .workers
                             .iter()
-                            .filter(|worker| worker.summary.state.is_active())
+                            .filter(|worker| {
+                                worker.summary.state.is_active()
+                                    && worker.summary.parent.as_deref() == starter
+                            })
                             .map(|worker| worker.summary.id.clone())
                             .collect(),
                     )
@@ -1588,6 +1693,7 @@ impl Feed {
                     worker.summary.cost_list += list;
                 }
                 self.worker_changed(&mut state, &agent, false);
+                self.add_up_families(&mut state);
             }
             AgentEvent::UsageLimitReached { error_message, .. } => {
                 let text = format!("usage limit reached ({})", render::cut(error_message, 300));
@@ -2425,12 +2531,31 @@ impl Feed {
         self.worker_changed(&mut state, id, true);
     }
 
+    /// The worker `id` is started by the worker `parent`, before its first
+    /// event comes: its place in the transcript is its parent's own, and the
+    /// main transcript holds the lines of the main agent's workers only.
+    pub fn worker_under(&self, id: &str, parent: &str) {
+        self.lock()
+            .parents
+            .insert(id.to_string(), parent.to_string());
+    }
+
     /// Tells the feed what the worker `id` started with (its model, effort,
     /// profile and place in the family) and, when the session knows, what
-    /// it has cost. The summary goes out when something changed.
+    /// it has cost. The summary goes out when something changed, and so do
+    /// those of the workers it started and the ones that started it when
+    /// their family's cost changed.
     pub fn worker_info(&self, id: &str, info: WorkerInfo) {
         let mut state = self.lock();
         self.known_worker(&mut state, id);
+        match &info.parent {
+            Some(parent) => {
+                state.parents.insert(id.to_string(), parent.clone());
+            }
+            None => {
+                state.parents.remove(id);
+            }
+        }
         let Some(worker) = state.worker(id) else {
             return;
         };
@@ -2447,6 +2572,27 @@ impl Feed {
         }
         if *summary != before {
             self.worker_changed(&mut state, id, false);
+        }
+        self.add_up_families(&mut state);
+    }
+
+    /// Adds up what each worker and the workers under it cost, and sends
+    /// the summaries whose totals changed.
+    fn add_up_families(&self, state: &mut State) {
+        let costs = family_costs(state.workers.iter().map(|worker| &worker.summary));
+        let mut changed = Vec::new();
+        for (worker, (billed, list)) in state.workers.iter_mut().zip(costs) {
+            let summary = &mut worker.summary;
+            if (summary.family_cost_billed - billed).abs() > 1e-12
+                || (summary.family_cost_list - list).abs() > 1e-12
+            {
+                summary.family_cost_billed = billed;
+                summary.family_cost_list = list;
+                changed.push(summary.id.clone());
+            }
+        }
+        for id in changed {
+            self.worker_changed(state, &id, false);
         }
     }
 
@@ -2509,8 +2655,14 @@ impl Feed {
         } else {
             worker.summary.title.clone()
         };
+        let parent = state.parents.get(id).cloned();
         let mut item = Item::new(Kind::WorkerLine, text);
         item.worker = Some(id.to_string());
+        // A worker's worker is placed in its parent's transcript, where the
+        // parent started it.
+        if let Some(parent) = parent {
+            item.agent = parent;
+        }
         self.push(state, item);
     }
 
@@ -3112,6 +3264,133 @@ mod tests {
         assert_eq!((summary.cost_billed, summary.cost_list), (1.0, 3.0));
         assert_eq!(summary.model, None, "the info is whole each time");
         assert!(feed.worker_summary("nobody").is_none());
+    }
+
+    /// A worker that a worker started is placed in its parent's transcript
+    /// and not the main one, from the start hook's word before its first
+    /// event or from its summary's. The main agent's worker keeps its place.
+    #[test]
+    fn a_workers_worker_is_placed_in_its_parents_transcript() {
+        let feed = Feed::new("main");
+        feed.turn_started();
+        feed.worker("r1", "Review the files", WorkerChange::Started);
+        // The hook knows the parent before the worker's events come.
+        feed.worker_under("r2", "r1");
+        feed.event(&event("worker", shell(Uuid::new_v4(), "ls")), Some("r2"));
+        feed.worker("r2", "Count the files", WorkerChange::Started);
+        // Another is told its parent with its summary.
+        let mut info = WorkerInfo::new();
+        info.parent = Some("r1".into());
+        info.depth = 2;
+        feed.worker_info("r3", info);
+        feed.worker("r3", "Count the tests", WorkerChange::Started);
+        let lines: Vec<(String, Option<String>)> = items(&feed)
+            .into_iter()
+            .filter(|item| item.kind == Kind::WorkerLine)
+            .map(|item| (item.agent.clone(), item.worker.clone()))
+            .collect();
+        assert_eq!(
+            lines,
+            [
+                ("main".to_string(), Some("r1".to_string())),
+                ("r1".to_string(), Some("r2".to_string())),
+                ("r1".to_string(), Some("r3".to_string())),
+            ]
+        );
+    }
+
+    /// The workers are listed with each one's workers after it, the first
+    /// to start first, whatever order they started in.
+    #[test]
+    fn a_family_is_listed_with_each_workers_workers_after_it() {
+        let worker = |id: &str, parent: Option<&str>| {
+            let mut worker = WorkerSummary::new(id);
+            worker.parent = parent.map(str::to_string);
+            worker
+        };
+        let workers = [
+            worker("r1", None),
+            worker("r2", None),
+            worker("r3", Some("r1")),
+            worker("r4", Some("r3")),
+            worker("r5", Some("r1")),
+            worker("r6", Some("r2")),
+            // Its parent is not among them.
+            worker("r7", Some("r9")),
+        ];
+        let ids: Vec<&str> = family_order(&workers)
+            .into_iter()
+            .map(|at| workers[at].id.as_str())
+            .collect();
+        assert_eq!(ids, ["r1", "r3", "r4", "r5", "r2", "r6", "r7"]);
+        assert!(family_order(&[]).is_empty());
+        // A loop of parents leaves none out.
+        let loops = [worker("r1", Some("r2")), worker("r2", Some("r1"))];
+        assert_eq!(family_order(&loops).len(), 2);
+    }
+
+    /// A worker's summary carries what it and its workers cost, and it goes
+    /// out again when the cost of one of its workers changes.
+    #[test]
+    fn a_workers_summary_adds_up_what_its_family_cost() {
+        use arko_ai::{BillingKind, UsageInfo};
+        let feed = Feed::new("main");
+        feed.worker("r1", "Review", WorkerChange::Started);
+        feed.worker("r2", "Count", WorkerChange::Started);
+        feed.worker("r3", "Count more", WorkerChange::Started);
+        let mut info = WorkerInfo::new();
+        info.parent = Some("r1".into());
+        info.depth = 2;
+        feed.worker_info("r2", info.clone());
+        info.parent = Some("r2".into());
+        info.depth = 3;
+        feed.worker_info("r3", info);
+        let usage = |total: f64, billed: f64| {
+            AgentEvent::UsageReported(UsageInfo {
+                billing: BillingKind::Metered,
+                total_cost: total,
+                billed_cost: Some(billed),
+                ..UsageInfo::default()
+            })
+        };
+        let (_, mut receiver) = feed.subscribe();
+        feed.event(&event("worker", usage(0.5, 0.5)), Some("r1"));
+        feed.event(&event("worker", usage(0.25, 0.25)), Some("r2"));
+        feed.event(&event("worker", usage(1.0, 1.0)), Some("r3"));
+        let family = |id: &str| {
+            let summary = feed.worker_summary(id).unwrap();
+            (
+                summary.cost_billed,
+                summary.family_cost_billed,
+                summary.family_cost_list,
+            )
+        };
+        // Each has its own, and its family's: r1 holds all three.
+        assert_eq!(family("r3"), (1.0, 1.0, 1.0));
+        assert_eq!(family("r2"), (0.25, 1.25, 1.25));
+        assert_eq!(family("r1"), (0.5, 1.75, 1.75));
+        // The summary of r1 went out with the total, also when only a
+        // worker of its worker spent.
+        let last_r1 = updates(&mut receiver)
+            .into_iter()
+            .filter_map(|update| match update {
+                Update::Worker(summary) if summary.id == "r1" => Some(summary),
+                _ => None,
+            })
+            .next_back()
+            .unwrap();
+        assert!(
+            (last_r1.family_cost_billed - 1.75).abs() < 1e-9,
+            "{last_r1:?}"
+        );
+        // A resumed session sets r2's saved cost, and the totals follow.
+        let mut info = WorkerInfo::new();
+        info.parent = Some("r1".into());
+        info.depth = 2;
+        info.costs = Some((2.0, 2.0));
+        feed.worker_info("r2", info);
+        assert_eq!(family("r1").1, 3.5);
+        assert_eq!(family("r2").1, 3.0);
     }
 
     /// A job a command started (terminal_start) keeps its call's own line,

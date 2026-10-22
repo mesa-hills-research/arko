@@ -35,10 +35,11 @@ use tokio::sync::mpsc;
 
 // The page's server and the terminal's full-screen view are both clients
 // of the feed.
+pub(crate) use feed::family_order_of;
 pub use feed::{
     Activity, Batches, CallStatus, Delivery, Feed, Item, JobKind, JobStart, JobState, JobSummary,
     Kind, Level, MAIN_AGENT, Question, REFRESH_MESSAGE, Snapshot, Source, Update, WorkerChange,
-    WorkerInfo, WorkerState, WorkerSummary,
+    WorkerInfo, WorkerState, WorkerSummary, family_order,
 };
 pub(crate) use history::all_items;
 pub use history::items as history;

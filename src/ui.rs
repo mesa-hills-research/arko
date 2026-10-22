@@ -518,18 +518,30 @@ pub async fn print_events(
                         printer.workers.insert(event.agent_run_id, label.clone());
                         record_worker_context(&printer.stats, label, &event.event);
                     }
-                    if event.agent_name == MAIN
-                        && let AgentEvent::ToolCallFormatted { tool_name, .. } = &event.event
+                    if let AgentEvent::ToolCallFormatted { tool_name, .. } = &event.event
                         && tool_name == crew::WAIT_FOR_AGENTS
                     {
+                        // What a wait without ids waits for: the workers
+                        // the agent started.
                         printer.running_runs = sorted_runs(
                             workflow
                                 .as_ref()
                                 .and_then(std::sync::Weak::upgrade)
                                 .map(|workflow| {
-                                    workflow
-                                        .active_subagents()
-                                        .into_iter()
+                                    let runs = workflow.active_subagents();
+                                    let all = workflow.subagents();
+                                    let by_main = event.agent_name == MAIN;
+                                    runs.into_iter()
+                                        .filter(|run| {
+                                            if by_main {
+                                                // (Not started by a worker.)
+                                                !all.iter().any(|other| {
+                                                    other.run_id == run.caller_run_id
+                                                })
+                                            } else {
+                                                run.caller_run_id == event.agent_run_id
+                                            }
+                                        })
                                         .map(|run| run.handle)
                                         .collect()
                                 })
@@ -700,7 +712,7 @@ impl EventPrinter {
                     }
                 } else if tool_name != "complete_task" {
                     let worker = self.worker(event.agent_run_id);
-                    let call = brief(&tool_name, &parameters);
+                    let call = brief_waiting_for(&tool_name, &parameters, &self.running_runs);
                     self.output
                         .echo(&self.output.dim(&format!("  ↳ {worker} {call}")));
                 }
@@ -1217,6 +1229,16 @@ pub fn waiting_for(parameters: &HashMap<String, serde_json::Value>, own: &[Strin
 
 /// A worker's call, briefly.
 pub fn brief(tool: &str, parameters: &HashMap<String, serde_json::Value>) -> String {
+    brief_waiting_for(tool, parameters, &[])
+}
+
+/// A worker's call, briefly, where `own` are the runs the worker has going
+/// (what its `wait_for_agents` waits for).
+pub fn brief_waiting_for(
+    tool: &str,
+    parameters: &HashMap<String, serde_json::Value>,
+    own: &[String],
+) -> String {
     let text = |name: &str| {
         parameters
             .get(name)
@@ -1232,7 +1254,7 @@ pub fn brief(tool: &str, parameters: &HashMap<String, serde_json::Value>) -> Str
         }
         crew::MESSAGE_AGENT => format!("message to {}", text("to")),
         HANDOVER_REPORT_TOOL_NAME => "handover report".to_string(),
-        crew::WAIT_FOR_AGENTS => waiting_for(parameters, &[]),
+        crew::WAIT_FOR_AGENTS => waiting_for(parameters, own),
         "terminal_start" => format!("background {}", command_line(text("command"))),
         tool if TerminalTool::NAMES.contains(&tool) => tool.replace('_', " "),
         "monitor_start" => format!("monitor {}", command_line(text("command"))),
@@ -1611,6 +1633,19 @@ mod tests {
                 .map(|line| strip_styles(&line))
                 .unwrap(),
             "● waiting for r1, r2"
+        );
+        // A worker that started workers waits for those, and names them.
+        assert_eq!(
+            brief_waiting_for(crew::WAIT_FOR_AGENTS, &params(&[]), &["r4".into()]),
+            "waiting for r4"
+        );
+        assert_eq!(
+            brief_waiting_for(crew::WAIT_FOR_AGENTS, &params(&[]), &[]),
+            "waiting for a message"
+        );
+        assert_eq!(
+            brief(crew::WAIT_FOR_AGENTS, &params(&[("runs", "r2".into())])),
+            "waiting for r2"
         );
         assert_eq!(
             line(

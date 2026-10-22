@@ -2564,6 +2564,94 @@ mod tests {
         .await
     }
 
+    /// A session whose workers started workers lists them under their
+    /// starters when it opens again: each worker's place in the family, what
+    /// each cost before, and what a family cost together.
+    #[tokio::test]
+    async fn a_resumed_session_lists_its_workers_under_their_starters() {
+        use crate::agents::WORKER;
+        let server = ModelServer::start(Arc::new(|index, body: String| {
+            let outputs = serde_json::from_str::<serde_json::Value>(&body).unwrap()["input"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|item| item["type"] == "function_call_output")
+                .count();
+            Box::pin(async move {
+                let id = format!("a{index}");
+                let response = if body.contains("You are agent run r2,") {
+                    complete(&id, "Counted 41 files.")
+                } else if body.contains("You are agent run r1,") {
+                    match outputs {
+                        0 => tool_call(
+                            &id,
+                            crew::START_AGENT,
+                            serde_json::json!({"agent": WORKER, "task": "Count the files."}),
+                        ),
+                        1 => tool_call(&id, crew::WAIT_FOR_AGENTS, serde_json::json!({})),
+                        _ => complete(&id, "Reviewed."),
+                    }
+                } else if outputs == 0 {
+                    tool_call(
+                        &id,
+                        crew::START_AGENT,
+                        serde_json::json!({"agent": WORKER, "task": "Review it.", "nested": true}),
+                    )
+                } else {
+                    reply(&id, "Started.")
+                };
+                if body.contains("You are agent run") {
+                    with_input(response, 50_000)
+                } else {
+                    response
+                }
+            })
+        }))
+        .await;
+        let temp = tempfile::tempdir().unwrap();
+        let (root, project) = (temp.path().join("arko"), temp.path().join("project"));
+        let (seam, ended) = open_app(&root, &project, &server, SessionChoice::New).await;
+        let id = seam.session.id.clone();
+        seam.input
+            .send(Input::Message(app_message("Review the files.")))
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                let workers = seam.feed.worker_summaries();
+                if workers.len() == 2
+                    && workers
+                        .iter()
+                        .all(|worker| worker.state == remote::WorkerState::Finished)
+                    && !seam.feed.activity().working
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("the workers finished");
+        let before = seam.feed.worker_summaries();
+        quit(seam, ended).await;
+
+        // A new process: its feed knows the workers from the saved runs.
+        let (seam, ended) = open_app(&root, &project, &server, SessionChoice::Resume(id)).await;
+        let workers = seam.feed.worker_summaries();
+        let family: Vec<_> = workers
+            .iter()
+            .map(|worker| (worker.id.as_str(), worker.parent.as_deref(), worker.depth))
+            .collect();
+        assert_eq!(family, [("r1", None, 1), ("r2", Some("r1"), 2)]);
+        let (r1, r2) = (&workers[0], &workers[1]);
+        assert!(r1.cost_billed > 0.0 && r2.cost_billed > 0.0, "{workers:?}");
+        for (restored, ran) in workers.iter().zip(&before) {
+            assert!((restored.cost_billed - ran.cost_billed).abs() < 1e-9);
+        }
+        assert!((r1.family_cost_billed - (r1.cost_billed + r2.cost_billed)).abs() < 1e-9);
+        assert!((r2.family_cost_billed - r2.cost_billed).abs() < 1e-9);
+        quit(seam, ended).await;
+    }
+
     async fn quit(seam: Seam, ended: oneshot::Receiver<RunEnd>) {
         seam.input.send(Input::Quit(Some(Vec::new()))).unwrap();
         let end = tokio::time::timeout(Duration::from_secs(30), ended).await;

@@ -121,6 +121,10 @@ pub struct WorkerFacts {
     pub effort: Option<String>,
     /// The profile it started with, if any.
     pub profile: Option<String>,
+    /// The worker that started it, when a worker did and not the main agent.
+    pub parent: Option<String>,
+    /// How far it is from the main agent, 1 for the main agent's workers.
+    pub depth: u32,
     /// What its model calls billed and would cost at API list prices, in
     /// dollars, when the session counted them.
     pub cost: Option<(f64, f64)>,
@@ -307,6 +311,7 @@ fn apply_cache(
 fn prepare(
     models: &Mutex<WorkerRecords>,
     workflow: &Mutex<Weak<Workflow>>,
+    feed: Option<&remote::Feed>,
     refuse: Option<&Refuse>,
     default_1h: bool,
     request: &StartRequest,
@@ -331,8 +336,13 @@ fn prepare(
     }
     let setup = match new {
         Some(new) => {
-            let family = family_of(workflow.lock().unwrap().upgrade(), request);
-            chooser::choose_in(&new.basis, request, refuse, family)?
+            let (family, parent) = family_of(workflow.lock().unwrap().upgrade(), request);
+            let setup = chooser::choose_in(&new.basis, request, refuse, family)?;
+            // The clients put its line where its parent is.
+            if let (Some(feed), Some(parent)) = (feed, parent) {
+                feed.worker_under(&request.handle, &parent);
+            }
+            setup
         }
         None => {
             // Not told what new workers start on: the registered worker.
@@ -352,21 +362,39 @@ fn prepare(
 /// Where in the tree of workers the start `request` happens: how deep the
 /// new worker is, and how many workers its starter has now. (The main agent
 /// is no worker, so its starts are at the first level.)
-fn family_of(workflow: Option<Arc<Workflow>>, request: &StartRequest) -> chooser::Family {
+fn family_of(
+    workflow: Option<Arc<Workflow>>,
+    request: &StartRequest,
+) -> (chooser::Family, Option<String>) {
     let Some(workflow) = workflow else {
-        return chooser::Family::MAIN;
+        return (chooser::Family::MAIN, None);
     };
     let runs = workflow.subagents();
     match runs.iter().find(|run| run.run_id == request.caller_run_id) {
-        Some(caller) => chooser::Family {
-            depth: caller.depth + 1,
-            live: runs
-                .iter()
-                .filter(|run| run.caller_run_id == caller.run_id && run.state.is_active())
-                .count(),
-        },
-        None => chooser::Family::MAIN,
+        Some(caller) => (
+            chooser::Family {
+                depth: caller.depth + 1,
+                live: runs
+                    .iter()
+                    .filter(|run| run.caller_run_id == caller.run_id && run.state.is_active())
+                    .count(),
+            },
+            Some(caller.handle.clone()),
+        ),
+        None => (chooser::Family::MAIN, None),
     }
+}
+
+/// The handle of the worker among `runs` that started the worker `run`,
+/// when a worker did (and not the main agent).
+pub(crate) fn started_by(
+    runs: &[arko_workflows::subagents::SubagentRecord],
+    run: Uuid,
+) -> Option<String> {
+    let caller = runs.iter().find(|other| other.run_id == run)?.caller_run_id;
+    runs.iter()
+        .find(|other| other.run_id == caller)
+        .map(|parent| parent.handle.clone())
 }
 
 /// The handles of the workers among `runs` that were started by the run
@@ -455,6 +483,9 @@ pub(crate) fn describe_worker(worker: &WorkerFacts) -> String {
         worker.state,
         ui::cut(&worker.task, 100)
     );
+    if let Some(parent) = &worker.parent {
+        line.push_str(&format!("\n  started by {parent}"));
+    }
     if let Some(model) = &worker.model {
         line.push_str(&format!("\n  runs {model}"));
         if let Some(effort) = &worker.effort {
@@ -528,6 +559,7 @@ impl Crew {
         let models = self.models.clone();
         let records = self.models.clone();
         let workflow = self.workflow.clone();
+        let feed = self.setup.feed.clone();
         let refuse = self.setup.refuse.clone();
         let project = self.project.clone();
         let mut config = SubagentsConfig::default()
@@ -546,6 +578,7 @@ impl Crew {
                     prepare(
                         &models,
                         &workflow,
+                        feed.as_ref(),
                         refuse.as_ref(),
                         default_1h,
                         request,
@@ -685,7 +718,11 @@ impl Crew {
         *self.lead.lock().unwrap() = started
             .iter()
             .rev()
-            .find(|run| !started.iter().any(|other| other.run_id == run.caller_run_id))
+            .find(|run| {
+                !started
+                    .iter()
+                    .any(|other| other.run_id == run.caller_run_id)
+            })
             .map(|run| run.caller_run_id)
             .or(lead);
         if let Some(old) = self.events.lock().unwrap().take() {
@@ -738,24 +775,20 @@ impl Crew {
                     Err(_) => break,
                 };
                 let Some(crew) = weak.upgrade() else { break };
+                // (A worker a worker started says whose it is.)
+                let name = crew.named(&event.handle, event.run_id);
                 let text = match event.kind.clone() {
-                    SubagentEventKind::Queued => Some(format!("{} queued", event.handle)),
-                    SubagentEventKind::Started => Some(format!("{} started", event.handle)),
-                    SubagentEventKind::Resumed => Some(format!("{} resumed", event.handle)),
-                    SubagentEventKind::Finished { summary } => Some(format!(
-                        "{} reported. {}",
-                        event.handle,
-                        ui::cut(&summary, 180)
-                    )),
-                    SubagentEventKind::Failed { error } => {
-                        Some(format!("{} failed ({error})", event.handle))
+                    SubagentEventKind::Queued => Some(format!("{name} queued")),
+                    SubagentEventKind::Started => Some(format!("{name} started")),
+                    SubagentEventKind::Resumed => Some(format!("{name} resumed")),
+                    SubagentEventKind::Finished { summary } => {
+                        Some(format!("{name} reported. {}", ui::cut(&summary, 180)))
                     }
+                    SubagentEventKind::Failed { error } => Some(format!("{name} failed ({error})")),
                     SubagentEventKind::Stopped { reason, .. } => {
-                        Some(format!("{} stopped ({reason})", event.handle))
+                        Some(format!("{name} stopped ({reason})"))
                     }
-                    SubagentEventKind::WorkspaceRemoved => {
-                        Some(format!("{} worktree removed", event.handle))
-                    }
+                    SubagentEventKind::WorkspaceRemoved => Some(format!("{name} worktree removed")),
                     _ => None,
                 };
                 if let Some(text) = text {
@@ -772,6 +805,19 @@ impl Crew {
         }));
     }
 
+    /// The worker `handle` (run `run`) as a notice names it: `r2`, or `r2
+    /// (under r1)` when a worker started it.
+    fn named(&self, handle: &str, run: Uuid) -> String {
+        let Some(workflow) = self.workflow() else {
+            return handle.to_string();
+        };
+        let runs = workflow.subagents();
+        match started_by(&runs, run) {
+            Some(parent) => format!("{handle} (under {parent})"),
+            None => handle.to_string(),
+        }
+    }
+
     /// What became of a worker, for the feed: its summary and placeholder
     /// follow its runs.
     fn tell_feed(&self, feed: &remote::Feed, handle: &str, run: Uuid, kind: &SubagentEventKind) {
@@ -783,7 +829,10 @@ impl Crew {
             SubagentEventKind::Failed { error } => WorkerChange::Failed { error },
             SubagentEventKind::Stopped { reason, .. } => WorkerChange::Stopped { reason },
             SubagentEventKind::WorkspaceRemoved => {
-                feed.notice(remote::Level::Info, &format!("{handle} worktree removed"));
+                feed.notice(
+                    remote::Level::Info,
+                    &format!("{} worktree removed", self.named(handle, run)),
+                );
                 return;
             }
             _ => return,
@@ -825,10 +874,7 @@ impl Crew {
         with_costs: bool,
     ) -> remote::WorkerInfo {
         let setup = self.run_model(run.run_id);
-        let parent = runs
-            .iter()
-            .find(|other| other.run_id == run.caller_run_id)
-            .map(|other| other.handle.clone());
+        let parent = started_by(runs, run.run_id);
         let costs = with_costs.then(|| {
             let results = workflow.context().agent_results.read();
             results
@@ -954,8 +1000,9 @@ impl Crew {
             return Vec::new();
         };
         let new = self.new_workers();
-        workflow
-            .subagents()
+        let runs = workflow.subagents();
+        let facts: Vec<WorkerFacts> = runs
+            .clone()
             .into_iter()
             .map(|run| {
                 // A run on another model than new workers' says it.
@@ -1013,6 +1060,8 @@ impl Crew {
                         .and_then(|started| started.effort)
                         .map(|effort| effort.to_string()),
                     profile: started.as_ref().and_then(|started| started.profile.clone()),
+                    parent: started_by(&runs, run.run_id),
+                    depth: run.depth,
                     cost: self
                         .setup
                         .feed
@@ -1032,6 +1081,17 @@ impl Crew {
                     id: run.handle,
                 }
             })
+            .collect();
+        // A worker's workers follow it.
+        let order = remote::family_order_of(
+            facts
+                .iter()
+                .map(|fact| (fact.id.as_str(), fact.parent.as_deref())),
+        );
+        let mut facts: Vec<Option<WorkerFacts>> = facts.into_iter().map(Some).collect();
+        order
+            .into_iter()
+            .filter_map(|at| facts[at].take())
             .collect()
     }
 
@@ -1520,6 +1580,8 @@ mod tests {
             model: Some("gpt-6.1-sol".into()),
             effort: Some("high".into()),
             profile: Some("3d-judge".into()),
+            parent: None,
+            depth: 1,
             cost: Some((0.1234, 0.1234)),
             other_model: None,
             cache_lifetime: Some(Duration::from_secs(300)),
@@ -1551,5 +1613,60 @@ mod tests {
             !text.contains("cost") && !text.contains("runs") && !text.contains("API"),
             "{text}"
         );
+        // A worker that a worker started says whose it is.
+        worker.parent = Some("r1".into());
+        worker.depth = 2;
+        assert!(
+            describe_worker(&worker)
+                .starts_with("r2  running  Judge the render\n  started by r1\n"),
+            "{}",
+            describe_worker(&worker)
+        );
+    }
+
+    /// A record of a worker `handle`, started by the run `caller`.
+    fn record(handle: &str, caller: Uuid) -> arko_workflows::subagents::SubagentRecord {
+        let now = chrono::Utc::now();
+        arko_workflows::subagents::SubagentRecord {
+            run_id: Uuid::new_v4(),
+            handle: handle.to_string(),
+            agent: "worker".into(),
+            caller_run_id: caller,
+            caller_agent: "main".into(),
+            depth: 1,
+            task: String::new(),
+            workspace: PathBuf::new(),
+            isolated: None,
+            parameters: Default::default(),
+            peers: Vec::new(),
+            all_peers: false,
+            state: SubagentState::Running,
+            created: now,
+            since: now,
+            report: None,
+            error: None,
+            pending: None,
+            stopped_by_caller: None,
+            stop_requested: None,
+            asking: false,
+            detached: false,
+        }
+    }
+
+    /// The worker that started a worker is known from the records, and the
+    /// workers below a worker are found through its workers.
+    #[test]
+    fn a_worker_started_by_a_worker_names_its_starter() {
+        let lead = Uuid::new_v4();
+        let r1 = record("r1", lead);
+        let r2 = record("r2", lead);
+        let r3 = record("r3", r1.run_id);
+        let r4 = record("r4", r3.run_id);
+        let records = [r1.clone(), r2.clone(), r3.clone(), r4.clone()];
+        assert_eq!(started_by(&records, r1.run_id), None);
+        assert_eq!(started_by(&records, r3.run_id).as_deref(), Some("r1"));
+        assert_eq!(started_by(&records, r4.run_id).as_deref(), Some("r3"));
+        assert_eq!(below(&records, r1.run_id), ["r3", "r4"]);
+        assert!(below(&records, r2.run_id).is_empty());
     }
 }

@@ -288,6 +288,39 @@ async fn a_worker_started_to_nest_starts_a_worker_whose_report_reaches_it() {
         );
     }
 
+    // r1's wait names the run it waits for, though the main agent has
+    // others going. (The feed names the runs of the agent that waits.)
+    assert!(
+        shown(&harness.feed)
+            .iter()
+            .any(|(kind, text, _)| kind == "call" && text == "waiting for r2"),
+        "{:?}",
+        shown(&harness.feed)
+    );
+    // r2's line is in r1's transcript, and r1's in the main one.
+    let lines: Vec<(String, Option<String>)> = harness
+        .feed
+        .subscribe()
+        .0
+        .items
+        .iter()
+        .filter(|item| item.kind == remote::Kind::WorkerLine)
+        .map(|item| (item.agent.clone(), item.worker.clone()))
+        .collect();
+    assert_eq!(
+        lines,
+        [
+            ("main".to_string(), Some("r1".to_string())),
+            ("r1".to_string(), Some("r2".to_string()))
+        ]
+    );
+    // /workers lists r2 after r1 and says who started it.
+    let described = harness.crew.as_ref().unwrap().describe();
+    assert!(
+        described.contains("r2  finished  Count the files in src.\n  started by r1\n"),
+        "{described}"
+    );
+
     // The clients know who started whom.
     let summaries = harness.feed.worker_summaries();
     let summary = |id: &str| summaries.iter().find(|summary| summary.id == id).unwrap();
@@ -683,5 +716,43 @@ async fn an_edit_is_refused_while_a_nested_worker_runs() {
             .unwrap_err(),
         "This message can't be edited."
     );
+    crew.shutdown().await;
+}
+
+/// Quitting while a tree runs counts every worker in it, and the workers
+/// the agent list, the status line and the quit popup read are all of them.
+#[tokio::test]
+async fn quitting_counts_the_workers_of_the_whole_tree() {
+    #[derive(Clone, Default)]
+    struct Printed(Arc<Mutex<Vec<String>>>);
+    impl ui::Printer for Printed {
+        fn print(&mut self, text: String) -> Result<(), ()> {
+            self.0
+                .lock()
+                .unwrap()
+                .extend(text.lines().map(str::to_string));
+            Ok(())
+        }
+    }
+    let script = Script::new(true);
+    let server = script.serve().await;
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, _sender) = open_session(temp.path(), &server);
+    turn(&mut harness, &mut inputs, "Review the files.").await;
+    tokio::time::timeout(Duration::from_secs(20), script.refused.notified())
+        .await
+        .expect("r1 asked to report early");
+    let crew = harness.crew.clone().unwrap();
+    until(|| crew.running() == ["r1", "r2"]).await;
+    let printed = Printed::default();
+    harness.output = Arc::new(Output::new(Some(Box::new(printed.clone())), false));
+    assert!(!harness.may_exit(Some(Vec::new())));
+    assert_eq!(
+        printed.0.lock().unwrap().last().unwrap(),
+        "2 workers are running. /exit again stops them and quits (resuming the session lets the agent continue them)."
+    );
+    // The status counts both too.
+    let live = remote::Meter::read(harness.gauges.as_ref());
+    assert_eq!(live.workers_running, ["r1", "r2"]);
     crew.shutdown().await;
 }
