@@ -42,7 +42,8 @@ start after you resume the session get the change.
 
 The session keeps its choice. Resuming with a flag changes it for the conversations that start
 after, and a conversation already started keeps the skills it began with. A name that isn't a
-built-in skill is skipped, and Arko says so.
+built-in skill in the environment setting or in `Options` is skipped, and Arko says so. The
+`--no-builtin-skill` flag refuses a name it doesn't know.
 
 ## For apps
 

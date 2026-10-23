@@ -2266,8 +2266,8 @@ impl Harness {
     }
 
     /// `/message WORKER TEXT`: the user's message goes to the worker as its
-    /// lead's would, and the lead gets a copy with its next news unless
-    /// `/message-copies` is off.
+    /// lead's would, and the lead gets a copy with its next news when
+    /// `/message-copies` is on.
     pub(crate) fn message_command(&mut self, argument: &str, source: Source) {
         let (to, text) = argument
             .split_once(char::is_whitespace)

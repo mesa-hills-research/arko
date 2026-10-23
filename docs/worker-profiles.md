@@ -142,7 +142,7 @@ say "r2 (under r1) reported". `/workers` and the web page's cards give what a wo
 workers, and `/cost` counts each worker once.
 
 The user's message to a worker is copied to the worker that started it, as news that doesn't start
-a turn, unless message copies are off. A worker reaches the one that started it with `message_agent`
+a turn, when message copies are on. A worker reaches the one that started it with `message_agent`
 to `lead`, and `link_agents` lets a worker's own workers message each other. A worker can't message
 another worker's workers. `/stop-workers r1` stops r1 and the workers under it, and only the worker
 that started a worker can restart it with a message.
