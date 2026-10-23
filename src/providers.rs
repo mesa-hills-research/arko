@@ -1232,10 +1232,48 @@ pub fn plan_usage_text(usage: &PlanUsage) -> Option<String> {
         return None;
     }
     let credits = usage.credits.as_ref().and_then(credits_text);
-    let text = format!("{} {}", plan_name(usage.plan), windows.join(", "));
-    Some(match credits {
-        Some(credits) => format!("{text}, {credits}"),
-        None => text,
+    let extra = usage.extra_usage.as_ref().and_then(extra_usage_text);
+    let mut text = format!("{} {}", plan_name(usage.plan), windows.join(", "));
+    for part in credits.into_iter().chain(extra) {
+        text.push_str(", ");
+        text.push_str(&part);
+    }
+    Some(text)
+}
+
+/// Whether a Claude account's extra usage is on, or pays for requests now.
+fn extra_usage_on(extra: &arko_ai::ExtraUsage) -> bool {
+    extra.enabled == Some(true) || extra.in_use
+}
+
+/// A Claude account's extra usage, as the status line says it: "extra usage
+/// $271.40 of $500.00" with its amounts, "extra usage $271.40 used" without a
+/// limit, and "extra usage in use" or "extra usage on" when the amounts aren't
+/// known. `None` when it isn't on.
+fn extra_usage_text(extra: &arko_ai::ExtraUsage) -> Option<String> {
+    if !extra_usage_on(extra) {
+        return None;
+    }
+    // The amounts are in minor units of the currency (cents for USD).
+    let places = extra.decimal_places.unwrap_or(2);
+    let (before, after) = match extra.currency.as_deref() {
+        None | Some("USD") => ("$", String::new()),
+        Some(code) => ("", format!(" {code}")),
+    };
+    let amount = |minor: f64| {
+        format!(
+            "{before}{:.*}",
+            places as usize,
+            minor / 10_f64.powi(places as i32)
+        )
+    };
+    Some(match (extra.used_credits, extra.monthly_limit) {
+        (Some(used), Some(limit)) => {
+            format!("extra usage {} of {}{after}", amount(used), amount(limit))
+        }
+        (Some(used), None) => format!("extra usage {}{after} used", amount(used)),
+        _ if extra.in_use => "extra usage in use".to_string(),
+        _ => "extra usage on".to_string(),
     })
 }
 
@@ -1977,6 +2015,65 @@ mod tests {
             [("5 h", 12.4), ("7 d", 3.0)]
         );
         assert!(plan_windows(&PlanUsage::default()).is_empty());
+    }
+
+    /// A Claude account's extra usage shows beside the plan windows when it is
+    /// on, with its amounts in the currency's decimal places, and says nothing
+    /// when it is off or not known.
+    #[test]
+    fn extra_usage_shows_beside_the_claude_windows_when_it_is_on() {
+        let line = |extra: Option<arko_ai::ExtraUsage>| {
+            let window = |percent: f64, minutes: u64| arko_ai::PlanUsageWindow {
+                used_percent: percent,
+                window_minutes: Some(minutes),
+                ..Default::default()
+            };
+            plan_usage_text(&PlanUsage {
+                plan: Some(SubscriptionPlan::ClaudeCode),
+                primary: Some(window(12.0, 300)),
+                secondary: Some(window(71.0, 10_080)),
+                extra_usage: extra,
+                ..Default::default()
+            })
+            .unwrap()
+        };
+        let extra = |enabled, in_use| arko_ai::ExtraUsage {
+            enabled,
+            in_use,
+            ..Default::default()
+        };
+        let amounts = |used, limit, currency: &str, places| arko_ai::ExtraUsage {
+            used_credits: Some(used),
+            monthly_limit: limit,
+            currency: Some(currency.into()),
+            decimal_places: Some(places),
+            ..extra(Some(true), true)
+        };
+        let windows = "Claude plan 5 h 12%, 7 d 71%";
+        assert_eq!(line(None), windows);
+        assert_eq!(line(Some(extra(Some(false), false))), windows);
+        assert_eq!(line(Some(extra(None, false))), windows);
+        assert_eq!(
+            line(Some(extra(Some(true), false))),
+            format!("{windows}, extra usage on")
+        );
+        assert_eq!(
+            line(Some(extra(Some(true), true))),
+            format!("{windows}, extra usage in use")
+        );
+        assert_eq!(
+            line(Some(amounts(27_140.0, Some(50_000.0), "USD", 2))),
+            format!("{windows}, extra usage $271.40 of $500.00")
+        );
+        assert_eq!(
+            line(Some(amounts(27_140.0, None, "USD", 2))),
+            format!("{windows}, extra usage $271.40 used")
+        );
+        // Another currency, with no decimal places, is named after the amounts.
+        assert_eq!(
+            line(Some(amounts(3_500.0, Some(10_000.0), "JPY", 0))),
+            format!("{windows}, extra usage 3500 of 10000 JPY")
+        );
     }
 
     #[test]

@@ -44,7 +44,13 @@ ChatGPT plan 5 h 12%, 7 d 82%, unlimited credits
 ```
 
 It says "has credits" when the backend gives no amount, and nothing about credits when there are
-none. Claude Code's usage reports hold no credits, so the Claude plan shows none.
+none. The Claude plan has no credits. It shows its extra usage instead when that is on, with the
+amounts when Claude Code gives them.
+
+```text
+Claude plan 5 h 12%, 7 d 71%, extra usage $271.40 of $500.00
+Claude plan 5 h 12%, 7 d 71%, extra usage on
+```
 
 ## When a file changes
 
