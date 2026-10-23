@@ -604,7 +604,13 @@ impl Harness {
                         crew: self.crew.clone(),
                     }),
                 )
-                .agent_tool(MAIN, Arc::new(kept_notes::ForgetNote(self.kept.clone())));
+                .agent_tool(
+                    MAIN,
+                    Arc::new(kept_notes::ForgetNote {
+                        notes: self.kept.clone(),
+                        crew: self.crew.clone(),
+                    }),
+                );
         }
         builder = builder.user_input_handler(self.asker.clone());
         let legacy = self.settings.max_workers > 0

@@ -2742,3 +2742,192 @@ async fn a_worker_hands_over(forget: bool) {
     }
     harness.crew.as_ref().unwrap().shutdown().await;
 }
+
+/// A note the user removes with `/notes remove` is announced to the main
+/// agent in its next request: once, with the start of its first line.
+#[tokio::test]
+async fn a_removed_note_is_announced_to_the_main_agent_once() {
+    let temp = tempfile::tempdir().unwrap();
+    let bodies: Bodies = Arc::default();
+    let server = ModelServer::start(Arc::new({
+        let bodies = bodies.clone();
+        move |_, body: String| {
+            let mut bodies = bodies.lock().unwrap();
+            bodies.push(body);
+            let id = format!("m{}", bodies.len());
+            Box::pin(async move { complete(&id, "Hi.") })
+        }
+    }))
+    .await;
+    let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
+    let note = "Tear the build box down when the last build is done, and tell the user what it cost.\nThe box is named build-1.";
+    harness.kept.add(note, kept_notes::Audience::Lead).unwrap();
+    for message in ["First.", "Second.", "Third."] {
+        if message == "Second." {
+            harness.live_command("/notes remove 1", Source::Terminal);
+        }
+        let end = harness
+            .turn(Prompt::User(message.into()), &mut inputs)
+            .await;
+        assert!(matches!(end, TurnEnd::Answered));
+    }
+    // The request after the removal has the line, and the one after that
+    // has the same single line in the conversation. (The bodies are JSON.)
+    let line = r#"The user removed kept note 1 (\"Tear the build box down when the last build is done, and tel…\")."#;
+    let held: Vec<usize> = bodies
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|body| body.matches(line).count())
+        .collect();
+    assert_eq!(held, [0, 1, 1]);
+}
+
+/// The user removes a note for the worker r1 while r1 and r2 work, and r1
+/// hears of it under its notes heading. The worker r2 doesn't.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_removed_note_reaches_the_workers_that_had_it() {
+    workers_hear_of_a_removed_note(false).await;
+}
+
+/// The main agent removes the note with `forget_note`: r1 hears of it as
+/// the main agent's doing, and the main agent isn't told what it did.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_note_the_main_agent_forgets_reaches_the_workers_that_had_it() {
+    workers_hear_of_a_removed_note(true).await;
+}
+
+/// The note for r1 is removed (by the main agent with `by_agent`, else by
+/// the user) once r1 and r2 both wait for their first answer.
+#[cfg(unix)]
+async fn workers_hear_of_a_removed_note(by_agent: bool) {
+    let temp = tempfile::tempdir().unwrap();
+    let bodies: Bodies = Arc::default();
+    let hold = Arc::new(tokio::sync::Semaphore::new(0));
+    // Both workers have asked for their first answer.
+    fn both_wait(bodies: &Bodies) -> bool {
+        let bodies = bodies.lock().unwrap();
+        ["You are agent run r1", "You are agent run r2"]
+            .iter()
+            .all(|worker| bodies.iter().any(|body| body.contains(worker)))
+    }
+    let server = ModelServer::start(Arc::new({
+        let (bodies, hold) = (bodies.clone(), hold.clone());
+        move |_, body: String| {
+            bodies.lock().unwrap().push(body.clone());
+            let (bodies, hold) = (bodies.clone(), hold.clone());
+            Box::pin(async move {
+                let start = |id: &str, task: &str| {
+                    tool_call(
+                        id,
+                        crew::START_AGENT,
+                        serde_json::json!({"agent": WORKER, "task": task}),
+                    )
+                };
+                let shell =
+                    |id: &str| tool_call(id, SHELL_TOOL, serde_json::json!({"command": "echo hi"}));
+                if body.contains("You are agent run r1") {
+                    if body.contains("call_w1") {
+                        complete("w2", "First done.")
+                    } else {
+                        hold.acquire().await.unwrap().forget();
+                        shell("w1")
+                    }
+                } else if body.contains("You are agent run r2") {
+                    if body.contains("call_v1") {
+                        complete("v2", "Second done.")
+                    } else {
+                        hold.acquire().await.unwrap().forget();
+                        shell("v1")
+                    }
+                } else if body.contains("First done.") && body.contains("Second done.") {
+                    complete("m6", "All done.")
+                } else if body.contains("call_m3") || (!by_agent && body.contains("call_m2")) {
+                    let n = body.matches("call_m4").count();
+                    tool_call(
+                        &format!("m4_{n}"),
+                        crew::WAIT_FOR_AGENTS,
+                        serde_json::json!({"timeout_seconds": 20}),
+                    )
+                } else if body.contains("call_m2") {
+                    until(|| both_wait(&bodies)).await;
+                    tool_call("m3", kept_notes::FORGET_NOTE, serde_json::json!({"id": 1}))
+                } else if body.contains("call_m1") {
+                    start("m2", "Second worker.")
+                } else {
+                    start("m1", "First worker.")
+                }
+            })
+        }
+    }))
+    .await;
+    let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
+    let _managers = equip(&mut harness, false);
+    let note = "Skip the slow tests.";
+    harness
+        .kept
+        .add(note, kept_notes::Audience::Workers(vec!["r1".into()]))
+        .unwrap();
+    let typing = tokio::spawn({
+        let (kept, workflow) = (harness.kept.clone(), harness.workflow().clone());
+        let (bodies, hold) = (bodies.clone(), hold.clone());
+        async move {
+            if by_agent {
+                // The main agent has the result of forgetting the note.
+                until(|| {
+                    bodies
+                        .lock()
+                        .unwrap()
+                        .iter()
+                        .any(|body| body.contains("call_m3"))
+                })
+                .await;
+            } else {
+                until(|| both_wait(&bodies)).await;
+                let note = kept.remove(1).unwrap();
+                kept.tell_removed(&workflow, &note, true);
+            }
+            hold.add_permits(2);
+        }
+    });
+    let end = tokio::time::timeout(
+        Duration::from_secs(40),
+        harness.turn(Prompt::User("Start the workers.".into()), &mut inputs),
+    )
+    .await
+    .unwrap();
+    typing.await.unwrap();
+    assert!(matches!(end, TurnEnd::Answered));
+    assert_eq!(summary(&harness), "All done.");
+    let by = if by_agent {
+        "The main agent"
+    } else {
+        "The user"
+    };
+    let line = format!(r#"{by} removed kept note 1 (\"Skip the slow tests.\")."#);
+    let count = |bodies: &[String], line: &str| -> Vec<usize> {
+        bodies
+            .iter()
+            .map(|body| body.matches(line).count())
+            .collect()
+    };
+    let bodies = bodies.lock().unwrap().clone();
+    let (workers, mains): (Vec<String>, Vec<String>) = bodies
+        .into_iter()
+        .partition(|body| body.contains("You are agent run"));
+    let (r1, r2): (Vec<String>, Vec<String>) = workers
+        .into_iter()
+        .partition(|body| body.contains("You are agent run r1"));
+    // r1 has the line once, under its notes heading, and r2 never does.
+    assert_eq!(count(&r1, &line), [0, 1]);
+    assert!(r1[1].contains("The main agent's notes for you."));
+    assert!(!r1[1].contains("This list replaces any earlier one."));
+    assert!(count(&r2, "removed kept note").iter().all(|n| *n == 0));
+    // The main agent hears of the user's doing once, and not of its own.
+    let mains = count(&mains, "removed kept note");
+    assert!(mains.iter().all(|n| *n <= usize::from(!by_agent)));
+    assert_eq!(mains.contains(&1), !by_agent);
+    harness.crew.as_ref().unwrap().shutdown().await;
+}

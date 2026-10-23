@@ -15,7 +15,11 @@ agent, for chosen workers by ID (`r1`), or for every worker.
 
 The notes hold 8 KB in all. A note that would pass that is refused until another is forgotten.
 
-`/notes` lists the notes, and `/notes remove N` removes one. An agent that already read a removed note
-keeps what it read.
+`/notes` lists the notes, and `/notes remove N` removes one. The main agent and the running workers
+the note was for are told in one line. An agent that already read the note keeps what it read until
+its next handover or compaction, which brings the current list. A note the main agent forgets is
+announced to the workers the same way.
 
-An app reads and changes the notes of a session folder with `arko::kept_notes::KeptNotes`.
+An app reads and changes the notes of a session folder with `arko::kept_notes::KeptNotes`. That
+changes the folder only. To remove a note from a session that is running, an app sends it the line
+`/notes remove N`, as the terminal does.
