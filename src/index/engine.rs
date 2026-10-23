@@ -1840,6 +1840,13 @@ impl Indexes {
             }
             None => (WatchState::Off, 0, false, None),
         };
+        // This process learns that another one watches only when it tries to
+        // watch or refresh the index, which a status doesn't.
+        let watch = if watch == WatchState::Off && monitor::watched_elsewhere(&layout) {
+            WatchState::Elsewhere
+        } else {
+            watch
+        };
         let (chunks, status_error, dense, active, progress) = match index2::status(&layout.state())
         {
             Ok(status) => (
