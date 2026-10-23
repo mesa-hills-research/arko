@@ -115,7 +115,7 @@ fn line(tool: &str, parameters: &Parameters, running: &[String]) -> Option<Item>
         crew::WORKER_OPTIONS => call("list worker options".into()),
         crew::SAVE_WORKER_PROFILE => {
             let scope = match text(parameters, "scope").trim() {
-                "" | "session" => String::new(),
+                "" => format!(" for {}", crate::profiles::Place::Project.reach()),
                 scope => match crate::profiles::Place::parse(scope) {
                     Some(place) => format!(" for {}", place.reach()),
                     None => format!(" for the {scope}"),
@@ -630,7 +630,11 @@ mod tests {
         };
         assert_eq!(
             save(&[("name", "judge".into())]),
-            "save worker profile judge"
+            "save worker profile judge for this project"
+        );
+        assert_eq!(
+            save(&[("name", "judge".into()), ("scope", "session".into())]),
+            "save worker profile judge for this session"
         );
         assert_eq!(
             save(&[("name", "judge".into()), ("scope", "user".into())]),

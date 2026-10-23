@@ -6,8 +6,9 @@
 //! The models change while Arko runs (a key added with `/keys`, a plan's
 //! usage), so the agent reads them from a tool and not from its instructions,
 //! which keeps them out of the prompt cache's prefix. A profile saved for
-//! the session needs no approval. One saved for the project or for every
-//! session is put to the user as a question first, as `ask_user` is.
+//! the session needs no approval, and neither does one for a project folder
+//! that git ignores. One saved anywhere else is put to the user as a question
+//! first, as `ask_user` is.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
@@ -498,7 +499,7 @@ impl Tool for SaveWorkerProfile {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: SAVE_WORKER_PROFILE.into(),
-            description: "Saves a worker profile that start_agent takes by name. It is kept for this session. With scope project or user it is kept for later sessions, and the user is asked first.".into(),
+            description: "Saves a worker profile that start_agent takes by name. It is kept with the project for later sessions, unless scope says session (this session only) or user (every project). The user is asked first, except for a session profile and a project profile in a folder git ignores.".into(),
             output_based_example: None,
             parameters: vec![
                 text_parameter(
@@ -528,7 +529,7 @@ impl Tool for SaveWorkerProfile {
                 ),
                 text_parameter(
                     "scope",
-                    "session (the default), project or user (every project).",
+                    "project (the default, kept with the project), session (this session only) or user (every project).",
                     false,
                 ),
             ],
@@ -571,7 +572,7 @@ impl Tool for SaveWorkerProfile {
         // profile that can't work.
         let profile = Self::profile_of(&params)?;
         let place = match optional_text(&params, "scope")? {
-            None => Place::Session,
+            None => Place::Project,
             Some(scope) => Place::parse(scope).ok_or_else(|| {
                 refused(format!("scope is session, project or user, not {scope}"))
             })?,
@@ -593,7 +594,7 @@ impl Tool for SaveWorkerProfile {
             )));
         }
         profiles::check_agent_save(&basis.roots, &profile.name).map_err(refused)?;
-        if place != Place::Session {
+        if profiles::needs_approval(&basis.roots, place, &profile.name) {
             if !self.0.asker.can_ask() {
                 return Err(refused(
                     "No one can approve it in this session. Save it for the session, or tell the user the setup you want.",
@@ -649,6 +650,7 @@ impl Tool for SaveWorkerProfile {
         let kept = match place {
             Place::Session => "for this session".to_string(),
             Place::Project => "for this project".to_string(),
+            Place::Repository => "for this repository".to_string(),
             Place::User => "in the user's Arko folder, for every project".to_string(),
         };
         let mut result = format!(

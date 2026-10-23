@@ -405,7 +405,13 @@ fn saving_writes_the_file_and_keeps_unknown_keys() {
 #[test]
 fn an_agent_never_replaces_or_hides_a_profile_the_user_made() {
     let temp = tempfile::tempdir().unwrap();
-    let roots = roots(temp.path());
+    // A project in a subfolder of a repository, so every place has a folder.
+    let app = temp.path().join("work").join("app");
+    git_init(&temp.path().join("work"));
+    std::fs::create_dir_all(&app).unwrap();
+    let roots = Roots::new(temp.path().join("arko"))
+        .workspace(&app)
+        .session(temp.path().join("session"));
     let mut mine = Profile::new("reviewer", "The user's reviewer");
     mine.model = Some("opus".into());
     save(&roots, Place::User, &mine, Author::User).unwrap();
@@ -417,6 +423,18 @@ fn an_agent_never_replaces_or_hides_a_profile_the_user_made() {
             refused, "There is already a profile `reviewer` made by the user. Choose another name.",
             "{place:?}"
         );
+    }
+    // The same for a profile the user made at the repository's root.
+    write(
+        &roots,
+        Place::Repository,
+        "judge",
+        "---\ndescription: Judges\n---\n",
+    );
+    for place in Place::ALL {
+        let judge = Profile::new("judge", "The agent's judge");
+        let refused = save(&roots, place, &judge, Author::Agent).unwrap_err();
+        assert!(refused.contains("made by the user"), "{place:?} {refused}");
     }
     assert_eq!(
         read(&roots, "reviewer").unwrap().profile.description,
@@ -523,7 +541,9 @@ fn the_approval_question_shows_the_whole_profile() {
     );
     let project = approval_text(&profile, Place::Project);
     assert!(
-        project.contains("in this project's .agents/profiles folder, for everyone who works on it")
+        project.contains(
+            "save the worker profile 3d-judge in this project's .agents/profiles folder."
+        )
     );
     let mut plain = Profile::new("quick", "Reads");
     plain.nested = true;
@@ -575,12 +595,21 @@ fn only_a_plain_yes_approves() {
 
 #[test]
 fn places_are_named_for_the_commands() {
-    for place in Place::ALL {
+    for place in Place::ALL
+        .into_iter()
+        .filter(|place| *place != Place::Repository)
+    {
         assert_eq!(Place::parse(place.name()), Some(place));
         assert_eq!(Place::parse(&place.name().to_uppercase()), Some(place));
     }
     assert_eq!(Place::parse("everywhere"), None);
-    assert!(Place::Session < Place::Project && Place::Project < Place::User);
+    // The repository's folder is read and not saved to.
+    assert_eq!(Place::parse("repository"), None);
+    assert!(
+        Place::Session < Place::Project
+            && Place::Project < Place::Repository
+            && Place::Repository < Place::User
+    );
     assert_eq!(Place::User.reach(), "every project");
 }
 
@@ -858,4 +887,209 @@ fn an_agents_first_write_never_replaces_a_file_that_appeared_meanwhile() {
             .unwrap()
             .contains("The user's own")
     );
+}
+
+/// Makes `dir` a git repository.
+fn git_init(dir: &Path) {
+    std::fs::create_dir_all(dir).unwrap();
+    let done = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["init", "-q"])
+        .status()
+        .unwrap();
+    assert!(done.success());
+}
+
+fn judge() -> Profile {
+    Profile::new("judge", "Judges renders")
+}
+
+/// A project folder that a save makes gets a `.gitignore` that ignores the
+/// folder and the file itself. A folder that was there, and one whose file
+/// the user deleted, don't get one, and the setting turns it off.
+#[test]
+fn a_project_folder_a_save_makes_gets_a_gitignore_once() {
+    let temp = tempfile::tempdir().unwrap();
+    let roots = roots(temp.path());
+    let folder = roots.folder(Place::Project).unwrap();
+    git_init(&temp.path().join("work"));
+    save(&roots, Place::Project, &judge(), Author::Agent).unwrap();
+    let ignore = folder.join(".gitignore");
+    assert_eq!(
+        std::fs::read_to_string(&ignore).unwrap(),
+        "# Arko keeps worker profiles out of git. Delete this file to share them.\n*\n"
+    );
+    // Git sees neither the profile nor the file.
+    let status = crate::sessions::git(
+        &temp.path().join("work"),
+        &["status", "--porcelain", "--untracked-files=all"],
+    );
+    assert_eq!(status.as_deref(), Some(""));
+    // The user deletes the file, and the next save doesn't write it again.
+    std::fs::remove_file(&ignore).unwrap();
+    save(
+        &roots,
+        Place::Project,
+        &Profile::new("other", "Another"),
+        Author::User,
+    )
+    .unwrap();
+    assert!(!ignore.exists());
+    // The other places get none.
+    save(&roots, Place::User, &judge(), Author::User).unwrap();
+    assert!(
+        !roots
+            .folder(Place::User)
+            .unwrap()
+            .join(".gitignore")
+            .exists()
+    );
+    // With the setting off a new folder doesn't get one either.
+    let off = Preferences {
+        keep_out_of_git: false,
+        ..Preferences::default()
+    };
+    off.save(&temp.path().join("arko")).unwrap();
+    std::fs::remove_dir_all(temp.path().join("work").join(".agents")).unwrap();
+    save(&roots, Place::Project, &judge(), Author::User).unwrap();
+    assert!(!ignore.exists());
+    assert_eq!(Preferences::load(&temp.path().join("arko")), off);
+}
+
+/// An agent saves in a project folder that git ignores without asking, and
+/// asks for one git tracks. Outside a git repository the user is asked, as
+/// for the user's own folder.
+#[test]
+fn a_project_folder_git_ignores_needs_no_approval() {
+    let temp = tempfile::tempdir().unwrap();
+    let roots = roots(temp.path());
+    let work = temp.path().join("work");
+    std::fs::create_dir_all(&work).unwrap();
+    assert!(needs_approval(&roots, Place::Project, "judge"), "no repo");
+    assert!(needs_approval(&roots, Place::User, "judge"));
+    assert!(!needs_approval(&roots, Place::Session, "judge"));
+
+    // In a repository, the folder a save is about to make will ignore itself.
+    git_init(&work);
+    assert!(
+        !needs_approval(&roots, Place::Project, "judge"),
+        "to be made"
+    );
+    save(&roots, Place::Project, &judge(), Author::Agent).unwrap();
+    assert!(!needs_approval(&roots, Place::Project, "judge"), "ignored");
+    assert!(
+        !needs_approval(&roots, Place::Project, "another"),
+        "ignored"
+    );
+
+    // Without the file the folder is git's to track.
+    let folder = roots.folder(Place::Project).unwrap();
+    std::fs::remove_file(folder.join(".gitignore")).unwrap();
+    assert!(needs_approval(&roots, Place::Project, "judge"), "tracked");
+
+    // With the setting off a folder to be made is tracked too.
+    std::fs::remove_dir_all(&folder).unwrap();
+    assert!(!needs_approval(&roots, Place::Project, "judge"));
+    Preferences {
+        keep_out_of_git: false,
+        ..Preferences::default()
+    }
+    .save(&temp.path().join("arko"))
+    .unwrap();
+    assert!(
+        needs_approval(&roots, Place::Project, "judge"),
+        "setting off"
+    );
+}
+
+/// A `.agents` that links to another place is not the project's folder, so the
+/// save asks even when that place is a git work tree.
+#[cfg(unix)]
+#[test]
+fn a_linked_agents_folder_that_leaves_the_project_still_asks() {
+    let temp = tempfile::tempdir().unwrap();
+    let roots = roots(temp.path());
+    let work = temp.path().join("work");
+    let other = temp.path().join("other");
+    git_init(&work);
+    git_init(&other);
+    let agents = work.join(".agents");
+    // A link to a folder inside the project is the project's own.
+    std::fs::create_dir(work.join("inner")).unwrap();
+    std::os::unix::fs::symlink(work.join("inner"), &agents).unwrap();
+    assert!(!needs_approval(&roots, Place::Project, "judge"), "inside");
+    std::fs::remove_file(&agents).unwrap();
+    std::os::unix::fs::symlink(&other, &agents).unwrap();
+    assert!(needs_approval(&roots, Place::Project, "judge"), "outside");
+}
+
+/// In a subfolder of a git repository the repository root's profiles are
+/// read too, behind the project's and ahead of the user's, unless the
+/// setting is off.
+#[test]
+fn a_subfolder_reads_the_repository_roots_profiles_unless_turned_off() {
+    let temp = tempfile::tempdir().unwrap();
+    let top = temp.path().join("repo");
+    let sub = top.join("packages").join("app");
+    std::fs::create_dir_all(&sub).unwrap();
+    git_init(&top);
+    let arko = temp.path().join("arko");
+    let roots = Roots::new(&arko).workspace(&sub);
+    assert_eq!(
+        roots.folder(Place::Repository),
+        Some(top.join(".agents").join("profiles"))
+    );
+    let make = |place, description: &str| {
+        write(
+            &roots,
+            place,
+            "reviewer",
+            &format!("---\ndescription: {description}\n---\n"),
+        );
+    };
+    make(Place::User, "Yours");
+    let found = read(&roots, "reviewer").unwrap();
+    assert_eq!(
+        (found.place, found.profile.description.as_str()),
+        (Place::User, "Yours")
+    );
+    make(Place::Repository, "The repository's");
+    let found = read(&roots, "reviewer").unwrap();
+    assert_eq!(found.place, Place::Repository);
+    assert_eq!(list(&roots).hidden[0].place, Place::User);
+    make(Place::Project, "The project's");
+    let listed = list(&roots);
+    assert_eq!(listed.active[0].place, Place::Project);
+    assert_eq!(
+        listed
+            .hidden
+            .iter()
+            .map(|found| found.place)
+            .collect::<Vec<_>>(),
+        [Place::Repository, Place::User]
+    );
+    // The repository's folder is the project's at the root, and there is none
+    // outside a repository.
+    assert_eq!(
+        Roots::new(&arko).workspace(&top).folder(Place::Repository),
+        None
+    );
+    assert_eq!(
+        Roots::new(&arko)
+            .workspace(temp.path())
+            .folder(Place::Repository),
+        None
+    );
+
+    // Turned off, the repository root's profiles are not read.
+    Preferences {
+        repo_root: false,
+        ..Preferences::default()
+    }
+    .save(&arko)
+    .unwrap();
+    assert_eq!(roots.folder(Place::Repository), None);
+    std::fs::remove_file(roots.folder(Place::Project).unwrap().join("reviewer.md")).unwrap();
+    assert_eq!(read(&roots, "reviewer").unwrap().place, Place::User);
 }

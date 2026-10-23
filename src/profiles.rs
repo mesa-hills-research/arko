@@ -13,10 +13,14 @@
 //! ```
 //!
 //! The profile's name is its file's name without `.md`. A profile lives in
-//! one of three places, and the nearest one wins when a name is in more
+//! one of four places, and the nearest one wins when a name is in more
 //! than one. The session's own folder (`profiles` in the session's folder)
-//! beats the project's (`.agents/profiles` in the working directory), and
-//! the project's beats the user's (`profiles` in Arko's folder).
+//! beats the project's (`.agents/profiles` in the working directory), the
+//! project's beats the repository's (`.agents/profiles` in the root of the
+//! git repository the working directory is in, when that is another folder),
+//! and the repository's beats the user's (`profiles` in Arko's folder).
+//! [`Preferences`] turns the repository's folder off, and keeps a project
+//! folder that Arko creates out of git.
 //!
 //! This module reads and writes the files without a session, as
 //! [`extensions`](crate::extensions) and [`accounts`](crate::accounts) do
@@ -50,6 +54,8 @@
 
 use std::path::{Path, PathBuf};
 
+use serde::{Deserialize, Serialize};
+
 use crate::agents::Effort;
 use crate::providers;
 
@@ -70,11 +76,17 @@ pub const RESERVED: [&str; 5] = ["default", "main", "worker", "lead", "all"];
 /// The `made_by` value of a profile an agent wrote.
 pub const MADE_BY_AGENT: &str = "agent";
 
-/// The folder in the project (the working directory) that holds profiles.
+/// The folder in the project (the working directory) and in a repository's
+/// root that holds profiles.
 const PROJECT_FOLDER: [&str; 2] = [".agents", "profiles"];
 /// The folder in Arko's folder and in a session's folder.
 const FOLDER: &str = "profiles";
 const EXTENSION: &str = "md";
+/// The file that keeps a project's profiles folder out of git: it ignores
+/// everything in the folder, itself included.
+const IGNORE_FILE: &str = ".gitignore";
+const IGNORE_TEXT: &str =
+    "# Arko keeps worker profiles out of git. Delete this file to share them.\n*\n";
 
 /// Where a profile lives. The places are listed nearest first, and the
 /// nearest wins when a name is in more than one. They sort in that order.
@@ -83,39 +95,54 @@ const EXTENSION: &str = "md";
 pub enum Place {
     /// The session's own folder. An agent saves here without asking.
     Session,
-    /// The project's `.agents/profiles`, shared with its team.
+    /// The project's `.agents/profiles`, kept with the workspace.
     Project,
+    /// The `.agents/profiles` in the root of the git repository the project
+    /// is in, when the project is a subfolder of it. The commands and the
+    /// agent's tool read it and don't save to it.
+    Repository,
     /// `profiles` in Arko's folder, for every project.
     User,
 }
 
 impl Place {
     /// Every place, nearest first.
-    pub const ALL: [Place; 3] = [Place::Session, Place::Project, Place::User];
+    pub const ALL: [Place; 4] = [
+        Place::Session,
+        Place::Project,
+        Place::Repository,
+        Place::User,
+    ];
 
     /// The word the commands and the agent's tool take: `session`,
-    /// `project` or `user`.
+    /// `project` or `user`. (The repository's is `repository`, which they
+    /// don't take.)
     pub fn name(self) -> &'static str {
         match self {
             Place::Session => "session",
             Place::Project => "project",
+            Place::Repository => "repository",
             Place::User => "user",
         }
     }
 
-    /// Parses [`name`](Self::name), in any case.
+    /// Parses [`name`](Self::name), in any case, for the places the commands
+    /// and the agent's tool take.
     pub fn parse(text: &str) -> Option<Place> {
         Place::ALL
             .into_iter()
+            .filter(|place| *place != Place::Repository)
             .find(|place| place.name().eq_ignore_ascii_case(text.trim()))
     }
 
     /// Who can use a profile in this place, as a phrase that follows
-    /// "for": `this session`, `this project` or `every project`.
+    /// "for": `this session`, `this project`, `this repository` or `every
+    /// project`.
     pub fn reach(self) -> &'static str {
         match self {
             Place::Session => "this session",
             Place::Project => "this project",
+            Place::Repository => "this repository",
             Place::User => "every project",
         }
     }
@@ -612,8 +639,56 @@ pub fn check_name(name: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// The three folders profiles are read from and saved in. The session's
-/// and the project's are optional, as an app's settings page has neither.
+/// The file in Arko's folder that holds the [`Preferences`].
+const PREFERENCES_FILE: &str = "profiles.json";
+
+/// What the user chose for every project about where profiles are kept, in
+/// `profiles.json` in Arko's folder. [`Roots`] and [`save`] read the file
+/// each time, so a change reaches the next worker started with no restart.
+/// Without the file, or when it can't be read, both are on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Preferences {
+    /// "Keep new profile folders out of git". When [`save`] makes a
+    /// project's profiles folder, it writes a `.gitignore` in it, so git
+    /// ignores the folder and the file.
+    pub keep_out_of_git: bool,
+    /// Also look in the `.agents/profiles` of the repository's root, when
+    /// the project is in a subfolder of a git repository.
+    pub repo_root: bool,
+}
+
+impl Default for Preferences {
+    fn default() -> Self {
+        Self {
+            keep_out_of_git: true,
+            repo_root: true,
+        }
+    }
+}
+
+impl Preferences {
+    /// The preferences in Arko's folder `root`.
+    pub fn load(root: &Path) -> Self {
+        std::fs::read_to_string(root.join(PREFERENCES_FILE))
+            .ok()
+            .and_then(|text| serde_json::from_str(&text).ok())
+            .unwrap_or_default()
+    }
+
+    /// Saves them in Arko's folder `root`.
+    pub fn save(&self, root: &Path) -> Result<(), String> {
+        let file = root.join(PREFERENCES_FILE);
+        let text = serde_json::to_string_pretty(self).map_err(|error| error.to_string())?;
+        std::fs::create_dir_all(root)
+            .and_then(|()| crate::session::write_whole(&file, (text + "\n").as_bytes()))
+            .map_err(|error| format!("Couldn't write {} ({})", file.display(), reason_of(&error)))
+    }
+}
+
+/// The folders profiles are read from and saved in. The session's, the
+/// project's and the repository's are optional, as an app's settings page
+/// has none of them.
 #[derive(Debug, Clone)]
 pub struct Roots {
     root: PathBuf,
@@ -644,14 +719,23 @@ impl Roots {
     }
 
     /// The folder that holds the profiles of `place`, whether it exists or
-    /// not. `None` when there is no session or project.
+    /// not. `None` when there is no session or project, and for the
+    /// repository when the project is not in a subfolder of a git
+    /// repository or [`Preferences::repo_root`] is off.
     pub fn folder(&self, place: Place) -> Option<PathBuf> {
+        let project_folder = |dir: &Path| dir.join(PROJECT_FOLDER[0]).join(PROJECT_FOLDER[1]);
         match place {
             Place::Session => self.session.as_ref().map(|dir| dir.join(FOLDER)),
-            Place::Project => self
-                .workspace
-                .as_ref()
-                .map(|dir| dir.join(PROJECT_FOLDER[0]).join(PROJECT_FOLDER[1])),
+            Place::Project => self.workspace.as_deref().map(project_folder),
+            Place::Repository => {
+                // The root has a `.git` folder, or a `.git` file in a worktree.
+                let workspace = self.workspace.as_deref()?;
+                let top = workspace
+                    .ancestors()
+                    .find(|dir| dir.join(".git").exists())?;
+                (top != workspace && Preferences::load(&self.root).repo_root)
+                    .then(|| project_folder(top))
+            }
             Place::User => Some(self.root.join(FOLDER)),
         }
     }
@@ -928,6 +1012,11 @@ pub struct Saved {
 /// An agent's save is marked `made_by: agent`, and can't replace or hide a
 /// profile that isn't (one the user made, in any place), and a user's save
 /// takes the mark off, as the profile is the user's now.
+///
+/// When this makes the project's profiles folder, and
+/// [`Preferences::keep_out_of_git`] is on, the folder gets a `.gitignore`
+/// that ignores it. It is written only when the folder is made, so a user who
+/// deletes it isn't given it again.
 pub fn save(
     roots: &Roots,
     place: Place,
@@ -951,8 +1040,25 @@ pub fn save(
         Author::User => None,
     };
     let replaced = file.is_file();
+    let made = !folder.exists();
     std::fs::create_dir_all(&folder)
         .map_err(|error| format!("Couldn't make {} ({})", folder.display(), reason_of(&error)))?;
+    // Only a folder made here gets the file, so one the user deleted is
+    // not written again.
+    if made && place == Place::Project && Preferences::load(&roots.root).keep_out_of_git {
+        let ignore = folder.join(IGNORE_FILE);
+        // (A save that made the folder a moment before has written it.)
+        match crate::session::write_new(&ignore, IGNORE_TEXT.as_bytes()) {
+            Err(error) if error.kind() != std::io::ErrorKind::AlreadyExists => {
+                return Err(format!(
+                    "Couldn't write {} ({})",
+                    ignore.display(),
+                    reason_of(&error)
+                ));
+            }
+            _ => {}
+        }
+    }
     let text = written.render();
     let write = if author == Author::Agent && !replaced {
         // The check above and this write are two steps. Someone who wrote
@@ -1016,6 +1122,62 @@ pub fn check_agent_save(roots: &Roots, name: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Whether the user is asked before an agent saves the profile `name` in
+/// `place`. Never for the session. For the project not when git ignores the
+/// profiles folder (inside a git work tree, as `git check-ignore` says, or
+/// a folder [`save`] is about to make with its own `.gitignore`), and
+/// outside a git repository the user is asked, as for the other places. A
+/// folder that a link leads out of the project is asked about too.
+pub fn needs_approval(roots: &Roots, place: Place, name: &str) -> bool {
+    match place {
+        Place::Session => false,
+        Place::Project => !roots
+            .workspace
+            .as_deref()
+            .zip(roots.folder(Place::Project))
+            .is_some_and(|(workspace, folder)| {
+                is_ignored(
+                    workspace,
+                    &folder,
+                    name,
+                    Preferences::load(&roots.root).keep_out_of_git,
+                )
+            }),
+        _ => true,
+    }
+}
+
+/// Whether git ignores the profile `name` in the project's `folder`, which
+/// is in the `workspace`.
+fn is_ignored(workspace: &Path, folder: &Path, name: &str, keep_out_of_git: bool) -> bool {
+    // The folder may not be made yet.
+    let Some(existing) = folder.ancestors().find(|dir| dir.is_dir()) else {
+        return false;
+    };
+    // `.agents` may be a link to another place, which is not ignored by
+    // the project's repository, so the user is asked.
+    let inside = existing
+        .canonicalize()
+        .and_then(|existing| Ok(existing.starts_with(workspace.canonicalize()?)));
+    if !inside.unwrap_or(false) {
+        return false;
+    }
+    if crate::sessions::git(existing, &["rev-parse", "--is-inside-work-tree"]).as_deref()
+        != Some("true")
+    {
+        return false;
+    }
+    if !folder.exists() && keep_out_of_git {
+        return true;
+    }
+    let file = folder.join(Profile::file_name(name));
+    crate::sessions::git(
+        existing,
+        &["check-ignore", "-q", "--", &file.to_string_lossy()],
+    )
+    .is_some()
+}
+
 /// Deletes the profile `name` from `place`. Returns the file it removed.
 pub fn delete(roots: &Roots, place: Place, name: &str) -> Result<PathBuf, String> {
     check_file_name(name)?;
@@ -1069,7 +1231,8 @@ fn size_of(text: &str) -> String {
 pub fn approval_text(profile: &Profile, place: Place) -> String {
     let wherever = match place {
         Place::User => "in your Arko folder, for every project",
-        Place::Project => "in this project's .agents/profiles folder, for everyone who works on it",
+        Place::Project => "in this project's .agents/profiles folder",
+        Place::Repository => "in the repository's .agents/profiles folder",
         Place::Session => "for this session",
     };
     let mut text = format!(

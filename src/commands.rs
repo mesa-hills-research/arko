@@ -105,7 +105,7 @@ pub const COMMANDS: &[Command] = &[
     Command::screen(
         "/settings",
         "",
-        "the view, theme, mouse, outside access, handover size, background jobs, monitor wakes, models for workers, worker depth, message copies, text replies, extra rules, Claude Code compaction, project instructions, web page and API keys",
+        "the view, theme, mouse, outside access, handover size, background jobs, monitor wakes, models for workers, worker depth, message copies, worker profile folders, text replies, extra rules, Claude Code compaction, project instructions, web page and API keys",
     ),
     Command {
         name: "/model",

@@ -405,6 +405,7 @@ async fn a_profile_for_the_session_is_saved_without_asking() {
             ("model", "sol".into()),
             ("effort", "high".into()),
             ("instructions", "Review it against the rules.".into()),
+            ("scope", "session".into()),
         ],
     )
     .await
@@ -432,10 +433,69 @@ async fn a_profile_for_the_session_is_saved_without_asking() {
         &[
             ("name", "reviewer".into()),
             ("description", "Reviews a diff again".into()),
+            ("scope", "session".into()),
         ],
     )
     .await;
     assert!(again.is_ok(), "{again:?}");
+}
+
+/// With no scope a profile is kept with the project. The user isn't asked
+/// while git ignores the profiles folder, and is when git tracks it.
+#[tokio::test]
+async fn a_profile_with_no_scope_is_kept_with_the_project_and_asks_when_git_tracks_it() {
+    let mut fixture = fixture(ModelChoice::Agent, true);
+    let mut questions = fixture.questions.take().unwrap();
+    let folder = fixture.basis.roots.folder(Place::Project).unwrap();
+    let work = folder.parent().unwrap().parent().unwrap();
+    std::fs::create_dir_all(work).unwrap();
+    let done = std::process::Command::new("git")
+        .arg("-C")
+        .arg(work)
+        .args(["init", "-q"])
+        .status()
+        .unwrap();
+    assert!(done.success());
+
+    // The folder is new, so the save makes it with a .gitignore, unasked.
+    let result = call(
+        &fixture.save,
+        &[
+            ("name", "reviewer".into()),
+            ("description", "Reviews".into()),
+        ],
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        result,
+        "Saved the worker profile reviewer for this project. start_agent takes it by name."
+    );
+    assert!(questions.try_recv().is_err(), "no question");
+    assert!(folder.join(".gitignore").is_file());
+    let found = profiles::read(&fixture.basis.roots, "reviewer").unwrap();
+    assert_eq!(found.place, Place::Project);
+
+    // Without the .gitignore git tracks the folder, so the user is asked.
+    std::fs::remove_file(folder.join(".gitignore")).unwrap();
+    let asking = {
+        let save = fixture.save.clone();
+        tokio::spawn(async move {
+            call(
+                &save,
+                &[("name", "audit".into()), ("description", "Audits".into())],
+            )
+            .await
+        })
+    };
+    let question = within(questions.recv()).await.unwrap();
+    assert!(
+        question
+            .text
+            .contains("worker profile audit in this project's")
+    );
+    question.answer.send("yes".into()).unwrap();
+    assert!(within(asking).await.unwrap().is_ok());
 }
 
 #[tokio::test]
@@ -605,7 +665,11 @@ async fn fixture_alone() -> String {
     assert!(
         call(
             &fixture.save,
-            &[("name", "audit".into()), ("description", "Audits".into())],
+            &[
+                ("name", "audit".into()),
+                ("description", "Audits".into()),
+                ("scope", "session".into()),
+            ],
         )
         .await
         .is_ok()
@@ -741,6 +805,7 @@ async fn a_profile_on_a_model_the_session_cant_reach_is_saved_with_a_warning() {
             ("name", "strong".into()),
             ("description", "Thinks hard".into()),
             ("model", "opus".into()),
+            ("scope", "session".into()),
         ],
     )
     .await
@@ -889,6 +954,7 @@ async fn an_effort_the_session_s_model_does_not_take_is_refused_for_a_profile_wi
             ("description", "Thinks hard".into()),
             ("model", "sol".into()),
             ("effort", "max".into()),
+            ("scope", "session".into()),
         ],
     )
     .await;

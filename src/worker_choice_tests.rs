@@ -107,7 +107,7 @@ fn lead(body: &str, step: &str) -> String {
         "Start by listing the options." => {
             return tool_call(step, crew::WORKER_OPTIONS, serde_json::json!({}));
         }
-        "Start by saving a profile." => return saving(None),
+        "Start by saving a profile." => return saving(Some("session")),
         "Start by saving a profile for everyone." => return saving(Some("user")),
         _ => {}
     }

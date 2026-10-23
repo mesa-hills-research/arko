@@ -77,6 +77,8 @@ pub struct Info {
     pub session_dir: PathBuf,
     /// Where the view's choices are remembered.
     pub prefs: Option<PathBuf>,
+    /// Arko's folder, where the settings for worker profiles are kept.
+    pub root: Option<PathBuf>,
 }
 
 /// What the view asks of the session and the terminal.
@@ -241,6 +243,9 @@ pub struct App {
     pub depth: Depth,
     pub theme: Theme,
     pub prefs: Prefs,
+    /// The settings for worker profiles, which are the user's for every
+    /// project.
+    pub profile_prefs: crate::profiles::Preferences,
     pub view: View,
     /// The worker whose own transcript shows (the worker view).
     pub watching: Option<String>,
@@ -333,6 +338,11 @@ impl App {
         depth: Depth,
     ) -> Self {
         let prefs = Prefs::load(info.prefs.as_deref());
+        let profile_prefs = info
+            .root
+            .as_deref()
+            .map(crate::profiles::Preferences::load)
+            .unwrap_or_default();
         // ARKO_THEME, else the theme chosen last, else the default.
         let theme_name = crate::credentials::var(theme::SETTING)
             .or_else(|| prefs.theme.clone())
@@ -356,6 +366,7 @@ impl App {
             depth,
             theme,
             prefs,
+            profile_prefs,
             view,
             watching: None,
             working_since: activity.working.then(Instant::now),
@@ -1493,6 +1504,8 @@ impl App {
             if commands::find("/message-copies on").is_some() {
                 rows.push(SettingsRow::MessageCopies);
             }
+            rows.push(SettingsRow::KeepProfilesOutOfGit);
+            rows.push(SettingsRow::RepoRootProfiles);
         }
         rows.push(SettingsRow::Keys);
         rows
@@ -1728,6 +1741,23 @@ impl App {
                 }
                 SettingsRow::MessageCopies => {
                     self.send(&crate::workers::copies_command(!self.message_copies()));
+                }
+                SettingsRow::KeepProfilesOutOfGit | SettingsRow::RepoRootProfiles => {
+                    let mut now = self.profile_prefs;
+                    if rows[row] == SettingsRow::KeepProfilesOutOfGit {
+                        now.keep_out_of_git = !now.keep_out_of_git;
+                    } else {
+                        now.repo_root = !now.repo_root;
+                    }
+                    match self
+                        .info
+                        .root
+                        .as_deref()
+                        .map_or(Ok(()), |root| now.save(root))
+                    {
+                        Ok(()) => self.profile_prefs = now,
+                        Err(error) => self.say(error),
+                    }
                 }
                 SettingsRow::Page => {
                     if self.reading.page.is_some() {
@@ -3127,7 +3157,9 @@ pub(super) mod tests {
             .unwrap();
         assert_eq!(rows[models + 1], SettingsRow::WorkerDepth);
         assert_eq!(rows[models + 2], SettingsRow::MessageCopies);
-        assert_eq!(rows[models + 3], SettingsRow::Keys);
+        assert_eq!(rows[models + 3], SettingsRow::KeepProfilesOutOfGit);
+        assert_eq!(rows[models + 4], SettingsRow::RepoRootProfiles);
+        assert_eq!(rows[models + 5], SettingsRow::Keys);
         app.overlay = Some(Overlay::Settings {
             row: models,
             picker: None,
@@ -3172,6 +3204,51 @@ pub(super) mod tests {
             sent(&mut app),
             ["/message-copies off", "/message-copies on"]
         );
+    }
+
+    /// The two profile rows are the user's for every project, so they are
+    /// saved in Arko's folder and not sent to the session.
+    #[test]
+    fn the_profile_rows_are_saved_in_arkos_folder() {
+        use crate::profiles::Preferences;
+        let temp = tempfile::tempdir().unwrap();
+        let mut app = App::new(
+            Snapshot::default(),
+            Editor::new(History::load(None)),
+            Info {
+                root: Some(temp.path().to_path_buf()),
+                ..Info::default()
+            },
+            Catalog::load(None),
+            Depth::Rgb,
+        );
+        app.reading.models.has_workers = true;
+        let rows = app.settings_rows();
+        let at = |wanted| rows.iter().position(|row| *row == wanted).unwrap();
+        for (row, read) in [
+            (
+                at(SettingsRow::KeepProfilesOutOfGit),
+                (|prefs: Preferences| prefs.keep_out_of_git) as fn(Preferences) -> bool,
+            ),
+            (at(SettingsRow::RepoRootProfiles), |prefs| prefs.repo_root),
+        ] {
+            app.overlay = Some(Overlay::Settings { row, picker: None });
+            assert!(read(app.profile_prefs), "on at first");
+            press(&mut app, KeyCode::Right, KeyModifiers::NONE);
+            assert!(!read(Preferences::load(temp.path())), "off in the file");
+            assert!(!read(app.profile_prefs));
+            press(&mut app, KeyCode::Left, KeyModifiers::NONE);
+            assert!(read(Preferences::load(temp.path())), "on again");
+            press(&mut app, KeyCode::Right, KeyModifiers::NONE);
+        }
+        assert_eq!(
+            Preferences::load(temp.path()),
+            Preferences {
+                keep_out_of_git: false,
+                repo_root: false
+            }
+        );
+        assert!(sent(&mut app).is_empty(), "nothing goes to the session");
     }
 
     /// Text replies are a session setting: the row turns them on or off with

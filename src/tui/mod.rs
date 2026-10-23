@@ -139,6 +139,7 @@ pub fn start(setup: Setup, output: &Arc<Output>) -> Option<Screen> {
         handover_at: setup.handover_at,
         session_dir: setup.session_dir.clone(),
         prefs: Some(setup.root.join("tui.json")),
+        root: Some(setup.root.clone()),
     };
     let editor = input::Editor::new(input::History::load(Some(history)));
     let mut app = App::new(snapshot, editor, info, catalog, depth);
