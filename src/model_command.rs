@@ -734,6 +734,7 @@ impl Harness {
             self.settings.message_copies,
             std::sync::atomic::Ordering::Relaxed,
         );
+        *lock(&self.gauges.builtin_skills) = self.settings.builtin_skills.clone();
         *lock(&self.gauges.project) = (
             self.settings.project_instructions,
             self.settings.worker_project_instructions,

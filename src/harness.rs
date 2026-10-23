@@ -1615,6 +1615,7 @@ impl Harness {
             "/cc-compact" => self.cc_compact_command(argument, source),
             "/extra-rules" => self.extra_rules_command(argument, source),
             "/project-instructions" => self.project_command(argument, source),
+            "/builtin-skills" => self.builtin_skills_command(argument, source),
             "/background-after" => self.background_after_command(argument, source),
             "/monitor-wakes" => self.monitor_wakes_command(argument, source),
             "/worker-models" => self.worker_models_command(argument, source),
@@ -4352,7 +4353,7 @@ pub(crate) fn place(link: &remote::Link) -> String {
 /// The commands that change a setting while the session runs, which take
 /// an argument: `/outside`, `/model`, `/handover`, `/handover-at`, `/keys`.
 /// And `/message`, which works while the agent works too.
-pub(crate) const LIVE_COMMANDS: [&str; 17] = [
+pub(crate) const LIVE_COMMANDS: [&str; 18] = [
     "/outside",
     "/model",
     "/handover",
@@ -4362,6 +4363,7 @@ pub(crate) const LIVE_COMMANDS: [&str; 17] = [
     "/cc-compact",
     "/extra-rules",
     "/project-instructions",
+    "/builtin-skills",
     "/background-after",
     "/monitor-wakes",
     "/worker-models",
@@ -5346,6 +5348,7 @@ pub(crate) mod tests {
             worker_models: Default::default(),
             worker_depth: Default::default(),
             message_copies: Default::default(),
+            builtin_skills: Default::default(),
             project: Default::default(),
             background: background.clone(),
             feed: Some(feed.clone()),

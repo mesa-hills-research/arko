@@ -355,3 +355,127 @@ async fn a_saved_conversation_resumes_after_the_built_in_skills_changed() {
     assert!(!resumed.contains("Reworded for a later Arko."));
     harness.crew.as_ref().unwrap().shutdown().await;
 }
+
+/// What the last command said.
+fn last_said(feed: &remote::Feed) -> String {
+    shown(feed)
+        .into_iter()
+        .rev()
+        .find(|(kind, _, _)| kind == "output" || kind == "notice")
+        .map(|(_, text, _)| text)
+        .unwrap_or_default()
+}
+
+/// The built-in skills `config`'s agent gets.
+fn given(config: &arko_agents::AgentConfig) -> Vec<String> {
+    config
+        .skills_config
+        .iter()
+        .flat_map(|skills| skills.embedded.iter())
+        .map(|skill| skill.name.clone())
+        .collect()
+}
+
+/// `/builtin-skills` says what the agents get and changes it, for all the
+/// built-in skills or one by name. Before the conversation starts the agents
+/// are built again, and the clients read the choice from the status.
+#[tokio::test]
+async fn builtin_skills_sets_what_the_agents_get_before_the_conversation_starts() {
+    let temp = tempfile::tempdir().unwrap();
+    let server =
+        ModelServer::start(Arc::new(|_, _| Box::pin(async { complete("k1", "Done.") }))).await;
+    let (mut harness, _inputs, _sender) = harness(temp.path(), server.client(), true);
+    assert!(harness.live_command("/builtin-skills", Source::Terminal));
+    assert_eq!(
+        last_said(&harness.feed),
+        "Built-in skills are off, so the agents get none of them. /builtin-skills on or off changes all of them, and /builtin-skills NAME on or off one."
+    );
+    assert!(harness.live_command("/builtin-skills on", Source::Terminal));
+    assert_eq!(last_said(&harness.feed), "Built-in skills are now on.");
+    assert_eq!(
+        given(&harness.main_config),
+        ["user-facing-prose", "repo-docs-style"]
+    );
+    assert!(harness.live_command("/builtin-skills repo-docs-style off", Source::Terminal));
+    assert_eq!(last_said(&harness.feed), "repo-docs-style is now off.");
+    assert_eq!(given(&harness.main_config), ["user-facing-prose"]);
+    assert_eq!(given(&harness.worker_config), ["user-facing-prose"]);
+    let saved = harness.session.load_settings().unwrap().builtin_skills;
+    assert_eq!(saved, harness.settings.builtin_skills);
+    assert_eq!(saved.off, ["repo-docs-style"]);
+    let live = remote::Meter::read(harness.gauges.as_ref()).settings;
+    assert!(live.builtin_skills);
+    let listed: Vec<(&str, bool)> = live
+        .builtin_skill_list
+        .iter()
+        .map(|skill| (skill.name.as_str(), skill.on))
+        .collect();
+    assert_eq!(
+        listed,
+        [("user-facing-prose", true), ("repo-docs-style", false)]
+    );
+    assert!(harness.live_command("/builtin-skills repo-docs-style off", Source::Terminal));
+    assert_eq!(last_said(&harness.feed), "repo-docs-style is off already.");
+    assert!(harness.live_command("/builtin-skills repo-docs-style on", Source::Web));
+    assert!(
+        last_said(&harness.feed)
+            .starts_with("Changed from the web page. repo-docs-style is now on."),
+        "{}",
+        last_said(&harness.feed)
+    );
+    // Off for all leaves each name's own switch as it was.
+    assert!(harness.live_command("/builtin-skills user-facing-prose off", Source::Terminal));
+    assert!(harness.live_command("/builtin-skills off", Source::Terminal));
+    assert!(given(&harness.main_config).is_empty());
+    assert!(harness.live_command("/builtin-skills repo-docs-style on", Source::Terminal));
+    assert_eq!(last_said(&harness.feed), "repo-docs-style is on already.");
+    assert!(harness.live_command("/builtin-skills user-facing-prose on", Source::Terminal));
+    assert_eq!(
+        last_said(&harness.feed),
+        "user-facing-prose is now on. Built-in skills are off, so the agents get none until you turn them on."
+    );
+    assert!(harness.settings.builtin_skills.none);
+    for (bad, said) in [
+        (
+            "repo-doc-style off",
+            "repo-doc-style isn't a built-in skill. They are user-facing-prose and repo-docs-style.",
+        ),
+        (
+            "maybe",
+            "/builtin-skills takes on or off, or a built-in skill's name and on or off, such as /builtin-skills repo-docs-style off.",
+        ),
+    ] {
+        assert!(harness.live_command(&format!("/builtin-skills {bad}"), Source::Terminal));
+        assert_eq!(last_said(&harness.feed), said, "{bad}");
+    }
+    harness.crew.as_ref().unwrap().shutdown().await;
+}
+
+/// After the conversation has started, the agents keep their skills and the
+/// session keeps the choice for the conversations and workers that start once
+/// it is resumed.
+#[tokio::test]
+async fn a_change_to_the_built_in_skills_after_the_start_waits_for_a_resume() {
+    let temp = tempfile::tempdir().unwrap();
+    let server =
+        ModelServer::start(Arc::new(|_, _| Box::pin(async { complete("k1", "Done.") }))).await;
+    let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
+    assert!(harness.live_command("/builtin-skills on", Source::Terminal));
+    let end = harness
+        .turn(Prompt::User("First.".into()), &mut inputs)
+        .await;
+    assert!(matches!(end, TurnEnd::Answered));
+    assert!(harness.live_command("/builtin-skills repo-docs-style off", Source::Terminal));
+    assert_eq!(
+        last_said(&harness.feed),
+        "repo-docs-style is now off. The agents in this session keep their skills. The change takes effect in the conversations and workers that start after you resume it."
+    );
+    for config in [&harness.main_config, &harness.worker_config] {
+        assert_eq!(given(config), ["user-facing-prose", "repo-docs-style"]);
+    }
+    assert_eq!(
+        harness.session.load_settings().unwrap().builtin_skills.off,
+        ["repo-docs-style"]
+    );
+    harness.crew.as_ref().unwrap().shutdown().await;
+}

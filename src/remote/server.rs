@@ -880,6 +880,17 @@ mod tests {
         assert!(!INDEX.contains("Session\u{2019}s"));
     }
 
+    /// The words of the built-in skills setting on the page are the
+    /// library's, and its markup has the switch.
+    #[test]
+    fn the_pages_built_in_skills_setting_uses_the_librarys_words() {
+        use crate::builtin_skills::{AFTER_START, SETTING_ABOUT, SETTING_NAME};
+        assert!(CORE.contains(SETTING_ABOUT));
+        assert!(CORE.contains(AFTER_START));
+        assert!(INDEX.contains(&format!(">{SETTING_NAME}<")));
+        assert!(INDEX.contains(&format!("aria-label=\"{SETTING_NAME}\"")));
+    }
+
     /// A worker's meta line holds its model, profile and cost, which a phone
     /// would cut at the end if the line couldn't wrap.
     #[test]

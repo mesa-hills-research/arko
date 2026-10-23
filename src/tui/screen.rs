@@ -1736,6 +1736,44 @@ mod tests {
         }
     }
 
+    /// The built-in skills row says that a change waits for the next time the
+    /// session opens once the conversation has started, and says nothing of
+    /// it before.
+    #[test]
+    fn the_built_in_skills_row_says_when_a_change_takes_effect() {
+        use crate::builtin_skills::{AFTER_START, SETTING_ABOUT, SETTING_NAME};
+        use crate::tui::overlay::{Overlay, SettingsRow};
+        let mut app = app();
+        let at = app
+            .settings_rows()
+            .iter()
+            .position(|row| *row == SettingsRow::BuiltinSkills)
+            .unwrap();
+        for started in [false, true] {
+            app.reading.models.started = started;
+            app.overlay = Some(Overlay::Settings {
+                row: at,
+                picker: None,
+            });
+            let rows = screen(&mut app, 100, 40);
+            assert!(
+                rows.iter()
+                    .any(|line| line.contains(&format!("▸ {SETTING_NAME}")))
+            );
+            // The description wraps in the box, so compare it by its words.
+            let text = rows
+                .iter()
+                .map(|line| line.trim_matches(|c: char| c == '│' || c.is_whitespace()))
+                .collect::<Vec<_>>()
+                .join(" ");
+            assert!(text.contains(SETTING_ABOUT), "{text}");
+            assert_eq!(text.contains("takes effect"), started, "{text}");
+            if started {
+                assert!(text.contains(AFTER_START), "{text}");
+            }
+        }
+    }
+
     /// The question to save a profile with long instructions is cut to fit
     /// the dock, and what is left still says how much is cut.
     #[test]

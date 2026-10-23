@@ -46,6 +46,9 @@ pub(crate) struct Gauges {
     /// The agent that started a worker gets a copy of the user's messages to
     /// it, as the harness last published it.
     pub(crate) message_copies: std::sync::atomic::AtomicBool,
+    /// Which built-in skills the agents get, as the harness last published
+    /// it.
+    pub(crate) builtin_skills: Mutex<crate::builtin_skills::BuiltinSkills>,
     /// Which of the project's instruction files the agents get, and whether
     /// workers do, as the harness last published them.
     pub(crate) project: Mutex<(project::Files, bool)>,
@@ -253,6 +256,7 @@ impl remote::Meter for Gauges {
         let crew = lock(&self.crew).clone();
         let stats = lock(&self.stats).clone();
         let (project_instructions, worker_project_instructions) = *lock(&self.project);
+        let builtin_skills = lock(&self.builtin_skills).clone();
         // What new workers hand over at, on their model (as the workflow
         // has them until the crew is told).
         let worker_at = |model: &arko_ai::Model, handover: Option<&arko_agents::HandoverConfig>| {
@@ -330,6 +334,13 @@ impl remote::Meter for Gauges {
                 message_copies: self
                     .message_copies
                     .load(std::sync::atomic::Ordering::Relaxed),
+                builtin_skills: !builtin_skills.none,
+                builtin_skill_list: crate::builtin_skills::names()
+                    .map(|name| remote::BuiltinSkillSetting {
+                        name: name.to_string(),
+                        on: !builtin_skills.off.iter().any(|off| off == name),
+                    })
+                    .to_vec(),
                 project_instructions,
                 worker_project_instructions,
                 background_after: self.background.after().map_or(0, |after| after.as_secs()),

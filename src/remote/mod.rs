@@ -397,6 +397,20 @@ pub struct LiveSettings {
     /// The agent that started a worker gets a copy of the user's messages to
     /// it (`/message-copies`). It applies from the next message.
     pub message_copies: bool,
+    /// The agents get the built-in skills at all (`/builtin-skills`). It
+    /// changes the agents only before the conversation starts
+    /// (`Models::started`), and after it a resumed session gets the change.
+    pub builtin_skills: bool,
+    /// Each built-in skill, and whether it is left out by name (apart from
+    /// `builtin_skills`).
+    pub builtin_skill_list: Vec<BuiltinSkillSetting>,
+}
+
+/// A built-in skill and whether `/builtin-skills` leaves it out by name.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct BuiltinSkillSetting {
+    pub name: String,
+    pub on: bool,
 }
 
 /// A random token of `bytes` bytes, in URL-safe base64.

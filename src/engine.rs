@@ -536,7 +536,11 @@ impl Engine {
                 };
                 // So can the built-in skills, for the conversations that start
                 // after it.
-                let skills = match builtin_skills_resumed(&options, &settings.builtin_skills)? {
+                let (chosen, skipped) = builtin_skills_resumed(&options, &settings.builtin_skills);
+                for warning in &skipped {
+                    prompter.note(Level::Warn, warning);
+                }
+                let skills = match chosen {
                     Some(skills) => {
                         settings.builtin_skills = skills;
                         true
@@ -841,6 +845,7 @@ impl Engine {
             worker_models: Default::default(),
             worker_depth: Default::default(),
             message_copies: Default::default(),
+            builtin_skills: Default::default(),
             project: Default::default(),
             background: managers.background.clone(),
             feed: Some(feed.clone()),
@@ -1858,14 +1863,31 @@ mod tests {
         quit(seam.unwrap(), ended).await;
     }
 
-    /// A name that isn't a built-in skill keeps the session from opening,
-    /// since a typo would leave the skill on.
+    /// A name that isn't a built-in skill is skipped with a warning, and the
+    /// session opens with the names around it left out.
     #[tokio::test]
-    async fn a_built_in_skill_that_does_not_exist_cannot_be_left_out() {
+    async fn a_built_in_skill_that_does_not_exist_is_skipped_with_a_warning() {
+        struct Hearing(Mutex<Vec<String>>);
+        #[async_trait::async_trait]
+        impl Prompter for Hearing {
+            async fn need_credentials(&self, need: &credentials::Need) -> Result<(), String> {
+                Err(need.message())
+            }
+            async fn approve_project_mcp(
+                &self,
+                _approval: &crate::prompter::McpApproval,
+            ) -> Result<Option<bool>, String> {
+                Ok(None)
+            }
+            fn note(&self, _level: crate::remote::Level, text: &str) {
+                crate::lock(&self.0).push(text.to_string());
+            }
+        }
         let temp = tempfile::tempdir().unwrap();
         let (server, _bodies) = counting_server().await;
         let project = temp.path().join("project");
         std::fs::create_dir_all(&project).unwrap();
+        let hearing = Arc::new(Hearing(Mutex::default()));
         let running = spawn(
             Options {
                 root: Some(temp.path().join("arko")),
@@ -1873,23 +1895,30 @@ mod tests {
                 model: Some("luna".into()),
                 openai_auth: Some(OpenAiAuth::ApiKey),
                 cache_1h: Some(false),
-                builtin_skills_off: Some(vec!["repo-doc-style".into()]),
+                builtin_skills_off: Some(vec!["repo-doc-style".into(), "user-facing-prose".into()]),
                 client: Some(GivenClient(Arc::new(server.client()))),
                 ..Options::default()
             },
-            Arc::new(NoPrompter),
+            hearing.clone(),
         );
-        let opened = tokio::time::timeout(Duration::from_secs(30), running.opened)
+        let seam = tokio::time::timeout(Duration::from_secs(30), running.opened)
             .await
             .unwrap()
+            .unwrap()
+            .expect("the session opens");
+        let saved = Session::open(&temp.path().join("arko"), &seam.session.id)
+            .unwrap()
+            .load_settings()
             .unwrap();
-        let error = opened.err().expect("the session does not open");
+        assert_eq!(saved.builtin_skills.off, ["user-facing-prose"]);
+        let heard = crate::lock(&hearing.0).clone();
         assert!(
-            error
-                .to_string()
-                .contains("names `repo-doc-style`, which isn't a built-in skill"),
-            "{error}"
+            heard.iter().any(|note| note.starts_with(
+                "builtin_skills_off names `repo-doc-style`, which isn't a built-in skill"
+            )),
+            "{heard:?}"
         );
+        quit(seam, running.ended).await;
     }
 
     /// Whether the agent that started a worker gets a copy of the user's

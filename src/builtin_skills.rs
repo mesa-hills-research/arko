@@ -1,14 +1,18 @@
 //! The skills built into Arko: general advice on writing, held in the
 //! program so no file is needed. They are listed with the skills of the
 //! skill folders, a skill of the same name in those folders replaces one, and
-//! `ARKO_BUILTIN_SKILLS`, `ARKO_BUILTIN_SKILLS_OFF` and their flags leave
-//! them out (see [`BuiltinSkills`]).
+//! `ARKO_BUILTIN_SKILLS`, `ARKO_BUILTIN_SKILLS_OFF`, their flags and
+//! `/builtin-skills` leave them out (see `BuiltinSkills`). An app reads their
+//! names with [`names`].
 //!
 //! Each is the `SKILL.md` in its folder here, and `BUILTIN` below lists them.
 //! A skill is loaded on demand unless its `pre_loaded` is true, which puts
 //! its whole text in the instructions of every session.
 
 use serde::{Deserialize, Serialize};
+
+use crate::Harness;
+use crate::remote::Source;
 
 /// A skill built into Arko.
 pub(crate) struct Builtin {
@@ -38,6 +42,14 @@ pub(crate) const BUILTIN: [Builtin; 2] = [
 ];
 
 impl Builtin {
+    /// What the skill is for, the `description` in its front matter.
+    pub fn description(&self) -> &'static str {
+        self.text
+            .lines()
+            .find_map(|line| line.strip_prefix("description: "))
+            .unwrap_or_default()
+    }
+
     /// The `SKILL.md` the agents' skill system loads: `text`, with
     /// `auto_load: true` in its front matter when the skill is pre-loaded.
     pub fn skill_md(&self) -> std::borrow::Cow<'static, str> {
@@ -55,8 +67,17 @@ impl Builtin {
     }
 }
 
-/// The built-in skills' names.
-pub(crate) fn names() -> [&'static str; BUILTIN.len()] {
+/// The name of the setting for whether the agents get the built-in skills
+/// at all, and the line under it. The terminal and the web page show both.
+pub const SETTING_NAME: &str = "Built-in skills";
+pub const SETTING_ABOUT: &str = "Off leaves out all of them, whatever the rows below say.";
+
+/// What a change does once the conversation has started.
+pub const AFTER_START: &str = "The agents in this session keep their skills. The change takes effect in the conversations and workers that start after you resume it.";
+
+/// The built-in skills' names, in the order they are listed. These are the
+/// names `Options::builtin_skills_off` takes.
+pub fn names() -> [&'static str; BUILTIN.len()] {
     BUILTIN.map(|skill| skill.name)
 }
 
@@ -85,27 +106,28 @@ impl BuiltinSkills {
         *self == Self::default()
     }
 
-    /// The setting `none` and `off` make of `from`'s words. A name no
-    /// built-in skill has is an error that says where it came from, since a
-    /// typo would leave the skill on.
-    pub fn new(none: bool, off: &[String], from: &str) -> Result<Self, String> {
+    /// The setting `none` and `off` make of `from`'s words, with a warning
+    /// for each name no built-in skill has. A session skips such a name and
+    /// goes on, since one that a later version dropped is no reason to
+    /// refuse a session.
+    pub fn new(none: bool, off: &[String], from: &str) -> (Self, Vec<String>) {
         let mut kept: Vec<String> = Vec::new();
+        let mut warnings: Vec<String> = Vec::new();
         for name in off
             .iter()
             .map(|name| name.trim())
             .filter(|name| !name.is_empty())
         {
             if find(name).is_none() {
-                return Err(format!(
-                    "{from} names `{name}`, which isn't a built-in skill. They are {}",
+                warnings.push(format!(
+                    "{from} names `{name}`, which isn't a built-in skill (they are {}), so Arko skips it",
                     crate::and_list(&names())
                 ));
-            }
-            if !kept.iter().any(|seen| seen == name) {
+            } else if !kept.iter().any(|seen| seen == name) {
                 kept.push(name.to_string());
             }
         }
-        Ok(Self { none, off: kept })
+        (Self { none, off: kept }, warnings)
     }
 
     /// Whether the agents get the built-in skill `name`.
@@ -125,6 +147,103 @@ impl BuiltinSkills {
             .filter(|skill| !self.gives(skill.name))
             .map(|skill| skill.name)
             .collect()
+    }
+}
+
+impl Harness {
+    /// `/builtin-skills`, typed at the prompt, sent from the page or chosen
+    /// in the settings: says which built-in skills the agents get, or with
+    /// `on` or `off` (all of them) or a name and `on` or `off` (one) changes
+    /// that. Before the conversation starts the agents are built again.
+    /// After it they keep their skills, as they keep their model, and the
+    /// session saves the choice for the conversations and workers that start
+    /// once it is resumed.
+    pub(crate) fn builtin_skills_command(&mut self, argument: &str, source: Source) {
+        let before = self.settings.builtin_skills.clone();
+        let result = self.builtin_skills_request(argument);
+        let changed = before != self.settings.builtin_skills;
+        self.setting_reply(result, source, changed);
+    }
+
+    fn builtin_skills_request(&mut self, argument: &str) -> Result<String, String> {
+        let words: Vec<&str> = argument.split_whitespace().collect();
+        let mut choice = self.settings.builtin_skills.clone();
+        let (subject, is, on) = match words.as_slice() {
+            [] => return Ok(self.builtin_skills_line()),
+            [state @ ("on" | "off")] => {
+                choice.none = *state == "off";
+                ("Built-in skills", "are", *state == "on")
+            }
+            [name, state @ ("on" | "off")] => {
+                if find(name).is_none() {
+                    return Err(format!(
+                        "{name} isn't a built-in skill. They are {}.",
+                        crate::and_list(&names())
+                    ));
+                }
+                choice.off.retain(|off| off != name);
+                if *state == "off" {
+                    choice.off.push(name.to_string());
+                }
+                (*name, "is", *state == "on")
+            }
+            _ => {
+                return Err(
+                    "/builtin-skills takes on or off, or a built-in skill's name and on or off, such as /builtin-skills repo-docs-style off."
+                        .to_string(),
+                );
+            }
+        };
+        let state = if on { "on" } else { "off" };
+        if choice == self.settings.builtin_skills {
+            return Ok(format!("{subject} {is} {state} already."));
+        }
+        let mut settings = self.settings.clone();
+        settings.builtin_skills = choice;
+        let mut text = format!("{subject} {is} now {state}.");
+        if settings.builtin_skills.none && words.len() == 2 {
+            text.push_str(
+                " Built-in skills are off, so the agents get none until you turn them on.",
+            );
+        }
+        if self.conversation_started() {
+            self.settings = settings;
+            self.save_session();
+            self.publish_models();
+            text.push(' ');
+            text.push_str(AFTER_START);
+        } else {
+            self.rebuild_agents(settings)?;
+        }
+        Ok(text)
+    }
+
+    /// Which built-in skills the agents get, as `/builtin-skills` says it.
+    fn builtin_skills_line(&self) -> String {
+        let choice = &self.settings.builtin_skills;
+        let given: Vec<&str> = choice.given().map(|skill| skill.name).collect();
+        let mut text = if choice.none {
+            "Built-in skills are off, so the agents get none of them.".to_string()
+        } else if given.is_empty() {
+            "Built-in skills are on, but every one is left out.".to_string()
+        } else {
+            let mut text = format!(
+                "Built-in skills are on, so the agents get {}",
+                crate::and_list(&given)
+            );
+            if !choice.off.is_empty() {
+                text.push_str(&format!(
+                    ", and not {}",
+                    crate::and_list(&choice.left_out())
+                ));
+            }
+            text.push('.');
+            text
+        };
+        text.push_str(
+            " /builtin-skills on or off changes all of them, and /builtin-skills NAME on or off one.",
+        );
+        text
     }
 }
 
@@ -256,11 +375,12 @@ mod tests {
         assert!(all.is_all());
         assert!(all.left_out().is_empty());
         assert_eq!(all.given().count(), BUILTIN.len());
-        let none = BuiltinSkills::new(true, &[], "x").unwrap();
+        let (none, warnings) = BuiltinSkills::new(true, &[], "x");
+        assert!(warnings.is_empty());
         assert!(!none.is_all());
         assert_eq!(none.left_out(), ["user-facing-prose", "repo-docs-style"]);
         assert!(!none.gives("repo-docs-style"));
-        let one = BuiltinSkills::new(
+        let (one, _) = BuiltinSkills::new(
             false,
             &[
                 " repo-docs-style".into(),
@@ -268,15 +388,27 @@ mod tests {
                 "".into(),
             ],
             "x",
-        )
-        .unwrap();
+        );
         assert_eq!(one.off, ["repo-docs-style"]);
         assert_eq!(one.left_out(), ["repo-docs-style"]);
         assert!(one.gives("user-facing-prose") && !one.gives("repo-docs-style"));
-        let typo = BuiltinSkills::new(false, &["repo-doc-style".into()], "--no-builtin-skill");
+    }
+
+    /// A name no built-in skill has is skipped, with a warning that says
+    /// where it came from, and the names around it still count.
+    #[test]
+    fn a_name_that_is_not_a_built_in_skill_is_skipped_with_a_warning() {
+        let (typo, warnings) = BuiltinSkills::new(
+            false,
+            &["repo-doc-style".into(), "user-facing-prose".into()],
+            "--no-builtin-skill",
+        );
+        assert_eq!(typo.off, ["user-facing-prose"]);
         assert_eq!(
-            typo.unwrap_err(),
-            "--no-builtin-skill names `repo-doc-style`, which isn't a built-in skill. They are user-facing-prose and repo-docs-style"
+            warnings,
+            [
+                "--no-builtin-skill names `repo-doc-style`, which isn't a built-in skill (they are user-facing-prose and repo-docs-style), so Arko skips it"
+            ]
         );
     }
 

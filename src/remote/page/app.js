@@ -1102,6 +1102,34 @@
     copySwitch.setAttribute('aria-checked', String(copies));
     copySwitch.setAttribute('aria-busy', String(Boolean(copying)));
     $('message-copies-about').textContent = C.messageCopiesAbout(copies);
+    // The built-in skills: all of them, then each.
+    const skillList = Array.isArray(settings.builtin_skill_list) ? settings.builtin_skill_list : [];
+    $('builtin-skills').hidden = skillList.length === 0;
+    const skillsPending = pending && pending.skills !== undefined;
+    const skillsOn = skillsPending ? pending.skills : settings.builtin_skills === true;
+    const skillsSwitch = $('builtin-skills-switch');
+    skillsSwitch.setAttribute('aria-checked', String(skillsOn));
+    skillsSwitch.setAttribute('aria-busy', String(Boolean(skillsPending)));
+    $('builtin-skills-about').textContent = C.builtinSkillsAbout(started);
+    const skillRows = $('builtin-skill-rows');
+    skillRows.replaceChildren();
+    for (const skill of skillList) {
+      const switching = pending && pending.skill === skill.name;
+      const on = switching ? pending.skillOn : skill.on;
+      const row = element('div', 'setting');
+      const button = element('button', 'switch');
+      button.type = 'button';
+      button.setAttribute('role', 'switch');
+      button.setAttribute('aria-checked', String(on));
+      button.setAttribute('aria-busy', String(Boolean(switching)));
+      button.setAttribute('aria-label', skill.name);
+      button.append(element('span'));
+      button.addEventListener('click', () => chooseBuiltinSkill(skill.name, !on));
+      const text = element('div', 'setting-text');
+      text.append(element('span', 'setting-name', skill.name));
+      row.append(text, button);
+      skillRows.append(row);
+    }
     $('project-workers').hidden = !(status && status.models && status.models.has_workers);
     const toWorkers = $('project-workers-switch');
     const giving = pending && pending.workers !== undefined;
@@ -1247,6 +1275,18 @@
     const on = !(status && status.settings && status.settings.message_copies === true);
     command('/message-copies ' + (on ? 'on' : 'off'), 'worker-note', (settings) => (settings.message_copies === true) === on, { copies: on });
   });
+
+  $('builtin-skills-switch').addEventListener('click', () => {
+    if (pending) return;
+    const on = !(status && status.settings && status.settings.builtin_skills === true);
+    command('/builtin-skills ' + (on ? 'on' : 'off'), 'builtin-skills-note', (settings) => (settings.builtin_skills === true) === on, { skills: on });
+  });
+
+  function chooseBuiltinSkill(name, on) {
+    if (pending) return;
+    const took = (settings) => (settings.builtin_skill_list || []).some((skill) => skill.name === name && skill.on === on);
+    command('/builtin-skills ' + name + ' ' + (on ? 'on' : 'off'), 'builtin-skills-note', took, { skill: name, skillOn: on });
+  }
 
   function chooseProject(key) {
     if (pending) return;
