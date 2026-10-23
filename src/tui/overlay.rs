@@ -772,7 +772,15 @@ fn settings(frame: &mut Frame, app: &App, area: Rect, selected: usize) {
                         &["on", "off"],
                         usize::from(skill.is_some_and(|skill| !skill.on)),
                     ),
-                    crate::builtin_skills::find(name).map_or_else(String::new, |skill| skill.description()),
+                    {
+                        let about = crate::builtin_skills::find(name)
+                            .map_or_else(String::new, |skill| skill.description());
+                        if app.conversation_started() {
+                            format!("{about} {}", crate::builtin_skills::AFTER_START)
+                        } else {
+                            about
+                        }
+                    },
                 )
             }
             SettingsRow::Keys => {

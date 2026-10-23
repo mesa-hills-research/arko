@@ -49,6 +49,7 @@ pub(crate) const BUILTIN: [Builtin; 3] = [
 impl Builtin {
     /// What the skill is for, the `description` in its front matter (on one
     /// line, or on the indented lines after `description: >`).
+    #[cfg(any(test, feature = "tui"))]
     pub fn description(&self) -> String {
         let mut lines = self
             .text
