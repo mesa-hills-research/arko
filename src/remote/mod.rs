@@ -43,6 +43,9 @@ pub use feed::{
 };
 pub(crate) use history::all_items;
 pub use history::items as history;
+/// The types of [`PlanStatus`]'s credits and extra usage, so an app needs no
+/// dependency of its own on arko_ai to read or build them.
+pub use arko_ai::{ExtraUsage, PlanCredits};
 pub(crate) use history::own_words;
 #[cfg(any(test, feature = "remote"))]
 pub use links::Kind as LinkKind;
