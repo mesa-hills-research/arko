@@ -2228,3 +2228,345 @@ async fn text_of_a_response_asked_again_without_streaming_stays_in_the_feed() {
     harness.crew.as_ref().unwrap().shutdown().await;
     managers.shutdown().await;
 }
+
+/// The note kept in these tests.
+const BUILD_BOX: &str = "Tear the build box down when the last build is done.";
+
+/// A note the main agent keeps comes back, listed as current, in the fresh
+/// conversation after a handover. The turns before don't carry it, and a
+/// new conversation's first message starts with it.
+#[cfg(unix)]
+#[tokio::test]
+async fn kept_notes_come_back_after_a_handover_and_start_a_new_conversation() {
+    let temp = tempfile::tempdir().unwrap();
+    let bodies: Bodies = Arc::default();
+    let server = ModelServer::start(Arc::new({
+        let bodies = bodies.clone();
+        move |_, body: String| {
+            bodies.lock().unwrap().push(body.clone());
+            Box::pin(async move {
+                if !body.contains("Second.") {
+                    if body.contains("call_k1") {
+                        complete("a1", "First done.")
+                    } else {
+                        tool_call(
+                            "k1",
+                            kept_notes::KEEP_NOTE,
+                            serde_json::json!({"text": BUILD_BOX}),
+                        )
+                    }
+                } else {
+                    // The fresh conversation goes on until it has the notes.
+                    let steps = body.matches("call_s").count();
+                    let after = if body.contains("# Your kept notes") || steps > 100 {
+                        complete("a2", "Second done.")
+                    } else {
+                        tool_call(
+                            &format!("s{steps}"),
+                            SHELL_TOOL,
+                            serde_json::json!({"command": "echo hi"}),
+                        )
+                    };
+                    handing_over(
+                        &body,
+                        tool_call("m1", SHELL_TOOL, serde_json::json!({"command": "echo hi"})),
+                        after,
+                    )
+                }
+            })
+        }
+    }))
+    .await;
+    let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
+    let _managers = equip(&mut harness, false);
+    let end = harness
+        .turn(Prompt::User("First.".into()), &mut inputs)
+        .await;
+    assert!(matches!(end, TurnEnd::Answered));
+    assert_eq!(harness.kept.list()[0].text, BUILD_BOX);
+    harness.live_command("/handover", Source::Terminal);
+    let end = tokio::time::timeout(
+        Duration::from_secs(30),
+        harness.turn(Prompt::User("Second.".into()), &mut inputs),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(end, TurnEnd::Answered));
+    assert_eq!(handovers(&harness), 1);
+    let heading = "# Your kept notes";
+    // Only the fresh conversation has them, not each turn before.
+    for body in bodies.lock().unwrap().iter() {
+        assert!(!body.contains(heading) || body.contains("REPORT:"));
+    }
+    assert!(body(&bodies, heading, "").contains(BUILD_BOX));
+    // A new conversation starts with them.
+    harness.new_conversation();
+    let message = harness.compose(Prompt::User("Third.".into()));
+    assert!(message.starts_with(heading) && message.contains(BUILD_BOX));
+}
+
+/// Claude Code's compaction leaves the main agent a summary, and its kept
+/// notes come back right after it.
+#[cfg(unix)]
+#[tokio::test]
+async fn kept_notes_come_back_after_claude_code_compacts_the_conversation() {
+    let temp = tempfile::tempdir().unwrap();
+    let script = serde_json::json!([
+        [
+            {"tool": "mcp__arko__keep_note", "input": {"text": BUILD_BOX}, "input_tokens": 1000},
+            {"tool": "mcp__arko__shell", "input": {"command": "echo two"}, "input_tokens": 642_000},
+            {"text": "Not reached: the turn was interrupted."},
+        ],
+        {"compact": {"pre_tokens": 642_000, "post_tokens": 38_000}},
+        [
+            // (The note is posted as the event arrives, a moment after.)
+            {"sleep": 0.5},
+            {"tool": "mcp__arko__shell", "input": {"command": "echo two"}, "input_tokens": 40_000},
+            {"tool": "mcp__arko__shell", "input": {"command": "echo three"}, "input_tokens": 40_000},
+            {"tool": "mcp__arko__complete_task", "input": {"summary": "Done after the compaction."}},
+        ],
+    ]);
+    let (mut harness, mut inputs, _sender, managers, fake) = in_claude_code(temp.path(), script);
+    let end = tokio::time::timeout(
+        Duration::from_secs(60),
+        harness.turn(Prompt::User("Work on it.".into()), &mut inputs),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(end, TurnEnd::Answered));
+    // The note reaches the agent once after the compaction, in a message
+    // Arko sends it or with a tool result, and not before.
+    let (log, _) = fake_log(&fake);
+    let compacted = log
+        .iter()
+        .position(|entry| entry["text"] == "/compact")
+        .unwrap();
+    let given = |entries: &[serde_json::Value]| -> Vec<String> {
+        entries
+            .iter()
+            .flat_map(|entry| {
+                [
+                    entry["text"].as_str(),
+                    entry["answer"]["hookSpecificOutput"]["additionalContext"].as_str(),
+                ]
+            })
+            .flatten()
+            .filter(|text| text.contains("# Your kept notes"))
+            .map(str::to_string)
+            .collect()
+    };
+    assert!(given(&log[..compacted]).is_empty());
+    let after = given(&log[compacted..]);
+    assert!(
+        after.len() == 1 && after[0].contains(BUILD_BOX),
+        "{after:?}"
+    );
+    harness.crew.as_ref().unwrap().shutdown().await;
+    managers.shutdown().await;
+}
+
+/// A worker gets the notes for it in its first message, and a note kept
+/// while it runs in its next step, with its own heading. Another worker
+/// doesn't get a note for the first.
+#[cfg(unix)]
+#[tokio::test]
+async fn workers_get_the_kept_notes_for_them() {
+    let temp = tempfile::tempdir().unwrap();
+    let bodies: Bodies = Arc::default();
+    let hold = Arc::new(Notify::new());
+    let server = ModelServer::start(Arc::new({
+        let (bodies, hold) = (bodies.clone(), hold.clone());
+        move |_, body: String| {
+            bodies.lock().unwrap().push(body.clone());
+            let hold = hold.clone();
+            Box::pin(async move {
+                let keep = |id: &str, text: &str, audience: &str| {
+                    tool_call(
+                        id,
+                        kept_notes::KEEP_NOTE,
+                        serde_json::json!({"text": text, "audience": audience}),
+                    )
+                };
+                let start = |id: &str, task: &str| {
+                    tool_call(
+                        id,
+                        crew::START_AGENT,
+                        serde_json::json!({"agent": WORKER, "task": task}),
+                    )
+                };
+                if body.contains("You are agent run r1") {
+                    if body.contains("call_w1") {
+                        complete("w2", "First done.")
+                    } else {
+                        hold.notified().await;
+                        tool_call("w1", SHELL_TOOL, serde_json::json!({"command": "echo hi"}))
+                    }
+                } else if body.contains("You are agent run r2") {
+                    complete("v1", "Second done.")
+                } else if body.contains("First done.") && body.contains("Second done.") {
+                    complete("m6", "All done.")
+                } else if body.contains("call_m4") {
+                    let n = body.matches("call_m5").count();
+                    tool_call(
+                        &format!("m5_{n}"),
+                        crew::WAIT_FOR_AGENTS,
+                        serde_json::json!({"timeout_seconds": 20}),
+                    )
+                } else if body.contains("call_m3") {
+                    start("m4", "Second worker.")
+                } else if body.contains("call_m2") {
+                    keep("m3", "Skip the slow tests.", "r1")
+                } else if body.contains("call_m1") {
+                    start("m2", "First worker.")
+                } else {
+                    keep("m1", "Use tabs.", "workers")
+                }
+            })
+        }
+    }))
+    .await;
+    let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
+    let _managers = equip(&mut harness, false);
+    let typing = tokio::spawn({
+        let bodies = bodies.clone();
+        async move {
+            until(|| {
+                bodies
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|body| body.contains("call_m3"))
+            })
+            .await;
+            hold.notify_one();
+        }
+    });
+    let end = tokio::time::timeout(
+        Duration::from_secs(40),
+        harness.turn(Prompt::User("Start the workers.".into()), &mut inputs),
+    )
+    .await
+    .unwrap();
+    typing.await.unwrap();
+    assert!(matches!(end, TurnEnd::Answered));
+    assert_eq!(summary(&harness), "All done.");
+    let heading = "# Notes from the main agent";
+    let first = body(&bodies, "You are agent run r1", "call_w1");
+    assert!(first.contains(heading) && first.contains("Use tabs."));
+    assert!(!first.contains("Skip the slow tests."));
+    let later = body(&bodies, "call_w1", "");
+    assert!(later.contains("The main agent kept these notes for you."));
+    assert!(later.contains("Use tabs.") && later.contains("Skip the slow tests."));
+    let second = body(&bodies, "You are agent run r2", "");
+    assert!(second.contains(heading) && second.contains("Use tabs."));
+    assert!(!second.contains("Skip the slow tests."));
+    harness.crew.as_ref().unwrap().shutdown().await;
+}
+
+/// A worker that hands over gets its notes again in the fresh conversation,
+/// including one kept after it started, which its restated first message
+/// can't have.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_worker_gets_its_kept_notes_again_after_its_own_handover() {
+    let temp = tempfile::tempdir().unwrap();
+    let bodies: Bodies = Arc::default();
+    let hold = Arc::new(Notify::new());
+    let server = ModelServer::start(Arc::new({
+        let (bodies, hold) = (bodies.clone(), hold.clone());
+        move |_, body: String| {
+            bodies.lock().unwrap().push(body.clone());
+            let hold = hold.clone();
+            Box::pin(async move {
+                if body.contains("You are agent run r1") {
+                    let steps = body.matches("call_s").count();
+                    let told = body.contains("The main agent kept these notes for you.");
+                    let after = if (body.contains("REPORT:") && told) || steps > 100 {
+                        complete("w9", "First done.")
+                    } else {
+                        tool_call(
+                            &format!("s{steps}"),
+                            SHELL_TOOL,
+                            serde_json::json!({"command": "echo hi"}),
+                        )
+                    };
+                    if !body.contains("call_w1") && !body.contains("REPORT:") {
+                        hold.notified().await;
+                    }
+                    // A first request under the size, then one over it.
+                    let (id, input) = if body.contains("call_w1") {
+                        ("w2", 100_000)
+                    } else {
+                        ("w1", 10_000)
+                    };
+                    handing_over(
+                        &body,
+                        crate::mock_model::with_input(
+                            tool_call(id, SHELL_TOOL, serde_json::json!({"command": "echo hi"})),
+                            input,
+                        ),
+                        after,
+                    )
+                } else if body.contains("First done.") {
+                    complete("m4", "All done.")
+                } else if body.contains("call_m2") {
+                    let n = body.matches("call_m3").count();
+                    tool_call(
+                        &format!("m3_{n}"),
+                        crew::WAIT_FOR_AGENTS,
+                        serde_json::json!({"timeout_seconds": 20}),
+                    )
+                } else if body.contains("call_m1") {
+                    tool_call(
+                        "m2",
+                        kept_notes::KEEP_NOTE,
+                        serde_json::json!({"text": "Skip the slow tests.", "audience": "r1"}),
+                    )
+                } else {
+                    tool_call(
+                        "m1",
+                        crew::START_AGENT,
+                        serde_json::json!({"agent": WORKER, "task": "First worker."}),
+                    )
+                }
+            })
+        }
+    }))
+    .await;
+    let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
+    let _managers = equip(&mut harness, false);
+    harness.live_command("/handover-at workers 20k", Source::Terminal);
+    let typing = tokio::spawn({
+        let bodies = bodies.clone();
+        async move {
+            until(|| {
+                bodies
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|body| body.contains("call_m2"))
+            })
+            .await;
+            hold.notify_one();
+        }
+    });
+    let end = tokio::time::timeout(
+        Duration::from_secs(40),
+        harness.turn(Prompt::User("Start the worker.".into()), &mut inputs),
+    )
+    .await
+    .unwrap();
+    typing.await.unwrap();
+    assert!(matches!(end, TurnEnd::Answered));
+    assert_eq!(summary(&harness), "All done.");
+    // The note was kept after the worker started, so its restated first
+    // message doesn't have it.
+    let again = bodies
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|body| body.contains("REPORT:") && body.contains("Skip the slow tests."))
+        .cloned();
+    assert!(again.is_some_and(|body| body.contains("The main agent kept these notes for you.")));
+    harness.crew.as_ref().unwrap().shutdown().await;
+}

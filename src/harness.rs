@@ -25,8 +25,8 @@ use crate::shell::{Shell, ShellTool};
 use crate::status::Gauges;
 use crate::ui::{Control, Input, Output, Stats};
 use crate::{
-    agents, commands, conversations, crew, details, glyphs, handover, index, keys, mcp, message,
-    outside, project, providers, remote, shell, skills, ui, worker_tools,
+    agents, commands, conversations, crew, details, glyphs, handover, index, kept_notes, keys, mcp,
+    message, outside, project, providers, remote, shell, skills, ui, worker_tools,
 };
 use crate::{and_list, lock};
 
@@ -241,6 +241,12 @@ pub(crate) fn unoffered_with(
     if missing.contains(&message::MESSAGE_USER) {
         parts.push("answers to you while it works (message_user)".to_string());
     }
+    if missing
+        .iter()
+        .any(|name| kept_notes::TOOL_NAMES.contains(name))
+    {
+        parts.push("kept notes (keep_note)".to_string());
+    }
     if missing.iter().any(|name| index::TOOL_NAMES.contains(name)) {
         parts.push("the search index tools".to_string());
     }
@@ -272,6 +278,7 @@ pub(crate) fn unoffered_with(
             || MonitorTool::NAMES.contains(&name)
             || name == ASK_USER_TOOL_NAME
             || name == message::MESSAGE_USER
+            || kept_notes::TOOL_NAMES.contains(&name)
     };
     let others = missing.iter().filter(|name| !named(name)).count();
     if others > 0 {
@@ -389,6 +396,8 @@ pub(crate) struct Harness {
     pub(crate) conversations: conversations::Conversations,
     /// The project's instruction files, as Arko found them (see `project`).
     pub(crate) project: project::Found,
+    /// The notes the main agent keeps (see `kept_notes`).
+    pub(crate) kept: Arc<kept_notes::KeptNotes>,
     /// What the user typed during a turn that the agent didn't read before
     /// the turn ended: it goes with the next message.
     pub(crate) unread: Vec<String>,
@@ -576,6 +585,24 @@ impl Harness {
         {
             builder = builder.agent_tool(MAIN, Arc::new(message::MessageUser));
         }
+        // (A session saved before kept notes has no tools for them.)
+        if keep
+            || main_config
+                .tool_config
+                .available_tool_names
+                .iter()
+                .any(|name| name == kept_notes::KEEP_NOTE)
+        {
+            builder = builder
+                .agent_tool(
+                    MAIN,
+                    Arc::new(kept_notes::KeepNote {
+                        notes: self.kept.clone(),
+                        crew: self.crew.clone(),
+                    }),
+                )
+                .agent_tool(MAIN, Arc::new(kept_notes::ForgetNote(self.kept.clone())));
+        }
         builder = builder.user_input_handler(self.asker.clone());
         let legacy = self.settings.max_workers > 0
             && saved
@@ -680,6 +707,7 @@ impl Harness {
         self.outside.attach(&workflow, &configs);
         self.handover
             .watch(&workflow, &configs[0], self.settings.openai_auth);
+        self.kept.follow(&workflow);
         let (control, controls) = mpsc::unbounded_channel();
         let task = tokio::spawn(ui::print_events(
             workflow.subscribe_events_lossless(),
@@ -4042,6 +4070,9 @@ impl Harness {
         if starts && let Some(project) = self.project.for_main(self.settings.project_instructions) {
             parts.push(project);
         }
+        if starts && let Some(kept) = self.kept.for_lead() {
+            parts.push(kept);
+        }
         if !self.unread.is_empty() {
             let unread = std::mem::take(&mut self.unread);
             // They were posted as one-time notes too: the run this message
@@ -5371,6 +5402,7 @@ pub(crate) mod tests {
             details,
             settings,
             providers: providers::Setup::new(None),
+            kept: crate::kept_notes::KeptNotes::new(&session.dir),
             session,
             client,
             keys,

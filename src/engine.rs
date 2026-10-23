@@ -897,6 +897,7 @@ impl Engine {
             details,
             settings,
             providers: provider_setup.clone(),
+            kept: crate::kept_notes::KeptNotes::new(&session.dir),
             session,
             client,
             keys,

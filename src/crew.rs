@@ -25,6 +25,7 @@ use uuid::Uuid;
 
 use crate::agents::NO_LIMIT;
 use crate::chooser;
+use crate::kept_notes::KeptNotes;
 use crate::remote;
 use crate::ui::{self, Output};
 
@@ -601,6 +602,7 @@ impl SubagentHook for StartHook {
 fn first_message_context(
     project: &Mutex<Option<String>>,
     records: &Mutex<WorkerRecords>,
+    kept: &KeptNotes,
     request: &StartRequest,
 ) -> Option<String> {
     let project = project.lock().unwrap().clone();
@@ -610,10 +612,10 @@ fn first_message_context(
         .runs
         .get(&request.run_id)
         .and_then(|setup| setup.context_added.clone());
-    match (project, added) {
-        (Some(project), Some(added)) => Some(format!("{}\n\n{added}", project.trim_end())),
-        (project, added) => project.or(added),
-    }
+    [project, added, kept.for_worker(&request.handle)]
+        .into_iter()
+        .flatten()
+        .reduce(|text, part| format!("{}\n\n{part}", text.trim_end()))
 }
 
 /// The parameters of the host's own that `start_agent` takes: the prompt
@@ -747,6 +749,9 @@ pub struct Crew {
     /// The project's instructions new workers get in their first message,
     /// if any (see `project`).
     project: Arc<Mutex<Option<String>>>,
+    /// The notes the main agent keeps, which new workers get in their first
+    /// message.
+    kept: Arc<KeptNotes>,
     workflow: Arc<Mutex<Weak<Workflow>>>,
     lead: Mutex<Option<Uuid>>,
     wake: mpsc::UnboundedSender<()>,
@@ -760,6 +765,7 @@ impl Crew {
             Arc::new(Self {
                 models: Arc::new(Mutex::new(WorkerRecords::load(&setup.session_dir))),
                 project: Arc::default(),
+                kept: KeptNotes::new(&setup.session_dir),
                 setup,
                 workflow: Arc::default(),
                 lead: Mutex::new(None),
@@ -778,6 +784,7 @@ impl Crew {
         let feed = self.setup.feed.clone();
         let refuse = self.setup.refuse.clone();
         let project = self.project.clone();
+        let kept = self.kept.clone();
         let mut config = SubagentsConfig::default()
             .offer_blocking_tool(false)
             // The deepest a session can allow. How deep workers go is the
@@ -799,7 +806,7 @@ impl Crew {
             }))
             // Asked as each worker starts: a run keeps its first message.
             .start_context(Arc::new(move |request: &StartRequest| {
-                first_message_context(&project, &records, request)
+                first_message_context(&project, &records, &kept, request)
             }));
         for parameter in start_parameters() {
             config = config.start_parameter(parameter);
@@ -1128,7 +1135,7 @@ impl Crew {
         }
     }
 
-    fn workflow(&self) -> Option<Arc<Workflow>> {
+    pub(crate) fn workflow(&self) -> Option<Arc<Workflow>> {
         self.workflow.lock().unwrap().upgrade()
     }
 

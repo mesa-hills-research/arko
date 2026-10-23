@@ -654,6 +654,7 @@ pub fn main_config(settings: &AgentSettings) -> Result<AgentConfig, String> {
     let mut tools = shared_tool_names(settings);
     tools.push(ASK_USER_TOOL_NAME.into());
     tools.push(crate::message::MESSAGE_USER.into());
+    tools.extend(crate::kept_notes::TOOL_NAMES.map(String::from));
     if settings.max_workers > 0 {
         tools.extend(crew::LEAD_TOOL_NAMES.iter().map(|name| name.to_string()));
     }
