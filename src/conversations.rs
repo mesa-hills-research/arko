@@ -471,6 +471,9 @@ impl Harness {
             // The lines typed during other conversations' turns were for
             // them (and its own unread ones come back above).
             workflow.skip_one_time_notes(result.agent_run_id);
+            // (After the skip, so that the list reaches it.) Notes kept in
+            // other conversations since it last had them aren't in it.
+            self.kept.tell_lead(&workflow);
             if let Some(crew) = &self.crew {
                 crew.lead_run(result.agent_run_id);
             }

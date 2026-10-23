@@ -404,17 +404,23 @@ impl KeptNotes {
         }
     }
 
+    /// Posts the main agent's current list in a one-time note, for the
+    /// conversation it continues. A list that says none are kept replaces
+    /// one the conversation may still hold, when notes were ever kept.
+    pub(crate) fn tell_lead(&self, workflow: &Workflow) {
+        let none = format!("# Your kept notes\n\n{NONE_LEFT} This list replaces any earlier one.");
+        if let Some(text) = self.for_lead().or_else(|| self.ever_kept().then_some(none))
+            && let Err(error) =
+                workflow.post_note(Posted::new(text).source(NoteSource::Host).to([MAIN]).once())
+        {
+            log::warn!("could not give the main agent its kept notes again ({error})");
+        }
+    }
+
     /// Gives run `run` of `agent` its notes again, in its fresh conversation.
     fn again(&self, workflow: &Workflow, agent: &str, run: uuid::Uuid) {
         if agent == MAIN {
-            let none =
-                format!("# Your kept notes\n\n{NONE_LEFT} This list replaces any earlier one.");
-            if let Some(text) = self.for_lead().or_else(|| self.ever_kept().then_some(none))
-                && let Err(error) =
-                    workflow.post_note(Posted::new(text).source(NoteSource::Host).to([MAIN]).once())
-            {
-                log::warn!("could not give the main agent its kept notes again ({error})");
-            }
+            self.tell_lead(workflow);
         } else if let Some(record) = workflow.subagents().iter().find(|r| r.run_id == run) {
             self.tell_worker(workflow, &record.handle);
         }

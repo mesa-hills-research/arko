@@ -10,7 +10,7 @@ agent, for chosen workers by ID (`r1`), or for every worker.
 
 | Agent | Gets its notes |
 |---|---|
-| Main agent | In the first message of each conversation, and again after a handover or a compaction |
+| Main agent | In the first message of each conversation, and again after a handover, after a compaction and when the session goes back to a conversation (`/resume N`, `arko -c`) |
 | Worker | In its first message, as they are kept while it runs, and again after its own handover or compaction |
 
 The notes hold 8 KB in all. A note that would pass that is refused until another is forgotten.
