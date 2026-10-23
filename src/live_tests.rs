@@ -2283,7 +2283,7 @@ async fn kept_notes_come_back_after_a_handover_and_start_a_new_conversation() {
         .turn(Prompt::User("First.".into()), &mut inputs)
         .await;
     assert!(matches!(end, TurnEnd::Answered));
-    assert_eq!(harness.kept.list()[0].text, BUILD_BOX);
+    assert_eq!(harness.kept.list().unwrap()[0].text, BUILD_BOX);
     harness.live_command("/handover", Source::Terminal);
     let end = tokio::time::timeout(
         Duration::from_secs(30),
@@ -2450,17 +2450,114 @@ async fn workers_get_the_kept_notes_for_them() {
     typing.await.unwrap();
     assert!(matches!(end, TurnEnd::Answered));
     assert_eq!(summary(&harness), "All done.");
+    // The main agent has its own call and the result, and no copy of the
+    // message to r1.
+    for main in bodies
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|body| !body.contains("You are agent run"))
+    {
+        assert!(main.matches("Skip the slow tests.").count() <= 1);
+    }
+    assert!(body(&bodies, "call_m3", "You are agent run").contains("Kept note 2. r1 has it now."));
     let heading = "# Notes from the main agent";
     let first = body(&bodies, "You are agent run r1", "call_w1");
     assert!(first.contains(heading) && first.contains("Use tabs."));
     assert!(!first.contains("Skip the slow tests."));
     let later = body(&bodies, "call_w1", "");
-    assert!(later.contains("The main agent kept these notes for you."));
+    assert!(later.contains("The main agent's notes for you."));
     assert!(later.contains("Use tabs.") && later.contains("Skip the slow tests."));
     let second = body(&bodies, "You are agent run r2", "");
     assert!(second.contains(heading) && second.contains("Use tabs."));
     assert!(!second.contains("Skip the slow tests."));
     harness.crew.as_ref().unwrap().shutdown().await;
+}
+
+/// A note forgotten before a handover is replaced by a list that says none
+/// are kept, since the restated first message still has it.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_forgotten_note_is_not_current_after_a_handover() {
+    let temp = tempfile::tempdir().unwrap();
+    let bodies: Bodies = Arc::default();
+    let server = ModelServer::start(Arc::new({
+        let bodies = bodies.clone();
+        move |_, body: String| {
+            bodies.lock().unwrap().push(body.clone());
+            Box::pin(async move {
+                if !body.contains("Second.") {
+                    complete("a1", "First done.")
+                } else {
+                    // The fresh conversation goes on until it has the list.
+                    let steps = body.matches("call_s").count();
+                    let after = if body.contains("No notes are kept now.") || steps > 100 {
+                        complete("a2", "Second done.")
+                    } else {
+                        tool_call(
+                            &format!("s{steps}"),
+                            SHELL_TOOL,
+                            serde_json::json!({"command": "echo hi"}),
+                        )
+                    };
+                    handing_over(
+                        &body,
+                        tool_call("m1", SHELL_TOOL, serde_json::json!({"command": "echo hi"})),
+                        after,
+                    )
+                }
+            })
+        }
+    }))
+    .await;
+    let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
+    let _managers = equip(&mut harness, false);
+    harness
+        .kept
+        .add(BUILD_BOX, kept_notes::Audience::Lead)
+        .unwrap();
+    let end = harness
+        .turn(Prompt::User("First.".into()), &mut inputs)
+        .await;
+    assert!(matches!(end, TurnEnd::Answered));
+    // The build box is down, and the agent forgets the note.
+    harness.live_command("/notes remove 1", Source::Terminal);
+    harness.live_command("/handover", Source::Terminal);
+    let end = tokio::time::timeout(
+        Duration::from_secs(30),
+        harness.turn(Prompt::User("Second.".into()), &mut inputs),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(end, TurnEnd::Answered));
+    assert_eq!(handovers(&harness), 1);
+    // The restated first message has the note, and what follows replaces it.
+    let fresh = body(&bodies, "No notes are kept now.", "");
+    assert!(fresh.contains("REPORT:"));
+    assert!(fresh.find(BUILD_BOX).unwrap() < fresh.find("No notes are kept now.").unwrap());
+}
+
+/// A branch of a session has its kept notes, which its conversation holds
+/// the calls for.
+#[tokio::test]
+async fn a_branch_has_the_kept_notes() {
+    let temp = tempfile::tempdir().unwrap();
+    let server =
+        ModelServer::start(Arc::new(|_, _| Box::pin(async { complete("m1", "Hi.") }))).await;
+    let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
+    let end = harness
+        .turn(Prompt::User("First.".into()), &mut inputs)
+        .await;
+    assert!(matches!(end, TurnEnd::Answered));
+    harness
+        .kept
+        .add(BUILD_BOX, kept_notes::Audience::Lead)
+        .unwrap();
+    let branch = harness.branch(None).unwrap();
+    let branch = Session::open(&harness.root, &branch).unwrap();
+    let notes = kept_notes::KeptNotes::new(&branch.dir).list().unwrap();
+    assert_eq!(notes.len(), 1);
+    assert_eq!(notes[0].text, BUILD_BOX);
 }
 
 /// `/notes` lists the session's notes, removes one by its number, and says
@@ -2489,7 +2586,7 @@ async fn notes_lists_and_removes_the_kept_notes() {
     ));
     harness.live_command("/notes remove 1", Source::Terminal);
     assert!(says(&harness.feed, "output", "Removed note 1."));
-    assert_eq!(harness.kept.list().len(), 1);
+    assert_eq!(harness.kept.list().unwrap().len(), 1);
     harness.live_command("/notes remove 1", Source::Terminal);
     assert!(says(
         &harness.feed,
@@ -2506,6 +2603,22 @@ async fn notes_lists_and_removes_the_kept_notes() {
 #[cfg(unix)]
 #[tokio::test]
 async fn a_worker_gets_its_kept_notes_again_after_its_own_handover() {
+    a_worker_hands_over(false).await;
+}
+
+/// A note forgotten after the worker started is replaced by a list that says
+/// none are kept, since the restated first message still has the note.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_worker_is_told_a_forgotten_note_is_gone_after_its_own_handover() {
+    a_worker_hands_over(true).await;
+}
+
+/// The worker r1 has a note for it, and hands over. With `forget` the note
+/// is in its first message and is forgotten while it runs, else it is kept
+/// while it runs.
+#[cfg(unix)]
+async fn a_worker_hands_over(forget: bool) {
     let temp = tempfile::tempdir().unwrap();
     let bodies: Bodies = Arc::default();
     let hold = Arc::new(Notify::new());
@@ -2517,7 +2630,7 @@ async fn a_worker_gets_its_kept_notes_again_after_its_own_handover() {
             Box::pin(async move {
                 if body.contains("You are agent run r1") {
                     let steps = body.matches("call_s").count();
-                    let told = body.contains("The main agent kept these notes for you.");
+                    let told = body.contains("The main agent's notes for you.");
                     let after = if (body.contains("REPORT:") && told) || steps > 100 {
                         complete("w9", "First done.")
                     } else {
@@ -2546,7 +2659,7 @@ async fn a_worker_gets_its_kept_notes_again_after_its_own_handover() {
                     )
                 } else if body.contains("First done.") {
                     complete("m4", "All done.")
-                } else if body.contains("call_m2") {
+                } else if body.contains("call_m2") || (forget && body.contains("call_m1")) {
                     let n = body.matches("call_m3").count();
                     tool_call(
                         &format!("m3_{n}"),
@@ -2573,17 +2686,26 @@ async fn a_worker_gets_its_kept_notes_again_after_its_own_handover() {
     let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
     let _managers = equip(&mut harness, false);
     harness.live_command("/handover-at workers 20k", Source::Terminal);
+    let r1 = kept_notes::Audience::Workers(vec!["r1".into()]);
+    if forget {
+        harness.kept.add("Skip the slow tests.", r1).unwrap();
+    }
     let typing = tokio::spawn({
-        let bodies = bodies.clone();
+        let (bodies, kept) = (bodies.clone(), harness.kept.clone());
+        // Once r1 has started, and with it the note in its first message.
+        let started = if forget { "call_m1" } else { "call_m2" };
         async move {
             until(|| {
                 bodies
                     .lock()
                     .unwrap()
                     .iter()
-                    .any(|body| body.contains("call_m2"))
+                    .any(|body| body.contains(started))
             })
             .await;
+            if forget {
+                kept.remove(1).unwrap();
+            }
             hold.notify_one();
         }
     });
@@ -2596,14 +2718,27 @@ async fn a_worker_gets_its_kept_notes_again_after_its_own_handover() {
     typing.await.unwrap();
     assert!(matches!(end, TurnEnd::Answered));
     assert_eq!(summary(&harness), "All done.");
-    // The note was kept after the worker started, so its restated first
-    // message doesn't have it.
-    let again = bodies
-        .lock()
-        .unwrap()
-        .iter()
-        .find(|body| body.contains("REPORT:") && body.contains("Skip the slow tests."))
-        .cloned();
-    assert!(again.is_some_and(|body| body.contains("The main agent kept these notes for you.")));
+    let fresh = |text: &str| {
+        bodies
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|body| body.contains("REPORT:") && body.contains(text))
+            .cloned()
+    };
+    if forget {
+        // The restated first message has the note, and the list after it
+        // says none are kept.
+        let body = fresh("No notes are kept now.").unwrap();
+        assert!(
+            body.find("Skip the slow tests.").unwrap()
+                < body.find("No notes are kept now.").unwrap()
+        );
+    } else {
+        // The note was kept after the worker started, so its restated first
+        // message doesn't have it.
+        let body = fresh("Skip the slow tests.").unwrap();
+        assert!(body.contains("The main agent's notes for you."));
+    }
     harness.crew.as_ref().unwrap().shutdown().await;
 }
