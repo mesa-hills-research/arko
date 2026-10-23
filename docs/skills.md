@@ -6,8 +6,8 @@ with `load_skill` when a task calls for it. A skill with `auto_load: true` in it
 always in their instructions instead.
 
 Arko reads skills from the project's `.agents/skills`, `.claude/skills` and `.skills`, from `skills`
-in Arko's folder, and from `~/.agents/skills` and `~/.claude/skills`. `/skills` lists each with its
-description and its folder.
+in Arko's folder, and from `~/.agents/skills` and `~/.claude/skills`. `/skills` lists them with
+their descriptions and folders.
 
 ## Built-in skills
 
@@ -50,9 +50,9 @@ built-in skill in the environment setting or in `Options` is skipped, and Arko s
 
 `Options::builtin_skills` and `Options::builtin_skills_off` do what the flags do, and
 `arko::builtin_skills::names()` gives the names they take. The facts from `Details::skills()` mark
-each built-in skill (`builtin`), give the path of a skill that replaces one (`replaces_builtin`) and
-list the built-in skills left out (`builtin_off`). `arko::extensions::list` includes the built-in
-skills as the environment's settings leave them, and `arko::extensions::list_with` as the app's
-`builtin_skills` and `builtin_skills_off` leave them. Each has `builtin` set and an empty `path`.
-The live settings (`remote::LiveSettings`) hold the choice in `builtin_skills` and
-`builtin_skill_list`.
+each built-in skill (`builtin`), give the path of a skill that replaces one (`replaces_builtin`),
+give the folder or file of each skill that isn't built in (`path`) and list the built-in skills left
+out (`builtin_off`). `arko::extensions::list` includes the built-in skills as the environment's
+settings leave them, and `arko::extensions::list_with` as the app's `builtin_skills` and
+`builtin_skills_off` leave them. Each has `builtin` set and an empty `path`. The live settings
+(`remote::LiveSettings`) hold the choice in `builtin_skills` and `builtin_skill_list`.
