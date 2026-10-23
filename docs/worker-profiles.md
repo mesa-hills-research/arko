@@ -181,6 +181,9 @@ two settings, and `ModelChoice::label` and `about` the words for each value, so 
 sets them as the terminal and the web page do.
 
 A worker's summary (`WorkerSummary`) names the worker that started it in `parent`, its `depth`
-(1 for the main agent's workers), and what it and the workers under it cost in
-`family_cost_billed` and `family_cost_list`. `arko::remote::family_order` puts a list of summaries
-in the order a list shows a family, with each worker's workers after it.
+(1 for the main agent's workers), whether it may start workers of its own in `nested`, and what it
+and the workers under it cost in `family_cost_billed` and `family_cost_list`. A worker that failed
+has the whole reason in `error`, and the feed sends `Update::WorkerEnded` when a worker finishes,
+fails or stops. `arko::remote::family_order` puts a list of summaries in the order a list shows a
+family, with each worker's workers after it. `family_order_with_levels` also gives each worker's
+level, counted from the roots in the list.
