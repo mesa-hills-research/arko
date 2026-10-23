@@ -1528,6 +1528,44 @@ fn the_monitor_line_says_who_keeps_the_index_current() {
     fixture.shutdown(&indexes);
 }
 
+/// A status from an Arko that watches nothing, such as `arko index status` in
+/// another terminal, says when another Arko watches the index.
+#[test]
+fn status_says_when_another_arko_watches_the_index() {
+    for force_polling in [false, true] {
+        let fixture = Fixture::new();
+        let root = fixture.code_project();
+        let work = fixture.base.join("work");
+        std::fs::create_dir_all(&work).unwrap();
+        let watching = fixture.open(&root, Backend::Hash, true, fast(force_polling));
+        let outcome = watching.create_blocking(&create_args(&root, None)).unwrap();
+        wait_for("the watcher", || {
+            matches!(
+                watching.live_state(&outcome.layout).0,
+                WatchState::Watching { .. }
+            )
+        });
+        let other = fixture.open(&work, Backend::Hash, true, fast(force_polling));
+        let status = |indexes: &Indexes| {
+            let reports = indexes.status_blocking(Some("proj"), &work).unwrap();
+            tools::format_status(&reports, None)
+        };
+        assert!(
+            status(&other).contains("monitor: on, watched by another Arko process"),
+            "{}",
+            status(&other)
+        );
+        // Once the watcher ends, nobody watches it. (A process another test
+        // forks may hold the lock's file for a moment, until it runs its
+        // program.)
+        fixture.shutdown(&watching);
+        wait_for("the watcher's lock to be free", || {
+            status(&other).contains("monitor: on, not watching it now")
+        });
+        fixture.shutdown(&other);
+    }
+}
+
 #[test]
 fn status_survives_unreadable_manifests() {
     let fixture = Fixture::new();

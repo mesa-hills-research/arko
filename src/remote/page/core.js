@@ -457,12 +457,26 @@
     return "How many levels of workers there can be, from 1 to 4. With 1 only the main agent starts workers. With more, a worker can start workers of its own when the agent that starts it says so, down to that level.";
   }
 
+  /** What the worker retry cap setting does with `cap` (null: off), as the
+   * library's `workers::retry_cap_about` says it. */
+  function retryCapAbout(cap) {
+    if (cap == null) return "Workers keep retrying failed model requests. On, a worker fails after 10 in a row, and the workers it started stop with it.";
+    return "A worker fails after " + plural(cap, 'failed model request', 'failed model requests') + " in a row, and the workers it started stop with it. A model response starts the count again.";
+  }
+
   /** What the message copies setting does, as the library's
    * `workers::copies_about` says it. */
   function messageCopiesAbout(on) {
     return on
       ? "The agent that started a worker gets a copy of each message you send the worker, with its next news."
-      : "The agent that started a worker doesn't see the messages you send the worker.";
+      : "The agent that started a worker doesn’t see the messages you send the worker.";
+  }
+
+  /** What the built-in skills setting does, as the library's
+   * `builtin_skills::SETTING_ABOUT` and `AFTER_START` say it. Once the
+   * conversation has started, the agents keep their skills. */
+  function builtinSkillsAbout(started) {
+    return "Off leaves out all of them, whatever the rows below say." + (started ? " The agents in this session keep their skills. The change takes effect in the conversations and workers that start after you resume it." : "");
   }
 
   /** How long a worker has run at `now`, in all its runs (also those
@@ -1013,7 +1027,9 @@
     noticeLabel,
     WORKER_MODELS,
     workerDepthAbout,
+    retryCapAbout,
     messageCopiesAbout,
+    builtinSkillsAbout,
     workerWords,
     stateOf,
     deliveryTag,

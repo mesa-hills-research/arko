@@ -27,7 +27,7 @@
 //! Arko with `default-features = false` and adds `remote` for the web page.
 
 mod agents;
-mod builtin_skills;
+pub mod builtin_skills;
 mod cache_memory;
 pub mod cache_timer;
 mod chat;
@@ -54,6 +54,7 @@ mod jobs;
 pub mod kept_notes;
 mod keys;
 pub mod logging;
+mod logins;
 mod mcp;
 mod message;
 #[cfg(any(test, feature = "testing"))]
@@ -106,12 +107,13 @@ pub use crate::ui::{Attachment, Banner, Input, Message, QuitAsk};
 pub mod accounts {
     pub use crate::claude_code::{
         ClaudeCodeStatus, Problem, Ready, add_to_path, find_installed, install_dirs,
-        status as claude_code,
+        outdated_text, status as claude_code,
     };
     pub use crate::credentials::{
-        ChatGptLogin, KEYS, Key, KeySource, KeyState, LoginSource, LoginState, chatgpt_login,
-        chatgpt_login_in, clear_chatgpt_login, key_states, key_states_in, set_chatgpt_login,
-        use_env,
+        ChatGptLogin, KEYS, Key, KeySource, KeyState, LoginSource, LoginState, add_chatgpt_login,
+        chatgpt_login, chatgpt_login_in, chatgpt_logins_in, clear_chatgpt_login,
+        first_chatgpt_login, key_states, key_states_in, login_changes, remove_chatgpt_login,
+        set_chatgpt_login, use_env,
     };
     pub use crate::keys::{Outcome, Secret, add, remove};
 }

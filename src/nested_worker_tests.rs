@@ -455,6 +455,7 @@ async fn only_a_worker_started_to_nest_below_the_depth_is_offered_the_start_tool
         assert!(r1.iter().any(|name| name == tool), "{tool}");
     }
     assert!(!first_message(&plain.requests("r1")[0]).contains("Workers of your own"));
+    assert!(!harness.feed.worker_summary("r1").unwrap().nested);
     // Its `message_agent` reaches its lead and its peers, not its workers.
     assert_eq!(
         parameter_text(&plain.requests("r1")[0], crew::MESSAGE_AGENT, "to"),
@@ -486,6 +487,9 @@ async fn only_a_worker_started_to_nest_below_the_depth_is_offered_the_start_tool
     let r2 = tools(&nesting, "r2");
     assert_eq!(starts(&r2), 0, "{r2:?}");
     assert!(!first_message(&nesting.requests("r2")[0]).contains("Workers of your own"));
+    // The summaries say it too.
+    let nested = |id| harness.feed.worker_summary(id).unwrap().nested;
+    assert!(nested("r1") && !nested("r2"));
     harness.crew.as_ref().unwrap().shutdown().await;
 }
 
@@ -923,6 +927,18 @@ async fn quitting_counts_the_workers_of_the_whole_tree() {
         .expect("r1 asked to report early");
     let crew = harness.crew.clone().unwrap();
     until(|| crew.running() == ["r1", "r2"]).await;
+    // An app's quit popup and the status say who started each worker.
+    let family = vec![
+        ("r1".to_string(), None),
+        ("r2".to_string(), Some("r1".to_string())),
+    ];
+    let (popup, mut asks) = mpsc::unbounded_channel();
+    harness.quit_popup = Some(popup);
+    harness.ask_about_workers = true;
+    assert!(!harness.may_exit(Some(Vec::new())));
+    assert_eq!(asks.try_recv().unwrap().workers, family);
+    harness.quit_popup = None;
+    harness.exit_warned = false;
     let printed = Printed::default();
     harness.output = Arc::new(Output::new(Some(Box::new(printed.clone())), false));
     assert!(!harness.may_exit(Some(Vec::new())));
@@ -932,7 +948,7 @@ async fn quitting_counts_the_workers_of_the_whole_tree() {
     );
     // The status counts both too.
     let live = remote::Meter::read(harness.gauges.as_ref());
-    assert_eq!(live.workers_running, ["r1", "r2"]);
+    assert_eq!(live.workers_running, family);
     crew.shutdown().await;
 }
 
@@ -1159,6 +1175,55 @@ async fn a_worker_starting_many_isolated_workers_together_stays_within_its_limit
         .filter(|run| run.handle != "r1")
         .count();
     assert_eq!(own, 8);
+    let crew = harness.crew.clone().unwrap();
+    crew.stop_all("done");
+    crew.shutdown().await;
+}
+
+/// A worker in a worktree of its own starts a worker with a profile that only
+/// the session's workspace has, since the profiles are the session's and a
+/// worktree has the committed files only.
+#[tokio::test]
+async fn a_worker_in_its_own_worktree_finds_the_profiles_of_the_leads_workspace() {
+    let mut script = Script::new(true);
+    script.r1_start = serde_json::json!({"nested": true, "isolated": true});
+    script.r2_start = serde_json::json!({"profile": "reviewer"});
+    let server = script.serve().await;
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, _sender) = open_session(temp.path(), &server);
+    let work = harness.settings.workspace.clone();
+    let git = |args: &[&str]| {
+        let done = std::process::Command::new("git")
+            .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+            .args(args)
+            .current_dir(&work)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_INDEX_FILE")
+            .env_remove("GIT_WORK_TREE")
+            .status()
+            .unwrap();
+        assert!(done.success(), "git {args:?}");
+    };
+    std::fs::write(work.join("a.txt"), "one\n").unwrap();
+    git(&["init", "-q"]);
+    git(&["add", "a.txt"]);
+    git(&["commit", "-q", "-m", "one"]);
+    let folder = work.join(".agents").join("profiles");
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(
+        folder.join("reviewer.md"),
+        "---\ndescription: Reviews a diff\nmodel: sol\neffort: medium\n---\nReview it with care.\n",
+    )
+    .unwrap();
+    turn(&mut harness, &mut inputs, "Review the files.").await;
+    until(|| script.requests("r2").len() == 1).await;
+    let worktree = harness.session.dir.join("worktrees").join("r1");
+    assert!(worktree.join("a.txt").is_file());
+    assert!(!worktree.join(".agents").exists(), "the worktree has no profiles");
+    assert!(
+        first_message(&script.requests("r2")[0])
+            .contains("# Your profile (reviewer)\nReview it with care."),
+    );
     let crew = harness.crew.clone().unwrap();
     crew.stop_all("done");
     crew.shutdown().await;

@@ -21,7 +21,7 @@
 //! so a session reaches them all one way, its [`OpenAiAuth`], saved with
 //! the session.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use arko_ai::model::ModelType;
@@ -37,6 +37,7 @@ use serde::{Deserialize, Serialize};
 use crate::agents::{Effort, ModelSettings, default_handover};
 use crate::claude_code;
 use crate::credentials::{self, Need};
+use crate::logins;
 use crate::session::Settings;
 
 /// The prefix of a model on OpenRouter: `openrouter:<slug>`.
@@ -219,14 +220,24 @@ pub fn is_claude_slug(slug: &str) -> bool {
     slug.trim_start_matches('~').starts_with("anthropic/")
 }
 
-/// Whether `model` takes Anthropic's prompt-cache lifetime (the 1-hour
-/// cache): Claude models on an API key or on OpenRouter. Claude Code
-/// chooses its own: an hour on a Claude plan.
+/// Whether `model` takes Anthropic's prompt-cache lifetime (5 minutes or
+/// 1 hour): Claude models on an API key, on OpenRouter or in Claude Code.
+/// Claude Code chooses its own when none is asked for: an hour on a Claude
+/// plan.
 pub fn takes_cache_ttl(model: &Model) -> bool {
     match model.provider {
-        Provider::Anthropic => true,
+        Provider::Anthropic | Provider::ClaudeCode => true,
         Provider::OpenRouter => is_claude_slug(&model.id),
         _ => false,
+    }
+}
+
+/// Asks for the 5-minute prompt cache outright where leaving it out gives a
+/// longer one: in Claude Code, which otherwise chooses its own. The other
+/// models have it when none is asked for.
+pub fn ask_five_minutes(model: &Model, generation: &mut GenerationConfig) {
+    if model.provider == Provider::ClaudeCode {
+        generation.anthropic_cache_ttl = Some(AnthropicCacheTtl::FiveMinutes);
     }
 }
 
@@ -597,6 +608,9 @@ pub fn missing_credential(name: &str, codex_auth: Option<&Path>) -> Option<Strin
         Provider::ClaudeCode => {
             return match claude_code::find_cli().map(|_| claude_code::check_recent()) {
                 Some(Ok(_)) => None,
+                Some(Err(claude_code::Problem::Outdated { .. })) => {
+                    Some("Claude Code updated".to_string())
+                }
                 Some(Err(_)) => Some("Claude Code signed in".to_string()),
                 None => Some("Claude Code installed".to_string()),
             };
@@ -619,12 +633,12 @@ pub fn missing_credential(name: &str, codex_auth: Option<&Path>) -> Option<Strin
 /// `None` without either.
 fn available_openai_auth(
     var: &impl Fn(&str) -> Option<String>,
-    auth_file: Option<&Path>,
+    auth_files: &[PathBuf],
 ) -> Option<OpenAiAuth> {
     let login = (var("OPENAI_OAUTH_ACCESS_TOKEN").is_some()
         && var("OPENAI_OAUTH_ACCOUNT_ID").is_some())
-        || auth_file.is_some_and(Path::is_file)
-        || (auth_file.is_none()
+        || auth_files.iter().any(|path| path.is_file())
+        || (auth_files.is_empty()
             && CodexAuthFile::default_path().is_some_and(|path| path.is_file()));
     let key = var(credentials::OPENAI_KEY).is_some();
     let wants_key = var(credentials::OPENAI_AUTH)
@@ -640,10 +654,7 @@ fn available_openai_auth(
 /// How this process reaches OpenAI models when the session's models
 /// don't say (its client was built so): see [`client`].
 pub fn spare_openai_auth(codex_auth: Option<&Path>) -> Option<OpenAiAuth> {
-    available_openai_auth(
-        &credentials::var,
-        credentials::codex_auth(codex_auth).as_deref(),
-    )
+    available_openai_auth(&credentials::var, &credentials::codex_auths(codex_auth))
 }
 
 /// The reasoning efforts `model` takes, from Arko's five, lowest first:
@@ -724,6 +735,8 @@ pub fn parse_effort(text: &str) -> Result<Effort, String> {
 pub fn needs_text(model: &str, needs: &str) -> String {
     if needs == "Claude Code signed in" {
         format!("{model} needs Claude Code signed in. Sign in with `claude auth login`.")
+    } else if needs == "Claude Code updated" {
+        format!("{model} needs Claude Code updated. Update it with `claude update`.")
     } else if needs.starts_with("Claude Code") {
         format!("{model} needs {needs}.")
     } else {
@@ -797,7 +810,14 @@ pub fn model_menu(
         Some(OpenAiAuth::ApiKey) => "OpenAI, with your API key",
         _ => "OpenAI, on your ChatGPT plan",
     };
-    let groups: [(String, &str, &[(&str, &'static str)]); 5] = [
+    // A group's name, a model that tells whether it is usable, and its models
+    // with their aliases.
+    type Group = (
+        String,
+        &'static str,
+        &'static [(&'static str, &'static str)],
+    );
+    let groups: [Group; 5] = [
         (
             "Claude Code, on your Claude plan".to_string(),
             "cc:claude-opus-5-5",
@@ -970,17 +990,17 @@ pub fn client(codex_auth: Option<&Path>, settings: &Settings) -> Result<LLMClien
     client_with(
         settings,
         credentials::var,
-        credentials::codex_auth(codex_auth),
+        credentials::codex_auths(codex_auth),
         claude_code::check_recent,
     )
 }
 
 /// [`client`], with the settings read through `var`, the Codex auth.json
-/// the user named (else Codex's own), and how Claude Code is checked.
+/// files the user named (else Codex's own), and how Claude Code is checked.
 fn client_with(
     settings: &Settings,
     var: impl Fn(&str) -> Option<String>,
-    auth_file: Option<std::path::PathBuf>,
+    auth_files: Vec<PathBuf>,
     check_claude_code: impl Fn() -> Result<claude_code::Ready, claude_code::Problem>,
 ) -> Result<LLMClient, Failure> {
     let models = [&settings.main, &settings.worker]
@@ -996,12 +1016,12 @@ fn client_with(
     let spare = !uses(Provider::OpenAI);
     let auth = match uses(Provider::OpenAI) {
         true => Some(settings.openai_auth.unwrap_or(OpenAiAuth::ChatGpt)),
-        false => available_openai_auth(&var, auth_file.as_deref()),
+        false => available_openai_auth(&var, &auth_files),
     };
     let from_env = |auth: Option<OpenAiAuth>| {
         LLMClient::from_env_with(|name| {
             let wanted = if name.starts_with("OPENAI_OAUTH_") {
-                auth == Some(OpenAiAuth::ChatGpt) && auth_file.is_none()
+                auth == Some(OpenAiAuth::ChatGpt) && auth_files.is_empty()
             } else if name == credentials::OPENAI_KEY {
                 auth == Some(OpenAiAuth::ApiKey)
             } else {
@@ -1017,17 +1037,13 @@ fn client_with(
         (Err(_), true) => from_env(None).map_err(|error| Failure::Other(error.to_string()))?,
         (Err(error), false) => return Err(Failure::Other(error.to_string())),
     };
-    if spare && auth == Some(OpenAiAuth::ChatGpt) && !client.has_provider(&Provider::OpenAI) {
-        let file = match &auth_file {
-            Some(path) => CodexAuthFile::load(path),
-            None => CodexAuthFile::load_default(),
-        };
-        if let Ok(file) = file
-            && file.credentials().is_ok()
-            && let Ok(with) = client.clone().with_codex_auth_file(&file)
-        {
-            client = with;
-        }
+    if spare
+        && auth == Some(OpenAiAuth::ChatGpt)
+        && !client.has_provider(&Provider::OpenAI)
+        && let Ok((accounts, _)) =
+            logins::chatgpt_accounts(&logins::paths_in_use_of(&auth_files), None)
+    {
+        client = client.with_chatgpt_accounts(accounts);
     }
     if !spare && auth == Some(OpenAiAuth::ChatGpt) && !client.has_provider(&Provider::OpenAI) {
         let (model, _) = models
@@ -1040,20 +1056,13 @@ fn client_with(
                 problem,
             })
         };
-        let auth = match &auth_file {
-            Some(path) => CodexAuthFile::load(path),
-            None => CodexAuthFile::load_default(),
+        let (accounts, problems) =
+            logins::chatgpt_accounts(&logins::paths_in_use_of(&auth_files), None).map_err(need)?;
+        // A login left out is said, while the others serve.
+        for problem in problems {
+            eprintln!("arko: {problem}");
         }
-        .map_err(|error| need(error.to_string()))?;
-        auth.credentials().map_err(|error| {
-            need(format!(
-                "{} holds no ChatGPT login ({error}). Sign in with `codex login`",
-                auth.path().display()
-            ))
-        })?;
-        client = client
-            .with_codex_auth_file(&auth)
-            .map_err(|error| need(error.to_string()))?;
+        client = client.with_chatgpt_accounts(accounts);
     }
     for (settings, model) in &models {
         if model.provider == Provider::ClaudeCode || client.has_provider(&model.provider) {
@@ -1195,6 +1204,19 @@ fn apply_catalog(
     Ok(notes)
 }
 
+/// A usage window by its length, in whole days, else in whole hours, else in
+/// minutes (`7 d`, `5 h`, `90 min`). `unknown` names one that doesn't say.
+fn window_name(minutes: Option<u64>, unknown: &str) -> String {
+    match minutes {
+        Some(minutes) if minutes > 0 && minutes % (24 * 60) == 0 => {
+            format!("{} d", minutes / (24 * 60))
+        }
+        Some(minutes) if minutes > 0 && minutes % 60 == 0 => format!("{} h", minutes / 60),
+        Some(minutes) => format!("{minutes} min"),
+        None => unknown.to_string(),
+    }
+}
+
 /// A plan's usage windows, as the status line and `/cost` say them:
 /// `Claude plan 5 h 12%, 7 d 3%`. `None` when it reports no window.
 pub fn plan_usage_text(usage: &PlanUsage) -> Option<String> {
@@ -1202,19 +1224,35 @@ pub fn plan_usage_text(usage: &PlanUsage) -> Option<String> {
         .into_iter()
         .filter_map(|(window, name)| {
             let window = window.as_ref()?;
-            let name = match window.window_minutes {
-                Some(300) => "5 h".to_string(),
-                Some(10_080) => "7 d".to_string(),
-                Some(minutes) => format!("{minutes} min"),
-                None => name.to_string(),
-            };
+            let name = window_name(window.window_minutes, name);
             Some(format!("{name} {:.0}%", window.used_percent))
         })
         .collect::<Vec<_>>();
     if windows.is_empty() {
         return None;
     }
-    Some(format!("{} {}", plan_name(usage.plan), windows.join(", ")))
+    let credits = usage.credits.as_ref().and_then(credits_text);
+    let text = format!("{} {}", plan_name(usage.plan), windows.join(", "));
+    Some(match credits {
+        Some(credits) => format!("{text}, {credits}"),
+        None => text,
+    })
+}
+
+/// A ChatGPT account's credits, as the status line says them: "credits
+/// left 12.50", "has credits" when the backend gives no balance, or
+/// "unlimited credits". `None` when it has none.
+fn credits_text(credits: &arko_ai::PlanCredits) -> Option<String> {
+    if credits.unlimited {
+        return Some("unlimited credits".to_string());
+    }
+    if !credits.has_credits {
+        return None;
+    }
+    Some(match credits.balance.as_deref().map(str::trim) {
+        Some(balance) if !balance.is_empty() => format!("credits left {balance}"),
+        _ => "has credits".to_string(),
+    })
 }
 
 /// `usage`'s windows (5 hours, 7 days), as the status gives them.
@@ -1223,14 +1261,8 @@ pub fn plan_windows(usage: &PlanUsage) -> Vec<crate::remote::PlanWindow> {
         .into_iter()
         .filter_map(|(window, name)| {
             let window = window.as_ref()?;
-            let label = match window.window_minutes {
-                Some(300) => "5 h".to_string(),
-                Some(10_080) => "7 d".to_string(),
-                Some(minutes) => format!("{minutes} min"),
-                None => name.to_string(),
-            };
             Some(crate::remote::PlanWindow {
-                label,
+                label: window_name(window.window_minutes, name),
                 used_percent: window.used_percent,
                 resets_at: window.resets_at.and_then(|at| i64::try_from(at).ok()),
             })
@@ -1679,12 +1711,18 @@ mod tests {
                 .anthropic_cache_ttl,
             Some(AnthropicCacheTtl::OneHour)
         );
+        // Claude Code passes the lifetime on, and chooses its own without one.
         assert_eq!(
             config("cc:opus", Effort::High, false, true)
                 .unwrap()
                 .anthropic_cache_ttl,
-            None,
-            "Claude Code chooses its cache"
+            Some(AnthropicCacheTtl::OneHour)
+        );
+        assert_eq!(
+            config("cc:opus", Effort::High, false, false)
+                .unwrap()
+                .anthropic_cache_ttl,
+            None
         );
         // OpenAI: its reasoning and Fast tier.
         let sol = config("sol", Effort::Max, true, true).unwrap();
@@ -1941,6 +1979,34 @@ mod tests {
         assert!(plan_windows(&PlanUsage::default()).is_empty());
     }
 
+    #[test]
+    fn a_plan_window_is_named_by_its_length() {
+        for (minutes, name) in [
+            (300, "5 h"),
+            (10_080, "7 d"),
+            (43_200, "30 d"),
+            (90, "90 min"),
+        ] {
+            assert_eq!(window_name(Some(minutes), "?"), name, "{minutes}");
+        }
+        assert_eq!(window_name(None, "5 h"), "5 h");
+        // The status line and the status give a long window the same name.
+        let chatgpt = PlanUsage {
+            plan: Some(SubscriptionPlan::ChatGpt),
+            secondary: Some(arko_ai::PlanUsageWindow {
+                used_percent: 43.0,
+                window_minutes: Some(43_200),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert_eq!(
+            plan_usage_text(&chatgpt).as_deref(),
+            Some("ChatGPT plan 30 d 43%")
+        );
+        assert_eq!(plan_windows(&chatgpt)[0].label, "30 d");
+    }
+
     /// What `client_with` needs when nothing is set, Claude Code is
     /// installed, and the ChatGPT login is a file that isn't there.
     fn need(session: &Settings, vars: &[(&str, &str)]) -> Option<Need> {
@@ -1960,7 +2026,7 @@ mod tests {
                 plan: Some("max".into()),
             })
         };
-        match client_with(session, lookup, Some("/no/such/auth.json".into()), ready) {
+        match client_with(session, lookup, vec!["/no/such/auth.json".into()], ready) {
             Ok(_) => None,
             Err(Failure::Need(need)) => Some(need),
             Err(Failure::Other(error)) => panic!("{error}"),
@@ -2015,12 +2081,12 @@ mod tests {
                 .find(|(set, _)| *set == name)
                 .map(|(_, value)| value.to_string())
         };
-        let client = client_with(&sol, lookup, None, || Err(claude_code::Problem::Missing))
+        let client = client_with(&sol, lookup, vec![], || Err(claude_code::Problem::Missing))
             .ok()
             .unwrap();
         assert!(!client.is_openai_chatgpt_oauth().await, "the API key");
         sol.openai_auth = Some(OpenAiAuth::ChatGpt);
-        let client = client_with(&sol, lookup, None, || Err(claude_code::Problem::Missing))
+        let client = client_with(&sol, lookup, vec![], || Err(claude_code::Problem::Missing))
             .ok()
             .unwrap();
         assert!(client.is_openai_chatgpt_oauth().await, "the login");
@@ -2038,11 +2104,54 @@ mod tests {
         // Claude Code takes no key, but must be installed and signed in.
         let cc = settings(model("cc:opus"), model("cc:fable"));
         assert_eq!(need(&cc, &[]), None);
-        let missing = client_with(&cc, |_| None, None, || Err(claude_code::Problem::Missing));
+        let missing = client_with(&cc, |_| None, vec![], || Err(claude_code::Problem::Missing));
         assert!(matches!(
             missing,
             Err(Failure::Need(Need::ClaudeCode { problem: claude_code::Problem::Missing, ref model })) if model == "cc:claude-opus-5-5"
         ));
+    }
+
+    /// A session on the ChatGPT login signs in with every login of the
+    /// list, in its order, leaving out one that doesn't work.
+    #[tokio::test]
+    async fn the_session_signs_in_with_every_chatgpt_login_in_order() {
+        let temp = tempfile::tempdir().unwrap();
+        let login = |folder: &str, account: &str| {
+            let path = temp.path().join(folder).join("auth.json");
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(
+                &path,
+                format!(r#"{{"tokens": {{"access_token": "access", "account_id": "{account}"}}}}"#),
+            )
+            .unwrap();
+            path
+        };
+        let (first, second) = (login("first", "account-1"), login("second", "account-2"));
+        let mut sol = settings(model("sol"), model("sol"));
+        sol.openai_auth = Some(OpenAiAuth::ChatGpt);
+        let labels = |paths: Vec<PathBuf>| {
+            let client = client_with(&sol, |_| None, paths, || Err(claude_code::Problem::Missing))
+                .ok()
+                .unwrap();
+            client
+                .chatgpt_accounts()
+                .unwrap()
+                .accounts()
+                .iter()
+                .map(|account| account.label().to_string())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            labels(vec![first.clone(), second.clone()]),
+            ["first", "second"]
+        );
+        assert_eq!(
+            labels(vec![second.clone(), first.clone()]),
+            ["second", "first"]
+        );
+        // One that is missing is left out while another works.
+        let missing = temp.path().join("none").join("auth.json");
+        assert_eq!(labels(vec![missing, first]), ["first"]);
     }
 
     #[test]

@@ -11,7 +11,7 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use arko_agents::ClaudeCodeSettings;
@@ -46,6 +46,32 @@ pub enum Problem {
     Missing,
     /// `claude` (at this path) isn't signed in.
     SignedOut(PathBuf),
+    /// `claude` is older than [`MINIMUM`], which fixes a security flaw.
+    Outdated { version: String },
+}
+
+/// The oldest Claude Code Arko runs.
+const MINIMUM: [u64; 3] = [2, 1, 308];
+
+/// What the user is told about a Claude Code older than the oldest Arko
+/// runs (2.1.308), for [`Problem::Outdated`]'s version.
+pub fn outdated_text(version: &str) -> String {
+    let [major, minor, patch] = MINIMUM;
+    format!(
+        "Claude Code {version} has a security flaw in its bundled Bun runtime, fixed in {major}.{minor}.{patch}. Update it with `claude update`, then start again."
+    )
+}
+
+/// The version `claude --version` says (`2.1.309 (Claude Code)`), when it
+/// reads as three numbers.
+fn parse_version(text: &str) -> Option<[u64; 3]> {
+    let mut parts = text.split_whitespace().next()?.split('.').map(|part| {
+        part.split(|c: char| !c.is_ascii_digit())
+            .next()?
+            .parse()
+            .ok()
+    });
+    Some([parts.next()??, parts.next()??, parts.next()??])
 }
 
 /// Claude Code, ready to run.
@@ -110,10 +136,35 @@ const RECENT: Duration = Duration::from_secs(10);
 static LAST_CHECK: std::sync::Mutex<Option<(Instant, Result<Ready, Problem>)>> =
     std::sync::Mutex::new(None);
 
-/// Checks that the Claude Code CLI at `path` is signed in: `claude auth
-/// status --json`, which makes no model request. An answer Arko can't read
-/// doesn't stop the session: the first turn reports a missing login too.
+/// Checks that the Claude Code CLI at `path` is recent enough, from `claude
+/// --version`, and signed in, from `claude auth status --json`, which makes
+/// no model request. An answer Arko can't read doesn't stop the session: the
+/// first turn reports a missing login too.
 pub fn check_at(path: &Path) -> Result<Ready, Problem> {
+    check_with(path, &run(path, &["--version"]))
+}
+
+/// [`check_at`], given what `claude --version` gave.
+fn check_with(path: &Path, version: &std::io::Result<String>) -> Result<Ready, Problem> {
+    match version {
+        Ok(text) => match parse_version(text) {
+            Some(found) if found < MINIMUM => {
+                return Err(Problem::Outdated {
+                    version: found.map(|number| number.to_string()).join("."),
+                });
+            }
+            Some(_) => {}
+            None => log::warn!(
+                "`{} --version` gave no version: {}",
+                path.display(),
+                text.trim()
+            ),
+        },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Err(Problem::Missing);
+        }
+        Err(error) => log::warn!("`{} --version` failed: {error}", path.display()),
+    }
     let ready = |method: Option<String>, plan: Option<String>| Ready {
         path: path.to_path_buf(),
         method,
@@ -154,7 +205,8 @@ fn auth_status(path: &Path) -> std::io::Result<String> {
 }
 
 /// The standard output of `claude` at `path` run with `args`, as sessions
-/// run it: the API key unset, no self-update, at most 15 s.
+/// run it: the API key unset, no self-update, at most 15 s (plus up to 2 s
+/// of retries while the program file is still busy).
 fn run(path: &Path, args: &[&str]) -> std::io::Result<String> {
     let launcher = path.extension().is_some_and(|extension| {
         extension.eq_ignore_ascii_case("cmd") || extension.eq_ignore_ascii_case("bat")
@@ -167,15 +219,15 @@ fn run(path: &Path, args: &[&str]) -> std::io::Result<String> {
     } else {
         Command::new(path)
     };
-    let mut child = command
+    command
         .args(args)
         .env(API_KEY, "")
         .env(NO_SELF_UPDATE.0, NO_SELF_UPDATE.1)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
-        .no_console_window()
-        .spawn()?;
+        .no_console_window();
+    let mut child = spawn_when_free(&mut command)?;
     let started = Instant::now();
     loop {
         if child.try_wait()?.is_some() {
@@ -197,6 +249,28 @@ fn run(path: &Path, args: &[&str]) -> std::io::Result<String> {
     }
     Ok(text)
 }
+
+/// Starts `command`, trying again for up to 2 s while the program is open
+/// for writing ("text file busy"). A process forked at the wrong moment, by
+/// another thread, holds the writer's file for a moment, until it runs its
+/// program.
+fn spawn_when_free(command: &mut Command) -> std::io::Result<Child> {
+    let started = Instant::now();
+    loop {
+        match command.spawn() {
+            Err(error)
+                if error.kind() == std::io::ErrorKind::ExecutableFileBusy
+                    && started.elapsed() < BUSY_WAIT =>
+            {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            spawned => return spawned,
+        }
+    }
+}
+
+/// How long a start waits for a program that is open for writing.
+const BUSY_WAIT: Duration = Duration::from_secs(2);
 
 /// `claude` on the PATH: on Windows also `claude.exe`, or the `claude.cmd`
 /// launcher npm installs (arko follows it to the program it starts).
@@ -323,12 +397,13 @@ pub struct ClaudeCodeStatus {
     pub on_path: bool,
     /// What `claude --version` says.
     pub version: Option<String>,
-    /// Whether it is signed in, and how.
+    /// Whether it is recent enough and signed in, and how.
     pub ready: Result<Ready, Problem>,
 }
 
-/// Where Claude Code is, its version, and whether it is signed in. It runs
-/// `claude` twice (up to 15 s each), so call it off a UI thread.
+/// Where Claude Code is, its version, and whether it is recent enough and
+/// signed in. It runs `claude` twice (up to 15 s each), so call it off a UI
+/// thread.
 pub fn status() -> ClaudeCodeStatus {
     let on_path = find_cli();
     let path = on_path.clone().or_else(|| find_in(install_dirs()));
@@ -340,14 +415,14 @@ pub fn status() -> ClaudeCodeStatus {
             ready: Err(Problem::Missing),
         };
     };
-    let version = run(&path, &["--version"])
-        .ok()
-        .map(|text| text.trim().to_string())
-        .filter(|text| !text.is_empty());
+    let version = run(&path, &["--version"]);
     ClaudeCodeStatus {
-        ready: check_at(&path),
+        ready: check_with(&path, &version),
         on_path: on_path.is_some(),
-        version,
+        version: version
+            .ok()
+            .map(|text| text.trim().to_string())
+            .filter(|text| !text.is_empty()),
         path: Some(path),
     }
 }
@@ -380,6 +455,27 @@ mod tests {
         assert_eq!(run(&claude, &["--version"]).unwrap().trim(), "2.1.0");
         let npm = install_dirs_in(None, Some(Path::new("/opt/npm")), None, None);
         assert_eq!(npm[0], Path::new("/opt/npm/bin"));
+    }
+
+    /// A program open for writing can't be started ("text file busy"). Another
+    /// thread's fork can hold a script's writer for a moment, so a start waits
+    /// for the program to be free.
+    #[cfg(unix)]
+    #[test]
+    fn a_program_open_for_writing_is_started_once_it_is_closed() {
+        use std::io::Write;
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("claude");
+        let mut writer = std::fs::File::create(&path).unwrap();
+        writer.write_all(b"#!/bin/sh\necho 2.1.0\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let closing = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(300));
+            drop(writer);
+        });
+        assert_eq!(run(&path, &["--version"]).unwrap().trim(), "2.1.0");
+        closing.join().unwrap();
     }
 
     /// A stand-in `claude` that answers `auth status --json` with `json`,
@@ -445,6 +541,64 @@ mod tests {
         assert_eq!(
             check_at(&temp.path().join("no-such-claude")),
             Err(Problem::Missing)
+        );
+    }
+
+    /// A Claude Code older than 2.1.308 has a security flaw, so it doesn't
+    /// run. A version Arko can't read does.
+    #[cfg(unix)]
+    #[test]
+    fn a_claude_code_older_than_2_1_308_is_refused() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::tempdir().unwrap();
+        let path = fake(temp.path(), r#"{"loggedIn": true}"#);
+        for version in [
+            "2.1.308",
+            "2.1.309 (Claude Code)",
+            "2.1.310",
+            "2.2.0",
+            "3.0.0",
+            "garbage",
+            "",
+        ] {
+            assert!(check_with(&path, &Ok(version.into())).is_ok(), "{version}");
+        }
+        for (version, shown) in [("2.1.307", "2.1.307"), ("2.0.99 (Claude Code)", "2.0.99")] {
+            assert_eq!(
+                check_with(&path, &Ok(version.into())),
+                Err(Problem::Outdated {
+                    version: shown.into()
+                }),
+                "{version}"
+            );
+        }
+        // A start that fails says nothing of the version.
+        assert!(check_with(&path, &Err(std::io::Error::other("busy"))).is_ok());
+
+        // A stand-in `claude` that says 2.1.296 is refused, with this text.
+        let old = temp.path().join("old");
+        std::fs::create_dir(&old).unwrap();
+        let path = old.join("claude");
+        std::fs::write(
+            &path,
+            "#!/bin/sh\nif [ \"$1\" = --version ]; then echo '2.1.296 (Claude Code)'; else echo '{\"loggedIn\": true}'; fi\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let problem = check_at(&path).unwrap_err();
+        assert_eq!(
+            problem,
+            Problem::Outdated {
+                version: "2.1.296".into()
+            }
+        );
+        let need = crate::credentials::Need::ClaudeCode {
+            model: "cc:claude-opus-5-5".into(),
+            problem,
+        };
+        assert_eq!(
+            need.message(),
+            "Claude Code 2.1.296 has a security flaw in its bundled Bun runtime, fixed in 2.1.308. Update it with `claude update`, then start again."
         );
     }
 

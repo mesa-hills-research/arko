@@ -131,31 +131,29 @@ async fn remote_page_demo() {
                 };
             }
             if let Some(step) = after("demo:stream") {
-                if step == 0 {
-                    if let Some(feed) = feed.get() {
-                        let words = "Here is a long reply that streams in, word by word, so the page has something to follow while you scroll up and down. ".repeat(3);
-                        'paragraphs: for paragraph in 0..12 {
-                            for word in words.split_inclusive(' ') {
-                                if !feed.activity().working {
-                                    break 'paragraphs;
-                                }
-                                feed.event(&WorkflowEvent {
-                                    timestamp: chrono::Utc::now(),
-                                    workflow_run_id: Uuid::nil(),
-                                    agent_name: MAIN.into(),
-                                    agent_run_id: Uuid::nil(),
-                                    event: AgentEvent::AssistantResponseChunk(word.into()),
-                                }, None);
-                                tokio::time::sleep(Duration::from_millis(40)).await;
+                if step == 0 && let Some(feed) = feed.get() {
+                    let words = "Here is a long reply that streams in, word by word, so the page has something to follow while you scroll up and down. ".repeat(3);
+                    'paragraphs: for paragraph in 0..12 {
+                        for word in words.split_inclusive(' ') {
+                            if !feed.activity().working {
+                                break 'paragraphs;
                             }
                             feed.event(&WorkflowEvent {
                                 timestamp: chrono::Utc::now(),
                                 workflow_run_id: Uuid::nil(),
                                 agent_name: MAIN.into(),
                                 agent_run_id: Uuid::nil(),
-                                event: AgentEvent::AssistantResponseChunk(format!("(paragraph {})\n\n", paragraph + 1)),
+                                event: AgentEvent::AssistantResponseChunk(word.into()),
                             }, None);
+                            tokio::time::sleep(Duration::from_millis(40)).await;
                         }
+                        feed.event(&WorkflowEvent {
+                            timestamp: chrono::Utc::now(),
+                            workflow_run_id: Uuid::nil(),
+                            agent_name: MAIN.into(),
+                            agent_run_id: Uuid::nil(),
+                            event: AgentEvent::AssistantResponseChunk(format!("(paragraph {})\n\n", paragraph + 1)),
+                        }, None);
                     }
                 }
                 done();
@@ -242,7 +240,9 @@ async fn remote_page_demo() {
         extra_rules: Default::default(),
         worker_models: Default::default(),
         worker_depth: Default::default(),
+        worker_retry_cap: Default::default(),
         message_copies: Default::default(),
+        builtin_skills: Default::default(),
         project: Default::default(),
         background: managers.background.clone(),
         feed: Some(harness.feed.clone()),

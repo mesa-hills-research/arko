@@ -318,8 +318,10 @@ pub(crate) enum TurnEnd {
 pub(crate) enum Prompt {
     /// The user's message.
     User(String),
-    /// The workers' news, without a message from the user.
-    News,
+    /// The workers' news, without a message from the user. `resent` is
+    /// whether the news holds mail that reached the agent earlier but not
+    /// whole.
+    News { resent: bool },
     /// A background job of the agent's finished, without a message from
     /// the user: its terminal update follows.
     Jobs,
@@ -338,7 +340,8 @@ impl Prompt {
     /// agent waits for the user.
     fn opening(&self) -> Option<Opening> {
         match self {
-            Prompt::News => Some(Opening::News),
+            Prompt::News { resent: false } => Some(Opening::News),
+            Prompt::News { resent: true } => Some(Opening::ResentNews),
             Prompt::Jobs => Some(Opening::Job),
             Prompt::Monitor(opening) => Some(*opening),
             Prompt::User(_) | Prompt::Unread | Prompt::Recover => None,
@@ -644,6 +647,7 @@ impl Harness {
             }
         }
         if let Some(crew) = &self.crew {
+            crew.set_retry_cap(self.settings.worker_retry_cap);
             // The main agent chooses and saves the workers' profiles.
             for tool in worker_tools::tools(
                 crew.clone(),
@@ -1638,15 +1642,18 @@ impl Harness {
             "/outside" => self.outside_command(argument, source),
             "/model" => self.model_command(argument, source),
             "/keys" => self.keys_command(argument, source),
+            "/chatgpt" => self.chatgpt_command(argument, source),
             "/handover" => self.handover_command(argument, source),
             "/text-replies" => self.text_replies_command(argument, source),
             "/cc-compact" => self.cc_compact_command(argument, source),
             "/extra-rules" => self.extra_rules_command(argument, source),
             "/project-instructions" => self.project_command(argument, source),
+            "/builtin-skills" => self.builtin_skills_command(argument, source),
             "/background-after" => self.background_after_command(argument, source),
             "/monitor-wakes" => self.monitor_wakes_command(argument, source),
             "/worker-models" => self.worker_models_command(argument, source),
             "/worker-depth" => self.worker_depth_command(argument, source),
+            "/worker-retry-cap" => self.worker_retry_cap_command(argument, source),
             "/message-copies" => self.message_copies_command(argument, source),
             "/profiles" => self.profiles_command(argument),
             "/jobs" => self.jobs_command(argument),
@@ -2294,8 +2301,8 @@ impl Harness {
     }
 
     /// `/message WORKER TEXT`: the user's message goes to the worker as its
-    /// lead's would, and the lead gets a copy with its next news unless
-    /// `/message-copies` is off.
+    /// lead's would, and the lead gets a copy with its next news when
+    /// `/message-copies` is on.
     pub(crate) fn message_command(&mut self, argument: &str, source: Source) {
         let (to, text) = argument
             .split_once(char::is_whitespace)
@@ -2890,7 +2897,7 @@ impl Harness {
                 workers: self
                     .crew
                     .as_ref()
-                    .map(|crew| crew.running())
+                    .map(|crew| crew.running_with_parents())
                     .unwrap_or_default(),
             });
             return false;
@@ -3599,7 +3606,8 @@ impl Harness {
                 }
                 return News::Waiting;
             }
-            match self.turn(Prompt::News, input).await {
+            let resent = crew.has_resent_mail();
+            match self.turn(Prompt::News { resent }, input).await {
                 TurnEnd::Answered => input.drain_woken(),
                 TurnEnd::Exit => return News::Exit,
                 TurnEnd::Stopped => return News::Stopped,
@@ -4063,7 +4071,7 @@ impl Harness {
         let message = match prompt {
             Prompt::Recover => return String::new(),
             Prompt::User(message) => Some(message),
-            Prompt::News | Prompt::Jobs | Prompt::Unread | Prompt::Monitor(_) => None,
+            Prompt::News { .. } | Prompt::Jobs | Prompt::Unread | Prompt::Monitor(_) => None,
         };
         let mut parts = Vec::new();
         // (A conversation cut back to its first message starts over.)
@@ -4384,20 +4392,23 @@ pub(crate) fn place(link: &remote::Link) -> String {
 /// The commands that change a setting while the session runs, which take
 /// an argument: `/outside`, `/model`, `/handover`, `/handover-at`, `/keys`.
 /// And `/message`, which works while the agent works too.
-pub(crate) const LIVE_COMMANDS: [&str; 18] = [
+pub(crate) const LIVE_COMMANDS: [&str; 21] = [
     "/outside",
     "/model",
     "/handover",
     "/handover-at",
     "/keys",
+    "/chatgpt",
     "/text-replies",
     "/cc-compact",
     "/extra-rules",
     "/project-instructions",
+    "/builtin-skills",
     "/background-after",
     "/monitor-wakes",
     "/worker-models",
     "/worker-depth",
+    "/worker-retry-cap",
     "/message-copies",
     "/profiles",
     "/jobs",
@@ -4469,8 +4480,11 @@ pub(crate) fn split_live_command(text: &str) -> Option<(&str, &str)> {
 pub(crate) struct Tee {
     pub(crate) to: Arc<Output>,
     /// Each line, with its level.
-    pub(crate) lines: Arc<Mutex<Vec<(Option<Level>, String)>>>,
+    pub(crate) lines: Arc<Mutex<Vec<TeeLine>>>,
 }
+
+/// A line a [`Tee`] kept, with its level.
+pub(crate) type TeeLine = (Option<Level>, String);
 
 impl ui::Printer for Tee {
     fn print(&mut self, text: String) -> Result<(), ()> {
@@ -5378,7 +5392,9 @@ pub(crate) mod tests {
             extra_rules: Default::default(),
             worker_models: Default::default(),
             worker_depth: Default::default(),
+            worker_retry_cap: Default::default(),
             message_copies: Default::default(),
+            builtin_skills: Default::default(),
             project: Default::default(),
             background: background.clone(),
             feed: Some(feed.clone()),
@@ -5932,7 +5948,7 @@ pub(crate) mod tests {
         let asked = asks.try_recv().unwrap();
         assert_eq!(
             (asked.jobs.len(), asked.workers),
-            (0, vec!["r1".to_string()])
+            (0, vec![("r1".to_string(), None)])
         );
         harness.quit_popup = None;
 
@@ -5954,6 +5970,23 @@ pub(crate) mod tests {
             "{news}"
         );
         crew.shutdown().await;
+    }
+
+    /// The message of a turn started for news that goes out again says part of
+    /// it reached the agent before but not whole. Other news opens as before.
+    #[tokio::test]
+    async fn the_message_of_resent_news_says_so() {
+        use crate::mock_model::{ModelServer, complete};
+        use crate::openings::Opening;
+        let server =
+            ModelServer::start(Arc::new(|_, _| Box::pin(async { complete("m", "Done.") }))).await;
+        let temp = tempfile::tempdir().unwrap();
+        let (mut harness, _inputs, _sender) = harness(temp.path(), server.client(), false);
+        let fresh = harness.compose(Prompt::News { resent: false });
+        assert!(fresh.contains(&Opening::News.text()), "{fresh}");
+        let again = harness.compose(Prompt::News { resent: true });
+        assert!(again.contains(&Opening::ResentNews.text()), "{again}");
+        assert!(!again.contains(&Opening::News.text()), "{again}");
     }
 
     /// Both directions share arko's mailbox, and a wait returns the report whole.
@@ -6263,6 +6296,61 @@ pub(crate) mod tests {
             "{told:#?}"
         );
         harness.crew.as_ref().unwrap().shutdown().await;
+    }
+
+    /// Closing Arko stops a worker that still runs, without waiting out the
+    /// 12 s that shutdown allows, and saves it as stopped.
+    #[tokio::test]
+    async fn closing_arko_stops_a_worker_that_is_blocked() {
+        use crate::mock_model::{ModelServer, complete, tool_call};
+        let started = Arc::new(tokio::sync::Notify::new());
+        let ready = started.clone();
+        let server = ModelServer::start(Arc::new(move |_, body: String| {
+            let ready = ready.clone();
+            Box::pin(async move {
+                if body.contains("You are agent run r1") {
+                    ready.notify_one();
+                    std::future::pending::<String>().await
+                } else if body.contains("Started r1") {
+                    complete("m2", "Worker is running.")
+                } else {
+                    tool_call(
+                        "m1",
+                        crew::START_AGENT,
+                        serde_json::json!({"agent":WORKER,"task":"Block."}),
+                    )
+                }
+            })
+        }))
+        .await;
+        let temp = tempfile::tempdir().unwrap();
+        let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
+        assert!(matches!(
+            harness
+                .turn(Prompt::User("Start it.".into()), &mut inputs)
+                .await,
+            TurnEnd::Answered
+        ));
+        tokio::time::timeout(Duration::from_secs(10), started.notified())
+            .await
+            .unwrap();
+        let closing = Instant::now();
+        harness.crew.as_ref().unwrap().shutdown().await;
+        // The stop ends the worker's run at once. Without it, shutdown
+        // waits its whole 12 s for a worker that never ends.
+        assert!(
+            closing.elapsed() < Duration::from_secs(6),
+            "closing took {:?}",
+            closing.elapsed()
+        );
+        let run = harness.session.dir.join("run");
+        let latest = std::fs::read_to_string(run.join("latest-checkpoint")).unwrap();
+        let saved: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(run.join(latest.trim())).unwrap())
+                .unwrap();
+        let workers = saved["subagents"]["runs"].as_array().unwrap();
+        assert_eq!(workers.len(), 1, "{saved}");
+        assert_eq!(workers[0]["state"], "stopped", "{saved}");
     }
 
     #[tokio::test]

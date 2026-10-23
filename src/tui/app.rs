@@ -77,6 +77,8 @@ pub struct Info {
     pub session_dir: PathBuf,
     /// Where the view's choices are remembered.
     pub prefs: Option<PathBuf>,
+    /// Arko's folder, where the settings for worker profiles are kept.
+    pub root: Option<PathBuf>,
 }
 
 /// What the view asks of the session and the terminal.
@@ -241,6 +243,9 @@ pub struct App {
     pub depth: Depth,
     pub theme: Theme,
     pub prefs: Prefs,
+    /// The settings for worker profiles, which are the user's for every
+    /// project.
+    pub profile_prefs: crate::profiles::Preferences,
     pub view: View,
     /// The worker whose own transcript shows (the worker view).
     pub watching: Option<String>,
@@ -305,6 +310,9 @@ pub struct App {
     /// The API keys as they are now, without their values, for the keys
     /// menu.
     pub key_states: fn() -> Vec<KeyState>,
+    /// The Codex auth.json files of the ChatGPT logins, in order, for the
+    /// settings.
+    pub login_paths: std::sync::Arc<dyn Fn() -> Vec<std::path::PathBuf> + Send + Sync>,
     /// The models `/model` completes, found once for the session's models
     /// (finding them can ask Claude Code for its login).
     model_names: std::cell::OnceCell<Vec<String>>,
@@ -333,6 +341,11 @@ impl App {
         depth: Depth,
     ) -> Self {
         let prefs = Prefs::load(info.prefs.as_deref());
+        let profile_prefs = info
+            .root
+            .as_deref()
+            .map(crate::profiles::Preferences::load)
+            .unwrap_or_default();
         // ARKO_THEME, else the theme chosen last, else the default.
         let theme_name = crate::credentials::var(theme::SETTING)
             .or_else(|| prefs.theme.clone())
@@ -356,6 +369,7 @@ impl App {
             depth,
             theme,
             prefs,
+            profile_prefs,
             view,
             watching: None,
             working_since: activity.working.then(Instant::now),
@@ -387,6 +401,9 @@ impl App {
             folded: None,
             model_needs: model_picker::needs,
             key_states: crate::credentials::key_states,
+            login_paths: std::sync::Arc::new(|| {
+                crate::logins::paths_in_use_of(&crate::credentials::codex_auths(None))
+            }),
             model_names: Default::default(),
         }
     }
@@ -577,7 +594,12 @@ impl App {
                 .map(|worker| worker.id.clone())
                 .collect(),
             // The workers running.
-            ("/stop-workers", []) => self.reading.workers_running.clone(),
+            ("/stop-workers", []) => self
+                .reading
+                .workers_running
+                .iter()
+                .map(|(id, _)| id.clone())
+                .collect(),
             ("/keys", ["add" | "remove"]) => crate::credentials::KEYS
                 .iter()
                 .map(|key| key.id.to_string())
@@ -592,6 +614,12 @@ impl App {
                 names
             }
             ("/model", words) => self.model_choices(words),
+            ("/builtin-skills", []) => ["on", "off"]
+                .into_iter()
+                .chain(crate::builtin_skills::names())
+                .map(String::from)
+                .collect(),
+            ("/builtin-skills", [_]) => vec!["on".into(), "off".into()],
             (name, words) => commands::choices(name, words)
                 .iter()
                 .map(|word| word.to_string())
@@ -1483,6 +1511,12 @@ impl App {
                 rows.push(SettingsRow::ProjectWorkers);
             }
         }
+        if commands::find("/builtin-skills on").is_some() {
+            rows.push(SettingsRow::BuiltinSkills);
+            rows.extend(
+                (0..self.reading.settings.builtin_skill_list.len()).map(SettingsRow::BuiltinSkill),
+            );
+        }
         if self.reading.models.has_workers {
             if commands::find("/worker-models agent").is_some() {
                 rows.push(SettingsRow::WorkerModels);
@@ -1490,11 +1524,19 @@ impl App {
             if commands::find("/worker-depth 2").is_some() {
                 rows.push(SettingsRow::WorkerDepth);
             }
+            if commands::find("/worker-retry-cap on").is_some() {
+                rows.push(SettingsRow::WorkerRetryCap);
+            }
             if commands::find("/message-copies on").is_some() {
                 rows.push(SettingsRow::MessageCopies);
             }
+            rows.push(SettingsRow::KeepProfilesOutOfGit);
+            rows.push(SettingsRow::RepoRootProfiles);
         }
         rows.push(SettingsRow::Keys);
+        if commands::find("/chatgpt add").is_some() {
+            rows.push(SettingsRow::Logins);
+        }
         rows
     }
 
@@ -1726,8 +1768,46 @@ impl App {
                         self.send(&crate::workers::depth_command(next));
                     }
                 }
+                SettingsRow::WorkerRetryCap => {
+                    self.send(&crate::workers::retry_cap_command(
+                        self.worker_retry_cap().is_none(),
+                    ));
+                }
                 SettingsRow::MessageCopies => {
                     self.send(&crate::workers::copies_command(!self.message_copies()));
+                }
+                SettingsRow::KeepProfilesOutOfGit | SettingsRow::RepoRootProfiles => {
+                    let mut now = self.profile_prefs;
+                    if rows[row] == SettingsRow::KeepProfilesOutOfGit {
+                        now.keep_out_of_git = !now.keep_out_of_git;
+                    } else {
+                        now.repo_root = !now.repo_root;
+                    }
+                    match self
+                        .info
+                        .root
+                        .as_deref()
+                        .map_or(Ok(()), |root| now.save(root))
+                    {
+                        Ok(()) => self.profile_prefs = now,
+                        Err(error) => self.say(error),
+                    }
+                }
+                SettingsRow::BuiltinSkills => {
+                    self.send(if self.builtin_skills() {
+                        "/builtin-skills off"
+                    } else {
+                        "/builtin-skills on"
+                    });
+                }
+                SettingsRow::BuiltinSkill(index) => {
+                    if let Some((name, on)) = self
+                        .builtin_skill(index)
+                        .map(|skill| (skill.name.clone(), skill.on))
+                    {
+                        let state = if on { "off" } else { "on" };
+                        self.send(&format!("/builtin-skills {name} {state}"));
+                    }
                 }
                 SettingsRow::Page => {
                     if self.reading.page.is_some() {
@@ -1741,7 +1821,7 @@ impl App {
                     self.open_keys("", Some(row));
                     return self.overlay.take();
                 }
-                SettingsRow::Keys => {}
+                SettingsRow::Keys | SettingsRow::Logins => {}
             }
         }
         Some(Overlay::Settings { row, picker: None })
@@ -1822,10 +1902,26 @@ impl App {
         self.reading.settings.worker_depth
     }
 
+    /// After how many failed model requests in a row a worker fails, if it
+    /// does.
+    pub fn worker_retry_cap(&self) -> Option<u32> {
+        self.reading.settings.worker_retry_cap
+    }
+
     /// Whether the agent that started a worker gets a copy of the user's
     /// messages to it.
     pub fn message_copies(&self) -> bool {
         self.reading.settings.message_copies
+    }
+
+    /// Whether the agents get the built-in skills at all.
+    pub fn builtin_skills(&self) -> bool {
+        self.reading.settings.builtin_skills
+    }
+
+    /// The `index`th built-in skill and whether it is left out by name.
+    pub fn builtin_skill(&self, index: usize) -> Option<&crate::remote::BuiltinSkillSetting> {
+        self.reading.settings.builtin_skill_list.get(index)
     }
 
     /// Which of the project's instruction files the agents get.
@@ -3107,11 +3203,12 @@ pub(super) mod tests {
         assert_eq!(sent(&mut app), ["/monitor-wakes off"]);
     }
 
-    /// Who chooses the workers' models, how deep workers go and whether the
-    /// starter of a worker gets a copy of the user's messages to it are the
-    /// last session settings, with the workers. The rows step with
-    /// `/worker-models`, `/worker-depth` and `/message-copies`, and a session
-    /// with no workers has none of them.
+    /// Who chooses the workers' models, how deep workers go, how many failed
+    /// requests stop a worker and whether the starter of a worker gets a copy
+    /// of the user's messages to it are the last session settings, with the
+    /// workers. The rows step with `/worker-models`, `/worker-depth`,
+    /// `/worker-retry-cap` and `/message-copies`, and a session with no
+    /// workers has none of them.
     #[test]
     fn the_worker_rows_send_the_commands() {
         let mut app = app();
@@ -3126,8 +3223,11 @@ pub(super) mod tests {
             .position(|row| *row == SettingsRow::WorkerModels)
             .unwrap();
         assert_eq!(rows[models + 1], SettingsRow::WorkerDepth);
-        assert_eq!(rows[models + 2], SettingsRow::MessageCopies);
-        assert_eq!(rows[models + 3], SettingsRow::Keys);
+        assert_eq!(rows[models + 2], SettingsRow::WorkerRetryCap);
+        assert_eq!(rows[models + 3], SettingsRow::MessageCopies);
+        assert_eq!(rows[models + 4], SettingsRow::KeepProfilesOutOfGit);
+        assert_eq!(rows[models + 5], SettingsRow::RepoRootProfiles);
+        assert_eq!(rows[models + 6], SettingsRow::Keys);
         app.overlay = Some(Overlay::Settings {
             row: models,
             picker: None,
@@ -3159,9 +3259,21 @@ pub(super) mod tests {
         app.reading.settings.worker_depth = 1;
         press(&mut app, KeyCode::Left, KeyModifiers::NONE);
         assert!(sent(&mut app).is_empty(), "1 is the least");
-        // The copies turn off and on, either way the arrow goes.
+        // The cap turns on (at 10) and off, either way the arrow goes.
         app.overlay = Some(Overlay::Settings {
             row: models + 2,
+            picker: None,
+        });
+        press(&mut app, KeyCode::Right, KeyModifiers::NONE);
+        app.reading.settings.worker_retry_cap = Some(5);
+        press(&mut app, KeyCode::Left, KeyModifiers::NONE);
+        assert_eq!(
+            sent(&mut app),
+            ["/worker-retry-cap on", "/worker-retry-cap off"]
+        );
+        // The copies turn off and on, either way the arrow goes.
+        app.overlay = Some(Overlay::Settings {
+            row: models + 3,
             picker: None,
         });
         app.reading.settings.message_copies = true;
@@ -3172,6 +3284,51 @@ pub(super) mod tests {
             sent(&mut app),
             ["/message-copies off", "/message-copies on"]
         );
+    }
+
+    /// The two profile rows are the user's for every project, so they are
+    /// saved in Arko's folder and not sent to the session.
+    #[test]
+    fn the_profile_rows_are_saved_in_arkos_folder() {
+        use crate::profiles::Preferences;
+        let temp = tempfile::tempdir().unwrap();
+        let mut app = App::new(
+            Snapshot::default(),
+            Editor::new(History::load(None)),
+            Info {
+                root: Some(temp.path().to_path_buf()),
+                ..Info::default()
+            },
+            Catalog::load(None),
+            Depth::Rgb,
+        );
+        app.reading.models.has_workers = true;
+        let rows = app.settings_rows();
+        let at = |wanted| rows.iter().position(|row| *row == wanted).unwrap();
+        for (row, read) in [
+            (
+                at(SettingsRow::KeepProfilesOutOfGit),
+                (|prefs: Preferences| prefs.keep_out_of_git) as fn(Preferences) -> bool,
+            ),
+            (at(SettingsRow::RepoRootProfiles), |prefs| prefs.repo_root),
+        ] {
+            app.overlay = Some(Overlay::Settings { row, picker: None });
+            assert!(read(app.profile_prefs), "on at first");
+            press(&mut app, KeyCode::Right, KeyModifiers::NONE);
+            assert!(!read(Preferences::load(temp.path())), "off in the file");
+            assert!(!read(app.profile_prefs));
+            press(&mut app, KeyCode::Left, KeyModifiers::NONE);
+            assert!(read(Preferences::load(temp.path())), "on again");
+            press(&mut app, KeyCode::Right, KeyModifiers::NONE);
+        }
+        assert_eq!(
+            Preferences::load(temp.path()),
+            Preferences {
+                keep_out_of_git: false,
+                repo_root: false
+            }
+        );
+        assert!(sent(&mut app).is_empty(), "nothing goes to the session");
     }
 
     /// Text replies are a session setting: the row turns them on or off with
@@ -3311,6 +3468,47 @@ pub(super) mod tests {
         });
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         assert_eq!(sent(&mut app), ["/project-instructions workers off"]);
+    }
+
+    /// The built-in skills are a group of their own after the project's
+    /// instructions: a row for all of them, then one for each, which send
+    /// `/builtin-skills`.
+    #[test]
+    fn the_built_in_skills_rows_send_the_command() {
+        use crate::remote::BuiltinSkillSetting;
+        let mut app = app();
+        let skill = |name: &str, on| BuiltinSkillSetting {
+            name: name.into(),
+            on,
+        };
+        let mut reading = app.reading.clone();
+        reading.settings.builtin_skills = true;
+        reading.settings.builtin_skill_list = vec![
+            skill("user-facing-prose", true),
+            skill("repo-docs-style", false),
+        ];
+        app.set_reading(reading);
+        let rows = app.settings_rows();
+        let all = rows
+            .iter()
+            .position(|row| *row == SettingsRow::BuiltinSkills)
+            .unwrap();
+        assert_eq!(rows[all + 1], SettingsRow::BuiltinSkill(0));
+        assert_eq!(rows[all + 2], SettingsRow::BuiltinSkill(1));
+        let files = rows
+            .iter()
+            .position(|row| *row == SettingsRow::ProjectFiles)
+            .unwrap();
+        assert_eq!(all, files + 1, "after the project's instructions");
+        for (row, expected) in [
+            (all, "/builtin-skills off"),
+            (all + 1, "/builtin-skills user-facing-prose off"),
+            (all + 2, "/builtin-skills repo-docs-style on"),
+        ] {
+            app.overlay = Some(Overlay::Settings { row, picker: None });
+            press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+            assert_eq!(sent(&mut app), [expected]);
+        }
     }
 
     /// The web page's overlay waits for the page until its status has it:

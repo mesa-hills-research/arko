@@ -231,6 +231,13 @@ pub struct Item {
     /// The worker a `worker_line` stands for.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub worker: Option<String>,
+    /// For a worker's stop notice, the worker that started the worker. None
+    /// for a worker of the main agent. The web page doesn't get it.
+    #[serde(skip)]
+    pub parent: Option<String>,
+    /// Whether it is a worker's stop notice. The web page doesn't get it.
+    #[serde(skip)]
+    pub stop: bool,
     /// Who sent a worker's `message`, [`MAIN_AGENT`] (its lead) or another
     /// worker's ID.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -276,6 +283,8 @@ impl Item {
             message_index: None,
             images: Vec::new(),
             worker: None,
+            parent: None,
+            stop: false,
             from: None,
             call: None,
             job: None,
@@ -412,6 +421,10 @@ pub struct WorkerSummary {
     pub last: Option<String>,
     /// Its report, once it finished.
     pub report: Option<String>,
+    /// Why it failed, whole, once it did. `last` has the start of it in one
+    /// line. The web page doesn't get it.
+    #[serde(skip)]
+    pub error: Option<String>,
     /// How long its runs that ended ran, in milliseconds. That's the time it
     /// worked (not the time it waited) in the runs that ended or that Arko
     /// stopped as it closed, also before the session was opened again. A
@@ -433,6 +446,10 @@ pub struct WorkerSummary {
     pub parent: Option<String>,
     /// How far it is from the main agent, 1 for the main agent's workers.
     pub depth: u32,
+    /// Whether it may start workers of its own (it started with `nested`).
+    /// The web page doesn't get it.
+    #[serde(skip)]
+    pub nested: bool,
     /// What its model calls billed, in dollars.
     pub cost_billed: f64,
     /// What its model calls would cost at API list prices. That is the
@@ -461,6 +478,7 @@ impl WorkerSummary {
             ended_at: None,
             last: None,
             report: None,
+            error: None,
             ran_ms: 0,
             running_since: None,
             model: None,
@@ -468,6 +486,7 @@ impl WorkerSummary {
             profile: None,
             parent: None,
             depth: 1,
+            nested: false,
             cost_billed: 0.0,
             cost_list: 0.0,
             family_cost_billed: 0.0,
@@ -504,10 +523,33 @@ pub fn family_order(workers: &[WorkerSummary]) -> Vec<usize> {
     )
 }
 
+/// [`family_order`] with each worker's level among `workers`. A worker whose
+/// parent isn't in `workers` is a root at level 1, the workers it started
+/// are at level 2, and so on (unlike [`WorkerSummary::depth`], which counts
+/// from the main agent).
+pub fn family_order_with_levels(workers: &[WorkerSummary]) -> Vec<(usize, u32)> {
+    family_levels_of(
+        workers
+            .iter()
+            .map(|worker| (worker.id.as_str(), worker.parent.as_deref())),
+    )
+}
+
 /// [`family_order`] for workers given as their ID and their parent's.
 pub(crate) fn family_order_of<'a>(
     links: impl IntoIterator<Item = (&'a str, Option<&'a str>)>,
 ) -> Vec<usize> {
+    family_levels_of(links)
+        .into_iter()
+        .map(|(at, _)| at)
+        .collect()
+}
+
+/// [`family_order_with_levels`] for workers given as their ID and their
+/// parent's.
+fn family_levels_of<'a>(
+    links: impl IntoIterator<Item = (&'a str, Option<&'a str>)>,
+) -> Vec<(usize, u32)> {
     let links: Vec<(&str, Option<&str>)> = links.into_iter().collect();
     let index: HashMap<&str, usize> = links
         .iter()
@@ -525,22 +567,22 @@ pub(crate) fn family_order_of<'a>(
         }
     }
     let mut order = Vec::with_capacity(links.len());
-    let mut pending: Vec<usize> = Vec::new();
+    let mut pending: Vec<(usize, u32)> = Vec::new();
     for root in roots {
-        pending.push(root);
-        while let Some(at) = pending.pop() {
-            order.push(at);
+        pending.push((root, 1));
+        while let Some((at, level)) = pending.pop() {
+            order.push((at, level));
             // (The earliest of its workers comes out first.)
-            pending.extend(under[at].iter().rev());
+            pending.extend(under[at].iter().rev().map(|at| (*at, level + 1)));
         }
     }
     // (A loop of parents, which no session makes, would leave some out.)
     if order.len() < links.len() {
         let mut placed = vec![false; links.len()];
-        for at in &order {
+        for (at, _) in &order {
             placed[*at] = true;
         }
-        order.extend((0..links.len()).filter(|at| !placed[*at]));
+        order.extend((0..links.len()).filter(|at| !placed[*at]).map(|at| (at, 1)));
     }
     order
 }
@@ -590,10 +632,10 @@ pub struct WorkerInfo {
     pub effort: Option<String>,
     /// The profile it started with.
     pub profile: Option<String>,
-    /// The worker that started it.
-    pub parent: Option<String>,
     /// How far it is from the main agent (0 is taken as 1).
     pub depth: u32,
+    /// Whether it may start workers of its own.
+    pub nested: bool,
     /// What it has billed and would cost at API list prices, when the
     /// session knows (a resumed session reads them from its saved runs).
     /// Without them, the costs the events add up stay as they are.
@@ -775,6 +817,10 @@ pub enum Update {
     Change(Item),
     /// A worker's summary, whole.
     Worker(WorkerSummary),
+    /// The worker `id` ended as `outcome` (finished, failed or stopped).
+    /// Its [`Update::Worker`] with that state, its `report` or `error`
+    /// comes right before, also in a merged batch.
+    WorkerEnded { id: String, outcome: WorkerState },
     /// The activity changed.
     Activity,
     /// The main agent's items from `from` on are gone (the conversation was
@@ -822,7 +868,8 @@ impl Batches {
 /// text appended to an item goes into the item when it came in the same
 /// batch (or into the batch's one append to it), an item's change replaces
 /// what the batch had of it (it is the whole item), a worker's summary
-/// only its last, and the activity is told once.
+/// only its last (but the one a worker ended with stays), and the activity
+/// is told once.
 pub fn merged(updates: Vec<Update>) -> Vec<Update> {
     let mut out: Vec<Option<Update>> = Vec::with_capacity(updates.len());
     // Where the batch has each item: created, changed or appended to.
@@ -874,6 +921,12 @@ pub fn merged(updates: Vec<Update>) -> Vec<Update> {
                     out[at] = None;
                 }
                 out.push(Some(Update::Worker(summary)));
+            }
+            Update::WorkerEnded { id, outcome } => {
+                // The summary it ended with stays, also if the worker goes
+                // on in the same batch.
+                workers.remove(&id);
+                out.push(Some(Update::WorkerEnded { id, outcome }));
             }
             Update::Job(summary) => {
                 if let Some(at) = jobs.insert(summary.id.clone(), out.len()) {
@@ -2414,6 +2467,7 @@ impl Feed {
         let mut state = self.lock();
         self.known_worker(&mut state, id);
         let now = now_ms();
+        let parent = state.parents.get(id).cloned();
         let Some(worker) = state.worker(id) else {
             return;
         };
@@ -2428,6 +2482,7 @@ impl Feed {
                 summary.state = WorkerState::Queued;
                 summary.started_at = None;
                 summary.ended_at = None;
+                summary.error = None;
             }
             WorkerChange::Started => {
                 summary.stop_counting(now);
@@ -2436,6 +2491,7 @@ impl Feed {
                 summary.running_since = Some(now);
                 summary.ended_at = None;
                 summary.report = None;
+                summary.error = None;
                 // A worker that goes on after a stop isn't doing what it did
                 // when it stopped.
                 if summary
@@ -2462,6 +2518,7 @@ impl Feed {
                 summary.state = WorkerState::Failed;
                 summary.ended_at = Some(now);
                 summary.last = Some(render::cut(error, 160));
+                summary.error = Some(error.to_string());
                 let error = crate::providers::explain_error(error);
                 ended = Some(
                     Item::new(
@@ -2481,14 +2538,18 @@ impl Feed {
                 } else {
                     render::cut(&format!("stopped ({reason})"), 160)
                 });
-                ended = Some(Item::new(
+                let mut notice = Item::new(
                     Kind::Notice,
                     if reason.is_empty() {
                         "stopped".to_string()
                     } else {
                         format!("stopped ({})", render::cut(reason, 300))
                     },
-                ));
+                )
+                .level(Level::Info);
+                notice.parent = parent;
+                notice.stop = true;
+                ended = Some(notice);
             }
         }
         if matches!(change, WorkerChange::Queued | WorkerChange::Started) {
@@ -2500,18 +2561,29 @@ impl Feed {
             self.push(&mut state, item.agent(id));
         }
         self.worker_changed(&mut state, id, true);
+        if let Some(worker) = state.worker(id)
+            && !worker.summary.state.is_active()
+        {
+            self.send(Update::WorkerEnded {
+                id: id.to_string(),
+                outcome: worker.summary.state,
+            });
+        }
     }
 
     /// A worker of the session from before Arko started (a resumed
     /// session). Its summary goes in without a place in the transcript,
     /// with how long it ran before (`ran_ms`). A run it goes on with counts
-    /// from when it starts again.
+    /// from when it starts again. `error` is the saved reason it ended, which
+    /// a worker that failed keeps as its `error`.
+    #[allow(clippy::too_many_arguments)]
     pub fn worker_restored(
         &self,
         id: &str,
         task: &str,
         was: WorkerState,
         report: Option<&str>,
+        error: Option<&str>,
         since: i64,
         ran_ms: u64,
     ) {
@@ -2528,6 +2600,9 @@ impl Feed {
                 .map(str::trim)
                 .filter(|report| !report.is_empty())
                 .map(str::to_string),
+            error: error
+                .filter(|_| was == WorkerState::Failed)
+                .map(str::to_string),
             ran_ms,
             ..WorkerSummary::new(id)
         };
@@ -2540,9 +2615,12 @@ impl Feed {
         self.worker_changed(&mut state, id, true);
     }
 
-    /// The worker `id` is started by the worker `parent`, before its first
-    /// event comes: its place in the transcript is its parent's own, and the
-    /// main transcript holds the lines of the main agent's workers only.
+    /// The worker `id` is started by the worker `parent`. This is how the feed
+    /// learns a worker's parent, so call it before the worker's first event
+    /// and before its [`worker_info`](Self::worker_info). The worker's place
+    /// in the transcript is its parent's own (the main transcript holds the
+    /// lines of the main agent's workers only), and its summary gets `parent`
+    /// with the next `worker_info`.
     pub fn worker_under(&self, id: &str, parent: &str) {
         self.lock()
             .parents
@@ -2550,21 +2628,15 @@ impl Feed {
     }
 
     /// Tells the feed what the worker `id` started with (its model, effort,
-    /// profile and place in the family) and, when the session knows, what
-    /// it has cost. The summary goes out when something changed, and so do
-    /// those of the workers it started and the ones that started it when
-    /// their family's cost changed.
+    /// profile, depth and whether it may start workers) and, when the session
+    /// knows, what it has cost. The summary goes out when something changed,
+    /// and so do those of the workers it started and the ones that started it
+    /// when their family's cost changed. The worker's parent is the one
+    /// [`worker_under`](Self::worker_under) named.
     pub fn worker_info(&self, id: &str, info: WorkerInfo) {
         let mut state = self.lock();
         self.known_worker(&mut state, id);
-        match &info.parent {
-            Some(parent) => {
-                state.parents.insert(id.to_string(), parent.clone());
-            }
-            None => {
-                state.parents.remove(id);
-            }
-        }
+        let parent = state.parents.get(id).cloned();
         let Some(worker) = state.worker(id) else {
             return;
         };
@@ -2573,8 +2645,9 @@ impl Feed {
         summary.model = info.model;
         summary.effort = info.effort;
         summary.profile = info.profile;
-        summary.parent = info.parent;
+        summary.parent = parent;
         summary.depth = info.depth.max(1);
+        summary.nested = info.nested;
         if let Some((billed, list)) = info.costs {
             summary.cost_billed = billed;
             summary.cost_list = list;
@@ -3205,6 +3278,58 @@ mod tests {
         assert!(feed.moved_jobs().is_empty());
     }
 
+    /// A worker that ends says so in an update of its own, after the summary
+    /// with its report or its whole error (`last` has the start of the
+    /// error), and that summary stays in a merged batch if the worker goes on.
+    #[test]
+    fn a_worker_s_end_is_an_update_after_its_summary_with_the_whole_error() {
+        let feed = Feed::new("main");
+        let (_, mut receiver) = feed.subscribe();
+        let error = format!("the model refused {}", "twice ".repeat(60));
+        feed.worker("r1", "Review", WorkerChange::Started);
+        feed.worker("r1", "Review", WorkerChange::Failed { error: &error });
+        let summary = feed.worker_summary("r1").unwrap();
+        assert_eq!(summary.error.as_deref(), Some(error.as_str()));
+        assert!(
+            summary
+                .last
+                .as_deref()
+                .is_some_and(|last| last.len() < error.len())
+        );
+        let seen = updates(&mut receiver);
+        assert!(matches!(
+            &seen[seen.len() - 2..],
+            [Update::Worker(ended), Update::WorkerEnded { id, outcome }]
+                if ended.state == WorkerState::Failed
+                    && id == "r1"
+                    && *outcome == WorkerState::Failed
+        ));
+        // (Starting is no end.)
+        let ends = seen
+            .iter()
+            .filter(|update| matches!(update, Update::WorkerEnded { .. }))
+            .count();
+        assert_eq!(ends, 1);
+        // Going on clears the error, and a batch that holds the end and the
+        // next summary keeps both.
+        feed.worker("r1", "Review", WorkerChange::Started);
+        assert_eq!(feed.worker_summary("r1").unwrap().error, None);
+        let again = feed.worker_summary("r1").unwrap();
+        let batch = merged(vec![
+            Update::Worker(summary),
+            Update::WorkerEnded {
+                id: "r1".into(),
+                outcome: WorkerState::Failed,
+            },
+            Update::Worker(again),
+        ]);
+        assert!(matches!(
+            batch.as_slice(),
+            [Update::Worker(ended), Update::WorkerEnded { .. }, Update::Worker(running)]
+                if ended.error.is_some() && running.error.is_none()
+        ));
+    }
+
     /// A worker's summary says what it started with, who started it and what
     /// its model calls cost. The cost adds up from the worker's events, a
     /// call a plan covered counting at its list price only, and a resumed
@@ -3214,11 +3339,11 @@ mod tests {
         use arko_ai::{BillingKind, UsageInfo};
         let feed = Feed::new("main");
         feed.worker("r2", "Judge the render", WorkerChange::Started);
+        feed.worker_under("r2", "r1");
         let mut info = WorkerInfo::new();
         info.model = Some("gpt-6.1-sol".into());
         info.effort = Some("high".into());
         info.profile = Some("3d-judge".into());
-        info.parent = Some("r1".into());
         info.depth = 2;
         feed.worker_info("r2", info);
         let summary = feed.worker_summary("r2").unwrap();
@@ -3272,6 +3397,37 @@ mod tests {
         assert!(feed.worker_summary("nobody").is_none());
     }
 
+    /// A worker's stop notice is Info and says it is a stop, so a client that
+    /// shows warnings only can choose to show it, and it names the worker that
+    /// started the worker.
+    #[test]
+    fn a_stop_notice_says_its_level_and_who_started_the_worker() {
+        let feed = Feed::new("main");
+        feed.worker("r1", "Review", WorkerChange::Started);
+        feed.worker_under("r2", "r1");
+        feed.worker("r2", "Count", WorkerChange::Started);
+        let reason = "its lead r1 was stopped";
+        feed.worker("r2", "Count", WorkerChange::Stopped { reason });
+        feed.worker("r1", "Review", WorkerChange::Stopped { reason: "" });
+        let notices: Vec<(String, Option<Level>, Option<String>, bool)> = items(&feed)
+            .into_iter()
+            .filter(|item| item.kind == Kind::Notice)
+            .map(|item| (item.text, item.level, item.parent, item.stop))
+            .collect();
+        assert_eq!(
+            notices,
+            [
+                (
+                    "stopped (its lead r1 was stopped)".to_string(),
+                    Some(Level::Info),
+                    Some("r1".to_string()),
+                    true
+                ),
+                ("stopped".to_string(), Some(Level::Info), None, true),
+            ]
+        );
+    }
+
     /// A worker that goes on after a stop (its lead messaged it) no longer
     /// shows the stop as what it does.
     #[test]
@@ -3313,11 +3469,15 @@ mod tests {
         feed.worker_under("r2", "r1");
         feed.event(&event("worker", shell(Uuid::new_v4(), "ls")), Some("r2"));
         feed.worker("r2", "Count the files", WorkerChange::Started);
-        // Another is told its parent with its summary.
+        // Another is told its parent before its summary, which holds it.
+        feed.worker_under("r3", "r1");
         let mut info = WorkerInfo::new();
-        info.parent = Some("r1".into());
         info.depth = 2;
         feed.worker_info("r3", info);
+        assert_eq!(
+            feed.worker_summary("r3").unwrap().parent.as_deref(),
+            Some("r1")
+        );
         feed.worker("r3", "Count the tests", WorkerChange::Started);
         let lines: Vec<(String, Option<String>)> = items(&feed)
             .into_iter()
@@ -3350,8 +3510,12 @@ mod tests {
             worker("r4", Some("r3")),
             worker("r5", Some("r1")),
             worker("r6", Some("r2")),
-            // Its parent is not among them.
-            worker("r7", Some("r9")),
+            // Its parent is not among them, and it is 3 levels from the main
+            // agent.
+            WorkerSummary {
+                depth: 3,
+                ..worker("r7", Some("r9"))
+            },
         ];
         let ids: Vec<&str> = family_order(&workers)
             .into_iter()
@@ -3362,6 +3526,25 @@ mod tests {
         // A loop of parents leaves none out.
         let loops = [worker("r1", Some("r2")), worker("r2", Some("r1"))];
         assert_eq!(family_order(&loops).len(), 2);
+        // The levels count from the roots listed, so r7, whose starter isn't
+        // listed, is at level 1 whatever its depth says.
+        let levels: Vec<(&str, u32)> = family_order_with_levels(&workers)
+            .into_iter()
+            .map(|(at, level)| (workers[at].id.as_str(), level))
+            .collect();
+        assert_eq!(
+            levels,
+            [
+                ("r1", 1),
+                ("r3", 2),
+                ("r4", 3),
+                ("r5", 2),
+                ("r2", 1),
+                ("r6", 2),
+                ("r7", 1)
+            ]
+        );
+        assert_eq!(family_order_with_levels(&loops), [(0, 1), (1, 1)]);
     }
 
     /// A worker's summary carries what it and its workers cost, and it goes
@@ -3373,11 +3556,11 @@ mod tests {
         feed.worker("r1", "Review", WorkerChange::Started);
         feed.worker("r2", "Count", WorkerChange::Started);
         feed.worker("r3", "Count more", WorkerChange::Started);
+        feed.worker_under("r2", "r1");
+        feed.worker_under("r3", "r2");
         let mut info = WorkerInfo::new();
-        info.parent = Some("r1".into());
         info.depth = 2;
         feed.worker_info("r2", info.clone());
-        info.parent = Some("r2".into());
         info.depth = 3;
         feed.worker_info("r3", info);
         let usage = |total: f64, billed: f64| {
@@ -3420,7 +3603,6 @@ mod tests {
         );
         // A resumed session sets r2's saved cost, and the totals follow.
         let mut info = WorkerInfo::new();
-        info.parent = Some("r1".into());
         info.depth = 2;
         info.costs = Some((2.0, 2.0));
         feed.worker_info("r2", info);
@@ -4267,7 +4449,7 @@ mod tests {
         );
         assert_eq!(feed.worker_run_times(), [("r1".to_string(), total)]);
         let resumed = Feed::new("main");
-        resumed.worker_restored("r1", "Count", WorkerState::Stopped, None, 0, total);
+        resumed.worker_restored("r1", "Count", WorkerState::Stopped, None, None, 0, total);
         assert_eq!(resumed.workers()[0].ran_ms, total);
         assert_eq!(resumed.workers()[0].run_time_ms(now_ms()), total);
     }
@@ -4282,10 +4464,11 @@ mod tests {
             "Review",
             WorkerState::Finished,
             Some("All good."),
+            None,
             5,
             0,
         );
-        feed.worker_restored("r1", "Again", WorkerState::Running, None, 6, 0);
+        feed.worker_restored("r1", "Again", WorkerState::Running, None, None, 6, 0);
         assert_eq!(feed.workers().len(), 1);
         assert_eq!(feed.workers()[0].ended_at, Some(5));
         assert!(items(&feed).is_empty());
@@ -4296,6 +4479,18 @@ mod tests {
             ("r2", WorkerState::Running)
         );
         assert_eq!(items(&feed)[0].kind, Kind::WorkerLine);
+    }
+
+    /// A restored worker that failed has the saved reason as its error, and
+    /// one that stopped, whose record holds why, does not.
+    #[test]
+    fn a_restored_worker_that_failed_keeps_its_saved_error() {
+        let feed = Feed::new("main");
+        let why = Some("the model refused");
+        feed.worker_restored("r1", "Review", WorkerState::Failed, None, why, 5, 0);
+        feed.worker_restored("r2", "Count", WorkerState::Stopped, None, why, 5, 0);
+        let errors: Vec<Option<String>> = feed.workers().into_iter().map(|w| w.error).collect();
+        assert_eq!(errors, [Some("the model refused".to_string()), None]);
     }
 
     /// A busy worker's summary goes out a few times a second, and its

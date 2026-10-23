@@ -17,6 +17,9 @@ const ENDS: &str = "A monitor of yours ends ";
 pub(crate) enum Opening {
     /// The workers sent news.
     News,
+    /// The workers sent news, and part of it reached the agent earlier but
+    /// not whole.
+    ResentNews,
     /// A background job of the agent's finished.
     Job,
     /// A monitor of the agent's alerted.
@@ -32,6 +35,7 @@ impl Opening {
     pub(crate) fn text(self) -> String {
         let lead = match self {
             Self::News => "Your workers sent you news as your last turn ended. It follows.".into(),
+            Self::ResentNews => "Your workers sent you news as your last turn ended. Some of it reached you earlier but not whole, so that part follows again.".into(),
             Self::Job => {
                 "A background job of yours finished after your last turn ended. Its update follows."
                     .into()
@@ -51,7 +55,7 @@ impl Opening {
     /// transcript shows too.
     pub(crate) fn notice(self) -> String {
         match self {
-            Self::News => "⇠ the workers' news goes to the agent".into(),
+            Self::News | Self::ResentNews => "⇠ the workers' news goes to the agent".into(),
             Self::Job => "⇠ a background job finished, and its update goes to the agent".into(),
             Self::Alert => "⇠ a monitor alerted, and its alert goes to the agent".into(),
             Self::EndsSoon(left) => format!(
@@ -70,7 +74,11 @@ impl Opening {
                 return None;
             }
             if paragraph.starts_with("Your workers sent you news") {
-                Some(Self::News)
+                Some(if paragraph.contains("follows again.") {
+                    Self::ResentNews
+                } else {
+                    Self::News
+                })
             } else if paragraph.starts_with("A background job of yours finished") {
                 Some(Self::Job)
             } else if paragraph.starts_with("A monitor of yours alerted") {
@@ -111,6 +119,7 @@ mod tests {
     fn each_opening_is_found_in_its_message() {
         for opening in [
             Opening::News,
+            Opening::ResentNews,
             Opening::Job,
             Opening::Alert,
             Opening::EndsSoon(Some(25)),
@@ -121,6 +130,14 @@ mod tests {
             let after = format!("# Session capabilities\n\nNo images.\n\n{}", opening.text());
             assert_eq!(Opening::of(&after), Some(opening));
         }
+        // News that goes out again says so, and has the same line in the
+        // transcript.
+        assert_eq!(
+            Opening::ResentNews.text(),
+            "Your workers sent you news as your last turn ended. Some of it reached you earlier but not whole, so that part follows again. (Arko started this turn for it. The user hasn't written.)"
+        );
+        assert_ne!(Opening::ResentNews.text(), Opening::News.text());
+        assert_eq!(Opening::ResentNews.notice(), Opening::News.notice());
         assert_eq!(
             Opening::of(
                 "Your workers sent you news as your last turn ended: it follows. (Arko started this turn for it; the user hasn't written.)"

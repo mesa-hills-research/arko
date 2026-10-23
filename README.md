@@ -21,7 +21,8 @@ models, and on your Claude plan through an installed Claude Code.
 - [Notes](docs/kept-notes.md) the main agent keeps for itself and its workers, which come back
   after a handover or a compaction
 - MCP servers in Claude Code's `.mcp.json` format, and [skills](docs/skills.md) from
-  `.agents/skills` or `.claude/skills`, with two for writing built in
+  `.agents/skills` or `.claude/skills`, with three built in (two for writing, and ponytail for
+  coding tasks and running workers)
 - Themes for the full-screen view, and your own in GPUI Kit's format
 - A library for apps with front ends of their own
 
@@ -56,10 +57,11 @@ Arko picks a model from the credentials it finds. Set `ANTHROPIC_API_KEY`, `OPEN
 `GEMINI_API_KEY` or `OPENROUTER_API_KEY`, sign in to Codex for a ChatGPT login, or sign in to Claude
 Code for `cc:` models. When the key for a model is missing, Arko asks for it on a setup screen. Keys
 can also go in a `.env` file. Semantic search in the indexes uses `VOYAGE_API_KEY`, and without it
-search is by keywords.
+search is by keywords. A second ChatGPT login takes over when the first reaches its usage limit, and `/chatgpt` manages
+them (see [ChatGPT logins](docs/chatgpt-logins.md)).
 
 In a session, `/help` lists the keys and commands, and `/settings` holds the view, the theme, the
-web page and the API keys. `arko --help` describes every option and setting.
+web page, the API keys and the ChatGPT logins. `arko --help` describes every option and setting.
 
 ## Library
 

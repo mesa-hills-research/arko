@@ -39,7 +39,7 @@ pub(crate) use feed::family_order_of;
 pub use feed::{
     Activity, Batches, CallStatus, Delivery, Feed, Item, JobKind, JobStart, JobState, JobSummary,
     Kind, Level, MAIN_AGENT, Question, REFRESH_MESSAGE, Snapshot, Source, Update, WorkerChange,
-    WorkerInfo, WorkerState, WorkerSummary, family_order,
+    WorkerInfo, WorkerState, WorkerSummary, family_order, family_order_with_levels,
 };
 pub(crate) use history::all_items;
 pub use history::items as history;
@@ -118,8 +118,11 @@ pub struct Reading {
     pub context_tokens: Option<usize>,
     /// The plans' usage windows (ChatGPT, Claude), as last reported.
     pub plan_usage: Option<String>,
-    /// The workers running.
-    pub workers_running: Vec<String>,
+    /// The workers running, each by its ID and the ID of the worker that
+    /// started it (none for a worker of the main agent). The web page doesn't
+    /// get it.
+    #[serde(skip)]
+    pub workers_running: Vec<(String, Option<String>)>,
     /// Each worker, a line or two (as `/workers` says them).
     pub workers: Option<String>,
     /// The settings a client may change (with commands).
@@ -394,9 +397,27 @@ pub struct LiveSettings {
     pub worker_models: crate::agents::ModelChoice,
     /// How many levels of workers the session allows (`/worker-depth`).
     pub worker_depth: u32,
+    /// A worker fails after this many failed model requests in a row
+    /// (`/worker-retry-cap`), if any. It applies when the session is resumed
+    /// once the conversation has started.
+    pub worker_retry_cap: Option<u32>,
     /// The agent that started a worker gets a copy of the user's messages to
     /// it (`/message-copies`). It applies from the next message.
     pub message_copies: bool,
+    /// The agents get the built-in skills at all (`/builtin-skills`). It
+    /// changes the agents only before the conversation starts
+    /// (`Models::started`), and after it a resumed session gets the change.
+    pub builtin_skills: bool,
+    /// Each built-in skill, and whether it is left out by name (apart from
+    /// `builtin_skills`).
+    pub builtin_skill_list: Vec<BuiltinSkillSetting>,
+}
+
+/// A built-in skill and whether `/builtin-skills` leaves it out by name.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct BuiltinSkillSetting {
+    pub name: String,
+    pub on: bool,
 }
 
 /// A random token of `bytes` bytes, in URL-safe base64.

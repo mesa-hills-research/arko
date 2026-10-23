@@ -98,8 +98,9 @@ pub struct Attachment {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QuitAsk {
     pub jobs: Vec<arko_agents::terminal::BackgroundJob>,
-    /// The workers running, by their IDs.
-    pub workers: Vec<String>,
+    /// The workers running, each by its ID and the ID of the worker that
+    /// started it (none for a worker of the main agent).
+    pub workers: Vec<(String, Option<String>)>,
 }
 
 /// Prints a front end's lines where the front end shows them: the line
@@ -189,10 +190,10 @@ impl Output {
         }
         let text = glyphs::render(text);
         let mut printer = self.printer.lock().unwrap();
-        if let Some(printer) = printer.as_mut() {
-            if printer.print(format!("{text}\n")).is_ok() {
-                return;
-            }
+        if let Some(printer) = printer.as_mut()
+            && printer.print(format!("{text}\n")).is_ok()
+        {
+            return;
         }
         if self.progress_to_stderr {
             eprintln!("{text}");
@@ -453,6 +454,9 @@ pub struct Stats {
     pub plan_usage: Option<String>,
     /// Each plan's part of `plan_usage`, by plan (`providers::plan_name`).
     pub plans: std::collections::BTreeMap<String, String>,
+    /// The session's ChatGPT logins, whose number set aside the ChatGPT
+    /// plan's usage says.
+    pub(crate) chatgpt: Option<arko_ai::ChatGptAccounts>,
     /// The main agent's latest model request.
     pub last_request: Option<remote::LastRequest>,
     /// How long the main agent's prompt cache lasts: as its provider says,
@@ -922,9 +926,12 @@ impl EventPrinter {
                 }
             }
             AgentEvent::PlanUsageReported(usage) => {
-                if let Some(text) = crate::providers::plan_usage_text(&usage) {
+                if let Some(mut text) = crate::providers::plan_usage_text(&usage) {
                     let mut stats = self.stats.lock().unwrap();
                     let plan = crate::providers::plan_name(usage.plan);
+                    if usage.plan != Some(arko_ai::SubscriptionPlan::ClaudeCode) {
+                        text.push_str(&crate::logins::set_aside_note(stats.chatgpt.as_ref()));
+                    }
                     stats.plans.insert(plan.to_string(), text);
                     stats.plan_usage = crate::providers::plan_usage_line(&stats.plans);
                     stats
@@ -1046,7 +1053,7 @@ impl EventPrinter {
                 self.output.bold("save worker profile"),
                 text("name").trim(),
                 match text("scope").trim() {
-                    "" | "session" => String::new(),
+                    "" => format!(" for {}", crate::profiles::Place::Project.reach()),
                     scope => match crate::profiles::Place::parse(scope) {
                         Some(place) => format!(" for {}", place.reach()),
                         None => format!(" for the {scope}"),
@@ -1808,6 +1815,67 @@ mod tests {
         assert_eq!(
             command_line("cat > a <<'EOF'\nx\nEOF"),
             "$ cat > a <<'EOF'  (+2 lines)"
+        );
+    }
+
+    /// A ChatGPT account's credits show beside its plan windows in the
+    /// status line and the figures `/cost`, the page and `worker_options`
+    /// read, when the backend reports them: what is left, "unlimited
+    /// credits", or nothing.
+    #[tokio::test]
+    async fn credits_show_beside_the_plan_windows() {
+        let output = Arc::new(Output::new(None, false));
+        let stats = Arc::new(Mutex::new(Stats::default()));
+        let mut printer = EventPrinter::new(output, stats.clone(), false, None);
+        let mut report = |credits: Option<arko_ai::PlanCredits>| {
+            printer.event(WorkflowEvent {
+                timestamp: chrono::Utc::now(),
+                workflow_run_id: Uuid::nil(),
+                agent_name: MAIN.into(),
+                agent_run_id: Uuid::nil(),
+                event: AgentEvent::PlanUsageReported(arko_ai::PlanUsage {
+                    plan: Some(arko_ai::SubscriptionPlan::ChatGpt),
+                    primary: Some(arko_ai::PlanUsageWindow {
+                        used_percent: 82.0,
+                        window_minutes: Some(10_080),
+                        ..Default::default()
+                    }),
+                    credits,
+                    ..Default::default()
+                }),
+            });
+            let stats = stats.lock().unwrap();
+            (
+                stats.plan_usage.clone().unwrap(),
+                stats.plans["ChatGPT plan"].clone(),
+            )
+        };
+        let credits = |has_credits, unlimited, balance: Option<&str>| {
+            Some(arko_ai::PlanCredits {
+                has_credits,
+                unlimited,
+                balance: balance.map(str::to_string),
+            })
+        };
+        let line = |text: &str| (text.to_string(), text.to_string());
+        assert_eq!(report(None), line("ChatGPT plan 7 d 82%"));
+        assert_eq!(
+            report(credits(true, false, Some("12.50"))),
+            line("ChatGPT plan 7 d 82%, credits left 12.50")
+        );
+        assert_eq!(
+            report(credits(true, true, None)),
+            line("ChatGPT plan 7 d 82%, unlimited credits")
+        );
+        // Credits with no balance given.
+        assert_eq!(
+            report(credits(true, false, None)),
+            line("ChatGPT plan 7 d 82%, has credits")
+        );
+        // None left: nothing is said.
+        assert_eq!(
+            report(credits(false, false, Some("0"))),
+            line("ChatGPT plan 7 d 82%")
         );
     }
 

@@ -335,8 +335,19 @@ fn the_cache_comes_from_the_call_then_the_profile_then_the_session() {
         ttl(&pick(&hour, &[("model", "luna"), ("cache", "1h")]).unwrap()),
         None
     );
+    // Claude Code takes one too, and chooses its own (an hour on a Claude
+    // plan) unless one is asked for, 5 minutes included.
+    assert_eq!(ttl(&pick(&basis, &[("model", "cc:opus")]).unwrap()), None);
     assert_eq!(
-        ttl(&pick(&hour, &[("model", "cc:opus"), ("cache", "1h")]).unwrap()),
+        ttl(&pick(&basis, &[("model", "cc:opus"), ("cache", "1h")]).unwrap()),
+        Some(arko_ai::AnthropicCacheTtl::OneHour)
+    );
+    assert_eq!(
+        ttl(&pick(&hour, &[("model", "cc:opus"), ("cache", "5m")]).unwrap()),
+        Some(arko_ai::AnthropicCacheTtl::FiveMinutes)
+    );
+    assert_eq!(
+        ttl(&pick(&basis, &[("model", "opus"), ("cache", "5m")]).unwrap()),
         None
     );
     assert_eq!(

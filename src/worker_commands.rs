@@ -1,7 +1,8 @@
-//! `/worker-models`, `/worker-depth`, `/message-copies` and `/profiles`: who
-//! chooses the workers' models, how deep workers go, whether the agent that
-//! started a worker gets a copy of the user's messages to it, and the worker
-//! profiles the user keeps.
+//! `/worker-models`, `/worker-depth`, `/worker-retry-cap`, `/message-copies`
+//! and `/profiles`: who chooses the workers' models, how deep workers go,
+//! how many failed requests stop a worker, whether the agent that started a
+//! worker gets a copy of the user's messages to it, and the worker profiles
+//! the user keeps.
 
 use arko_workflows::notes::{Note, NoteSource};
 
@@ -42,6 +43,11 @@ const PLACEHOLDER: &str = "Describe what this profile is for";
 /// How `/profiles` is used.
 const PROFILES_USAGE: &str = "/profiles lists the worker profiles, /profiles NAME shows one, /profiles add NAME MODEL [EFFORT] [DESCRIPTION] makes one for every project, and /profiles remove NAME deletes one.";
 
+/// The retry cap as the commands say it: a number, or `off`.
+fn cap_word(cap: Option<u32>) -> String {
+    cap.map_or_else(|| "off".to_string(), |cap| cap.to_string())
+}
+
 /// What the main agent is told when the user changes the depth to `depth`,
 /// if anything. With every worker on the session's model none starts workers,
 /// and it was told so.
@@ -59,7 +65,7 @@ fn depth_note(depth: u32, choice: ModelChoice) -> Option<String> {
 }
 
 impl Harness {
-    /// The three folders profiles are read from, for this session.
+    /// The folders profiles are read from, for this session.
     pub(crate) fn profile_roots(&self) -> Roots {
         Roots::new(&self.root)
             .workspace(&self.settings.workspace)
@@ -188,7 +194,7 @@ impl Harness {
             return Ok(format!(
                 "{} is {now}. {} /worker-depth 1 to {} changes it.",
                 workers::DEPTH_NAME,
-                workers::depth_effect(now),
+                workers::depth_effect(now, self.settings.worker_models),
                 workers::MAX_DEPTH
             ));
         }
@@ -197,7 +203,7 @@ impl Harness {
             return Ok(format!(
                 "{} is {depth} already. {}",
                 workers::DEPTH_NAME,
-                workers::depth_effect(depth)
+                workers::depth_effect(depth, self.settings.worker_models)
             ));
         }
         let mut settings = self.settings.clone();
@@ -224,8 +230,57 @@ impl Harness {
         Ok(format!(
             "{} is now {depth}. {}",
             workers::DEPTH_NAME,
-            workers::depth_effect(depth)
+            workers::depth_effect(depth, self.settings.worker_models)
         ))
+    }
+
+    /// `/worker-retry-cap`, typed at the prompt, sent from the page or chosen
+    /// in the settings: says how many failed model requests in a row stop a
+    /// worker, or with `off`, `on` or a number sets it. The workflow holds
+    /// the cap from when it is built, so a change before the conversation
+    /// starts builds the agents again, and one after it waits for the
+    /// session to be resumed.
+    pub(crate) fn worker_retry_cap_command(&mut self, argument: &str, source: Source) {
+        let before = self.settings.worker_retry_cap;
+        let result = self.worker_retry_cap_request(argument);
+        let changed = before != self.settings.worker_retry_cap;
+        self.setting_reply(result, source, changed);
+    }
+
+    fn worker_retry_cap_request(&mut self, argument: &str) -> Result<String, String> {
+        if self.settings.max_workers == 0 || self.crew.is_none() {
+            return Err("This session has no workers (it started with --workers 0, or with the old worker tools).".to_string());
+        }
+        let now = self.settings.worker_retry_cap;
+        let name = workers::RETRY_CAP_NAME;
+        if argument.is_empty() {
+            return Ok(format!(
+                "{name} is {}. {} {} off, on or a number changes it.",
+                cap_word(now),
+                workers::retry_cap_about(now),
+                workers::RETRY_CAP_COMMAND
+            ));
+        }
+        let cap = workers::parse_retry_cap(argument)?;
+        if cap == now {
+            return Ok(format!("{name} is {} already.", cap_word(cap)));
+        }
+        let mut settings = self.settings.clone();
+        settings.worker_retry_cap = cap;
+        let mut text = format!(
+            "{name} is now {}. {}",
+            cap_word(cap),
+            workers::retry_cap_about(cap)
+        );
+        if self.conversation_started() {
+            self.settings = settings;
+            self.save_session();
+            self.publish_models();
+            text.push_str(" It applies when you resume the session.");
+        } else {
+            self.rebuild_agents(settings)?;
+        }
+        Ok(text)
     }
 
     /// `/message-copies`, typed at the prompt, sent from the page or chosen

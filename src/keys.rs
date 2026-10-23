@@ -79,16 +79,19 @@ pub struct Keys {
     id: u64,
     /// Arko's folder, whose other sessions hear of the keys added and
     /// removed here, and tell theirs.
-    shared: std::sync::OnceLock<std::path::PathBuf>,
-    client: Arc<LLMClient>,
+    pub(crate) shared: std::sync::OnceLock<std::path::PathBuf>,
+    pub(crate) client: Arc<LLMClient>,
     indexes: Option<Arc<index::Indexes>>,
-    feed: Option<remote::Feed>,
+    pub(crate) feed: Option<remote::Feed>,
     /// The session's context: its settings and keys are read and saved as
     /// the session's, whatever thread calls (an app's).
-    context: Option<Arc<crate::context::SessionContext>>,
+    pub(crate) context: Option<Arc<crate::context::SessionContext>>,
     /// Where the providers are reached: their own addresses, or (tests) a
     /// local server for all of them.
-    local: std::sync::OnceLock<String>,
+    pub(crate) local: std::sync::OnceLock<String>,
+    /// The session's `--codex-auth` file, which comes before ARKO_CODEX_AUTH
+    /// ([`use_codex_auth`](Self::use_codex_auth)).
+    pub(crate) codex_auth: std::sync::OnceLock<std::path::PathBuf>,
     state: Mutex<State>,
 }
 
@@ -186,6 +189,7 @@ impl Keys {
             feed,
             context: crate::context::handle(),
             local: std::sync::OnceLock::new(),
+            codex_auth: std::sync::OnceLock::new(),
             state: Mutex::new(State {
                 openai,
                 withdrawn: Vec::new(),
@@ -200,6 +204,7 @@ impl Keys {
         if self.shared.set(root.clone()).is_err() {
             return;
         }
+        self.share_logins(root.clone());
         let mut changes = credentials::changes();
         let keys = Arc::downgrade(self);
         tokio::spawn(async move {
@@ -324,6 +329,10 @@ impl Keys {
                 if needs == "Claude Code signed in" {
                     format!(
                         "Can't start a worker on {name}. It needs Claude Code signed in. The user signs in with `claude auth login`. {USABLE}"
+                    )
+                } else if needs == "Claude Code updated" {
+                    format!(
+                        "Can't start a worker on {name}. It needs Claude Code updated, since this one has a security flaw. The user updates it with `claude update`. {USABLE}"
                     )
                 } else {
                     format!(
@@ -502,7 +511,7 @@ impl Keys {
         }
     }
 
-    fn notice(&self, text: &str) {
+    pub(crate) fn notice(&self, text: &str) {
         if let Some(feed) = &self.feed {
             feed.notice(Level::Info, text);
         }

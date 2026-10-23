@@ -98,7 +98,7 @@ async fn a_key_added_while_arko_runs_reaches_new_workers_at_once() {
     assert_eq!(
         last_said(&harness.feed),
         format!("{openrouter} needs OPENROUTER_API_KEY. /keys adds API keys.")
-    );
+   );
 
     // The conversation starts, with a worker on luna.
     assert!(matches!(
@@ -113,7 +113,7 @@ async fn a_key_added_while_arko_runs_reaches_new_workers_at_once() {
     assert_eq!(
         harness.keys.apply(&credentials::OPENROUTER, Some("sk-or-test")),
         "OpenRouter's models can be used now."
-    );
+   );
     assert_eq!(reachable(&harness), ["openai", "openrouter"]);
     assert!(harness.live_command(&format!("/model worker {openrouter}"), Source::Terminal));
     assert!(
@@ -122,7 +122,7 @@ async fn a_key_added_while_arko_runs_reaches_new_workers_at_once() {
         )),
         "{}",
         last_said(&harness.feed)
-    );
+   );
     assert!(matches!(
         harness.turn(Prompt::User("Start a worker.".into()), &mut inputs).await,
         TurnEnd::Answered
@@ -143,13 +143,13 @@ async fn a_key_added_while_arko_runs_reaches_new_workers_at_once() {
     assert_eq!(
         harness.keys.apply(&credentials::OPENROUTER, None),
         "Agents already using it keep it until Arko quits."
-    );
+   );
     assert_eq!(reachable(&harness), ["openai"]);
     assert!(harness.live_command(&format!("/model worker {openrouter}"), Source::Terminal));
     assert_eq!(
         last_said(&harness.feed),
         format!("{openrouter} needs OPENROUTER_API_KEY. /keys adds API keys.")
-    );
+   );
     let before = on_openrouter(&bodies);
     assert!(matches!(
         harness.turn(Prompt::User("Start a worker.".into()), &mut inputs).await,
@@ -183,5 +183,72 @@ async fn keys_are_listed_and_added_only_at_the_terminal() {
     assert!(said(&harness.feed).contains("/keys add reads the key with the input hidden"));
     assert!(harness.live_command("/keys add nothing", Source::Terminal));
     assert!(said(&harness.feed).contains("Arko takes no API key for `nothing`."));
+    harness.crew.as_ref().unwrap().shutdown().await;
+}
+
+/// A Codex auth.json for `account`.
+fn write_login(path: &std::path::Path, account: &str) {
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(
+        path,
+        format!(r#"{{"tokens": {{"access_token": "access-{account}", "account_id": "{account}"}}}}"#),
+    )
+    .unwrap();
+}
+
+/// `/chatgpt` lists the ChatGPT logins (their folders only on the page),
+/// and adds, orders and removes them at the terminal only.
+#[tokio::test]
+async fn chatgpt_logins_are_listed_everywhere_and_changed_only_at_the_terminal() {
+    let server = ModelServer::start(Arc::new(|_, _| Box::pin(async { complete("m", "Done.") }))).await;
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("arko");
+    let (one, two) = (temp.path().join("one/auth.json"), temp.path().join("two/auth.json"));
+    write_login(&one, "account-1");
+    write_login(&two, "account-2");
+    credentials::set_chatgpt_login(&root, &one).unwrap();
+    let env = credentials::Env::for_folder_in(None, false, Some(&root));
+    let (mut harness, _inputs, _sender) =
+        crate::context::with_env(env, || harness(temp.path(), server.client(), true));
+    let files = || -> Vec<std::path::PathBuf> {
+        credentials::chatgpt_logins_in(&root)
+            .into_iter()
+            .filter_map(|login| login.path)
+            .collect()
+    };
+
+    assert!(harness.live_command("/chatgpt", Source::Terminal));
+    let text = said(&harness.feed);
+    assert!(text.starts_with("ChatGPT logins\n  1  "), "{text}");
+    assert!(text.contains(&one.display().to_string()), "{text}");
+    assert!(text.contains("A new session uses them."), "{text}");
+    assert!(harness.live_command("/chatgpt", Source::Web));
+    let text = last_said(&harness.feed);
+    assert!(text.contains("  1  one"), "{text}");
+    assert!(!text.contains(&one.display().to_string()), "{text}");
+
+    assert!(harness.live_command(&format!("/chatgpt add {}", two.display()), Source::Terminal));
+    assert!(said(&harness.feed).contains("A new session uses it."));
+    assert_eq!(files(), [one.clone(), two.clone()]);
+    assert!(harness.live_command("/chatgpt first 2", Source::Terminal));
+    assert_eq!(files(), [two.clone(), one.clone()]);
+    assert!(harness.live_command("/chatgpt remove 1", Source::Terminal));
+    assert_eq!(files(), std::slice::from_ref(&one));
+    assert!(harness.live_command("/chatgpt remove 5", Source::Terminal));
+    assert!(said(&harness.feed).contains("There is no login 5."));
+    assert!(harness.live_command(&format!("/chatgpt add {}", two.display()), Source::Web));
+    assert!(said(&harness.feed).contains(
+        "ChatGPT logins are changed at the terminal, not from the web page."
+    ));
+    assert_eq!(files(), std::slice::from_ref(&one));
+    // A file that holds no login is "not usable", and the page leaves out
+    // the path its reason names.
+    std::fs::write(&one, r#"{"tokens": {}}"#).unwrap();
+    assert!(harness.live_command("/chatgpt", Source::Terminal));
+    assert!(last_said(&harness.feed).contains("not usable ("));
+    assert!(harness.live_command("/chatgpt", Source::Web));
+    let text = last_said(&harness.feed);
+    assert!(text.contains("  1  one · not usable"), "{text}");
+    assert!(!text.contains(&one.display().to_string()), "{text}");
     harness.crew.as_ref().unwrap().shutdown().await;
 }

@@ -286,7 +286,8 @@ impl ModelSettings {
     }
 
     /// A model that takes Anthropic's cache lifetimes, so a worker's
-    /// `cache` chooses one: Claude by API key or on OpenRouter.
+    /// `cache` chooses one: Claude by API key, on OpenRouter or in Claude
+    /// Code.
     fn takes_cache_ttl(&self) -> bool {
         resolve_model(&self.model).is_ok_and(|model| providers::takes_cache_ttl(&model))
     }
@@ -978,15 +979,15 @@ fn profile_names(profiles: &[ProfileName]) -> String {
 /// the main agent that chooses `start_agent`'s `cache`.
 fn cache_paragraph(settings: &AgentSettings) -> String {
     let openai = settings.worker.provider() == Ok(Provider::OpenAI);
-    if settings.worker.takes_cache_ttl() {
+    if settings.worker.in_claude_code() {
+        "\nA worker runs in Claude Code and keeps a prompt cache of its conversation. Set `start_agent`'s `cache` to `1h` for a worker you expect to send messages or follow-up work after it reports, so continuing it reuses its cache, and to `5m` for a quick one-off such as a research task. Without `cache`, Claude Code uses an hour on a Claude plan. Continuing a worker after its cache has expired rereads its whole conversation uncached, which uses more of the plan's limits. If it finished more than an hour ago, start a fresh worker instead, unless its context is worth that.\n".to_string()
+    } else if settings.worker.takes_cache_ttl() {
         format!(
             "\nA worker keeps a prompt cache of its conversation. Set `start_agent`'s `cache` to `1h` for a worker you expect to send messages or follow-up work after it reports, so continuing it reuses its cache, and to `5m` for a quick one-off such as a research task (a 1h cache costs more to write, twice the input price instead of 1.25 times). The default is `{}`. Continuing a worker after its cache has expired rereads its whole conversation at full price. If it finished more than an hour ago, start a fresh worker instead, unless its context is worth that.\n",
             if settings.worker.cache_1h { "1h" } else { "5m" }
         )
     } else if openai && settings.providers.openai_auth != Some(OpenAiAuth::ApiKey) {
         "\nA worker keeps a prompt cache of its conversation for 30 minutes after its last step (ChatGPT's cache, which no setting changes). Continuing a worker after its cache has expired rereads its whole conversation uncached, which uses more of the ChatGPT plan's limits. If it finished more than 30 minutes ago, start a fresh worker instead, unless its context is worth that.\n".to_string()
-    } else if settings.worker.in_claude_code() {
-        "\nA worker runs in Claude Code, which keeps a prompt cache of its conversation for an hour after its last step on a Claude plan (no setting changes it). Continuing a worker after its cache has expired rereads its whole conversation uncached, which uses more of the plan's limits. If it finished more than an hour ago, start a fresh worker instead, unless its context is worth that.\n".to_string()
     } else {
         String::new()
     }
@@ -1230,8 +1231,9 @@ mod tests {
 
     /// With every worker on the session's worker model, its provider's cache
     /// gets a paragraph: the `cache` choice where Anthropic's cache
-    /// lifetimes apply, ChatGPT's 30 minutes, Claude Code's hour, and
-    /// nothing where Arko can't tell. Where the main agent chooses the
+    /// lifetimes apply (in Claude Code too, which uses an hour on a plan
+    /// without one), ChatGPT's 30 minutes, and nothing where Arko can't
+    /// tell. Where the main agent chooses the
     /// models, `worker_options` tells it each model's cache instead.
     #[test]
     fn the_lead_hears_about_its_workers_caches_by_provider() {
@@ -1247,6 +1249,9 @@ mod tests {
         };
         let openrouter_claude = model("openrouter:anthropic/claude-opus-5.5", false);
         assert!(instructions(&openrouter_claude, None).contains("`cache`"));
+        let claude_code = instructions(&model("cc:opus", false), None);
+        assert!(claude_code.contains("`cache` to `1h`") && claude_code.contains("`5m`"));
+        assert!(claude_code.contains("Without `cache`, Claude Code uses an hour"));
         let sol = model("sol", false);
         assert!(instructions(&sol, None).contains("for 30 minutes after its last step"));
         assert!(

@@ -1,4 +1,4 @@
-// Tests of the page's logic (core.js), outside the page: `node --test src/remote/page-tests/core.test.js`.
+// Tests of the page's logic (core.js) and style sheet, outside the page: `node --test src/remote/page-tests/core.test.js`.
 'use strict';
 
 const test = require('node:test');
@@ -489,8 +489,16 @@ test('the workers settings read as words', () => {
   assert.equal(core.WORKER_MODELS.session.name, "Session's worker model");
   assert.match(core.workerDepthAbout(), /^How many levels of workers there can be, from 1 to 4\. With 1 only the main agent starts workers\./);
   assert.doesNotMatch(core.workerDepthAbout(), /takes effect/);
+  assert.equal(core.retryCapAbout(null), 'Workers keep retrying failed model requests. On, a worker fails after 10 in a row, and the workers it started stop with it.');
+  assert.equal(core.retryCapAbout(1), 'A worker fails after 1 failed model request in a row, and the workers it started stop with it. A model response starts the count again.');
+  assert.match(core.retryCapAbout(5), /^A worker fails after 5 failed model requests in a row/);
   assert.match(core.messageCopiesAbout(true), /^The agent that started a worker gets a copy of each message you send the worker/);
-  assert.match(core.messageCopiesAbout(false), /^The agent that started a worker doesn't see the messages you send the worker\.$/);
+  assert.match(core.messageCopiesAbout(false), /^The agent that started a worker doesn’t see the messages you send the worker\.$/);
+});
+
+test('the built-in skills setting says what a change reaches once the conversation has started', () => {
+  assert.equal(core.builtinSkillsAbout(false), 'Off leaves out all of them, whatever the rows below say.');
+  assert.match(core.builtinSkillsAbout(true), /^Off leaves out all of them, whatever the rows below say\. The agents in this session keep their skills\./);
 });
 
 // ----- the prompt cache's timer: the words the terminal and Arko Studio use -----
@@ -598,4 +606,20 @@ test('text beside a wait and a message from the agent show in every view, in ord
   assert.deepEqual(kinds(core.layout(items, 'full')), ['user', 'text', 'message', 'text', 'call']);
   assert.deepEqual(kinds(core.layout(items, 'quiet')), ['user', 'text', 'message', 'text', 'call']);
   assert.deepEqual(kinds(core.layout(items, 'messages')), ['user', 'text', 'message', 'text', 'count']);
+});
+
+// The reply row replaces the text row that streamed, so a flip must not move
+// anything. Both get the rows' own margin and nothing that adds to the box.
+test('the agent\'s reply row has the same box as a text row', () => {
+  const css = require('node:fs').readFileSync(require('node:path').join(__dirname, '../page/app.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+  const box = /^\s*(background|border|padding|margin|width|max-width|min-height|box-shadow|outline)\b/m;
+  for (const [, selectors, body] of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+    for (const selector of selectors.split(',').map((s) => s.trim())) {
+      if (/\.row\.(reply|text)(?![\w-])/.test(selector) && !selector.includes('.report')) {
+        assert.doesNotMatch(body.split(';').join('\n'), box, selector + ' changes the box');
+      }
+    }
+  }
+  // A worker's report keeps its card.
+  assert.match(css, /\.row\.reply\.report\s*\{[^}]*padding/);
 });
