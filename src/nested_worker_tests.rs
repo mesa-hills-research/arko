@@ -1164,6 +1164,55 @@ async fn a_worker_starting_many_isolated_workers_together_stays_within_its_limit
     crew.shutdown().await;
 }
 
+/// A worker in a worktree of its own starts a worker with a profile that only
+/// the session's workspace has, since the profiles are the session's and a
+/// worktree has the committed files only.
+#[tokio::test]
+async fn a_worker_in_its_own_worktree_finds_the_profiles_of_the_leads_workspace() {
+    let mut script = Script::new(true);
+    script.r1_start = serde_json::json!({"nested": true, "isolated": true});
+    script.r2_start = serde_json::json!({"profile": "reviewer"});
+    let server = script.serve().await;
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, _sender) = open_session(temp.path(), &server);
+    let work = harness.settings.workspace.clone();
+    let git = |args: &[&str]| {
+        let done = std::process::Command::new("git")
+            .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+            .args(args)
+            .current_dir(&work)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_INDEX_FILE")
+            .env_remove("GIT_WORK_TREE")
+            .status()
+            .unwrap();
+        assert!(done.success(), "git {args:?}");
+    };
+    std::fs::write(work.join("a.txt"), "one\n").unwrap();
+    git(&["init", "-q"]);
+    git(&["add", "a.txt"]);
+    git(&["commit", "-q", "-m", "one"]);
+    let folder = work.join(".agents").join("profiles");
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(
+        folder.join("reviewer.md"),
+        "---\ndescription: Reviews a diff\nmodel: sol\neffort: medium\n---\nReview it with care.\n",
+    )
+    .unwrap();
+    turn(&mut harness, &mut inputs, "Review the files.").await;
+    until(|| script.requests("r2").len() == 1).await;
+    let worktree = harness.session.dir.join("worktrees").join("r1");
+    assert!(worktree.join("a.txt").is_file());
+    assert!(!worktree.join(".agents").exists(), "the worktree has no profiles");
+    assert!(
+        first_message(&script.requests("r2")[0])
+            .contains("# Your profile (reviewer)\nReview it with care."),
+    );
+    let crew = harness.crew.clone().unwrap();
+    crew.stop_all("done");
+    crew.shutdown().await;
+}
+
 /// The main agent is told that a worker can start workers only when the
 /// depth lets it. The instructions are those of the conversation's start, so
 /// the depth before it starts changes them, and after it starts a note tells
