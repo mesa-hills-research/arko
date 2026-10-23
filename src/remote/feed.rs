@@ -412,6 +412,10 @@ pub struct WorkerSummary {
     pub last: Option<String>,
     /// Its report, once it finished.
     pub report: Option<String>,
+    /// Why it failed, whole, once it did. `last` has the start of it in one
+    /// line. The web page doesn't get it.
+    #[serde(skip)]
+    pub error: Option<String>,
     /// How long its runs that ended ran, in milliseconds. That's the time it
     /// worked (not the time it waited) in the runs that ended or that Arko
     /// stopped as it closed, also before the session was opened again. A
@@ -461,6 +465,7 @@ impl WorkerSummary {
             ended_at: None,
             last: None,
             report: None,
+            error: None,
             ran_ms: 0,
             running_since: None,
             model: None,
@@ -775,6 +780,10 @@ pub enum Update {
     Change(Item),
     /// A worker's summary, whole.
     Worker(WorkerSummary),
+    /// The worker `id` ended as `outcome` (finished, failed or stopped).
+    /// Its [`Update::Worker`] with that state, its `report` or `error`
+    /// comes right before, also in a merged batch.
+    WorkerEnded { id: String, outcome: WorkerState },
     /// The activity changed.
     Activity,
     /// The main agent's items from `from` on are gone (the conversation was
@@ -822,7 +831,8 @@ impl Batches {
 /// text appended to an item goes into the item when it came in the same
 /// batch (or into the batch's one append to it), an item's change replaces
 /// what the batch had of it (it is the whole item), a worker's summary
-/// only its last, and the activity is told once.
+/// only its last (but the one a worker ended with stays), and the activity
+/// is told once.
 pub fn merged(updates: Vec<Update>) -> Vec<Update> {
     let mut out: Vec<Option<Update>> = Vec::with_capacity(updates.len());
     // Where the batch has each item: created, changed or appended to.
@@ -874,6 +884,12 @@ pub fn merged(updates: Vec<Update>) -> Vec<Update> {
                     out[at] = None;
                 }
                 out.push(Some(Update::Worker(summary)));
+            }
+            Update::WorkerEnded { id, outcome } => {
+                // The summary it ended with stays, also if the worker goes
+                // on in the same batch.
+                workers.remove(&id);
+                out.push(Some(Update::WorkerEnded { id, outcome }));
             }
             Update::Job(summary) => {
                 if let Some(at) = jobs.insert(summary.id.clone(), out.len()) {
@@ -2428,6 +2444,7 @@ impl Feed {
                 summary.state = WorkerState::Queued;
                 summary.started_at = None;
                 summary.ended_at = None;
+                summary.error = None;
             }
             WorkerChange::Started => {
                 summary.stop_counting(now);
@@ -2436,6 +2453,7 @@ impl Feed {
                 summary.running_since = Some(now);
                 summary.ended_at = None;
                 summary.report = None;
+                summary.error = None;
                 // A worker that goes on after a stop isn't doing what it did
                 // when it stopped.
                 if summary
@@ -2462,6 +2480,7 @@ impl Feed {
                 summary.state = WorkerState::Failed;
                 summary.ended_at = Some(now);
                 summary.last = Some(render::cut(error, 160));
+                summary.error = Some(error.to_string());
                 let error = crate::providers::explain_error(error);
                 ended = Some(
                     Item::new(
@@ -2500,6 +2519,14 @@ impl Feed {
             self.push(&mut state, item.agent(id));
         }
         self.worker_changed(&mut state, id, true);
+        if let Some(worker) = state.worker(id)
+            && !worker.summary.state.is_active()
+        {
+            self.send(Update::WorkerEnded {
+                id: id.to_string(),
+                outcome: worker.summary.state,
+            });
+        }
     }
 
     /// A worker of the session from before Arko started (a resumed
@@ -3203,6 +3230,58 @@ mod tests {
             Some("finished in the background")
         );
         assert!(feed.moved_jobs().is_empty());
+    }
+
+    /// A worker that ends says so in an update of its own, after the summary
+    /// with its report or its whole error (`last` has the start of the
+    /// error), and that summary stays in a merged batch if the worker goes on.
+    #[test]
+    fn a_worker_s_end_is_an_update_after_its_summary_with_the_whole_error() {
+        let feed = Feed::new("main");
+        let (_, mut receiver) = feed.subscribe();
+        let error = format!("the model refused {}", "twice ".repeat(60));
+        feed.worker("r1", "Review", WorkerChange::Started);
+        feed.worker("r1", "Review", WorkerChange::Failed { error: &error });
+        let summary = feed.worker_summary("r1").unwrap();
+        assert_eq!(summary.error.as_deref(), Some(error.as_str()));
+        assert!(
+            summary
+                .last
+                .as_deref()
+                .is_some_and(|last| last.len() < error.len())
+        );
+        let seen = updates(&mut receiver);
+        assert!(matches!(
+            &seen[seen.len() - 2..],
+            [Update::Worker(ended), Update::WorkerEnded { id, outcome }]
+                if ended.state == WorkerState::Failed
+                    && id == "r1"
+                    && *outcome == WorkerState::Failed
+        ));
+        // (Starting is no end.)
+        let ends = seen
+            .iter()
+            .filter(|update| matches!(update, Update::WorkerEnded { .. }))
+            .count();
+        assert_eq!(ends, 1);
+        // Going on clears the error, and a batch that holds the end and the
+        // next summary keeps both.
+        feed.worker("r1", "Review", WorkerChange::Started);
+        assert_eq!(feed.worker_summary("r1").unwrap().error, None);
+        let again = feed.worker_summary("r1").unwrap();
+        let batch = merged(vec![
+            Update::Worker(summary),
+            Update::WorkerEnded {
+                id: "r1".into(),
+                outcome: WorkerState::Failed,
+            },
+            Update::Worker(again),
+        ]);
+        assert!(matches!(
+            batch.as_slice(),
+            [Update::Worker(ended), Update::WorkerEnded { .. }, Update::Worker(running)]
+                if ended.error.is_some() && running.error.is_none()
+        ));
     }
 
     /// A worker's summary says what it started with, who started it and what

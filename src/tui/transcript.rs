@@ -385,6 +385,7 @@ impl Transcript {
                 Some(worker) => *worker = summary,
                 None => self.workers.push(summary),
             },
+            Update::WorkerEnded { .. } => {}
             Update::Activity => {}
             // The main agent's items from `from` on are gone.
             Update::Truncate { from } => {
