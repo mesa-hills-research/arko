@@ -18,10 +18,12 @@
 //! never do. With the text in both, the host gets it either way.
 //!
 //! On a Wayland compositor without data-control, such as GNOME's, arboard
-//! falls back to XWayland's clipboard. There wl-copy takes the text first
-//! when it is installed, so a Wayland program owns the copy. Where arboard
-//! can't reach a clipboard either, wl-copy, xclip or xsel take the text if
-//! one is installed.
+//! falls back to XWayland, and the compositor passes the clipboard and the
+//! primary selection on to Wayland programs. wl-copy is left for when
+//! arboard can't reach a clipboard, because without data-control it opens a
+//! window to get the focus, which flickers in the taskbar (twice for the
+//! clipboard and the primary selection). Then wl-copy, xclip or xsel take
+//! the text if one is installed.
 
 use std::sync::Mutex;
 
@@ -45,10 +47,6 @@ pub fn copy(text: &str) -> Copied {
     let set = |name: &str| std::env::var_os(name).is_some_and(|value| !value.is_empty());
     if set("SSH_CONNECTION") || set("SSH_TTY") {
         return Copied::Terminal;
-    }
-    #[cfg(all(unix, not(target_os = "macos")))]
-    if wl_copy_first(set("WAYLAND_DISPLAY"), data_control) && copy_with(text, &WL_COPY) {
-        return Copied::System;
     }
     let error = match system(text) {
         Ok(()) => return Copied::System,
@@ -118,29 +116,6 @@ fn primary(clipboard: &mut arboard::Clipboard, text: &str) {
     if let Err(error) = set {
         log::info!("the primary selection didn't take a copy: {error}");
     }
-}
-
-/// Whether wl-copy takes a copy before arboard: on a Wayland desktop
-/// (`wayland`) whose compositor has no data-control protocol, as
-/// `data_control` finds out (asked only on Wayland).
-#[cfg(all(unix, not(target_os = "macos")))]
-fn wl_copy_first(wayland: bool, data_control: impl FnOnce() -> bool) -> bool {
-    wayland && !data_control()
-}
-
-/// Whether the Wayland compositor has the data-control protocol, as arboard
-/// checks it, asked once a run. A compositor Arko can't reach counts as
-/// having it, so arboard copies as it would.
-#[cfg(all(unix, not(target_os = "macos")))]
-fn data_control() -> bool {
-    static HAS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *HAS.get_or_init(|| {
-        let check = wl_clipboard_rs::utils::is_primary_selection_supported();
-        !matches!(
-            check,
-            Err(wl_clipboard_rs::utils::PrimarySelectionCheckError::MissingProtocol)
-        )
-    })
 }
 
 /// A clipboard program, with its arguments for the clipboard and for the
@@ -224,18 +199,6 @@ fn run(text: &str, program: &str, args: &[&str]) -> bool {
 #[cfg(all(test, unix, not(target_os = "macos")))]
 mod tests {
     use super::*;
-
-    /// wl-copy goes first only on a Wayland desktop whose compositor has
-    /// no data-control protocol, and the compositor is asked only on
-    /// Wayland. Elsewhere arboard copies first, as on X11.
-    #[test]
-    fn wl_copy_goes_first_on_wayland_without_data_control() {
-        assert!(wl_copy_first(true, || false));
-        assert!(!wl_copy_first(true, || true));
-        assert!(!wl_copy_first(false, || {
-            panic!("the compositor is asked only on Wayland")
-        }));
-    }
 
     /// A clipboard program that isn't installed takes nothing, so the next
     /// way is tried.
