@@ -1202,6 +1202,19 @@ fn apply_catalog(
     Ok(notes)
 }
 
+/// A usage window by its length, in whole days, else in whole hours, else in
+/// minutes (`7 d`, `5 h`, `90 min`). `unknown` names one that doesn't say.
+fn window_name(minutes: Option<u64>, unknown: &str) -> String {
+    match minutes {
+        Some(minutes) if minutes > 0 && minutes % (24 * 60) == 0 => {
+            format!("{} d", minutes / (24 * 60))
+        }
+        Some(minutes) if minutes > 0 && minutes % 60 == 0 => format!("{} h", minutes / 60),
+        Some(minutes) => format!("{minutes} min"),
+        None => unknown.to_string(),
+    }
+}
+
 /// A plan's usage windows, as the status line and `/cost` say them:
 /// `Claude plan 5 h 12%, 7 d 3%`. `None` when it reports no window.
 pub fn plan_usage_text(usage: &PlanUsage) -> Option<String> {
@@ -1209,12 +1222,7 @@ pub fn plan_usage_text(usage: &PlanUsage) -> Option<String> {
         .into_iter()
         .filter_map(|(window, name)| {
             let window = window.as_ref()?;
-            let name = match window.window_minutes {
-                Some(300) => "5 h".to_string(),
-                Some(10_080) => "7 d".to_string(),
-                Some(minutes) => format!("{minutes} min"),
-                None => name.to_string(),
-            };
+            let name = window_name(window.window_minutes, name);
             Some(format!("{name} {:.0}%", window.used_percent))
         })
         .collect::<Vec<_>>();
@@ -1230,14 +1238,8 @@ pub fn plan_windows(usage: &PlanUsage) -> Vec<crate::remote::PlanWindow> {
         .into_iter()
         .filter_map(|(window, name)| {
             let window = window.as_ref()?;
-            let label = match window.window_minutes {
-                Some(300) => "5 h".to_string(),
-                Some(10_080) => "7 d".to_string(),
-                Some(minutes) => format!("{minutes} min"),
-                None => name.to_string(),
-            };
             Some(crate::remote::PlanWindow {
-                label,
+                label: window_name(window.window_minutes, name),
                 used_percent: window.used_percent,
                 resets_at: window.resets_at.and_then(|at| i64::try_from(at).ok()),
             })
@@ -1946,6 +1948,34 @@ mod tests {
             [("5 h", 12.4), ("7 d", 3.0)]
         );
         assert!(plan_windows(&PlanUsage::default()).is_empty());
+    }
+
+    #[test]
+    fn a_plan_window_is_named_by_its_length() {
+        for (minutes, name) in [
+            (300, "5 h"),
+            (10_080, "7 d"),
+            (43_200, "30 d"),
+            (90, "90 min"),
+        ] {
+            assert_eq!(window_name(Some(minutes), "?"), name, "{minutes}");
+        }
+        assert_eq!(window_name(None, "5 h"), "5 h");
+        // The status line and the status give a long window the same name.
+        let chatgpt = PlanUsage {
+            plan: Some(SubscriptionPlan::ChatGpt),
+            secondary: Some(arko_ai::PlanUsageWindow {
+                used_percent: 43.0,
+                window_minutes: Some(43_200),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert_eq!(
+            plan_usage_text(&chatgpt).as_deref(),
+            Some("ChatGPT plan 30 d 43%")
+        );
+        assert_eq!(plan_windows(&chatgpt)[0].label, "30 d");
     }
 
     /// What `client_with` needs when nothing is set, Claude Code is
