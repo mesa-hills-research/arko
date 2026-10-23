@@ -11,7 +11,7 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use arko_agents::ClaudeCodeSettings;
@@ -154,7 +154,8 @@ fn auth_status(path: &Path) -> std::io::Result<String> {
 }
 
 /// The standard output of `claude` at `path` run with `args`, as sessions
-/// run it: the API key unset, no self-update, at most 15 s.
+/// run it: the API key unset, no self-update, at most 15 s (plus up to 2 s
+/// of retries while the program file is still busy).
 fn run(path: &Path, args: &[&str]) -> std::io::Result<String> {
     let launcher = path.extension().is_some_and(|extension| {
         extension.eq_ignore_ascii_case("cmd") || extension.eq_ignore_ascii_case("bat")
@@ -167,15 +168,15 @@ fn run(path: &Path, args: &[&str]) -> std::io::Result<String> {
     } else {
         Command::new(path)
     };
-    let mut child = command
+    command
         .args(args)
         .env(API_KEY, "")
         .env(NO_SELF_UPDATE.0, NO_SELF_UPDATE.1)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
-        .no_console_window()
-        .spawn()?;
+        .no_console_window();
+    let mut child = spawn_when_free(&mut command)?;
     let started = Instant::now();
     loop {
         if child.try_wait()?.is_some() {
@@ -197,6 +198,28 @@ fn run(path: &Path, args: &[&str]) -> std::io::Result<String> {
     }
     Ok(text)
 }
+
+/// Starts `command`, trying again for up to 2 s while the program is open
+/// for writing ("text file busy"). A process forked at the wrong moment, by
+/// another thread, holds the writer's file for a moment, until it runs its
+/// program.
+fn spawn_when_free(command: &mut Command) -> std::io::Result<Child> {
+    let started = Instant::now();
+    loop {
+        match command.spawn() {
+            Err(error)
+                if error.kind() == std::io::ErrorKind::ExecutableFileBusy
+                    && started.elapsed() < BUSY_WAIT =>
+            {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            spawned => return spawned,
+        }
+    }
+}
+
+/// How long a start waits for a program that is open for writing.
+const BUSY_WAIT: Duration = Duration::from_secs(2);
 
 /// `claude` on the PATH: on Windows also `claude.exe`, or the `claude.cmd`
 /// launcher npm installs (arko follows it to the program it starts).
@@ -380,6 +403,27 @@ mod tests {
         assert_eq!(run(&claude, &["--version"]).unwrap().trim(), "2.1.0");
         let npm = install_dirs_in(None, Some(Path::new("/opt/npm")), None, None);
         assert_eq!(npm[0], Path::new("/opt/npm/bin"));
+    }
+
+    /// A program open for writing can't be started ("text file busy"). Another
+    /// thread's fork can hold a script's writer for a moment, so a start waits
+    /// for the program to be free.
+    #[cfg(unix)]
+    #[test]
+    fn a_program_open_for_writing_is_started_once_it_is_closed() {
+        use std::io::Write;
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("claude");
+        let mut writer = std::fs::File::create(&path).unwrap();
+        writer.write_all(b"#!/bin/sh\necho 2.1.0\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let closing = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(300));
+            drop(writer);
+        });
+        assert_eq!(run(&path, &["--version"]).unwrap().trim(), "2.1.0");
+        closing.join().unwrap();
     }
 
     /// A stand-in `claude` that answers `auth status --json` with `json`,

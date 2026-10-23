@@ -4436,8 +4436,11 @@ pub(crate) fn split_live_command(text: &str) -> Option<(&str, &str)> {
 pub(crate) struct Tee {
     pub(crate) to: Arc<Output>,
     /// Each line, with its level.
-    pub(crate) lines: Arc<Mutex<Vec<(Option<Level>, String)>>>,
+    pub(crate) lines: Arc<Mutex<Vec<TeeLine>>>,
 }
+
+/// A line a [`Tee`] kept, with its level.
+pub(crate) type TeeLine = (Option<Level>, String);
 
 impl ui::Printer for Tee {
     fn print(&mut self, text: String) -> Result<(), ()> {
@@ -6229,6 +6232,61 @@ pub(crate) mod tests {
             "{told:#?}"
         );
         harness.crew.as_ref().unwrap().shutdown().await;
+    }
+
+    /// Closing Arko stops a worker that still runs, without waiting out the
+    /// 12 s that shutdown allows, and saves it as stopped.
+    #[tokio::test]
+    async fn closing_arko_stops_a_worker_that_is_blocked() {
+        use crate::mock_model::{ModelServer, complete, tool_call};
+        let started = Arc::new(tokio::sync::Notify::new());
+        let ready = started.clone();
+        let server = ModelServer::start(Arc::new(move |_, body: String| {
+            let ready = ready.clone();
+            Box::pin(async move {
+                if body.contains("You are agent run r1") {
+                    ready.notify_one();
+                    std::future::pending::<String>().await
+                } else if body.contains("Started r1") {
+                    complete("m2", "Worker is running.")
+                } else {
+                    tool_call(
+                        "m1",
+                        crew::START_AGENT,
+                        serde_json::json!({"agent":WORKER,"task":"Block."}),
+                    )
+                }
+            })
+        }))
+        .await;
+        let temp = tempfile::tempdir().unwrap();
+        let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
+        assert!(matches!(
+            harness
+                .turn(Prompt::User("Start it.".into()), &mut inputs)
+                .await,
+            TurnEnd::Answered
+        ));
+        tokio::time::timeout(Duration::from_secs(10), started.notified())
+            .await
+            .unwrap();
+        let closing = Instant::now();
+        harness.crew.as_ref().unwrap().shutdown().await;
+        // The stop ends the worker's run at once. Without it, shutdown
+        // waits its whole 12 s for a worker that never ends.
+        assert!(
+            closing.elapsed() < Duration::from_secs(6),
+            "closing took {:?}",
+            closing.elapsed()
+        );
+        let run = harness.session.dir.join("run");
+        let latest = std::fs::read_to_string(run.join("latest-checkpoint")).unwrap();
+        let saved: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(run.join(latest.trim())).unwrap())
+                .unwrap();
+        let workers = saved["subagents"]["runs"].as_array().unwrap();
+        assert_eq!(workers.len(), 1, "{saved}");
+        assert_eq!(workers[0]["state"], "stopped", "{saved}");
     }
 
     #[tokio::test]

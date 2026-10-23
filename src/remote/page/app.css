@@ -400,8 +400,15 @@ kbd {
 /* A note the agent hasn't read yet. */
 .row.user.pending .bubble { color: var(--muted); }
 
-.row.reply { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 10px 14px; }
-.row.reply.report { border-left: 3px solid var(--success); }
+/* The agent's reply has no box of its own. It is the text row that streamed,
+   so nothing moves when it ends the turn. A worker's report is a card. */
+.row.reply.report {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--success);
+  border-radius: 12px;
+  padding: 10px 14px;
+}
 .label { display: block; font-size: 12px; font-weight: 600; color: var(--muted); margin-bottom: 2px; }
 .row.message .label { color: var(--accent-text); }
 

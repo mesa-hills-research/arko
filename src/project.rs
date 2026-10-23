@@ -374,16 +374,22 @@ mod tests {
         }
         let agent = pair("AGENTS.md", "agent rules");
         let claude_md = pair("CLAUDE.md", "claude rules");
-        assert_eq!(given(&agents, Files::One), [agent.clone()]);
-        assert_eq!(given(&agents, Files::Both), [agent.clone()]);
-        assert_eq!(given(&claude, Files::One), [claude_md.clone()]);
-        assert_eq!(given(&claude, Files::Both), [claude_md.clone()]);
-        assert_eq!(given(&both, Files::One), [agent.clone()]);
+        assert_eq!(given(&agents, Files::One), std::slice::from_ref(&agent));
+        assert_eq!(given(&agents, Files::Both), std::slice::from_ref(&agent));
+        assert_eq!(given(&claude, Files::One), std::slice::from_ref(&claude_md));
+        assert_eq!(
+            given(&claude, Files::Both),
+            std::slice::from_ref(&claude_md)
+        );
+        assert_eq!(given(&both, Files::One), std::slice::from_ref(&agent));
         assert_eq!(
             given(&both, Files::Both),
             [agent.clone(), claude_md.clone()]
         );
-        assert_eq!(given(&blank_agents, Files::One), [claude_md.clone()]);
+        assert_eq!(
+            given(&blank_agents, Files::One),
+            std::slice::from_ref(&claude_md)
+        );
         assert_eq!(given(&blank_agents, Files::Both), [claude_md]);
         for found in [&agents, &claude, &both, &blank_agents] {
             assert!(given(found, Files::Off).is_empty());
