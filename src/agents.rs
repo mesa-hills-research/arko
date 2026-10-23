@@ -655,6 +655,7 @@ pub fn main_config(settings: &AgentSettings) -> Result<AgentConfig, String> {
     let mut tools = shared_tool_names(settings);
     tools.push(ASK_USER_TOOL_NAME.into());
     tools.push(crate::message::MESSAGE_USER.into());
+    tools.extend(crate::kept_notes::TOOL_NAMES.map(String::from));
     if settings.max_workers > 0 {
         tools.extend(crew::LEAD_TOOL_NAMES.iter().map(|name| name.to_string()));
     }
@@ -2110,6 +2111,23 @@ mod tests {
                 !config.instructions.contains("wait_for_agents"),
                 "{text_replies}"
             );
+        }
+    }
+
+    #[test]
+    fn only_the_lead_keeps_notes() {
+        let opus = model("opus", false);
+        let settings = AgentSettings::for_test(&opus, &opus);
+        let has = |config: AgentConfig, name: &str| {
+            config
+                .tool_config
+                .available_tool_names
+                .iter()
+                .any(|tool| tool == name)
+        };
+        for name in crate::kept_notes::TOOL_NAMES {
+            assert!(has(main_config(&settings).unwrap(), name), "{name}");
+            assert!(!has(worker_config(&settings).unwrap(), name), "{name}");
         }
     }
 

@@ -51,6 +51,7 @@ pub mod images;
 mod index;
 mod inputs;
 mod jobs;
+pub mod kept_notes;
 mod keys;
 pub mod logging;
 mod logins;
