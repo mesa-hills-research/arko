@@ -1240,7 +1240,8 @@ pub fn plan_usage_text(usage: &PlanUsage) -> Option<String> {
 }
 
 /// A ChatGPT account's credits, as the status line says them: "credits
-/// left 12.50", or "unlimited credits". `None` when it has none.
+/// left 12.50", "has credits" when the backend gives no balance, or
+/// "unlimited credits". `None` when it has none.
 fn credits_text(credits: &arko_ai::PlanCredits) -> Option<String> {
     if credits.unlimited {
         return Some("unlimited credits".to_string());
@@ -1250,7 +1251,7 @@ fn credits_text(credits: &arko_ai::PlanCredits) -> Option<String> {
     }
     Some(match credits.balance.as_deref().map(str::trim) {
         Some(balance) if !balance.is_empty() => format!("credits left {balance}"),
-        _ => "credits left".to_string(),
+        _ => "has credits".to_string(),
     })
 }
 

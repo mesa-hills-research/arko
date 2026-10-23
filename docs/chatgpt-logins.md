@@ -1,7 +1,7 @@
 # ChatGPT logins
 
-Arko signs in to ChatGPT with a Codex `auth.json`. Several logins can share the work, and Arko
-uses them in order.
+Arko signs in to ChatGPT with a Codex `auth.json`. Several logins can take turns, and Arko uses
+them in order.
 
 ## Setting them
 
@@ -28,21 +28,23 @@ or quota ran out, Arko sets it aside and goes on with the next one at once. It c
 first after the reset. A login with credits left keeps serving on them. When every login is set
 aside, the agents wait for the earliest reset, as they do with one.
 
-A conversation goes on when another login takes over. Each login is sent only the reasoning that
-login produced, and the conversation keeps everything.
+A conversation goes on when another login takes over. Each login is sent only the reasoning it
+produced during the run, and the conversation keeps everything. Reasoning saved from an earlier run
+counts as the first login's, so a resumed conversation sends it to the first login, even when a
+second one produced it.
 
 ## Credits and usage
 
 The status line, `/cost`, `worker_options` and the web page show the plan usage of the login that
-served last, with its credits when the backend reports them, and how many logins are set aside.
+served last, with its credits when the backend reports them, and how many other logins are set aside.
 
 ```text
-ChatGPT plan 5 h 12%, 7 d 82%, credits left 12.50, 1 login set aside
+ChatGPT plan 5 h 12%, 7 d 82%, credits left 12.50, 1 set aside
 ChatGPT plan 5 h 12%, 7 d 82%, unlimited credits
 ```
 
-Nothing is said about credits when there are none. Claude Code's usage reports hold no credits, so
-the Claude plan shows none.
+It says "has credits" when the backend gives no amount, and nothing about credits when there are
+none. Claude Code's usage reports hold no credits, so the Claude plan shows none.
 
 ## When a file changes
 

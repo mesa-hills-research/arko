@@ -98,7 +98,7 @@ async fn a_key_added_while_arko_runs_reaches_new_workers_at_once() {
     assert_eq!(
         last_said(&harness.feed),
         format!("{openrouter} needs OPENROUTER_API_KEY. /keys adds API keys.")
-    );
+   );
 
     // The conversation starts, with a worker on luna.
     assert!(matches!(
@@ -113,7 +113,7 @@ async fn a_key_added_while_arko_runs_reaches_new_workers_at_once() {
     assert_eq!(
         harness.keys.apply(&credentials::OPENROUTER, Some("sk-or-test")),
         "OpenRouter's models can be used now."
-    );
+   );
     assert_eq!(reachable(&harness), ["openai", "openrouter"]);
     assert!(harness.live_command(&format!("/model worker {openrouter}"), Source::Terminal));
     assert!(
@@ -122,7 +122,7 @@ async fn a_key_added_while_arko_runs_reaches_new_workers_at_once() {
         )),
         "{}",
         last_said(&harness.feed)
-    );
+   );
     assert!(matches!(
         harness.turn(Prompt::User("Start a worker.".into()), &mut inputs).await,
         TurnEnd::Answered
@@ -143,13 +143,13 @@ async fn a_key_added_while_arko_runs_reaches_new_workers_at_once() {
     assert_eq!(
         harness.keys.apply(&credentials::OPENROUTER, None),
         "Agents already using it keep it until Arko quits."
-    );
+   );
     assert_eq!(reachable(&harness), ["openai"]);
     assert!(harness.live_command(&format!("/model worker {openrouter}"), Source::Terminal));
     assert_eq!(
         last_said(&harness.feed),
         format!("{openrouter} needs OPENROUTER_API_KEY. /keys adds API keys.")
-    );
+   );
     let before = on_openrouter(&bodies);
     assert!(matches!(
         harness.turn(Prompt::User("Start a worker.".into()), &mut inputs).await,
@@ -240,6 +240,15 @@ async fn chatgpt_logins_are_listed_everywhere_and_changed_only_at_the_terminal()
     assert!(said(&harness.feed).contains(
         "ChatGPT logins are changed at the terminal, not from the web page."
     ));
-    assert_eq!(files(), [one]);
+    assert_eq!(files(), std::slice::from_ref(&one));
+    // A file that holds no login is "not usable", and the page leaves out
+    // the path its reason names.
+    std::fs::write(&one, r#"{"tokens": {}}"#).unwrap();
+    assert!(harness.live_command("/chatgpt", Source::Terminal));
+    assert!(last_said(&harness.feed).contains("not usable ("));
+    assert!(harness.live_command("/chatgpt", Source::Web));
+    let text = last_said(&harness.feed);
+    assert!(text.contains("  1  one · not usable"), "{text}");
+    assert!(!text.contains(&one.display().to_string()), "{text}");
     harness.crew.as_ref().unwrap().shutdown().await;
 }

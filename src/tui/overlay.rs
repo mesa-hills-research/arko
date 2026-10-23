@@ -854,11 +854,15 @@ fn settings(frame: &mut Frame, app: &App, area: Rect, selected: usize) {
                     .map(|(n, path)| format!("{} {}", n + 1, path.display()))
                     .collect::<Vec<_>>()
                     .join(" · ");
+                let about = match logins.is_empty() {
+                    true => "None. /chatgpt add PATH adds one.".to_string(),
+                    false => format!("{list}. /chatgpt adds, removes and orders them."),
+                };
                 (
                     "Providers",
                     "ChatGPT logins",
                     vec![Span::styled(format!(" {} ", logins.len()), theme.text())],
-                    format!("{list}. /chatgpt adds, removes and orders them."),
+                    about,
                 )
             }
         };

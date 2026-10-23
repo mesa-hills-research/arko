@@ -1867,6 +1867,11 @@ mod tests {
             report(credits(true, true, None)),
             line("ChatGPT plan 7 d 82%, unlimited credits")
         );
+        // Credits with no balance given.
+        assert_eq!(
+            report(credits(true, false, None)),
+            line("ChatGPT plan 7 d 82%, has credits")
+        );
         // None left: nothing is said.
         assert_eq!(
             report(credits(false, false, Some("0"))),

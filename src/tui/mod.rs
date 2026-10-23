@@ -144,6 +144,11 @@ pub fn start(setup: Setup, output: &Arc<Output>) -> Option<Screen> {
     let editor = input::Editor::new(input::History::load(Some(history)));
     let mut app = App::new(snapshot, editor, info, catalog, depth);
     app.transcript.banner = Some(setup.banner.clone());
+    // The logins the session signs in with, `--codex-auth` included.
+    app.login_paths = {
+        let keys = setup.keys.clone();
+        std::sync::Arc::new(move || keys.login_paths())
+    };
     app.transcript.set_open_thinking(setup.show_thinking);
     app.shift_enter = terminal.1;
     if !app.mouse {

@@ -867,7 +867,8 @@ mod tests {
     fn the_settings_list_the_chatgpt_logins() {
         use crate::tui::overlay::{Overlay, SettingsRow};
         let mut app = app();
-        app.login_paths = || vec!["/a/auth.json".into(), "/b/auth.json".into()];
+        app.login_paths =
+            std::sync::Arc::new(|| vec!["/a/auth.json".into(), "/b/auth.json".into()]);
         let row = app
             .settings_rows()
             .iter()
@@ -875,7 +876,6 @@ mod tests {
             .unwrap();
         app.overlay = Some(Overlay::Settings { row, picker: None });
         let rows = screen(&mut app, 80, 30);
-        println!("{}", rows.join("\n"));
         assert!(
             rows.iter()
                 .any(|row| row.contains("▸ ChatGPT logins     2")),
@@ -884,6 +884,14 @@ mod tests {
         assert!(
             rows.iter()
                 .any(|row| row.contains("1 /a/auth.json · 2 /b/auth.json")),
+            "{rows:#?}"
+        );
+        // With none, the row says so and how to add one.
+        app.login_paths = std::sync::Arc::new(Vec::new);
+        let rows = screen(&mut app, 80, 30);
+        assert!(
+            rows.iter()
+                .any(|row| row.contains("None. /chatgpt add PATH adds one.")),
             "{rows:#?}"
         );
     }

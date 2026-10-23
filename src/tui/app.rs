@@ -312,7 +312,7 @@ pub struct App {
     pub key_states: fn() -> Vec<KeyState>,
     /// The Codex auth.json files of the ChatGPT logins, in order, for the
     /// settings.
-    pub login_paths: fn() -> Vec<std::path::PathBuf>,
+    pub login_paths: std::sync::Arc<dyn Fn() -> Vec<std::path::PathBuf> + Send + Sync>,
     /// The models `/model` completes, found once for the session's models
     /// (finding them can ask Claude Code for its login).
     model_names: std::cell::OnceCell<Vec<String>>,
@@ -401,7 +401,9 @@ impl App {
             folded: None,
             model_needs: model_picker::needs,
             key_states: crate::credentials::key_states,
-            login_paths: || crate::logins::paths_in_use_of(&crate::credentials::codex_auths(None)),
+            login_paths: std::sync::Arc::new(|| {
+                crate::logins::paths_in_use_of(&crate::credentials::codex_auths(None))
+            }),
             model_names: Default::default(),
         }
     }

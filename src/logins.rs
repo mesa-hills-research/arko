@@ -156,6 +156,15 @@ impl Keys {
         crate::context::within(self.context.clone(), run)
     }
 
+    /// The Codex auth.json files the session signs in with, in order.
+    pub(crate) fn login_paths(&self) -> Vec<PathBuf> {
+        self.within(|| {
+            paths_in_use_of(&credentials::codex_auths(
+                self.codex_auth.get().map(PathBuf::as_path),
+            ))
+        })
+    }
+
     /// The ChatGPT logins in use, in order.
     pub fn logins(&self) -> Vec<ChatGptLogin> {
         self.within(|| credentials::chatgpt_logins(self.codex_auth.get().map(PathBuf::as_path)))
@@ -237,12 +246,7 @@ impl Keys {
         let Some(accounts) = self.client.chatgpt_accounts() else {
             return Err(Unused::Other);
         };
-        let paths = self.within(|| {
-            paths_in_use_of(&credentials::codex_auths(
-                self.codex_auth.get().map(PathBuf::as_path),
-            ))
-        });
-        let built = build(&paths, self.local.get().map(String::as_str));
+        let built = build(&self.login_paths(), self.local.get().map(String::as_str));
         if built.accounts.is_empty() {
             return Err(Unused::Failed(
                 built
@@ -267,7 +271,9 @@ impl Keys {
             loop {
                 match changes.recv().await {
                     Ok(changed) if changed == root => {}
-                    Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    // (A change may have been missed: the logins are read again.)
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                    Ok(_) => continue,
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }
                 let Some(keys) = keys.upgrade() else {
@@ -407,7 +413,11 @@ impl crate::Harness {
             match &login.state {
                 LoginState::Ready => {}
                 LoginState::Missing => notes.push("file missing".to_string()),
-                LoginState::Invalid(why) => notes.push(format!("not usable ({why})")),
+                // (The reason holds the path, which the page leaves out.)
+                LoginState::Invalid(why) if source == Source::Terminal => {
+                    notes.push(format!("not usable ({why})"))
+                }
+                LoginState::Invalid(_) => notes.push("not usable".to_string()),
             }
             if login.source == LoginSource::Default {
                 notes.push("Codex's own".to_string());
@@ -446,7 +456,7 @@ impl crate::Harness {
 }
 
 /// What the ChatGPT plan's usage adds when some of the logins are set
-/// aside: ", 1 login set aside".
+/// aside: ", 1 set aside".
 pub(crate) fn set_aside_note(accounts: Option<&ChatGptAccounts>) -> String {
     let set_aside = accounts.map_or(0, |accounts| {
         accounts
@@ -457,8 +467,7 @@ pub(crate) fn set_aside_note(accounts: Option<&ChatGptAccounts>) -> String {
     });
     match set_aside {
         0 => String::new(),
-        1 => ", 1 login set aside".to_string(),
-        n => format!(", {n} logins set aside"),
+        n => format!(", {n} set aside"),
     }
 }
 
@@ -689,10 +698,7 @@ mod tests {
         assert_eq!(served_by(&client).await, "two");
         assert_eq!(backend.asked(), ["account-1", "account-2"]);
         // The plan usage says the first is set aside.
-        assert_eq!(
-            set_aside_note(client.chatgpt_accounts()),
-            ", 1 login set aside"
-        );
+        assert_eq!(set_aside_note(client.chatgpt_accounts()), ", 1 set aside");
         assert_eq!(set_aside_note(None), "");
     }
 
@@ -794,5 +800,103 @@ mod tests {
             .unwrap_err();
         assert_eq!(error.kind(), arko_ai::ErrorKind::Authentication);
         assert_eq!(backend.asked(), ["account-3"]);
+    }
+
+    /// A reply that reports the weekly window at 82% and 12.50 credits.
+    fn with_plan_headers(turn: String) -> String {
+        format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nx-codex-primary-used-percent: 82\r\nx-codex-primary-window-minutes: 10080\r\nx-codex-credits-has-credits: True\r\nx-codex-credits-unlimited: False\r\nx-codex-credits-balance: 12.50\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{turn}",
+            turn.len()
+        )
+    }
+
+    /// The status line shows the credits of the login that served the turn,
+    /// and how many others are set aside.
+    #[tokio::test]
+    async fn the_status_shows_the_serving_logins_credits_and_the_others_set_aside() {
+        let temp = tempfile::tempdir().unwrap();
+        let (first, second) = (
+            temp.path().join("one/auth.json"),
+            temp.path().join("two/auth.json"),
+        );
+        sign_in(&first, "account-1");
+        sign_in(&second, "account-2");
+        let backend = Backend::start().await;
+        backend.answer("account-1", usage_limit());
+        backend.answer(
+            "account-2",
+            with_plan_headers(crate::mock_model::reply("1", "hello")),
+        );
+        let project = temp.path().join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        let running = crate::spawn(
+            crate::Options {
+                root: Some(temp.path().join("arko")),
+                workspace: Some(project),
+                model: Some("sol".into()),
+                openai_auth: Some(crate::OpenAiAuth::ChatGpt),
+                cache_1h: Some(false),
+                text_replies: Some(true),
+                client: Some(crate::options::GivenClient(client(
+                    &[first, second],
+                    &backend,
+                ))),
+                ..crate::Options::default()
+            },
+            Arc::new(crate::NoPrompter),
+        );
+        let seam = tokio::time::timeout(std::time::Duration::from_secs(30), running.opened)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        seam.input
+            .send(crate::Input::Message(crate::Message {
+                text: "Hi.".into(),
+                images: Vec::new(),
+            }))
+            .unwrap();
+        let line = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+            loop {
+                if let Some(line) = seam.meter.read().plan_usage {
+                    return line;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            line,
+            "ChatGPT plan 7 d 82%, credits left 12.50, 1 set aside"
+        );
+        seam.input
+            .send(crate::Input::Quit(Some(Vec::new())))
+            .unwrap();
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(30), running.ended).await;
+    }
+
+    /// `--codex-auth` is the first login of the session, whatever else is
+    /// set.
+    #[tokio::test]
+    async fn the_session_flag_is_the_first_login() {
+        let temp = tempfile::tempdir().unwrap();
+        let (flag, set) = (
+            temp.path().join("flag/auth.json"),
+            temp.path().join("set/auth.json"),
+        );
+        sign_in(&flag, "account-1");
+        sign_in(&set, "account-2");
+        let root = temp.path().join("arko");
+        let env = credentials::Env::for_folder_in(None, false, Some(&root));
+        let keys = crate::context::with_env(env, || {
+            Keys::new(Arc::new(LLMClient::new()), None, None, None)
+        });
+        keys.use_codex_auth(Some(flag.clone()));
+        if std::env::var_os(credentials::CODEX_AUTH).is_none() {
+            assert_eq!(keys.login_paths(), std::slice::from_ref(&flag));
+            assert!(matches!(keys.add_login(&set), Outcome::Done { .. }));
+            assert_eq!(keys.login_paths(), [flag, set]);
+        }
     }
 }
