@@ -805,7 +805,8 @@
     const words = rest.split(/\s+/).filter(Boolean);
     const partial = /\s$/.test(rest) ? '' : words.pop() || '';
     const typed = partial.toLowerCase();
-    const choices = choicesOf(command.name, words) || [];
+    // Past the second word nothing is completed (/model worker MODEL EFFORT is the deepest), so free text asks for nothing.
+    const choices = (words.length <= 2 && choicesOf(command.name, words)) || [];
     const items = choices
       .filter((word) => word.toLowerCase().startsWith(typed) && word !== partial)
       .map((word) => ({ label: word, insert: word + ' ' }));

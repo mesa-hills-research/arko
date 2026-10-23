@@ -683,6 +683,11 @@ test('after a command and a space, the menu shows its arguments and the words th
   const seen = [];
   core.slashMenu(COMMANDS, '/model worker  op', (name, before) => (seen.push([name, before]), []));
   assert.deepEqual(seen, [['/model', ['worker']]]);
+  // Free text past the second word asks for nothing.
+  seen.length = 0;
+  core.slashMenu(COMMANDS, '/message r1 please look at the failing test', (name, before) => (seen.push([name, before]), []));
+  core.slashMenu(COMMANDS, '/model worker opus h', (name, before) => (seen.push([name, before]), []));
+  assert.deepEqual(seen, [['/model', ['worker', 'opus']]]);
 });
 
 test('the menu’s keys move, pick and close, and Enter sends a word that is whole', () => {

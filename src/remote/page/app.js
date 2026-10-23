@@ -1655,7 +1655,7 @@
   /** The commands the session runs from the page (once the server gave them). */
   let commandList = null;
   let commandsAsked = false;
-  /** The words an argument may be, by the command and the words before it. */
+  /** The words an argument may be, by the command and the words before it, and when they came. */
   const choiceCache = new Map();
   /** What the menu shows now (see FinCore.slashMenu), and the item selected. */
   let menu = null;
@@ -1675,28 +1675,36 @@
     }
   }
 
-  /** Asks for the commands once (when the stream starts, or on a first slash if that failed). */
+  /** Asks for the commands once (when the stream starts), and again on a
+   * slash after a pause if that failed. */
   function loadCommands() {
     if (commandList || commandsAsked) return;
     commandsAsked = true;
     fetchJson('/api/commands').then((list) => {
       commandList = list;
-      commandsAsked = false;
-      refreshMenu();
+      if (list) {
+        commandsAsked = false;
+        refreshMenu();
+      } else {
+        setTimeout(() => (commandsAsked = false), 5000);
+      }
     });
   }
 
+  /** How long the words an argument may be stay good: a worker may start meanwhile. */
+  const CHOICES_FRESH_MS = 10000;
+
   function choicesOf(name, before) {
     const key = JSON.stringify([name, before]);
-    if (!choiceCache.has(key)) {
-      choiceCache.set(key, undefined);
-      fetchJson('/api/choices', { command: name, before }).then((answer) => {
-        // (An answer that fails stays empty until the box is cleared.)
-        choiceCache.set(key, (answer && answer.choices) || []);
-        refreshMenu();
-      });
-    }
-    return choiceCache.get(key);
+    const hit = choiceCache.get(key);
+    if (hit && Date.now() - hit.at < CHOICES_FRESH_MS) return hit.words;
+    // (Words that are known stay in the menu while they are asked for again.)
+    choiceCache.set(key, { words: hit && hit.words, at: Date.now() });
+    fetchJson('/api/choices', { command: name, before }).then((answer) => {
+      choiceCache.set(key, { words: (answer && answer.choices) || [], at: Date.now() });
+      refreshMenu();
+    });
+    return hit && hit.words;
   }
 
   function refreshMenu() {
@@ -1785,7 +1793,8 @@
     refreshMenu();
   });
   text.addEventListener('keydown', (event) => {
-    if (event.isComposing) return;
+    // (Safari reports the Enter that ends a composition as keyCode 229.)
+    if (event.isComposing || event.keyCode === 229) return;
     const plain = !event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey;
     const move = menu && plain ? C.slashKey(menu, selected, event.key, text.value.slice(menu.from)) : null;
     if (move) {
