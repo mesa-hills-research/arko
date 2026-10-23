@@ -607,6 +607,9 @@ pub fn missing_credential(name: &str, codex_auth: Option<&Path>) -> Option<Strin
         Provider::ClaudeCode => {
             return match claude_code::find_cli().map(|_| claude_code::check_recent()) {
                 Some(Ok(_)) => None,
+                Some(Err(claude_code::Problem::Outdated { .. })) => {
+                    Some("Claude Code updated".to_string())
+                }
                 Some(Err(_)) => Some("Claude Code signed in".to_string()),
                 None => Some("Claude Code installed".to_string()),
             };
@@ -734,6 +737,8 @@ pub fn parse_effort(text: &str) -> Result<Effort, String> {
 pub fn needs_text(model: &str, needs: &str) -> String {
     if needs == "Claude Code signed in" {
         format!("{model} needs Claude Code signed in. Sign in with `claude auth login`.")
+    } else if needs == "Claude Code updated" {
+        format!("{model} needs Claude Code updated. Update it with `claude update`.")
     } else if needs.starts_with("Claude Code") {
         format!("{model} needs {needs}.")
     } else {
