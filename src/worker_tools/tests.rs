@@ -181,7 +181,7 @@ fn a_claude_model_by_key_shows_its_prices_and_cache_and_a_plan_model_its_usage()
         )
     );
     assert!(text.contains(
-        "\n- cc:opus · efforts low to max · Claude plan 5 h 62%, 7 d 31%, shared with the user's own use · hands over at 950k, Claude Code compacts · cache 1h, fixed"
+        "\n- cc:opus · efforts low to max · Claude plan 5 h 62%, 7 d 31%, shared with the user's own use · hands over at 950k, Claude Code compacts · cache 5m or 1h (1h when you choose none, on a Claude plan)"
     ), "{text}");
     assert!(text.contains("\n- gemini · efforts low to high · $"));
     assert!(
@@ -191,7 +191,7 @@ fn a_claude_model_by_key_shows_its_prices_and_cache_and_a_plan_model_its_usage()
     // A session that hands over in Claude Code says so.
     basis.cc_compact = false;
     let text = options_text(&basis, Show::Models, &everything, &plans);
-    assert!(text.contains("hands over at 950k · cache 1h, fixed"));
+    assert!(text.contains("hands over at 950k · cache 5m or 1h (1h when you choose none"));
 }
 
 #[test]

@@ -219,14 +219,24 @@ pub fn is_claude_slug(slug: &str) -> bool {
     slug.trim_start_matches('~').starts_with("anthropic/")
 }
 
-/// Whether `model` takes Anthropic's prompt-cache lifetime (the 1-hour
-/// cache): Claude models on an API key or on OpenRouter. Claude Code
-/// chooses its own: an hour on a Claude plan.
+/// Whether `model` takes Anthropic's prompt-cache lifetime (5 minutes or
+/// 1 hour): Claude models on an API key, on OpenRouter or in Claude Code.
+/// Claude Code chooses its own when none is asked for: an hour on a Claude
+/// plan.
 pub fn takes_cache_ttl(model: &Model) -> bool {
     match model.provider {
-        Provider::Anthropic => true,
+        Provider::Anthropic | Provider::ClaudeCode => true,
         Provider::OpenRouter => is_claude_slug(&model.id),
         _ => false,
+    }
+}
+
+/// Asks for the 5-minute prompt cache outright where leaving it out gives a
+/// longer one: in Claude Code, which otherwise chooses its own. The other
+/// models have it when none is asked for.
+pub fn ask_five_minutes(model: &Model, generation: &mut GenerationConfig) {
+    if model.provider == Provider::ClaudeCode {
+        generation.anthropic_cache_ttl = Some(AnthropicCacheTtl::FiveMinutes);
     }
 }
 
@@ -1679,12 +1689,18 @@ mod tests {
                 .anthropic_cache_ttl,
             Some(AnthropicCacheTtl::OneHour)
         );
+        // Claude Code passes the lifetime on, and chooses its own without one.
         assert_eq!(
             config("cc:opus", Effort::High, false, true)
                 .unwrap()
                 .anthropic_cache_ttl,
-            None,
-            "Claude Code chooses its cache"
+            Some(AnthropicCacheTtl::OneHour)
+        );
+        assert_eq!(
+            config("cc:opus", Effort::High, false, false)
+                .unwrap()
+                .anthropic_cache_ttl,
+            None
         );
         // OpenAI: its reasoning and Fast tier.
         let sol = config("sol", Effort::Max, true, true).unwrap();

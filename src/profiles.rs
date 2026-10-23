@@ -34,7 +34,7 @@
 //! | `model` | A model as `/model` takes it. Without one, the session's worker model |
 //! | `effort` | `low`, `medium`, `high`, `xhigh` or `max`, checked against the model |
 //! | `fast` | `true` for fast mode where the model has it. Off by default |
-//! | `cache` | `5m` or `1h`, the prompt cache of Claude workers on an API key |
+//! | `cache` | `5m` or `1h`, the prompt cache of Claude workers on an API key, on OpenRouter or in Claude Code |
 //! | `nested` | `true` lets the worker start workers of its own |
 //! | `made_by` | `agent` when an agent wrote the profile |
 //!
@@ -122,7 +122,7 @@ impl Place {
 }
 
 /// How long a worker's prompt cache lasts, for the Claude models on an API
-/// key or OpenRouter that take a choice.
+/// key, on OpenRouter or in Claude Code that take a choice.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Cache {

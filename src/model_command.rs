@@ -883,7 +883,7 @@ mod tests {
         let cc = providers::resolve_model("cc:opus").unwrap();
         let on_cc = switched(&opus, &cc, Effort::Xhigh, None);
         assert!(on_cc.fast);
-        assert!(!on_cc.cache_1h, "Claude Code chooses its own");
+        assert!(on_cc.cache_1h, "Claude Code takes a cache lifetime too");
         assert_eq!(on_cc.handover_at, Some(950_000));
         // A size given (--handover-at) stays, up to 95% of what the new
         // model accepts.

@@ -148,8 +148,8 @@ pub(crate) fn new_settings(
         (None, Some(default)) => name(&default.main)?,
         (None, None) => unreachable!("a default without --model"),
     };
-    // The 1-hour cache is Anthropic's, by API key or on OpenRouter; other
-    // models ignore it.
+    // The 1-hour cache is Anthropic's, by API key, on OpenRouter or in Claude
+    // Code; other models ignore it.
     let want_1h = match options.cache_1h {
         Some(on) => on,
         None => credentials::switch(credentials::CACHE_1H)?.unwrap_or(false),
@@ -257,7 +257,7 @@ pub(crate) fn new_settings(
     if options.cache_1h == Some(true) && !main.cache_1h && !worker.cache_1h {
         prompter.note(
             Level::Warn,
-            "--cache-1h is for Claude models by API key or on OpenRouter (Claude Code chooses its own). This session has none, so it is ignored",
+            "--cache-1h is for Claude models, by API key, on OpenRouter or in Claude Code. This session has none, so it is ignored",
         );
     }
     let (builtin_skills, skipped) = builtin_skills_for(options)?;

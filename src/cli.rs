@@ -97,12 +97,12 @@ pub(crate) struct Args {
     #[arg(long)]
     pub(crate) worker_fast: bool,
 
-    /// Anthropic's 1-hour prompt cache for the Claude models (by API key
-    /// or on OpenRouter), instead of the 5-minute one. The cache outlasts
-    /// pauses of up to an hour, and a cache write costs 2x the input price
-    /// instead of 1.25x. Claude Code chooses its own (an hour on a Claude
-    /// plan). ARKO_CACHE_1H (1 or 0, in the environment or a .env file) sets
-    /// the default.
+    /// Anthropic's 1-hour prompt cache for the Claude models (by API key,
+    /// on OpenRouter or in Claude Code), instead of the 5-minute one. The
+    /// cache outlasts pauses of up to an hour, and a cache write costs 2x
+    /// the input price instead of 1.25x. Without it Claude Code chooses its
+    /// own (an hour on a Claude plan). ARKO_CACHE_1H (1 or 0, in the
+    /// environment or a .env file) sets the default.
     #[arg(long = "cache-1h", conflicts_with = "no_cache_1h")]
     pub(crate) cache_1h: bool,
 
