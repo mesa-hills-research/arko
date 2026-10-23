@@ -4436,8 +4436,11 @@ pub(crate) fn split_live_command(text: &str) -> Option<(&str, &str)> {
 pub(crate) struct Tee {
     pub(crate) to: Arc<Output>,
     /// Each line, with its level.
-    pub(crate) lines: Arc<Mutex<Vec<(Option<Level>, String)>>>,
+    pub(crate) lines: Arc<Mutex<Vec<TeeLine>>>,
 }
+
+/// A line a [`Tee`] kept, with its level.
+pub(crate) type TeeLine = (Option<Level>, String);
 
 impl ui::Printer for Tee {
     fn print(&mut self, text: String) -> Result<(), ()> {

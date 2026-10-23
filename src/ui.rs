@@ -189,10 +189,10 @@ impl Output {
         }
         let text = glyphs::render(text);
         let mut printer = self.printer.lock().unwrap();
-        if let Some(printer) = printer.as_mut() {
-            if printer.print(format!("{text}\n")).is_ok() {
-                return;
-            }
+        if let Some(printer) = printer.as_mut()
+            && printer.print(format!("{text}\n")).is_ok()
+        {
+            return;
         }
         if self.progress_to_stderr {
             eprintln!("{text}");

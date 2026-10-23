@@ -797,7 +797,14 @@ pub fn model_menu(
         Some(OpenAiAuth::ApiKey) => "OpenAI, with your API key",
         _ => "OpenAI, on your ChatGPT plan",
     };
-    let groups: [(String, &str, &[(&str, &'static str)]); 5] = [
+    // A group's name, a model that tells whether it is usable, and its models
+    // with their aliases.
+    type Group = (
+        String,
+        &'static str,
+        &'static [(&'static str, &'static str)],
+    );
+    let groups: [Group; 5] = [
         (
             "Claude Code, on your Claude plan".to_string(),
             "cc:claude-opus-5-5",

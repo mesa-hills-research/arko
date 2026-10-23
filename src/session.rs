@@ -792,7 +792,7 @@ pub fn list(root: &Path) -> Vec<(Session, Settings)> {
             Some((session, settings))
         })
         .collect();
-    sessions.sort_by(|a, b| b.1.created.cmp(&a.1.created));
+    sessions.sort_by_key(|session| std::cmp::Reverse(session.1.created));
     sessions
 }
 
