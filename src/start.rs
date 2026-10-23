@@ -296,6 +296,10 @@ pub(crate) fn new_settings(
             Some(depth) => crate::workers::check_depth(depth)?,
             None => DEFAULT_WORKER_DEPTH,
         },
+        worker_retry_cap: options
+            .worker_retry_cap
+            .map(crate::workers::check_retry_cap)
+            .transpose()?,
         message_copies: options.message_copies.unwrap_or(false),
         nested_start: true,
         builtin_skills,

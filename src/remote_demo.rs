@@ -240,6 +240,7 @@ async fn remote_page_demo() {
         extra_rules: Default::default(),
         worker_models: Default::default(),
         worker_depth: Default::default(),
+        worker_retry_cap: Default::default(),
         message_copies: Default::default(),
         builtin_skills: Default::default(),
         project: Default::default(),

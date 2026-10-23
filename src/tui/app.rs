@@ -1518,6 +1518,9 @@ impl App {
             if commands::find("/worker-depth 2").is_some() {
                 rows.push(SettingsRow::WorkerDepth);
             }
+            if commands::find("/worker-retry-cap on").is_some() {
+                rows.push(SettingsRow::WorkerRetryCap);
+            }
             if commands::find("/message-copies on").is_some() {
                 rows.push(SettingsRow::MessageCopies);
             }
@@ -1756,6 +1759,11 @@ impl App {
                         self.send(&crate::workers::depth_command(next));
                     }
                 }
+                SettingsRow::WorkerRetryCap => {
+                    self.send(&crate::workers::retry_cap_command(
+                        self.worker_retry_cap().is_none(),
+                    ));
+                }
                 SettingsRow::MessageCopies => {
                     self.send(&crate::workers::copies_command(!self.message_copies()));
                 }
@@ -1883,6 +1891,12 @@ impl App {
     /// How many levels of workers the session allows.
     pub fn worker_depth(&self) -> u32 {
         self.reading.settings.worker_depth
+    }
+
+    /// After how many failed model requests in a row a worker fails, if it
+    /// does.
+    pub fn worker_retry_cap(&self) -> Option<u32> {
+        self.reading.settings.worker_retry_cap
     }
 
     /// Whether the agent that started a worker gets a copy of the user's
@@ -3180,11 +3194,12 @@ pub(super) mod tests {
         assert_eq!(sent(&mut app), ["/monitor-wakes off"]);
     }
 
-    /// Who chooses the workers' models, how deep workers go and whether the
-    /// starter of a worker gets a copy of the user's messages to it are the
-    /// last session settings, with the workers. The rows step with
-    /// `/worker-models`, `/worker-depth` and `/message-copies`, and a session
-    /// with no workers has none of them.
+    /// Who chooses the workers' models, how deep workers go, how many failed
+    /// requests stop a worker and whether the starter of a worker gets a copy
+    /// of the user's messages to it are the last session settings, with the
+    /// workers. The rows step with `/worker-models`, `/worker-depth`,
+    /// `/worker-retry-cap` and `/message-copies`, and a session with no
+    /// workers has none of them.
     #[test]
     fn the_worker_rows_send_the_commands() {
         let mut app = app();
@@ -3199,10 +3214,11 @@ pub(super) mod tests {
             .position(|row| *row == SettingsRow::WorkerModels)
             .unwrap();
         assert_eq!(rows[models + 1], SettingsRow::WorkerDepth);
-        assert_eq!(rows[models + 2], SettingsRow::MessageCopies);
-        assert_eq!(rows[models + 3], SettingsRow::KeepProfilesOutOfGit);
-        assert_eq!(rows[models + 4], SettingsRow::RepoRootProfiles);
-        assert_eq!(rows[models + 5], SettingsRow::Keys);
+        assert_eq!(rows[models + 2], SettingsRow::WorkerRetryCap);
+        assert_eq!(rows[models + 3], SettingsRow::MessageCopies);
+        assert_eq!(rows[models + 4], SettingsRow::KeepProfilesOutOfGit);
+        assert_eq!(rows[models + 5], SettingsRow::RepoRootProfiles);
+        assert_eq!(rows[models + 6], SettingsRow::Keys);
         app.overlay = Some(Overlay::Settings {
             row: models,
             picker: None,
@@ -3234,9 +3250,21 @@ pub(super) mod tests {
         app.reading.settings.worker_depth = 1;
         press(&mut app, KeyCode::Left, KeyModifiers::NONE);
         assert!(sent(&mut app).is_empty(), "1 is the least");
-        // The copies turn off and on, either way the arrow goes.
+        // The cap turns on (at 10) and off, either way the arrow goes.
         app.overlay = Some(Overlay::Settings {
             row: models + 2,
+            picker: None,
+        });
+        press(&mut app, KeyCode::Right, KeyModifiers::NONE);
+        app.reading.settings.worker_retry_cap = Some(5);
+        press(&mut app, KeyCode::Left, KeyModifiers::NONE);
+        assert_eq!(
+            sent(&mut app),
+            ["/worker-retry-cap on", "/worker-retry-cap off"]
+        );
+        // The copies turn off and on, either way the arrow goes.
+        app.overlay = Some(Overlay::Settings {
+            row: models + 3,
             picker: None,
         });
         app.reading.settings.message_copies = true;

@@ -1095,6 +1095,13 @@
       depthOptions.append(option);
     }
     $('worker-depth-about').textContent = C.workerDepthAbout();
+    // A worker fails after this many failed model requests in a row, when this is on.
+    const capping = pending && pending.retryCap !== undefined;
+    const cap = capping ? pending.retryCap : (settings.worker_retry_cap || null);
+    const capSwitch = $('retry-cap-switch');
+    capSwitch.setAttribute('aria-checked', String(cap !== null));
+    capSwitch.setAttribute('aria-busy', String(Boolean(capping)));
+    $('retry-cap-about').textContent = C.retryCapAbout(cap);
     // Copies of the user's messages to a worker go to its starter, when this is on.
     const copying = pending && pending.copies !== undefined;
     const copies = copying ? pending.copies : settings.message_copies === true;
@@ -1269,6 +1276,12 @@
     if (level === now) return;
     command('/worker-depth ' + level, 'worker-note', (settings) => settings.worker_depth === level, { workerDepth: level });
   }
+
+  $('retry-cap-switch').addEventListener('click', () => {
+    if (pending) return;
+    const on = !(status && status.settings && status.settings.worker_retry_cap);
+    command('/worker-retry-cap ' + (on ? 'on' : 'off'), 'worker-note', (settings) => Boolean(settings.worker_retry_cap) === on, { retryCap: on ? 10 : null });
+  });
 
   $('message-copies-switch').addEventListener('click', () => {
     if (pending) return;

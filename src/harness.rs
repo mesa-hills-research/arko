@@ -617,6 +617,7 @@ impl Harness {
             }
         }
         if let Some(crew) = &self.crew {
+            crew.set_retry_cap(self.settings.worker_retry_cap);
             // The main agent chooses and saves the workers' profiles.
             for tool in worker_tools::tools(
                 crew.clone(),
@@ -1620,6 +1621,7 @@ impl Harness {
             "/monitor-wakes" => self.monitor_wakes_command(argument, source),
             "/worker-models" => self.worker_models_command(argument, source),
             "/worker-depth" => self.worker_depth_command(argument, source),
+            "/worker-retry-cap" => self.worker_retry_cap_command(argument, source),
             "/message-copies" => self.message_copies_command(argument, source),
             "/profiles" => self.profiles_command(argument),
             "/jobs" => self.jobs_command(argument),
@@ -4353,7 +4355,7 @@ pub(crate) fn place(link: &remote::Link) -> String {
 /// The commands that change a setting while the session runs, which take
 /// an argument: `/outside`, `/model`, `/handover`, `/handover-at`, `/keys`.
 /// And `/message`, which works while the agent works too.
-pub(crate) const LIVE_COMMANDS: [&str; 18] = [
+pub(crate) const LIVE_COMMANDS: [&str; 19] = [
     "/outside",
     "/model",
     "/handover",
@@ -4368,6 +4370,7 @@ pub(crate) const LIVE_COMMANDS: [&str; 18] = [
     "/monitor-wakes",
     "/worker-models",
     "/worker-depth",
+    "/worker-retry-cap",
     "/message-copies",
     "/profiles",
     "/jobs",
@@ -5350,6 +5353,7 @@ pub(crate) mod tests {
             extra_rules: Default::default(),
             worker_models: Default::default(),
             worker_depth: Default::default(),
+            worker_retry_cap: Default::default(),
             message_copies: Default::default(),
             builtin_skills: Default::default(),
             project: Default::default(),

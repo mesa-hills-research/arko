@@ -105,7 +105,7 @@ pub const COMMANDS: &[Command] = &[
     Command::screen(
         "/settings",
         "",
-        "the view, theme, mouse, outside access, handover size, background jobs, monitor wakes, models for workers, worker depth, message copies, worker profile folders, text replies, extra rules, Claude Code compaction, project instructions, built-in skills, web page and API keys",
+        "the view, theme, mouse, outside access, handover size, background jobs, monitor wakes, models for workers, worker depth, worker retry cap, message copies, worker profile folders, text replies, extra rules, Claude Code compaction, project instructions, built-in skills, web page and API keys",
     ),
     Command {
         name: "/model",
@@ -177,6 +177,13 @@ pub const COMMANDS: &[Command] = &[
         name: "/worker-depth",
         args: "1-4",
         about: "how deep workers go, from 1 to 4. 1 means only the main agent starts workers",
+        aliases: &[],
+        runs: Runs::Session,
+    },
+    Command {
+        name: "/worker-retry-cap",
+        args: "off|on|N",
+        about: "how many failed model requests in a row stop a worker. on means 10 and off means no cap",
         aliases: &[],
         runs: Runs::Session,
     },
@@ -279,6 +286,7 @@ const CHOICES: &[(&str, &[&str], &[&str])] = &[
     ("/background-after", &[], &["off"]),
     ("/monitor-wakes", &[], &["always", "off"]),
     ("/worker-models", &[], &["agent", "profiles", "session"]),
+    ("/worker-retry-cap", &[], &["off", "on"]),
     ("/message-copies", &[], ON_OFF),
     ("/profiles", &[], &["add", "remove"]),
     ("/jobs", &[], &["stop"]),

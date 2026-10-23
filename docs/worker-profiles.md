@@ -110,6 +110,7 @@ in your Arko folder once you turn outside access on. So treat a project's profil
 | `/profiles remove NAME` | Deletes the profile `/profiles` shows under that name |
 | `/worker-models agent`, `profiles` or `session` | Who chooses the workers' models. See below |
 | `/worker-depth 1` to `4` | How many levels of workers the session allows |
+| `/worker-retry-cap off`, `on` or a number | How many failed model requests in a row stop a worker |
 | `/message-copies on` or `off` | Whether the agent that started a worker gets a copy of the messages you send the worker |
 
 `/worker-models` (also `--worker-models`) takes three values. It is the "Models for workers" row in
@@ -123,6 +124,14 @@ A session saved before the setting existed keeps `session`, which is how its wor
 levels of workers the session allows, and it applies to the next worker started. With 1 only the
 main agent starts workers. With more, a worker can start workers of its own when the agent
 that starts it says so, down to that level.
+
+`/worker-retry-cap` (also `--worker-retry-cap [N]`) is saved with the session and is off by default. It
+is the "Worker retry cap" row in `/settings` and the setting of that name on the web page. With a
+number N, `on` or the flag without a number (which mean 10), a worker fails after N failed model
+requests in a row, and the workers it started stop with it. A model response starts the count
+again. The main agent has no cap. The cap is set when the session's workflow is built, so a change
+before the conversation starts applies at once, and a change after it applies when you resume the
+session.
 
 `/message-copies` (also `--message-copies` and `--no-message-copies`) is saved with the session and
 is off by default. It is the "Message copies" row in `/settings` and the setting of that name on the

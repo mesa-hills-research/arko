@@ -43,6 +43,8 @@ pub(crate) struct Gauges {
     /// session allows, as the harness last published them.
     pub(crate) worker_models: Mutex<crate::agents::ModelChoice>,
     pub(crate) worker_depth: std::sync::atomic::AtomicU32,
+    /// The worker retry cap, or 0 for none.
+    pub(crate) worker_retry_cap: std::sync::atomic::AtomicU32,
     /// The agent that started a worker gets a copy of the user's messages to
     /// it, as the harness last published it.
     pub(crate) message_copies: std::sync::atomic::AtomicBool,
@@ -334,6 +336,11 @@ impl remote::Meter for Gauges {
                 extra_rules: *lock(&self.extra_rules),
                 worker_models: *lock(&self.worker_models),
                 worker_depth: self.worker_depth.load(std::sync::atomic::Ordering::Relaxed),
+                worker_retry_cap: Some(
+                    self.worker_retry_cap
+                        .load(std::sync::atomic::Ordering::Relaxed),
+                )
+                .filter(|cap| *cap > 0),
                 message_copies: self
                     .message_copies
                     .load(std::sync::atomic::Ordering::Relaxed),
