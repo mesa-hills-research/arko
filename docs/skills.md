@@ -10,12 +10,13 @@ in Arko's folder, and from `~/.agents/skills` and `~/.claude/skills`. `/skills` 
 
 ## Built-in skills
 
-Arko has two skills built in, so no files are needed.
+Arko has three skills built in, so no files are needed.
 
 | Skill | Load it for |
 |---|---|
 | `user-facing-prose` | Any text a person reads, such as UI text, messages, errors, docs and commit messages |
 | `repo-docs-style` | READMEs, docs pages, design notes and changelogs |
+| `ponytail` | Any coding task, and running workers |
 
 The agents load them on demand like any other skill, and `/skills` marks them as built in.
 

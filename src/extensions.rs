@@ -284,11 +284,11 @@ mod tests {
         };
         assert_eq!(
             builtin(Some(true), &[]),
-            ["user-facing-prose", "repo-docs-style"]
+            ["user-facing-prose", "repo-docs-style", "ponytail"]
         );
         assert_eq!(
             builtin(Some(true), &["repo-docs-style", "repo-doc-style"]),
-            ["user-facing-prose"]
+            ["user-facing-prose", "ponytail"]
         );
         assert!(builtin(Some(false), &[]).is_empty());
     }

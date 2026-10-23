@@ -452,7 +452,13 @@ mod tests {
         assert_eq!(dynamic_choices(&reading, "/outside", &[]), ["on", "off"]);
         assert_eq!(
             dynamic_choices(&reading, "/builtin-skills", &[]),
-            ["on", "off", "user-facing-prose", "repo-docs-style"]
+            [
+                "on",
+                "off",
+                "user-facing-prose",
+                "repo-docs-style",
+                "ponytail"
+            ]
         );
         assert_eq!(
             dynamic_choices(&reading, "/builtin-skills", &["repo-docs-style"]),

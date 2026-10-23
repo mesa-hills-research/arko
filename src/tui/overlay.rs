@@ -772,8 +772,7 @@ fn settings(frame: &mut Frame, app: &App, area: Rect, selected: usize) {
                         &["on", "off"],
                         usize::from(skill.is_some_and(|skill| !skill.on)),
                     ),
-                    crate::builtin_skills::find(name)
-                        .map_or_else(String::new, |skill| skill.description().to_string()),
+                    crate::builtin_skills::find(name).map_or_else(String::new, |skill| skill.description()),
                 )
             }
             SettingsRow::Keys => {

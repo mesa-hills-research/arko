@@ -28,7 +28,7 @@ pub(crate) struct Builtin {
 }
 
 /// The built-in skills, in the order they are listed.
-pub(crate) const BUILTIN: [Builtin; 2] = [
+pub(crate) const BUILTIN: [Builtin; 3] = [
     Builtin {
         name: "user-facing-prose",
         text: include_str!("builtin_skills/user-facing-prose/SKILL.md"),
@@ -39,15 +39,30 @@ pub(crate) const BUILTIN: [Builtin; 2] = [
         text: include_str!("builtin_skills/repo-docs-style/SKILL.md"),
         pre_loaded: false,
     },
+    Builtin {
+        name: "ponytail",
+        text: include_str!("builtin_skills/ponytail/SKILL.md"),
+        pre_loaded: false,
+    },
 ];
 
 impl Builtin {
-    /// What the skill is for, the `description` in its front matter.
-    pub fn description(&self) -> &'static str {
-        self.text
+    /// What the skill is for, the `description` in its front matter (on one
+    /// line, or on the indented lines after `description: >`).
+    pub fn description(&self) -> String {
+        let mut lines = self
+            .text
             .lines()
-            .find_map(|line| line.strip_prefix("description: "))
-            .unwrap_or_default()
+            .skip_while(|line| !line.starts_with("description:"));
+        let first = lines.next().unwrap_or_default()["description:".len()..].trim();
+        if first != ">" {
+            return first.to_string();
+        }
+        let folded: Vec<&str> = lines
+            .take_while(|line| line.starts_with(' '))
+            .map(str::trim)
+            .collect();
+        folded.join(" ")
     }
 
     /// The `SKILL.md` the agents' skill system loads: `text`, with
@@ -181,9 +196,11 @@ impl Harness {
                         crate::and_list(&names())
                     ));
                 }
-                choice.off.retain(|off| off != name);
-                if *state == "off" {
+                let listed = choice.off.iter().any(|off| off == name);
+                if *state == "off" && !listed {
                     choice.off.push(name.to_string());
+                } else if *state == "on" {
+                    choice.off.retain(|off| off != name);
                 }
                 (*name, "is", *state == "on")
             }
@@ -251,19 +268,16 @@ impl Harness {
 mod tests {
     use super::*;
 
-    /// The `name` and `description` lines of a skill's front matter.
-    fn front_matter(text: &str) -> (Option<String>, Option<String>) {
+    /// The `name` line of a skill's front matter.
+    fn front_matter_name(text: &str) -> Option<String> {
         let mut lines = text.lines();
         assert_eq!(lines.next(), Some("---"), "front matter opens the file");
-        let (mut name, mut description) = (None, None);
         for line in lines {
             if line == "---" {
-                return (name, description);
+                return None;
             }
             if let Some(value) = line.strip_prefix("name: ") {
-                name = Some(value.to_string());
-            } else if let Some(value) = line.strip_prefix("description: ") {
-                description = Some(value.to_string());
+                return Some(value.to_string());
             }
         }
         panic!("front matter closes");
@@ -285,11 +299,10 @@ mod tests {
         for skill in &BUILTIN {
             let on_disk = std::fs::read_to_string(folder.join(skill.name).join("SKILL.md"));
             assert_eq!(on_disk.unwrap(), skill.text, "{}", skill.name);
-            let (name, description) = front_matter(skill.text);
-            assert_eq!(name.as_deref(), Some(skill.name));
-            let description = description.expect("a description");
+            assert_eq!(front_matter_name(skill.text).as_deref(), Some(skill.name));
+            let description = skill.description();
             assert!(
-                description.contains("Load it before"),
+                description.contains("Load it before") || description.contains("Use it for"),
                 "{} says when to load it",
                 skill.name
             );
@@ -301,6 +314,21 @@ mod tests {
                     .text
                     .contains("\n# Repository documentation style\n")
         );
+    }
+
+    /// A description on the lines after `description: >` reads as one.
+    #[test]
+    fn a_description_on_folded_lines_is_read_as_one() {
+        let ponytail = find("ponytail").unwrap().description();
+        assert!(
+            ponytail.starts_with(
+                "Finish the whole task with the smallest change that fully works, split"
+            )
+        );
+        assert!(ponytail.ends_with("complains about over-engineering."));
+        assert!(!ponytail.contains('\n'));
+        let one_line = find("repo-docs-style").unwrap().description();
+        assert!(one_line.starts_with("Rules for repository documentation"));
     }
 
     /// The texts teach plain prose, and are written in it. Their examples
@@ -378,7 +406,10 @@ mod tests {
         let (none, warnings) = BuiltinSkills::new(true, &[], "x");
         assert!(warnings.is_empty());
         assert!(!none.is_all());
-        assert_eq!(none.left_out(), ["user-facing-prose", "repo-docs-style"]);
+        assert_eq!(
+            none.left_out(),
+            ["user-facing-prose", "repo-docs-style", "ponytail"]
+        );
         assert!(!none.gives("repo-docs-style"));
         let (one, _) = BuiltinSkills::new(
             false,
@@ -407,7 +438,7 @@ mod tests {
         assert_eq!(
             warnings,
             [
-                "--no-builtin-skill names `repo-doc-style`, which isn't a built-in skill (they are user-facing-prose and repo-docs-style), so Arko skips it"
+                "--no-builtin-skill names `repo-doc-style`, which isn't a built-in skill (they are user-facing-prose, repo-docs-style, and ponytail), so Arko skips it"
             ]
         );
     }
