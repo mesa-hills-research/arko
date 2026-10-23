@@ -859,3 +859,115 @@ fn an_agents_first_write_never_replaces_a_file_that_appeared_meanwhile() {
             .contains("The user's own")
     );
 }
+
+/// Makes `dir` a git repository.
+fn git_init(dir: &Path) {
+    std::fs::create_dir_all(dir).unwrap();
+    let done = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["init", "-q"])
+        .status()
+        .unwrap();
+    assert!(done.success());
+}
+
+fn judge() -> Profile {
+    Profile::new("judge", "Judges renders")
+}
+
+/// A project folder that a save makes gets a `.gitignore` that ignores the
+/// folder and the file itself. A folder that was there, and one whose file
+/// the user deleted, don't get one, and the setting turns it off.
+#[test]
+fn a_project_folder_a_save_makes_gets_a_gitignore_once() {
+    let temp = tempfile::tempdir().unwrap();
+    let roots = roots(temp.path());
+    let folder = roots.folder(Place::Project).unwrap();
+    git_init(&temp.path().join("work"));
+    save(&roots, Place::Project, &judge(), Author::Agent).unwrap();
+    let ignore = folder.join(".gitignore");
+    assert_eq!(
+        std::fs::read_to_string(&ignore).unwrap(),
+        "# Arko keeps worker profiles out of git. Delete this file to share them.\n*\n"
+    );
+    // Git sees neither the profile nor the file.
+    let status = crate::sessions::git(
+        &temp.path().join("work"),
+        &["status", "--porcelain", "--untracked-files=all"],
+    );
+    assert_eq!(status.as_deref(), Some(""));
+    // The user deletes the file, and the next save doesn't write it again.
+    std::fs::remove_file(&ignore).unwrap();
+    save(
+        &roots,
+        Place::Project,
+        &Profile::new("other", "Another"),
+        Author::User,
+    )
+    .unwrap();
+    assert!(!ignore.exists());
+    // The other places get none.
+    save(&roots, Place::User, &judge(), Author::User).unwrap();
+    assert!(
+        !roots
+            .folder(Place::User)
+            .unwrap()
+            .join(".gitignore")
+            .exists()
+    );
+    // With the setting off a new folder doesn't get one either.
+    let off = Preferences {
+        keep_out_of_git: false,
+    };
+    off.save(&temp.path().join("arko")).unwrap();
+    std::fs::remove_dir_all(temp.path().join("work").join(".agents")).unwrap();
+    save(&roots, Place::Project, &judge(), Author::User).unwrap();
+    assert!(!ignore.exists());
+    assert_eq!(Preferences::load(&temp.path().join("arko")), off);
+}
+
+/// An agent saves in a project folder that git ignores without asking, and
+/// asks for one git tracks. Outside a git repository the user is asked, as
+/// for the user's own folder.
+#[test]
+fn a_project_folder_git_ignores_needs_no_approval() {
+    let temp = tempfile::tempdir().unwrap();
+    let roots = roots(temp.path());
+    let work = temp.path().join("work");
+    std::fs::create_dir_all(&work).unwrap();
+    assert!(needs_approval(&roots, Place::Project, "judge"), "no repo");
+    assert!(needs_approval(&roots, Place::User, "judge"));
+    assert!(!needs_approval(&roots, Place::Session, "judge"));
+
+    // In a repository, the folder a save is about to make will ignore itself.
+    git_init(&work);
+    assert!(
+        !needs_approval(&roots, Place::Project, "judge"),
+        "to be made"
+    );
+    save(&roots, Place::Project, &judge(), Author::Agent).unwrap();
+    assert!(!needs_approval(&roots, Place::Project, "judge"), "ignored");
+    assert!(
+        !needs_approval(&roots, Place::Project, "another"),
+        "ignored"
+    );
+
+    // Without the file the folder is git's to track.
+    let folder = roots.folder(Place::Project).unwrap();
+    std::fs::remove_file(folder.join(".gitignore")).unwrap();
+    assert!(needs_approval(&roots, Place::Project, "judge"), "tracked");
+
+    // With the setting off a folder to be made is tracked too.
+    std::fs::remove_dir_all(&folder).unwrap();
+    assert!(!needs_approval(&roots, Place::Project, "judge"));
+    Preferences {
+        keep_out_of_git: false,
+    }
+    .save(&temp.path().join("arko"))
+    .unwrap();
+    assert!(
+        needs_approval(&roots, Place::Project, "judge"),
+        "setting off"
+    );
+}

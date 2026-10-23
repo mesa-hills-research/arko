@@ -1046,7 +1046,7 @@ impl EventPrinter {
                 self.output.bold("save worker profile"),
                 text("name").trim(),
                 match text("scope").trim() {
-                    "" | "session" => String::new(),
+                    "" => format!(" for {}", crate::profiles::Place::Project.reach()),
                     scope => match crate::profiles::Place::parse(scope) {
                         Some(place) => format!(" for {}", place.reach()),
                         None => format!(" for the {scope}"),

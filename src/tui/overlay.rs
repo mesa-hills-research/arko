@@ -80,6 +80,8 @@ pub enum SettingsRow {
     /// Whether the agent that started a worker gets a copy of the user's
     /// messages to it.
     MessageCopies,
+    /// Whether a profiles folder Arko makes in a project is kept out of git.
+    KeepProfilesOutOfGit,
     Keys,
 }
 
@@ -696,6 +698,21 @@ fn settings(frame: &mut Frame, app: &App, area: Rect, selected: usize) {
                 crate::workers::COPIES_NAME,
                 choices(theme, &["on", "off"], usize::from(!app.message_copies())),
                 crate::workers::copies_about(app.message_copies()).to_string(),
+            ),
+            SettingsRow::KeepProfilesOutOfGit => (
+                "Worker profiles",
+                "Keep out of git",
+                choices(
+                    theme,
+                    &["on", "off"],
+                    usize::from(!app.profile_prefs.keep_out_of_git),
+                ),
+                if app.profile_prefs.keep_out_of_git {
+                    "A new profile folder gets a .gitignore, so git ignores it. Delete that file to share the profiles."
+                } else {
+                    "A new profile folder is left for git to track."
+                }
+                .to_string(),
             ),
             SettingsRow::Page => (
                 "Session",

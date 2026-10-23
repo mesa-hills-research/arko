@@ -630,7 +630,7 @@ fn worktrees(dir: &Path) -> Vec<PathBuf> {
     found
 }
 
-fn git(dir: &Path, args: &[&str]) -> Option<String> {
+pub(crate) fn git(dir: &Path, args: &[&str]) -> Option<String> {
     let output = Command::new("git")
         .arg("-C")
         .arg(dir)

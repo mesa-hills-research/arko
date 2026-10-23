@@ -52,6 +52,19 @@ project's and the project's beats yours. Arko reads the files each time a worker
 edit reaches the next worker without a restart. A worker keeps the setup it started with, also
 when its profile is edited or deleted later and when the session is resumed.
 
+The main agent saves a profile for the project unless it says `session` or `user`, so profiles
+stay with the workspace and a new session there finds them. A worker in a worktree of its own
+uses the profiles of the session's working directory, as a worktree has the committed files only.
+
+When Arko makes the project's `.agents/profiles` folder, it writes a `.gitignore` in it with a
+comment and `*`. Git then ignores the folder and that file, and your repository's own `.gitignore`
+stays as it is. Delete the file to share the profiles with your team. Arko writes it only when it
+makes the folder, so it doesn't come back.
+
+The "Keep out of git" row under "Worker profiles" in `/settings` turns the file off for the folders
+Arko makes from then on. It is on by default and kept for every project in `profiles.json` in
+Arko's folder.
+
 ## How a worker's setup is chosen
 
 For the model, the effort and the prompt cache, the call to `start_agent` wins, then the
@@ -73,7 +86,9 @@ profile, then the session's worker model, which `/model worker` and `--worker-mo
 Two tools help it choose. `worker_options` lists the profiles and the models usable now, with
 each model's efforts, price, handover size and prompt cache, and the plan usage next to models on
 a plan. `save_worker_profile` saves a setup under a name. A profile for the session needs no
-approval. Before Arko saves one for the project or for every project, it puts you a question that
+approval, and neither does one for a project folder that git ignores (`git check-ignore` says),
+which is the folder Arko makes by default. Before Arko saves one in a folder git tracks, in a
+project outside a git repository, or for every project, it puts you a question that
 shows the whole profile, and only a plain yes saves it (a "please" or "thanks" after the yes is
 fine). Anything else you write goes back to the agent as your feedback, and the transcript says
 nothing was saved. The agent can't replace a profile you made.
@@ -173,12 +188,13 @@ profiles::save(&roots, Place::User, &profile, Author::User)?;
 profiles::delete(&roots, Place::User, "3d-judge")?;
 ```
 
-`Profile::check` tells whether a profile can be saved, with a model Arko knows and an effort it
-takes. `profiles::folders` gives the folders for an "open the folder" button, and
-`profiles::approval_text` and `profiles::is_approval` are the question the agent's save puts to
-the user and the rule for its answer. `arko::workers` has the names, commands and sentences of the
-two settings, and `ModelChoice::label` and `about` the words for each value, so an app labels and
-sets them as the terminal and the web page do.
+`profiles::Preferences` loads and saves the setting, and `profiles::needs_approval` tells whether
+the agent's save asks you first. `Profile::check` tells whether a profile can be saved, with a
+model Arko knows and an effort it takes. `profiles::folders` gives the folders for an "open the
+folder" button, and `profiles::approval_text` and `profiles::is_approval` are the question the
+agent's save puts to the user and the rule for its answer. `arko::workers` has the names,
+commands and sentences of the two settings, and `ModelChoice::label` and `about` the words for each
+value, so an app labels and sets them as the terminal and the web page do.
 
 A worker's summary (`WorkerSummary`) names the worker that started it in `parent`, its `depth`
 (1 for the main agent's workers), and what it and the workers under it cost in
