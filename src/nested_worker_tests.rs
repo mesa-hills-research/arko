@@ -927,6 +927,18 @@ async fn quitting_counts_the_workers_of_the_whole_tree() {
         .expect("r1 asked to report early");
     let crew = harness.crew.clone().unwrap();
     until(|| crew.running() == ["r1", "r2"]).await;
+    // An app's quit popup and the status say who started each worker.
+    let family = vec![
+        ("r1".to_string(), None),
+        ("r2".to_string(), Some("r1".to_string())),
+    ];
+    let (popup, mut asks) = mpsc::unbounded_channel();
+    harness.quit_popup = Some(popup);
+    harness.ask_about_workers = true;
+    assert!(!harness.may_exit(Some(Vec::new())));
+    assert_eq!(asks.try_recv().unwrap().workers, family);
+    harness.quit_popup = None;
+    harness.exit_warned = false;
     let printed = Printed::default();
     harness.output = Arc::new(Output::new(Some(Box::new(printed.clone())), false));
     assert!(!harness.may_exit(Some(Vec::new())));
@@ -936,7 +948,7 @@ async fn quitting_counts_the_workers_of_the_whole_tree() {
     );
     // The status counts both too.
     let live = remote::Meter::read(harness.gauges.as_ref());
-    assert_eq!(live.workers_running, ["r1", "r2"]);
+    assert_eq!(live.workers_running, family);
     crew.shutdown().await;
 }
 

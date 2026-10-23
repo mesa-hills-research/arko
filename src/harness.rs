@@ -2861,7 +2861,7 @@ impl Harness {
                 workers: self
                     .crew
                     .as_ref()
-                    .map(|crew| crew.running())
+                    .map(|crew| crew.running_with_parents())
                     .unwrap_or_default(),
             });
             return false;
@@ -5898,7 +5898,7 @@ pub(crate) mod tests {
         let asked = asks.try_recv().unwrap();
         assert_eq!(
             (asked.jobs.len(), asked.workers),
-            (0, vec!["r1".to_string()])
+            (0, vec![("r1".to_string(), None)])
         );
         harness.quit_popup = None;
 

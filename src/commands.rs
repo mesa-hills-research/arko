@@ -309,7 +309,11 @@ pub fn dynamic_choices(
     match (name, before) {
         ("/watch", []) => workers().into_iter().chain(["main".to_string()]).collect(),
         ("/message", []) => workers(),
-        ("/stop-workers", []) => reading.workers_running.clone(),
+        ("/stop-workers", []) => reading
+            .workers_running
+            .iter()
+            .map(|(id, _)| id.clone())
+            .collect(),
         ("/keys", ["add" | "remove"]) => crate::credentials::KEYS
             .iter()
             .map(|key| key.id.to_string())
@@ -410,7 +414,7 @@ mod tests {
         };
         let mut reading = Reading {
             agents: vec![agent("r1"), agent("r2")],
-            workers_running: vec!["r2".into()],
+            workers_running: vec![("r2".into(), None)],
             ..Reading::default()
         };
         reading.page = Some(Page {

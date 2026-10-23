@@ -1165,6 +1165,21 @@ impl Crew {
             })
             .unwrap_or_default()
     }
+    /// The workers running, each with the ID of the worker that started it
+    /// (none for the main agent's).
+    pub fn running_with_parents(&self) -> Vec<(String, Option<String>)> {
+        let Some(workflow) = self.workflow() else {
+            return Vec::new();
+        };
+        // (The active ones first, so a worker that starts in between is in
+        // `runs` too.)
+        let active = workflow.active_subagents();
+        let runs = workflow.subagents();
+        active
+            .into_iter()
+            .map(|run| (run.handle, started_by(&runs, run.run_id)))
+            .collect()
+    }
     /// The user's message to worker `to` (`r1`), which goes as its lead's
     /// message does: a running worker reads it at its next step, and one
     /// that ended goes on with it. With `copy`, the worker that started it

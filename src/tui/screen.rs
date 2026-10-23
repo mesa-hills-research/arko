@@ -1171,7 +1171,7 @@ mod tests {
         use std::time::Duration;
         let mut app = app();
         let long = format!("cargo build --release {}", "x".repeat(80));
-        app.reading.workers_running = vec!["r1".into()];
+        app.reading.workers_running = vec![("r1".into(), None)];
         app.ask_quit(vec![
             job("sleep 300", Duration::from_secs(150)),
             job(&format!("{long}\necho done"), Duration::from_secs(5)),

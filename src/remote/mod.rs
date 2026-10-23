@@ -118,8 +118,11 @@ pub struct Reading {
     pub context_tokens: Option<usize>,
     /// The plans' usage windows (ChatGPT, Claude), as last reported.
     pub plan_usage: Option<String>,
-    /// The workers running.
-    pub workers_running: Vec<String>,
+    /// The workers running, each by its ID and the ID of the worker that
+    /// started it (none for a worker of the main agent). The web page doesn't
+    /// get it.
+    #[serde(skip)]
+    pub workers_running: Vec<(String, Option<String>)>,
     /// Each worker, a line or two (as `/workers` says them).
     pub workers: Option<String>,
     /// The settings a client may change (with commands).
