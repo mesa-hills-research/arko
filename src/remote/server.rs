@@ -797,6 +797,10 @@ async fn commands(
     axum::Json(commands).into_response()
 }
 
+/// The most the words before the one typed may hold, in bytes, for
+/// `POST /api/choices`.
+const MAX_BEFORE: usize = 4096;
+
 #[derive(Deserialize)]
 struct ChoicesBody {
     command: String,
@@ -825,6 +829,13 @@ async fn choices(
         )
             .into_response();
     };
+    if body.before.iter().map(String::len).sum::<usize>() > MAX_BEFORE {
+        return (
+            StatusCode::BAD_REQUEST,
+            error_body("the words before the one typed are too long"),
+        )
+            .into_response();
+    }
     let reading = app.meter.read();
     // (Finding the models can ask Claude Code for its login.)
     let words = tokio::task::spawn_blocking(move || {
@@ -1229,6 +1240,37 @@ mod tests {
         }
         let response = served.post("/api/choices", Some(&cookie), "{}").await;
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        // Words that are too long are refused, and the most allowed isn't.
+        for (long, status) in [
+            (MAX_BEFORE, StatusCode::OK),
+            (MAX_BEFORE + 1, StatusCode::BAD_REQUEST),
+        ] {
+            let body = serde_json::json!({ "command": "/model", "before": ["a".repeat(long)] });
+            let response = served
+                .post("/api/choices", Some(&cookie), &body.to_string())
+                .await;
+            assert_eq!(response.status(), status, "{long} bytes");
+        }
+        // Another site's page can't use the cookie.
+        let response = served
+            .http
+            .get(format!("{}/api/commands", served.base))
+            .header(header::COOKIE, &cookie)
+            .header("sec-fetch-site", "cross-site")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let response = served
+            .http
+            .post(format!("{}/api/choices", served.base))
+            .header(header::COOKIE, &cookie)
+            .header(header::ORIGIN, "http://127.0.0.1:3000")
+            .body(r#"{"command": "/outside"}"#)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
     }
 
     /// `GET /api/links` answers 401 without a session or the key, and
