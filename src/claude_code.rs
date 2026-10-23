@@ -53,8 +53,9 @@ pub enum Problem {
 /// The oldest Claude Code Arko runs.
 const MINIMUM: [u64; 3] = [2, 1, 308];
 
-/// What the user is told about a Claude Code older than [`MINIMUM`].
-pub(crate) fn outdated_text(version: &str) -> String {
+/// What the user is told about a Claude Code older than the oldest Arko
+/// runs (2.1.308), for [`Problem::Outdated`]'s version.
+pub fn outdated_text(version: &str) -> String {
     let [major, minor, patch] = MINIMUM;
     format!(
         "Claude Code {version} has a security flaw in its bundled Bun runtime, fixed in {major}.{minor}.{patch}. Update it with `claude update`, then start again."

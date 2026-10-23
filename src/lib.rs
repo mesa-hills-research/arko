@@ -105,7 +105,7 @@ pub use crate::ui::{Attachment, Banner, Input, Message, QuitAsk};
 pub mod accounts {
     pub use crate::claude_code::{
         ClaudeCodeStatus, Problem, Ready, add_to_path, find_installed, install_dirs,
-        status as claude_code,
+        outdated_text, status as claude_code,
     };
     pub use crate::credentials::{
         ChatGptLogin, KEYS, Key, KeySource, KeyState, LoginSource, LoginState, chatgpt_login,
