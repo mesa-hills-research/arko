@@ -403,6 +403,10 @@ pub struct LiveSettings {
     /// How long after the user's last message a monitor's warning before it
     /// ends still wakes the agent (`/monitor-wakes`).
     pub monitor_wakes: crate::monitors::Wakes,
+    /// For how many seconds a warning wakes the agent now, which `auto`
+    /// takes from the main agent's prompt cache (0 for never, null for
+    /// always).
+    pub monitor_wakes_within: Option<u64>,
     /// Who chooses the workers' models (`/worker-models`). It applies to the
     /// next worker started.
     pub worker_models: crate::agents::ModelChoice,

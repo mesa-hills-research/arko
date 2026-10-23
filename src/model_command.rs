@@ -726,6 +726,7 @@ impl Harness {
         );
         *lock(&self.gauges.extra_rules) = self.settings.extra_rules;
         *lock(&self.gauges.worker_models) = self.settings.worker_models;
+        *lock(&self.gauges.monitor_wakes) = self.settings.monitor_wakes;
         self.gauges.worker_depth.store(
             self.settings.worker_depth,
             std::sync::atomic::Ordering::Relaxed,

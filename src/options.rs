@@ -106,8 +106,7 @@ pub struct Options {
     /// never), by default the session's own, or never when one-shot.
     pub background_after: Option<u64>,
     /// How long after the user's last message a monitor's warning still
-    /// wakes the agent, by default the session's own (two hours in a new
-    /// one).
+    /// wakes the agent, by default the session's own (auto in a new one).
     pub monitor_wakes: Option<crate::monitors::Wakes>,
     /// Show the agents' thinking whole from the start (a new session).
     pub show_thinking: bool,
