@@ -1324,9 +1324,7 @@ impl Harness {
     /// Whether the command can't be run from where it was typed: the page
     /// can't quit Arko or turn itself off.
     pub(crate) fn refused(&self, command: &str, source: Source) -> bool {
-        if source == Source::Web
-            && (matches!(command, "/exit" | "/quit") || is_remote_command(command))
-        {
+        if source == Source::Web && commands::find(command).is_some_and(|c| c.terminal_only()) {
             self.say(
                 Level::Warn,
                 &format!("  {command} works at the terminal only, not from the web page."),
@@ -5013,6 +5011,29 @@ pub(crate) mod tests {
         assert_eq!(command("/workers"), Some("/workers"));
         assert_eq!(command("/usr/bin is missing"), None);
         assert_eq!(command("/cost please"), None);
+    }
+
+    /// The page lists the session's commands it doesn't refuse, among
+    /// them the ones that change a setting while the session runs.
+    #[tokio::test]
+    async fn the_page_lists_the_commands_it_can_run() {
+        let temp = tempfile::tempdir().unwrap();
+        let (harness, _inputs, _sender) = harness(temp.path(), LLMClient::new(), false);
+        let listed: Vec<&str> = commands::on_page().map(|command| command.name).collect();
+        for command in commands::COMMANDS
+            .iter()
+            .filter(|command| command.runs == commands::Runs::Session)
+        {
+            assert_eq!(
+                listed.contains(&command.name),
+                !harness.refused(command.name, Source::Web),
+                "{}",
+                command.name
+            );
+        }
+        for name in LIVE_COMMANDS {
+            assert!(listed.contains(&name), "{name}");
+        }
     }
 
     /// A session saved before workers ran in parallel, and before the file
