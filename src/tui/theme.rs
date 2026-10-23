@@ -685,7 +685,10 @@ impl Roles {
             border,
             selection,
             user,
-            warning: readable(first(&["base.yellow"]).unwrap_or(text), background),
+            warning: readable(
+                first(&["warning.background", "base.yellow"]).unwrap_or(text),
+                background,
+            ),
             error: readable(first(&["base.red"]).unwrap_or(text), background),
             success: readable(first(&["base.green"]).unwrap_or(text), background),
         }
@@ -769,6 +772,17 @@ mod tests {
             on(roles.on_fill, roles.fill, "text on the accent");
             on(roles.text, roles.selection, "text on a selection");
         }
+    }
+
+    /// The warning role is the theme's warning colour, else its yellow.
+    #[test]
+    fn the_warning_role_is_the_themes_warning_colour_else_its_yellow() {
+        let catalog = Catalog::load(None);
+        let warning = |name: &str| Roles::of(catalog.find(name).unwrap()).warning;
+        // No warning colour: the yellow.
+        assert_eq!(warning("macos classic dark"), Rgb(0xFF, 0xC6, 0x00));
+        // The light theme's yellow is too faint for text, its warning colour is not.
+        assert_eq!(warning("macOS Classic Light"), Rgb(0x82, 0x6E, 0x00));
     }
 
     /// A colour too faint for text keeps its hue as it is made readable:
