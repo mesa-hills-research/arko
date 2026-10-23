@@ -188,6 +188,18 @@ pub(crate) struct SavedSetup {
     pub(crate) configs: std::collections::HashMap<String, arko_agents::AgentConfig>,
 }
 
+/// The parts of a checkpoint [`saved_setup`] reads. The rest of a long
+/// session's large checkpoint stays unparsed.
+#[derive(serde::Deserialize)]
+struct CheckpointSetup {
+    workflow_name: String,
+    /// The results with their tasks, in checkpoints from before task files.
+    #[serde(default)]
+    agent_results: Vec<AgentResult>,
+    #[serde(default)]
+    agent_runs: Vec<arko_workflows::persistence::state::AgentRunRecord>,
+}
+
 pub(crate) fn saved_setup(checkpoint: &Path, run_dir: &Path) -> Result<SavedSetup, String> {
     let unreadable = |error: String| {
         format!(
@@ -197,14 +209,36 @@ pub(crate) fn saved_setup(checkpoint: &Path, run_dir: &Path) -> Result<SavedSetu
     };
     let text =
         std::fs::read_to_string(checkpoint).map_err(|error| unreadable(error.to_string()))?;
-    let state: arko_workflows::persistence::state::WorkflowState =
+    let state: CheckpointSetup =
         serde_json::from_str(&text).map_err(|error| unreadable(error.to_string()))?;
     let mut configs = std::collections::HashMap::new();
-    for result in state
-        .agent_results_in(run_dir)
-        .map_err(|error| unreadable(error.to_string()))?
-    {
+    for result in state.agent_results {
         configs.insert(result.agent_name, result.task.agent_config);
+    }
+    // An agent's latest run holds its configuration, so only that task file
+    // is read, however many runs the session has.
+    let latest: std::collections::HashMap<_, _> = state
+        .agent_runs
+        .iter()
+        .map(|run| (&run.agent_name, run))
+        .collect();
+    let images = arko_workflows::persistence::images::ImageFiles::in_run_dir(run_dir);
+    for (agent, run) in latest {
+        let path = run_dir.join(&run.task_file);
+        let task = std::fs::read_to_string(&path)
+            .map_err(|error| error.to_string())
+            .and_then(|json| {
+                images
+                    .with(|| serde_json::from_str::<arko_agents::Task>(&json))
+                    .map_err(|error| error.to_string())
+            })
+            .map_err(|error| {
+                unreadable(format!(
+                    "the checkpoint's task file {} for agent '{agent}' can't be loaded: {error}",
+                    path.display()
+                ))
+            })?;
+        configs.insert(agent.clone(), task.agent_config);
     }
     Ok(SavedSetup {
         name: state.workflow_name,
@@ -5303,6 +5337,116 @@ pub(crate) mod tests {
         assert_eq!(saved.name, "fin");
         harness.open(true).unwrap();
         harness.crew.as_ref().unwrap().shutdown().await;
+    }
+
+    /// A session's saved setup holds each agent name's latest run's
+    /// configuration, as the whole checkpoint gives it, and the task files
+    /// of earlier runs are not read.
+    #[test]
+    fn the_saved_setup_is_that_of_each_agents_latest_run() {
+        let temp = tempfile::tempdir().unwrap();
+        let run = temp.path();
+        let opus = ModelSettings {
+            model: resolve_model("opus").unwrap().id,
+            effort: Effort::High,
+            fast: false,
+            cache_1h: false,
+            handover_at: None,
+        };
+        let settings = AgentSettings::for_test(&opus, &opus);
+        let task = |agent: &str, instructions: &str| {
+            let mut config = if agent == MAIN {
+                agents::main_config(&settings).unwrap()
+            } else {
+                agents::worker_config(&settings).unwrap()
+            };
+            config.instructions = instructions.into();
+            arko_agents::Task::new(config, "Go.".into(), run.into(), None)
+        };
+        // Runs of both agents, each with another configuration than the
+        // run before it.
+        let mut earlier = Vec::new();
+        let mut records = Vec::new();
+        for (n, (agent, instructions)) in [
+            (MAIN, "main 1"),
+            (WORKER, "worker 1"),
+            (MAIN, "main 2"),
+            (WORKER, "worker 2"),
+            (WORKER, "worker 3"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let task = task(agent, instructions);
+            let file = format!("agents/{}/{n}.json", task.id);
+            std::fs::create_dir_all(run.join(&file).parent().unwrap()).unwrap();
+            std::fs::write(run.join(&file), serde_json::to_string(&task).unwrap()).unwrap();
+            if instructions != "main 2" && instructions != "worker 3" {
+                earlier.push(run.join(&file));
+            }
+            records.push(serde_json::json!({
+                "agent_run_id": task.id,
+                "agent_name": agent,
+                "status": "Completed",
+                "summary": "",
+                "task_file": file,
+            }));
+        }
+        // A checkpoint from before task files holds its results' tasks.
+        let legacy = AgentResult {
+            agent_run_id: uuid::Uuid::new_v4(),
+            agent_name: "legacy".into(),
+            status: AgentRunStatus::Completed,
+            summary: String::new(),
+            error: None,
+            task: task(WORKER, "legacy 1"),
+            stopped_by: None,
+        };
+        let checkpoint = run.join("checkpoint.json");
+        std::fs::write(
+            &checkpoint,
+            serde_json::json!({
+                "workflow_name": "fin",
+                "checkpoint_id": uuid::Uuid::new_v4(),
+                "timestamp": chrono::Utc::now(),
+                "memory_snapshot": [],
+                "message_queues": {},
+                "budget_spent": 0.0,
+                "agent_results": [legacy],
+                "agent_runs": records,
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        // What the whole checkpoint gives: the last of each name's runs.
+        let state: arko_workflows::persistence::state::WorkflowState =
+            serde_json::from_str(&std::fs::read_to_string(&checkpoint).unwrap()).unwrap();
+        let mut expected = std::collections::HashMap::new();
+        for result in state.agent_results_in(run).unwrap() {
+            expected.insert(
+                result.agent_name,
+                serde_json::to_value(&result.task.agent_config).unwrap(),
+            );
+        }
+        let configs = |saved: SavedSetup| {
+            assert_eq!(saved.name, "fin");
+            saved
+                .configs
+                .into_iter()
+                .map(|(agent, config)| (agent, serde_json::to_value(config).unwrap()))
+                .collect::<std::collections::HashMap<_, _>>()
+        };
+        assert_eq!(configs(saved_setup(&checkpoint, run).unwrap()), expected);
+        let instructions = |agent: &str| expected[agent]["instructions"].as_str().unwrap();
+        assert_eq!(instructions(MAIN), "main 2");
+        assert_eq!(instructions(WORKER), "worker 3");
+        assert_eq!(instructions("legacy"), "legacy 1");
+
+        for file in earlier {
+            std::fs::remove_file(file).unwrap();
+        }
+        assert_eq!(configs(saved_setup(&checkpoint, run).unwrap()), expected);
     }
 
     fn request(questions: &str) -> UserInputRequest {
