@@ -55,8 +55,12 @@ pub struct Options {
     /// default 2 in a new session, and a resumed session's own. A session
     /// isn't opened with another number.
     pub worker_depth: Option<u32>,
+    /// A worker fails after this many failed model requests in a row, by
+    /// default no cap in a new session, and a resumed session's own. A
+    /// session isn't opened with 0.
+    pub worker_retry_cap: Option<u32>,
     /// Whether the agent that started a worker gets a copy of the user's
-    /// messages to the worker, by default yes in a new session, and a
+    /// messages to the worker, by default no in a new session, and a
     /// resumed session's own. It can change as a session resumes.
     pub message_copies: Option<bool>,
     /// The 1-hour prompt cache, by default as `ARKO_CACHE_1H` says.
@@ -76,9 +80,10 @@ pub struct Options {
     /// they get none. A resumed session takes it for its new conversations.
     pub builtin_skills: Option<bool>,
     /// The built-in skills to leave out, by name (`user-facing-prose`,
-    /// `repo-docs-style`), by default as `ARKO_BUILTIN_SKILLS_OFF` says. A
-    /// name that isn't a built-in skill keeps the session from opening. A
-    /// resumed session takes it for its new conversations.
+    /// `repo-docs-style`, see [`builtin_skills::names`](crate::builtin_skills::names)),
+    /// by default as `ARKO_BUILTIN_SKILLS_OFF` says. A name that isn't a
+    /// built-in skill is skipped with a warning. A resumed session takes it
+    /// for its new conversations.
     pub builtin_skills_off: Option<Vec<String>>,
     /// The project instructions, by default a new session's default, or a
     /// resumed session's own.
@@ -204,6 +209,7 @@ impl Default for Options {
             worker_fast: false,
             worker_models: None,
             worker_depth: None,
+            worker_retry_cap: None,
             message_copies: None,
             cache_1h: None,
             text_replies: None,

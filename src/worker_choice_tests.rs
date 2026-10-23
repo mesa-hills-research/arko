@@ -107,7 +107,7 @@ fn lead(body: &str, step: &str) -> String {
         "Start by listing the options." => {
             return tool_call(step, crew::WORKER_OPTIONS, serde_json::json!({}));
         }
-        "Start by saving a profile." => return saving(None),
+        "Start by saving a profile." => return saving(Some("session")),
         "Start by saving a profile for everyone." => return saving(Some("user")),
         _ => {}
     }
@@ -663,6 +663,65 @@ async fn worker_depth_is_kept_and_says_what_it_allows() {
     assert_eq!(harness.session.load_settings().unwrap().worker_depth, 3);
     assert!(harness.live_command("/worker-depth 3", Source::Terminal));
     assert!(last_said(&harness.feed).starts_with("Worker depth is 3 already."));
+    // With every worker on the session's model, none starts workers at any
+    // depth, and the three replies say so.
+    assert!(harness.live_command("/worker-models session", Source::Terminal));
+    let none = "No worker starts workers, because every worker runs the session’s worker model.";
+    for (command, reply) in [
+        ("/worker-depth", format!("Worker depth is 3. {none} /worker-depth 1 to 4 changes it.")),
+        ("/worker-depth 3", format!("Worker depth is 3 already. {none}")),
+        ("/worker-depth 4", format!("Worker depth is now 4. {none}")),
+    ] {
+        assert!(harness.live_command(command, Source::Terminal));
+        assert_eq!(last_said(&harness.feed), reply, "{command}");
+    }
+    harness.crew.as_ref().unwrap().shutdown().await;
+}
+
+/// `/worker-retry-cap` says how many failed model requests in a row stop a
+/// worker and sets it to off, on (10) or a number, saved with the session.
+/// Before the conversation starts the workers get it at once. After, it waits
+/// for the session to be resumed.
+#[tokio::test]
+async fn the_worker_retry_cap_is_kept_and_reaches_the_workers() {
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, _sender, _server, _seen) = setup(temp.path()).await;
+    let capped = |harness: &Harness| harness.crew.as_ref().unwrap().config().max_failed_requests;
+    assert!(harness.live_command("/worker-retry-cap", Source::Terminal));
+    assert_eq!(
+        last_said(&harness.feed),
+        "Worker retry cap is off. Workers keep retrying failed model requests. On, a worker fails after 10 in a row, and the workers it started stop with it. /worker-retry-cap off, on or a number changes it."
+    );
+    for bad in ["0", "-1", "many"] {
+        assert!(harness.live_command(&format!("/worker-retry-cap {bad}"), Source::Terminal));
+        assert!(
+            last_said(&harness.feed).contains("isn't off, on or a number from 1"),
+            "{bad}: {}",
+            last_said(&harness.feed)
+        );
+    }
+    assert_eq!(capped(&harness), None);
+    assert!(harness.live_command("/worker-retry-cap on", Source::Terminal));
+    assert_eq!(
+        last_said(&harness.feed),
+        "Worker retry cap is now 10. A worker fails after 10 failed model requests in a row, and the workers it started stop with it. A model response starts the count again."
+    );
+    assert_eq!(capped(&harness), Some(10));
+    assert!(harness.live_command("/worker-retry-cap 3", Source::Terminal));
+    assert_eq!(harness.session.load_settings().unwrap().worker_retry_cap, Some(3));
+    assert_eq!(capped(&harness), Some(3));
+    assert!(harness.live_command("/worker-retry-cap 3", Source::Terminal));
+    assert!(last_said(&harness.feed).starts_with("Worker retry cap is 3 already."));
+    assert!(harness.live_command("/worker-retry-cap off", Source::Terminal));
+    assert_eq!(harness.session.load_settings().unwrap().worker_retry_cap, None);
+    assert_eq!(capped(&harness), None);
+    // Once the conversation has started the setting is saved, and the
+    // workflow keeps the cap it was built with.
+    start_worker(&mut harness, &mut inputs, "Start a plain worker.").await;
+    assert!(harness.live_command("/worker-retry-cap 5", Source::Terminal));
+    assert!(last_said(&harness.feed).ends_with(" It applies when you resume the session."));
+    assert_eq!(harness.session.load_settings().unwrap().worker_retry_cap, Some(5));
+    assert_eq!(capped(&harness), None);
     harness.crew.as_ref().unwrap().shutdown().await;
 }
 
@@ -670,10 +729,13 @@ async fn worker_depth_is_kept_and_says_what_it_allows() {
 /// of the user's messages to it, and sets it on or off, saved with the
 /// session. Without workers there is nothing to set.
 #[tokio::test]
-async fn message_copies_are_on_by_default_and_the_command_sets_them() {
+async fn the_message_copies_command_says_and_sets_them() {
     let temp = tempfile::tempdir().unwrap();
     let (mut harness, _inputs, _sender, _server, _seen) = setup(temp.path()).await;
-    assert!(harness.settings.message_copies, "on by default");
+    assert!(
+        harness.settings.message_copies,
+        "a test session has copies on"
+    );
     assert!(harness.live_command("/message-copies", Source::Terminal));
     assert_eq!(
         last_said(&harness.feed),
@@ -682,7 +744,7 @@ async fn message_copies_are_on_by_default_and_the_command_sets_them() {
     assert!(harness.live_command("/message-copies off", Source::Terminal));
     assert_eq!(
         last_said(&harness.feed),
-        "Message copies are now off. The agent that started a worker doesn't see the messages you send the worker."
+        "Message copies are now off. The agent that started a worker doesn’t see the messages you send the worker."
     );
     assert!(!harness.settings.message_copies);
     assert!(!harness.session.load_settings().unwrap().message_copies);
@@ -904,7 +966,7 @@ fn the_flags_set_who_chooses_and_how_deep_for_a_new_session() {
     let default = new(&[]);
     assert_eq!(default.worker_models, crate::agents::ModelChoice::Agent);
     assert_eq!(default.worker_depth, 2);
-    assert!(default.message_copies, "copies are on by default");
+    assert!(!default.message_copies, "copies are off by default");
     assert!(new(&["--message-copies"]).message_copies);
     assert!(!new(&["--no-message-copies"]).message_copies);
     assert!(
@@ -930,6 +992,29 @@ fn the_flags_set_who_chooses_and_how_deep_for_a_new_session() {
         ["--worker-depth", "deep"],
     ] {
         assert!(Args::try_parse_from(["arko", bad[0], bad[1]]).is_err(), "{bad:?}");
+    }
+}
+
+/// `--worker-retry-cap` sets a new session's cap, 10 without a number. A
+/// session started without it has no cap.
+#[test]
+fn the_flag_sets_the_worker_retry_cap_for_a_new_session() {
+    let temp = tempfile::tempdir().unwrap();
+    let dir = temp.path().to_str().unwrap();
+    let cap = |words: &[&str]| {
+        let mut all = vec!["-m", "opus", "--no-cache-1h", "-C", dir];
+        all.extend(words);
+        new_settings(&args(&all), &NoPrompter).unwrap().0.worker_retry_cap
+    };
+    assert_eq!(cap(&[]), None);
+    assert_eq!(cap(&["--worker-retry-cap"]), Some(10));
+    assert_eq!(cap(&["--worker-retry-cap", "4"]), Some(4));
+    assert_eq!(cap(&["--worker-retry-cap", "--worker-depth", "3"]), Some(10));
+    for bad in ["0", "many"] {
+        assert!(
+            Args::try_parse_from(["arko", "--worker-retry-cap", bad]).is_err(),
+            "{bad}"
+        );
     }
 }
 

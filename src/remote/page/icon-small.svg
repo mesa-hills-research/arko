@@ -1,17 +1,26 @@
-<svg xmlns="http://www.w3.org/2000/svg" version="1.1" width="1024" height="1024" viewBox="0 0 1024 1024">
-  <!-- The mark for 16 to 32 px. Drawn on a 16 px grid (64 units per pixel) with thicker
-       strokes and larger nodes, and the arc and the bowl run into the nodes so no
-       gap is thinner than a pixel. -->
+<svg xmlns="http://www.w3.org/2000/svg" version="1.1" width="1024" height="1024" viewBox="123 120 778 778">
   <g fill="#D5642A">
-    <!-- the arc over the top, ending in the hollow node -->
-    <path fill-rule="evenodd" d="M766.5 384A352 352 0 1 0 66.5 458.1A96 96 0 0 0 231.9 543.6A224 224 0 1 1 637.7 384ZM128 480a32 32 0 1 0 64 0a32 32 0 1 0 -64 0Z"/>
-    <!-- the stem and the bowl, ending in the bottom node -->
-    <path d="M640 576L640 608A224 224 0 0 1 377.2 828.6A96 96 0 1 0 331.3 949.7A352 352 0 0 0 640 879.5L640 960L768 960L768 576Z"/>
-    <!-- the right node, the arrow shaft and the arrow head -->
-    <circle cx="480" cy="480" r="96"/>
-    <rect x="480" y="448" width="368" height="64"/>
-    <path d="M832 304L1008 480L832 656Z"/>
+    <!-- the hollow node -->
+    <path fill-rule="evenodd" d="M123 531.5a67.6 67.6 0 1 1 135.3 0a67.6 67.6 0 1 1 -135.3 0ZM155.4 531.5a35.3 35.3 0 1 0 70.5 0a35.3 35.3 0 1 0 -70.5 0Z"/>
+    <!-- the right node -->
+    <circle cx="524.2" cy="519.5" r="62.2"/>
+    <!-- the bottom node -->
+    <circle cx="399.1" cy="802.1" r="62.8"/>
+    <!-- the top left of the arc -->
+    <path d="M453.2 156.7A304 304 0 0 0 142.4 456.7A89 89 0 0 1 224.5 449.2A222.8 222.8 0 0 1 453.2 234.5Z"/>
+    <!-- the top right of the arc and the stem under it -->
+    <path d="M482.5 153.7A292.7 292.7 0 0 1 761.8 446L761.8 478.5L681.3 478.5L681.3 445.5A213.3 213.3 0 0 0 482.5 232.7Z"/>
+    <!-- the bottom of the arc and the stem -->
+    <path d="M681.3 574.9L681.3 634.6A163.8 163.8 0 0 1 483.6 794.9A84.8 84.8 0 0 1 458.2 862.9A241 241 0 0 0 681.3 798.9L681.3 861.4L761.8 861.4L761.8 574.9Z"/>
+    <!-- the link from the hollow node to the right node -->
+    <path d="M241.6 508.8L450.3 508.8A74.7 74.7 0 0 0 452.7 541.1L241.6 541.1Z"/>
+    <!-- the link from the hollow node to the bottom node -->
+    <path d="M201 573.1L333.2 748.7A84.8 84.8 0 0 1 356.1 729L238.7 573.1Z"/>
+    <!-- the link from the right node to the bottom node -->
+    <path d="M491.1 564.2L421.9 720.4A84.8 84.8 0 0 1 449.2 733.7L524.3 564.2Z"/>
+    <!-- the arrow shaft -->
+    <path d="M597.6 505.3L839.5 505.3L839.5 544.6L594.6 544.6A74.7 74.7 0 0 0 597.6 505.3Z"/>
+    <!-- the arrow head -->
+    <path d="M827 454.4L901.1 526.3L827 598.1Z"/>
   </g>
-  <!-- the links between the nodes -->
-  <path fill="none" stroke="#D5642A" stroke-width="64" d="M224 480H480M180.2 540.7L288 864M480 480L288 864"/>
 </svg>

@@ -73,13 +73,24 @@ pub enum SettingsRow {
     Compact,
     ProjectFiles,
     ProjectWorkers,
+    /// Whether the agents get the built-in skills at all.
+    BuiltinSkills,
+    /// One built-in skill, by its place in the session's list of them.
+    BuiltinSkill(usize),
     /// Who chooses the workers' models.
     WorkerModels,
     /// How many levels of workers there can be.
     WorkerDepth,
+    /// Whether a worker fails after a number of failed model requests in a
+    /// row.
+    WorkerRetryCap,
     /// Whether the agent that started a worker gets a copy of the user's
     /// messages to it.
     MessageCopies,
+    /// Whether a profiles folder Arko makes in a project is kept out of git.
+    KeepProfilesOutOfGit,
+    /// Whether profiles are also read from the git repo's root.
+    RepoRootProfiles,
     Keys,
     /// The ChatGPT logins, which `/chatgpt` changes.
     Logins,
@@ -693,11 +704,51 @@ fn settings(frame: &mut Frame, app: &App, area: Rect, selected: usize) {
                 ],
                 crate::workers::depth_about().to_string(),
             ),
+            SettingsRow::WorkerRetryCap => (
+                "Workers",
+                crate::workers::RETRY_CAP_NAME,
+                choices(
+                    theme,
+                    &["on", "off"],
+                    usize::from(app.worker_retry_cap().is_none()),
+                ),
+                crate::workers::retry_cap_about(app.worker_retry_cap()),
+            ),
             SettingsRow::MessageCopies => (
                 "Workers",
                 crate::workers::COPIES_NAME,
                 choices(theme, &["on", "off"], usize::from(!app.message_copies())),
                 crate::workers::copies_about(app.message_copies()).to_string(),
+            ),
+            SettingsRow::KeepProfilesOutOfGit => (
+                "Worker profiles",
+                "Keep out of git",
+                choices(
+                    theme,
+                    &["on", "off"],
+                    usize::from(!app.profile_prefs.keep_out_of_git),
+                ),
+                if app.profile_prefs.keep_out_of_git {
+                    "A new profile folder gets a .gitignore, so git ignores it. Delete that file to share the profiles."
+                } else {
+                    "A new profile folder is left for git to track."
+                }
+                .to_string(),
+            ),
+            SettingsRow::RepoRootProfiles => (
+                "Worker profiles",
+                "Repo root",
+                choices(
+                    theme,
+                    &["on", "off"],
+                    usize::from(!app.profile_prefs.repo_root),
+                ),
+                if app.profile_prefs.repo_root {
+                    "In a subfolder of a git repo, the .agents/profiles in the repo root is read too."
+                } else {
+                    "Only the project's own .agents/profiles is read."
+                }
+                .to_string(),
             ),
             SettingsRow::Page => (
                 "Session",
@@ -745,6 +796,42 @@ fn settings(frame: &mut Frame, app: &App, area: Rect, selected: usize) {
                 }
                 .to_string(),
             ),
+            SettingsRow::BuiltinSkills => (
+                "Skills",
+                crate::builtin_skills::SETTING_NAME,
+                choices(theme, &["on", "off"], usize::from(!app.builtin_skills())),
+                if app.conversation_started() {
+                    format!(
+                        "{} {}",
+                        crate::builtin_skills::SETTING_ABOUT,
+                        crate::builtin_skills::AFTER_START
+                    )
+                } else {
+                    crate::builtin_skills::SETTING_ABOUT.to_string()
+                },
+            ),
+            SettingsRow::BuiltinSkill(index) => {
+                let skill = app.builtin_skill(*index);
+                let name = skill.map_or("", |skill| skill.name.as_str());
+                (
+                    "Skills",
+                    name,
+                    choices(
+                        theme,
+                        &["on", "off"],
+                        usize::from(skill.is_some_and(|skill| !skill.on)),
+                    ),
+                    {
+                        let about = crate::builtin_skills::find(name)
+                            .map_or_else(String::new, |skill| skill.description());
+                        if app.conversation_started() {
+                            format!("{about} {}", crate::builtin_skills::AFTER_START)
+                        } else {
+                            about
+                        }
+                    },
+                )
+            }
             SettingsRow::Keys => {
                 let states = (app.key_states)();
                 let set = states.iter().filter(|state| state.masked.is_some()).count();

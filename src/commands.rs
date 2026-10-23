@@ -105,7 +105,7 @@ pub const COMMANDS: &[Command] = &[
     Command::screen(
         "/settings",
         "",
-        "the view, theme, mouse, outside access, handover size, background jobs, monitor wakes, models for workers, worker depth, message copies, text replies, extra rules, Claude Code compaction, project instructions, web page, API keys and ChatGPT logins",
+        "the view, theme, mouse, outside access, handover size, background jobs, monitor wakes, models for workers, worker depth, worker retry cap, message copies, worker profile folders, text replies, extra rules, Claude Code compaction, project instructions, built-in skills, web page, API keys and ChatGPT logins",
     ),
     Command {
         name: "/model",
@@ -188,6 +188,13 @@ pub const COMMANDS: &[Command] = &[
         runs: Runs::Session,
     },
     Command {
+        name: "/worker-retry-cap",
+        args: "off|on|N",
+        about: "how many failed model requests in a row stop a worker. on means 10 and off means no cap",
+        aliases: &[],
+        runs: Runs::Session,
+    },
+    Command {
         name: "/message-copies",
         args: "on|off",
         about: "copies of your messages to a worker for the agent that started it",
@@ -219,6 +226,13 @@ pub const COMMANDS: &[Command] = &[
         name: "/project-instructions",
         args: "one|both|off | workers on|off",
         about: "which of the project's AGENTS.md and CLAUDE.md the agents get (one is AGENTS.md, else CLAUDE.md), and whether workers get them. Each conversation and worker gets them once, in its first message, and a change reaches those that start after it",
+        aliases: &[],
+        runs: Runs::Session,
+    },
+    Command {
+        name: "/builtin-skills",
+        args: "on|off | NAME on|off",
+        about: "whether the agents get Arko's built-in skills, all or one by name. It changes the agents before the conversation starts, and after it a resumed session gets the change",
         aliases: &[],
         runs: Runs::Session,
     },
@@ -279,6 +293,7 @@ const CHOICES: &[(&str, &[&str], &[&str])] = &[
     ("/background-after", &[], &["off"]),
     ("/monitor-wakes", &[], &["always", "off"]),
     ("/worker-models", &[], &["agent", "profiles", "session"]),
+    ("/worker-retry-cap", &[], &["off", "on"]),
     ("/message-copies", &[], ON_OFF),
     ("/profiles", &[], &["add", "remove"]),
     ("/jobs", &[], &["stop"]),
@@ -317,7 +332,11 @@ pub fn dynamic_choices(
     match (name, before) {
         ("/watch", []) => workers().into_iter().chain(["main".to_string()]).collect(),
         ("/message", []) => workers(),
-        ("/stop-workers", []) => reading.workers_running.clone(),
+        ("/stop-workers", []) => reading
+            .workers_running
+            .iter()
+            .map(|(id, _)| id.clone())
+            .collect(),
         ("/keys", ["add" | "remove"]) => crate::credentials::KEYS
             .iter()
             .map(|key| key.id.to_string())
@@ -333,6 +352,13 @@ pub fn dynamic_choices(
             names
         }
         ("/model", words) => model_choices(&reading.models, words),
+        ("/builtin-skills", []) => ON_OFF
+            .iter()
+            .copied()
+            .chain(crate::builtin_skills::names())
+            .map(String::from)
+            .collect(),
+        ("/builtin-skills", [_]) => ON_OFF.iter().map(|word| word.to_string()).collect(),
         (name, words) => choices(name, words)
             .iter()
             .map(|word| word.to_string())
@@ -418,7 +444,7 @@ mod tests {
         };
         let mut reading = Reading {
             agents: vec![agent("r1"), agent("r2")],
-            workers_running: vec!["r2".into()],
+            workers_running: vec![("r2".into(), None)],
             ..Reading::default()
         };
         reading.page = Some(Page {
@@ -444,6 +470,20 @@ mod tests {
         assert_eq!(workers.first().map(String::as_str), Some("main"));
         assert!(dynamic_choices(&reading, "/model", &["opus"]).contains(&"high".to_string()));
         assert_eq!(dynamic_choices(&reading, "/outside", &[]), ["on", "off"]);
+        assert_eq!(
+            dynamic_choices(&reading, "/builtin-skills", &[]),
+            [
+                "on",
+                "off",
+                "user-facing-prose",
+                "repo-docs-style",
+                "ponytail"
+            ]
+        );
+        assert_eq!(
+            dynamic_choices(&reading, "/builtin-skills", &["repo-docs-style"]),
+            ["on", "off"]
+        );
     }
 
     #[test]

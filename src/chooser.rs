@@ -260,7 +260,8 @@ fn choose_at(
 
     let effort = effort_for(basis, &call, profile, &model, same_model)?;
     let fast = profile.is_some_and(|profile| profile.fast) || (same_model && basis.worker.fast);
-    let cache_1h = cache_for(&call, profile)?.unwrap_or(basis.worker.cache_1h);
+    let cache_choice = cache_for(&call, profile)?;
+    let cache_1h = cache_choice.unwrap_or(basis.worker.cache_1h);
     let worker = ModelSettings {
         model: model_name,
         effort,
@@ -288,6 +289,11 @@ fn choose_at(
         Some(name) if fast => format!("The profile `{name}` asks for fast mode. {why}"),
         _ => why,
     })?;
+
+    // Claude Code has its own cache unless 5 minutes is asked for outright.
+    if cache_choice == Some(false) {
+        providers::ask_five_minutes(&model, &mut setup.llm_config.generation_config);
+    }
 
     // What goes into the run's first message: the profile's instructions,
     // what it needs to know to start workers of its own, and the extra

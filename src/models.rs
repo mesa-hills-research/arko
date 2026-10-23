@@ -125,8 +125,9 @@ pub fn image_refusal(model: &str, mime: &str) -> Option<String> {
 
 /// Whether a session's 1-hour prompt cache ([`Options::cache_1h`](crate::Options::cache_1h))
 /// applies to the model `model` (as `/model` takes it). It does to Claude
-/// models on an API key or on OpenRouter. Claude Code chooses its own (an
-/// hour on a Claude plan), and the other providers have none to choose.
+/// models on an API key, on OpenRouter or in Claude Code (which otherwise
+/// chooses its own, an hour on a Claude plan), and the other providers have
+/// none to choose.
 pub fn takes_cache_1h(model: &str) -> bool {
     providers::resolve_model(model).is_ok_and(|model| providers::takes_cache_ttl(&model))
 }
@@ -172,20 +173,20 @@ pub fn display_name(model: &str) -> String {
 mod tests {
     use super::*;
 
-    /// The 1-hour cache applies to Claude models on an API key or on
-    /// OpenRouter, and to no other.
+    /// The 1-hour cache applies to Claude models on an API key, on OpenRouter
+    /// or in Claude Code, and to no other.
     #[test]
-    fn the_1_hour_cache_applies_to_claude_by_api_key_or_openrouter() {
+    fn the_1_hour_cache_applies_to_claude_by_api_key_openrouter_or_claude_code() {
         for model in [
             "opus",
             "sonnet",
             "claude-opus-5-5",
             "openrouter:anthropic/claude-opus-5.5",
+            "cc:opus",
         ] {
             assert!(takes_cache_1h(model), "{model}");
         }
         for model in [
-            "cc:opus",
             "sol",
             "gemini",
             "openrouter:meta/small-model",

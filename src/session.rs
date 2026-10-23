@@ -160,10 +160,15 @@ pub struct Settings {
         skip_serializing_if = "is_default_worker_depth"
     )]
     pub worker_depth: u32,
+    /// A worker fails after this many failed model requests in a row
+    /// (`/worker-retry-cap`). None, no cap, in sessions saved before it
+    /// existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker_retry_cap: Option<u32>,
     /// The agent that started a worker gets a copy of the user's messages to
-    /// it (`/message-copies`). On in sessions saved before it existed, as
-    /// they always did.
-    #[serde(default = "default_message_copies", skip_serializing_if = "is_on")]
+    /// it (`/message-copies`). Always saved, off in a new session. On in
+    /// sessions saved before it existed, as they always did.
+    #[serde(default = "default_message_copies")]
     pub message_copies: bool,
     /// The session was made by an Arko whose `start_agent` takes `nested`.
     /// A conversation in Claude Code keeps the tools it started with, so one
@@ -194,10 +199,6 @@ fn is_default_worker_depth(depth: &u32) -> bool {
 
 fn default_message_copies() -> bool {
     true
-}
-
-fn is_on(on: &bool) -> bool {
-    *on
 }
 
 impl Settings {
@@ -235,6 +236,7 @@ impl Settings {
             monitor_wakes: Default::default(),
             worker_models: ModelChoice::default(),
             worker_depth: DEFAULT_WORKER_DEPTH,
+            worker_retry_cap: None,
             message_copies: true,
             nested_start: true,
             builtin_skills: BuiltinSkills {
@@ -792,7 +794,7 @@ pub fn list(root: &Path) -> Vec<(Session, Settings)> {
             Some((session, settings))
         })
         .collect();
-    sessions.sort_by(|a, b| b.1.created.cmp(&a.1.created));
+    sessions.sort_by_key(|session| std::cmp::Reverse(session.1.created));
     sessions
 }
 
@@ -828,8 +830,9 @@ mod tests {
 
     /// A session saved before workers' models could be chosen keeps every
     /// worker on the session's worker model, as it always did, and has two
-    /// levels of workers. A session made since writes who chooses, and
-    /// writes the depth only when it isn't the default.
+    /// levels of workers and no retry cap. A session made since writes who
+    /// chooses, and writes the depth and the cap only when they aren't the
+    /// default.
     #[test]
     fn a_session_saved_before_worker_choices_loads_as_it_always_worked() {
         let temp = tempfile::tempdir().unwrap();
@@ -838,6 +841,7 @@ mod tests {
         let text = std::fs::read_to_string(&file).unwrap();
         assert!(text.contains("\"worker_models\": \"agent\""), "{text}");
         assert!(!text.contains("worker_depth"), "{text}");
+        assert!(!text.contains("worker_retry_cap"), "{text}");
         assert_eq!(
             session.load_settings().unwrap().worker_models,
             ModelChoice::Agent
@@ -853,25 +857,32 @@ mod tests {
         let mut settings = loaded;
         settings.worker_models = ModelChoice::Profiles;
         settings.worker_depth = 3;
+        settings.worker_retry_cap = Some(5);
         session.save_settings(&settings).unwrap();
         let text = std::fs::read_to_string(session.dir.join(SETTINGS_FILE)).unwrap();
+        assert!(text.contains("\"worker_retry_cap\": 5"), "{text}");
         assert!(text.contains("\"worker_models\": \"profiles\""), "{text}");
         assert!(text.contains("\"worker_depth\": 3"), "{text}");
         let loaded = session.load_settings().unwrap();
         assert_eq!(loaded.worker_models, ModelChoice::Profiles);
         assert_eq!(loaded.worker_depth, 3);
+        assert_eq!(loaded.worker_retry_cap, Some(5));
     }
 
     /// A session saved before message copies could be turned off has them on,
-    /// as it always did. A session made now writes the setting only when it
-    /// is off.
+    /// as it always did. A session made now always writes the setting, so a
+    /// reload gives the value it had.
     #[test]
     fn a_session_saved_before_message_copies_loads_with_them_on() {
         let temp = tempfile::tempdir().unwrap();
         let session = test_session(temp.path());
         let file = session.dir.join(SETTINGS_FILE);
         let text = std::fs::read_to_string(&file).unwrap();
-        assert!(!text.contains("message_copies"), "{text}");
+        assert!(text.contains("\"message_copies\": true"), "{text}");
+        // The file of a session from before has no such setting.
+        let mut old: serde_json::Value = serde_json::from_str(&text).unwrap();
+        old.as_object_mut().unwrap().remove("message_copies");
+        std::fs::write(&file, serde_json::to_string_pretty(&old).unwrap()).unwrap();
         let mut settings = session.load_settings().unwrap();
         assert!(settings.message_copies, "on without the setting");
         settings.message_copies = false;
@@ -879,15 +890,6 @@ mod tests {
         let text = std::fs::read_to_string(&file).unwrap();
         assert!(text.contains("\"message_copies\": false"), "{text}");
         assert!(!session.load_settings().unwrap().message_copies);
-        // Turned on again, the file is as it was.
-        settings.message_copies = true;
-        session.save_settings(&settings).unwrap();
-        assert!(
-            !std::fs::read_to_string(&file)
-                .unwrap()
-                .contains("message_copies")
-        );
-        assert!(session.load_settings().unwrap().message_copies);
     }
 
     /// A session made now says its `start_agent` took `nested`, and one saved

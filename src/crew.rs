@@ -196,6 +196,12 @@ impl WorkerSetup {
         }
     }
 
+    /// Whether the run may start workers of its own: its setup adds the
+    /// start tools.
+    pub(crate) fn nests(&self) -> bool {
+        self.tools_added.iter().any(|tool| tool == START_AGENT)
+    }
+
     /// Whether Claude Code compacts the run's conversation at the handover
     /// size, instead of a handover (as `agents::compacts` says of a
     /// configuration).
@@ -307,8 +313,11 @@ fn apply_cache(
         None => default_1h,
     };
     if crate::providers::takes_cache_ttl(&config.llm_config.model) {
-        config.llm_config.generation_config.anthropic_cache_ttl =
-            one_hour.then_some(AnthropicCacheTtl::OneHour);
+        let generation = &mut config.llm_config.generation_config;
+        generation.anthropic_cache_ttl = one_hour.then_some(AnthropicCacheTtl::OneHour);
+        if chosen == Some("5m") {
+            crate::providers::ask_five_minutes(&config.llm_config.model, generation);
+        }
     }
     Ok(())
 }
@@ -592,7 +601,7 @@ impl SubagentHook for StartHook {
             .unwrap()
             .runs
             .get(&record.run_id)
-            .is_some_and(|setup| setup.tools_added.iter().any(|tool| tool == START_AGENT))
+            .is_some_and(WorkerSetup::nests)
     }
 }
 
@@ -632,7 +641,7 @@ fn start_parameters() -> Vec<ToolParameterDefinition> {
     vec![
         text(
             CACHE_PARAM,
-            "1h or 5m, how long the worker's prompt cache lasts after its last step. Only Claude workers on an API key or OpenRouter take it. ChatGPT keeps its own 30-minute cache, and Claude Code an hour.",
+            "1h or 5m, how long the worker's prompt cache lasts after its last step. Only Claude workers take it, on an API key, on OpenRouter or in Claude Code, which uses 1h on a Claude plan when you choose none. ChatGPT keeps its own 30-minute cache.",
         ),
         text(
             PROFILE_PARAM,
@@ -749,6 +758,9 @@ pub struct Crew {
     project: Arc<Mutex<Option<String>>>,
     workflow: Arc<Mutex<Weak<Workflow>>>,
     lead: Mutex<Option<Uuid>>,
+    /// How many failed model requests in a row stop a worker (see
+    /// `config`), if any do.
+    retry_cap: Mutex<Option<u32>>,
     wake: mpsc::UnboundedSender<()>,
     events: Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
@@ -763,6 +775,7 @@ impl Crew {
                 setup,
                 workflow: Arc::default(),
                 lead: Mutex::new(None),
+                retry_cap: Mutex::new(None),
                 wake,
                 events: Mutex::new(None),
             }),
@@ -809,10 +822,20 @@ impl Crew {
         } else {
             config.max_running(self.setup.max_running as usize)
         };
+        // The framework reads the cap when the workflow is built.
+        if let Some(cap) = *self.retry_cap.lock().unwrap() {
+            config = config.max_failed_requests(cap);
+        }
         // A worker's workspace may be outside the lead's only while outside
         // access is on, which can change while the session runs: the
         // `outside` hook refuses the others.
         config.workspaces_anywhere()
+    }
+
+    /// Stops a worker after `cap` failed model requests in a row, in the
+    /// workflow built from now on (none: no cap).
+    pub fn set_retry_cap(&self, cap: Option<u32>) {
+        *self.retry_cap.lock().unwrap() = cap;
     }
 
     /// The model new workers start on from now on.
@@ -962,11 +985,15 @@ impl Crew {
                     &run.task,
                     state,
                     run.report.as_deref(),
+                    run.error.as_deref(),
                     run.since.timestamp_millis(),
                     ran.get(&run.handle).copied().unwrap_or(0),
                 );
-                // What it started with and what it cost before.
-                feed.worker_info(&run.handle, self.worker_info(workflow, run, &runs, true));
+                // Who started it, what it started with and what it cost before.
+                if let Some(parent) = started_by(&runs, run.run_id) {
+                    feed.worker_under(&run.handle, &parent);
+                }
+                feed.worker_info(&run.handle, self.worker_info(workflow, run, true));
             }
         }
         if self.has_mail() {
@@ -1051,7 +1078,7 @@ impl Crew {
             .unwrap_or_default();
         let record = runs.iter().find(|record| record.run_id == run);
         if let (Some(workflow), Some(record)) = (&workflow, record) {
-            feed.worker_info(handle, self.worker_info(workflow, record, &runs, false));
+            feed.worker_info(handle, self.worker_info(workflow, record, false));
         }
         let task = record.map(|record| record.task.clone()).unwrap_or_default();
         let ended = matches!(
@@ -1067,21 +1094,16 @@ impl Crew {
     }
 
     /// What a worker's summary says of it: the setup it started with, its
-    /// place in the family, and (`with_costs`) what its saved runs cost, for
-    /// a session that resumes. The costs of a worker that starts add up from
-    /// its events.
-    ///
-    /// `runs` are all the session's workers, which the caller reads once, so
-    /// a long list isn't read again for each of its workers.
+    /// depth, and (`with_costs`) what its saved runs cost, for a session that
+    /// resumes. The costs of a worker that starts add up from its events. Who
+    /// started it is told with `Feed::worker_under`.
     fn worker_info(
         &self,
         workflow: &Workflow,
         run: &arko_workflows::subagents::SubagentRecord,
-        runs: &[arko_workflows::subagents::SubagentRecord],
         with_costs: bool,
     ) -> remote::WorkerInfo {
         let setup = self.run_model(run.run_id);
-        let parent = started_by(runs, run.run_id);
         let costs = with_costs.then(|| {
             let results = workflow.context().agent_results.read();
             results
@@ -1104,8 +1126,8 @@ impl Crew {
             .as_ref()
             .and_then(|setup| setup.effort)
             .map(|effort| effort.to_string());
+        info.nested = setup.as_ref().is_some_and(WorkerSetup::nests);
         info.profile = setup.and_then(|setup| setup.profile);
-        info.parent = parent;
         info.depth = run.depth;
         info.costs = costs;
         info
@@ -1158,6 +1180,21 @@ impl Crew {
             })
             .unwrap_or_default()
     }
+    /// The workers running, each with the ID of the worker that started it
+    /// (none for the main agent's).
+    pub fn running_with_parents(&self) -> Vec<(String, Option<String>)> {
+        let Some(workflow) = self.workflow() else {
+            return Vec::new();
+        };
+        // (The active ones first, so a worker that starts in between is in
+        // `runs` too.)
+        let active = workflow.active_subagents();
+        let runs = workflow.subagents();
+        active
+            .into_iter()
+            .map(|run| (run.handle, started_by(&runs, run.run_id)))
+            .collect()
+    }
     /// The user's message to worker `to` (`r1`), which goes as its lead's
     /// message does: a running worker reads it at its next step, and one
     /// that ended goes on with it. With `copy`, the worker that started it
@@ -1194,6 +1231,14 @@ impl Crew {
                 .pending_news(lead)
                 .iter()
                 .any(|item| item.kind.wakes())
+        })
+    }
+    /// Whether the news waiting for the lead holds mail that reached it
+    /// before but not whole, and goes out again.
+    pub fn has_resent_mail(&self) -> bool {
+        let lead = *self.lead.lock().unwrap();
+        lead.zip(self.workflow()).is_some_and(|(lead, workflow)| {
+            workflow.pending_news(lead).iter().any(|item| item.resent)
         })
     }
     pub fn describe(&self) -> String {
@@ -1472,6 +1517,20 @@ mod tests {
         );
         request.parameters.insert(CACHE_PARAM.into(), "2h".into());
         assert!(hook.prepare(&request, &mut config).is_err());
+        // Claude Code chooses its own cache unless one is asked for, so 5m is
+        // asked for outright.
+        config.llm_config.model = crate::agents::resolve_model("cc:opus").unwrap();
+        for (cache, expected) in [
+            ("5m", Some(AnthropicCacheTtl::FiveMinutes)),
+            ("1h", Some(AnthropicCacheTtl::OneHour)),
+        ] {
+            request.parameters.insert(CACHE_PARAM.into(), cache.into());
+            hook.prepare(&request, &mut config).unwrap();
+            assert_eq!(
+                config.llm_config.generation_config.anthropic_cache_ttl, expected,
+                "{cache}"
+            );
+        }
     }
 
     /// A run is offered the start tools only when its own setup adds them.

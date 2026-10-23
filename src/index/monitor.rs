@@ -160,6 +160,28 @@ pub fn open_changes(
     open_polling(root, layout, rules, docs)
 }
 
+/// Whether another process's watcher holds the index's state, found by trying
+/// the state's lock without opening a watcher or creating anything. A watcher
+/// of this process that holds it counts too, so ask for an index this process
+/// doesn't watch.
+pub fn watched_elsewhere(layout: &Layout) -> bool {
+    // The lock file arko_index's watchers hold in their state directory.
+    const LOCK: &str = ".arko-index-state";
+    let states = [
+        #[cfg(target_os = "linux")]
+        layout.watch2(),
+        layout.watch(),
+    ];
+    states.iter().any(|state| {
+        std::fs::File::open(state.join(LOCK)).is_ok_and(|file| {
+            matches!(
+                file.try_lock_shared(),
+                Err(std::fs::TryLockError::WouldBlock)
+            )
+        })
+    })
+}
+
 /// Every delta a freshly opened watcher has (what changed since its state was
 /// last acknowledged): the last sequence, if any.
 pub fn drain(changes: &mut dyn Changes) -> Result<Option<u64>, String> {

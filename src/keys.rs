@@ -330,6 +330,10 @@ impl Keys {
                     format!(
                         "Can't start a worker on {name}. It needs Claude Code signed in. The user signs in with `claude auth login`. {USABLE}"
                     )
+                } else if needs == "Claude Code updated" {
+                    format!(
+                        "Can't start a worker on {name}. It needs Claude Code updated, since this one has a security flaw. The user updates it with `claude update`. {USABLE}"
+                    )
                 } else {
                     format!(
                         "Can't start a worker on {name}. It needs {needs}. {USABLE}"

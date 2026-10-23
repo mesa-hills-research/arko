@@ -730,10 +730,15 @@ impl Harness {
             self.settings.worker_depth,
             std::sync::atomic::Ordering::Relaxed,
         );
+        self.gauges.worker_retry_cap.store(
+            self.settings.worker_retry_cap.unwrap_or(0),
+            std::sync::atomic::Ordering::Relaxed,
+        );
         self.gauges.message_copies.store(
             self.settings.message_copies,
             std::sync::atomic::Ordering::Relaxed,
         );
+        *lock(&self.gauges.builtin_skills) = self.settings.builtin_skills.clone();
         *lock(&self.gauges.project) = (
             self.settings.project_instructions,
             self.settings.worker_project_instructions,
@@ -882,7 +887,7 @@ mod tests {
         let cc = providers::resolve_model("cc:opus").unwrap();
         let on_cc = switched(&opus, &cc, Effort::Xhigh, None);
         assert!(on_cc.fast);
-        assert!(!on_cc.cache_1h, "Claude Code chooses its own");
+        assert!(on_cc.cache_1h, "Claude Code takes a cache lifetime too");
         assert_eq!(on_cc.handover_at, Some(950_000));
         // A size given (--handover-at) stays, up to 95% of what the new
         // model accepts.

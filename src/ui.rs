@@ -98,8 +98,9 @@ pub struct Attachment {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QuitAsk {
     pub jobs: Vec<arko_agents::terminal::BackgroundJob>,
-    /// The workers running, by their IDs.
-    pub workers: Vec<String>,
+    /// The workers running, each by its ID and the ID of the worker that
+    /// started it (none for a worker of the main agent).
+    pub workers: Vec<(String, Option<String>)>,
 }
 
 /// Prints a front end's lines where the front end shows them: the line
@@ -189,10 +190,10 @@ impl Output {
         }
         let text = glyphs::render(text);
         let mut printer = self.printer.lock().unwrap();
-        if let Some(printer) = printer.as_mut() {
-            if printer.print(format!("{text}\n")).is_ok() {
-                return;
-            }
+        if let Some(printer) = printer.as_mut()
+            && printer.print(format!("{text}\n")).is_ok()
+        {
+            return;
         }
         if self.progress_to_stderr {
             eprintln!("{text}");
@@ -1052,7 +1053,7 @@ impl EventPrinter {
                 self.output.bold("save worker profile"),
                 text("name").trim(),
                 match text("scope").trim() {
-                    "" | "session" => String::new(),
+                    "" => format!(" for {}", crate::profiles::Place::Project.reach()),
                     scope => match crate::profiles::Place::parse(scope) {
                         Some(place) => format!(" for {}", place.reach()),
                         None => format!(" for the {scope}"),

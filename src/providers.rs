@@ -220,14 +220,24 @@ pub fn is_claude_slug(slug: &str) -> bool {
     slug.trim_start_matches('~').starts_with("anthropic/")
 }
 
-/// Whether `model` takes Anthropic's prompt-cache lifetime (the 1-hour
-/// cache): Claude models on an API key or on OpenRouter. Claude Code
-/// chooses its own: an hour on a Claude plan.
+/// Whether `model` takes Anthropic's prompt-cache lifetime (5 minutes or
+/// 1 hour): Claude models on an API key, on OpenRouter or in Claude Code.
+/// Claude Code chooses its own when none is asked for: an hour on a Claude
+/// plan.
 pub fn takes_cache_ttl(model: &Model) -> bool {
     match model.provider {
-        Provider::Anthropic => true,
+        Provider::Anthropic | Provider::ClaudeCode => true,
         Provider::OpenRouter => is_claude_slug(&model.id),
         _ => false,
+    }
+}
+
+/// Asks for the 5-minute prompt cache outright where leaving it out gives a
+/// longer one: in Claude Code, which otherwise chooses its own. The other
+/// models have it when none is asked for.
+pub fn ask_five_minutes(model: &Model, generation: &mut GenerationConfig) {
+    if model.provider == Provider::ClaudeCode {
+        generation.anthropic_cache_ttl = Some(AnthropicCacheTtl::FiveMinutes);
     }
 }
 
@@ -598,6 +608,9 @@ pub fn missing_credential(name: &str, codex_auth: Option<&Path>) -> Option<Strin
         Provider::ClaudeCode => {
             return match claude_code::find_cli().map(|_| claude_code::check_recent()) {
                 Some(Ok(_)) => None,
+                Some(Err(claude_code::Problem::Outdated { .. })) => {
+                    Some("Claude Code updated".to_string())
+                }
                 Some(Err(_)) => Some("Claude Code signed in".to_string()),
                 None => Some("Claude Code installed".to_string()),
             };
@@ -722,6 +735,8 @@ pub fn parse_effort(text: &str) -> Result<Effort, String> {
 pub fn needs_text(model: &str, needs: &str) -> String {
     if needs == "Claude Code signed in" {
         format!("{model} needs Claude Code signed in. Sign in with `claude auth login`.")
+    } else if needs == "Claude Code updated" {
+        format!("{model} needs Claude Code updated. Update it with `claude update`.")
     } else if needs.starts_with("Claude Code") {
         format!("{model} needs {needs}.")
     } else {
@@ -795,7 +810,14 @@ pub fn model_menu(
         Some(OpenAiAuth::ApiKey) => "OpenAI, with your API key",
         _ => "OpenAI, on your ChatGPT plan",
     };
-    let groups: [(String, &str, &[(&str, &'static str)]); 5] = [
+    // A group's name, a model that tells whether it is usable, and its models
+    // with their aliases.
+    type Group = (
+        String,
+        &'static str,
+        &'static [(&'static str, &'static str)],
+    );
+    let groups: [Group; 5] = [
         (
             "Claude Code, on your Claude plan".to_string(),
             "cc:claude-opus-5-5",
@@ -1182,6 +1204,19 @@ fn apply_catalog(
     Ok(notes)
 }
 
+/// A usage window by its length, in whole days, else in whole hours, else in
+/// minutes (`7 d`, `5 h`, `90 min`). `unknown` names one that doesn't say.
+fn window_name(minutes: Option<u64>, unknown: &str) -> String {
+    match minutes {
+        Some(minutes) if minutes > 0 && minutes % (24 * 60) == 0 => {
+            format!("{} d", minutes / (24 * 60))
+        }
+        Some(minutes) if minutes > 0 && minutes % 60 == 0 => format!("{} h", minutes / 60),
+        Some(minutes) => format!("{minutes} min"),
+        None => unknown.to_string(),
+    }
+}
+
 /// A plan's usage windows, as the status line and `/cost` say them:
 /// `Claude plan 5 h 12%, 7 d 3%`. `None` when it reports no window.
 pub fn plan_usage_text(usage: &PlanUsage) -> Option<String> {
@@ -1189,12 +1224,7 @@ pub fn plan_usage_text(usage: &PlanUsage) -> Option<String> {
         .into_iter()
         .filter_map(|(window, name)| {
             let window = window.as_ref()?;
-            let name = match window.window_minutes {
-                Some(300) => "5 h".to_string(),
-                Some(10_080) => "7 d".to_string(),
-                Some(minutes) => format!("{minutes} min"),
-                None => name.to_string(),
-            };
+            let name = window_name(window.window_minutes, name);
             Some(format!("{name} {:.0}%", window.used_percent))
         })
         .collect::<Vec<_>>();
@@ -1230,14 +1260,8 @@ pub fn plan_windows(usage: &PlanUsage) -> Vec<crate::remote::PlanWindow> {
         .into_iter()
         .filter_map(|(window, name)| {
             let window = window.as_ref()?;
-            let label = match window.window_minutes {
-                Some(300) => "5 h".to_string(),
-                Some(10_080) => "7 d".to_string(),
-                Some(minutes) => format!("{minutes} min"),
-                None => name.to_string(),
-            };
             Some(crate::remote::PlanWindow {
-                label,
+                label: window_name(window.window_minutes, name),
                 used_percent: window.used_percent,
                 resets_at: window.resets_at.and_then(|at| i64::try_from(at).ok()),
             })
@@ -1686,12 +1710,18 @@ mod tests {
                 .anthropic_cache_ttl,
             Some(AnthropicCacheTtl::OneHour)
         );
+        // Claude Code passes the lifetime on, and chooses its own without one.
         assert_eq!(
             config("cc:opus", Effort::High, false, true)
                 .unwrap()
                 .anthropic_cache_ttl,
-            None,
-            "Claude Code chooses its cache"
+            Some(AnthropicCacheTtl::OneHour)
+        );
+        assert_eq!(
+            config("cc:opus", Effort::High, false, false)
+                .unwrap()
+                .anthropic_cache_ttl,
+            None
         );
         // OpenAI: its reasoning and Fast tier.
         let sol = config("sol", Effort::Max, true, true).unwrap();
@@ -1946,6 +1976,34 @@ mod tests {
             [("5 h", 12.4), ("7 d", 3.0)]
         );
         assert!(plan_windows(&PlanUsage::default()).is_empty());
+    }
+
+    #[test]
+    fn a_plan_window_is_named_by_its_length() {
+        for (minutes, name) in [
+            (300, "5 h"),
+            (10_080, "7 d"),
+            (43_200, "30 d"),
+            (90, "90 min"),
+        ] {
+            assert_eq!(window_name(Some(minutes), "?"), name, "{minutes}");
+        }
+        assert_eq!(window_name(None, "5 h"), "5 h");
+        // The status line and the status give a long window the same name.
+        let chatgpt = PlanUsage {
+            plan: Some(SubscriptionPlan::ChatGpt),
+            secondary: Some(arko_ai::PlanUsageWindow {
+                used_percent: 43.0,
+                window_minutes: Some(43_200),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert_eq!(
+            plan_usage_text(&chatgpt).as_deref(),
+            Some("ChatGPT plan 30 d 43%")
+        );
+        assert_eq!(plan_windows(&chatgpt)[0].label, "30 d");
     }
 
     /// What `client_with` needs when nothing is set, Claude Code is

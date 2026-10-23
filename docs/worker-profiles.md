@@ -44,13 +44,28 @@ chooses that for each worker with `isolated` in `start_agent`. A key Arko doesn'
 | Place | Folder | Who uses it |
 |---|---|---|
 | This session | `profiles` in the session's folder | This session |
-| This project | `.agents/profiles` in the working directory | Everyone who works on the project |
+| This project | `.agents/profiles` in the working directory | Every session in the working directory |
+| This repository | `.agents/profiles` in the root of the git repository | Every session in the repository |
 | Every project | `profiles` in Arko's folder | You, in every project |
 
-When a name is in more than one place, the nearest wins, so a session's profile beats the
-project's and the project's beats yours. Arko reads the files each time a worker starts, so an
-edit reaches the next worker without a restart. A worker keeps the setup it started with, also
-when its profile is edited or deleted later and when the session is resumed.
+When a name is in more than one place, the nearest wins, in the order above. Arko reads the files
+each time a worker starts, so an edit reaches the next worker without a restart. A worker keeps
+the setup it started with, also when its profile is edited or deleted later and when the session
+is resumed.
+
+The main agent saves a profile for the project unless it says `session` or `user`, so profiles
+stay with the workspace and a new session there finds them. A worker in a worktree of its own
+uses the profiles of the session's working directory, as a worktree has the committed files only.
+
+When Arko makes the project's `.agents/profiles` folder, it writes a `.gitignore` in it with a
+comment and `*`. Git then ignores the folder and that file, and your repository's own `.gitignore`
+stays as it is. Delete the file to share the profiles with your team. Arko writes it only when it
+makes the folder, so it doesn't come back.
+
+In a subfolder of a git repository, Arko also reads the repository root's `.agents/profiles`, after
+the working directory's own. The "Keep out of git" and "Repo root" rows under "Worker profiles" in
+`/settings` turn off the file above and this lookup. Both are on by default and kept for every
+project in `profiles.json` in Arko's folder.
 
 ## How a worker's setup is chosen
 
@@ -73,7 +88,9 @@ profile, then the session's worker model, which `/model worker` and `--worker-mo
 Two tools help it choose. `worker_options` lists the profiles and the models usable now, with
 each model's efforts, price, handover size and prompt cache, and the plan usage next to models on
 a plan. `save_worker_profile` saves a setup under a name. A profile for the session needs no
-approval. Before Arko saves one for the project or for every project, it puts you a question that
+approval, and neither does one for a project folder that git ignores (`git check-ignore` says),
+which is the folder Arko makes by default. Before Arko saves one in a folder git tracks, in a
+project outside a git repository, or for every project, it puts you a question that
 shows the whole profile, and only a plain yes saves it (a "please" or "thanks" after the yes is
 fine). Anything else you write goes back to the agent as your feedback, and the transcript says
 nothing was saved. The agent can't replace a profile you made.
@@ -93,6 +110,7 @@ in your Arko folder once you turn outside access on. So treat a project's profil
 | `/profiles remove NAME` | Deletes the profile `/profiles` shows under that name |
 | `/worker-models agent`, `profiles` or `session` | Who chooses the workers' models. See below |
 | `/worker-depth 1` to `4` | How many levels of workers the session allows |
+| `/worker-retry-cap off`, `on` or a number | How many failed model requests in a row stop a worker |
 | `/message-copies on` or `off` | Whether the agent that started a worker gets a copy of the messages you send the worker |
 
 `/worker-models` (also `--worker-models`) takes three values. It is the "Models for workers" row in
@@ -107,11 +125,20 @@ levels of workers the session allows, and it applies to the next worker started.
 main agent starts workers. With more, a worker can start workers of its own when the agent
 that starts it says so, down to that level.
 
+`/worker-retry-cap` (also `--worker-retry-cap [N]`) is saved with the session and is off by default. It
+is the "Worker retry cap" row in `/settings` and the setting of that name on the web page. With a
+number N, `on` or the flag without a number (which mean 10), a worker fails after N failed model
+requests in a row, and the workers it started stop with it. A model response starts the count
+again. The main agent has no cap. The cap is set when the session's workflow is built, so a change
+before the conversation starts applies at once, and a change after it applies when you resume the
+session.
+
 `/message-copies` (also `--message-copies` and `--no-message-copies`) is saved with the session and
-is on by default. It is the "Message copies" row in `/settings` and the setting of that name on the
-web page. The agent that started a worker gets a copy of each message you send the worker, with its
-next news and without a turn of its own. With it off, that agent doesn't see your messages. A change
-applies from the next message, and a session saved before the setting existed has it on.
+is off by default. It is the "Message copies" row in `/settings` and the setting of that name on the
+web page. With it on, the agent that started a worker gets a copy of each message you send the
+worker, with its next news and without a turn of its own. With it off, that agent doesn't see your
+messages. A change applies from the next message, and a session saved before the setting existed has
+it on.
 
 ## Workers that start workers
 
@@ -141,7 +168,7 @@ say "r2 (under r1) reported". `/workers` and the web page's cards give what a wo
 workers, and `/cost` counts each worker once.
 
 The user's message to a worker is copied to the worker that started it, as news that doesn't start
-a turn, unless message copies are off. A worker reaches the one that started it with `message_agent`
+a turn, when message copies are on. A worker reaches the one that started it with `message_agent`
 to `lead`, and `link_agents` lets a worker's own workers message each other. A worker can't message
 another worker's workers. `/stop-workers r1` stops r1 and the workers under it, and only the worker
 that started a worker can restart it with a message.
@@ -173,14 +200,18 @@ profiles::save(&roots, Place::User, &profile, Author::User)?;
 profiles::delete(&roots, Place::User, "3d-judge")?;
 ```
 
-`Profile::check` tells whether a profile can be saved, with a model Arko knows and an effort it
-takes. `profiles::folders` gives the folders for an "open the folder" button, and
-`profiles::approval_text` and `profiles::is_approval` are the question the agent's save puts to
-the user and the rule for its answer. `arko::workers` has the names, commands and sentences of the
-two settings, and `ModelChoice::label` and `about` the words for each value, so an app labels and
-sets them as the terminal and the web page do.
+`profiles::Preferences` loads and saves the profile settings, and `profiles::needs_approval` tells
+whether the agent's save asks you first. `Profile::check` tells whether a profile can be saved,
+with a model Arko knows and an effort it takes. `profiles::folders` gives the folders for an "open
+the folder" button, and `profiles::approval_text` and `profiles::is_approval` are the question the
+agent's save puts to the user and the rule for its answer. `arko::workers` has the names,
+commands and sentences of the two settings, and `ModelChoice::label` and `about` the words for each
+value, so an app labels and sets them as the terminal and the web page do.
 
 A worker's summary (`WorkerSummary`) names the worker that started it in `parent`, its `depth`
-(1 for the main agent's workers), and what it and the workers under it cost in
-`family_cost_billed` and `family_cost_list`. `arko::remote::family_order` puts a list of summaries
-in the order a list shows a family, with each worker's workers after it.
+(1 for the main agent's workers), whether it may start workers of its own in `nested`, and what it
+and the workers under it cost in `family_cost_billed` and `family_cost_list`. A worker that failed
+has the whole reason in `error`, and the feed sends `Update::WorkerEnded` when a worker finishes,
+fails or stops. `arko::remote::family_order` puts a list of summaries in the order a list shows a
+family, with each worker's workers after it. `family_order_with_levels` also gives each worker's
+level, counted from the roots in the list.
