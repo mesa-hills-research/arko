@@ -682,7 +682,7 @@ async fn message_copies_are_on_by_default_and_the_command_sets_them() {
     assert!(harness.live_command("/message-copies off", Source::Terminal));
     assert_eq!(
         last_said(&harness.feed),
-        "Message copies are now off. The agent that started a worker doesn't see the messages you send the worker."
+        "Message copies are now off. The agent that started a worker doesn’t see the messages you send the worker."
     );
     assert!(!harness.settings.message_copies);
     assert!(!harness.session.load_settings().unwrap().message_copies);

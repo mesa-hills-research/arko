@@ -56,7 +56,7 @@ pub fn copies_about(on: bool) -> &'static str {
     if on {
         "The agent that started a worker gets a copy of each message you send the worker, with its next news."
     } else {
-        "The agent that started a worker doesn't see the messages you send the worker."
+        "The agent that started a worker doesn’t see the messages you send the worker."
     }
 }
 
@@ -144,6 +144,7 @@ mod tests {
         assert_eq!(copies_command(true), "/message-copies on");
         assert_eq!(copies_command(false), "/message-copies off");
         assert_ne!(copies_about(true), copies_about(false));
+        assert!(copies_about(false).contains("doesn’t"));
         // Choosing the session's model says that no worker starts workers.
         assert_eq!(
             ModelChoice::Session.about(),

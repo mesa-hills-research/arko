@@ -52,6 +52,7 @@ pub const SYMBOLS_TABLE: &[(char, &str, &str)] = &[
     ('≈', "≈", "~"),
     ('“', "\"", "\""),
     ('”', "\"", "\""),
+    ('’', "'", "'"),
     // The full-screen view's.
     ('▎', "│", "|"),
     ('▸', "›", ">"),
@@ -253,6 +254,8 @@ pub(crate) mod tests {
             ("ui.rs", include_str!("ui.rs")),
             ("main.rs", include_str!("main.rs")),
             ("crew.rs", include_str!("crew.rs")),
+            ("workers.rs", include_str!("workers.rs")),
+            ("worker_commands.rs", include_str!("worker_commands.rs")),
             ("providers.rs", include_str!("providers.rs")),
             ("tui/app.rs", include_str!("tui/app.rs")),
             ("tui/transcript.rs", include_str!("tui/transcript.rs")),

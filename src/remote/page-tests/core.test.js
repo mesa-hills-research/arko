@@ -490,7 +490,7 @@ test('the workers settings read as words', () => {
   assert.match(core.workerDepthAbout(), /^How many levels of workers there can be, from 1 to 4\. With 1 only the main agent starts workers\./);
   assert.doesNotMatch(core.workerDepthAbout(), /takes effect/);
   assert.match(core.messageCopiesAbout(true), /^The agent that started a worker gets a copy of each message you send the worker/);
-  assert.match(core.messageCopiesAbout(false), /^The agent that started a worker doesn't see the messages you send the worker\.$/);
+  assert.match(core.messageCopiesAbout(false), /^The agent that started a worker doesn’t see the messages you send the worker\.$/);
 });
 
 // ----- the prompt cache's timer: the words the terminal and Arko Studio use -----
