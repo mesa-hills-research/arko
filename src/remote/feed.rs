@@ -1718,6 +1718,8 @@ impl Feed {
             }
             // The conversation's own requests (not Claude Code's subagents').
             AgentEvent::ModelRequestStarted { subagent: None, .. } => {
+                // A failure's warning and its error come before the next request.
+                state.warned.remove(&agent);
                 let open = state.open_text.get(&agent).copied().and_then(|(_, id)| {
                     let (lane, _) = state.lane(&agent);
                     lane.find(id).map(|item| (id, item.text.len()))
@@ -2422,6 +2424,7 @@ impl Feed {
     pub fn turn_started(&self) {
         {
             let mut state = self.lock();
+            state.warned.remove(MAIN_AGENT);
             if state.turn_opened {
                 state.turn_opened = false;
             } else {
@@ -2543,6 +2546,7 @@ impl Feed {
                     .clone()
                     .map(|report| Item::new(Kind::Reply, report));
             }
+            // The state's only reason text, so it keeps the warning's text.
             WorkerChange::Failed { error } => {
                 summary.stop_counting(now);
                 summary.state = WorkerState::Failed;
@@ -4261,6 +4265,55 @@ mod tests {
                 ("notice", "warn", limit),
                 ("notice", "warn", "usage limit reached"),
                 ("notice", "error", "the model is overloaded"),
+            ]
+        );
+    }
+
+    /// A warning is remembered only until the agent's next request or the
+    /// next turn, so an error with the same text later is shown. A worker's
+    /// warning is an item of its own.
+    #[test]
+    fn an_errors_text_is_shown_again_after_the_next_request_or_turn() {
+        let note = "API Error: Connection lost mid-response. The response above may be incomplete.";
+        let warning = || AgentEvent::ServiceWarning { text: note.into() };
+        let failed = || AgentEvent::ErrorEncountered {
+            error_message: note.into(),
+            requires_approval_to_retry: true,
+            tool_call_id: None,
+            error_kind: None,
+        };
+        let started = || AgentEvent::ModelRequestStarted {
+            model: "claude-opus-5-5".into(),
+            subagent: None,
+            sizes: None,
+            bytes_per_token: 3.0,
+        };
+        let feed = Feed::new("main");
+        feed.turn_started();
+        feed.event(&event("main", warning()), None);
+        feed.event(&event("main", failed()), None);
+        // The next request, then an error with the same text.
+        feed.event(&event("main", started()), None);
+        feed.event(&event("main", failed()), None);
+        // The next turn, likewise.
+        feed.event(&event("main", warning()), None);
+        feed.turn_started();
+        feed.event(&event("main", failed()), None);
+        // A worker's warning and error are its own.
+        feed.event(&event("w", warning()), Some("r1"));
+        feed.event(&event("w", failed()), Some("r1"));
+        let shown: Vec<(String, Option<Level>)> = items(&feed)
+            .into_iter()
+            .map(|item| (item.agent, item.level))
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                ("main".to_string(), Some(Level::Warn)),
+                ("main".to_string(), Some(Level::Error)),
+                ("main".to_string(), Some(Level::Warn)),
+                ("main".to_string(), Some(Level::Error)),
+                ("r1".to_string(), Some(Level::Warn)),
             ]
         );
     }

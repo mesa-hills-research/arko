@@ -692,6 +692,13 @@ impl EventPrinter {
     fn event(&mut self, event: WorkflowEvent) {
         let main = event.agent_name == MAIN;
         let at = event.timestamp.timestamp_millis();
+        // A failure's warning and its error come before the next request.
+        if matches!(
+            event.event,
+            AgentEvent::ModelRequestStarted { subagent: None, .. }
+        ) {
+            self.warned.remove(&event.agent_run_id);
+        }
         match event.event {
             AgentEvent::AssistantResponseChunk(text) if main => {
                 self.flush_thinking();
@@ -1443,7 +1450,7 @@ pub fn sentence(text: &str) -> String {
 /// maybe with a prefix. It is empty when nothing else is left.
 pub fn without_warning(message: &str, warning: &str) -> String {
     let warning = warning.trim();
-    if warning.is_empty() {
+    if warning.is_empty() || !message.contains(warning) {
         return message.to_string();
     }
     let rest = message.replace(warning, "");
@@ -2308,6 +2315,32 @@ mod tests {
             lines[2].contains("  ! Claude Code could not authenticate\x1b"),
             "{lines:?}"
         );
+        // After the next request, an error with the same text is shown.
+        printer.event(event(AgentEvent::ModelRequestStarted {
+            model: "claude-opus-5-5".into(),
+            subagent: None,
+            sizes: None,
+            bytes_per_token: 3.0,
+        }));
+        printer.event(event(failed(note.into())));
+        // A worker's warning names the worker.
+        let worker = |event: AgentEvent| WorkflowEvent {
+            timestamp: chrono::Utc::now(),
+            workflow_run_id: Uuid::nil(),
+            agent_name: "worker".into(),
+            agent_run_id: Uuid::from_u128(1),
+            event,
+        };
+        printer.event(worker(AgentEvent::ServiceWarning { text: note.into() }));
+        printer.event(worker(failed(note.into())));
+        let lines = printed.0.lock().unwrap().clone();
+        assert_eq!(lines.len(), 5, "{lines:?}");
+        assert_eq!(Output::level_of(&lines[3]), Some(remote::Level::Error));
+        assert!(lines[3].contains(note), "{lines:?}");
+        assert_eq!(Output::level_of(&lines[4]), Some(remote::Level::Warn));
+        assert!(lines[4].contains("  ! worker 1: API Error"), "{lines:?}");
+        // A message without the warning's text stays as it is.
+        assert_eq!(without_warning("build failed:", note), "build failed:");
     }
 
     /// With text replies, the main agent's text is held: printed as
