@@ -53,6 +53,7 @@ mod inputs;
 mod jobs;
 mod keys;
 pub mod logging;
+mod logins;
 mod mcp;
 mod message;
 #[cfg(any(test, feature = "testing"))]
@@ -108,9 +109,10 @@ pub mod accounts {
         outdated_text, status as claude_code,
     };
     pub use crate::credentials::{
-        ChatGptLogin, KEYS, Key, KeySource, KeyState, LoginSource, LoginState, chatgpt_login,
-        chatgpt_login_in, clear_chatgpt_login, key_states, key_states_in, set_chatgpt_login,
-        use_env,
+        ChatGptLogin, KEYS, Key, KeySource, KeyState, LoginSource, LoginState, add_chatgpt_login,
+        chatgpt_login, chatgpt_login_in, chatgpt_logins_in, clear_chatgpt_login,
+        first_chatgpt_login, key_states, key_states_in, login_changes, remove_chatgpt_login,
+        set_chatgpt_login, use_env,
     };
     pub use crate::keys::{Outcome, Secret, add, remove};
 }

@@ -774,6 +774,7 @@ impl Engine {
         );
         // A key added in another session open on Arko's folder is used here too.
         keys.share(root.clone());
+        keys.use_codex_auth(options.codex_auth.clone());
         let mcp_tools = mcp.tool_names();
         let mcp_started = mcp.started();
         let known_indexes = indexes
@@ -828,6 +829,7 @@ impl Engine {
         let output = Arc::new(Output::new(None, one_shot));
         let stats = Arc::new(Mutex::new(Stats {
             cache_memory: Some(Arc::new(crate::cache_memory::Memory::open(&session.dir))),
+            chatgpt: client.chatgpt_accounts().cloned(),
             ..Stats::default()
         }));
         let (remote_actions, remote_input) = mpsc::unbounded_channel();

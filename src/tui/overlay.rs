@@ -92,6 +92,8 @@ pub enum SettingsRow {
     /// Whether profiles are also read from the git repo's root.
     RepoRootProfiles,
     Keys,
+    /// The ChatGPT logins, which `/chatgpt` changes.
+    Logins,
 }
 
 /// The handover sizes ← and → step through, in tokens.
@@ -842,6 +844,25 @@ fn settings(frame: &mut Frame, app: &App, area: Rect, selected: usize) {
                     ],
                     "The model providers' keys, and Voyage's for the search indexes. Enter opens them."
                         .to_string(),
+                )
+            }
+            SettingsRow::Logins => {
+                let logins = (app.login_paths)();
+                let list = logins
+                    .iter()
+                    .enumerate()
+                    .map(|(n, path)| format!("{} {}", n + 1, path.display()))
+                    .collect::<Vec<_>>()
+                    .join(" · ");
+                let about = match logins.is_empty() {
+                    true => "None. /chatgpt add PATH adds one.".to_string(),
+                    false => format!("{list}. /chatgpt adds, removes and orders them."),
+                };
+                (
+                    "Providers",
+                    "ChatGPT logins",
+                    vec![Span::styled(format!(" {} ", logins.len()), theme.text())],
+                    about,
                 )
             }
         };

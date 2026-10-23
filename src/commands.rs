@@ -105,7 +105,7 @@ pub const COMMANDS: &[Command] = &[
     Command::screen(
         "/settings",
         "",
-        "the view, theme, mouse, outside access, handover size, background jobs, monitor wakes, models for workers, worker depth, worker retry cap, message copies, worker profile folders, text replies, extra rules, Claude Code compaction, project instructions, built-in skills, web page and API keys",
+        "the view, theme, mouse, outside access, handover size, background jobs, monitor wakes, models for workers, worker depth, worker retry cap, message copies, worker profile folders, text replies, extra rules, Claude Code compaction, project instructions, built-in skills, web page, API keys and ChatGPT logins",
     ),
     Command {
         name: "/model",
@@ -118,6 +118,13 @@ pub const COMMANDS: &[Command] = &[
         name: "/keys",
         args: "[add|remove PROVIDER]",
         about: "add, replace or remove an API key for Anthropic, OpenAI, Gemini, OpenRouter or Voyage, used at once",
+        aliases: &[],
+        runs: Runs::Session,
+    },
+    Command {
+        name: "/chatgpt",
+        args: "[add PATH|remove N|first N]",
+        about: "the ChatGPT logins, in the order they are used. The next one takes over when one reaches its usage limit",
         aliases: &[],
         runs: Runs::Session,
     },
@@ -303,6 +310,7 @@ const CHOICES: &[(&str, &[&str], &[&str])] = &[
     ("/remote", &[], &["qr", "off", "new-key"]),
     ("/handover-at", &[], &["main", "workers"]),
     ("/keys", &[], &["add", "remove"]),
+    ("/chatgpt", &[], &["add", "remove", "first"]),
 ];
 
 /// The words that may follow `before` in the arguments of the command
