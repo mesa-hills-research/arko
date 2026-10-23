@@ -1334,6 +1334,16 @@ impl Feed {
             .collect()
     }
 
+    /// How many calls each worker has made, by its ID, to keep with the
+    /// session beside [`worker_run_times`](Self::worker_run_times).
+    pub(crate) fn worker_tool_calls(&self) -> Vec<(String, u32)> {
+        self.lock()
+            .workers
+            .iter()
+            .map(|worker| (worker.summary.id.clone(), worker.summary.tool_calls))
+            .collect()
+    }
+
     /// The workers, in the order they started.
     #[cfg(test)]
     pub fn workers(&self) -> Vec<WorkerSummary> {
@@ -2607,9 +2617,10 @@ impl Feed {
 
     /// A worker of the session from before Arko started (a resumed
     /// session). Its summary goes in without a place in the transcript,
-    /// with how long it ran before (`ran_ms`). A run it goes on with counts
-    /// from when it starts again. `error` is the saved reason it ended, which
-    /// a worker that failed keeps as its `error`.
+    /// with how long it ran before (`ran_ms`) and the calls it made
+    /// (`tool_calls`). A run it goes on with adds to both. `error` is the
+    /// saved reason it ended, which a worker that failed keeps as its
+    /// `error`.
     #[allow(clippy::too_many_arguments)]
     pub fn worker_restored(
         &self,
@@ -2620,6 +2631,7 @@ impl Feed {
         error: Option<&str>,
         since: i64,
         ran_ms: u64,
+        tool_calls: u32,
     ) {
         let mut state = self.lock();
         if state.worker(id).is_some() {
@@ -2638,6 +2650,7 @@ impl Feed {
                 .filter(|_| was == WorkerState::Failed)
                 .map(str::to_string),
             ran_ms,
+            tool_calls,
             ..WorkerSummary::new(id)
         };
         state.workers.push(Worker {
@@ -4594,9 +4607,23 @@ mod tests {
         );
         assert_eq!(feed.worker_run_times(), [("r1".to_string(), total)]);
         let resumed = Feed::new("main");
-        resumed.worker_restored("r1", "Count", WorkerState::Stopped, None, None, 0, total);
+        resumed.worker_restored("r1", "Count", WorkerState::Stopped, None, None, 0, total, 0);
         assert_eq!(resumed.workers()[0].ran_ms, total);
         assert_eq!(resumed.workers()[0].run_time_ms(now_ms()), total);
+    }
+
+    /// A worker restored with a session has the calls it made before, and
+    /// its next run adds to them and to its time.
+    #[test]
+    fn a_restored_worker_goes_on_from_its_calls_and_time() {
+        let feed = Feed::new("main");
+        feed.worker_restored("r1", "Count", WorkerState::Stopped, None, None, 0, 5_000, 7);
+        assert_eq!(feed.worker_tool_calls(), [("r1".to_string(), 7)]);
+        feed.worker("r1", "Count", WorkerChange::Started);
+        feed.event(&event("worker", shell(Uuid::new_v4(), "ls")), Some("r1"));
+        let worker = &feed.workers()[0];
+        assert_eq!((worker.ran_ms, worker.tool_calls), (5_000, 8));
+        assert!(worker.run_time_ms(now_ms()) >= 5_000);
     }
 
     /// The workers of a resumed session are listed, without a place in the
@@ -4612,8 +4639,9 @@ mod tests {
             None,
             5,
             0,
+            0,
         );
-        feed.worker_restored("r1", "Again", WorkerState::Running, None, None, 6, 0);
+        feed.worker_restored("r1", "Again", WorkerState::Running, None, None, 6, 0, 0);
         assert_eq!(feed.workers().len(), 1);
         assert_eq!(feed.workers()[0].ended_at, Some(5));
         assert!(items(&feed).is_empty());
@@ -4632,8 +4660,8 @@ mod tests {
     fn a_restored_worker_that_failed_keeps_its_saved_error() {
         let feed = Feed::new("main");
         let why = Some("the model refused");
-        feed.worker_restored("r1", "Review", WorkerState::Failed, None, why, 5, 0);
-        feed.worker_restored("r2", "Count", WorkerState::Stopped, None, why, 5, 0);
+        feed.worker_restored("r1", "Review", WorkerState::Failed, None, why, 5, 0, 0);
+        feed.worker_restored("r2", "Count", WorkerState::Stopped, None, why, 5, 0, 0);
         let errors: Vec<Option<String>> = feed.workers().into_iter().map(|w| w.error).collect();
         assert_eq!(errors, [Some("the model refused".to_string()), None]);
     }
