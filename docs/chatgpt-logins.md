@@ -44,7 +44,13 @@ ChatGPT plan 5 h 12%, 7 d 82%, unlimited credits
 ```
 
 It says "has credits" when the backend gives no amount, and nothing about credits when there are
-none. Claude Code's usage reports hold no credits, so the Claude plan shows none.
+none. The Claude plan has no credits. It shows its extra usage instead when that is on, with the
+amounts when Claude Code gives them.
+
+```text
+Claude plan 5 h 12%, 7 d 71%, extra usage $271.40 of $500.00
+Claude plan 5 h 12%, 7 d 71%, extra usage on
+```
 
 ## When a file changes
 
@@ -60,3 +66,6 @@ before.
 `first_chatgpt_login` for the list of an Arko folder, `set_chatgpt_login` for a list of one, and
 `clear_chatgpt_login` for Codex's own. `login_changes` tells when a folder's list changes, and the
 sessions open on the folder in the same process use the change at once.
+
+`remote::PlanStatus` holds each plan's usage as `windows`, `credits`, `set_aside` and `extra_usage`
+beside the `text` line.

@@ -1813,9 +1813,8 @@ mod tests {
         }
     }
 
-    /// The built-in skills rows say that a change waits for the next time the
-    /// session opens once the conversation has started, and say nothing of
-    /// it before.
+    /// The built-in skills rows say what a change reaches once the
+    /// conversation has started, and say nothing of it before.
     #[test]
     fn the_built_in_skills_rows_say_when_a_change_takes_effect() {
         use crate::builtin_skills::{AFTER_START, SETTING_ABOUT, SETTING_NAME};
@@ -1854,7 +1853,7 @@ mod tests {
                     .collect::<Vec<_>>()
                     .join(" ");
                 assert!(text.contains(about), "{text}");
-                assert_eq!(text.contains("takes effect"), started, "{text}");
+                assert_eq!(text.contains("keeps its skills"), started, "{text}");
                 if started {
                     assert!(text.contains(AFTER_START), "{text}");
                 }

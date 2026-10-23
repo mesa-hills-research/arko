@@ -498,7 +498,7 @@ test('the workers settings read as words', () => {
 
 test('the built-in skills setting says what a change reaches once the conversation has started', () => {
   assert.equal(core.builtinSkillsAbout(false), 'Off leaves out all of them, whatever the rows below say.');
-  assert.match(core.builtinSkillsAbout(true), /^Off leaves out all of them, whatever the rows below say\. The agents in this session keep their skills\./);
+  assert.match(core.builtinSkillsAbout(true), /^Off leaves out all of them, whatever the rows below say\. The conversation going on keeps its skills\./);
 });
 
 // ----- the prompt cache's timer: the words the terminal and Arko Studio use -----

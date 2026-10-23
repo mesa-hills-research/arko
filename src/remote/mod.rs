@@ -277,7 +277,15 @@ pub struct PlanStatus {
     /// The plan, as `/cost` names it ("ChatGPT plan").
     pub plan: String,
     pub windows: Vec<PlanWindow>,
-    /// The windows in a line ("ChatGPT plan 5 h 12%, 7 d 40%").
+    /// A ChatGPT account's credits, when it has some left or unlimited.
+    pub credits: Option<arko_ai::PlanCredits>,
+    /// How many of the ChatGPT logins are set aside.
+    pub set_aside: usize,
+    /// A Claude account's extra usage, when it is on. The line shows its
+    /// amounts, when it has them.
+    pub extra_usage: Option<arko_ai::ExtraUsage>,
+    /// The plan's usage in a line ("ChatGPT plan 5 h 12%, 7 d 40%, credits
+    /// left 12.50", "Claude plan 5 h 12%, extra usage $271.40 of $500.00").
     pub text: String,
 }
 
@@ -398,15 +406,15 @@ pub struct LiveSettings {
     /// How many levels of workers the session allows (`/worker-depth`).
     pub worker_depth: u32,
     /// A worker fails after this many failed model requests in a row
-    /// (`/worker-retry-cap`), if any. It applies when the session is resumed
-    /// once the conversation has started.
+    /// (`/worker-retry-cap`), if any. A change applies at once, also to the
+    /// workers running.
     pub worker_retry_cap: Option<u32>,
     /// The agent that started a worker gets a copy of the user's messages to
     /// it (`/message-copies`). It applies from the next message.
     pub message_copies: bool,
-    /// The agents get the built-in skills at all (`/builtin-skills`). It
-    /// changes the agents only before the conversation starts
-    /// (`Models::started`), and after it a resumed session gets the change.
+    /// The agents get the built-in skills at all (`/builtin-skills`). Once
+    /// the conversation has started (`Models::started`), it keeps its skills,
+    /// and new workers and new conversations get the change.
     pub builtin_skills: bool,
     /// Each built-in skill, and whether it is left out by name (apart from
     /// `builtin_skills`).
