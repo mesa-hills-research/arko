@@ -117,7 +117,7 @@ pub struct Options {
     /// The Codex auth file of the ChatGPT login.
     pub codex_auth: Option<PathBuf>,
     pub openai_auth: Option<OpenAiAuth>,
-    /// The shell on Windows, by default `ARKO_SHELL`, else cmd.exe.
+    /// The shell on Windows, by default `ARKO_SHELL`, else PowerShell.
     pub shell: Option<WindowsShell>,
     /// MCP config files besides the project's and Arko's.
     pub mcp_config: Vec<PathBuf>,

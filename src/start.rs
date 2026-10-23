@@ -329,13 +329,13 @@ pub(crate) fn new_settings(
 }
 
 /// The shell a new session runs commands in on Windows: --shell, else
-/// ARKO_SHELL, else cmd.exe.
+/// ARKO_SHELL, else PowerShell.
 pub(crate) fn windows_shell(options: &Options) -> Result<WindowsShell, String> {
     if let Some(shell) = options.shell {
         return Ok(shell);
     }
     match credentials::var(credentials::SHELL) {
-        None => Ok(WindowsShell::Cmd),
+        None => Ok(WindowsShell::Powershell),
         Some(value) => value
             .trim()
             .parse::<WindowsShell>()

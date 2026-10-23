@@ -289,7 +289,7 @@ pub(crate) struct Args {
 
     /// The shell commands run in on Windows, cmd (cmd.exe) or powershell
     /// (PowerShell 7 where installed, else Windows PowerShell). By default
-    /// ARKO_SHELL, else cmd. Elsewhere commands run in bash (else sh).
+    /// ARKO_SHELL, else powershell. Elsewhere commands run in bash (else sh).
     #[arg(long, value_enum)]
     pub(crate) shell: Option<WindowsShell>,
 

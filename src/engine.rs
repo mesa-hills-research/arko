@@ -2291,10 +2291,12 @@ mod tests {
             })
         }))
         .await;
-        let start = |name: &str, shell: &str| {
+        let start = |name: &str, shell: Option<&str>| {
             let workspace = temp.path().join(name);
             std::fs::create_dir_all(&workspace).unwrap();
-            std::fs::write(workspace.join(".env"), format!("ARKO_SHELL={shell}\n")).unwrap();
+            if let Some(shell) = shell {
+                std::fs::write(workspace.join(".env"), format!("ARKO_SHELL={shell}\n")).unwrap();
+            }
             spawn(
                 Options {
                     root: Some(root.clone()),
@@ -2310,7 +2312,8 @@ mod tests {
             )
         };
         let wait = Duration::from_secs(30);
-        let (first, second) = (start("first", "powershell"), start("second", "cmd"));
+        // (The first sets no shell, so it gets the default.)
+        let (first, second) = (start("first", None), start("second", Some("cmd")));
         let first_seam = tokio::time::timeout(wait, first.opened)
             .await
             .unwrap()
