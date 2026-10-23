@@ -514,10 +514,33 @@ pub fn family_order(workers: &[WorkerSummary]) -> Vec<usize> {
     )
 }
 
+/// [`family_order`] with each worker's level among `workers`. A worker whose
+/// parent isn't in `workers` is a root at level 1, the workers it started
+/// are at level 2, and so on (unlike [`WorkerSummary::depth`], which counts
+/// from the main agent).
+pub fn family_order_with_levels(workers: &[WorkerSummary]) -> Vec<(usize, u32)> {
+    family_levels_of(
+        workers
+            .iter()
+            .map(|worker| (worker.id.as_str(), worker.parent.as_deref())),
+    )
+}
+
 /// [`family_order`] for workers given as their ID and their parent's.
 pub(crate) fn family_order_of<'a>(
     links: impl IntoIterator<Item = (&'a str, Option<&'a str>)>,
 ) -> Vec<usize> {
+    family_levels_of(links)
+        .into_iter()
+        .map(|(at, _)| at)
+        .collect()
+}
+
+/// [`family_order_with_levels`] for workers given as their ID and their
+/// parent's.
+fn family_levels_of<'a>(
+    links: impl IntoIterator<Item = (&'a str, Option<&'a str>)>,
+) -> Vec<(usize, u32)> {
     let links: Vec<(&str, Option<&str>)> = links.into_iter().collect();
     let index: HashMap<&str, usize> = links
         .iter()
@@ -535,22 +558,22 @@ pub(crate) fn family_order_of<'a>(
         }
     }
     let mut order = Vec::with_capacity(links.len());
-    let mut pending: Vec<usize> = Vec::new();
+    let mut pending: Vec<(usize, u32)> = Vec::new();
     for root in roots {
-        pending.push(root);
-        while let Some(at) = pending.pop() {
-            order.push(at);
+        pending.push((root, 1));
+        while let Some((at, level)) = pending.pop() {
+            order.push((at, level));
             // (The earliest of its workers comes out first.)
-            pending.extend(under[at].iter().rev());
+            pending.extend(under[at].iter().rev().map(|at| (*at, level + 1)));
         }
     }
     // (A loop of parents, which no session makes, would leave some out.)
     if order.len() < links.len() {
         let mut placed = vec![false; links.len()];
-        for at in &order {
+        for (at, _) in &order {
             placed[*at] = true;
         }
-        order.extend((0..links.len()).filter(|at| !placed[*at]));
+        order.extend((0..links.len()).filter(|at| !placed[*at]).map(|at| (at, 1)));
     }
     order
 }
@@ -3437,8 +3460,12 @@ mod tests {
             worker("r4", Some("r3")),
             worker("r5", Some("r1")),
             worker("r6", Some("r2")),
-            // Its parent is not among them.
-            worker("r7", Some("r9")),
+            // Its parent is not among them, and it is 3 levels from the main
+            // agent.
+            WorkerSummary {
+                depth: 3,
+                ..worker("r7", Some("r9"))
+            },
         ];
         let ids: Vec<&str> = family_order(&workers)
             .into_iter()
@@ -3449,6 +3476,25 @@ mod tests {
         // A loop of parents leaves none out.
         let loops = [worker("r1", Some("r2")), worker("r2", Some("r1"))];
         assert_eq!(family_order(&loops).len(), 2);
+        // The levels count from the roots listed, so r7, whose starter isn't
+        // listed, is at level 1 whatever its depth says.
+        let levels: Vec<(&str, u32)> = family_order_with_levels(&workers)
+            .into_iter()
+            .map(|(at, level)| (workers[at].id.as_str(), level))
+            .collect();
+        assert_eq!(
+            levels,
+            [
+                ("r1", 1),
+                ("r3", 2),
+                ("r4", 3),
+                ("r5", 2),
+                ("r2", 1),
+                ("r6", 2),
+                ("r7", 1)
+            ]
+        );
+        assert_eq!(family_order_with_levels(&loops), [(0, 1), (1, 1)]);
     }
 
     /// A worker's summary carries what it and its workers cost, and it goes
