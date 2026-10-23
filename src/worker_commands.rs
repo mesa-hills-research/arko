@@ -188,7 +188,7 @@ impl Harness {
             return Ok(format!(
                 "{} is {now}. {} /worker-depth 1 to {} changes it.",
                 workers::DEPTH_NAME,
-                workers::depth_effect(now),
+                workers::depth_effect(now, self.settings.worker_models),
                 workers::MAX_DEPTH
             ));
         }
@@ -197,7 +197,7 @@ impl Harness {
             return Ok(format!(
                 "{} is {depth} already. {}",
                 workers::DEPTH_NAME,
-                workers::depth_effect(depth)
+                workers::depth_effect(depth, self.settings.worker_models)
             ));
         }
         let mut settings = self.settings.clone();
@@ -224,7 +224,7 @@ impl Harness {
         Ok(format!(
             "{} is now {depth}. {}",
             workers::DEPTH_NAME,
-            workers::depth_effect(depth)
+            workers::depth_effect(depth, self.settings.worker_models)
         ))
     }
 

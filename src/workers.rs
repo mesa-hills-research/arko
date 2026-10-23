@@ -82,11 +82,15 @@ pub fn depth_about() -> &'static str {
     "How many levels of workers there can be, from 1 to 4. With 1 only the main agent starts workers. With more, a worker can start workers of its own when the agent that starts it says so, down to that level."
 }
 
-/// What a worker depth of `depth` means for the session now, as a sentence
-/// to follow "Worker depth is 2."
-pub fn depth_effect(depth: u32) -> String {
+/// What a worker depth of `depth` means for the session now, with `choice`
+/// as the workers' models are chosen, as a sentence to follow "Worker depth
+/// is 2." No worker starts workers when every one runs the session's model.
+pub fn depth_effect(depth: u32, choice: ModelChoice) -> String {
     if depth <= 1 {
         "Only the main agent starts workers.".to_string()
+    } else if choice == ModelChoice::Session {
+        "No worker starts workers, because every worker runs the session’s worker model."
+            .to_string()
     } else {
         format!(
             "Workers can go {depth} levels deep, and a worker can start workers of its own when the agent that starts it says so."
@@ -151,13 +155,31 @@ mod tests {
             "Every worker runs the session's worker model, and none starts workers."
         );
         // The sentences an app shows say what the value means.
-        assert_eq!(depth_effect(1), "Only the main agent starts workers.");
+        let agent = ModelChoice::Agent;
         assert_eq!(
-            depth_effect(3),
+            depth_effect(1, agent),
+            "Only the main agent starts workers."
+        );
+        assert_eq!(
+            depth_effect(3, agent),
             "Workers can go 3 levels deep, and a worker can start workers of its own when the agent that starts it says so."
         );
-        assert_ne!(depth_effect(3), depth_effect(4));
-        assert!(depth_effect(4).starts_with("Workers can go 4 levels deep"));
+        assert_ne!(depth_effect(3, agent), depth_effect(4, agent));
+        assert!(depth_effect(4, agent).starts_with("Workers can go 4 levels deep"));
+        // With every worker on the session's model none starts workers, at
+        // any depth that would let them.
+        assert_eq!(
+            depth_effect(3, ModelChoice::Session),
+            "No worker starts workers, because every worker runs the session’s worker model."
+        );
+        assert_eq!(
+            depth_effect(1, ModelChoice::Session),
+            depth_effect(1, agent)
+        );
+        assert_eq!(
+            depth_effect(3, ModelChoice::Profiles),
+            depth_effect(3, agent)
+        );
         assert!(depth_about().contains("With 1 only the main agent starts workers"));
         assert!(!depth_about().contains("takes effect"));
         assert_eq!(parse_depth(" 4 "), Ok(4));
