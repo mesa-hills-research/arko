@@ -44,8 +44,8 @@ chooses that for each worker with `isolated` in `start_agent`. A key Arko doesn'
 | Place | Folder | Who uses it |
 |---|---|---|
 | This session | `profiles` in the session's folder | This session |
-| This project | `.agents/profiles` in the working directory | Everyone who works on the project |
-| This repository | `.agents/profiles` in the root of the git repository | Everyone who works in the repository |
+| This project | `.agents/profiles` in the working directory | Every session in the working directory |
+| This repository | `.agents/profiles` in the root of the git repository | Every session in the repository |
 | Every project | `profiles` in Arko's folder | You, in every project |
 
 When a name is in more than one place, the nearest wins, in the order above. Arko reads the files

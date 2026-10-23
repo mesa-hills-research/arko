@@ -6,8 +6,9 @@
 //! The models change while Arko runs (a key added with `/keys`, a plan's
 //! usage), so the agent reads them from a tool and not from its instructions,
 //! which keeps them out of the prompt cache's prefix. A profile saved for
-//! the session needs no approval. One saved for the project or for every
-//! session is put to the user as a question first, as `ask_user` is.
+//! the session needs no approval, and neither does one for a project folder
+//! that git ignores. One saved anywhere else is put to the user as a question
+//! first, as `ask_user` is.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
