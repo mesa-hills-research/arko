@@ -148,6 +148,20 @@ async fn setup(
     ModelServer,
     Seen,
 ) {
+    setup_answering(temp, |who| complete(&format!("w{who}"), "Worker done.")).await
+}
+
+/// [`setup`], with `worker` giving the answer to the worker `who`'s requests.
+async fn setup_answering(
+    temp: &Path,
+    worker: fn(&str) -> String,
+) -> (
+    Harness,
+    Inputs,
+    mpsc::UnboundedSender<Input>,
+    ModelServer,
+    Seen,
+) {
     let seen: Seen = Arc::default();
     let record = seen.clone();
     let server = ModelServer::start(Arc::new(move |_, body: String| {
@@ -161,7 +175,7 @@ async fn setup(
             if who == "main" {
                 lead(&body, "m")
             } else {
-                complete(&format!("w{who}"), "Worker done.")
+                worker(&who)
             }
         })
     }))
@@ -680,8 +694,7 @@ async fn worker_depth_is_kept_and_says_what_it_allows() {
 
 /// `/worker-retry-cap` says how many failed model requests in a row stop a
 /// worker and sets it to off, on (10) or a number, saved with the session.
-/// Before the conversation starts the workers get it at once. After, it waits
-/// for the session to be resumed.
+/// The workers get it at once, before the conversation starts and after.
 #[tokio::test]
 async fn the_worker_retry_cap_is_kept_and_reaches_the_workers() {
     let temp = tempfile::tempdir().unwrap();
@@ -715,13 +728,64 @@ async fn the_worker_retry_cap_is_kept_and_reaches_the_workers() {
     assert!(harness.live_command("/worker-retry-cap off", Source::Terminal));
     assert_eq!(harness.session.load_settings().unwrap().worker_retry_cap, None);
     assert_eq!(capped(&harness), None);
-    // Once the conversation has started the setting is saved, and the
-    // workflow keeps the cap it was built with.
     start_worker(&mut harness, &mut inputs, "Start a plain worker.").await;
     assert!(harness.live_command("/worker-retry-cap 5", Source::Terminal));
-    assert!(last_said(&harness.feed).ends_with(" It applies when you resume the session."));
+    assert_eq!(
+        last_said(&harness.feed),
+        "Worker retry cap is now 5. A worker fails after 5 failed model requests in a row, and the workers it started stop with it. A model response starts the count again."
+    );
     assert_eq!(harness.session.load_settings().unwrap().worker_retry_cap, Some(5));
-    assert_eq!(capped(&harness), None);
+    assert_eq!(capped(&harness), Some(5));
+    harness.crew.as_ref().unwrap().shutdown().await;
+}
+
+/// A worker whose model requests keep failing goes on under no cap, and
+/// `/worker-retry-cap` set while it runs stops it at its next failed request.
+#[tokio::test]
+async fn a_cap_set_while_a_worker_runs_stops_it() {
+    let unavailable = |_: &str| {
+        let body = r#"{"error":{"message":"synthetic 503","type":"server_error"}}"#;
+        format!(
+            "HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
+    };
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, _sender, _server, seen) =
+        setup_answering(temp.path(), unavailable).await;
+    // The worker retries every 20 ms, and each retry counts as a failed request.
+    let retry = &mut harness.worker_config;
+    retry.llm_error_policy = arko_agents::LLMErrorPolicy::RetryThenPauseAndAwaitApproval {
+        max_attempts: 10_000,
+    };
+    retry.llm_retry_config.initial_delay_ms = 20;
+    retry.llm_retry_config.max_delay_ms = 20;
+    retry.llm_retry_config.jitter = false;
+    harness.open(false).unwrap();
+    harness.start_new_workers();
+    let end = harness
+        .turn(Prompt::User("Start a plain worker.".into()), &mut inputs)
+        .await;
+    assert!(matches!(end, TurnEnd::Answered));
+    let failed_requests = || {
+        let seen = seen.lock().unwrap();
+        seen.iter().filter(|(who, ..)| who != "main").count()
+    };
+    let within = async |wait: &dyn Fn() -> bool| {
+        let until = std::time::Instant::now() + Duration::from_secs(30);
+        while !wait() {
+            assert!(std::time::Instant::now() < until, "the wait ended in time");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    };
+    let worker = |harness: &Harness| harness.workflow().subagents().remove(0);
+    within(&|| failed_requests() >= 6).await;
+    assert_eq!(worker(&harness).state, arko_workflows::subagents::SubagentState::Running);
+
+    assert!(harness.live_command("/worker-retry-cap 2", Source::Terminal));
+    within(&|| worker(&harness).state == arko_workflows::subagents::SubagentState::Failed).await;
+    let error = worker(&harness).error.unwrap_or_default();
+    assert!(error.contains("It stopped after "), "{error}");
     harness.crew.as_ref().unwrap().shutdown().await;
 }
 

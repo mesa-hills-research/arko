@@ -398,8 +398,8 @@ pub struct LiveSettings {
     /// How many levels of workers the session allows (`/worker-depth`).
     pub worker_depth: u32,
     /// A worker fails after this many failed model requests in a row
-    /// (`/worker-retry-cap`), if any. It applies when the session is resumed
-    /// once the conversation has started.
+    /// (`/worker-retry-cap`), if any. A change applies at once, also to the
+    /// workers running.
     pub worker_retry_cap: Option<u32>,
     /// The agent that started a worker gets a copy of the user's messages to
     /// it (`/message-copies`). It applies from the next message.

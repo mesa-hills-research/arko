@@ -129,9 +129,8 @@ that starts it says so, down to that level.
 is the "Worker retry cap" row in `/settings` and the setting of that name on the web page. With a
 number N, `on` or the flag without a number (which mean 10), a worker fails after N failed model
 requests in a row, and the workers it started stop with it. A model response starts the count
-again. The main agent has no cap. The cap is set when the session's workflow is built, so a change
-before the conversation starts applies at once, and a change after it applies when you resume the
-session.
+again. The main agent has no cap. A change applies at once, and a worker already running has the
+new cap at its next failed request.
 
 `/message-copies` (also `--message-copies` and `--no-message-copies`) is saved with the session and
 is off by default. It is the "Message copies" row in `/settings` and the setting of that name on the

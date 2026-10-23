@@ -236,10 +236,10 @@ impl Harness {
 
     /// `/worker-retry-cap`, typed at the prompt, sent from the page or chosen
     /// in the settings: says how many failed model requests in a row stop a
-    /// worker, or with `off`, `on` or a number sets it. The workflow holds
-    /// the cap from when it is built, so a change before the conversation
-    /// starts builds the agents again, and one after it waits for the
-    /// session to be resumed.
+    /// worker, or with `off`, `on` or a number sets it. Before the
+    /// conversation starts the agents are built again. After it the running
+    /// workflow gets the cap, and its running workers have it at their next
+    /// failed request.
     pub(crate) fn worker_retry_cap_command(&mut self, argument: &str, source: Source) {
         let before = self.settings.worker_retry_cap;
         let result = self.worker_retry_cap_request(argument);
@@ -267,7 +267,7 @@ impl Harness {
         }
         let mut settings = self.settings.clone();
         settings.worker_retry_cap = cap;
-        let mut text = format!(
+        let text = format!(
             "{name} is now {}. {}",
             cap_word(cap),
             workers::retry_cap_about(cap)
@@ -276,7 +276,10 @@ impl Harness {
             self.settings = settings;
             self.save_session();
             self.publish_models();
-            text.push_str(" It applies when you resume the session.");
+            if let Some(crew) = &self.crew {
+                crew.set_retry_cap(cap);
+            }
+            self.workflow().set_max_failed_requests(cap);
         } else {
             self.rebuild_agents(settings)?;
         }
