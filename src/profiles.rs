@@ -1047,13 +1047,17 @@ pub fn save(
     // not written again.
     if made && place == Place::Project && Preferences::load(&roots.root).keep_out_of_git {
         let ignore = folder.join(IGNORE_FILE);
-        crate::session::write_new(&ignore, IGNORE_TEXT.as_bytes()).map_err(|error| {
-            format!(
-                "Couldn't write {} ({})",
-                ignore.display(),
-                reason_of(&error)
-            )
-        })?;
+        // (A save that made the folder a moment before has written it.)
+        match crate::session::write_new(&ignore, IGNORE_TEXT.as_bytes()) {
+            Err(error) if error.kind() != std::io::ErrorKind::AlreadyExists => {
+                return Err(format!(
+                    "Couldn't write {} ({})",
+                    ignore.display(),
+                    reason_of(&error)
+                ));
+            }
+            _ => {}
+        }
     }
     let text = written.render();
     let write = if author == Author::Agent && !replaced {
@@ -1122,27 +1126,42 @@ pub fn check_agent_save(roots: &Roots, name: &str) -> Result<(), String> {
 /// `place`. Never for the session. For the project not when git ignores the
 /// profiles folder (inside a git work tree, as `git check-ignore` says, or
 /// a folder [`save`] is about to make with its own `.gitignore`), and
-/// outside a git repository the user is asked, as for the other places.
+/// outside a git repository the user is asked, as for the other places. A
+/// folder that a link leads out of the project is asked about too.
 pub fn needs_approval(roots: &Roots, place: Place, name: &str) -> bool {
     match place {
         Place::Session => false,
-        Place::Project => !roots.folder(Place::Project).is_some_and(|folder| {
-            is_ignored(
-                &folder,
-                name,
-                Preferences::load(&roots.root).keep_out_of_git,
-            )
-        }),
+        Place::Project => !roots
+            .workspace
+            .as_deref()
+            .zip(roots.folder(Place::Project))
+            .is_some_and(|(workspace, folder)| {
+                is_ignored(
+                    workspace,
+                    &folder,
+                    name,
+                    Preferences::load(&roots.root).keep_out_of_git,
+                )
+            }),
         _ => true,
     }
 }
 
-/// Whether git ignores the profile `name` in the project's `folder`.
-fn is_ignored(folder: &Path, name: &str, keep_out_of_git: bool) -> bool {
+/// Whether git ignores the profile `name` in the project's `folder`, which
+/// is in the `workspace`.
+fn is_ignored(workspace: &Path, folder: &Path, name: &str, keep_out_of_git: bool) -> bool {
     // The folder may not be made yet.
     let Some(existing) = folder.ancestors().find(|dir| dir.is_dir()) else {
         return false;
     };
+    // `.agents` may be a link to another place, which is not ignored by
+    // the project's repository, so the user is asked.
+    let inside = existing
+        .canonicalize()
+        .and_then(|existing| Ok(existing.starts_with(workspace.canonicalize()?)));
+    if !inside.unwrap_or(false) {
+        return false;
+    }
     if crate::sessions::git(existing, &["rev-parse", "--is-inside-work-tree"]).as_deref()
         != Some("true")
     {
@@ -1212,10 +1231,8 @@ fn size_of(text: &str) -> String {
 pub fn approval_text(profile: &Profile, place: Place) -> String {
     let wherever = match place {
         Place::User => "in your Arko folder, for every project",
-        Place::Project => "in this project's .agents/profiles folder, for everyone who works on it",
-        Place::Repository => {
-            "in the repository's .agents/profiles folder, for everyone who works on it"
-        }
+        Place::Project => "in this project's .agents/profiles folder",
+        Place::Repository => "in the repository's .agents/profiles folder",
         Place::Session => "for this session",
     };
     let mut text = format!(

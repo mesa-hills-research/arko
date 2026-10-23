@@ -405,18 +405,36 @@ fn saving_writes_the_file_and_keeps_unknown_keys() {
 #[test]
 fn an_agent_never_replaces_or_hides_a_profile_the_user_made() {
     let temp = tempfile::tempdir().unwrap();
-    let roots = roots(temp.path());
+    // A project in a subfolder of a repository, so every place has a folder.
+    let app = temp.path().join("work").join("app");
+    git_init(&temp.path().join("work"));
+    std::fs::create_dir_all(&app).unwrap();
+    let roots = Roots::new(temp.path().join("arko"))
+        .workspace(&app)
+        .session(temp.path().join("session"));
     let mut mine = Profile::new("reviewer", "The user's reviewer");
     mine.model = Some("opus".into());
     save(&roots, Place::User, &mine, Author::User).unwrap();
 
     let theirs = Profile::new("reviewer", "The agent's reviewer");
-    for place in [Place::Session, Place::Project, Place::User] {
+    for place in Place::ALL {
         let refused = save(&roots, place, &theirs, Author::Agent).unwrap_err();
         assert_eq!(
             refused, "There is already a profile `reviewer` made by the user. Choose another name.",
             "{place:?}"
         );
+    }
+    // The same for a profile the user made at the repository's root.
+    write(
+        &roots,
+        Place::Repository,
+        "judge",
+        "---\ndescription: Judges\n---\n",
+    );
+    for place in Place::ALL {
+        let judge = Profile::new("judge", "The agent's judge");
+        let refused = save(&roots, place, &judge, Author::Agent).unwrap_err();
+        assert!(refused.contains("made by the user"), "{place:?} {refused}");
     }
     assert_eq!(
         read(&roots, "reviewer").unwrap().profile.description,
@@ -523,7 +541,9 @@ fn the_approval_question_shows_the_whole_profile() {
     );
     let project = approval_text(&profile, Place::Project);
     assert!(
-        project.contains("in this project's .agents/profiles folder, for everyone who works on it")
+        project.contains(
+            "save the worker profile 3d-judge in this project's .agents/profiles folder."
+        )
     );
     let mut plain = Profile::new("quick", "Reads");
     plain.nested = true;
@@ -981,6 +1001,27 @@ fn a_project_folder_git_ignores_needs_no_approval() {
         needs_approval(&roots, Place::Project, "judge"),
         "setting off"
     );
+}
+
+/// A `.agents` that links to another place is not the project's folder, so the
+/// save asks even when that place is a git work tree.
+#[cfg(unix)]
+#[test]
+fn a_linked_agents_folder_that_leaves_the_project_still_asks() {
+    let temp = tempfile::tempdir().unwrap();
+    let roots = roots(temp.path());
+    let work = temp.path().join("work");
+    let other = temp.path().join("other");
+    git_init(&work);
+    git_init(&other);
+    let agents = work.join(".agents");
+    // A link to a folder inside the project is the project's own.
+    std::fs::create_dir(work.join("inner")).unwrap();
+    std::os::unix::fs::symlink(work.join("inner"), &agents).unwrap();
+    assert!(!needs_approval(&roots, Place::Project, "judge"), "inside");
+    std::fs::remove_file(&agents).unwrap();
+    std::os::unix::fs::symlink(&other, &agents).unwrap();
+    assert!(needs_approval(&roots, Place::Project, "judge"), "outside");
 }
 
 /// In a subfolder of a git repository the repository root's profiles are
