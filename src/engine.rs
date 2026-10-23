@@ -1470,20 +1470,45 @@ mod tests {
         quit(seam, running.ended).await;
     }
 
-    /// How long a worker ran is kept with the session: when it opens again,
-    /// the worker's time goes on from there.
+    /// How long a worker ran and how many calls it made are kept with the
+    /// session. When it opens again the worker shows both, and a run it goes
+    /// on with adds to them.
     #[tokio::test]
-    async fn a_workers_run_time_is_kept_with_the_session() {
+    async fn a_workers_run_time_and_calls_are_kept_with_the_session() {
         let temp = tempfile::tempdir().unwrap();
         let bodies: Arc<Mutex<Vec<String>>> = Arc::default();
         let server = ModelServer::start(Arc::new({
             let bodies = bodies.clone();
             move |_, body: String| {
                 bodies.lock().unwrap().push(body.clone());
+                let list = || serde_json::json!({"directory": "."});
                 Box::pin(async move {
                     if body.contains("You are agent run r1") {
-                        tokio::time::sleep(Duration::from_millis(150)).await;
-                        complete("w1", "Counted three.")
+                        // Two calls, then its report. Once it is told to go
+                        // on, one more call and a second report.
+                        if body.contains("call_w3") {
+                            complete("w4", "Counted again.")
+                        } else if body.contains("Once more.") {
+                            tokio::time::sleep(Duration::from_millis(150)).await;
+                            tool_call("w3", "list_files", list())
+                        } else if body.contains("call_w2") {
+                            complete("w5", "Counted three.")
+                        } else if body.contains("call_w1") {
+                            tool_call("w2", "list_files", list())
+                        } else {
+                            tokio::time::sleep(Duration::from_millis(150)).await;
+                            tool_call("w1", "list_files", list())
+                        }
+                    } else if body.contains("Counted again.") {
+                        reply("m6", "Fine.")
+                    } else if body.contains("call_m4") {
+                        reply("m5", "Asked.")
+                    } else if body.contains("Ask r1 again.") {
+                        tool_call(
+                            "m4",
+                            crate::crew::MESSAGE_AGENT,
+                            serde_json::json!({"to": "r1", "message": "Once more."}),
+                        )
                     } else if body.contains("Counted three.") {
                         reply("m3", "Noted.")
                     } else if body.contains("call_m1") {
@@ -1505,42 +1530,56 @@ mod tests {
         seam.input
             .send(Input::Message(app_message("Start a worker.")))
             .unwrap();
-        let finished = || {
+        // Waits until r1 finished with `calls` calls.
+        let finished = |seam: &Seam, calls| {
             seam.feed.subscribe().0.workers.into_iter().find(|worker| {
-                worker.id == "r1" && worker.state == crate::remote::WorkerState::Finished
+                worker.id == "r1"
+                    && worker.state == crate::remote::WorkerState::Finished
+                    && worker.tool_calls == calls
             })
         };
         tokio::time::timeout(Duration::from_secs(30), async {
-            while finished().is_none() {
+            while finished(&seam, 2).is_none() {
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
         })
         .await
         .unwrap();
         idle(&seam).await;
-        let ran = finished().unwrap().ran_ms;
+        let ran = finished(&seam, 2).unwrap().ran_ms;
         assert!(ran >= 150, "{ran}");
         quit(seam, ended).await;
-        let kept = std::fs::read_to_string(
-            Session::open(&root, &id)
-                .unwrap()
-                .dir
-                .join("worker-times.json"),
-        )
-        .unwrap();
-        assert!(kept.contains(&format!("\"r1\": {ran}")), "{kept}");
+        let kept = |name: &str| {
+            std::fs::read_to_string(Session::open(&root, &id).unwrap().dir.join(name)).unwrap()
+        };
+        assert!(
+            kept("worker-times.json").contains(&format!("\"r1\": {ran}")),
+            "{}",
+            kept("worker-times.json")
+        );
+        assert!(
+            kept("worker-calls.json").contains("\"r1\": 2"),
+            "{}",
+            kept("worker-calls.json")
+        );
 
         let (seam, ended) = open_app(&root, &project, &server, SessionChoice::Resume(id)).await;
-        let restored = seam
-            .feed
-            .subscribe()
-            .0
-            .workers
-            .into_iter()
-            .find(|worker| worker.id == "r1")
-            .unwrap();
+        let restored = finished(&seam, 2).unwrap();
         assert_eq!(restored.ran_ms, ran);
         assert_eq!(restored.running_since, None);
+        // The worker goes on, and its figures with it.
+        seam.input
+            .send(Input::Message(app_message("Ask r1 again.")))
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(30), async {
+            while finished(&seam, 3).is_none() {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(finished(&seam, 3).unwrap().ran_ms >= ran + 150);
+        idle(&seam).await;
         quit(seam, ended).await;
     }
 

@@ -104,10 +104,17 @@ pub const USER_MESSAGE_HEADING: &str = "The user sent you a message directly. Te
 /// in its folder.
 const RUN_TIMES_FILE: &str = "worker-times.json";
 
-/// How long each worker of the session in `dir` ran, as last kept (none:
-/// a session from before they were kept).
-fn load_run_times(dir: &std::path::Path) -> BTreeMap<String, u64> {
-    std::fs::read_to_string(dir.join(RUN_TIMES_FILE))
+/// How many calls each worker of the session made, by its handle, in its
+/// folder.
+const TOOL_CALLS_FILE: &str = "worker-calls.json";
+
+/// What `file` of the session in `dir` kept of each worker (none: a session
+/// from before it was kept).
+fn load_kept<T: serde::de::DeserializeOwned>(
+    dir: &std::path::Path,
+    file: &str,
+) -> BTreeMap<String, T> {
+    std::fs::read_to_string(dir.join(file))
         .ok()
         .and_then(|text| serde_json::from_str(&text).ok())
         .unwrap_or_default()
@@ -972,8 +979,9 @@ impl Crew {
         let mut events = workflow.subscribe_subagents();
         if let Some(feed) = &self.setup.feed {
             // The workers of a resumed session, for the clients' lists, with
-            // how long they ran before.
-            let ran = load_run_times(&self.setup.session_dir);
+            // how long they ran and how many calls they made before.
+            let ran: BTreeMap<String, u64> = load_kept(&self.setup.session_dir, RUN_TIMES_FILE);
+            let calls: BTreeMap<String, u32> = load_kept(&self.setup.session_dir, TOOL_CALLS_FILE);
             let runs = workflow.subagents();
             for run in &runs {
                 let state = match run.state {
@@ -995,6 +1003,7 @@ impl Crew {
                     run.error.as_deref(),
                     run.since.timestamp_millis(),
                     ran.get(&run.handle).copied().unwrap_or(0),
+                    calls.get(&run.handle).copied().unwrap_or(0),
                 );
                 // Who started it, what it started with and what it cost before.
                 if let Some(parent) = started_by(&runs, run.run_id) {
@@ -1096,7 +1105,7 @@ impl Crew {
         );
         feed.worker(handle, &task, change);
         if ended {
-            self.save_run_times();
+            self.save_worker_figures();
         }
     }
 
@@ -1140,20 +1149,27 @@ impl Crew {
         info
     }
 
-    /// Keeps how long each worker ran with the session, to go on from when
-    /// it opens again.
-    fn save_run_times(&self) {
+    /// Keeps how long each worker ran and how many calls it made with the
+    /// session, to go on from when it opens again.
+    fn save_worker_figures(&self) {
         let Some(feed) = &self.setup.feed else {
             return;
         };
-        let times: BTreeMap<String, u64> = feed.worker_run_times().into_iter().collect();
-        let written = serde_json::to_vec_pretty(&times)
+        self.keep(RUN_TIMES_FILE, feed.worker_run_times());
+        self.keep(TOOL_CALLS_FILE, feed.worker_tool_calls());
+    }
+
+    /// Writes `figures`, one for each worker, to `file` in the session's
+    /// folder.
+    fn keep<T: serde::Serialize>(&self, file: &str, figures: Vec<(String, T)>) {
+        let figures: BTreeMap<String, T> = figures.into_iter().collect();
+        let written = serde_json::to_vec_pretty(&figures)
             .map_err(std::io::Error::other)
             .and_then(|text| {
-                crate::session::write_whole(&self.setup.session_dir.join(RUN_TIMES_FILE), &text)
+                crate::session::write_whole(&self.setup.session_dir.join(file), &text)
             });
         if let Err(error) = written {
-            log::warn!("could not keep how long the workers ran ({error})");
+            log::warn!("could not keep {file} ({error})");
         }
     }
 
@@ -1405,8 +1421,9 @@ impl Crew {
                 }
             })
             .await;
-            // How long they ran, the runs just stopped too.
-            self.save_run_times();
+            // How long they ran and what they called, the runs just stopped
+            // too.
+            self.save_worker_figures();
             // Mail publication schedules its own checkpoint. Await one here so
             // exiting immediately after a report preserves that report on resume.
             if let Err(error) = workflow.checkpoint().await {
