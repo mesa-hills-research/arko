@@ -2858,6 +2858,73 @@ mod tests {
         );
     }
 
+    /// Claude Code's message about a request that failed mid-response shows
+    /// once, as a line in the theme's warning colour (the terminal's yellow
+    /// in the terminal theme), apart from the reply. The error that carries
+    /// the same text adds no line.
+    #[test]
+    fn a_failed_requests_message_shows_once_in_the_warning_colour() {
+        use crate::tui::theme::{Catalog, DEFAULT, Depth};
+        use arko_agents::AgentEvent;
+        let note = "API Error: Connection lost mid-response. The response above may be incomplete.";
+        let event = |event: AgentEvent| arko_workflows::WorkflowEvent {
+            timestamp: chrono::Utc::now(),
+            workflow_run_id: uuid::Uuid::nil(),
+            agent_name: MAIN_AGENT.into(),
+            agent_run_id: uuid::Uuid::nil(),
+            event,
+        };
+        for theme in [
+            Catalog::load(None).theme(DEFAULT, Depth::Rgb),
+            Theme::terminal(),
+        ] {
+            let feed = crate::remote::Feed::new(MAIN_AGENT);
+            let (snapshot, mut updates) = feed.subscribe();
+            let mut t = Transcript::new();
+            t.reset(snapshot);
+            feed.event(
+                &event(AgentEvent::AssistantResponseChunk("The answer is".into())),
+                None,
+            );
+            feed.event(
+                &event(AgentEvent::ServiceWarning { text: note.into() }),
+                None,
+            );
+            feed.event(
+                &event(AgentEvent::ErrorEncountered {
+                    error_message: note.into(),
+                    requires_approval_to_retry: true,
+                    tool_call_id: None,
+                    error_kind: None,
+                }),
+                None,
+            );
+            while let Ok(update) = updates.try_recv() {
+                t.apply(update);
+            }
+            let (width, height) = (100, 6);
+            let area = Rect::new(0, 0, width, height);
+            let mut buffer = Buffer::empty(area);
+            t.draw(&mut buffer, area, &full(), &theme);
+            let rows: Vec<String> = (0..height)
+                .map(|y| {
+                    let row: String = (0..width).map(|x| buffer[(x, y)].symbol()).collect();
+                    row.trim_end().to_string()
+                })
+                .collect();
+            let warned: Vec<usize> = (0..rows.len())
+                .filter(|y| rows[*y].contains(note))
+                .collect();
+            assert_eq!(warned.len(), 1, "{rows:?}");
+            let y = warned[0];
+            let x = rows[y].split(note).next().unwrap().chars().count() as u16;
+            assert_eq!(buffer[(x, y as u16)].fg, theme.warning, "{rows:?}");
+            let reply = rows.iter().position(|row| row.trim() == "The answer is");
+            let reply = reply.unwrap_or_else(|| panic!("the reply is alone in its row: {rows:?}"));
+            assert_eq!(buffer[(2, reply as u16)].fg, theme.text, "{rows:?}");
+        }
+    }
+
     /// Scrolled up, the screen stays put as items come, and the marker
     /// counts them; at the bottom again, it follows.
     #[test]

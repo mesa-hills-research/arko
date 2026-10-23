@@ -608,6 +608,9 @@ struct EventPrinter {
     /// The main agent's latest request is one of Claude Code's subagents':
     /// its usage isn't the conversation's.
     subagent_request: bool,
+    /// The text of each run's latest `ServiceWarning`, which the error that
+    /// follows it doesn't repeat.
+    warned: HashMap<Uuid, String>,
 }
 
 impl EventPrinter {
@@ -632,6 +635,15 @@ impl EventPrinter {
             request_start: (0, 0),
             printed_since_request: (false, false),
             subagent_request: false,
+            warned: HashMap::new(),
+        }
+    }
+
+    /// `message` without the text of the run's latest warning.
+    fn unrepeated(&self, run: Uuid, message: &str) -> String {
+        match self.warned.get(&run) {
+            Some(warning) => without_warning(message, warning),
+            None => message.to_string(),
         }
     }
 
@@ -751,17 +763,32 @@ impl EventPrinter {
                 } else {
                     format!("{}: ", self.worker(event.agent_run_id))
                 };
-                let text = if tool_call_id.is_some() {
-                    cut(&error_message, 400)
+                if tool_call_id.is_some() {
+                    let line = format!("  ✗ {who}{}", cut(&error_message, 400));
+                    self.output.echo(&self.output.error(&line));
                 } else {
-                    cut(&crate::providers::explain_error(&error_message), 400)
-                };
-                let line = if tool_call_id.is_some() {
-                    format!("  ✗ {who}{text}")
+                    let message = crate::providers::explain_error(&error_message);
+                    let message = self.unrepeated(event.agent_run_id, &message);
+                    if !message.is_empty() {
+                        let line = format!("  ! {who}{}", cut(&message, 400));
+                        self.output.echo(&self.output.error(&line));
+                    }
+                }
+            }
+            // Claude Code's own message about a failed request: one line, in
+            // the warning colour, which the error after it doesn't repeat.
+            AgentEvent::ServiceWarning { text } => {
+                if main {
+                    self.flush();
+                }
+                let who = if main {
+                    String::new()
                 } else {
-                    format!("  ! {who}{text}")
+                    format!("{}: ", self.worker(event.agent_run_id))
                 };
-                self.output.echo(&self.output.error(&line));
+                let line = format!("  ! {who}{}", cut(&text, 400));
+                self.output.echo(&self.output.warn(&line));
+                self.warned.insert(event.agent_run_id, text);
             }
             // The response failed after it streamed: what it added goes, and
             // its retry streams it again.
@@ -803,10 +830,12 @@ impl EventPrinter {
                 )));
             }
             AgentEvent::UsageLimitReached { error_message, .. } => {
-                self.output.echo(&self.output.warn(&format!(
-                    "  … usage limit reached ({})",
-                    cut(&error_message, 300)
-                )));
+                let why = self.unrepeated(event.agent_run_id, &error_message);
+                let line = match why.is_empty() {
+                    true => "  … usage limit reached".to_string(),
+                    false => format!("  … usage limit reached ({})", cut(&why, 300)),
+                };
+                self.output.echo(&self.output.warn(&line));
             }
             AgentEvent::OutputTokenLimitReached { output_tokens, .. } if main => {
                 // Held text may be the reply, which the turn's end shows.
@@ -1407,6 +1436,18 @@ pub fn sentence(text: &str) -> String {
         .next()
         .map(|first| first.to_uppercase().chain(chars).collect())
         .unwrap_or_default()
+}
+
+/// `message` without the text of `warning`, which it repeats: the error that
+/// follows a [`ServiceWarning`](AgentEvent::ServiceWarning) carries its text,
+/// maybe with a prefix. It is empty when nothing else is left.
+pub fn without_warning(message: &str, warning: &str) -> String {
+    let warning = warning.trim();
+    if warning.is_empty() {
+        return message.to_string();
+    }
+    let rest = message.replace(warning, "");
+    rest.trim().trim_end_matches(':').trim_end().to_string()
 }
 
 /// `text` on one line, at most `limit` characters.
@@ -2224,6 +2265,49 @@ mod tests {
         let shown = printed.0.lock().unwrap().clone();
         assert_eq!(shown[0], "Half a line,");
         assert!(shown[1].contains("the response broke off"), "{shown:?}");
+    }
+
+    /// Claude Code's message about a request that failed mid-response is
+    /// one line in the warning colour, apart from the reply. The error that
+    /// carries the same text adds no line, and one that adds a prefix shows
+    /// the prefix alone.
+    #[tokio::test]
+    async fn a_failed_requests_message_prints_once_as_a_warning() {
+        let printed = Printed::default();
+        let output = Arc::new(Output::new(Some(Box::new(printed.clone())), false).colored());
+        let mut printer = EventPrinter::new(output, Arc::default(), false, None);
+        let event = |event: AgentEvent| WorkflowEvent {
+            timestamp: chrono::Utc::now(),
+            workflow_run_id: Uuid::nil(),
+            agent_name: MAIN.into(),
+            agent_run_id: Uuid::nil(),
+            event,
+        };
+        let note = "API Error: Connection lost mid-response. The response above may be incomplete.";
+        let failed = |text: String| AgentEvent::ErrorEncountered {
+            error_message: text,
+            requires_approval_to_retry: true,
+            tool_call_id: None,
+            error_kind: None,
+        };
+        printer.event(event(AgentEvent::AssistantResponseChunk(
+            "The answer is".into(),
+        )));
+        printer.event(event(AgentEvent::ServiceWarning { text: note.into() }));
+        printer.event(event(failed(note.into())));
+        printer.event(event(failed(format!(
+            "Claude Code could not authenticate: {note}"
+        ))));
+        let lines = printed.0.lock().unwrap().clone();
+        assert_eq!(lines.len(), 3, "{lines:?}");
+        assert_eq!(lines[0], "The answer is");
+        assert_eq!(Output::level_of(&lines[1]), Some(remote::Level::Warn));
+        assert!(lines[1].contains(note), "{lines:?}");
+        assert_eq!(Output::level_of(&lines[2]), Some(remote::Level::Error));
+        assert!(
+            lines[2].contains("  ! Claude Code could not authenticate\x1b"),
+            "{lines:?}"
+        );
     }
 
     /// With text replies, the main agent's text is held: printed as

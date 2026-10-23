@@ -1168,9 +1168,20 @@ struct State {
     /// The latest jobs that ended without the feed having seen them run,
     /// with how and when: a moved call's result may name one after.
     unseen_ends: VecDeque<(String, JobState, i64)>,
+    /// The text of each agent's latest `ServiceWarning`, which the error that
+    /// follows it doesn't repeat.
+    warned: HashMap<String, String>,
 }
 
 impl State {
+    /// `message` without the text of `agent`'s latest warning.
+    fn unrepeated(&self, agent: &str, message: &str) -> String {
+        match self.warned.get(agent) {
+            Some(warning) => crate::ui::without_warning(message, warning),
+            None => message.to_string(),
+        }
+    }
+
     fn lane(&mut self, agent: &str) -> (&mut Lane, Budget) {
         if agent == MAIN_AGENT {
             (&mut self.main, MAIN_BUDGET)
@@ -1692,10 +1703,19 @@ impl Feed {
                 }
                 _ => {
                     let message = crate::providers::explain_error(error_message);
-                    let item = notice(render::cut(&message, 600), Level::Error);
-                    self.push(&mut state, item);
+                    let message = state.unrepeated(&agent, &message);
+                    if !message.is_empty() {
+                        let item = notice(render::cut(&message, 600), Level::Error);
+                        self.push(&mut state, item);
+                    }
                 }
             },
+            // Claude Code's own message about a failed request: one line, in
+            // the warning colour, which the error after it doesn't repeat.
+            AgentEvent::ServiceWarning { text } => {
+                state.warned.insert(agent.clone(), text.clone());
+                self.push(&mut state, notice(render::cut(text, 600), Level::Warn));
+            }
             // The conversation's own requests (not Claude Code's subagents').
             AgentEvent::ModelRequestStarted { subagent: None, .. } => {
                 let open = state.open_text.get(&agent).copied().and_then(|(_, id)| {
@@ -1749,7 +1769,11 @@ impl Feed {
                 self.add_up_families(&mut state);
             }
             AgentEvent::UsageLimitReached { error_message, .. } => {
-                let text = format!("usage limit reached ({})", render::cut(error_message, 300));
+                let why = state.unrepeated(&agent, error_message);
+                let text = match why.is_empty() {
+                    true => "usage limit reached".to_string(),
+                    false => format!("usage limit reached ({})", render::cut(&why, 300)),
+                };
                 self.push(&mut state, notice(text, Level::Warn));
             }
             AgentEvent::OutputTokenLimitReached { output_tokens, .. } if main => {
@@ -2331,6 +2355,12 @@ impl Feed {
         state.open_text.remove(MAIN_AGENT);
         state.unread_notes.retain(|(_, id)| *id < from);
         self.send(Update::Truncate { from });
+    }
+
+    /// `message` without the text of the main agent's latest warning (an
+    /// error that carries it).
+    pub(crate) fn unrepeated(&self, message: &str) -> String {
+        self.lock().unrepeated(MAIN_AGENT, message)
     }
 
     /// What Arko says about the session.
@@ -4170,6 +4200,68 @@ mod tests {
                 .ends_with("needs access through Anthropic's Cyber Verification Program."),
             "{}",
             last.text
+        );
+    }
+
+    /// Claude Code's message about a request that failed mid-response is one
+    /// warning notice for the page, and the agent's text stays what it said
+    /// before. The error that carries the same text adds no notice, and a
+    /// usage limit announces itself without it.
+    #[test]
+    fn a_failed_requests_message_is_one_warning_and_not_reply_text() {
+        let note = "API Error: Connection lost mid-response. The response above may be incomplete.";
+        let limit = "You've hit your limit. It resets at 3pm.";
+        let failed = |text: &str| AgentEvent::ErrorEncountered {
+            error_message: text.into(),
+            requires_approval_to_retry: true,
+            tool_call_id: None,
+            error_kind: None,
+        };
+        let feed = Feed::new("main");
+        feed.turn_started();
+        feed.event(&event("main", chunk("The answer is")), None);
+        feed.event(
+            &event("main", AgentEvent::ServiceWarning { text: note.into() }),
+            None,
+        );
+        feed.event(&event("main", failed(note)), None);
+        feed.event(
+            &event("main", AgentEvent::ServiceWarning { text: limit.into() }),
+            None,
+        );
+        feed.event(
+            &event(
+                "main",
+                AgentEvent::UsageLimitReached {
+                    resets_at_unix_ms: None,
+                    waiting_until_unix_ms: None,
+                    error_message: limit.into(),
+                },
+            ),
+            None,
+        );
+        // Another failure's error keeps its text.
+        feed.event(&event("main", failed("the model is overloaded")), None);
+        let sent: Vec<serde_json::Value> = items(&feed)
+            .iter()
+            .map(|item| serde_json::to_value(item).unwrap())
+            .collect();
+        let shown: Vec<(&str, &str, &str)> = sent
+            .iter()
+            .map(|item| {
+                let text = |name: &str| item[name].as_str().unwrap_or_default();
+                (text("kind"), text("level"), text("text"))
+            })
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                ("text", "", "The answer is"),
+                ("notice", "warn", note),
+                ("notice", "warn", limit),
+                ("notice", "warn", "usage limit reached"),
+                ("notice", "error", "the model is overloaded"),
+            ]
         );
     }
 

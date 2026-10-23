@@ -3614,7 +3614,10 @@ impl Harness {
             Err(error) => {
                 self.say(
                     Level::Error,
-                    &format!("The turn failed. {}", ui::sentence(&error.to_string())),
+                    &format!(
+                        "The turn failed. {}",
+                        ui::sentence(&self.feed.unrepeated(&error.to_string()))
+                    ),
                 );
                 self.keep_unread(unread_notes(&notes, &workflow), false);
                 self.recover_after_error(&workflow);
