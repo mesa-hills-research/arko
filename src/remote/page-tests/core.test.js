@@ -1,4 +1,4 @@
-// Tests of the page's logic (core.js), outside the page: `node --test src/remote/page-tests/core.test.js`.
+// Tests of the page's logic (core.js) and style sheet, outside the page: `node --test src/remote/page-tests/core.test.js`.
 'use strict';
 
 const test = require('node:test');
@@ -598,4 +598,20 @@ test('text beside a wait and a message from the agent show in every view, in ord
   assert.deepEqual(kinds(core.layout(items, 'full')), ['user', 'text', 'message', 'text', 'call']);
   assert.deepEqual(kinds(core.layout(items, 'quiet')), ['user', 'text', 'message', 'text', 'call']);
   assert.deepEqual(kinds(core.layout(items, 'messages')), ['user', 'text', 'message', 'text', 'count']);
+});
+
+// The reply row replaces the text row that streamed, so a flip must not move
+// anything. Both get the rows' own margin and nothing that adds to the box.
+test('the agent\'s reply row has the same box as a text row', () => {
+  const css = require('node:fs').readFileSync(require('node:path').join(__dirname, '../page/app.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+  const box = /^\s*(background|border|padding|margin|width|max-width|min-height|box-shadow|outline)\b/m;
+  for (const [, selectors, body] of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+    for (const selector of selectors.split(',').map((s) => s.trim())) {
+      if (/\.row\.(reply|text)(?![\w-])/.test(selector) && !selector.includes('.report')) {
+        assert.doesNotMatch(body.split(';').join('\n'), box, selector + ' changes the box');
+      }
+    }
+  }
+  // A worker's report keeps its card.
+  assert.match(css, /\.row\.reply\.report\s*\{[^}]*padding/);
 });
