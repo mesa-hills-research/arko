@@ -6,11 +6,15 @@
 //! the first message of a conversation and again after a handover or a Claude
 //! Code compaction, as a one-time note that lists the current ones (a
 //! handover restates the first message as it was, so a note kept since isn't
-//! in it). A worker gets the notes for it in its first message, as they are
-//! kept while it is active, and again after its own handover or compaction.
-//! Nothing is sent on other turns. Once notes were kept, an agent whose
-//! notes are all gone gets a list that says so, since its restated first
-//! message may still hold them.
+//! in it). It gets the list once more when the session goes back to a
+//! conversation (`/resume N`, `arko -c`), which may have missed changes. A
+//! worker gets the notes for it in its first message, as they are kept while
+//! it is active, and again after its own handover or compaction. Once notes
+//! were kept, an agent whose notes are all gone gets a list that says so,
+//! since its restated first message may still hold them. Nothing else is
+//! sent on other turns, except one line for a note that is removed
+//! (`/notes remove`, `forget_note`), to the main agent and to the active
+//! workers the note was for.
 //!
 //! The file is read for each call, so a front end that opens the same folder
 //! sees the notes the session keeps.
@@ -566,7 +570,7 @@ impl Tool for KeepNote {
     fn definition(&self) -> ToolDefinition {
         definition(
             KEEP_NOTE,
-            "Keeps a note for yourself or for workers. It comes back by itself after a handover or a compaction and in a new conversation's first message, so keep what must outlast this conversation, such as something the user asked you to do later. The notes hold 8 KB in all.",
+            "Keeps a note for yourself or for workers. It comes back by itself after a handover or a compaction, when you go back to a conversation, and in a new conversation's first message, so keep what must outlast this conversation, such as something the user asked you to do later. The notes hold 8 KB in all.",
             vec![
                 parameter(
                     "text",
