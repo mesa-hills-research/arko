@@ -118,7 +118,7 @@ fn models_for_new_session(root: &std::path::Path) -> NewSessionModels {
 pub fn image_refusal(model: &str, mime: &str) -> Option<String> {
     let model = providers::resolve_model(model).ok()?;
     model.image_refusal(&arko_ai::Image::Base64 {
-        data: String::new(),
+        data: "".into(),
         mime_type: mime.to_string(),
     })
 }

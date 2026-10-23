@@ -135,7 +135,7 @@ impl Images {
         };
         use base64::Engine as _;
         let bytes = base64::engine::general_purpose::STANDARD
-            .decode(data)
+            .decode(data.as_bytes())
             .ok()?;
         Some(self.add(bytes.into(), mime_type, label))
     }
