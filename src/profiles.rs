@@ -13,11 +13,14 @@
 //! ```
 //!
 //! The profile's name is its file's name without `.md`. A profile lives in
-//! one of three places, and the nearest one wins when a name is in more
+//! one of four places, and the nearest one wins when a name is in more
 //! than one. The session's own folder (`profiles` in the session's folder)
-//! beats the project's (`.agents/profiles` in the working directory), and
-//! the project's beats the user's (`profiles` in Arko's folder).
-//! [`Preferences`] keeps a project folder that Arko creates out of git.
+//! beats the project's (`.agents/profiles` in the working directory), the
+//! project's beats the repository's (`.agents/profiles` in the root of the
+//! git repository the working directory is in, when that is another folder),
+//! and the repository's beats the user's (`profiles` in Arko's folder).
+//! [`Preferences`] turns the repository's folder off, and keeps a project
+//! folder that Arko creates out of git.
 //!
 //! This module reads and writes the files without a session, as
 //! [`extensions`](crate::extensions) and [`accounts`](crate::accounts) do
@@ -73,7 +76,8 @@ pub const RESERVED: [&str; 5] = ["default", "main", "worker", "lead", "all"];
 /// The `made_by` value of a profile an agent wrote.
 pub const MADE_BY_AGENT: &str = "agent";
 
-/// The folder in the project (the working directory) that holds profiles.
+/// The folder in the project (the working directory) and in a repository's
+/// root that holds profiles.
 const PROJECT_FOLDER: [&str; 2] = [".agents", "profiles"];
 /// The folder in Arko's folder and in a session's folder.
 const FOLDER: &str = "profiles";
@@ -93,37 +97,52 @@ pub enum Place {
     Session,
     /// The project's `.agents/profiles`, kept with the workspace.
     Project,
+    /// The `.agents/profiles` in the root of the git repository the project
+    /// is in, when the project is a subfolder of it. The commands and the
+    /// agent's tool read it and don't save to it.
+    Repository,
     /// `profiles` in Arko's folder, for every project.
     User,
 }
 
 impl Place {
     /// Every place, nearest first.
-    pub const ALL: [Place; 3] = [Place::Session, Place::Project, Place::User];
+    pub const ALL: [Place; 4] = [
+        Place::Session,
+        Place::Project,
+        Place::Repository,
+        Place::User,
+    ];
 
     /// The word the commands and the agent's tool take: `session`,
-    /// `project` or `user`.
+    /// `project` or `user`. (The repository's is `repository`, which they
+    /// don't take.)
     pub fn name(self) -> &'static str {
         match self {
             Place::Session => "session",
             Place::Project => "project",
+            Place::Repository => "repository",
             Place::User => "user",
         }
     }
 
-    /// Parses [`name`](Self::name), in any case.
+    /// Parses [`name`](Self::name), in any case, for the places the commands
+    /// and the agent's tool take.
     pub fn parse(text: &str) -> Option<Place> {
         Place::ALL
             .into_iter()
+            .filter(|place| *place != Place::Repository)
             .find(|place| place.name().eq_ignore_ascii_case(text.trim()))
     }
 
     /// Who can use a profile in this place, as a phrase that follows
-    /// "for": `this session`, `this project` or `every project`.
+    /// "for": `this session`, `this project`, `this repository` or `every
+    /// project`.
     pub fn reach(self) -> &'static str {
         match self {
             Place::Session => "this session",
             Place::Project => "this project",
+            Place::Repository => "this repository",
             Place::User => "every project",
         }
     }
@@ -626,7 +645,7 @@ const PREFERENCES_FILE: &str = "profiles.json";
 /// What the user chose for every project about where profiles are kept, in
 /// `profiles.json` in Arko's folder. [`Roots`] and [`save`] read the file
 /// each time, so a change reaches the next worker started with no restart.
-/// Without the file, or when it can't be read, it is on.
+/// Without the file, or when it can't be read, both are on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Preferences {
@@ -634,12 +653,16 @@ pub struct Preferences {
     /// project's profiles folder, it writes a `.gitignore` in it, so git
     /// ignores the folder and the file.
     pub keep_out_of_git: bool,
+    /// Also look in the `.agents/profiles` of the repository's root, when
+    /// the project is in a subfolder of a git repository.
+    pub repo_root: bool,
 }
 
 impl Default for Preferences {
     fn default() -> Self {
         Self {
             keep_out_of_git: true,
+            repo_root: true,
         }
     }
 }
@@ -663,8 +686,9 @@ impl Preferences {
     }
 }
 
-/// The three folders profiles are read from and saved in. The session's
-/// and the project's are optional, as an app's settings page has neither.
+/// The folders profiles are read from and saved in. The session's, the
+/// project's and the repository's are optional, as an app's settings page
+/// has none of them.
 #[derive(Debug, Clone)]
 pub struct Roots {
     root: PathBuf,
@@ -695,14 +719,23 @@ impl Roots {
     }
 
     /// The folder that holds the profiles of `place`, whether it exists or
-    /// not. `None` when there is no session or project.
+    /// not. `None` when there is no session or project, and for the
+    /// repository when the project is not in a subfolder of a git
+    /// repository or [`Preferences::repo_root`] is off.
     pub fn folder(&self, place: Place) -> Option<PathBuf> {
+        let project_folder = |dir: &Path| dir.join(PROJECT_FOLDER[0]).join(PROJECT_FOLDER[1]);
         match place {
             Place::Session => self.session.as_ref().map(|dir| dir.join(FOLDER)),
-            Place::Project => self
-                .workspace
-                .as_ref()
-                .map(|dir| dir.join(PROJECT_FOLDER[0]).join(PROJECT_FOLDER[1])),
+            Place::Project => self.workspace.as_deref().map(project_folder),
+            Place::Repository => {
+                // The root has a `.git` folder, or a `.git` file in a worktree.
+                let workspace = self.workspace.as_deref()?;
+                let top = workspace
+                    .ancestors()
+                    .find(|dir| dir.join(".git").exists())?;
+                (top != workspace && Preferences::load(&self.root).repo_root)
+                    .then(|| project_folder(top))
+            }
             Place::User => Some(self.root.join(FOLDER)),
         }
     }
@@ -1180,6 +1213,9 @@ pub fn approval_text(profile: &Profile, place: Place) -> String {
     let wherever = match place {
         Place::User => "in your Arko folder, for every project",
         Place::Project => "in this project's .agents/profiles folder, for everyone who works on it",
+        Place::Repository => {
+            "in the repository's .agents/profiles folder, for everyone who works on it"
+        }
         Place::Session => "for this session",
     };
     let mut text = format!(

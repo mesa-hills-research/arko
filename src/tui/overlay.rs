@@ -82,6 +82,8 @@ pub enum SettingsRow {
     MessageCopies,
     /// Whether a profiles folder Arko makes in a project is kept out of git.
     KeepProfilesOutOfGit,
+    /// Whether profiles are also read from the git repo's root.
+    RepoRootProfiles,
     Keys,
 }
 
@@ -711,6 +713,21 @@ fn settings(frame: &mut Frame, app: &App, area: Rect, selected: usize) {
                     "A new profile folder gets a .gitignore, so git ignores it. Delete that file to share the profiles."
                 } else {
                     "A new profile folder is left for git to track."
+                }
+                .to_string(),
+            ),
+            SettingsRow::RepoRootProfiles => (
+                "Worker profiles",
+                "Repo root",
+                choices(
+                    theme,
+                    &["on", "off"],
+                    usize::from(!app.profile_prefs.repo_root),
+                ),
+                if app.profile_prefs.repo_root {
+                    "In a subfolder of a git repo, the .agents/profiles in the repo root is read too."
+                } else {
+                    "Only the project's own .agents/profiles is read."
                 }
                 .to_string(),
             ),

@@ -649,6 +649,7 @@ impl Tool for SaveWorkerProfile {
         let kept = match place {
             Place::Session => "for this session".to_string(),
             Place::Project => "for this project".to_string(),
+            Place::Repository => "for this repository".to_string(),
             Place::User => "in the user's Arko folder, for every project".to_string(),
         };
         let mut result = format!(

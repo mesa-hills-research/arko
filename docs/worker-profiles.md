@@ -45,12 +45,13 @@ chooses that for each worker with `isolated` in `start_agent`. A key Arko doesn'
 |---|---|---|
 | This session | `profiles` in the session's folder | This session |
 | This project | `.agents/profiles` in the working directory | Everyone who works on the project |
+| This repository | `.agents/profiles` in the root of the git repository | Everyone who works in the repository |
 | Every project | `profiles` in Arko's folder | You, in every project |
 
-When a name is in more than one place, the nearest wins, so a session's profile beats the
-project's and the project's beats yours. Arko reads the files each time a worker starts, so an
-edit reaches the next worker without a restart. A worker keeps the setup it started with, also
-when its profile is edited or deleted later and when the session is resumed.
+When a name is in more than one place, the nearest wins, in the order above. Arko reads the files
+each time a worker starts, so an edit reaches the next worker without a restart. A worker keeps
+the setup it started with, also when its profile is edited or deleted later and when the session
+is resumed.
 
 The main agent saves a profile for the project unless it says `session` or `user`, so profiles
 stay with the workspace and a new session there finds them. A worker in a worktree of its own
@@ -61,9 +62,10 @@ comment and `*`. Git then ignores the folder and that file, and your repository'
 stays as it is. Delete the file to share the profiles with your team. Arko writes it only when it
 makes the folder, so it doesn't come back.
 
-The "Keep out of git" row under "Worker profiles" in `/settings` turns the file off for the folders
-Arko makes from then on. It is on by default and kept for every project in `profiles.json` in
-Arko's folder.
+In a subfolder of a git repository, Arko also reads the repository root's `.agents/profiles`, after
+the working directory's own. The "Keep out of git" and "Repo root" rows under "Worker profiles" in
+`/settings` turn off the file above and this lookup. Both are on by default and kept for every
+project in `profiles.json` in Arko's folder.
 
 ## How a worker's setup is chosen
 
@@ -188,10 +190,10 @@ profiles::save(&roots, Place::User, &profile, Author::User)?;
 profiles::delete(&roots, Place::User, "3d-judge")?;
 ```
 
-`profiles::Preferences` loads and saves the setting, and `profiles::needs_approval` tells whether
-the agent's save asks you first. `Profile::check` tells whether a profile can be saved, with a
-model Arko knows and an effort it takes. `profiles::folders` gives the folders for an "open the
-folder" button, and `profiles::approval_text` and `profiles::is_approval` are the question the
+`profiles::Preferences` loads and saves the profile settings, and `profiles::needs_approval` tells
+whether the agent's save asks you first. `Profile::check` tells whether a profile can be saved,
+with a model Arko knows and an effort it takes. `profiles::folders` gives the folders for an "open
+the folder" button, and `profiles::approval_text` and `profiles::is_approval` are the question the
 agent's save puts to the user and the rule for its answer. `arko::workers` has the names,
 commands and sentences of the two settings, and `ModelChoice::label` and `about` the words for each
 value, so an app labels and sets them as the terminal and the web page do.

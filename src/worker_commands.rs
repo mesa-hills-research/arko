@@ -59,7 +59,7 @@ fn depth_note(depth: u32, choice: ModelChoice) -> Option<String> {
 }
 
 impl Harness {
-    /// The three folders profiles are read from, for this session.
+    /// The folders profiles are read from, for this session.
     pub(crate) fn profile_roots(&self) -> Roots {
         Roots::new(&self.root)
             .workspace(&self.settings.workspace)

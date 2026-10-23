@@ -1505,6 +1505,7 @@ impl App {
                 rows.push(SettingsRow::MessageCopies);
             }
             rows.push(SettingsRow::KeepProfilesOutOfGit);
+            rows.push(SettingsRow::RepoRootProfiles);
         }
         rows.push(SettingsRow::Keys);
         rows
@@ -1741,9 +1742,13 @@ impl App {
                 SettingsRow::MessageCopies => {
                     self.send(&crate::workers::copies_command(!self.message_copies()));
                 }
-                SettingsRow::KeepProfilesOutOfGit => {
+                SettingsRow::KeepProfilesOutOfGit | SettingsRow::RepoRootProfiles => {
                     let mut now = self.profile_prefs;
-                    now.keep_out_of_git = !now.keep_out_of_git;
+                    if rows[row] == SettingsRow::KeepProfilesOutOfGit {
+                        now.keep_out_of_git = !now.keep_out_of_git;
+                    } else {
+                        now.repo_root = !now.repo_root;
+                    }
                     match self
                         .info
                         .root
@@ -3153,7 +3158,8 @@ pub(super) mod tests {
         assert_eq!(rows[models + 1], SettingsRow::WorkerDepth);
         assert_eq!(rows[models + 2], SettingsRow::MessageCopies);
         assert_eq!(rows[models + 3], SettingsRow::KeepProfilesOutOfGit);
-        assert_eq!(rows[models + 4], SettingsRow::Keys);
+        assert_eq!(rows[models + 4], SettingsRow::RepoRootProfiles);
+        assert_eq!(rows[models + 5], SettingsRow::Keys);
         app.overlay = Some(Overlay::Settings {
             row: models,
             picker: None,
@@ -3200,10 +3206,10 @@ pub(super) mod tests {
         );
     }
 
-    /// The row is the user's for every project, so it is saved in Arko's
-    /// folder and not sent to the session.
+    /// The two profile rows are the user's for every project, so they are
+    /// saved in Arko's folder and not sent to the session.
     #[test]
-    fn the_keep_out_of_git_row_is_saved_in_arkos_folder() {
+    fn the_profile_rows_are_saved_in_arkos_folder() {
         use crate::profiles::Preferences;
         let temp = tempfile::tempdir().unwrap();
         let mut app = App::new(
@@ -3217,21 +3223,31 @@ pub(super) mod tests {
             Depth::Rgb,
         );
         app.reading.models.has_workers = true;
-        let row = app
-            .settings_rows()
-            .iter()
-            .position(|row| *row == SettingsRow::KeepProfilesOutOfGit)
-            .unwrap();
-        app.overlay = Some(Overlay::Settings { row, picker: None });
-        assert!(app.profile_prefs.keep_out_of_git, "on at first");
-        press(&mut app, KeyCode::Right, KeyModifiers::NONE);
-        assert!(!app.profile_prefs.keep_out_of_git);
-        assert!(
-            !Preferences::load(temp.path()).keep_out_of_git,
-            "off in the file"
+        let rows = app.settings_rows();
+        let at = |wanted| rows.iter().position(|row| *row == wanted).unwrap();
+        for (row, read) in [
+            (
+                at(SettingsRow::KeepProfilesOutOfGit),
+                (|prefs: Preferences| prefs.keep_out_of_git) as fn(Preferences) -> bool,
+            ),
+            (at(SettingsRow::RepoRootProfiles), |prefs| prefs.repo_root),
+        ] {
+            app.overlay = Some(Overlay::Settings { row, picker: None });
+            assert!(read(app.profile_prefs), "on at first");
+            press(&mut app, KeyCode::Right, KeyModifiers::NONE);
+            assert!(!read(Preferences::load(temp.path())), "off in the file");
+            assert!(!read(app.profile_prefs));
+            press(&mut app, KeyCode::Left, KeyModifiers::NONE);
+            assert!(read(Preferences::load(temp.path())), "on again");
+            press(&mut app, KeyCode::Right, KeyModifiers::NONE);
+        }
+        assert_eq!(
+            Preferences::load(temp.path()),
+            Preferences {
+                keep_out_of_git: false,
+                repo_root: false
+            }
         );
-        press(&mut app, KeyCode::Left, KeyModifiers::NONE);
-        assert!(Preferences::load(temp.path()).keep_out_of_git, "on again");
         assert!(sent(&mut app).is_empty(), "nothing goes to the session");
     }
 

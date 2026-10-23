@@ -411,7 +411,7 @@ fn an_agent_never_replaces_or_hides_a_profile_the_user_made() {
     save(&roots, Place::User, &mine, Author::User).unwrap();
 
     let theirs = Profile::new("reviewer", "The agent's reviewer");
-    for place in Place::ALL {
+    for place in [Place::Session, Place::Project, Place::User] {
         let refused = save(&roots, place, &theirs, Author::Agent).unwrap_err();
         assert_eq!(
             refused, "There is already a profile `reviewer` made by the user. Choose another name.",
@@ -575,12 +575,21 @@ fn only_a_plain_yes_approves() {
 
 #[test]
 fn places_are_named_for_the_commands() {
-    for place in Place::ALL {
+    for place in Place::ALL
+        .into_iter()
+        .filter(|place| *place != Place::Repository)
+    {
         assert_eq!(Place::parse(place.name()), Some(place));
         assert_eq!(Place::parse(&place.name().to_uppercase()), Some(place));
     }
     assert_eq!(Place::parse("everywhere"), None);
-    assert!(Place::Session < Place::Project && Place::Project < Place::User);
+    // The repository's folder is read and not saved to.
+    assert_eq!(Place::parse("repository"), None);
+    assert!(
+        Place::Session < Place::Project
+            && Place::Project < Place::Repository
+            && Place::Repository < Place::User
+    );
     assert_eq!(Place::User.reach(), "every project");
 }
 
@@ -919,6 +928,7 @@ fn a_project_folder_a_save_makes_gets_a_gitignore_once() {
     // With the setting off a new folder doesn't get one either.
     let off = Preferences {
         keep_out_of_git: false,
+        ..Preferences::default()
     };
     off.save(&temp.path().join("arko")).unwrap();
     std::fs::remove_dir_all(temp.path().join("work").join(".agents")).unwrap();
@@ -963,6 +973,7 @@ fn a_project_folder_git_ignores_needs_no_approval() {
     assert!(!needs_approval(&roots, Place::Project, "judge"));
     Preferences {
         keep_out_of_git: false,
+        ..Preferences::default()
     }
     .save(&temp.path().join("arko"))
     .unwrap();
@@ -970,4 +981,74 @@ fn a_project_folder_git_ignores_needs_no_approval() {
         needs_approval(&roots, Place::Project, "judge"),
         "setting off"
     );
+}
+
+/// In a subfolder of a git repository the repository root's profiles are
+/// read too, behind the project's and ahead of the user's, unless the
+/// setting is off.
+#[test]
+fn a_subfolder_reads_the_repository_roots_profiles_unless_turned_off() {
+    let temp = tempfile::tempdir().unwrap();
+    let top = temp.path().join("repo");
+    let sub = top.join("packages").join("app");
+    std::fs::create_dir_all(&sub).unwrap();
+    git_init(&top);
+    let arko = temp.path().join("arko");
+    let roots = Roots::new(&arko).workspace(&sub);
+    assert_eq!(
+        roots.folder(Place::Repository),
+        Some(top.join(".agents").join("profiles"))
+    );
+    let make = |place, description: &str| {
+        write(
+            &roots,
+            place,
+            "reviewer",
+            &format!("---\ndescription: {description}\n---\n"),
+        );
+    };
+    make(Place::User, "Yours");
+    let found = read(&roots, "reviewer").unwrap();
+    assert_eq!(
+        (found.place, found.profile.description.as_str()),
+        (Place::User, "Yours")
+    );
+    make(Place::Repository, "The repository's");
+    let found = read(&roots, "reviewer").unwrap();
+    assert_eq!(found.place, Place::Repository);
+    assert_eq!(list(&roots).hidden[0].place, Place::User);
+    make(Place::Project, "The project's");
+    let listed = list(&roots);
+    assert_eq!(listed.active[0].place, Place::Project);
+    assert_eq!(
+        listed
+            .hidden
+            .iter()
+            .map(|found| found.place)
+            .collect::<Vec<_>>(),
+        [Place::Repository, Place::User]
+    );
+    // The repository's folder is the project's at the root, and there is none
+    // outside a repository.
+    assert_eq!(
+        Roots::new(&arko).workspace(&top).folder(Place::Repository),
+        None
+    );
+    assert_eq!(
+        Roots::new(&arko)
+            .workspace(temp.path())
+            .folder(Place::Repository),
+        None
+    );
+
+    // Turned off, the repository root's profiles are not read.
+    Preferences {
+        repo_root: false,
+        ..Preferences::default()
+    }
+    .save(&arko)
+    .unwrap();
+    assert_eq!(roots.folder(Place::Repository), None);
+    std::fs::remove_file(roots.folder(Place::Project).unwrap().join("reviewer.md")).unwrap();
+    assert_eq!(read(&roots, "reviewer").unwrap().place, Place::User);
 }
