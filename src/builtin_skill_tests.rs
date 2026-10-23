@@ -468,31 +468,41 @@ async fn builtin_skills_sets_what_the_agents_get_before_the_conversation_starts(
     harness.crew.as_ref().unwrap().shutdown().await;
 }
 
-/// After the conversation has started, the agents keep their skills and the
-/// session keeps the choice for the conversations and workers that start once
-/// it is resumed.
+/// After the conversation has started, a change to the built-in skills
+/// reaches the workflow at once. The conversation going on keeps its skills,
+/// a new conversation gets the change, and the session saves it.
 #[tokio::test]
-async fn a_change_to_the_built_in_skills_after_the_start_waits_for_a_resume() {
+async fn a_change_to_the_built_in_skills_after_the_start_reaches_the_next_conversation() {
     let temp = tempfile::tempdir().unwrap();
-    let server =
-        ModelServer::start(Arc::new(|_, _| Box::pin(async { complete("k1", "Done.") }))).await;
+    let bodies: Arc<Mutex<Vec<String>>> = Arc::default();
+    let server = ModelServer::start(Arc::new({
+        let bodies = bodies.clone();
+        move |_, body: String| {
+            bodies.lock().unwrap().push(body);
+            Box::pin(async { complete("k1", "Done.") })
+        }
+    }))
+    .await;
     let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
     assert!(harness.live_command("/builtin-skills on", Source::Terminal));
-    let end = harness
-        .turn(Prompt::User("First.".into()), &mut inputs)
-        .await;
-    assert!(matches!(end, TurnEnd::Answered));
+    let mut say = async |harness: &mut Harness, text: &str| {
+        let end = harness.turn(Prompt::User(text.into()), &mut inputs).await;
+        assert!(matches!(end, TurnEnd::Answered));
+        bodies.lock().unwrap().last().unwrap().clone()
+    };
+    let first = say(&mut harness, "First.").await;
+    assert!(first.contains("**repo-docs-style**"));
     assert!(harness.live_command("/builtin-skills repo-docs-style off", Source::Terminal));
     assert_eq!(
         last_said(&harness.feed),
-        "repo-docs-style is now off. The agents in this session keep their skills. The change takes effect in the conversations and workers that start after you resume it."
+        "repo-docs-style is now off. The conversation going on keeps its skills. New workers and new conversations get the change."
     );
-    for config in [&harness.main_config, &harness.worker_config] {
-        assert_eq!(
-            given(config),
-            ["user-facing-prose", "repo-docs-style", "ponytail"]
-        );
-    }
+    let going_on = say(&mut harness, "Second.").await;
+    assert!(going_on.contains("**repo-docs-style**"), "kept");
+    harness.new_conversation();
+    let new = say(&mut harness, "Third.").await;
+    assert!(!new.contains("**repo-docs-style**"), "left out");
+    assert!(new.contains("**ponytail**"));
     assert_eq!(
         harness.session.load_settings().unwrap().builtin_skills.off,
         ["repo-docs-style"]

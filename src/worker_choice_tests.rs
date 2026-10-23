@@ -789,6 +789,28 @@ async fn a_cap_set_while_a_worker_runs_stops_it() {
     harness.crew.as_ref().unwrap().shutdown().await;
 }
 
+/// A change to the built-in skills reaches the workers that start after it.
+#[tokio::test]
+async fn a_worker_started_after_a_skills_change_has_the_new_skills() {
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, _sender, _server, seen) = setup(temp.path()).await;
+    let listed = |task: &str| {
+        let seen = seen.lock().unwrap();
+        let (.., body) = seen
+            .iter()
+            .find(|(who, _, _, body)| who != "main" && user_texts(body)[0].contains(task))
+            .unwrap();
+        body.contains("**repo-docs-style**")
+    };
+    assert!(harness.live_command("/builtin-skills on", Source::Terminal));
+    start_worker(&mut harness, &mut inputs, "Start before the change.").await;
+    assert!(harness.live_command("/builtin-skills repo-docs-style off", Source::Terminal));
+    start_worker(&mut harness, &mut inputs, "Start after the change.").await;
+    assert!(listed("Start before the change."));
+    assert!(!listed("Start after the change."));
+    harness.crew.as_ref().unwrap().shutdown().await;
+}
+
 /// `/message-copies` says whether the agent that started a worker gets a copy
 /// of the user's messages to it, and sets it on or off, saved with the
 /// session. Without workers there is nothing to set.

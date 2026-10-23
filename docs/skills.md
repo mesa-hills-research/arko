@@ -37,8 +37,8 @@ quote the list in a `.env` file if it has spaces. A flag beats the setting.
 
 `/builtin-skills on` or `off` changes all of them as you go, and `/builtin-skills repo-docs-style off`
 one. Both are rows in `/settings` and on the web page. Before the conversation starts the change
-reaches the agents. After that the agents keep their skills, and the conversations and workers that
-start after you resume the session get the change.
+reaches the agents. After that the conversation going on keeps its skills, and new workers and new
+conversations get the change.
 
 The session keeps its choice. Resuming with a flag changes it for the conversations that start
 after, and a conversation already started keeps the skills it began with. A name that isn't a

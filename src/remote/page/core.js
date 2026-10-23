@@ -474,9 +474,9 @@
 
   /** What the built-in skills setting does, as the library's
    * `builtin_skills::SETTING_ABOUT` and `AFTER_START` say it. Once the
-   * conversation has started, the agents keep their skills. */
+   * conversation has started, it keeps its skills. */
   function builtinSkillsAbout(started) {
-    return "Off leaves out all of them, whatever the rows below say." + (started ? " The agents in this session keep their skills. The change takes effect in the conversations and workers that start after you resume it." : "");
+    return "Off leaves out all of them, whatever the rows below say." + (started ? " The conversation going on keeps its skills. New workers and new conversations get the change." : "");
   }
 
   /** How long a worker has run at `now`, in all its runs (also those

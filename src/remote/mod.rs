@@ -404,9 +404,9 @@ pub struct LiveSettings {
     /// The agent that started a worker gets a copy of the user's messages to
     /// it (`/message-copies`). It applies from the next message.
     pub message_copies: bool,
-    /// The agents get the built-in skills at all (`/builtin-skills`). It
-    /// changes the agents only before the conversation starts
-    /// (`Models::started`), and after it a resumed session gets the change.
+    /// The agents get the built-in skills at all (`/builtin-skills`). Once
+    /// the conversation has started (`Models::started`), it keeps its skills,
+    /// and new workers and new conversations get the change.
     pub builtin_skills: bool,
     /// Each built-in skill, and whether it is left out by name (apart from
     /// `builtin_skills`).

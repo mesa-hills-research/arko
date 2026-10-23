@@ -12,6 +12,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::Harness;
+use crate::agents::{MAIN, WORKER};
 use crate::remote::Source;
 
 /// A skill built into Arko.
@@ -89,7 +90,8 @@ pub const SETTING_NAME: &str = "Built-in skills";
 pub const SETTING_ABOUT: &str = "Off leaves out all of them, whatever the rows below say.";
 
 /// What a change does once the conversation has started.
-pub const AFTER_START: &str = "The agents in this session keep their skills. The change takes effect in the conversations and workers that start after you resume it.";
+pub const AFTER_START: &str =
+    "The conversation going on keeps its skills. New workers and new conversations get the change.";
 
 /// The built-in skills' names, in the order they are listed. These are the
 /// names `Options::builtin_skills_off` takes.
@@ -171,9 +173,9 @@ impl Harness {
     /// in the settings: says which built-in skills the agents get, or with
     /// `on` or `off` (all of them) or a name and `on` or `off` (one) changes
     /// that. Before the conversation starts the agents are built again.
-    /// After it they keep their skills, as they keep their model, and the
-    /// session saves the choice for the conversations and workers that start
-    /// once it is resumed.
+    /// After it the running workflow gives the main agent and the workers
+    /// the new skills for the runs that start from now on, and the
+    /// conversation going on keeps its own.
     pub(crate) fn builtin_skills_command(&mut self, argument: &str, source: Source) {
         let before = self.settings.builtin_skills.clone();
         let result = self.builtin_skills_request(argument);
@@ -228,6 +230,13 @@ impl Harness {
             self.settings = settings;
             self.save_session();
             self.publish_models();
+            let skills = crate::skills::config(&self.skill_folders, &self.settings.builtin_skills);
+            let workers = (self.settings.max_workers > 0).then_some(WORKER);
+            for agent in [MAIN].into_iter().chain(workers) {
+                if let Err(error) = self.workflow().set_agent_skills(agent, skills.clone()) {
+                    log::warn!("could not give the {agent} agent its new skills: {error}");
+                }
+            }
             text.push(' ');
             text.push_str(AFTER_START);
         } else {
