@@ -213,6 +213,8 @@ async fn the_facts_say_which_skills_are_built_in_and_which_are_left_out() {
             ("ponytail", true, None),
         ]
     );
+    assert_eq!(facts.skills[1].path, Some(folder.join("review")));
+    assert_eq!(facts.skills[2].path, None);
     // With every built-in skill on and no replacement, they follow the
     // folders' skills.
     with_folders(&mut harness, Vec::new());
@@ -252,40 +254,60 @@ impl crate::ui::Printer for Printed {
     }
 }
 
-/// `/skills` marks the built-in skills, says where a replacement comes
-/// from, and names those left out. The banner counts only the user's own.
+/// `/skills` has a line for each skill with its name, description and where
+/// it comes from, the descriptions cut to fit the width, and names the
+/// built-in skills left out. The banner counts only the user's own.
 #[tokio::test]
-async fn skills_lists_the_built_in_skills_and_what_replaces_or_leaves_them_out() {
+async fn skills_lists_each_skill_with_its_description_and_where_it_comes_from() {
     let temp = tempfile::tempdir().unwrap();
     let (mut harness, _inputs, _sender) = harness(temp.path(), LLMClient::new(), true);
     let printed = Printed::default();
     harness.output = Arc::new(Output::new(Some(Box::new(printed.clone())), false));
     let folder = temp.path().join("skills");
     own_skill(&folder, "repo-docs-style", "Mine.");
+    let always = folder.join("always-on");
+    std::fs::create_dir_all(&always).unwrap();
+    std::fs::write(
+        always.join("SKILL.md"),
+        "---\nname: always-on\ndescription: My always-on skill.\nauto_load: true\n---\n\nAlways.\n",
+    )
+    .unwrap();
     with_folders(&mut harness, vec![folder.clone()]);
     harness.settings.builtin_skills = BuiltinSkills {
         none: false,
-        off: Vec::new(),
+        off: vec!["user-facing-prose".into()],
     };
     harness.publish_details();
-    harness.list_skills();
+    harness.list_skills_within(100);
     let text = printed.0.lock().unwrap().join("\n");
+    let lines: Vec<&str> = text.lines().collect();
+    // By name, the names in a column of their own, and no line over the width.
+    let names = ["always-on", "ponytail", "repo-docs-style"];
+    for (line, name) in lines.iter().zip(names) {
+        assert!(line.starts_with(&format!("{name:<15}  ")), "{text}");
+    }
+    assert!(lines.iter().all(|line| line.chars().count() <= 100), "{text}");
+    // The user's skills say where they are, and the built-in one that it is
+    // built in, with its long description cut. Nothing says what replaces what.
     assert!(
-        text.contains(&format!(
-            "repo-docs-style  My repo-docs-style skill.  (replaces the built-in skill, from {})",
-            folder.join("repo-docs-style").display()
-        )),
+        lines[0].ends_with(&format!("{}, always loaded", always.display())),
         "{text}"
     );
-    assert!(text.contains("user-facing-prose  "), "{text}");
-    assert!(text.contains("  (built in)"), "{text}");
+    assert!(lines[0].contains("  My always-on skill. "), "{text}");
+    assert!(lines[1].contains("…  built in"), "{text}");
     assert!(
-        text.contains(&format!("From {}", folder.display())),
+        lines[2].ends_with(&format!("  {}", folder.join("repo-docs-style").display())),
         "{text}"
     );
-    assert!(!text.contains("left out"), "{text}");
-    // The one skill of the user's is the only one the banner counts.
-    assert_eq!(harness.header(None).tools, ["1 skill"]);
+    assert!(lines[2].contains("  My repo-docs-style skill. "), "{text}");
+    assert_eq!(
+        lines[3],
+        "Built-in skills left out (user-facing-prose).",
+        "{text}"
+    );
+    assert_eq!(lines.len(), 4, "{text}");
+    // Of the three skills, the two in the folder are the user's own.
+    assert_eq!(harness.header(None).tools, ["2 skills"]);
 
     printed.0.lock().unwrap().clear();
     harness.settings.builtin_skills = BuiltinSkills {
@@ -302,6 +324,22 @@ async fn skills_lists_the_built_in_skills_and_what_replaces_or_leaves_them_out()
         "{text}"
     );
     assert!(harness.header(None).tools.is_empty());
+}
+
+/// A path under the home directory is written with a `~`.
+#[test]
+fn a_path_in_the_home_directory_is_written_with_a_tilde() {
+    let home = Path::new("/home/ada");
+    let skill = home.join(".claude/skills/review");
+    assert_eq!(
+        with_tilde(&skill, Some(home)),
+        Path::new("~").join(".claude/skills/review").display().to_string()
+    );
+    assert_eq!(with_tilde(&skill, None), skill.display().to_string());
+    assert_eq!(
+        with_tilde(Path::new("/srv/skills/review"), Some(home)),
+        "/srv/skills/review"
+    );
 }
 
 /// A conversation saved with the built-in skills resumes after some were

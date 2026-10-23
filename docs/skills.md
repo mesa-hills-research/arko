@@ -6,7 +6,8 @@ with `load_skill` when a task calls for it. A skill with `auto_load: true` in it
 always in their instructions instead.
 
 Arko reads skills from the project's `.agents/skills`, `.claude/skills` and `.skills`, from `skills`
-in Arko's folder, and from `~/.agents/skills` and `~/.claude/skills`. `/skills` lists them.
+in Arko's folder, and from `~/.agents/skills` and `~/.claude/skills`. `/skills` lists each with its
+description and its folder.
 
 ## Built-in skills
 
@@ -18,12 +19,12 @@ Arko has three skills built in, so no files are needed.
 | `repo-docs-style` | READMEs, docs pages, design notes and changelogs |
 | `ponytail` | Any coding task, and running workers |
 
-The agents load them on demand like any other skill, and `/skills` marks them as built in.
+The agents load them on demand like any other skill, and `/skills` lists them as built in.
 
 ### Replace one
 
-A skill of the same name in any skill folder replaces the built-in one. `/skills` says where the
-replacement is.
+A skill of the same name in any skill folder replaces the built-in one, and `/skills` shows its
+folder.
 
 ### Leave them out
 

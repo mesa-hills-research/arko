@@ -99,6 +99,24 @@ fn monitor_about(info: &arko_agents::terminal::MonitorInfo) -> String {
     parts.join(" · ")
 }
 
+/// How many columns of the terminal a line can use: its width less the
+/// full-screen view's margin, or 78 where there is no terminal.
+fn terminal_width() -> usize {
+    #[cfg(feature = "tui")]
+    let columns = crossterm::terminal::size().map_or(80, |(columns, _)| usize::from(columns));
+    #[cfg(not(feature = "tui"))]
+    let columns: usize = 80;
+    columns.saturating_sub(2)
+}
+
+/// `path`, with the home directory written as `~`.
+fn with_tilde(path: &Path, home: Option<&Path>) -> String {
+    match home.and_then(|home| path.strip_prefix(home).ok()) {
+        Some(rest) => Path::new("~").join(rest).display().to_string(),
+        None => path.display().to_string(),
+    }
+}
+
 /// The minutes from now to `expires_at`, to the nearest: 0 for less than
 /// one.
 fn minutes_left(expires_at: std::time::SystemTime) -> u64 {
@@ -3128,7 +3146,15 @@ impl Harness {
         }
     }
 
+    /// `/skills`: a line for each skill, with its description and where it
+    /// comes from.
     pub(crate) fn list_skills(&self) {
+        self.list_skills_within(terminal_width());
+    }
+
+    /// `list_skills` with each description cut so its line fits `width`
+    /// columns.
+    fn list_skills_within(&self, width: usize) {
         let out = &self.output;
         self.publish_details();
         let skills = match self.details.skills() {
@@ -3138,54 +3164,54 @@ impl Harness {
                 return;
             }
         };
-        if skills.skills.is_empty() {
+        let home = std::env::home_dir();
+        let mut rows: Vec<(String, String, String)> = skills
+            .skills
+            .iter()
+            .map(|skill| {
+                let mut from = match &skill.path {
+                    Some(path) => with_tilde(path, home.as_deref()),
+                    None => "built in".to_string(),
+                };
+                if skill.always {
+                    from.push_str(", always loaded");
+                }
+                (skill.name.clone(), skill.description.clone(), from)
+            })
+            .collect();
+        rows.sort();
+        if rows.is_empty() {
             out.line(&format!(
                 "No skills. Arko reads them (folders with a SKILL.md) from the project's .agents/skills, .claude/skills and .skills, from {}, and from ~/.agents/skills and ~/.claude/skills.",
                 skills.own_folder.display()
             ));
         }
-        // What sets a skill apart: it is built in, or replaces a built-in
-        // one, or is always in the instructions.
-        let marks = |skill: &details::SkillFacts| {
-            let mut said = Vec::new();
-            if skill.builtin {
-                said.push("built in".to_string());
-            }
-            if let Some(path) = &skill.replaces_builtin {
-                said.push(format!(
-                    "replaces the built-in skill, from {}",
-                    path.display()
-                ));
-            }
-            if skill.always {
-                said.push("always in the agents' instructions".to_string());
-            }
-            (!said.is_empty()).then(|| out.dim(&format!("({})", said.join(", "))))
-        };
-        for skill in &skills.skills {
-            let rest = if skill.always {
-                String::new()
-            } else {
-                ui::cut(&skill.description, 160)
-            };
-            let line = [Some(rest), marks(skill)]
-                .into_iter()
-                .flatten()
-                .filter(|part| !part.is_empty())
-                .collect::<Vec<_>>()
-                .join("  ");
-            out.line(&format!("{}  {line}", out.bold(&skill.name)));
-        }
-        if !skills.folders.is_empty() {
-            out.line(&out.dim(&format!(
-                "From {}",
-                skills
-                    .folders
-                    .iter()
-                    .map(|folder| folder.display().to_string())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            )));
+        let names = rows
+            .iter()
+            .map(|row| row.0.chars().count())
+            .max()
+            .unwrap_or(0);
+        let froms = rows
+            .iter()
+            .map(|row| row.2.chars().count())
+            .max()
+            .unwrap_or(0);
+        // The descriptions take what is left of the line, at least 20
+        // columns (a cut one gets a column more, for its ellipsis).
+        let room = width.saturating_sub(names + froms + 4 + 1).max(20);
+        let shown: Vec<String> = rows.iter().map(|row| ui::cut(&row.1, room)).collect();
+        let shown_width = shown
+            .iter()
+            .map(|text| text.chars().count())
+            .max()
+            .unwrap_or(0);
+        for ((name, _, from), description) in rows.iter().zip(&shown) {
+            out.line(&format!(
+                "{}{}  {description:<shown_width$}  {}",
+                out.bold(name),
+                " ".repeat(names - name.chars().count()),
+                out.dim(from)
+            ));
         }
         if !skills.builtin_off.is_empty() {
             out.line(&out.dim(&format!(

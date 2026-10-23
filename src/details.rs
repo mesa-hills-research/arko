@@ -400,7 +400,7 @@ impl McpFacts {
 #[derive(Debug, Clone, PartialEq)]
 pub struct SkillFacts {
     pub name: String,
-    /// What it is for (empty for one always in the instructions).
+    /// What it is for.
     pub description: String,
     /// It is always in the agents' instructions (else they load it when
     /// they need it).
@@ -411,6 +411,8 @@ pub struct SkillFacts {
     /// It is a skill of the user's with the name of a built-in one, which it
     /// replaces. This is where it is, its folder or its file.
     pub replaces_builtin: Option<PathBuf>,
+    /// Where it is, its folder or its file (none for a built-in skill).
+    pub path: Option<PathBuf>,
 }
 
 /// What `/skills` says.
@@ -564,19 +566,13 @@ impl Details {
                     .iter()
                     .any(|other| other.embedded && other.name == skill.name))
             .then(|| skill.path.clone()),
+            path: (!skill.embedded).then(|| skill.path.clone()),
         };
         let mut skills: Vec<SkillFacts> = loaded()
             .filter(|skill| !skill.auto_load)
             .map(facts)
             .collect();
-        skills.extend(
-            loaded()
-                .filter(|skill| skill.auto_load)
-                .map(|skill| SkillFacts {
-                    description: String::new(),
-                    ..facts(skill)
-                }),
-        );
+        skills.extend(loaded().filter(|skill| skill.auto_load).map(facts));
         Ok(SkillsFacts {
             skills,
             folders: self.skill_folders.clone(),
