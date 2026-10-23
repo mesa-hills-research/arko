@@ -255,59 +255,83 @@ impl crate::ui::Printer for Printed {
 }
 
 /// `/skills` has a line for each skill with its name, description and where
-/// it comes from, the descriptions cut to fit the width, and names the
-/// built-in skills left out. The banner counts only the user's own.
+/// it comes from, the descriptions cut to fit the width (counted in
+/// columns, so wide characters take two) and the folders shortened when the
+/// width is narrow, and names the built-in skills left out. The banner
+/// counts only the user's own.
 #[tokio::test]
 async fn skills_lists_each_skill_with_its_description_and_where_it_comes_from() {
+    use unicode_width::UnicodeWidthStr;
+
     let temp = tempfile::tempdir().unwrap();
     let (mut harness, _inputs, _sender) = harness(temp.path(), LLMClient::new(), true);
     let printed = Printed::default();
     harness.output = Arc::new(Output::new(Some(Box::new(printed.clone())), false));
     let folder = temp.path().join("skills");
     own_skill(&folder, "repo-docs-style", "Mine.");
-    let always = folder.join("always-on");
-    std::fs::create_dir_all(&always).unwrap();
-    std::fs::write(
-        always.join("SKILL.md"),
-        "---\nname: always-on\ndescription: My always-on skill.\nauto_load: true\n---\n\nAlways.\n",
-    )
-    .unwrap();
+    let skill_file = |name: &str, description: &str, extra: &str| {
+        let dir = folder.join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("SKILL.md"),
+            format!("---\nname: {name}\ndescription: {description}\n{extra}---\n\n{name}.\n"),
+        )
+        .unwrap();
+        dir
+    };
+    let always = skill_file("always-on", "My always-on skill.", "auto_load: true\n");
+    let wide = skill_file("wide", &"日本語".repeat(34), "");
     with_folders(&mut harness, vec![folder.clone()]);
     harness.settings.builtin_skills = BuiltinSkills {
         none: false,
         off: vec!["user-facing-prose".into()],
     };
     harness.publish_details();
-    harness.list_skills_within(100);
+    harness.list_skills_within(160);
     let text = printed.0.lock().unwrap().join("\n");
     let lines: Vec<&str> = text.lines().collect();
     // By name, the names in a column of their own, and no line over the width.
-    let names = ["always-on", "ponytail", "repo-docs-style"];
+    let names = ["always-on", "ponytail", "repo-docs-style", "wide"];
     for (line, name) in lines.iter().zip(names) {
         assert!(line.starts_with(&format!("{name:<15}  ")), "{text}");
     }
-    assert!(lines.iter().all(|line| line.chars().count() <= 100), "{text}");
-    // The user's skills say where they are, and the built-in one that it is
-    // built in, with its long description cut. Nothing says what replaces what.
-    assert!(
-        lines[0].ends_with(&format!("{}, always loaded", always.display())),
-        "{text}"
-    );
+    assert!(lines.iter().all(|line| line.width() <= 160), "{text}");
+    // Each says where it is, in a column of its own (the built-in one that
+    // it is built in), and nothing says what replaces what.
+    let places = [
+        format!("{}, always loaded", always.display()),
+        "built in".to_string(),
+        folder.join("repo-docs-style").display().to_string(),
+        wide.display().to_string(),
+    ];
+    for (line, place) in lines.iter().zip(&places) {
+        assert!(line.ends_with(&format!("  {place}")), "{text}");
+        assert_eq!(line.width() - place.width(), lines[0].width() - places[0].width(), "{text}");
+    }
+    // A description is whole or cut with an ellipsis, wide characters too.
     assert!(lines[0].contains("  My always-on skill. "), "{text}");
     assert!(lines[1].contains("…  built in"), "{text}");
-    assert!(
-        lines[2].ends_with(&format!("  {}", folder.join("repo-docs-style").display())),
-        "{text}"
-    );
     assert!(lines[2].contains("  My repo-docs-style skill. "), "{text}");
+    assert!(lines[3].contains("…  "), "{text}");
+    assert!(!lines[3].contains(&"日本語".repeat(34)), "{text}");
     assert_eq!(
-        lines[3],
+        lines[4],
         "Built-in skills left out (user-facing-prose).",
         "{text}"
     );
-    assert_eq!(lines.len(), 4, "{text}");
-    // Of the three skills, the two in the folder are the user's own.
-    assert_eq!(harness.header(None).tools, ["2 skills"]);
+    assert_eq!(lines.len(), 5, "{text}");
+    // Of the four skills, the three in the folder are the user's own.
+    assert_eq!(harness.header(None).tools, ["3 skills"]);
+
+    // On a narrow terminal the folders lose their leading folders, so each
+    // skill still has a line.
+    printed.0.lock().unwrap().clear();
+    harness.list_skills_within(78);
+    let text = printed.0.lock().unwrap().join("\n");
+    let lines: Vec<&str> = text.lines().collect();
+    assert!(lines.iter().all(|line| line.width() <= 78), "{text}");
+    assert!(lines[0].ends_with("  …/skills/always-on, always loaded"), "{text}");
+    assert_eq!(lines.len(), 5, "{text}");
 
     printed.0.lock().unwrap().clear();
     harness.settings.builtin_skills = BuiltinSkills {

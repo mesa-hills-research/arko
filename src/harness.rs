@@ -14,6 +14,7 @@ use arko_workflows::persistence::{EventLog, PersistenceConfig};
 use arko_workflows::prelude::*;
 use arko_workflows::services::{RUN_WORKFLOW_AGENT_TOOL_NAME, WorkflowServicesConfig};
 use tokio::sync::{mpsc, oneshot};
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::agents::{MAIN, NO_LIMIT, WORKER};
 use crate::crew::Crew;
@@ -115,6 +116,40 @@ fn with_tilde(path: &Path, home: Option<&Path>) -> String {
         Some(rest) => Path::new("~").join(rest).display().to_string(),
         None => path.display().to_string(),
     }
+}
+
+/// `text` on one line, cut to at most `columns` terminal columns (a wide
+/// character takes two) with a `…` where it is cut.
+fn cut_columns(text: &str, columns: usize) -> String {
+    let single = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if single.width() <= columns {
+        return single;
+    }
+    let mut cut = String::new();
+    let mut used = 1;
+    for c in single.chars() {
+        used += c.width().unwrap_or(0);
+        if used > columns {
+            break;
+        }
+        cut.push(c);
+    }
+    cut.push('…');
+    cut
+}
+
+/// `path` with its leading folders replaced by `…/` until it fits
+/// `columns`, or as short as that gets (its last folder or file).
+fn shorten_path(path: &str, columns: usize) -> String {
+    let (mut shown, mut rest) = (path.to_string(), path);
+    while shown.width() > columns
+        && let Some((_, tail)) = rest.split_once(['/', '\\'])
+        && !tail.is_empty()
+    {
+        rest = tail;
+        shown = format!("…/{rest}");
+    }
+    shown
 }
 
 /// The minutes from now to `expires_at`, to the nearest: 0 for less than
@@ -3165,18 +3200,32 @@ impl Harness {
             }
         };
         let home = std::env::home_dir();
+        let names = skills
+            .skills
+            .iter()
+            .map(|skill| skill.name.width())
+            .max()
+            .unwrap_or(0);
+        // A folder leaves the description 20 columns, dropping its leading
+        // folders if it has to.
+        let place_room = width.saturating_sub(names + 4 + 20);
         let mut rows: Vec<(String, String, String)> = skills
             .skills
             .iter()
             .map(|skill| {
-                let mut from = match &skill.path {
-                    Some(path) => with_tilde(path, home.as_deref()),
+                let always = if skill.always { ", always loaded" } else { "" };
+                let place = match &skill.path {
+                    Some(path) => shorten_path(
+                        &with_tilde(path, home.as_deref()),
+                        place_room.saturating_sub(always.len()),
+                    ),
                     None => "built in".to_string(),
                 };
-                if skill.always {
-                    from.push_str(", always loaded");
-                }
-                (skill.name.clone(), skill.description.clone(), from)
+                (
+                    skill.name.clone(),
+                    skill.description.clone(),
+                    format!("{place}{always}"),
+                )
             })
             .collect();
         rows.sort();
@@ -3186,31 +3235,17 @@ impl Harness {
                 skills.own_folder.display()
             ));
         }
-        let names = rows
-            .iter()
-            .map(|row| row.0.chars().count())
-            .max()
-            .unwrap_or(0);
-        let froms = rows
-            .iter()
-            .map(|row| row.2.chars().count())
-            .max()
-            .unwrap_or(0);
-        // The descriptions take what is left of the line, at least 20
-        // columns (a cut one gets a column more, for its ellipsis).
-        let room = width.saturating_sub(names + froms + 4 + 1).max(20);
-        let shown: Vec<String> = rows.iter().map(|row| ui::cut(&row.1, room)).collect();
-        let shown_width = shown
-            .iter()
-            .map(|text| text.chars().count())
-            .max()
-            .unwrap_or(0);
-        for ((name, _, from), description) in rows.iter().zip(&shown) {
+        let places = rows.iter().map(|row| row.2.width()).max().unwrap_or(0);
+        let room = width.saturating_sub(names + places + 4).max(20);
+        let shown: Vec<String> = rows.iter().map(|row| cut_columns(&row.1, room)).collect();
+        let shown_width = shown.iter().map(|text| text.width()).max().unwrap_or(0);
+        for ((name, _, place), description) in rows.iter().zip(&shown) {
             out.line(&format!(
-                "{}{}  {description:<shown_width$}  {}",
+                "{}{}  {description}{}  {}",
                 out.bold(name),
-                " ".repeat(names - name.chars().count()),
-                out.dim(from)
+                " ".repeat(names - name.width()),
+                " ".repeat(shown_width - description.width()),
+                out.dim(place)
             ));
         }
         if !skills.builtin_off.is_empty() {
