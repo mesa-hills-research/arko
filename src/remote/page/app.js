@@ -1095,9 +1095,9 @@
       depthOptions.append(option);
     }
     $('worker-depth-about').textContent = C.workerDepthAbout();
-    // Copies of the user's messages to a worker go to its starter, unless this is off.
+    // Copies of the user's messages to a worker go to its starter, when this is on.
     const copying = pending && pending.copies !== undefined;
-    const copies = copying ? pending.copies : settings.message_copies !== false;
+    const copies = copying ? pending.copies : settings.message_copies === true;
     const copySwitch = $('message-copies-switch');
     copySwitch.setAttribute('aria-checked', String(copies));
     copySwitch.setAttribute('aria-busy', String(Boolean(copying)));
@@ -1244,8 +1244,8 @@
 
   $('message-copies-switch').addEventListener('click', () => {
     if (pending) return;
-    const on = !(status && status.settings && status.settings.message_copies !== false);
-    command('/message-copies ' + (on ? 'on' : 'off'), 'worker-note', (settings) => (settings.message_copies !== false) === on, { copies: on });
+    const on = !(status && status.settings && status.settings.message_copies === true);
+    command('/message-copies ' + (on ? 'on' : 'off'), 'worker-note', (settings) => (settings.message_copies === true) === on, { copies: on });
   });
 
   function chooseProject(key) {

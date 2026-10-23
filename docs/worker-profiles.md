@@ -108,10 +108,11 @@ main agent starts workers. With more, a worker can start workers of its own when
 that starts it says so, down to that level.
 
 `/message-copies` (also `--message-copies` and `--no-message-copies`) is saved with the session and
-is on by default. It is the "Message copies" row in `/settings` and the setting of that name on the
-web page. The agent that started a worker gets a copy of each message you send the worker, with its
-next news and without a turn of its own. With it off, that agent doesn't see your messages. A change
-applies from the next message, and a session saved before the setting existed has it on.
+is off by default. It is the "Message copies" row in `/settings` and the setting of that name on the
+web page. With it on, the agent that started a worker gets a copy of each message you send the
+worker, with its next news and without a turn of its own. With it off, that agent doesn't see your
+messages. A change applies from the next message, and a session saved before the setting existed has
+it on.
 
 ## Workers that start workers
 

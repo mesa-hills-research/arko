@@ -288,7 +288,7 @@ pub(crate) fn new_settings(
             Some(depth) => crate::workers::check_depth(depth)?,
             None => DEFAULT_WORKER_DEPTH,
         },
-        message_copies: options.message_copies.unwrap_or(true),
+        message_copies: options.message_copies.unwrap_or(false),
         nested_start: true,
         builtin_skills: builtin_skills_for(options)?,
     };

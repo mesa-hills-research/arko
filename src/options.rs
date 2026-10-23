@@ -56,7 +56,7 @@ pub struct Options {
     /// isn't opened with another number.
     pub worker_depth: Option<u32>,
     /// Whether the agent that started a worker gets a copy of the user's
-    /// messages to the worker, by default yes in a new session, and a
+    /// messages to the worker, by default no in a new session, and a
     /// resumed session's own. It can change as a session resumes.
     pub message_copies: Option<bool>,
     /// The 1-hour prompt cache, by default as `ARKO_CACHE_1H` says.

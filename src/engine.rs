@@ -1894,7 +1894,7 @@ mod tests {
 
     /// Whether the agent that started a worker gets a copy of the user's
     /// messages to it can be set for a new session, which keeps it, and again
-    /// as it resumes. A new session has copies on, and a resume without the
+    /// as it resumes. A new session has copies off, and a resume without the
     /// option keeps the session's.
     #[tokio::test]
     async fn message_copies_are_set_for_a_new_session_and_on_resume() {
@@ -1935,26 +1935,26 @@ mod tests {
         };
         let (seam, ended) = open(SessionChoice::New, None).await;
         let id = seam.session.id.clone();
-        assert!(saved(&id), "a new session has copies on");
-        assert!(seam.meter.read().settings.message_copies);
-        quit(seam, ended).await;
-        // A resume with the option turns them off and saves that.
-        let (seam, ended) = open(SessionChoice::Resume(id.clone()), Some(false)).await;
-        assert!(!saved(&id));
+        assert!(!saved(&id), "a new session has copies off");
         assert!(!seam.meter.read().settings.message_copies);
         quit(seam, ended).await;
-        // Without it, a resume keeps the session's.
-        let (seam, ended) = open(SessionChoice::Resume(id.clone()), None).await;
-        assert!(!saved(&id));
-        assert!(!seam.meter.read().settings.message_copies);
-        quit(seam, ended).await;
+        // A resume with the option turns them on and saves that.
         let (seam, ended) = open(SessionChoice::Resume(id.clone()), Some(true)).await;
         assert!(saved(&id));
         assert!(seam.meter.read().settings.message_copies);
         quit(seam, ended).await;
+        // Without it, a resume keeps the session's.
+        let (seam, ended) = open(SessionChoice::Resume(id.clone()), None).await;
+        assert!(saved(&id));
+        assert!(seam.meter.read().settings.message_copies);
+        quit(seam, ended).await;
+        let (seam, ended) = open(SessionChoice::Resume(id.clone()), Some(false)).await;
+        assert!(!saved(&id));
+        assert!(!seam.meter.read().settings.message_copies);
+        quit(seam, ended).await;
         // A new session takes it too.
-        let (seam, ended) = open(SessionChoice::New, Some(false)).await;
-        assert!(!saved(&seam.session.id));
+        let (seam, ended) = open(SessionChoice::New, Some(true)).await;
+        assert!(saved(&seam.session.id));
         quit(seam, ended).await;
     }
 
