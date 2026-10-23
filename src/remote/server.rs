@@ -196,6 +196,8 @@ fn router(app: Arc<App>) -> Router {
         .route("/api/background", axum::routing::post(background))
         .route("/api/jobs/stop", axum::routing::post(stop_job))
         .route("/api/links", get(links))
+        .route("/api/commands", get(commands))
+        .route("/api/choices", axum::routing::post(choices))
         .layer(DefaultBodyLimit::max(MAX_BODY))
         .layer(axum::middleware::map_response(harden))
         .with_state(app)
@@ -773,6 +775,85 @@ async fn links(
     axum::Json(links).into_response()
 }
 
+/// `GET /api/commands`: the commands the page runs, each with its name,
+/// what may follow it and what it does, for the menu of the input.
+async fn commands(
+    State(app): State<Arc<App>>,
+    ConnectInfo(peer): Peer,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(refusal) = app.authorize(&headers, peer.ip()) {
+        return refusal.into_response();
+    }
+    let commands: Vec<_> = crate::commands::on_page()
+        .map(|command| {
+            serde_json::json!({
+                "name": command.name,
+                "args": command.args,
+                "about": command.about,
+            })
+        })
+        .collect();
+    axum::Json(commands).into_response()
+}
+
+/// The most the words before the one typed may hold, in bytes, for
+/// `POST /api/choices`.
+const MAX_BEFORE: usize = 4096;
+
+#[derive(Deserialize)]
+struct ChoicesBody {
+    command: String,
+    /// The words typed after the command, before the one being typed.
+    #[serde(default)]
+    before: Vec<String>,
+}
+
+/// `POST /api/choices` with `{"command": "/model", "before": ["worker"]}`:
+/// the words that may come next in that command's arguments, as the
+/// full-screen view completes them (fixed ones, or the session's workers,
+/// models and so on).
+async fn choices(
+    State(app): State<Arc<App>>,
+    ConnectInfo(peer): Peer,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    if let Err(refusal) = app.authorize(&headers, peer.ip()) {
+        return refusal.into_response();
+    }
+    let Ok(body) = serde_json::from_slice::<ChoicesBody>(&body) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            error_body("send {\"command\": ..., \"before\": [...]}"),
+        )
+            .into_response();
+    };
+    if body.before.iter().map(String::len).sum::<usize>() > MAX_BEFORE {
+        return (
+            StatusCode::BAD_REQUEST,
+            error_body("the words before the one typed are too long"),
+        )
+            .into_response();
+    }
+    let reading = app.meter.read();
+    // (Finding the models can ask Claude Code for its login.)
+    let words = tokio::task::spawn_blocking(move || {
+        let command = crate::commands::on_page().find(|command| command.name == body.command)?;
+        let before: Vec<&str> = body.before.iter().map(String::as_str).collect();
+        Some(crate::commands::dynamic_choices(
+            &reading,
+            command.name,
+            &before,
+        ))
+    })
+    .await
+    .ok()
+    .flatten()
+    .unwrap_or_default();
+    axum::Json(serde_json::json!({ "choices": words })).into_response()
+}
+
 /// `POST /api/stop`: stops the turn, as Ctrl-C does.
 async fn stop(
     State(app): State<Arc<App>>,
@@ -1087,6 +1168,109 @@ mod tests {
                 .expect("the stream goes on");
             buffer.push_str(&String::from_utf8_lossy(&chunk));
         }
+    }
+
+    /// The input's menu gets the commands the page runs, from the same list
+    /// as the full-screen view's, and the words an argument may be, fixed
+    /// or the session's. Both need a session.
+    #[tokio::test]
+    async fn the_commands_and_their_arguments_come_from_the_session() {
+        let feed = Feed::new("main");
+        let meter = Arc::new(Moving(Mutex::new(Reading {
+            agents: vec![super::super::AgentStatus {
+                id: "r1".into(),
+                context_tokens: None,
+                context_window: None,
+                handover_at: None,
+                compacts: false,
+            }],
+            ..Reading::default()
+        })));
+        let served = serve_with(&feed, "127.0.0.1:0", Info::default(), meter);
+        assert_eq!(
+            served.get("/api/commands", None).await.status(),
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            served.post("/api/choices", None, "{}").await.status(),
+            StatusCode::UNAUTHORIZED
+        );
+        let cookie = served.login().await;
+        let listed: Vec<serde_json::Value> = served
+            .get("/api/commands", Some(&cookie))
+            .await
+            .json()
+            .await
+            .unwrap();
+        let names: Vec<&str> = listed
+            .iter()
+            .map(|command| command["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            names,
+            crate::commands::on_page()
+                .map(|command| command.name)
+                .collect::<Vec<_>>()
+        );
+        // The ones the page can't run aren't offered.
+        for name in ["/exit", "/remote", "/watch", "/view", "/copy", "/settings"] {
+            assert!(!names.contains(&name), "{name}");
+        }
+        let model = listed.iter().find(|c| c["name"] == "/model").unwrap();
+        assert_eq!(
+            model["args"],
+            "[MODEL] [EFFORT] | worker [MODEL|main] [EFFORT]"
+        );
+        assert!(!model["about"].as_str().unwrap().is_empty());
+
+        for (command, before, words) in [
+            ("/outside", &[][..], vec!["on", "off"]),
+            ("/message", &[], vec!["r1"]),
+            ("/jobs", &["stop"], vec!["all"]),
+            ("/cost", &[], vec![]),
+            ("/exit", &[], vec![]),
+        ] {
+            let body = serde_json::json!({ "command": command, "before": before });
+            let response = served
+                .post("/api/choices", Some(&cookie), &body.to_string())
+                .await;
+            assert_eq!(response.status(), StatusCode::OK, "{command}");
+            let answer: serde_json::Value = response.json().await.unwrap();
+            assert_eq!(answer["choices"], serde_json::json!(words), "{command}");
+        }
+        let response = served.post("/api/choices", Some(&cookie), "{}").await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        // Words that are too long are refused, and the most allowed isn't.
+        for (long, status) in [
+            (MAX_BEFORE, StatusCode::OK),
+            (MAX_BEFORE + 1, StatusCode::BAD_REQUEST),
+        ] {
+            let body = serde_json::json!({ "command": "/model", "before": ["a".repeat(long)] });
+            let response = served
+                .post("/api/choices", Some(&cookie), &body.to_string())
+                .await;
+            assert_eq!(response.status(), status, "{long} bytes");
+        }
+        // Another site's page can't use the cookie.
+        let response = served
+            .http
+            .get(format!("{}/api/commands", served.base))
+            .header(header::COOKIE, &cookie)
+            .header("sec-fetch-site", "cross-site")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let response = served
+            .http
+            .post(format!("{}/api/choices", served.base))
+            .header(header::COOKIE, &cookie)
+            .header(header::ORIGIN, "http://127.0.0.1:3000")
+            .body(r#"{"command": "/outside"}"#)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
     }
 
     /// `GET /api/links` answers 401 without a session or the key, and

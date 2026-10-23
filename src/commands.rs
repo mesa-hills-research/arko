@@ -60,6 +60,12 @@ impl Command {
     fn named(&self, name: &str) -> bool {
         self.name == name || self.aliases.contains(&name)
     }
+
+    /// Whether only the terminal runs it: the web page can't quit Arko or
+    /// turn itself off.
+    pub fn terminal_only(&self) -> bool {
+        matches!(self.name, "/exit" | "/remote")
+    }
 }
 
 /// Every command, in the order the help and the menu list them.
@@ -276,6 +282,14 @@ pub fn find(text: &str) -> Option<&'static Command> {
     COMMANDS
         .iter()
         .find(|command| command.named(name) && (rest.is_empty() || !command.args.is_empty()))
+}
+
+/// The commands the web page runs, for its menu: the session's, except
+/// those only the terminal runs.
+pub fn on_page() -> impl Iterator<Item = &'static Command> {
+    COMMANDS
+        .iter()
+        .filter(|command| command.runs == Runs::Session && !command.terminal_only())
 }
 
 /// The commands whose names start with `prefix` (which starts with `/`),

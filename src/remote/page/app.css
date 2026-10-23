@@ -364,6 +364,60 @@ kbd {
 .stop svg { width: 16px; height: 16px; fill: currentColor; }
 .stop:disabled { opacity: 0.5; }
 
+/* The command menu opens above the input. */
+.compose { position: relative; }
+.slash {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + 6px);
+  display: flex;
+  flex-direction: column;
+  max-height: min(50vh, 340px);
+  max-height: min(50dvh, 340px);
+  background: var(--surface);
+  border-radius: 12px;
+  box-shadow: var(--shadow);
+  padding: 6px;
+  z-index: 6;
+}
+.slash-hint { padding: 6px 10px 8px; font-size: 13px; overflow-wrap: anywhere; }
+.slash-hint:not([hidden]) + .slash-list { border-top: 1px solid var(--line); padding-top: 6px; margin-top: 2px; }
+.slash-hint .slash-about { margin-top: 2px; }
+.slash-list { list-style: none; margin: 0; padding: 0; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+.slash-list li {
+  display: flex;
+  flex-wrap: wrap;
+  column-gap: 10px;
+  align-items: baseline;
+  min-height: 40px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.slash-list li:hover { background: var(--secondary); }
+.slash-list li[aria-selected="true"] { background: var(--tint); }
+.slash-name { font: 600 14px/1.4 var(--mono); }
+.slash-args { flex: 1; min-width: 0; color: var(--muted); font: 13px/1.4 var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.slash-hint .slash-args { white-space: normal; }
+.slash-about {
+  flex: 0 0 100%;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.35;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 1;
+  line-clamp: 1;
+  overflow: hidden;
+}
+@media (min-width: 720px) {
+  .slash-about { -webkit-line-clamp: 2; line-clamp: 2; }
+}
+@media (pointer: coarse) {
+  .slash-list li { min-height: 44px; }
+}
+
 .keys { display: none; gap: 6px; align-items: center; justify-content: flex-end; color: var(--muted); font-size: 12px; margin-top: 6px; }
 .keys kbd { margin-left: 8px; }
 @media (pointer: fine) and (min-width: 720px) {
