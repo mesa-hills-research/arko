@@ -219,12 +219,17 @@ pub(crate) async fn job_alert(
 /// The notes of the turn (`notes`, with their sequence numbers) that the
 /// main agent's runs never read.
 pub(crate) fn unread_notes(notes: &[(u64, String)], workflow: &Workflow) -> Vec<String> {
-    let given = workflow
-        .result()
+    let runs: Vec<_> = workflow
+        .context()
         .agent_results
+        .read()
         .iter()
         .filter(|run| run.agent_name == MAIN)
-        .map(|run| workflow.notes_given(run.agent_run_id))
+        .map(|run| run.agent_run_id)
+        .collect();
+    let given = runs
+        .into_iter()
+        .map(|run| workflow.notes_given(run))
         .max()
         .unwrap_or(0);
     notes

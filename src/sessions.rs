@@ -187,14 +187,16 @@ fn saved_conversation(
     if let Some(seed) = saved.seed {
         return Ok((Some(seed), saved.conversations));
     }
-    let task = saved.conversations.current_run().and_then(|run| {
+    let result = saved.conversations.current_run().and_then(|run| {
         saved
             .results
             .into_iter()
             .find(|result| result.agent_run_id == run)
             .filter(goes_on)
-            .map(|result| result.task)
     });
+    let task = result
+        .map(|result| result.task().cloned().map_err(|error| error.to_string()))
+        .transpose()?;
     Ok((task, saved.conversations))
 }
 
@@ -376,7 +378,10 @@ pub(crate) fn conversation_of(
             .iter()
             .find(|result| result.agent_run_id == *run)
             .ok_or_else(|| unreadable(format!("run {run} is missing")))?;
-        add(&mut found, &result.task);
+        let task = result
+            .task()
+            .map_err(|error| unreadable(error.to_string()))?;
+        add(&mut found, task);
     }
     Ok(found)
 }
@@ -389,7 +394,7 @@ fn goes_on(result: &arko_workflows::prelude::AgentResult) -> bool {
     match result.status {
         AgentRunStatus::Completed | AgentRunStatus::Interrupted => true,
         AgentRunStatus::Cancelled => {
-            result.task.parent.is_none()
+            result.info().parent.is_none()
                 && result
                     .stopped_by
                     .as_ref()

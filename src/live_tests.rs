@@ -553,7 +553,7 @@ const SHELL_TOOL: &str = crate::shell::SHELL_TOOL_NAME;
 /// The main agent's run as the last turn left it.
 fn handovers(harness: &Harness) -> usize {
     match &harness.conversation {
-        Conversation::Answered(result) => result.task.handovers.len(),
+        Conversation::Answered(result) => result.task().unwrap().handovers.len(),
         _ => panic!("the conversation wasn't answered"),
     }
 }
