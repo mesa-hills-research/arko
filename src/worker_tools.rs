@@ -405,6 +405,7 @@ fn models_text(
             let how = match missing.as_str() {
                 "Claude Code signed in" => "The user signs in with `claude auth login`.",
                 "Claude Code installed" => "The user installs Claude Code.",
+                "Claude Code updated" => "The user updates it with `claude update`.",
                 _ => "The user adds it with /keys.",
             };
             unusable.push_str(&format!(
@@ -480,6 +481,7 @@ fn needs_warning(needs: &str) -> String {
     match needs {
         "Claude Code signed in" => " Workers on it can't start until the user signs in to Claude Code with `claude auth login`.".to_string(),
         "Claude Code installed" => " Workers on it can't start until the user installs Claude Code.".to_string(),
+        "Claude Code updated" => " Workers on it can't start until the user updates Claude Code with `claude update`.".to_string(),
         key => format!(" Workers on it can't start until the user adds {key} with /keys."),
     }
 }

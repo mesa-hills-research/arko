@@ -614,6 +614,10 @@ impl Need {
                 "{model} runs in Claude Code ({}), which isn't signed in. Sign in with `claude auth login`",
                 path.display()
             ),
+            Need::ClaudeCode {
+                problem: claude_code::Problem::Outdated { version },
+                ..
+            } => claude_code::outdated_text(version),
         }
     }
 }
@@ -945,6 +949,9 @@ pub fn setup(need: Option<&Need>) -> Result<(), String> {
                 Err(claude_code::Problem::SignedOut(path)) => {
                     format!("not signed in ({})", path.display())
                 }
+                Err(claude_code::Problem::Outdated { version }) => {
+                    format!("{version}, too old (update it with `claude update`)")
+                }
             };
             out.line(&format!("  Claude Code         {claude}"));
             let voyage = match lookup(VOYAGE_KEY) {
@@ -985,6 +992,7 @@ pub fn setup(need: Option<&Need>) -> Result<(), String> {
                 "{model} runs in Claude Code ({}), which isn't signed in.",
                 path.display()
             ),
+            claude_code::Problem::Outdated { version } => claude_code::outdated_text(version),
         }),
     }
     out.line("");
@@ -1180,6 +1188,12 @@ fn ask_claude_code(
                         "In another terminal, sign in with `claude auth login`, with the Claude account whose plan Arko should use.",
                     );
                 }
+                claude_code::Problem::Outdated { version } => {
+                    if !said {
+                        out.line(&claude_code::outdated_text(version));
+                    }
+                    out.line("In another terminal, update it with `claude update`.");
+                }
             }
             instructed = Some(problem.clone());
             said = false;
@@ -1198,6 +1212,7 @@ fn ask_claude_code(
             Err(still) if still == problem => out.line(&out.warn(match still {
                 claude_code::Problem::Missing => "Not yet. There is still no `claude` on the PATH.",
                 claude_code::Problem::SignedOut(_) => "Not yet. Claude Code still isn't signed in.",
+                claude_code::Problem::Outdated { .. } => "Not yet. Claude Code is still too old.",
             })),
             Err(other) => problem = other,
         }
