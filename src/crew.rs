@@ -1233,6 +1233,14 @@ impl Crew {
                 .any(|item| item.kind.wakes())
         })
     }
+    /// Whether the news waiting for the lead holds mail that reached it
+    /// before but not whole, and goes out again.
+    pub fn has_resent_mail(&self) -> bool {
+        let lead = *self.lead.lock().unwrap();
+        lead.zip(self.workflow()).is_some_and(|(lead, workflow)| {
+            workflow.pending_news(lead).iter().any(|item| item.resent)
+        })
+    }
     pub fn describe(&self) -> String {
         self.facts()
             .iter()
