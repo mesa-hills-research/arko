@@ -758,6 +758,9 @@ pub struct Crew {
     project: Arc<Mutex<Option<String>>>,
     workflow: Arc<Mutex<Weak<Workflow>>>,
     lead: Mutex<Option<Uuid>>,
+    /// How many failed model requests in a row stop a worker (see
+    /// `config`), if any do.
+    retry_cap: Mutex<Option<u32>>,
     wake: mpsc::UnboundedSender<()>,
     events: Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
@@ -772,6 +775,7 @@ impl Crew {
                 setup,
                 workflow: Arc::default(),
                 lead: Mutex::new(None),
+                retry_cap: Mutex::new(None),
                 wake,
                 events: Mutex::new(None),
             }),
@@ -818,10 +822,20 @@ impl Crew {
         } else {
             config.max_running(self.setup.max_running as usize)
         };
+        // The framework reads the cap when the workflow is built.
+        if let Some(cap) = *self.retry_cap.lock().unwrap() {
+            config = config.max_failed_requests(cap);
+        }
         // A worker's workspace may be outside the lead's only while outside
         // access is on, which can change while the session runs: the
         // `outside` hook refuses the others.
         config.workspaces_anywhere()
+    }
+
+    /// Stops a worker after `cap` failed model requests in a row, in the
+    /// workflow built from now on (none: no cap).
+    pub fn set_retry_cap(&self, cap: Option<u32>) {
+        *self.retry_cap.lock().unwrap() = cap;
     }
 
     /// The model new workers start on from now on.
@@ -1217,6 +1231,14 @@ impl Crew {
                 .pending_news(lead)
                 .iter()
                 .any(|item| item.kind.wakes())
+        })
+    }
+    /// Whether the news waiting for the lead holds mail that reached it
+    /// before but not whole, and goes out again.
+    pub fn has_resent_mail(&self) -> bool {
+        let lead = *self.lead.lock().unwrap();
+        lead.zip(self.workflow()).is_some_and(|(lead, workflow)| {
+            workflow.pending_news(lead).iter().any(|item| item.resent)
         })
     }
     pub fn describe(&self) -> String {

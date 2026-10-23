@@ -306,6 +306,15 @@ mod tests {
             .unwrap()
             .contains("outside the working directory")
         );
+        // A path that starts with ~ is the home directory's, not the working
+        // directory's.
+        assert!(
+            check(
+                WRITE_FILE_TOOL_NAME,
+                serde_json::json!({"path": "~/x.txt", "content": "x"})
+            )
+            .is_some_and(|reason| reason.contains("outside the working directory"))
+        );
         assert!(
             check(
                 EDIT_FILE_TOOL_NAME,

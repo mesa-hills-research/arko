@@ -730,6 +730,10 @@ impl Harness {
             self.settings.worker_depth,
             std::sync::atomic::Ordering::Relaxed,
         );
+        self.gauges.worker_retry_cap.store(
+            self.settings.worker_retry_cap.unwrap_or(0),
+            std::sync::atomic::Ordering::Relaxed,
+        );
         self.gauges.message_copies.store(
             self.settings.message_copies,
             std::sync::atomic::Ordering::Relaxed,

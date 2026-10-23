@@ -534,6 +534,13 @@ impl Engine {
                     }
                     None => false,
                 };
+                let cap = match options.worker_retry_cap {
+                    Some(cap) => {
+                        let cap = Some(crate::workers::check_retry_cap(cap)?);
+                        std::mem::replace(&mut settings.worker_retry_cap, cap) != cap
+                    }
+                    None => false,
+                };
                 // So can the built-in skills, for the conversations that start
                 // after it.
                 let (chosen, skipped) = builtin_skills_resumed(&options, &settings.builtin_skills);
@@ -555,6 +562,7 @@ impl Engine {
                     | wakes
                     | choice
                     | depth
+                    | cap
                     | skills
                     | copies
                 {
@@ -844,6 +852,7 @@ impl Engine {
             extra_rules: Default::default(),
             worker_models: Default::default(),
             worker_depth: Default::default(),
+            worker_retry_cap: Default::default(),
             message_copies: Default::default(),
             builtin_skills: Default::default(),
             project: Default::default(),
@@ -2079,6 +2088,76 @@ mod tests {
             }
         }
         assert_eq!(saved(&id), (ModelChoice::Session, 1));
+    }
+
+    /// The worker retry cap can be set for a new session, which keeps it, and
+    /// again as it resumes. A new session has none, and a resume without the
+    /// option keeps the session's. A cap of 0 opens nothing.
+    #[tokio::test]
+    async fn the_worker_retry_cap_is_set_for_a_new_session_and_on_resume() {
+        let temp = tempfile::tempdir().unwrap();
+        let (server, _bodies) = counting_server().await;
+        let (root, project) = (temp.path().join("arko"), temp.path().join("project"));
+        std::fs::create_dir_all(&project).unwrap();
+        let try_open = |session: SessionChoice, cap: Option<u32>| {
+            let running = spawn(
+                Options {
+                    root: Some(root.clone()),
+                    session,
+                    workspace: Some(project.clone()),
+                    model: Some("luna".into()),
+                    openai_auth: Some(OpenAiAuth::ApiKey),
+                    cache_1h: Some(false),
+                    worker_retry_cap: cap,
+                    client: Some(GivenClient(Arc::new(server.client()))),
+                    ..Options::default()
+                },
+                Arc::new(NoPrompter),
+            );
+            async move {
+                let opened = tokio::time::timeout(Duration::from_secs(30), running.opened)
+                    .await
+                    .unwrap()
+                    .unwrap();
+                (opened, running.ended)
+            }
+        };
+        let open = |session: SessionChoice, cap: Option<u32>| {
+            let opening = try_open(session, cap);
+            async move {
+                let (opened, ended) = opening.await;
+                (opened.unwrap(), ended)
+            }
+        };
+        let saved = |id: &str| {
+            Session::open(&root, id)
+                .unwrap()
+                .load_settings()
+                .unwrap()
+                .worker_retry_cap
+        };
+        let (seam, ended) = open(SessionChoice::New, None).await;
+        let id = seam.session.id.clone();
+        assert_eq!(saved(&id), None);
+        assert_eq!(seam.meter.read().settings.worker_retry_cap, None);
+        quit(seam, ended).await;
+        let (seam, ended) = open(SessionChoice::Resume(id.clone()), Some(4)).await;
+        assert_eq!(saved(&id), Some(4));
+        assert_eq!(seam.meter.read().settings.worker_retry_cap, Some(4));
+        quit(seam, ended).await;
+        let (seam, ended) = open(SessionChoice::Resume(id.clone()), None).await;
+        assert_eq!(saved(&id), Some(4));
+        quit(seam, ended).await;
+        let (seam, ended) = open(SessionChoice::New, Some(2)).await;
+        assert_eq!(saved(&seam.session.id), Some(2));
+        quit(seam, ended).await;
+        for session in [SessionChoice::New, SessionChoice::Resume(id.clone())] {
+            let (opened, _ended) = try_open(session, Some(0)).await;
+            assert!(
+                matches!(opened, Err(OpenError::Failed(why)) if why == "the worker retry cap is a number from 1, not 0")
+            );
+        }
+        assert_eq!(saved(&id), Some(4));
     }
 
     /// A process opens one session without `spawn`: it reads the process's

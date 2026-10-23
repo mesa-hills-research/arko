@@ -1738,6 +1738,11 @@ mod tests {
                 workers::depth_about().to_string(),
             ),
             (
+                SettingsRow::WorkerRetryCap,
+                workers::RETRY_CAP_NAME,
+                workers::retry_cap_about(None),
+            ),
+            (
                 SettingsRow::MessageCopies,
                 workers::COPIES_NAME,
                 workers::copies_about(true).to_string(),

@@ -678,6 +678,53 @@ async fn worker_depth_is_kept_and_says_what_it_allows() {
     harness.crew.as_ref().unwrap().shutdown().await;
 }
 
+/// `/worker-retry-cap` says how many failed model requests in a row stop a
+/// worker and sets it to off, on (10) or a number, saved with the session.
+/// Before the conversation starts the workers get it at once. After, it waits
+/// for the session to be resumed.
+#[tokio::test]
+async fn the_worker_retry_cap_is_kept_and_reaches_the_workers() {
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, _sender, _server, _seen) = setup(temp.path()).await;
+    let capped = |harness: &Harness| harness.crew.as_ref().unwrap().config().max_failed_requests;
+    assert!(harness.live_command("/worker-retry-cap", Source::Terminal));
+    assert_eq!(
+        last_said(&harness.feed),
+        "Worker retry cap is off. Workers keep retrying failed model requests. On, a worker fails after 10 in a row, and the workers it started stop with it. /worker-retry-cap off, on or a number changes it."
+    );
+    for bad in ["0", "-1", "many"] {
+        assert!(harness.live_command(&format!("/worker-retry-cap {bad}"), Source::Terminal));
+        assert!(
+            last_said(&harness.feed).contains("isn't off, on or a number from 1"),
+            "{bad}: {}",
+            last_said(&harness.feed)
+        );
+    }
+    assert_eq!(capped(&harness), None);
+    assert!(harness.live_command("/worker-retry-cap on", Source::Terminal));
+    assert_eq!(
+        last_said(&harness.feed),
+        "Worker retry cap is now 10. A worker fails after 10 failed model requests in a row, and the workers it started stop with it. A model response starts the count again."
+    );
+    assert_eq!(capped(&harness), Some(10));
+    assert!(harness.live_command("/worker-retry-cap 3", Source::Terminal));
+    assert_eq!(harness.session.load_settings().unwrap().worker_retry_cap, Some(3));
+    assert_eq!(capped(&harness), Some(3));
+    assert!(harness.live_command("/worker-retry-cap 3", Source::Terminal));
+    assert!(last_said(&harness.feed).starts_with("Worker retry cap is 3 already."));
+    assert!(harness.live_command("/worker-retry-cap off", Source::Terminal));
+    assert_eq!(harness.session.load_settings().unwrap().worker_retry_cap, None);
+    assert_eq!(capped(&harness), None);
+    // Once the conversation has started the setting is saved, and the
+    // workflow keeps the cap it was built with.
+    start_worker(&mut harness, &mut inputs, "Start a plain worker.").await;
+    assert!(harness.live_command("/worker-retry-cap 5", Source::Terminal));
+    assert!(last_said(&harness.feed).ends_with(" It applies when you resume the session."));
+    assert_eq!(harness.session.load_settings().unwrap().worker_retry_cap, Some(5));
+    assert_eq!(capped(&harness), None);
+    harness.crew.as_ref().unwrap().shutdown().await;
+}
+
 /// `/message-copies` says whether the agent that started a worker gets a copy
 /// of the user's messages to it, and sets it on or off, saved with the
 /// session. Without workers there is nothing to set.
@@ -945,6 +992,29 @@ fn the_flags_set_who_chooses_and_how_deep_for_a_new_session() {
         ["--worker-depth", "deep"],
     ] {
         assert!(Args::try_parse_from(["arko", bad[0], bad[1]]).is_err(), "{bad:?}");
+    }
+}
+
+/// `--worker-retry-cap` sets a new session's cap, 10 without a number. A
+/// session started without it has no cap.
+#[test]
+fn the_flag_sets_the_worker_retry_cap_for_a_new_session() {
+    let temp = tempfile::tempdir().unwrap();
+    let dir = temp.path().to_str().unwrap();
+    let cap = |words: &[&str]| {
+        let mut all = vec!["-m", "opus", "--no-cache-1h", "-C", dir];
+        all.extend(words);
+        new_settings(&args(&all), &NoPrompter).unwrap().0.worker_retry_cap
+    };
+    assert_eq!(cap(&[]), None);
+    assert_eq!(cap(&["--worker-retry-cap"]), Some(10));
+    assert_eq!(cap(&["--worker-retry-cap", "4"]), Some(4));
+    assert_eq!(cap(&["--worker-retry-cap", "--worker-depth", "3"]), Some(10));
+    for bad in ["0", "many"] {
+        assert!(
+            Args::try_parse_from(["arko", "--worker-retry-cap", bad]).is_err(),
+            "{bad}"
+        );
     }
 }
 

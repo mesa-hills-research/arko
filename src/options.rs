@@ -55,6 +55,10 @@ pub struct Options {
     /// default 2 in a new session, and a resumed session's own. A session
     /// isn't opened with another number.
     pub worker_depth: Option<u32>,
+    /// A worker fails after this many failed model requests in a row, by
+    /// default no cap in a new session, and a resumed session's own. A
+    /// session isn't opened with 0.
+    pub worker_retry_cap: Option<u32>,
     /// Whether the agent that started a worker gets a copy of the user's
     /// messages to the worker, by default no in a new session, and a
     /// resumed session's own. It can change as a session resumes.
@@ -205,6 +209,7 @@ impl Default for Options {
             worker_fast: false,
             worker_models: None,
             worker_depth: None,
+            worker_retry_cap: None,
             message_copies: None,
             cache_1h: None,
             text_replies: None,

@@ -858,6 +858,8 @@ mod tests {
             );
         }
         assert!(CORE.contains(&format!("\"{}\"", workers::depth_about())));
+        // The page writes the cap's sentence for a number from a template.
+        assert!(CORE.contains(&format!("\"{}\"", workers::retry_cap_about(None))));
         for on in [true, false] {
             assert!(
                 CORE.contains(&format!("\"{}\"", workers::copies_about(on))),
@@ -868,6 +870,7 @@ mod tests {
         for name in [
             workers::MODELS_NAME,
             workers::DEPTH_NAME,
+            workers::RETRY_CAP_NAME,
             workers::COPIES_NAME,
         ] {
             assert!(INDEX.contains(&format!(">{name}<")), "{name}");

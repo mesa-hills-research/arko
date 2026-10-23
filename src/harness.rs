@@ -311,8 +311,10 @@ pub(crate) enum TurnEnd {
 pub(crate) enum Prompt {
     /// The user's message.
     User(String),
-    /// The workers' news, without a message from the user.
-    News,
+    /// The workers' news, without a message from the user. `resent` is
+    /// whether the news holds mail that reached the agent earlier but not
+    /// whole.
+    News { resent: bool },
     /// A background job of the agent's finished, without a message from
     /// the user: its terminal update follows.
     Jobs,
@@ -331,7 +333,8 @@ impl Prompt {
     /// agent waits for the user.
     fn opening(&self) -> Option<Opening> {
         match self {
-            Prompt::News => Some(Opening::News),
+            Prompt::News { resent: false } => Some(Opening::News),
+            Prompt::News { resent: true } => Some(Opening::ResentNews),
             Prompt::Jobs => Some(Opening::Job),
             Prompt::Monitor(opening) => Some(*opening),
             Prompt::User(_) | Prompt::Unread | Prompt::Recover => None,
@@ -617,6 +620,7 @@ impl Harness {
             }
         }
         if let Some(crew) = &self.crew {
+            crew.set_retry_cap(self.settings.worker_retry_cap);
             // The main agent chooses and saves the workers' profiles.
             for tool in worker_tools::tools(
                 crew.clone(),
@@ -1620,6 +1624,7 @@ impl Harness {
             "/monitor-wakes" => self.monitor_wakes_command(argument, source),
             "/worker-models" => self.worker_models_command(argument, source),
             "/worker-depth" => self.worker_depth_command(argument, source),
+            "/worker-retry-cap" => self.worker_retry_cap_command(argument, source),
             "/message-copies" => self.message_copies_command(argument, source),
             "/profiles" => self.profiles_command(argument),
             "/jobs" => self.jobs_command(argument),
@@ -3571,7 +3576,8 @@ impl Harness {
                 }
                 return News::Waiting;
             }
-            match self.turn(Prompt::News, input).await {
+            let resent = crew.has_resent_mail();
+            match self.turn(Prompt::News { resent }, input).await {
                 TurnEnd::Answered => input.drain_woken(),
                 TurnEnd::Exit => return News::Exit,
                 TurnEnd::Stopped => return News::Stopped,
@@ -4035,7 +4041,7 @@ impl Harness {
         let message = match prompt {
             Prompt::Recover => return String::new(),
             Prompt::User(message) => Some(message),
-            Prompt::News | Prompt::Jobs | Prompt::Unread | Prompt::Monitor(_) => None,
+            Prompt::News { .. } | Prompt::Jobs | Prompt::Unread | Prompt::Monitor(_) => None,
         };
         let mut parts = Vec::new();
         // (A conversation cut back to its first message starts over.)
@@ -4353,7 +4359,7 @@ pub(crate) fn place(link: &remote::Link) -> String {
 /// The commands that change a setting while the session runs, which take
 /// an argument: `/outside`, `/model`, `/handover`, `/handover-at`, `/keys`.
 /// And `/message`, which works while the agent works too.
-pub(crate) const LIVE_COMMANDS: [&str; 18] = [
+pub(crate) const LIVE_COMMANDS: [&str; 19] = [
     "/outside",
     "/model",
     "/handover",
@@ -4368,6 +4374,7 @@ pub(crate) const LIVE_COMMANDS: [&str; 18] = [
     "/monitor-wakes",
     "/worker-models",
     "/worker-depth",
+    "/worker-retry-cap",
     "/message-copies",
     "/profiles",
     "/jobs",
@@ -5350,6 +5357,7 @@ pub(crate) mod tests {
             extra_rules: Default::default(),
             worker_models: Default::default(),
             worker_depth: Default::default(),
+            worker_retry_cap: Default::default(),
             message_copies: Default::default(),
             builtin_skills: Default::default(),
             project: Default::default(),
@@ -5926,6 +5934,23 @@ pub(crate) mod tests {
             "{news}"
         );
         crew.shutdown().await;
+    }
+
+    /// The message of a turn started for news that goes out again says part of
+    /// it reached the agent before but not whole. Other news opens as before.
+    #[tokio::test]
+    async fn the_message_of_resent_news_says_so() {
+        use crate::mock_model::{ModelServer, complete};
+        use crate::openings::Opening;
+        let server =
+            ModelServer::start(Arc::new(|_, _| Box::pin(async { complete("m", "Done.") }))).await;
+        let temp = tempfile::tempdir().unwrap();
+        let (mut harness, _inputs, _sender) = harness(temp.path(), server.client(), false);
+        let fresh = harness.compose(Prompt::News { resent: false });
+        assert!(fresh.contains(&Opening::News.text()), "{fresh}");
+        let again = harness.compose(Prompt::News { resent: true });
+        assert!(again.contains(&Opening::ResentNews.text()), "{again}");
+        assert!(!again.contains(&Opening::News.text()), "{again}");
     }
 
     /// Both directions share arko's mailbox, and a wait returns the report whole.

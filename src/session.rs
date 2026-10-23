@@ -160,6 +160,11 @@ pub struct Settings {
         skip_serializing_if = "is_default_worker_depth"
     )]
     pub worker_depth: u32,
+    /// A worker fails after this many failed model requests in a row
+    /// (`/worker-retry-cap`). None, no cap, in sessions saved before it
+    /// existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker_retry_cap: Option<u32>,
     /// The agent that started a worker gets a copy of the user's messages to
     /// it (`/message-copies`). Always saved, off in a new session. On in
     /// sessions saved before it existed, as they always did.
@@ -231,6 +236,7 @@ impl Settings {
             monitor_wakes: Default::default(),
             worker_models: ModelChoice::default(),
             worker_depth: DEFAULT_WORKER_DEPTH,
+            worker_retry_cap: None,
             message_copies: true,
             nested_start: true,
             builtin_skills: BuiltinSkills {
@@ -824,8 +830,9 @@ mod tests {
 
     /// A session saved before workers' models could be chosen keeps every
     /// worker on the session's worker model, as it always did, and has two
-    /// levels of workers. A session made since writes who chooses, and
-    /// writes the depth only when it isn't the default.
+    /// levels of workers and no retry cap. A session made since writes who
+    /// chooses, and writes the depth and the cap only when they aren't the
+    /// default.
     #[test]
     fn a_session_saved_before_worker_choices_loads_as_it_always_worked() {
         let temp = tempfile::tempdir().unwrap();
@@ -834,6 +841,7 @@ mod tests {
         let text = std::fs::read_to_string(&file).unwrap();
         assert!(text.contains("\"worker_models\": \"agent\""), "{text}");
         assert!(!text.contains("worker_depth"), "{text}");
+        assert!(!text.contains("worker_retry_cap"), "{text}");
         assert_eq!(
             session.load_settings().unwrap().worker_models,
             ModelChoice::Agent
@@ -849,13 +857,16 @@ mod tests {
         let mut settings = loaded;
         settings.worker_models = ModelChoice::Profiles;
         settings.worker_depth = 3;
+        settings.worker_retry_cap = Some(5);
         session.save_settings(&settings).unwrap();
         let text = std::fs::read_to_string(session.dir.join(SETTINGS_FILE)).unwrap();
+        assert!(text.contains("\"worker_retry_cap\": 5"), "{text}");
         assert!(text.contains("\"worker_models\": \"profiles\""), "{text}");
         assert!(text.contains("\"worker_depth\": 3"), "{text}");
         let loaded = session.load_settings().unwrap();
         assert_eq!(loaded.worker_models, ModelChoice::Profiles);
         assert_eq!(loaded.worker_depth, 3);
+        assert_eq!(loaded.worker_retry_cap, Some(5));
     }
 
     /// A session saved before message copies could be turned off has them on,

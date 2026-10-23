@@ -81,6 +81,9 @@ pub enum SettingsRow {
     WorkerModels,
     /// How many levels of workers there can be.
     WorkerDepth,
+    /// Whether a worker fails after a number of failed model requests in a
+    /// row.
+    WorkerRetryCap,
     /// Whether the agent that started a worker gets a copy of the user's
     /// messages to it.
     MessageCopies,
@@ -698,6 +701,16 @@ fn settings(frame: &mut Frame, app: &App, area: Rect, selected: usize) {
                     Span::styled(format!(" {}", glyphs::render("→")), theme.dim()),
                 ],
                 crate::workers::depth_about().to_string(),
+            ),
+            SettingsRow::WorkerRetryCap => (
+                "Workers",
+                crate::workers::RETRY_CAP_NAME,
+                choices(
+                    theme,
+                    &["on", "off"],
+                    usize::from(app.worker_retry_cap().is_none()),
+                ),
+                crate::workers::retry_cap_about(app.worker_retry_cap()),
             ),
             SettingsRow::MessageCopies => (
                 "Workers",

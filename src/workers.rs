@@ -1,8 +1,10 @@
 //! The session settings for who chooses the workers' models, how deep
-//! workers go and whether the agent that started a worker gets a copy of the
-//! user's messages to it, with the words and commands every front end uses
-//! for them (`/worker-models`, `/worker-depth`, `/message-copies`, and the
-//! flags `--worker-models`, `--worker-depth`, `--message-copies`). The
+//! workers go, how many failed requests stop a worker and whether the agent
+//! that started a worker gets a copy of the user's messages to it, with the
+//! words and commands every front end uses for them (`/worker-models`,
+//! `/worker-depth`, `/worker-retry-cap`, `/message-copies`, and the flags
+//! `--worker-models`, `--worker-depth`, `--worker-retry-cap`,
+//! `--message-copies`). The
 //! terminal's settings, the web page and an app's settings page name and set
 //! them alike.
 
@@ -31,6 +33,17 @@ pub const DEPTH_NAME: &str = "Worker depth";
 /// [`MAX_DEPTH`] ([`parse_depth`] reads it, [`depth_command`] writes it).
 pub const DEPTH_COMMAND: &str = "/worker-depth";
 
+/// The name of the setting for how many failed model requests in a row stop
+/// a worker.
+pub const RETRY_CAP_NAME: &str = "Worker retry cap";
+
+/// The command that sets it, which takes `off`, `on` or a number from 1
+/// ([`parse_retry_cap`] reads it, [`retry_cap_command`] writes it).
+pub const RETRY_CAP_COMMAND: &str = "/worker-retry-cap";
+
+/// The cap `on` gives, and `--worker-retry-cap` without a number.
+pub const DEFAULT_RETRY_CAP: u32 = 10;
+
 /// The name of the setting for whether the agent that started a worker gets
 /// a copy of the messages the user sends the worker.
 pub const COPIES_NAME: &str = "Message copies";
@@ -57,6 +70,56 @@ pub fn copies_about(on: bool) -> &'static str {
         "The agent that started a worker gets a copy of each message you send the worker, with its next news."
     } else {
         "The agent that started a worker doesn’t see the messages you send the worker."
+    }
+}
+
+/// The command that turns the retry cap on (at [`DEFAULT_RETRY_CAP`]) or off,
+/// such as `/worker-retry-cap off`.
+pub fn retry_cap_command(on: bool) -> String {
+    format!("{RETRY_CAP_COMMAND} {}", copies_state(on))
+}
+
+/// The line under the retry cap setting, saying what it does with `cap` as
+/// the setting is.
+pub fn retry_cap_about(cap: Option<u32>) -> String {
+    match cap {
+        None => format!(
+            "Workers keep retrying failed model requests. On, a worker fails after {DEFAULT_RETRY_CAP} in a row, and the workers it started stop with it."
+        ),
+        Some(cap) => format!(
+            "A worker fails after {cap} failed model {} in a row, and the workers it started stop with it. A model response starts the count again.",
+            if cap == 1 { "request" } else { "requests" }
+        ),
+    }
+}
+
+/// `cap` if it is a cap a session can have, 1 or more. An app that sets
+/// `Options::worker_retry_cap` is held to the same range as the command and
+/// the flag.
+pub fn check_retry_cap(cap: u32) -> Result<u32, String> {
+    if cap >= 1 {
+        Ok(cap)
+    } else {
+        Err("the worker retry cap is a number from 1, not 0".to_string())
+    }
+}
+
+/// Reads `text` as `/worker-retry-cap` takes it: `off` for no cap, `on` for
+/// [`DEFAULT_RETRY_CAP`], or a whole number from 1.
+pub fn parse_retry_cap(text: &str) -> Result<Option<u32>, String> {
+    match text.trim() {
+        "off" => Ok(None),
+        "on" => Ok(Some(DEFAULT_RETRY_CAP)),
+        number => number
+            .parse::<u32>()
+            .ok()
+            .and_then(|cap| check_retry_cap(cap).ok())
+            .map(Some)
+            .ok_or_else(|| {
+                format!(
+                    "`{number}` isn't off, on or a number from 1, such as {RETRY_CAP_COMMAND} {DEFAULT_RETRY_CAP}."
+                )
+            }),
     }
 }
 
@@ -189,6 +252,29 @@ mod tests {
             assert!(check_depth(bad).unwrap_err().contains("from 1 to 4"));
         }
         assert_eq!(DEFAULT_DEPTH, 2);
+        assert_eq!(RETRY_CAP_NAME, "Worker retry cap");
+        assert_eq!(retry_cap_command(true), "/worker-retry-cap on");
+        assert_eq!(retry_cap_command(false), "/worker-retry-cap off");
+        assert_eq!(
+            retry_cap_about(Some(1)),
+            "A worker fails after 1 failed model request in a row, and the workers it started stop with it. A model response starts the count again."
+        );
+        assert!(
+            retry_cap_about(Some(5))
+                .starts_with("A worker fails after 5 failed model requests in a row")
+        );
+        assert_eq!(parse_retry_cap(" off "), Ok(None));
+        assert_eq!(parse_retry_cap("on"), Ok(Some(DEFAULT_RETRY_CAP)));
+        assert_eq!(parse_retry_cap("7"), Ok(Some(7)));
+        assert_eq!(check_retry_cap(1), Ok(1));
+        for bad in ["0", "-1", "2.5", "many", ""] {
+            let error = parse_retry_cap(bad).unwrap_err();
+            assert!(
+                error.contains("off, on or a number from 1"),
+                "{bad}: {error}"
+            );
+        }
+        assert!(check_retry_cap(0).is_err());
         for bad in ["0", "5", "two", "", "-1", "2.5"] {
             let error = parse_depth(bad).unwrap_err();
             assert!(error.contains("from 1 to 4"), "{bad}: {error}");
