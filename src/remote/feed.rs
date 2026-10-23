@@ -2574,13 +2574,16 @@ impl Feed {
     /// A worker of the session from before Arko started (a resumed
     /// session). Its summary goes in without a place in the transcript,
     /// with how long it ran before (`ran_ms`). A run it goes on with counts
-    /// from when it starts again.
+    /// from when it starts again. `error` is the saved reason it ended, which
+    /// a worker that failed keeps as its `error`.
+    #[allow(clippy::too_many_arguments)]
     pub fn worker_restored(
         &self,
         id: &str,
         task: &str,
         was: WorkerState,
         report: Option<&str>,
+        error: Option<&str>,
         since: i64,
         ran_ms: u64,
     ) {
@@ -2596,6 +2599,9 @@ impl Feed {
             report: report
                 .map(str::trim)
                 .filter(|report| !report.is_empty())
+                .map(str::to_string),
+            error: error
+                .filter(|_| was == WorkerState::Failed)
                 .map(str::to_string),
             ran_ms,
             ..WorkerSummary::new(id)
@@ -4443,7 +4449,7 @@ mod tests {
         );
         assert_eq!(feed.worker_run_times(), [("r1".to_string(), total)]);
         let resumed = Feed::new("main");
-        resumed.worker_restored("r1", "Count", WorkerState::Stopped, None, 0, total);
+        resumed.worker_restored("r1", "Count", WorkerState::Stopped, None, None, 0, total);
         assert_eq!(resumed.workers()[0].ran_ms, total);
         assert_eq!(resumed.workers()[0].run_time_ms(now_ms()), total);
     }
@@ -4458,10 +4464,11 @@ mod tests {
             "Review",
             WorkerState::Finished,
             Some("All good."),
+            None,
             5,
             0,
         );
-        feed.worker_restored("r1", "Again", WorkerState::Running, None, 6, 0);
+        feed.worker_restored("r1", "Again", WorkerState::Running, None, None, 6, 0);
         assert_eq!(feed.workers().len(), 1);
         assert_eq!(feed.workers()[0].ended_at, Some(5));
         assert!(items(&feed).is_empty());
@@ -4472,6 +4479,18 @@ mod tests {
             ("r2", WorkerState::Running)
         );
         assert_eq!(items(&feed)[0].kind, Kind::WorkerLine);
+    }
+
+    /// A restored worker that failed has the saved reason as its error, and
+    /// one that stopped, whose record holds why, does not.
+    #[test]
+    fn a_restored_worker_that_failed_keeps_its_saved_error() {
+        let feed = Feed::new("main");
+        let why = Some("the model refused");
+        feed.worker_restored("r1", "Review", WorkerState::Failed, None, why, 5, 0);
+        feed.worker_restored("r2", "Count", WorkerState::Stopped, None, why, 5, 0);
+        let errors: Vec<Option<String>> = feed.workers().into_iter().map(|w| w.error).collect();
+        assert_eq!(errors, [Some("the model refused".to_string()), None]);
     }
 
     /// A busy worker's summary goes out a few times a second, and its

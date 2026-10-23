@@ -968,6 +968,7 @@ impl Crew {
                     &run.task,
                     state,
                     run.report.as_deref(),
+                    run.error.as_deref(),
                     run.since.timestamp_millis(),
                     ran.get(&run.handle).copied().unwrap_or(0),
                 );
