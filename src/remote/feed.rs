@@ -231,6 +231,13 @@ pub struct Item {
     /// The worker a `worker_line` stands for.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub worker: Option<String>,
+    /// For a worker's stop notice, the worker that started the worker. None
+    /// for a worker of the main agent. The web page doesn't get it.
+    #[serde(skip)]
+    pub parent: Option<String>,
+    /// Whether it is a worker's stop notice. The web page doesn't get it.
+    #[serde(skip)]
+    pub stop: bool,
     /// Who sent a worker's `message`, [`MAIN_AGENT`] (its lead) or another
     /// worker's ID.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -276,6 +283,8 @@ impl Item {
             message_index: None,
             images: Vec::new(),
             worker: None,
+            parent: None,
+            stop: false,
             from: None,
             call: None,
             job: None,
@@ -2460,6 +2469,7 @@ impl Feed {
         let mut state = self.lock();
         self.known_worker(&mut state, id);
         let now = now_ms();
+        let parent = state.parents.get(id).cloned();
         let Some(worker) = state.worker(id) else {
             return;
         };
@@ -2530,14 +2540,18 @@ impl Feed {
                 } else {
                     render::cut(&format!("stopped ({reason})"), 160)
                 });
-                ended = Some(Item::new(
+                let mut notice = Item::new(
                     Kind::Notice,
                     if reason.is_empty() {
                         "stopped".to_string()
                     } else {
                         format!("stopped ({})", render::cut(reason, 300))
                     },
-                ));
+                )
+                .level(Level::Info);
+                notice.parent = parent;
+                notice.stop = true;
+                ended = Some(notice);
             }
         }
         if matches!(change, WorkerChange::Queued | WorkerChange::Started) {
@@ -3380,6 +3394,37 @@ mod tests {
         assert_eq!((summary.cost_billed, summary.cost_list), (1.0, 3.0));
         assert_eq!(summary.model, None, "the info is whole each time");
         assert!(feed.worker_summary("nobody").is_none());
+    }
+
+    /// A worker's stop notice is Info and says it is a stop, so a client that
+    /// shows warnings only can choose to show it, and it names the worker that
+    /// started the worker.
+    #[test]
+    fn a_stop_notice_says_its_level_and_who_started_the_worker() {
+        let feed = Feed::new("main");
+        feed.worker("r1", "Review", WorkerChange::Started);
+        feed.worker_under("r2", "r1");
+        feed.worker("r2", "Count", WorkerChange::Started);
+        let reason = "its lead r1 was stopped";
+        feed.worker("r2", "Count", WorkerChange::Stopped { reason });
+        feed.worker("r1", "Review", WorkerChange::Stopped { reason: "" });
+        let notices: Vec<(String, Option<Level>, Option<String>, bool)> = items(&feed)
+            .into_iter()
+            .filter(|item| item.kind == Kind::Notice)
+            .map(|item| (item.text, item.level, item.parent, item.stop))
+            .collect();
+        assert_eq!(
+            notices,
+            [
+                (
+                    "stopped (its lead r1 was stopped)".to_string(),
+                    Some(Level::Info),
+                    Some("r1".to_string()),
+                    true
+                ),
+                ("stopped".to_string(), Some(Level::Info), None, true),
+            ]
+        );
     }
 
     /// A worker that goes on after a stop (its lead messaged it) no longer
