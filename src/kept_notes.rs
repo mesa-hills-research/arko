@@ -6,11 +6,15 @@
 //! the first message of a conversation and again after a handover or a Claude
 //! Code compaction, as a one-time note that lists the current ones (a
 //! handover restates the first message as it was, so a note kept since isn't
-//! in it). A worker gets the notes for it in its first message, as they are
-//! kept while it is active, and again after its own handover or compaction.
-//! Nothing is sent on other turns. Once notes were kept, an agent whose
-//! notes are all gone gets a list that says so, since its restated first
-//! message may still hold them.
+//! in it). It gets the list once more when the session goes back to a
+//! conversation (`/resume N`, `arko -c`), which may have missed changes. A
+//! worker gets the notes for it in its first message, as they are kept while
+//! it is active, and again after its own handover or compaction. Once notes
+//! were kept, an agent whose notes are all gone gets a list that says so,
+//! since its restated first message may still hold them. Nothing else is
+//! sent on other turns, except one line for a note that is removed
+//! (`/notes remove`, `forget_note`), to the main agent and to the active
+//! workers the note was for.
 //!
 //! The file is read for each call, so a front end that opens the same folder
 //! sees the notes the session keeps.
@@ -50,6 +54,12 @@ const _: () = assert!(MAX_BYTES < arko_workflows::notes::MAX_NOTE_BYTES);
 
 /// What the worker is told above its notes.
 const WORKER_HEADING: &str = "The main agent's notes for you. This list replaces any earlier one.";
+
+/// What the worker is told above the removal of a note, which isn't a list.
+const REMOVED_HEADING: &str = "The main agent's notes for you.";
+
+/// The characters of a removed note's first line that its announcement quotes.
+const QUOTED_CHARS: usize = 60;
 
 /// What a list says when the notes it replaces are all gone.
 const NONE_LEFT: &str = "No notes are kept now.";
@@ -265,7 +275,8 @@ impl KeptNotes {
         Ok(note)
     }
 
-    /// Removes a note, returning it.
+    /// Removes a note, returning it. The agents of a running session aren't
+    /// told, so that session removes a note with `/notes remove N`.
     pub fn remove(&self, id: u32) -> Result<Note, String> {
         let _writing = crate::lock(&WRITING);
         let mut saved = self.read()?;
@@ -330,6 +341,47 @@ impl KeptNotes {
         }
     }
 
+    /// Tells the agents that `note` is removed, by the user or (`by_user`
+    /// unset) by the main agent. The main agent hears of it in a one-time
+    /// note, unless it did it, and each active worker that had the note in a
+    /// message. They keep what they read, and a handover or a compaction
+    /// gives them the current list.
+    pub(crate) fn tell_removed(&self, workflow: &Workflow, note: &Note, by_user: bool) {
+        let by = if by_user {
+            "The user"
+        } else {
+            "The main agent"
+        };
+        let first = note.text.lines().next().unwrap_or_default();
+        let line = format!(
+            "{by} removed kept note {} (\"{}\").",
+            note.id,
+            crate::ui::cut(first, QUOTED_CHARS)
+        );
+        if by_user
+            && let Err(error) = workflow.post_note(
+                Posted::new(&line)
+                    .source(NoteSource::Host)
+                    .to([MAIN])
+                    .once(),
+            )
+        {
+            log::warn!("could not tell the main agent a kept note was removed ({error})");
+        }
+        for record in workflow.subagents() {
+            if record.state.is_active()
+                && note.audience.includes(&record.handle)
+                && let Err(error) =
+                    workflow.message_subagent(&record.handle, &line, REMOVED_HEADING, "")
+            {
+                log::warn!(
+                    "could not tell {} a kept note was removed ({error})",
+                    record.handle
+                );
+            }
+        }
+    }
+
     /// Follows `workflow` (in place of the one followed before): after an
     /// agent's handover or Claude Code's compaction of its conversation, the
     /// agent gets its notes again.
@@ -356,17 +408,23 @@ impl KeptNotes {
         }
     }
 
+    /// Posts the main agent's current list in a one-time note, for the
+    /// conversation it continues. A list that says none are kept replaces
+    /// one the conversation may still hold, when notes were ever kept.
+    pub(crate) fn tell_lead(&self, workflow: &Workflow) {
+        let none = format!("# Your kept notes\n\n{NONE_LEFT} This list replaces any earlier one.");
+        if let Some(text) = self.for_lead().or_else(|| self.ever_kept().then_some(none))
+            && let Err(error) =
+                workflow.post_note(Posted::new(text).source(NoteSource::Host).to([MAIN]).once())
+        {
+            log::warn!("could not give the main agent its kept notes again ({error})");
+        }
+    }
+
     /// Gives run `run` of `agent` its notes again, in its fresh conversation.
     fn again(&self, workflow: &Workflow, agent: &str, run: uuid::Uuid) {
         if agent == MAIN {
-            let none =
-                format!("# Your kept notes\n\n{NONE_LEFT} This list replaces any earlier one.");
-            if let Some(text) = self.for_lead().or_else(|| self.ever_kept().then_some(none))
-                && let Err(error) =
-                    workflow.post_note(Posted::new(text).source(NoteSource::Host).to([MAIN]).once())
-            {
-                log::warn!("could not give the main agent its kept notes again ({error})");
-            }
+            self.tell_lead(workflow);
         } else if let Some(record) = workflow.subagents().iter().find(|r| r.run_id == run) {
             self.tell_worker(workflow, &record.handle);
         }
@@ -416,10 +474,13 @@ impl crate::Harness {
                 },
             },
             ["remove", number] => match number.parse().map(|id| self.kept.remove(id)) {
-                Ok(Ok(note)) => format!(
-                    "Removed note {}. Agents that already read it still have it in their conversation.",
-                    note.id
-                ),
+                Ok(Ok(note)) => {
+                    self.kept.tell_removed(self.workflow(), &note, true);
+                    format!(
+                        "Removed note {}. The agents that have it are told.",
+                        note.id
+                    )
+                }
                 Ok(Err(why)) => format!("{why} /notes lists them."),
                 Err(_) => USAGE.to_string(),
             },
@@ -456,8 +517,16 @@ impl std::fmt::Debug for KeepNote {
 }
 
 /// `forget_note`, for the main agent.
-#[derive(Debug)]
-pub(crate) struct ForgetNote(pub(crate) Arc<KeptNotes>);
+pub(crate) struct ForgetNote {
+    pub(crate) notes: Arc<KeptNotes>,
+    pub(crate) crew: Option<Arc<Crew>>,
+}
+
+impl std::fmt::Debug for ForgetNote {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ForgetNote")
+    }
+}
 
 fn parameter(
     name: &str,
@@ -501,7 +570,7 @@ impl Tool for KeepNote {
     fn definition(&self) -> ToolDefinition {
         definition(
             KEEP_NOTE,
-            "Keeps a note for yourself or for workers. It comes back by itself after a handover or a compaction and in a new conversation's first message, so keep what must outlast this conversation, such as something the user asked you to do later. The notes hold 8 KB in all.",
+            "Keeps a note for yourself or for workers. It comes back by itself after a handover or a compaction, when you go back to a conversation, and in a new conversation's first message, so keep what must outlast this conversation, such as something the user asked you to do later. The notes hold 8 KB in all.",
             vec![
                 parameter(
                     "text",
@@ -562,7 +631,7 @@ impl Tool for ForgetNote {
     fn definition(&self) -> ToolDefinition {
         definition(
             FORGET_NOTE,
-            "Removes a note you kept. A worker that already read it keeps what it read.",
+            "Removes a note you kept. The workers it was for are told, and one that already read it keeps what it read.",
             vec![parameter(
                 "id",
                 "The note's number.",
@@ -586,7 +655,10 @@ impl Tool for ForgetNote {
             })
             .and_then(|id| u32::try_from(id).ok())
             .ok_or_else(|| refused("id is the number of a kept note"))?;
-        let note = self.0.remove(id).map_err(refused)?;
+        let note = self.notes.remove(id).map_err(refused)?;
+        if let Some(workflow) = self.crew.as_ref().and_then(|crew| crew.workflow()) {
+            self.notes.tell_removed(&workflow, &note, false);
+        }
         Ok(format!("Forgot note {}.", note.id))
     }
 }

@@ -19,7 +19,7 @@ models, and on your Claude plan through an installed Claude Code.
 - Workers that start workers of their own, down to a depth you set
   ([docs](docs/worker-profiles.md#workers-that-start-workers))
 - [Notes](docs/kept-notes.md) the main agent keeps for itself and its workers, which come back
-  after a handover or a compaction
+  after a handover or a compaction, or when a conversation is resumed
 - MCP servers in Claude Code's `.mcp.json` format, and [skills](docs/skills.md) from
   `.agents/skills` or `.claude/skills`, with three built in (two for writing, and ponytail for
   coding tasks and running workers)

@@ -467,6 +467,8 @@ async fn a_resumed_session_lists_its_conversations_and_goes_on_in_its_own() {
     let first = request_with(&bodies, "Which fruit?");
     assert!(first.contains("Apples are red."), "{first}");
     assert!(!first.contains("Pears"), "{first}");
+    // (No note was ever kept, so no list was posted on the way.)
+    assert!(lists_held(&bodies).iter().all(|held| *held == 0));
 
     // Saved before the record: each run is a conversation, the latest
     // current.
@@ -494,4 +496,83 @@ async fn a_resumed_session_lists_its_conversations_and_goes_on_in_its_own() {
         &harness.feed,
         "Resumed. The next message starts a new conversation. /resume goes back to the last one."
     ));
+}
+
+/// The `# Your kept notes` list in each of the model's requests.
+fn lists_held(bodies: &Bodies) -> Vec<usize> {
+    bodies
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|body| body.matches("# Your kept notes").count())
+        .collect()
+}
+
+/// A note kept in the second conversation reaches the first, which
+/// `/resume 1` goes back to, once: in its next request, and not again after.
+#[tokio::test]
+async fn a_conversation_resumed_gets_the_notes_kept_since() {
+    let temp = tempfile::tempdir().unwrap();
+    let bodies: Bodies = Arc::default();
+    let hold = Arc::new(Notify::new());
+    // (The turn about pears doesn't wait.)
+    hold.notify_one();
+    let server = ModelServer::start(fruit_model(bodies.clone(), hold)).await;
+    let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
+    harness
+        .turn(Prompt::User("Apples are red.".into()), &mut inputs)
+        .await;
+    harness.new_conversation();
+    harness
+        .turn(Prompt::User("Pears are green.".into()), &mut inputs)
+        .await;
+    let note = "Tear the build box down.";
+    harness.kept.add(note, kept_notes::Audience::Lead).unwrap();
+    harness.resume_command("1").await;
+    for message in ["Which fruit?", "And the colour?"] {
+        harness
+            .turn(Prompt::User(message.into()), &mut inputs)
+            .await;
+    }
+    assert_eq!(lists_held(&bodies), [0, 0, 1, 1]);
+    assert!(request_with(&bodies, "Which fruit?").contains(note));
+}
+
+/// A conversation `/resume` goes back to is told when every note was
+/// removed since, since it may still hold the list.
+#[tokio::test]
+async fn a_conversation_resumed_is_told_when_no_notes_are_left() {
+    let temp = tempfile::tempdir().unwrap();
+    let bodies: Bodies = Arc::default();
+    let hold = Arc::new(Notify::new());
+    // (The turn about pears doesn't wait.)
+    hold.notify_one();
+    let server = ModelServer::start(fruit_model(bodies.clone(), hold)).await;
+    let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
+    harness
+        .kept
+        .add("Tear the build box down.", kept_notes::Audience::Lead)
+        .unwrap();
+    harness
+        .turn(Prompt::User("Apples are red.".into()), &mut inputs)
+        .await;
+    harness.new_conversation();
+    harness
+        .turn(Prompt::User("Pears are green.".into()), &mut inputs)
+        .await;
+    harness.kept.remove(1).unwrap();
+    harness.resume_command("1").await;
+    for message in ["Which fruit?", "And the colour?"] {
+        harness
+            .turn(Prompt::User(message.into()), &mut inputs)
+            .await;
+    }
+    // (The second conversation's first message has the list, the first
+    // one's too, and the resumed one's next request says none are left.)
+    assert_eq!(lists_held(&bodies), [1, 1, 2, 2]);
+    let told = "No notes are kept now. This list replaces any earlier one.";
+    assert_eq!(
+        request_with(&bodies, "Which fruit?").matches(told).count(),
+        1
+    );
 }
