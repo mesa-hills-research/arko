@@ -73,6 +73,10 @@ pub enum SettingsRow {
     Compact,
     ProjectFiles,
     ProjectWorkers,
+    /// Whether the agents get the built-in skills at all.
+    BuiltinSkills,
+    /// One built-in skill, by its place in the session's list of them.
+    BuiltinSkill(usize),
     /// Who chooses the workers' models.
     WorkerModels,
     /// How many levels of workers there can be.
@@ -777,6 +781,42 @@ fn settings(frame: &mut Frame, app: &App, area: Rect, selected: usize) {
                 }
                 .to_string(),
             ),
+            SettingsRow::BuiltinSkills => (
+                "Skills",
+                crate::builtin_skills::SETTING_NAME,
+                choices(theme, &["on", "off"], usize::from(!app.builtin_skills())),
+                if app.conversation_started() {
+                    format!(
+                        "{} {}",
+                        crate::builtin_skills::SETTING_ABOUT,
+                        crate::builtin_skills::AFTER_START
+                    )
+                } else {
+                    crate::builtin_skills::SETTING_ABOUT.to_string()
+                },
+            ),
+            SettingsRow::BuiltinSkill(index) => {
+                let skill = app.builtin_skill(*index);
+                let name = skill.map_or("", |skill| skill.name.as_str());
+                (
+                    "Skills",
+                    name,
+                    choices(
+                        theme,
+                        &["on", "off"],
+                        usize::from(skill.is_some_and(|skill| !skill.on)),
+                    ),
+                    {
+                        let about = crate::builtin_skills::find(name)
+                            .map_or_else(String::new, |skill| skill.description());
+                        if app.conversation_started() {
+                            format!("{about} {}", crate::builtin_skills::AFTER_START)
+                        } else {
+                            about
+                        }
+                    },
+                )
+            }
             SettingsRow::Keys => {
                 let states = (app.key_states)();
                 let set = states.iter().filter(|state| state.masked.is_some()).count();

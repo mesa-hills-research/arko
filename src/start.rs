@@ -60,13 +60,16 @@ pub(crate) fn extra_rules_for(options: &Options) -> ExtraRules {
 
 /// The built-in skills a new session gives its agents: as the options say,
 /// else as ARKO_BUILTIN_SKILLS (1 or 0) and ARKO_BUILTIN_SKILLS_OFF (names
-/// separated by commas) do, else all of them.
-pub(crate) fn builtin_skills_for(options: &Options) -> Result<BuiltinSkills, String> {
+/// separated by commas) do, else all of them. With a warning for each name
+/// that isn't a built-in skill.
+pub(crate) fn builtin_skills_for(
+    options: &Options,
+) -> Result<(BuiltinSkills, Vec<String>), String> {
     let none = match options.builtin_skills {
         Some(on) => !on,
         None => credentials::switch(credentials::BUILTIN_SKILLS)?.is_some_and(|on| !on),
     };
-    match &options.builtin_skills_off {
+    Ok(match &options.builtin_skills_off {
         Some(names) => BuiltinSkills::new(none, names, "builtin_skills_off"),
         None => {
             let named: Vec<String> = credentials::var(credentials::BUILTIN_SKILLS_OFF)
@@ -74,22 +77,23 @@ pub(crate) fn builtin_skills_for(options: &Options) -> Result<BuiltinSkills, Str
                 .unwrap_or_default();
             BuiltinSkills::new(none, &named, credentials::BUILTIN_SKILLS_OFF)
         }
-    }
+    })
 }
 
 /// A resumed session's built-in skills with the options over its own, for
-/// the conversations that start from now on. `None` when they don't change.
+/// the conversations that start from now on (`None` when they don't change),
+/// and a warning for each name that isn't a built-in skill.
 pub(crate) fn builtin_skills_resumed(
     options: &Options,
     saved: &BuiltinSkills,
-) -> Result<Option<BuiltinSkills>, String> {
+) -> (Option<BuiltinSkills>, Vec<String>) {
     if options.builtin_skills.is_none() && options.builtin_skills_off.is_none() {
-        return Ok(None);
+        return (None, Vec::new());
     }
     let none = options.builtin_skills.map_or(saved.none, |on| !on);
     let off = options.builtin_skills_off.as_ref().unwrap_or(&saved.off);
-    let chosen = BuiltinSkills::new(none, off, "builtin_skills_off")?;
-    Ok(Some(chosen).filter(|chosen| chosen != saved))
+    let (chosen, warnings) = BuiltinSkills::new(none, off, "builtin_skills_off");
+    (Some(chosen).filter(|chosen| chosen != saved), warnings)
 }
 
 /// The project's instructions as the options choose them, over `settings`'
@@ -144,8 +148,8 @@ pub(crate) fn new_settings(
         (None, Some(default)) => name(&default.main)?,
         (None, None) => unreachable!("a default without --model"),
     };
-    // The 1-hour cache is Anthropic's, by API key or on OpenRouter; other
-    // models ignore it.
+    // The 1-hour cache is Anthropic's, by API key, on OpenRouter or in Claude
+    // Code; other models ignore it.
     let want_1h = match options.cache_1h {
         Some(on) => on,
         None => credentials::switch(credentials::CACHE_1H)?.unwrap_or(false),
@@ -253,8 +257,12 @@ pub(crate) fn new_settings(
     if options.cache_1h == Some(true) && !main.cache_1h && !worker.cache_1h {
         prompter.note(
             Level::Warn,
-            "--cache-1h is for Claude models by API key or on OpenRouter (Claude Code chooses its own). This session has none, so it is ignored",
+            "--cache-1h is for Claude models, by API key, on OpenRouter or in Claude Code. This session has none, so it is ignored",
         );
+    }
+    let (builtin_skills, skipped) = builtin_skills_for(options)?;
+    for warning in &skipped {
+        prompter.note(Level::Warn, warning);
     }
     let mut settings = Settings {
         text_replies: text_replies_for(options),
@@ -288,9 +296,9 @@ pub(crate) fn new_settings(
             Some(depth) => crate::workers::check_depth(depth)?,
             None => DEFAULT_WORKER_DEPTH,
         },
-        message_copies: options.message_copies.unwrap_or(true),
+        message_copies: options.message_copies.unwrap_or(false),
         nested_start: true,
-        builtin_skills: builtin_skills_for(options)?,
+        builtin_skills,
     };
     project_from_options(options, &mut settings);
     if settings.mode == crate::session::Mode::Chat {

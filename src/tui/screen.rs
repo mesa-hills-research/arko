@@ -1773,6 +1773,55 @@ mod tests {
         }
     }
 
+    /// The built-in skills rows say that a change waits for the next time the
+    /// session opens once the conversation has started, and say nothing of
+    /// it before.
+    #[test]
+    fn the_built_in_skills_rows_say_when_a_change_takes_effect() {
+        use crate::builtin_skills::{AFTER_START, SETTING_ABOUT, SETTING_NAME};
+        use crate::remote::BuiltinSkillSetting;
+        use crate::tui::overlay::{Overlay, SettingsRow};
+        let mut app = app();
+        app.reading.settings.builtin_skill_list = vec![BuiltinSkillSetting {
+            name: "ponytail".into(),
+            on: true,
+        }];
+        for (row, name, about) in [
+            (SettingsRow::BuiltinSkills, SETTING_NAME, SETTING_ABOUT),
+            (
+                SettingsRow::BuiltinSkill(0),
+                "ponytail",
+                "Finish the whole task with the smallest change",
+            ),
+        ] {
+            let at = app
+                .settings_rows()
+                .iter()
+                .position(|other| *other == row)
+                .unwrap();
+            for started in [false, true] {
+                app.reading.models.started = started;
+                app.overlay = Some(Overlay::Settings {
+                    row: at,
+                    picker: None,
+                });
+                let rows = screen(&mut app, 100, 40);
+                assert!(rows.iter().any(|line| line.contains(&format!("▸ {name}"))));
+                // The description wraps in the box, so compare it by its words.
+                let text = rows
+                    .iter()
+                    .map(|line| line.trim_matches(|c: char| c == '│' || c.is_whitespace()))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                assert!(text.contains(about), "{text}");
+                assert_eq!(text.contains("takes effect"), started, "{text}");
+                if started {
+                    assert!(text.contains(AFTER_START), "{text}");
+                }
+            }
+        }
+    }
+
     /// The question to save a profile with long instructions is cut to fit
     /// the dock, and what is left still says how much is cut.
     #[test]

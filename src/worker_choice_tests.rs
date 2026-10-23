@@ -682,10 +682,13 @@ async fn worker_depth_is_kept_and_says_what_it_allows() {
 /// of the user's messages to it, and sets it on or off, saved with the
 /// session. Without workers there is nothing to set.
 #[tokio::test]
-async fn message_copies_are_on_by_default_and_the_command_sets_them() {
+async fn the_message_copies_command_says_and_sets_them() {
     let temp = tempfile::tempdir().unwrap();
     let (mut harness, _inputs, _sender, _server, _seen) = setup(temp.path()).await;
-    assert!(harness.settings.message_copies, "on by default");
+    assert!(
+        harness.settings.message_copies,
+        "a test session has copies on"
+    );
     assert!(harness.live_command("/message-copies", Source::Terminal));
     assert_eq!(
         last_said(&harness.feed),
@@ -916,7 +919,7 @@ fn the_flags_set_who_chooses_and_how_deep_for_a_new_session() {
     let default = new(&[]);
     assert_eq!(default.worker_models, crate::agents::ModelChoice::Agent);
     assert_eq!(default.worker_depth, 2);
-    assert!(default.message_copies, "copies are on by default");
+    assert!(!default.message_copies, "copies are off by default");
     assert!(new(&["--message-copies"]).message_copies);
     assert!(!new(&["--no-message-copies"]).message_copies);
     assert!(

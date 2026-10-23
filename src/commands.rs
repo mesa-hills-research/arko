@@ -105,7 +105,7 @@ pub const COMMANDS: &[Command] = &[
     Command::screen(
         "/settings",
         "",
-        "the view, theme, mouse, outside access, handover size, background jobs, monitor wakes, models for workers, worker depth, message copies, worker profile folders, text replies, extra rules, Claude Code compaction, project instructions, web page and API keys",
+        "the view, theme, mouse, outside access, handover size, background jobs, monitor wakes, models for workers, worker depth, message copies, worker profile folders, text replies, extra rules, Claude Code compaction, project instructions, built-in skills, web page and API keys",
     ),
     Command {
         name: "/model",
@@ -212,6 +212,13 @@ pub const COMMANDS: &[Command] = &[
         name: "/project-instructions",
         args: "one|both|off | workers on|off",
         about: "which of the project's AGENTS.md and CLAUDE.md the agents get (one is AGENTS.md, else CLAUDE.md), and whether workers get them. Each conversation and worker gets them once, in its first message, and a change reaches those that start after it",
+        aliases: &[],
+        runs: Runs::Session,
+    },
+    Command {
+        name: "/builtin-skills",
+        args: "on|off | NAME on|off",
+        about: "whether the agents get Arko's built-in skills, all or one by name. It changes the agents before the conversation starts, and after it a resumed session gets the change",
         aliases: &[],
         runs: Runs::Session,
     },
@@ -329,6 +336,13 @@ pub fn dynamic_choices(
             names
         }
         ("/model", words) => model_choices(&reading.models, words),
+        ("/builtin-skills", []) => ON_OFF
+            .iter()
+            .copied()
+            .chain(crate::builtin_skills::names())
+            .map(String::from)
+            .collect(),
+        ("/builtin-skills", [_]) => ON_OFF.iter().map(|word| word.to_string()).collect(),
         (name, words) => choices(name, words)
             .iter()
             .map(|word| word.to_string())
@@ -440,6 +454,20 @@ mod tests {
         assert_eq!(workers.first().map(String::as_str), Some("main"));
         assert!(dynamic_choices(&reading, "/model", &["opus"]).contains(&"high".to_string()));
         assert_eq!(dynamic_choices(&reading, "/outside", &[]), ["on", "off"]);
+        assert_eq!(
+            dynamic_choices(&reading, "/builtin-skills", &[]),
+            [
+                "on",
+                "off",
+                "user-facing-prose",
+                "repo-docs-style",
+                "ponytail"
+            ]
+        );
+        assert_eq!(
+            dynamic_choices(&reading, "/builtin-skills", &["repo-docs-style"]),
+            ["on", "off"]
+        );
     }
 
     #[test]

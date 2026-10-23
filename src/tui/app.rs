@@ -608,6 +608,12 @@ impl App {
                 names
             }
             ("/model", words) => self.model_choices(words),
+            ("/builtin-skills", []) => ["on", "off"]
+                .into_iter()
+                .chain(crate::builtin_skills::names())
+                .map(String::from)
+                .collect(),
+            ("/builtin-skills", [_]) => vec!["on".into(), "off".into()],
             (name, words) => commands::choices(name, words)
                 .iter()
                 .map(|word| word.to_string())
@@ -1499,6 +1505,12 @@ impl App {
                 rows.push(SettingsRow::ProjectWorkers);
             }
         }
+        if commands::find("/builtin-skills on").is_some() {
+            rows.push(SettingsRow::BuiltinSkills);
+            rows.extend(
+                (0..self.reading.settings.builtin_skill_list.len()).map(SettingsRow::BuiltinSkill),
+            );
+        }
         if self.reading.models.has_workers {
             if commands::find("/worker-models agent").is_some() {
                 rows.push(SettingsRow::WorkerModels);
@@ -1764,6 +1776,22 @@ impl App {
                         Err(error) => self.say(error),
                     }
                 }
+                SettingsRow::BuiltinSkills => {
+                    self.send(if self.builtin_skills() {
+                        "/builtin-skills off"
+                    } else {
+                        "/builtin-skills on"
+                    });
+                }
+                SettingsRow::BuiltinSkill(index) => {
+                    if let Some((name, on)) = self
+                        .builtin_skill(index)
+                        .map(|skill| (skill.name.clone(), skill.on))
+                    {
+                        let state = if on { "off" } else { "on" };
+                        self.send(&format!("/builtin-skills {name} {state}"));
+                    }
+                }
                 SettingsRow::Page => {
                     if self.reading.page.is_some() {
                         self.send("/remote off");
@@ -1861,6 +1889,16 @@ impl App {
     /// messages to it.
     pub fn message_copies(&self) -> bool {
         self.reading.settings.message_copies
+    }
+
+    /// Whether the agents get the built-in skills at all.
+    pub fn builtin_skills(&self) -> bool {
+        self.reading.settings.builtin_skills
+    }
+
+    /// The `index`th built-in skill and whether it is left out by name.
+    pub fn builtin_skill(&self, index: usize) -> Option<&crate::remote::BuiltinSkillSetting> {
+        self.reading.settings.builtin_skill_list.get(index)
     }
 
     /// Which of the project's instruction files the agents get.
@@ -3393,6 +3431,47 @@ pub(super) mod tests {
         });
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         assert_eq!(sent(&mut app), ["/project-instructions workers off"]);
+    }
+
+    /// The built-in skills are a group of their own after the project's
+    /// instructions: a row for all of them, then one for each, which send
+    /// `/builtin-skills`.
+    #[test]
+    fn the_built_in_skills_rows_send_the_command() {
+        use crate::remote::BuiltinSkillSetting;
+        let mut app = app();
+        let skill = |name: &str, on| BuiltinSkillSetting {
+            name: name.into(),
+            on,
+        };
+        let mut reading = app.reading.clone();
+        reading.settings.builtin_skills = true;
+        reading.settings.builtin_skill_list = vec![
+            skill("user-facing-prose", true),
+            skill("repo-docs-style", false),
+        ];
+        app.set_reading(reading);
+        let rows = app.settings_rows();
+        let all = rows
+            .iter()
+            .position(|row| *row == SettingsRow::BuiltinSkills)
+            .unwrap();
+        assert_eq!(rows[all + 1], SettingsRow::BuiltinSkill(0));
+        assert_eq!(rows[all + 2], SettingsRow::BuiltinSkill(1));
+        let files = rows
+            .iter()
+            .position(|row| *row == SettingsRow::ProjectFiles)
+            .unwrap();
+        assert_eq!(all, files + 1, "after the project's instructions");
+        for (row, expected) in [
+            (all, "/builtin-skills off"),
+            (all + 1, "/builtin-skills user-facing-prose off"),
+            (all + 2, "/builtin-skills repo-docs-style on"),
+        ] {
+            app.overlay = Some(Overlay::Settings { row, picker: None });
+            press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+            assert_eq!(sent(&mut app), [expected]);
+        }
     }
 
     /// The web page's overlay waits for the page until its status has it:

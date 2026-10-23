@@ -313,8 +313,11 @@ fn apply_cache(
         None => default_1h,
     };
     if crate::providers::takes_cache_ttl(&config.llm_config.model) {
-        config.llm_config.generation_config.anthropic_cache_ttl =
-            one_hour.then_some(AnthropicCacheTtl::OneHour);
+        let generation = &mut config.llm_config.generation_config;
+        generation.anthropic_cache_ttl = one_hour.then_some(AnthropicCacheTtl::OneHour);
+        if chosen == Some("5m") {
+            crate::providers::ask_five_minutes(&config.llm_config.model, generation);
+        }
     }
     Ok(())
 }
@@ -638,7 +641,7 @@ fn start_parameters() -> Vec<ToolParameterDefinition> {
     vec![
         text(
             CACHE_PARAM,
-            "1h or 5m, how long the worker's prompt cache lasts after its last step. Only Claude workers on an API key or OpenRouter take it. ChatGPT keeps its own 30-minute cache, and Claude Code an hour.",
+            "1h or 5m, how long the worker's prompt cache lasts after its last step. Only Claude workers take it, on an API key, on OpenRouter or in Claude Code, which uses 1h on a Claude plan when you choose none. ChatGPT keeps its own 30-minute cache.",
         ),
         text(
             PROFILE_PARAM,
@@ -1492,6 +1495,20 @@ mod tests {
         );
         request.parameters.insert(CACHE_PARAM.into(), "2h".into());
         assert!(hook.prepare(&request, &mut config).is_err());
+        // Claude Code chooses its own cache unless one is asked for, so 5m is
+        // asked for outright.
+        config.llm_config.model = crate::agents::resolve_model("cc:opus").unwrap();
+        for (cache, expected) in [
+            ("5m", Some(AnthropicCacheTtl::FiveMinutes)),
+            ("1h", Some(AnthropicCacheTtl::OneHour)),
+        ] {
+            request.parameters.insert(CACHE_PARAM.into(), cache.into());
+            hook.prepare(&request, &mut config).unwrap();
+            assert_eq!(
+                config.llm_config.generation_config.anthropic_cache_ttl, expected,
+                "{cache}"
+            );
+        }
     }
 
     /// A run is offered the start tools only when its own setup adds them.

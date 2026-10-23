@@ -241,6 +241,7 @@ async fn remote_page_demo() {
         worker_models: Default::default(),
         worker_depth: Default::default(),
         message_copies: Default::default(),
+        builtin_skills: Default::default(),
         project: Default::default(),
         background: managers.background.clone(),
         feed: Some(harness.feed.clone()),

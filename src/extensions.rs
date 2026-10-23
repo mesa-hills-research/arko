@@ -4,6 +4,7 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::builtin_skills::BuiltinSkills;
 use crate::{mcp, skills};
 
 /// An MCP server a session would start, or would leave out and why.
@@ -79,6 +80,23 @@ pub struct Extensions {
 /// that `ARKO_BUILTIN_SKILLS` and `ARKO_BUILTIN_SKILLS_OFF` leave on. It
 /// reads the files, so call it off a UI thread.
 pub fn list(root: &Path, workspace: Option<&Path>, mcp_config: &[PathBuf]) -> Extensions {
+    list_with(root, workspace, mcp_config, None, None)
+}
+
+/// [`list`] with the app's choice of built-in skills, as
+/// [`Options::builtin_skills`](crate::Options::builtin_skills) and
+/// [`Options::builtin_skills_off`](crate::Options::builtin_skills_off) give
+/// it, where `None` leaves it to the environment. A name that isn't a
+/// built-in skill is skipped, as a session skips it. If
+/// `ARKO_BUILTIN_SKILLS` holds a value a session wouldn't open with, every
+/// built-in skill is listed as skipped, with the reason.
+pub fn list_with(
+    root: &Path,
+    workspace: Option<&Path>,
+    mcp_config: &[PathBuf],
+    builtin_skills: Option<bool>,
+    builtin_skills_off: Option<&[String]>,
+) -> Extensions {
     let mut extensions = Extensions::default();
     let normal = |file: &Path| {
         arko_agents::utils::normalize_path(
@@ -153,9 +171,7 @@ pub fn list(root: &Path, workspace: Option<&Path>, mcp_config: &[PathBuf]) -> Ex
         }
     }
     let folders = skills::folders_for(workspace, root);
-    // A new session has the built-in skills as ARKO_BUILTIN_SKILLS and
-    // ARKO_BUILTIN_SKILLS_OFF say.
-    let builtin = crate::start::builtin_skills_for(&crate::Options::default()).unwrap_or_default();
+    let (builtin, refused) = builtin_choice(builtin_skills, builtin_skills_off);
     extensions.skills = skills::scan(&folders, &builtin, workspace.unwrap_or(root))
         .into_iter()
         .map(|skill| SkillEntry {
@@ -163,11 +179,31 @@ pub fn list(root: &Path, workspace: Option<&Path>, mcp_config: &[PathBuf]) -> Ex
             name: skill.name,
             description: skill.description,
             auto_load: skill.auto_load,
-            skipped: skill.skipped,
+            skipped: skill
+                .skipped
+                .or_else(|| refused.clone().filter(|_| skill.embedded)),
             builtin: skill.embedded,
         })
         .collect();
     extensions
+}
+
+/// The built-in skills a new session would give, as the app's choice says,
+/// else as `ARKO_BUILTIN_SKILLS` and `ARKO_BUILTIN_SKILLS_OFF` say. With a
+/// setting a session wouldn't open with, all of them and why.
+fn builtin_choice(
+    builtin_skills: Option<bool>,
+    builtin_skills_off: Option<&[String]>,
+) -> (BuiltinSkills, Option<String>) {
+    let options = crate::Options {
+        builtin_skills,
+        builtin_skills_off: builtin_skills_off.map(<[String]>::to_vec),
+        ..crate::Options::default()
+    };
+    match crate::start::builtin_skills_for(&options) {
+        Ok((builtin, _)) => (builtin, None),
+        Err(error) => (BuiltinSkills::default(), Some(error)),
+    }
 }
 
 /// The answer remembered for the project's current `.mcp.json` servers.
@@ -230,6 +266,54 @@ mod tests {
                 .any(|skill| skill.path.starts_with(root.join(".agents")))
         );
         assert!(listed.notes.is_empty());
+    }
+
+    /// The app's choice decides which built-in skills are listed, and a name
+    /// no built-in skill has is skipped, as a session skips it.
+    #[test]
+    fn the_apps_choice_of_built_in_skills_is_listed() {
+        let temp = tempfile::tempdir().unwrap();
+        let builtin = |on: Option<bool>, off: &[&str]| -> Vec<String> {
+            let off: Vec<String> = off.iter().map(|name| name.to_string()).collect();
+            list_with(temp.path(), None, &[], on, Some(&off))
+                .skills
+                .into_iter()
+                .filter(|skill| skill.builtin)
+                .map(|skill| skill.name)
+                .collect()
+        };
+        assert_eq!(
+            builtin(Some(true), &[]),
+            ["user-facing-prose", "repo-docs-style", "ponytail"]
+        );
+        assert_eq!(
+            builtin(Some(true), &["repo-docs-style", "repo-doc-style"]),
+            ["user-facing-prose", "ponytail"]
+        );
+        assert!(builtin(Some(false), &[]).is_empty());
+    }
+
+    /// A setting a session wouldn't open with doesn't list the built-in
+    /// skills as given.
+    #[test]
+    fn a_setting_a_session_would_refuse_lists_every_built_in_skill_as_skipped() {
+        let temp = tempfile::tempdir().unwrap();
+        let (root, workspace) = (temp.path().join("arko"), temp.path().join("project"));
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::write(workspace.join(".env"), "ARKO_BUILTIN_SKILLS=maybe\n").unwrap();
+        let env = crate::credentials::Env::for_folder_in(Some(&workspace), false, Some(&root));
+        let (builtin, why) = crate::context::with_env(env, || builtin_choice(None, None));
+        assert!(builtin.is_all());
+        let why = why.expect("a reason");
+        assert!(
+            why.contains("ARKO_BUILTIN_SKILLS") && why.contains("`maybe`"),
+            "{why}"
+        );
+        // The app's own choice doesn't read it.
+        let env = crate::credentials::Env::for_folder_in(Some(&workspace), false, Some(&root));
+        let (builtin, why) =
+            crate::context::with_env(env, || builtin_choice(Some(false), Some(&[])));
+        assert!(builtin.none && why.is_none());
     }
 
     #[test]

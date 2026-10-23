@@ -19,7 +19,8 @@ models, and on your Claude plan through an installed Claude Code.
 - Workers that start workers of their own, down to a depth you set
   ([docs](docs/worker-profiles.md#workers-that-start-workers))
 - MCP servers in Claude Code's `.mcp.json` format, and [skills](docs/skills.md) from
-  `.agents/skills` or `.claude/skills`, with two for writing built in
+  `.agents/skills` or `.claude/skills`, with three built in (two for writing, and ponytail for
+  coding tasks and running workers)
 - Themes for the full-screen view, and your own in GPUI Kit's format
 - A library for apps with front ends of their own
 

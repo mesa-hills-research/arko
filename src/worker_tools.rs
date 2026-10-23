@@ -362,12 +362,12 @@ fn model_line(
         "- {name} · efforts {} · {cost} · {handover}",
         efforts_range(model)
     );
-    if providers::takes_cache_ttl(model) {
+    if model.provider == Provider::ClaudeCode {
+        line.push_str(" · cache 5m or 1h (1h when you choose none, on a Claude plan)");
+    } else if providers::takes_cache_ttl(model) {
         line.push_str(" · cache 5m or 1h (1h costs twice the input price to write)");
     } else if chatgpt {
         line.push_str(" · cache 30m, fixed");
-    } else if model.provider == Provider::ClaudeCode {
-        line.push_str(" · cache 1h, fixed");
     }
     line
 }
