@@ -35,6 +35,9 @@ use tokio::sync::mpsc;
 
 // The page's server and the terminal's full-screen view are both clients
 // of the feed.
+/// The types of [`PlanStatus`]'s credits and extra usage, so an app needs no
+/// dependency of its own on arko_ai to read or build them.
+pub use arko_ai::{ExtraUsage, PlanCredits};
 pub(crate) use feed::family_order_of;
 pub use feed::{
     Activity, Batches, CallStatus, Delivery, Feed, Item, JobKind, JobStart, JobState, JobSummary,
@@ -43,9 +46,6 @@ pub use feed::{
 };
 pub(crate) use history::all_items;
 pub use history::items as history;
-/// The types of [`PlanStatus`]'s credits and extra usage, so an app needs no
-/// dependency of its own on arko_ai to read or build them.
-pub use arko_ai::{ExtraUsage, PlanCredits};
 pub(crate) use history::own_words;
 #[cfg(any(test, feature = "remote"))]
 pub use links::Kind as LinkKind;

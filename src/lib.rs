@@ -106,8 +106,8 @@ pub use crate::ui::{Attachment, Banner, Input, Message, QuitAsk};
 /// API keys and logins, for an app's accounts page (no session needed).
 pub mod accounts {
     pub use crate::claude_code::{
-        ClaudeCodeStatus, Problem, Ready, add_to_path, find_installed, install_dirs,
-        outdated_text, status as claude_code,
+        ClaudeCodeStatus, Problem, Ready, add_to_path, find_installed, install_dirs, outdated_text,
+        status as claude_code,
     };
     pub use crate::credentials::{
         ChatGptLogin, KEYS, Key, KeySource, KeyState, LoginSource, LoginState, add_chatgpt_login,
