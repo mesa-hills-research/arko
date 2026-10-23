@@ -1199,20 +1199,8 @@ async fn the_first_message_after_a_quit_names_the_jobs_that_stopped() {
     managers.shutdown().await;
     drop(managers);
 
-    // The session opens again (`arko -c`). (A job's task lets go of the
-    // terminal's lock when it is next run, which on a busy machine can be
-    // after the shutdown gave up waiting for it.)
-    let mut tries = 0;
-    let managers = loop {
-        match Managers::open(&harness.session, &shell) {
-            Ok(managers) => break managers,
-            Err(_) if tries < 100 => {
-                tries += 1;
-                tokio::time::sleep(Duration::from_millis(50)).await;
-            }
-            Err(error) => panic!("{error}"),
-        }
-    };
+    // The session opens again (`arko -c`).
+    let managers = Managers::open(&harness.session, &shell).unwrap();
     harness.background = managers.background.clone();
     harness.new_conversation();
     assert!(matches!(
