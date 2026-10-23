@@ -146,6 +146,13 @@ pub const COMMANDS: &[Command] = &[
         runs: Runs::Session,
     },
     Command {
+        name: "/notes",
+        args: "[remove N]",
+        about: "the notes the main agent keeps, which come back after a handover or compaction, and removing one",
+        aliases: &[],
+        runs: Runs::Session,
+    },
+    Command {
         name: "/background-after",
         args: "DURATION|off",
         about: "how long a shell command or another long call runs before it moves to the background, where it goes on as a job and the agent goes on with its work",
@@ -275,6 +282,7 @@ const CHOICES: &[(&str, &[&str], &[&str])] = &[
     ("/message-copies", &[], ON_OFF),
     ("/profiles", &[], &["add", "remove"]),
     ("/jobs", &[], &["stop"]),
+    ("/notes", &[], &["remove"]),
     ("/jobs", &["stop"], &["all"]),
     ("/text-replies", &[], ON_OFF),
     ("/cc-compact", &[], ON_OFF),

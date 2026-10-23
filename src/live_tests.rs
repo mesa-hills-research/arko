@@ -2463,6 +2463,43 @@ async fn workers_get_the_kept_notes_for_them() {
     harness.crew.as_ref().unwrap().shutdown().await;
 }
 
+/// `/notes` lists the session's notes, removes one by its number, and says
+/// what it can't do.
+#[tokio::test]
+async fn notes_lists_and_removes_the_kept_notes() {
+    let temp = tempfile::tempdir().unwrap();
+    let server =
+        ModelServer::start(Arc::new(|_, _| Box::pin(async { complete("m1", "Hi.") }))).await;
+    let (mut harness, _inputs, _sender) = harness(temp.path(), server.client(), true);
+    assert!(harness.live_command("/notes", Source::Terminal));
+    assert!(says(&harness.feed, "output", "No notes are kept."));
+    harness
+        .kept
+        .add(BUILD_BOX, kept_notes::Audience::Lead)
+        .unwrap();
+    harness
+        .kept
+        .add("Use tabs.", kept_notes::Audience::AllWorkers)
+        .unwrap();
+    harness.live_command("/notes", Source::Terminal);
+    assert!(says(
+        &harness.feed,
+        "output",
+        &format!("1  for the main agent\n   {BUILD_BOX}\n2  for every worker\n   Use tabs.")
+    ));
+    harness.live_command("/notes remove 1", Source::Terminal);
+    assert!(says(&harness.feed, "output", "Removed note 1."));
+    assert_eq!(harness.kept.list().len(), 1);
+    harness.live_command("/notes remove 1", Source::Terminal);
+    assert!(says(
+        &harness.feed,
+        "output",
+        "There is no kept note 1. /notes lists them."
+    ));
+    harness.live_command("/notes remove soon", Source::Terminal);
+    assert!(says(&harness.feed, "output", "/notes lists the kept notes"));
+}
+
 /// A worker that hands over gets its notes again in the fresh conversation,
 /// including one kept after it started, which its restated first message
 /// can't have.

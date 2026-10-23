@@ -325,6 +325,56 @@ impl KeptNotes {
     }
 }
 
+/// How `/notes` is used.
+const USAGE: &str = "/notes lists the kept notes, and /notes remove N removes one.";
+
+impl crate::Harness {
+    /// `/notes`: lists the session's kept notes, and with `remove N` removes
+    /// one.
+    pub(crate) fn notes_command(&mut self, argument: &str) {
+        let words: Vec<&str> = argument.split_whitespace().collect();
+        let text = match words.as_slice() {
+            [] => {
+                let notes = self.kept.list();
+                match notes.first() {
+                    None => {
+                        "No notes are kept. The main agent keeps them with keep_note.".to_string()
+                    }
+                    Some(first) => {
+                        let mut lines: Vec<String> = notes
+                            .iter()
+                            .map(|note| {
+                                format!(
+                                    "{}  for {}\n   {}",
+                                    note.id,
+                                    note.audience.describe(),
+                                    note.text.replace('\n', "\n   ")
+                                )
+                            })
+                            .collect();
+                        lines.push(format!("/notes remove {} removes the first.", first.id));
+                        lines.join("\n")
+                    }
+                }
+            }
+            ["remove", number] => match number.parse().map(|id| self.kept.remove(id)) {
+                Ok(Ok(note)) => format!(
+                    "Removed note {}. Agents that already read it still have it in their conversation.",
+                    note.id
+                ),
+                Ok(Err(why)) => format!("{why} /notes lists them."),
+                Err(_) => USAGE.to_string(),
+            },
+            _ => USAGE.to_string(),
+        };
+        self.mirrored(|harness| {
+            for line in text.lines() {
+                harness.output.line(line);
+            }
+        });
+    }
+}
+
 /// `keep_note`, for the main agent.
 pub(crate) struct KeepNote {
     pub(crate) notes: Arc<KeptNotes>,

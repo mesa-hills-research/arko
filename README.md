@@ -18,6 +18,8 @@ models, and on your Claude plan through an installed Claude Code.
   [worker profiles](docs/worker-profiles.md) you write
 - Workers that start workers of their own, down to a depth you set
   ([docs](docs/worker-profiles.md#workers-that-start-workers))
+- [Notes](docs/kept-notes.md) the main agent keeps for itself and its workers, which come back
+  after a handover or a compaction
 - MCP servers in Claude Code's `.mcp.json` format, and [skills](docs/skills.md) from
   `.agents/skills` or `.claude/skills`, with two for writing built in
 - Themes for the full-screen view, and your own in GPUI Kit's format

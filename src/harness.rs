@@ -1650,6 +1650,7 @@ impl Harness {
             "/message-copies" => self.message_copies_command(argument, source),
             "/profiles" => self.profiles_command(argument),
             "/jobs" => self.jobs_command(argument),
+            "/notes" => self.notes_command(argument),
             _ => self.handover_at_command(argument, source),
         }
         // (A setting it changed shows in the status and the details.)
@@ -4383,7 +4384,7 @@ pub(crate) fn place(link: &remote::Link) -> String {
 /// The commands that change a setting while the session runs, which take
 /// an argument: `/outside`, `/model`, `/handover`, `/handover-at`, `/keys`.
 /// And `/message`, which works while the agent works too.
-pub(crate) const LIVE_COMMANDS: [&str; 17] = [
+pub(crate) const LIVE_COMMANDS: [&str; 18] = [
     "/outside",
     "/model",
     "/handover",
@@ -4400,6 +4401,7 @@ pub(crate) const LIVE_COMMANDS: [&str; 17] = [
     "/message-copies",
     "/profiles",
     "/jobs",
+    "/notes",
     "/message",
 ];
 
