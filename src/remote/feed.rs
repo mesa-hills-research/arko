@@ -632,8 +632,6 @@ pub struct WorkerInfo {
     pub effort: Option<String>,
     /// The profile it started with.
     pub profile: Option<String>,
-    /// The worker that started it.
-    pub parent: Option<String>,
     /// How far it is from the main agent (0 is taken as 1).
     pub depth: u32,
     /// Whether it may start workers of its own.
@@ -2611,9 +2609,12 @@ impl Feed {
         self.worker_changed(&mut state, id, true);
     }
 
-    /// The worker `id` is started by the worker `parent`, before its first
-    /// event comes: its place in the transcript is its parent's own, and the
-    /// main transcript holds the lines of the main agent's workers only.
+    /// The worker `id` is started by the worker `parent`. This is how the feed
+    /// learns a worker's parent, so call it before the worker's first event
+    /// and before its [`worker_info`](Self::worker_info). The worker's place
+    /// in the transcript is its parent's own (the main transcript holds the
+    /// lines of the main agent's workers only), and its summary gets `parent`
+    /// with the next `worker_info`.
     pub fn worker_under(&self, id: &str, parent: &str) {
         self.lock()
             .parents
@@ -2621,21 +2622,15 @@ impl Feed {
     }
 
     /// Tells the feed what the worker `id` started with (its model, effort,
-    /// profile and place in the family) and, when the session knows, what
-    /// it has cost. The summary goes out when something changed, and so do
-    /// those of the workers it started and the ones that started it when
-    /// their family's cost changed.
+    /// profile, depth and whether it may start workers) and, when the session
+    /// knows, what it has cost. The summary goes out when something changed,
+    /// and so do those of the workers it started and the ones that started it
+    /// when their family's cost changed. The worker's parent is the one
+    /// [`worker_under`](Self::worker_under) named.
     pub fn worker_info(&self, id: &str, info: WorkerInfo) {
         let mut state = self.lock();
         self.known_worker(&mut state, id);
-        match &info.parent {
-            Some(parent) => {
-                state.parents.insert(id.to_string(), parent.clone());
-            }
-            None => {
-                state.parents.remove(id);
-            }
-        }
+        let parent = state.parents.get(id).cloned();
         let Some(worker) = state.worker(id) else {
             return;
         };
@@ -2644,7 +2639,7 @@ impl Feed {
         summary.model = info.model;
         summary.effort = info.effort;
         summary.profile = info.profile;
-        summary.parent = info.parent;
+        summary.parent = parent;
         summary.depth = info.depth.max(1);
         summary.nested = info.nested;
         if let Some((billed, list)) = info.costs {
@@ -3338,11 +3333,11 @@ mod tests {
         use arko_ai::{BillingKind, UsageInfo};
         let feed = Feed::new("main");
         feed.worker("r2", "Judge the render", WorkerChange::Started);
+        feed.worker_under("r2", "r1");
         let mut info = WorkerInfo::new();
         info.model = Some("gpt-6.1-sol".into());
         info.effort = Some("high".into());
         info.profile = Some("3d-judge".into());
-        info.parent = Some("r1".into());
         info.depth = 2;
         feed.worker_info("r2", info);
         let summary = feed.worker_summary("r2").unwrap();
@@ -3468,11 +3463,15 @@ mod tests {
         feed.worker_under("r2", "r1");
         feed.event(&event("worker", shell(Uuid::new_v4(), "ls")), Some("r2"));
         feed.worker("r2", "Count the files", WorkerChange::Started);
-        // Another is told its parent with its summary.
+        // Another is told its parent before its summary, which holds it.
+        feed.worker_under("r3", "r1");
         let mut info = WorkerInfo::new();
-        info.parent = Some("r1".into());
         info.depth = 2;
         feed.worker_info("r3", info);
+        assert_eq!(
+            feed.worker_summary("r3").unwrap().parent.as_deref(),
+            Some("r1")
+        );
         feed.worker("r3", "Count the tests", WorkerChange::Started);
         let lines: Vec<(String, Option<String>)> = items(&feed)
             .into_iter()
@@ -3551,11 +3550,11 @@ mod tests {
         feed.worker("r1", "Review", WorkerChange::Started);
         feed.worker("r2", "Count", WorkerChange::Started);
         feed.worker("r3", "Count more", WorkerChange::Started);
+        feed.worker_under("r2", "r1");
+        feed.worker_under("r3", "r2");
         let mut info = WorkerInfo::new();
-        info.parent = Some("r1".into());
         info.depth = 2;
         feed.worker_info("r2", info.clone());
-        info.parent = Some("r2".into());
         info.depth = 3;
         feed.worker_info("r3", info);
         let usage = |total: f64, billed: f64| {
@@ -3598,7 +3597,6 @@ mod tests {
         );
         // A resumed session sets r2's saved cost, and the totals follow.
         let mut info = WorkerInfo::new();
-        info.parent = Some("r1".into());
         info.depth = 2;
         info.costs = Some((2.0, 2.0));
         feed.worker_info("r2", info);

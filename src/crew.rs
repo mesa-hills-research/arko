@@ -971,8 +971,11 @@ impl Crew {
                     run.since.timestamp_millis(),
                     ran.get(&run.handle).copied().unwrap_or(0),
                 );
-                // What it started with and what it cost before.
-                feed.worker_info(&run.handle, self.worker_info(workflow, run, &runs, true));
+                // Who started it, what it started with and what it cost before.
+                if let Some(parent) = started_by(&runs, run.run_id) {
+                    feed.worker_under(&run.handle, &parent);
+                }
+                feed.worker_info(&run.handle, self.worker_info(workflow, run, true));
             }
         }
         if self.has_mail() {
@@ -1057,7 +1060,7 @@ impl Crew {
             .unwrap_or_default();
         let record = runs.iter().find(|record| record.run_id == run);
         if let (Some(workflow), Some(record)) = (&workflow, record) {
-            feed.worker_info(handle, self.worker_info(workflow, record, &runs, false));
+            feed.worker_info(handle, self.worker_info(workflow, record, false));
         }
         let task = record.map(|record| record.task.clone()).unwrap_or_default();
         let ended = matches!(
@@ -1073,21 +1076,16 @@ impl Crew {
     }
 
     /// What a worker's summary says of it: the setup it started with, its
-    /// place in the family, and (`with_costs`) what its saved runs cost, for
-    /// a session that resumes. The costs of a worker that starts add up from
-    /// its events.
-    ///
-    /// `runs` are all the session's workers, which the caller reads once, so
-    /// a long list isn't read again for each of its workers.
+    /// depth, and (`with_costs`) what its saved runs cost, for a session that
+    /// resumes. The costs of a worker that starts add up from its events. Who
+    /// started it is told with `Feed::worker_under`.
     fn worker_info(
         &self,
         workflow: &Workflow,
         run: &arko_workflows::subagents::SubagentRecord,
-        runs: &[arko_workflows::subagents::SubagentRecord],
         with_costs: bool,
     ) -> remote::WorkerInfo {
         let setup = self.run_model(run.run_id);
-        let parent = started_by(runs, run.run_id);
         let costs = with_costs.then(|| {
             let results = workflow.context().agent_results.read();
             results
@@ -1112,7 +1110,6 @@ impl Crew {
             .map(|effort| effort.to_string());
         info.nested = setup.as_ref().is_some_and(WorkerSetup::nests);
         info.profile = setup.and_then(|setup| setup.profile);
-        info.parent = parent;
         info.depth = run.depth;
         info.costs = costs;
         info
