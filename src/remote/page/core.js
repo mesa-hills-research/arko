@@ -433,13 +433,15 @@
   }
 
   /** How long after the user's last message a monitor's warning wakes the
-   * agent, from the settings' `monitor_wakes` (seconds, 0 for never, or
-   * null for always): "For 2 h after your last message", "Always", "Never". */
-  function wakesWords(seconds) {
+   * agent, from the settings' `monitor_wakes` (the setting, such as "auto"
+   * or "2h") and `monitor_wakes_within` (the seconds now, 0 for never, or
+   * null for always): "For 2 h after your last message", "Auto (54 min)",
+   * "Always", "Never". */
+  function wakesWords(setting, seconds) {
     if (seconds == null) return 'Always';
     if (seconds === 0) return 'Never';
     const time = seconds % 3600 === 0 ? seconds / 3600 + ' h' : seconds % 60 === 0 ? seconds / 60 + ' min' : seconds + ' s';
-    return 'For ' + time + ' after your last message';
+    return setting === 'auto' ? 'Auto (' + time + ')' : 'For ' + time + ' after your last message';
   }
 
   /** Who chooses the workers' models, as `/worker-models` takes it. The

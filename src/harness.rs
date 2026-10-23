@@ -827,6 +827,7 @@ impl Harness {
             // And how long its prompt cache has left, as the session's
             // record has it.
             self.restore_cache(size.is_some());
+            self.tell_monitors_of_the_window();
         }
         if let Some(crew) = &self.crew {
             crew.attach(&workflow, lead);
@@ -2801,8 +2802,8 @@ impl Harness {
         let now = self.settings.monitor_wakes;
         if argument.is_empty() {
             let text = format!(
-                "{} /monitor-wakes 30m, /monitor-wakes always or /monitor-wakes off changes that.",
-                now.sentence()
+                "{} /monitor-wakes 30m, auto, always or off changes that.",
+                now.sentence(self.monitor_window())
             );
             self.mirrored(|harness| harness.output.line(&text));
             return;
@@ -2815,7 +2816,7 @@ impl Harness {
             }
         };
         if wakes == now {
-            let text = format!("No change. {}", wakes.sentence());
+            let text = format!("No change. {}", wakes.sentence(self.monitor_window()));
             self.mirrored(|harness| harness.output.line(&text));
             return;
         }
@@ -2830,7 +2831,7 @@ impl Harness {
             );
         }
         self.set_monitor_wakes(wakes);
-        let text = wakes.sentence();
+        let text = wakes.sentence(self.monitor_window());
         self.mirrored(|harness| harness.output.line(&text));
     }
 
@@ -2838,10 +2839,9 @@ impl Harness {
     /// wakes the agent: the monitors follow at once, and the session keeps
     /// it.
     pub(crate) fn set_monitor_wakes(&mut self, wakes: crate::monitors::Wakes) {
-        if let Some(jobs) = self.background.manager() {
-            jobs.set_warning_wakes_within(wakes.within());
-        }
         self.settings.monitor_wakes = wakes;
+        *lock(&self.gauges.monitor_wakes) = wakes;
+        self.tell_monitors_of_the_window();
         if let Err(error) = self.session.save_settings(&self.settings) {
             self.say(
                 Level::Error,
@@ -3809,9 +3809,28 @@ impl Harness {
     /// [`cache_expiry`]), so a warning before a monitor ends that would come
     /// after that wakes the idle agent before it instead.
     pub(crate) fn tell_monitors_of_the_cache(&self) {
+        self.tell_monitors_of_the_window();
         if let (Some(run), Some(jobs)) = (self.conversation_run(), self.background.manager()) {
             jobs.set_prompt_cache_expiry(run, cache_expiry(&lock(&self.stats)));
         }
+    }
+
+    /// How long a monitor's warning wakes the agent for now: the session's
+    /// setting, which `auto` takes from the main agent's prompt cache.
+    pub(crate) fn monitor_window(&self) -> Option<Duration> {
+        let cache = lock(&self.stats).cache_lifetime;
+        self.settings.monitor_wakes.within(cache)
+    }
+
+    /// Tells the monitors how long their warnings wake the agent for (see
+    /// [`monitor_window`](Self::monitor_window)). It changes with the
+    /// setting, and with the cache when the main agent's model changes or a
+    /// Claude Code cache write shows its lifetime.
+    pub(crate) fn tell_monitors_of_the_window(&self) {
+        if let Some(jobs) = self.background.manager() {
+            jobs.set_warning_wakes_within(self.monitor_window());
+        }
+        self.gauges.touch();
     }
 
     /// The user wrote just now: the monitors' warnings go on waking the
@@ -3826,10 +3845,7 @@ impl Harness {
     /// Whether a monitor's warning wakes the agent now: the user wrote within
     /// the time warnings wake it for.
     pub(crate) fn warnings_wake(&self) -> bool {
-        let within = self.background.manager().map_or(
-            Some(arko_agents::terminal::DEFAULT_WARNINGS_WAKE_WITHIN),
-            |jobs| jobs.warning_wakes_within(),
-        );
+        let within = self.monitor_window();
         let since = self.user_active_at.elapsed().unwrap_or_default();
         within.is_none_or(|within| since < within)
     }
@@ -5461,6 +5477,7 @@ pub(crate) mod tests {
             cc_compact: Default::default(),
             extra_rules: Default::default(),
             worker_models: Default::default(),
+            monitor_wakes: Default::default(),
             worker_depth: Default::default(),
             worker_retry_cap: Default::default(),
             message_copies: Default::default(),

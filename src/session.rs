@@ -144,8 +144,9 @@ pub struct Settings {
     #[serde(default = "default_background_after")]
     pub background_after: u64,
     /// How long after the user's last message a monitor's warning before it
-    /// ends still wakes the agent, as `/monitor-wakes` last set it. Two
-    /// hours in sessions saved before it.
+    /// ends still wakes the agent, as `/monitor-wakes` last set it. Auto in
+    /// sessions saved before it, and in those that held two hours, the
+    /// former default.
     #[serde(default)]
     pub monitor_wakes: crate::monitors::Wakes,
     /// Who picks the model of a worker (`/worker-models`). Every worker runs

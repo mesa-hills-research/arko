@@ -1723,8 +1723,10 @@ async fn a_monitors_warning_wakes_the_agent_before_its_cache_expires() {
     limits.start_wait = Duration::ZERO;
     limits.cache_margin = Duration::from_secs(1);
     managers.jobs.set_monitor_limits(limits).unwrap();
-    // A cache that lasts 3 seconds after each request.
+    // A cache that lasts 3 seconds after each request, and warnings that
+    // wake the agent however long ago the user wrote.
     harness.stats.lock().unwrap().cache_lifetime = Some(Duration::from_secs(3));
+    harness.settings.monitor_wakes = crate::monitors::Wakes::Always;
     tokio::time::timeout(
         Duration::from_secs(20),
         harness.turn(Prompt::User("Start the server and watch it.".into()), &mut inputs),
@@ -1753,9 +1755,9 @@ async fn a_monitors_warning_wakes_the_agent_before_its_cache_expires() {
 }
 
 /// `/monitor-wakes` says how long a monitor's warning wakes the agent after
-/// your last message, sets it (or always, or off), keeps it in the session,
-/// and the monitors follow at once. A change from the web page is said in
-/// the terminal too.
+/// your last message, sets it (or auto, always or off), keeps it in the
+/// session, and the monitors follow at once. A change from the web page is
+/// said in the terminal too.
 #[tokio::test]
 async fn the_monitor_wakes_command_sets_and_keeps() {
     let server = ModelServer::start(Arc::new(|_, _| Box::pin(async { complete("m1", "Noted.") })))
@@ -1772,7 +1774,7 @@ async fn the_monitor_wakes_command_sets_and_keeps() {
     );
     assert_eq!(
         harness.session.load_settings().unwrap().monitor_wakes,
-        crate::monitors::Wakes(Some(1_800))
+        crate::monitors::Wakes::For(1_800)
     );
     assert!(harness.live_command("/monitor-wakes always", Source::Terminal));
     assert_eq!(managers.jobs.warning_wakes_within(), None);
@@ -1783,8 +1785,9 @@ async fn the_monitor_wakes_command_sets_and_keeps() {
             .iter()
             .any(|(kind, text, _)| (kind == "output" || kind == "notice") && text.contains(start))
     };
+    // (Auto: 90% of the 5-minute cache the test's model has.)
     assert!(said(
-        "A monitor's warning wakes the agent for 2 hours after your last message"
+        "A monitor's warning wakes the agent while the prompt cache from your last message lasts (now 270 seconds)"
     ));
     assert!(said("isn't a time"));
     assert!(said("Monitor wakes was set to 30m from the web page."));
@@ -1792,8 +1795,53 @@ async fn the_monitor_wakes_command_sets_and_keeps() {
     managers.shutdown().await;
 }
 
+/// With `auto` (the default), a monitor's warning wakes the agent while the
+/// main agent's prompt cache lasts (90% of it, an hour where the provider
+/// gives none), and the monitors follow when the cache changes. A time set
+/// is kept whatever the cache.
+#[tokio::test]
+async fn auto_monitor_wakes_follow_the_prompt_cache() {
+    let server = ModelServer::start(Arc::new(|_, _| {
+        Box::pin(async { complete("m1", "Noted.") })
+    }))
+    .await;
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
+    let managers = equip(&mut harness, &mut inputs, 0);
+    let within = |harness: &mut Harness, cache: Option<u64>| {
+        harness.stats.lock().unwrap().cache_lifetime = cache.map(Duration::from_secs);
+        harness.tell_monitors_of_the_cache();
+        managers.jobs.warning_wakes_within()
+    };
+    assert_eq!(harness.settings.monitor_wakes, crate::monitors::Wakes::Auto);
+    assert_eq!(
+        within(&mut harness, Some(300)),
+        Some(Duration::from_secs(270))
+    );
+    // The status says the setting and the time it is now.
+    let status = crate::remote::Meter::read(harness.gauges.as_ref()).settings;
+    assert_eq!(status.monitor_wakes, crate::monitors::Wakes::Auto);
+    assert_eq!(status.monitor_wakes_within, Some(270));
+    assert_eq!(
+        within(&mut harness, Some(3_600)),
+        Some(Duration::from_secs(3_240))
+    );
+    assert_eq!(within(&mut harness, None), Some(Duration::from_secs(3_600)));
+    assert!(harness.live_command("/monitor-wakes 2h", Source::Terminal));
+    assert_eq!(
+        within(&mut harness, Some(300)),
+        Some(Duration::from_secs(7_200))
+    );
+    assert!(harness.live_command("/monitor-wakes auto", Source::Terminal));
+    assert_eq!(
+        managers.jobs.warning_wakes_within(),
+        Some(Duration::from_secs(270))
+    );
+    managers.shutdown().await;
+}
+
 /// `--monitor-wakes` sets how long monitors' warnings wake the agent for a
-/// new session, which keeps it, and two hours is the default.
+/// new session, which keeps it, and auto is the default.
 #[test]
 fn the_monitor_wakes_flag_sets_a_new_sessions_time() {
     let temp = tempfile::tempdir().unwrap();
@@ -1804,14 +1852,18 @@ fn the_monitor_wakes_flag_sets_a_new_sessions_time() {
         let args = Args::try_parse_from(words).unwrap();
         new_settings(&args.options().unwrap(), &NoPrompter).unwrap().0
     };
-    assert_eq!(settings(&[]).monitor_wakes, crate::monitors::Wakes(Some(7_200)));
+    assert_eq!(settings(&[]).monitor_wakes, crate::monitors::Wakes::Auto);
     assert_eq!(
         settings(&["--monitor-wakes", "off"]).monitor_wakes,
-        crate::monitors::Wakes(Some(0))
+        crate::monitors::Wakes::Never
     );
     assert_eq!(
         settings(&["--monitor-wakes", "always"]).monitor_wakes,
-        crate::monitors::Wakes(None)
+        crate::monitors::Wakes::Always
+    );
+    assert_eq!(
+        settings(&["--monitor-wakes", "2h"]).monitor_wakes,
+        crate::monitors::Wakes::For(7_200)
     );
     assert!(Args::try_parse_from(["arko", "--monitor-wakes", "soon"]).is_err());
 }

@@ -418,10 +418,11 @@ test("the header shows the worker's own figures while its view shows", () => {
 });
 
 test('the monitor wakes setting reads as words', () => {
-  assert.equal(core.wakesWords(7200), 'For 2 h after your last message');
-  assert.equal(core.wakesWords(1800), 'For 30 min after your last message');
-  assert.equal(core.wakesWords(null), 'Always');
-  assert.equal(core.wakesWords(0), 'Never');
+  assert.equal(core.wakesWords('2h', 7200), 'For 2 h after your last message');
+  assert.equal(core.wakesWords('30m', 1800), 'For 30 min after your last message');
+  assert.equal(core.wakesWords('auto', 3240), 'Auto (54 min)');
+  assert.equal(core.wakesWords('always', null), 'Always');
+  assert.equal(core.wakesWords('off', 0), 'Never');
 });
 
 test('a worker says its model, profile and cost once the summary has them', () => {

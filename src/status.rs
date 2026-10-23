@@ -42,6 +42,9 @@ pub(crate) struct Gauges {
     /// Who chooses the workers' models, and how many levels of workers the
     /// session allows, as the harness last published them.
     pub(crate) worker_models: Mutex<crate::agents::ModelChoice>,
+    /// How long after the user's last message a monitor's warning wakes the
+    /// agent, as the harness last published it.
+    pub(crate) monitor_wakes: Mutex<crate::monitors::Wakes>,
     pub(crate) worker_depth: std::sync::atomic::AtomicU32,
     /// The worker retry cap, or 0 for none.
     pub(crate) worker_retry_cap: std::sync::atomic::AtomicU32,
@@ -306,6 +309,7 @@ impl remote::Meter for Gauges {
         let (cost, api_price, costs) = costs(workflow.as_deref());
         let cache = cache_status(&stats, &lock(&self.models));
         let last_request = stats.last_request.clone();
+        let monitor_wakes = *lock(&self.monitor_wakes);
         remote::Reading {
             cost,
             api_price,
@@ -346,15 +350,10 @@ impl remote::Meter for Gauges {
                 project_instructions,
                 worker_project_instructions,
                 background_after: self.background.after().map_or(0, |after| after.as_secs()),
-                monitor_wakes: crate::monitors::Wakes(
-                    self.background
-                        .manager()
-                        .map_or(
-                            Some(arko_agents::terminal::DEFAULT_WARNINGS_WAKE_WITHIN),
-                            |jobs| jobs.warning_wakes_within(),
-                        )
-                        .map(|within| within.as_secs()),
-                ),
+                monitor_wakes,
+                monitor_wakes_within: monitor_wakes
+                    .within(stats.cache_lifetime)
+                    .map(|within| within.as_secs()),
             },
             commands: self.commands_running(),
             movable: match (&self.feed, self.background.manager()) {

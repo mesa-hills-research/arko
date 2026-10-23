@@ -703,7 +703,8 @@ impl Engine {
             .set_after(background_after_for(&options, settings.background_after));
         managers
             .jobs
-            .set_warning_wakes_within(settings.monitor_wakes.within());
+            // (The cache's lifetime is known once the conversation opens.)
+            .set_warning_wakes_within(settings.monitor_wakes.within(None));
 
         // MCP servers, skills and search indexes: what goes wrong with them is
         // said, and the session goes on without.
@@ -853,6 +854,7 @@ impl Engine {
             cc_compact: Default::default(),
             extra_rules: Default::default(),
             worker_models: Default::default(),
+            monitor_wakes: Default::default(),
             worker_depth: Default::default(),
             worker_retry_cap: Default::default(),
             message_copies: Default::default(),
@@ -1792,7 +1794,7 @@ mod tests {
                     model: Some("luna".into()),
                     openai_auth: Some(OpenAiAuth::ApiKey),
                     cache_1h: Some(false),
-                    monitor_wakes: wakes.map(|seconds| crate::monitors::Wakes(Some(seconds))),
+                    monitor_wakes: wakes.map(crate::monitors::Wakes::For),
                     client: Some(GivenClient(Arc::new(server.client()))),
                     ..Options::default()
                 },
@@ -1816,17 +1818,17 @@ mod tests {
         };
         let (seam, ended) = open(SessionChoice::New, Some(2_700)).await;
         let id = seam.session.id.clone();
-        assert_eq!(wakes(&id), crate::monitors::Wakes(Some(2_700)));
+        assert_eq!(wakes(&id), crate::monitors::Wakes::For(2_700));
         quit(seam, ended).await;
         // A resume without the option keeps the session's.
         let (seam, ended) = open(SessionChoice::Resume(id.clone()), None).await;
-        assert_eq!(wakes(&id), crate::monitors::Wakes(Some(2_700)));
+        assert_eq!(wakes(&id), crate::monitors::Wakes::For(2_700));
         quit(seam, ended).await;
         let (seam, ended) = open(SessionChoice::Resume(id.clone()), Some(1_800)).await;
-        assert_eq!(wakes(&id), crate::monitors::Wakes(Some(1_800)));
+        assert_eq!(wakes(&id), crate::monitors::Wakes::For(1_800));
         assert_eq!(
             seam.meter.read().settings.monitor_wakes,
-            crate::monitors::Wakes(Some(1_800))
+            crate::monitors::Wakes::For(1_800)
         );
         quit(seam, ended).await;
     }

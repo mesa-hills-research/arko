@@ -1952,6 +1952,15 @@ impl App {
         self.reading.settings.monitor_wakes
     }
 
+    /// For how long a warning wakes the agent now, which `auto` takes from
+    /// its prompt cache (`None`: always).
+    pub fn monitor_wakes_within(&self) -> Option<std::time::Duration> {
+        self.reading
+            .settings
+            .monitor_wakes_within
+            .map(std::time::Duration::from_secs)
+    }
+
     /// The handover size now.
     pub fn handover_at(&self) -> usize {
         match self.reading.settings.handover_at {
@@ -3194,11 +3203,11 @@ pub(super) mod tests {
         app.overlay = Some(Overlay::Settings { row, picker: None });
         press(&mut app, KeyCode::Right, KeyModifiers::NONE);
         press(&mut app, KeyCode::Left, KeyModifiers::NONE);
-        assert_eq!(sent(&mut app), ["/monitor-wakes 4h", "/monitor-wakes 1h"]);
-        app.reading.settings.monitor_wakes = crate::monitors::Wakes(Some(8 * 3600));
+        assert_eq!(sent(&mut app), ["/monitor-wakes 1h", "/monitor-wakes 30m"]);
+        app.reading.settings.monitor_wakes = crate::monitors::Wakes::For(8 * 3600);
         press(&mut app, KeyCode::Right, KeyModifiers::NONE);
         assert_eq!(sent(&mut app), ["/monitor-wakes always"]);
-        app.reading.settings.monitor_wakes = crate::monitors::Wakes(Some(1800));
+        app.reading.settings.monitor_wakes = crate::monitors::Wakes::For(1800);
         press(&mut app, KeyCode::Left, KeyModifiers::NONE);
         assert_eq!(sent(&mut app), ["/monitor-wakes off"]);
     }

@@ -597,18 +597,17 @@ fn settings(frame: &mut Frame, app: &App, area: Rect, selected: usize) {
                 vec![
                     Span::styled(format!("{} ", glyphs::render("←")), theme.dim()),
                     Span::styled(
-                        match app.monitor_wakes().0 {
-                            None => " always ".to_string(),
-                            Some(0) => " off ".to_string(),
-                            Some(seconds) => {
+                        match app.monitor_wakes() {
+                            crate::monitors::Wakes::For(seconds) => {
                                 format!(" for {} ", crate::shell::shown_background_after(seconds))
                             }
+                            wakes => format!(" {} ", wakes.shown_now(app.monitor_wakes_within())),
                         },
                         theme.chosen(),
                     ),
                     Span::styled(format!(" {}", glyphs::render("→")), theme.dim()),
                 ],
-                app.monitor_wakes().sentence(),
+                app.monitor_wakes().sentence(app.monitor_wakes_within()),
             ),
             SettingsRow::Replies => (
                 "Session",

@@ -1009,7 +1009,7 @@
     $('handover-whose').hidden = !hasWorkers;
     $('workers-handover-value').textContent = settings.workers_handover_at ? C.tokens(settings.workers_handover_at) + ' tokens' : 'Not set';
     $('background-value').textContent = settings.background_after ? duration(settings.background_after) : 'Off';
-    $('wakes-value').textContent = C.wakesWords(settings.monitor_wakes);
+    $('wakes-value').textContent = C.wakesWords(settings.monitor_wakes, settings.monitor_wakes_within);
     // Text replies change only before the conversation starts.
     const replies = $('replies-switch');
     const replying = pending && pending.replies !== undefined;
@@ -1346,11 +1346,11 @@
     event.preventDefault();
     const time = $('wakes-input').value.trim();
     if (!time) {
-      note('wakes-note', 'Give a time, such as 2h, or always, or off.', true);
+      note('wakes-note', 'Give a time, such as 2h, or auto, always or off.', true);
       return;
     }
     const before = status && status.settings ? status.settings.monitor_wakes : undefined;
-    // Arko reads the time ("30m", "2h", "always", "off") and says what's wrong with it.
+    // Arko reads the time ("30m", "2h", "auto", "always", "off") and says what's wrong with it.
     command('/monitor-wakes ' + time, 'wakes-note', (settings) => settings.monitor_wakes !== before).then((sent) => {
       if (sent) $('wakes-input').value = '';
     });
