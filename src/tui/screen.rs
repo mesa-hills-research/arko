@@ -847,6 +847,33 @@ mod tests {
         );
     }
 
+    /// The settings list the ChatGPT logins, in order, on the row of
+    /// `/chatgpt`.
+    #[test]
+    fn the_settings_list_the_chatgpt_logins() {
+        use crate::tui::overlay::{Overlay, SettingsRow};
+        let mut app = app();
+        app.login_paths = || vec!["/a/auth.json".into(), "/b/auth.json".into()];
+        let row = app
+            .settings_rows()
+            .iter()
+            .position(|row| *row == SettingsRow::Logins)
+            .unwrap();
+        app.overlay = Some(Overlay::Settings { row, picker: None });
+        let rows = screen(&mut app, 80, 30);
+        println!("{}", rows.join("\n"));
+        assert!(
+            rows.iter()
+                .any(|row| row.contains("▸ ChatGPT logins     2")),
+            "{rows:#?}"
+        );
+        assert!(
+            rows.iter()
+                .any(|row| row.contains("1 /a/auth.json · 2 /b/auth.json")),
+            "{rows:#?}"
+        );
+    }
+
     /// The input box moves a word that crosses its edge whole to the next
     /// line, and the cursor is drawn after it.
     #[test]

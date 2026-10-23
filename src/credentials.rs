@@ -405,7 +405,7 @@ fn read_dotenv(path: &Path) -> Vec<(&'static str, String)> {
 }
 
 /// `~` and `~/...` with the home directory in place of `~`.
-fn expand_home(path: &str) -> PathBuf {
+pub(crate) fn expand_home(path: &str) -> PathBuf {
     let home = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
         .filter(|home| !home.is_empty())
         .map(PathBuf::from);
@@ -614,29 +614,14 @@ fn save_logins(env: &Env, paths: &[PathBuf]) -> Result<(), String> {
 /// Adds the Codex auth.json at `path` after the ChatGPT logins the
 /// sessions of Arko's folder `root` use, and saves the list as
 /// [`set_chatgpt_login`] saves one. While none is set, the list is Codex's
-/// own login (when its file is there) and then `path`. Fails when the file
+/// own login (when its file holds one) and then `path`. Fails when the file
 /// holds no ChatGPT login, is in the list already, or holds an account
 /// another login already is. Replies the logins now.
 pub fn add_chatgpt_login(root: &Path, path: &Path) -> Result<Vec<ChatGptLogin>, String> {
-    with_logins(root, None, |paths| {
-        let path = checked_login(path)?;
-        if paths.contains(&path) {
-            return Err(format!("{} is in the list already.", path.display()));
-        }
-        let account = login_account(&path);
-        if let Some(same) = paths
-            .iter()
-            .find(|other| account.is_some() && login_account(other) == account)
-        {
-            return Err(format!(
-                "{} is the same ChatGPT account as {}.",
-                path.display(),
-                same.display()
-            ));
-        }
-        paths.push(path);
-        Ok(())
-    })
+    let env = Env::for_folder_in(None, true, Some(root));
+    let logins = with_logins(&env, None, |paths, _| add_login_to(paths, path))?;
+    announce_logins(root);
+    Ok(logins)
 }
 
 /// Removes the Codex auth.json at `path` from the ChatGPT logins the
@@ -644,66 +629,109 @@ pub fn add_chatgpt_login(root: &Path, path: &Path) -> Result<Vec<ChatGptLogin>, 
 /// Codex's own login, as [`clear_chatgpt_login`] does. Replies the logins
 /// now.
 pub fn remove_chatgpt_login(root: &Path, path: &Path) -> Result<Vec<ChatGptLogin>, String> {
-    with_logins(root, None, |paths| {
-        let path = std::path::absolute(path).map_err(|error| error.to_string())?;
-        let at = paths
-            .iter()
-            .position(|login| *login == path)
-            .ok_or_else(|| format!("{} isn't in the list.", path.display()))?;
-        if chatgpt_logins(None)[at].source == LoginSource::Default {
-            return Err(format!(
-                "{} is Codex's own login, which Arko uses while no other is set.",
-                path.display()
-            ));
-        }
-        paths.remove(at);
-        Ok(())
-    })
+    let env = Env::for_folder_in(None, true, Some(root));
+    let logins = with_logins(&env, None, |paths, codex_own| {
+        remove_login_from(paths, path, codex_own)
+    })?;
+    announce_logins(root);
+    Ok(logins)
 }
 
 /// Puts the Codex auth.json at `path` first among the ChatGPT logins the
 /// sessions of Arko's folder `root` use, which are tried in order. Replies
 /// the logins now.
 pub fn first_chatgpt_login(root: &Path, path: &Path) -> Result<Vec<ChatGptLogin>, String> {
-    with_logins(root, None, |paths| {
-        let path = std::path::absolute(path).map_err(|error| error.to_string())?;
-        let at = paths
-            .iter()
-            .position(|login| *login == path)
-            .ok_or_else(|| format!("{} isn't in the list.", path.display()))?;
-        let login = paths.remove(at);
-        paths.insert(0, login);
-        Ok(())
-    })
+    let env = Env::for_folder_in(None, true, Some(root));
+    let logins = with_logins(&env, None, |paths, _| first_login_of(paths, path))?;
+    announce_logins(root);
+    Ok(logins)
 }
 
-/// Changes the ChatGPT logins of Arko's folder `root` with `change`, which
-/// gets the list in use (Codex's own login while none is set, when its file
-/// is there; `flag` is a session's `--codex-auth`). It saves the new list,
-/// tells the open sessions, and replies the logins now.
+/// Adds `path` to `paths`, as [`add_chatgpt_login`] says.
+pub(crate) fn add_login_to(paths: &mut Vec<PathBuf>, path: &Path) -> Result<(), String> {
+    let path = checked_login(path)?;
+    if paths.contains(&path) {
+        return Err(format!("{} is in the list already.", path.display()));
+    }
+    let account = login_account(&path);
+    if let Some(same) = paths
+        .iter()
+        .find(|other| account.is_some() && login_account(other) == account)
+    {
+        return Err(format!(
+            "{} is the same ChatGPT account as {}.",
+            path.display(),
+            same.display()
+        ));
+    }
+    paths.push(path);
+    Ok(())
+}
+
+/// Removes `path` from `paths`, as [`remove_chatgpt_login`] says.
+/// `codex_own`: `paths` is Codex's own login, which no setting holds.
+pub(crate) fn remove_login_from(
+    paths: &mut Vec<PathBuf>,
+    path: &Path,
+    codex_own: bool,
+) -> Result<(), String> {
+    let path = std::path::absolute(path).map_err(|error| error.to_string())?;
+    let at = paths
+        .iter()
+        .position(|login| *login == path)
+        .ok_or_else(|| format!("{} isn't in the list.", path.display()))?;
+    if codex_own {
+        return Err(format!(
+            "{} is Codex's own login, which Arko uses while no other is set.",
+            path.display()
+        ));
+    }
+    paths.remove(at);
+    Ok(())
+}
+
+/// Puts `path` first in `paths`, as [`first_chatgpt_login`] says.
+pub(crate) fn first_login_of(paths: &mut Vec<PathBuf>, path: &Path) -> Result<(), String> {
+    let path = std::path::absolute(path).map_err(|error| error.to_string())?;
+    let at = paths
+        .iter()
+        .position(|login| *login == path)
+        .ok_or_else(|| format!("{} isn't in the list.", path.display()))?;
+    let login = paths.remove(at);
+    paths.insert(0, login);
+    Ok(())
+}
+
+/// Changes the ChatGPT logins in `env` with `change`, which gets the list
+/// in use (Codex's own login while none is set, when its file holds a login,
+/// with whether that is so; `flag` is a session's `--codex-auth`). It saves
+/// the new list in Arko's folder, and replies the logins now. The open
+/// sessions are told ([`announce_logins`]) by the caller, once it has done
+/// what it does of its own.
 pub(crate) fn with_logins(
-    root: &Path,
+    env: &Env,
     flag: Option<&Path>,
-    change: impl FnOnce(&mut Vec<PathBuf>) -> Result<(), String>,
+    change: impl FnOnce(&mut Vec<PathBuf>, bool) -> Result<(), String>,
 ) -> Result<Vec<ChatGptLogin>, String> {
-    let env = Env::for_folder_in(None, true, Some(root));
     crate::context::with_env(env.clone(), || {
-        let mut paths: Vec<PathBuf> = chatgpt_logins(flag)
+        let logins: Vec<ChatGptLogin> = chatgpt_logins(flag)
             .into_iter()
             .filter(|login| {
-                login.source != LoginSource::Default || login.state != LoginState::Missing
+                login.source != LoginSource::Default || login.state == LoginState::Ready
             })
-            .filter_map(|login| login.path)
             .collect();
-        change(&mut paths)?;
+        let codex_own = logins
+            .first()
+            .is_some_and(|login| login.source == LoginSource::Default);
+        let mut paths: Vec<PathBuf> = logins.into_iter().filter_map(|login| login.path).collect();
+        change(&mut paths, codex_own)?;
         if paths.is_empty() {
             unset(&env.arko_dotenv()?, CODEX_AUTH)?;
             env.forget(CODEX_AUTH);
         } else {
-            save_logins(&env, &paths)?;
+            save_logins(env, &paths)?;
         }
-        announce_logins(root);
-        Ok(chatgpt_logins(None))
+        Ok(chatgpt_logins(flag))
     })
 }
 
@@ -750,7 +778,7 @@ pub fn login_changes() -> tokio::sync::broadcast::Receiver<PathBuf> {
 
 /// Tells the open sessions of Arko's folder `root` that its ChatGPT logins
 /// changed.
-fn announce_logins(root: &Path) {
+pub(crate) fn announce_logins(root: &Path) {
     let _ = login_sender().send(root.to_path_buf());
 }
 
@@ -1781,7 +1809,7 @@ mod tests {
         set_chatgpt_login(&root, &one).unwrap();
         let saved = || std::fs::read_to_string(root.join(".env")).unwrap();
         assert_eq!(saved().trim(), format!("ARKO_CODEX_AUTH={}", one.display()));
-        assert_eq!(login_files(&root), [one.clone()]);
+        assert_eq!(login_files(&root), std::slice::from_ref(&one));
         // A path saved relative to the .env, by an Arko that kept one.
         let older = temp.path().join("older");
         std::fs::create_dir_all(&older).unwrap();
@@ -1826,7 +1854,7 @@ mod tests {
                 .contains("isn't in the list")
         );
         remove_chatgpt_login(&root, &two).unwrap();
-        assert_eq!(login_files(&root), [one.clone()]);
+        assert_eq!(login_files(&root), std::slice::from_ref(&one));
         assert_eq!(saved().trim(), format!("ARKO_CODEX_AUTH={}", one.display()));
         // The last one removed goes back to Codex's own login.
         if std::env::var_os(CODEX_AUTH).is_none() {

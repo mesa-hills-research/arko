@@ -53,6 +53,7 @@ mod inputs;
 mod jobs;
 mod keys;
 pub mod logging;
+mod logins;
 mod mcp;
 mod message;
 #[cfg(any(test, feature = "testing"))]

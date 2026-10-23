@@ -762,6 +762,7 @@ impl Engine {
         );
         // A key added in another session open on Arko's folder is used here too.
         keys.share(root.clone());
+        keys.use_codex_auth(options.codex_auth.clone());
         let mcp_tools = mcp.tool_names();
         let mcp_started = mcp.started();
         let known_indexes = indexes

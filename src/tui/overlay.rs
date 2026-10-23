@@ -81,6 +81,8 @@ pub enum SettingsRow {
     /// messages to it.
     MessageCopies,
     Keys,
+    /// The ChatGPT logins, which `/chatgpt` changes.
+    Logins,
 }
 
 /// The handover sizes ← and → step through, in tokens.
@@ -755,6 +757,21 @@ fn settings(frame: &mut Frame, app: &App, area: Rect, selected: usize) {
                     ],
                     "The model providers' keys, and Voyage's for the search indexes. Enter opens them."
                         .to_string(),
+                )
+            }
+            SettingsRow::Logins => {
+                let logins = (app.login_paths)();
+                let list = logins
+                    .iter()
+                    .enumerate()
+                    .map(|(n, path)| format!("{} {}", n + 1, path.display()))
+                    .collect::<Vec<_>>()
+                    .join(" · ");
+                (
+                    "Providers",
+                    "ChatGPT logins",
+                    vec![Span::styled(format!(" {} ", logins.len()), theme.text())],
+                    format!("{list}. /chatgpt adds, removes and orders them."),
                 )
             }
         };
