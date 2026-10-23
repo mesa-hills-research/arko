@@ -196,6 +196,12 @@ impl WorkerSetup {
         }
     }
 
+    /// Whether the run may start workers of its own: its setup adds the
+    /// start tools.
+    pub(crate) fn nests(&self) -> bool {
+        self.tools_added.iter().any(|tool| tool == START_AGENT)
+    }
+
     /// Whether Claude Code compacts the run's conversation at the handover
     /// size, instead of a handover (as `agents::compacts` says of a
     /// configuration).
@@ -592,7 +598,7 @@ impl SubagentHook for StartHook {
             .unwrap()
             .runs
             .get(&record.run_id)
-            .is_some_and(|setup| setup.tools_added.iter().any(|tool| tool == START_AGENT))
+            .is_some_and(WorkerSetup::nests)
     }
 }
 
@@ -1104,6 +1110,7 @@ impl Crew {
             .as_ref()
             .and_then(|setup| setup.effort)
             .map(|effort| effort.to_string());
+        info.nested = setup.as_ref().is_some_and(WorkerSetup::nests);
         info.profile = setup.and_then(|setup| setup.profile);
         info.parent = parent;
         info.depth = run.depth;

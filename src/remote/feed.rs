@@ -437,6 +437,10 @@ pub struct WorkerSummary {
     pub parent: Option<String>,
     /// How far it is from the main agent, 1 for the main agent's workers.
     pub depth: u32,
+    /// Whether it may start workers of its own (it started with `nested`).
+    /// The web page doesn't get it.
+    #[serde(skip)]
+    pub nested: bool,
     /// What its model calls billed, in dollars.
     pub cost_billed: f64,
     /// What its model calls would cost at API list prices. That is the
@@ -473,6 +477,7 @@ impl WorkerSummary {
             profile: None,
             parent: None,
             depth: 1,
+            nested: false,
             cost_billed: 0.0,
             cost_list: 0.0,
             family_cost_billed: 0.0,
@@ -599,6 +604,8 @@ pub struct WorkerInfo {
     pub parent: Option<String>,
     /// How far it is from the main agent (0 is taken as 1).
     pub depth: u32,
+    /// Whether it may start workers of its own.
+    pub nested: bool,
     /// What it has billed and would cost at API list prices, when the
     /// session knows (a resumed session reads them from its saved runs).
     /// Without them, the costs the events add up stay as they are.
@@ -2602,6 +2609,7 @@ impl Feed {
         summary.profile = info.profile;
         summary.parent = info.parent;
         summary.depth = info.depth.max(1);
+        summary.nested = info.nested;
         if let Some((billed, list)) = info.costs {
             summary.cost_billed = billed;
             summary.cost_list = list;
