@@ -708,6 +708,15 @@ mod tests {
         Settings::for_test(workspace, &luna)
     }
 
+    /// Waits up to 2 s for nothing to hold the session. A process another test
+    /// forks may hold a lock's file for a moment, until it runs its program.
+    fn wait_until_free(root: &Path, id: &str) {
+        let waited = std::time::Instant::now();
+        while holder(root, id).is_some() && waited.elapsed() < std::time::Duration::from_secs(2) {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
     #[test]
     fn export_refuses_missing_saved_runs_and_checkpoints() {
         let temp = tempfile::tempdir().unwrap();
@@ -801,6 +810,7 @@ mod tests {
                 .title,
             "Count the pears"
         );
+        wait_until_free(&root, &first.id);
         assert_eq!(delete(&root, &first.id), Ok(Deleted::default()));
         assert!(!first.dir.exists());
         assert_eq!(list(&root).len(), 1);
@@ -835,6 +845,7 @@ mod tests {
             "no lock file of Arko's left in its session"
         );
         drop(terminal);
+        wait_until_free(&root, &session.id);
         assert_eq!(holder(&root, &session.id), None);
         assert_eq!(delete(&root, &session.id), Ok(Deleted::default()));
         assert!(!session.dir.exists());
