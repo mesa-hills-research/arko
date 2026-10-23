@@ -189,13 +189,6 @@ fn draw_input(
     }
 }
 
-/// The agent list's state column, as wide as its widest word (`finished`).
-const STATE_WIDTH: usize = 8;
-/// Its time column, as wide as `9h 59m`.
-const TIME_WIDTH: usize = 6;
-/// The figures of its tool call column, up to 999.
-const CALLS_WIDTH: usize = 3;
-
 /// A worker's time in the agent list, such as `45s`, `12m` or `1h 05m`. The
 /// minutes have two digits beside the hours, so they line up with those of
 /// the rows that show minutes only.
@@ -231,6 +224,28 @@ fn draw_list(frame: &mut Frame, app: &mut App, area: Rect, rows: Vec<ListRow>) {
         .map(|row| row.map_or(4, |w| indent(w) + w.id.len()))
         .max()
         .unwrap_or(4);
+    // The state, time and tool call columns are as wide as their widest
+    // figure among the rows drawn.
+    let drawn = || {
+        rows.iter().filter_map(|row| match *row {
+            ListRow::Agent(index) => list[index],
+            _ => None,
+        })
+    };
+    let state_width = drawn()
+        .map(|w| transcript::state(w, theme).0.len())
+        .max()
+        .unwrap_or(0);
+    let time_width = drawn()
+        .filter_map(|w| transcript::run_time(w, now))
+        .map(|ms| list_time(ms).len())
+        .max()
+        .unwrap_or(0);
+    let calls_width = drawn()
+        .map(|w| w.tool_calls.to_string().len())
+        .max()
+        .unwrap_or(0);
+    let dot = glyphs::render(" · ");
     for (line, row) in rows.iter().enumerate() {
         let y = area.y + line as u16;
         let counted = match *row {
@@ -317,16 +332,15 @@ fn draw_list(frame: &mut Frame, app: &mut App, area: Rect, rows: Vec<ListRow>) {
                 // In columns: the state, the time and the tool calls line
                 // up from row to row.
                 let (state, style) = transcript::state(worker, theme);
-                right.push(Span::styled(format!("{state:<STATE_WIDTH$}"), style));
+                right.push(Span::styled(format!("{state:<state_width$}"), style));
                 let time = transcript::run_time(worker, now).map_or_else(
-                    || " ".repeat(TIME_WIDTH + 3),
-                    |ms| format!("{} {:>TIME_WIDTH$}", glyphs::render(" ·"), list_time(ms)),
+                    || " ".repeat(text_width(&dot) + time_width),
+                    |ms| format!("{dot}{:>time_width$}", list_time(ms)),
                 );
                 right.push(Span::styled(time, theme.dim()));
                 right.push(Span::styled(
                     format!(
-                        "{} {:>CALLS_WIDTH$} tool call{} ",
-                        glyphs::render(" ·"),
+                        "{dot}{:>calls_width$} tool call{} ",
                         worker.tool_calls,
                         if worker.tool_calls == 1 { " " } else { "s" }
                     ),
@@ -1016,50 +1030,73 @@ mod tests {
         );
     }
 
-    /// The agent list's state, time and tool calls are columns that line
-    /// up, for times up to 9h 59m and up to 999 tool calls.
+    /// The agent list's state, time and tool calls are columns as wide as
+    /// their widest figure in the rows drawn, with one space on each side of
+    /// the dots. A longer time or more tool calls in one row widen the
+    /// columns of them all.
     #[test]
     fn the_agent_list_s_figures_line_up() {
         use crate::remote::WorkerState::{Queued, Running};
         use crate::tui::app::tests::worker;
         let mut app = app();
-        let workers = [
-            (Running, 720_000, 18),
-            (Running, 3_900_000, 104),
-            (Running, 45_000, 1),
-            (Queued, 0, 0),
-            (Running, 35_940_000, 999),
-        ];
-        for (n, (state, ran_ms, tool_calls)) in workers.into_iter().enumerate() {
-            let mut summary = worker(&format!("r{}", n + 1), state);
+        let add = |app: &mut App, id: &str, state, ran_ms, tool_calls| {
+            let mut summary = worker(id, state);
             summary.ran_ms = ran_ms;
             summary.tool_calls = tool_calls;
             app.update(Update::Worker(summary), Activity::default);
-        }
-        let rows = screen(&mut app, 80, 40);
-        let list = &rows[rows.len() - 5..];
-        // The figures from the state's column on, which is as far left of
-        // the tool calls in every row.
-        let column = |row: &String| {
-            let calls = row[..row.find(" tool call").unwrap()].chars().count();
-            row.chars().skip(calls - 23).collect::<String>()
         };
+        // The figures from the state's column on, `width` wide, which is as
+        // far left of the tool calls in every row.
+        let figures = |app: &mut App, rows: usize, width: usize| {
+            let screen = screen(app, 80, 40);
+            let list = &screen[screen.len() - rows..];
+            let columns: Vec<String> = list
+                .iter()
+                .map(|row| {
+                    let calls = row[..row.find(" tool call").unwrap()].chars().count();
+                    row.chars().skip(calls - width).collect()
+                })
+                .collect();
+            // Each dot has a space on each side, and the second is in the
+            // same column in every row.
+            let mut second = Vec::new();
+            for row in &columns {
+                let chars: Vec<char> = row.chars().collect();
+                let dots: Vec<usize> = (0..chars.len()).filter(|at| chars[*at] == '·').collect();
+                for at in &dots {
+                    assert_eq!((chars[at - 1], chars[at + 1]), (' ', ' '), "{columns:#?}");
+                }
+                second.push(*dots.last().unwrap());
+            }
+            assert!(second.iter().all(|at| *at == second[0]), "{columns:#?}");
+            columns
+        };
+        // Times under an hour add no padding.
+        add(&mut app, "r1", Running, 720_000, 18);
+        add(&mut app, "r2", Running, 2_700_000, 104);
+        add(&mut app, "r3", Running, 45_000, 1);
+        add(&mut app, "r4", Queued, 0, 0);
         assert_eq!(
-            list.iter().map(column).collect::<Vec<_>>(),
+            figures(&mut app, 4, 7 + 3 + 3 + 3 + 3),
             [
-                "running  ·    12m ·  18 tool calls".to_string(),
-                "running  · 1h 05m · 104 tool calls".to_string(),
-                "running  ·    45s ·   1 tool call".to_string(),
-                format!("queued{}·   0 tool calls", " ".repeat(12)),
-                "running  · 9h 59m · 999 tool calls".to_string(),
-            ],
-            "{list:#?}"
+                "running · 12m ·  18 tool calls".to_string(),
+                "running · 45m · 104 tool calls".to_string(),
+                "running · 45s ·   1 tool call".to_string(),
+                format!("queued{}·   0 tool calls", " ".repeat(8)),
+            ]
         );
-        let calls: Vec<usize> = list
-            .iter()
-            .map(|row| row[..row.find(" tool call").unwrap()].chars().count())
-            .collect();
-        assert!(calls.iter().all(|at| *at == calls[0]), "{list:#?}");
+        // A row with hours and thousands of tool calls widens them for all.
+        add(&mut app, "r5", Running, 36_300_000, 1234);
+        assert_eq!(
+            figures(&mut app, 5, 7 + 3 + 7 + 3 + 4),
+            [
+                "running ·     12m ·   18 tool calls".to_string(),
+                "running ·     45m ·  104 tool calls".to_string(),
+                "running ·     45s ·    1 tool call".to_string(),
+                format!("queued{}·    0 tool calls", " ".repeat(12)),
+                "running · 10h 05m · 1234 tool calls".to_string(),
+            ]
+        );
     }
 
     /// A worker's workers follow it in the agent list, indented two columns
