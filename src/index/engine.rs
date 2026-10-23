@@ -105,8 +105,9 @@ pub enum WatchState {
     Watching {
         polling: bool,
     },
-    /// Another process (another Arko) holds the watcher state; a watcher thread
-    /// of this one tries again every [`Timing::busy_retry`].
+    /// Another process (another Arko) holds the watcher state. A watcher thread
+    /// of this one tries again every [`Timing::busy_retry`], and a status taken
+    /// without one probes the lock.
     Elsewhere,
     /// The watcher failed; the thread retries.
     Failed(String),

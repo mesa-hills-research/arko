@@ -154,7 +154,8 @@ fn auth_status(path: &Path) -> std::io::Result<String> {
 }
 
 /// The standard output of `claude` at `path` run with `args`, as sessions
-/// run it: the API key unset, no self-update, at most 15 s.
+/// run it: the API key unset, no self-update, at most 15 s (plus up to 2 s
+/// of retries while the program file is still busy).
 fn run(path: &Path, args: &[&str]) -> std::io::Result<String> {
     let launcher = path.extension().is_some_and(|extension| {
         extension.eq_ignore_ascii_case("cmd") || extension.eq_ignore_ascii_case("bat")
