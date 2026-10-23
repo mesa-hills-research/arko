@@ -445,6 +445,23 @@ impl crate::Harness {
     }
 }
 
+/// What the ChatGPT plan's usage adds when some of the logins are set
+/// aside: ", 1 login set aside".
+pub(crate) fn set_aside_note(accounts: Option<&ChatGptAccounts>) -> String {
+    let set_aside = accounts.map_or(0, |accounts| {
+        accounts
+            .statuses()
+            .iter()
+            .filter(|status| status.exhausted)
+            .count()
+    });
+    match set_aside {
+        0 => String::new(),
+        1 => ", 1 login set aside".to_string(),
+        n => format!(", {n} logins set aside"),
+    }
+}
+
 /// A local time for a Unix time: "14:30" today, else "Oct 20 14:30".
 fn until(at: std::time::SystemTime) -> String {
     use chrono::{DateTime, Local};
@@ -671,6 +688,12 @@ mod tests {
         backend.answer("account-2", crate::mock_model::reply("1", "hello"));
         assert_eq!(served_by(&client).await, "two");
         assert_eq!(backend.asked(), ["account-1", "account-2"]);
+        // The plan usage says the first is set aside.
+        assert_eq!(
+            set_aside_note(client.chatgpt_accounts()),
+            ", 1 login set aside"
+        );
+        assert_eq!(set_aside_note(None), "");
     }
 
     /// Logins added, ordered and removed during a session, here or in

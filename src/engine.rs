@@ -817,6 +817,7 @@ impl Engine {
         let output = Arc::new(Output::new(None, one_shot));
         let stats = Arc::new(Mutex::new(Stats {
             cache_memory: Some(Arc::new(crate::cache_memory::Memory::open(&session.dir))),
+            chatgpt: client.chatgpt_accounts().cloned(),
             ..Stats::default()
         }));
         let (remote_actions, remote_input) = mpsc::unbounded_channel();

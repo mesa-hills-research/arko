@@ -1201,7 +1201,27 @@ pub fn plan_usage_text(usage: &PlanUsage) -> Option<String> {
     if windows.is_empty() {
         return None;
     }
-    Some(format!("{} {}", plan_name(usage.plan), windows.join(", ")))
+    let credits = usage.credits.as_ref().and_then(credits_text);
+    let text = format!("{} {}", plan_name(usage.plan), windows.join(", "));
+    Some(match credits {
+        Some(credits) => format!("{text}, {credits}"),
+        None => text,
+    })
+}
+
+/// A ChatGPT account's credits, as the status line says them: "credits
+/// left 12.50", or "unlimited credits". `None` when it has none.
+fn credits_text(credits: &arko_ai::PlanCredits) -> Option<String> {
+    if credits.unlimited {
+        return Some("unlimited credits".to_string());
+    }
+    if !credits.has_credits {
+        return None;
+    }
+    Some(match credits.balance.as_deref().map(str::trim) {
+        Some(balance) if !balance.is_empty() => format!("credits left {balance}"),
+        _ => "credits left".to_string(),
+    })
 }
 
 /// `usage`'s windows (5 hours, 7 days), as the status gives them.
