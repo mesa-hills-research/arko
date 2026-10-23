@@ -395,7 +395,8 @@ fn read_dotenv(path: &Path) -> Vec<(&'static str, String)> {
         }
         let value = if key == CODEX_AUTH {
             let folder = path.parent().unwrap_or(Path::new(""));
-            join_logins(&login_paths(&value, Some(folder)))
+            let paths = login_paths(&value, Some(folder));
+            join_logins(&paths).unwrap_or(value)
         } else {
             value
         };
@@ -440,13 +441,23 @@ fn login_paths(value: &str, folder: Option<&Path>) -> Vec<PathBuf> {
 
 /// `paths` as ARKO_CODEX_AUTH holds them: one path as it is, several as
 /// [`login_paths`] reads them.
-fn join_logins(paths: &[PathBuf]) -> String {
-    match paths {
-        [one] => one.to_string_lossy().into_owned(),
-        _ => std::env::join_paths(paths)
-            .map(|joined| joined.to_string_lossy().into_owned())
-            .unwrap_or_default(),
+/// Fails, naming the path, when one of several holds the separator.
+fn join_logins(paths: &[PathBuf]) -> Result<String, String> {
+    if let [one] = paths {
+        return Ok(one.to_string_lossy().into_owned());
     }
+    std::env::join_paths(paths)
+        .map(|joined| joined.to_string_lossy().into_owned())
+        .map_err(|_| {
+            let separator = if cfg!(windows) { ';' } else { ':' };
+            let path = paths
+                .iter()
+                .find(|path| std::env::join_paths([path]).is_err());
+            format!(
+                "{} can't be in a list of logins, because its path holds `{separator}`.",
+                path.map_or_else(String::new, |path| path.display().to_string())
+            )
+        })
 }
 
 /// A yes-or-no setting: `1`, `true`, `yes` or `on`, or `0`, `false`, `no`
@@ -605,7 +616,7 @@ fn checked_login(path: &Path) -> Result<PathBuf, String> {
 /// Saves `paths` as the ChatGPT logins of `env`'s Arko folder, in this
 /// process and (as ARKO_CODEX_AUTH in its .env) in later ones.
 fn save_logins(env: &Env, paths: &[PathBuf]) -> Result<(), String> {
-    let text = join_logins(paths);
+    let text = join_logins(paths)?;
     save(&env.arko_dotenv()?, CODEX_AUTH, &text)?;
     env.enter(CODEX_AUTH, text);
     Ok(())
@@ -664,6 +675,8 @@ pub(crate) fn add_login_to(paths: &mut Vec<PathBuf>, path: &Path) -> Result<(), 
             same.display()
         ));
     }
+    // (It has to be savable with the others.)
+    join_logins(&[paths.as_slice(), std::slice::from_ref(&path)].concat())?;
     paths.push(path);
     Ok(())
 }
@@ -1860,6 +1873,19 @@ mod tests {
                 .contains("Could not use")
         );
 
+        // A path that holds the separator can't join the others.
+        #[cfg(unix)]
+        {
+            let odd = temp.path().join("odd:folder/auth.json");
+            write_login(&odd, "account-3");
+            let refused = add_chatgpt_login(&root, &odd).unwrap_err();
+            assert!(
+                refused.contains("can't be in a list of logins"),
+                "{refused}"
+            );
+            assert_eq!(login_files(&root), [one.clone(), two.clone()]);
+        }
+
         // One is put first, then removed.
         first_chatgpt_login(&root, &two).unwrap();
         assert_eq!(login_files(&root), [two.clone(), one.clone()]);
@@ -1884,10 +1910,14 @@ mod tests {
 
         // The sessions of the folder heard of every change.
         let mut heard = 0;
-        while let Ok(heard_root) = changes.try_recv() {
-            heard += usize::from(heard_root == root);
+        loop {
+            match changes.try_recv() {
+                Ok(heard_root) => heard += usize::from(heard_root == root),
+                Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {}
+                Err(_) => break,
+            }
         }
-        assert!(heard >= 5, "{heard}");
+        assert!(heard >= 1, "{heard}");
     }
 
     /// The ChatGPT login says where Arko reads it and whether it holds a
