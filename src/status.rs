@@ -302,15 +302,7 @@ impl remote::Meter for Gauges {
                 .collect(),
             _ => Vec::new(),
         };
-        let plans = stats
-            .plans
-            .iter()
-            .map(|(plan, text)| remote::PlanStatus {
-                plan: plan.clone(),
-                windows: stats.plan_windows.get(plan).cloned().unwrap_or_default(),
-                text: text.clone(),
-            })
-            .collect();
+        let plans = stats.plan_status.values().cloned().collect();
         let (cost, api_price, costs) = costs(workflow.as_deref());
         let cache = cache_status(&stats, &lock(&self.models));
         let last_request = stats.last_request.clone();

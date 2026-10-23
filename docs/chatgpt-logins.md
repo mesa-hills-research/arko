@@ -66,3 +66,6 @@ before.
 `first_chatgpt_login` for the list of an Arko folder, `set_chatgpt_login` for a list of one, and
 `clear_chatgpt_login` for Codex's own. `login_changes` tells when a folder's list changes, and the
 sessions open on the folder in the same process use the change at once.
+
+`remote::PlanStatus` holds each plan's usage as `windows`, `credits`, `set_aside` and `extra_usage`
+beside the `text` line.

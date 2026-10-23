@@ -475,15 +475,7 @@ impl Details {
             }
             _ => Default::default(),
         };
-        let plans = stats
-            .plans
-            .iter()
-            .map(|(plan, text)| remote::PlanStatus {
-                plan: plan.clone(),
-                windows: stats.plan_windows.get(plan).cloned().unwrap_or_default(),
-                text: text.clone(),
-            })
-            .collect();
+        let plans = stats.plan_status.values().cloned().collect();
         let embeddings = self
             .indexes
             .as_ref()

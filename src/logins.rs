@@ -455,16 +455,20 @@ impl crate::Harness {
     }
 }
 
-/// What the ChatGPT plan's usage adds when some of the logins are set
-/// aside: ", 1 set aside".
-pub(crate) fn set_aside_note(accounts: Option<&ChatGptAccounts>) -> String {
-    let set_aside = accounts.map_or(0, |accounts| {
+/// How many of the ChatGPT logins are set aside.
+pub(crate) fn set_aside(accounts: Option<&ChatGptAccounts>) -> usize {
+    accounts.map_or(0, |accounts| {
         accounts
             .statuses()
             .iter()
             .filter(|status| status.exhausted)
             .count()
-    });
+    })
+}
+
+/// What the ChatGPT plan's usage adds when `set_aside` of the logins are set
+/// aside: ", 1 set aside".
+pub(crate) fn set_aside_note(set_aside: usize) -> String {
     match set_aside {
         0 => String::new(),
         n => format!(", {n} set aside"),
@@ -698,8 +702,10 @@ mod tests {
         assert_eq!(served_by(&client).await, "two");
         assert_eq!(backend.asked(), ["account-1", "account-2"]);
         // The plan usage says the first is set aside.
-        assert_eq!(set_aside_note(client.chatgpt_accounts()), ", 1 set aside");
-        assert_eq!(set_aside_note(None), "");
+        assert_eq!(set_aside(client.chatgpt_accounts()), 1);
+        assert_eq!(set_aside_note(1), ", 1 set aside");
+        assert_eq!(set_aside(None), 0);
+        assert_eq!(set_aside_note(0), "");
     }
 
     /// Logins added, ordered and removed during a session, here or in
@@ -870,6 +876,10 @@ mod tests {
             line,
             "ChatGPT plan 7 d 82%, credits left 12.50, 1 set aside"
         );
+        // The status has them as data too.
+        let plan = seam.meter.read().plans.remove(0);
+        assert_eq!(plan.set_aside, 1);
+        assert_eq!(plan.credits.unwrap().balance.as_deref(), Some("12.50"));
         seam.input
             .send(crate::Input::Quit(Some(Vec::new())))
             .unwrap();

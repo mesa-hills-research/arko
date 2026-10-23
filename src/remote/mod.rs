@@ -277,7 +277,15 @@ pub struct PlanStatus {
     /// The plan, as `/cost` names it ("ChatGPT plan").
     pub plan: String,
     pub windows: Vec<PlanWindow>,
-    /// The windows in a line ("ChatGPT plan 5 h 12%, 7 d 40%").
+    /// A ChatGPT account's credits, when it has some left or unlimited.
+    pub credits: Option<arko_ai::PlanCredits>,
+    /// How many of the ChatGPT logins are set aside.
+    pub set_aside: usize,
+    /// A Claude account's extra usage, when it is on. The line shows its
+    /// amounts, when it has them.
+    pub extra_usage: Option<arko_ai::ExtraUsage>,
+    /// The plan's usage in a line ("ChatGPT plan 5 h 12%, 7 d 40%, credits
+    /// left 12.50", "Claude plan 5 h 12%, extra usage $271.40 of $500.00").
     pub text: String,
 }
 

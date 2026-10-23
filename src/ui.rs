@@ -444,8 +444,8 @@ pub struct Stats {
     /// What the main agent's model accepts, in tokens: as its latest request
     /// said, else as the session started.
     pub context_window: Option<usize>,
-    /// Each plan's usage windows, by plan, as last reported.
-    pub plan_windows: std::collections::BTreeMap<String, Vec<remote::PlanWindow>>,
+    /// Each plan's usage, by plan, as last reported.
+    pub plan_status: std::collections::BTreeMap<String, remote::PlanStatus>,
     /// Each worker's context, by its handle: the input of its latest
     /// request and what its model accepts, in tokens.
     pub workers: std::collections::BTreeMap<String, (usize, Option<usize>)>,
@@ -928,15 +928,16 @@ impl EventPrinter {
             AgentEvent::PlanUsageReported(usage) => {
                 if let Some(mut text) = crate::providers::plan_usage_text(&usage) {
                     let mut stats = self.stats.lock().unwrap();
-                    let plan = crate::providers::plan_name(usage.plan);
-                    if usage.plan != Some(arko_ai::SubscriptionPlan::ClaudeCode) {
-                        text.push_str(&crate::logins::set_aside_note(stats.chatgpt.as_ref()));
-                    }
-                    stats.plans.insert(plan.to_string(), text);
+                    let set_aside = if usage.plan == Some(arko_ai::SubscriptionPlan::ClaudeCode) {
+                        0
+                    } else {
+                        crate::logins::set_aside(stats.chatgpt.as_ref())
+                    };
+                    text.push_str(&crate::logins::set_aside_note(set_aside));
+                    let status = crate::providers::plan_status(&usage, text.clone(), set_aside);
+                    stats.plans.insert(status.plan.clone(), text);
                     stats.plan_usage = crate::providers::plan_usage_line(&stats.plans);
-                    stats
-                        .plan_windows
-                        .insert(plan.to_string(), crate::providers::plan_windows(&usage));
+                    stats.plan_status.insert(status.plan.clone(), status);
                 }
             }
             _ => {}
@@ -1877,6 +1878,62 @@ mod tests {
             report(credits(false, false, Some("0"))),
             line("ChatGPT plan 7 d 82%")
         );
+    }
+
+    /// A Claude account's extra usage shows in the same line as the plan
+    /// windows, and the status has it as data, its credits and its logins set
+    /// aside too. Off, the line says nothing of it and the status has none.
+    #[tokio::test]
+    async fn extra_usage_shows_beside_the_claude_plan_windows() {
+        let output = Arc::new(Output::new(None, false));
+        let stats = Arc::new(Mutex::new(Stats::default()));
+        let mut printer = EventPrinter::new(output, stats.clone(), false, None);
+        let mut report = |extra_usage: arko_ai::ExtraUsage| {
+            printer.event(WorkflowEvent {
+                timestamp: chrono::Utc::now(),
+                workflow_run_id: Uuid::nil(),
+                agent_name: MAIN.into(),
+                agent_run_id: Uuid::nil(),
+                event: AgentEvent::PlanUsageReported(arko_ai::PlanUsage {
+                    plan: Some(arko_ai::SubscriptionPlan::ClaudeCode),
+                    primary: Some(arko_ai::PlanUsageWindow {
+                        used_percent: 12.0,
+                        window_minutes: Some(300),
+                        ..Default::default()
+                    }),
+                    extra_usage: Some(extra_usage),
+                    ..Default::default()
+                }),
+            });
+            stats.lock().unwrap().plan_status["Claude plan"].clone()
+        };
+        let on = arko_ai::ExtraUsage {
+            enabled: Some(true),
+            in_use: true,
+            used_credits: Some(27_140.0),
+            monthly_limit: Some(50_000.0),
+            currency: Some("USD".into()),
+            decimal_places: Some(2),
+            ..Default::default()
+        };
+        let status = report(on.clone());
+        assert_eq!(
+            status.text,
+            "Claude plan 5 h 12%, extra usage $271.40 of $500.00"
+        );
+        assert_eq!(status.extra_usage, Some(on));
+        assert_eq!((status.credits, status.set_aside), (None, 0));
+        assert_eq!(
+            stats.lock().unwrap().plan_usage.as_deref(),
+            Some(status.text.as_str())
+        );
+        let off = arko_ai::ExtraUsage {
+            enabled: Some(false),
+            ..Default::default()
+        };
+        let status = report(off);
+        assert_eq!(status.text, "Claude plan 5 h 12%");
+        assert_eq!(status.extra_usage, None);
     }
 
     #[tokio::test]

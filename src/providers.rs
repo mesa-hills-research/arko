@@ -1308,6 +1308,20 @@ pub fn plan_windows(usage: &PlanUsage) -> Vec<crate::remote::PlanWindow> {
         .collect()
 }
 
+/// `usage` as the status gives a plan's usage, with its `text` and how many
+/// ChatGPT logins are `set_aside`. Credits and extra usage are there only when
+/// the text shows them.
+pub fn plan_status(usage: &PlanUsage, text: String, set_aside: usize) -> crate::remote::PlanStatus {
+    crate::remote::PlanStatus {
+        plan: plan_name(usage.plan).to_string(),
+        windows: plan_windows(usage),
+        credits: usage.credits.clone().filter(arko_ai::PlanCredits::usable),
+        set_aside,
+        extra_usage: usage.extra_usage.clone().filter(extra_usage_on),
+        text,
+    }
+}
+
 /// Every plan's latest usage, in one line: a session with agents on both
 /// plans shows both.
 pub fn plan_usage_line(plans: &std::collections::BTreeMap<String, String>) -> Option<String> {
