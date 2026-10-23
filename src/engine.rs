@@ -973,6 +973,12 @@ impl Engine {
         harness.give_workers_project();
         prompter.opening();
         harness.open(!new)?;
+        if !new {
+            // The conversation it goes on in may hold a list that changed
+            // while the session was closed. (Not in `open`, which also
+            // rebuilds the workflow of a session that never closed.)
+            harness.kept.tell_lead(harness.workflow());
+        }
         harness.import_seed().await?;
         harness.start_new_workers();
         harness.publish_models();
@@ -1535,6 +1541,55 @@ mod tests {
             .unwrap();
         assert_eq!(restored.ran_ms, ran);
         assert_eq!(restored.running_since, None);
+        quit(seam, ended).await;
+    }
+
+    /// A session continued with `-c` gets the kept notes once, in the
+    /// conversation it goes on in, also when they changed while it was
+    /// closed. One that never had a note gets no list.
+    #[tokio::test]
+    async fn a_continued_session_gets_the_kept_notes_once() {
+        let temp = tempfile::tempdir().unwrap();
+        let (server, bodies) = counting_server().await;
+        let (root, project) = (temp.path().join("arko"), temp.path().join("project"));
+        let (seam, ended) = open_app(&root, &project, &server, SessionChoice::New).await;
+        let id = seam.session.id.clone();
+        let lists = |bodies: &Mutex<Vec<String>>| -> Vec<usize> {
+            let bodies = bodies.lock().unwrap();
+            bodies
+                .iter()
+                .map(|body| body.matches("# Your kept notes").count())
+                .collect()
+        };
+        seam.input
+            .send(Input::Message(app_message("One.")))
+            .unwrap();
+        answered(&seam, &bodies, 1).await;
+        quit(seam, ended).await;
+        let (seam, ended) =
+            open_app(&root, &project, &server, SessionChoice::Resume(id.clone())).await;
+        seam.input
+            .send(Input::Message(app_message("Two.")))
+            .unwrap();
+        answered(&seam, &bodies, 2).await;
+        assert_eq!(lists(&bodies), [0, 0]);
+        quit(seam, ended).await;
+        // An app keeps a note in the closed session's folder.
+        let dir = Session::open(&root, &id).unwrap().dir;
+        crate::kept_notes::KeptNotes::new(&dir)
+            .add(
+                "Tear the build box down.",
+                crate::kept_notes::Audience::Lead,
+            )
+            .unwrap();
+        let (seam, ended) = open_app(&root, &project, &server, SessionChoice::Resume(id)).await;
+        for (count, message) in [(3, "Three."), (4, "Four.")] {
+            seam.input
+                .send(Input::Message(app_message(message)))
+                .unwrap();
+            answered(&seam, &bodies, count).await;
+        }
+        assert_eq!(lists(&bodies), [0, 0, 1, 1]);
         quit(seam, ended).await;
     }
 

@@ -467,6 +467,8 @@ async fn a_resumed_session_lists_its_conversations_and_goes_on_in_its_own() {
     let first = request_with(&bodies, "Which fruit?");
     assert!(first.contains("Apples are red."), "{first}");
     assert!(!first.contains("Pears"), "{first}");
+    // (No note was ever kept, so no list was posted on the way.)
+    assert!(lists_held(&bodies).iter().all(|held| *held == 0));
 
     // Saved before the record: each run is a conversation, the latest
     // current.
@@ -536,27 +538,41 @@ async fn a_conversation_resumed_gets_the_notes_kept_since() {
     assert!(request_with(&bodies, "Which fruit?").contains(note));
 }
 
-/// A session continued with `-c` gets the list once, in the conversation it
-/// goes on in, whatever changed in the notes while it was closed.
+/// A conversation `/resume` goes back to is told when every note was
+/// removed since, since it may still hold the list.
 #[tokio::test]
-async fn a_continued_session_gets_the_notes_once() {
+async fn a_conversation_resumed_is_told_when_no_notes_are_left() {
     let temp = tempfile::tempdir().unwrap();
     let bodies: Bodies = Arc::default();
     let hold = Arc::new(Notify::new());
+    // (The turn about pears doesn't wait.)
+    hold.notify_one();
     let server = ModelServer::start(fruit_model(bodies.clone(), hold)).await;
     let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
-    harness
-        .turn(Prompt::User("Apples are red.".into()), &mut inputs)
-        .await;
     harness
         .kept
         .add("Tear the build box down.", kept_notes::Audience::Lead)
         .unwrap();
-    harness.open(true).unwrap();
+    harness
+        .turn(Prompt::User("Apples are red.".into()), &mut inputs)
+        .await;
+    harness.new_conversation();
+    harness
+        .turn(Prompt::User("Pears are green.".into()), &mut inputs)
+        .await;
+    harness.kept.remove(1).unwrap();
+    harness.resume_command("1").await;
     for message in ["Which fruit?", "And the colour?"] {
         harness
             .turn(Prompt::User(message.into()), &mut inputs)
             .await;
     }
-    assert_eq!(lists_held(&bodies), [0, 1, 1]);
+    // (The second conversation's first message has the list, the first
+    // one's too, and the resumed one's next request says none are left.)
+    assert_eq!(lists_held(&bodies), [1, 1, 2, 2]);
+    let told = "No notes are kept now. This list replaces any earlier one.";
+    assert_eq!(
+        request_with(&bodies, "Which fruit?").matches(told).count(),
+        1
+    );
 }

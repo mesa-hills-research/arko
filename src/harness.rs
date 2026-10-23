@@ -736,11 +736,6 @@ impl Harness {
         }
         // The conversation the session was in goes on.
         self.open_conversations(&workflow, resume);
-        if resume {
-            // The conversation it goes on in may hold a list that changed
-            // while the session was closed.
-            self.kept.tell_lead(&workflow);
-        }
         let lead = self.conversations.current_run();
         self.conversation = conversation_of(&workflow, lead);
         {
