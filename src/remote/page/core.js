@@ -768,6 +768,76 @@
     return text;
   }
 
+  // ----- the command menu -----
+
+  /**
+   * The menu for the box's `text`, or null when it isn't a command line.
+   * `commands` is the list the server gives (`{ name, args, about }`), and
+   * `choicesOf(name, before)` the words an argument may be after the words
+   * `before` (an array), or undefined while they are not there yet.
+   *
+   * While the command's name is typed, the items are the commands that
+   * start with it. After a space, they are the words the argument may be,
+   * and `command` is the command, whose hint the menu shows with its first
+   * argument. `from` is where in the text a pick goes, and `selected` the
+   * item it starts on (-1 for none, where nothing is typed yet).
+   */
+  function slashMenu(commands, text, choicesOf) {
+    if (!text.startsWith('/') || text.includes('\n')) return null;
+    const space = text.search(/\s/);
+    if (space < 0) {
+      const typed = text.toLowerCase();
+      const items = commands
+        .filter((command) => command.name.startsWith(typed))
+        .map((command) => ({
+          label: command.name,
+          args: command.args,
+          about: command.about,
+          insert: command.args ? command.name + ' ' : command.name,
+        }));
+      if (!items.length) return null;
+      const exact = items.findIndex((item) => item.label === text);
+      return { items, from: 0, selected: Math.max(exact, 0), command: null };
+    }
+    const command = commands.find((c) => c.name === text.slice(0, space));
+    if (!command || !command.args) return null;
+    const rest = text.slice(space);
+    const words = rest.split(/\s+/).filter(Boolean);
+    const partial = /\s$/.test(rest) ? '' : words.pop() || '';
+    const typed = partial.toLowerCase();
+    const choices = choicesOf(command.name, words) || [];
+    const items = choices
+      .filter((word) => word.toLowerCase().startsWith(typed) && word !== partial)
+      .map((word) => ({ label: word, insert: word + ' ' }));
+    // Past the first argument the menu shows only words to pick.
+    if (words.length && !items.length) return null;
+    return {
+      items,
+      from: text.length - partial.length,
+      // A word typed whole (r1, with r10 too) is sent as it is, not replaced.
+      selected: partial && items.length && !choices.includes(partial) ? 0 : -1,
+      command: words.length ? null : command,
+    };
+  }
+
+  /**
+   * What a key does while the menu is open, given the item selected (-1 for
+   * none) and the word typed so far: null when the menu leaves it alone,
+   * else `{ selected }` (moved), `{ pick }` (an item's index) or
+   * `{ close: true }`. Enter takes the selected item unless the word is
+   * already whole, which sends it as it is.
+   */
+  function slashKey(menu, selected, key, typed) {
+    const count = menu.items.length;
+    if (key === 'Escape') return { close: true };
+    if (!count) return null;
+    if (key === 'ArrowDown') return { selected: (selected + 1) % count };
+    if (key === 'ArrowUp') return { selected: selected < 0 ? count - 1 : (selected + count - 1) % count };
+    if (key === 'Tab') return { pick: Math.max(selected, 0) };
+    if (key === 'Enter' && selected >= 0 && menu.items[selected].label !== typed) return { pick: selected };
+    return null;
+  }
+
   // ----- markdown -----
 
   const SAFE_LINK = /^(https?:|mailto:)/i;
@@ -1044,6 +1114,8 @@
     CACHE_WARNING_MS,
     runTime,
     firstLine,
+    slashMenu,
+    slashKey,
     markdown,
     inline,
   };

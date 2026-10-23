@@ -787,6 +787,8 @@
     else text.placeholder = status && status.working ? 'Add to the task' : 'Message';
     send.title = asking() ? 'Answer' : 'Send';
     text.setAttribute('aria-label', text.placeholder);
+    // (What is typed answers the question then, not a command.)
+    if (menu && asking()) refreshMenu();
   }
 
   function asking() {
@@ -1542,6 +1544,7 @@
       failures = 0;
       setConnection('live');
       onReset(JSON.parse(event.data));
+      loadCommands();
     });
     stream.addEventListener('item', (event) => onItem(JSON.parse(event.data)));
     stream.addEventListener('append', (event) => onAppend(JSON.parse(event.data)));
@@ -1639,6 +1642,7 @@
       follow();
     }
     grow();
+    refreshMenu();
   }
 
   $('compose').addEventListener('submit', (event) => {
@@ -1646,9 +1650,160 @@
     submit();
   });
 
-  text.addEventListener('input', grow);
+  // ----- the command menu, above the input -----
+
+  /** The commands the session runs from the page (once the server gave them). */
+  let commandList = null;
+  let commandsAsked = false;
+  /** The words an argument may be, by the command and the words before it. */
+  const choiceCache = new Map();
+  /** What the menu shows now (see FinCore.slashMenu), and the item selected. */
+  let menu = null;
+  let selected = -1;
+  /** The text Esc closed the menu for. */
+  let closedFor = null;
+
+  async function fetchJson(path, body) {
+    try {
+      const response = await fetch(
+        path,
+        body ? { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : { credentials: 'same-origin' },
+      );
+      return response.ok ? await response.json() : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Asks for the commands once (when the stream starts, or on a first slash if that failed). */
+  function loadCommands() {
+    if (commandList || commandsAsked) return;
+    commandsAsked = true;
+    fetchJson('/api/commands').then((list) => {
+      commandList = list;
+      commandsAsked = false;
+      refreshMenu();
+    });
+  }
+
+  function choicesOf(name, before) {
+    const key = JSON.stringify([name, before]);
+    if (!choiceCache.has(key)) {
+      choiceCache.set(key, undefined);
+      fetchJson('/api/choices', { command: name, before }).then((answer) => {
+        // (An answer that fails stays empty until the box is cleared.)
+        choiceCache.set(key, (answer && answer.choices) || []);
+        refreshMenu();
+      });
+    }
+    return choiceCache.get(key);
+  }
+
+  function refreshMenu() {
+    const value = text.value;
+    let next = null;
+    if (value.startsWith('/') && !asking() && document.activeElement === text && closedFor !== value) {
+      loadCommands();
+      if (commandList) next = C.slashMenu(commandList, value, choicesOf);
+    }
+    if (!value.startsWith('/')) choiceCache.clear();
+    menu = next;
+    selected = next ? next.selected : -1;
+    renderMenu();
+  }
+
+  function renderMenu() {
+    const items = menu ? menu.items : [];
+    const hint = $('slash-hint');
+    $('slash').hidden = !menu;
+    hint.hidden = !(menu && menu.command);
+    if (menu && menu.command) {
+      hint.replaceChildren(
+        element('span', 'slash-name', menu.command.name),
+        element('span', 'slash-args', ' ' + menu.command.args),
+        element('span', 'slash-about', menu.command.about),
+      );
+      text.setAttribute('aria-describedby', 'slash-hint');
+    } else {
+      text.removeAttribute('aria-describedby');
+    }
+    $('slash-list').hidden = !items.length;
+    $('slash-list').setAttribute('aria-label', menu && menu.from === 0 ? 'Commands' : 'Choices');
+    $('slash-list').replaceChildren(
+      ...items.map((item, index) => {
+        const row = element('li', item.about === undefined ? 'slash-word' : 'slash-command');
+        row.id = 'slash-' + index;
+        row.setAttribute('role', 'option');
+        row.dataset.index = index;
+        row.append(element('span', 'slash-name', item.label));
+        if (item.args) row.append(element('span', 'slash-args', item.args));
+        if (item.about) row.append(element('span', 'slash-about', item.about));
+        return row;
+      }),
+    );
+    text.setAttribute('aria-expanded', String(items.length > 0));
+    markSelected();
+  }
+
+  function markSelected() {
+    const rows = $('slash-list').children;
+    for (const row of rows) row.setAttribute('aria-selected', String(Number(row.dataset.index) === selected));
+    if (selected >= 0 && rows[selected]) {
+      rows[selected].scrollIntoView({ block: 'nearest' });
+      text.setAttribute('aria-activedescendant', rows[selected].id);
+    } else {
+      text.removeAttribute('aria-activedescendant');
+    }
+  }
+
+  /** Puts the menu's item `index` in the box in place of the word typed. */
+  function pickItem(index) {
+    const value = text.value.slice(0, menu.from) + menu.items[index].insert;
+    text.value = value;
+    text.setSelectionRange(value.length, value.length);
+    text.focus();
+    grow();
+    refreshMenu();
+  }
+
+  // A tap on the menu leaves the focus in the box, so a phone keeps its
+  // keyboard.
+  $('slash').addEventListener('mousedown', (event) => event.preventDefault());
+  $('slash-list').addEventListener('click', (event) => {
+    const row = event.target.closest('li');
+    if (row && menu) pickItem(Number(row.dataset.index));
+  });
+  text.addEventListener('focus', refreshMenu);
+  text.addEventListener('blur', () => {
+    menu = null;
+    choiceCache.clear();
+    renderMenu();
+  });
+
+  text.addEventListener('input', () => {
+    grow();
+    refreshMenu();
+  });
   text.addEventListener('keydown', (event) => {
-    if (event.key !== 'Enter' || event.isComposing) return;
+    if (event.isComposing) return;
+    const plain = !event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey;
+    const move = menu && plain ? C.slashKey(menu, selected, event.key, text.value.slice(menu.from)) : null;
+    if (move) {
+      event.preventDefault();
+      // (Esc closes the menu before it leaves a worker's view.)
+      event.stopPropagation();
+      if (move.close) {
+        closedFor = text.value;
+        refreshMenu();
+      } else if (move.pick !== undefined) {
+        pickItem(move.pick);
+      } else {
+        selected = move.selected;
+        markSelected();
+      }
+      return;
+    }
+    if (event.key !== 'Enter') return;
     // Enter sends with a keyboard; on a touch screen it starts a new line
     // (and Ctrl or Cmd+Enter sends).
     if (event.ctrlKey || event.metaKey || (fine.matches && !event.shiftKey && !event.altKey)) {

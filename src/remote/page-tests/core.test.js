@@ -624,3 +624,88 @@ test('the agent\'s reply row has the same box as a text row', () => {
   // A worker's report keeps its card.
   assert.match(css, /\.row\.reply\.report\s*\{[^}]*padding/);
 });
+
+// ----- the command menu -----
+
+const COMMANDS = [
+  { name: '/new', args: '', about: 'start a new conversation' },
+  { name: '/cost', args: '', about: 'what this session has cost' },
+  { name: '/model', args: '[MODEL] [EFFORT]', about: 'the main agent’s model' },
+  { name: '/message-copies', args: 'on|off', about: 'copies of your messages' },
+  { name: '/message', args: 'WORKER MESSAGE', about: 'send a worker a message' },
+  { name: '/outside', args: 'on|off', about: 'access outside the workspace' },
+];
+const WORDS = { '/model': [], '/outside': ['on', 'off'], '/message': ['r1', 'r10', 'r2'] };
+const choices = (name, before) => (before.length ? [] : WORDS[name]);
+const labels = (menu) => menu.items.map((i) => i.label);
+
+test('the menu filters the commands by what is typed and shows each one’s arguments and help', () => {
+  const menu = core.slashMenu(COMMANDS, '/', choices);
+  assert.deepEqual(labels(menu), COMMANDS.map((c) => c.name));
+  assert.equal(menu.selected, 0);
+  assert.deepEqual(labels(core.slashMenu(COMMANDS, '/me', choices)), ['/message-copies', '/message']);
+  assert.deepEqual(menu.items[2], { label: '/model', args: '[MODEL] [EFFORT]', about: 'the main agent’s model', insert: '/model ' });
+  // A command that takes nothing is picked without a space, and one typed whole is the one selected.
+  assert.equal(menu.items[1].insert, '/cost');
+  assert.equal(core.slashMenu(COMMANDS, '/message', choices).selected, 1);
+  assert.equal(core.slashMenu(COMMANDS, '/message-copies', choices).selected, 0);
+  assert.equal(labels(core.slashMenu(COMMANDS, '/MOD', choices))[0], '/model');
+  // Text that isn't a command being typed has no menu.
+  for (const text of ['', 'cost', '/usr/bin is missing', '/xyz', '/cost ', 'a\n/cost', '/cost\n']) {
+    assert.equal(core.slashMenu(COMMANDS, text, choices), null, JSON.stringify(text));
+  }
+});
+
+test('after a command and a space, the menu shows its arguments and the words they may be', () => {
+  const menu = core.slashMenu(COMMANDS, '/outside ', choices);
+  assert.equal(menu.command.args, 'on|off');
+  assert.deepEqual(labels(menu), ['on', 'off']);
+  assert.equal(menu.from, 9);
+  assert.equal(menu.selected, -1, 'nothing is selected until a letter is typed or a key moves it');
+  const typed = core.slashMenu(COMMANDS, '/outside o', choices);
+  assert.deepEqual(labels(typed), ['on', 'off']);
+  assert.equal(typed.selected, 0);
+  assert.equal(typed.from, 9);
+  assert.deepEqual(labels(core.slashMenu(COMMANDS, '/outside of', choices)), ['off']);
+  // A word typed whole leaves the hint, and a second word has nothing to pick.
+  assert.deepEqual(labels(core.slashMenu(COMMANDS, '/outside on', choices)), []);
+  assert.equal(core.slashMenu(COMMANDS, '/outside on', choices).command.name, '/outside');
+  assert.equal(core.slashMenu(COMMANDS, '/outside on ', choices), null);
+  // Words not there yet (being fetched) leave the hint alone.
+  const waiting = core.slashMenu(COMMANDS, '/message ', () => undefined);
+  assert.deepEqual([labels(waiting), waiting.command.args], [[], 'WORKER MESSAGE']);
+  // A word that is whole and starts others (r1, r10) is sent by Enter, and the others are an arrow away.
+  const whole = core.slashMenu(COMMANDS, '/message r1', choices);
+  assert.deepEqual([labels(whole), whole.selected], [['r10'], -1]);
+  assert.equal(core.slashMenu(COMMANDS, '/message r', choices).selected, 0);
+  assert.equal(core.slashMenu(COMMANDS, '/message r1 hello', choices), null);
+  // The words before the one typed go to the lookup.
+  const seen = [];
+  core.slashMenu(COMMANDS, '/model worker  op', (name, before) => (seen.push([name, before]), []));
+  assert.deepEqual(seen, [['/model', ['worker']]]);
+});
+
+test('the menu’s keys move, pick and close, and Enter sends a word that is whole', () => {
+  const menu = core.slashMenu(COMMANDS, '/me', choices);
+  assert.deepEqual(labels(menu), ['/message-copies', '/message']);
+  assert.deepEqual(core.slashKey(menu, 0, 'ArrowDown', '/me'), { selected: 1 });
+  assert.deepEqual(core.slashKey(menu, 1, 'ArrowDown', '/me'), { selected: 0 });
+  assert.deepEqual(core.slashKey(menu, 0, 'ArrowUp', '/me'), { selected: 1 });
+  assert.deepEqual(core.slashKey(menu, 0, 'Tab', '/me'), { pick: 0 });
+  assert.deepEqual(core.slashKey(menu, 1, 'Enter', '/me'), { pick: 1 });
+  assert.deepEqual(core.slashKey(menu, 0, 'Escape', '/me'), { close: true });
+  assert.equal(core.slashKey(menu, 0, 'a', '/me'), null);
+  // A command typed whole is sent by Enter, and picked by Tab.
+  assert.equal(core.slashKey(menu, 1, 'Enter', '/message'), null);
+  assert.deepEqual(core.slashKey(menu, 1, 'Tab', '/message'), { pick: 1 });
+  // With nothing selected, the arrows start at either end, Tab takes the first, and Enter sends.
+  const words = core.slashMenu(COMMANDS, '/outside ', choices);
+  assert.deepEqual(core.slashKey(words, -1, 'ArrowDown', ''), { selected: 0 });
+  assert.deepEqual(core.slashKey(words, -1, 'ArrowUp', ''), { selected: 1 });
+  assert.deepEqual(core.slashKey(words, -1, 'Tab', ''), { pick: 0 });
+  assert.equal(core.slashKey(words, -1, 'Enter', ''), null);
+  // A hint without words takes only Esc.
+  const hint = core.slashMenu(COMMANDS, '/message ', () => []);
+  assert.deepEqual(core.slashKey(hint, -1, 'Escape', ''), { close: true });
+  for (const key of ['ArrowDown', 'Tab', 'Enter']) assert.equal(core.slashKey(hint, -1, key, ''), null);
+});
