@@ -588,7 +588,12 @@ impl App {
                 .map(|worker| worker.id.clone())
                 .collect(),
             // The workers running.
-            ("/stop-workers", []) => self.reading.workers_running.clone(),
+            ("/stop-workers", []) => self
+                .reading
+                .workers_running
+                .iter()
+                .map(|(id, _)| id.clone())
+                .collect(),
             ("/keys", ["add" | "remove"]) => crate::credentials::KEYS
                 .iter()
                 .map(|key| key.id.to_string())

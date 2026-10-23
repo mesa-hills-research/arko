@@ -385,6 +385,7 @@ impl Transcript {
                 Some(worker) => *worker = summary,
                 None => self.workers.push(summary),
             },
+            Update::WorkerEnded { .. } => {}
             Update::Activity => {}
             // The main agent's items from `from` on are gone.
             Update::Truncate { from } => {
@@ -1473,12 +1474,16 @@ impl Filter {
                     };
                 }
                 if !item.is_main() {
-                    // A worker's calls and what went wrong show in Full. Its
-                    // text, its report and what the user wrote to it are its
-                    // own view's.
+                    // A worker's calls and what went wrong show in Full, and
+                    // so does its stop (an Info notice). Its text, its report
+                    // and what the user wrote to it are its own view's.
                     return match (view, item.kind) {
                         (View::Full, Kind::Call) => Show::Item,
-                        (View::Full, Kind::Notice) if item.level != Some(Level::Info) => Show::Item,
+                        (View::Full, Kind::Notice)
+                            if item.level != Some(Level::Info) || item.stop =>
+                        {
+                            Show::Item
+                        }
                         _ => Show::Hidden,
                     };
                 }
@@ -3175,12 +3180,23 @@ mod tests {
             depth: 2,
             ..WorkerSummary::new("r2")
         }));
+        // (The feed's stop notices are Info.)
         let mut second = item(2, Kind::Notice, "stopped (its lead r1 was stopped)").agent("r2");
+        second.level = Some(Level::Info);
+        second.parent = Some("r1".into());
+        second.stop = true;
         second.turn = Some(1);
         t.apply(Update::Item(second));
         let mut first = item(3, Kind::Notice, "stopped (the user stopped the worker)").agent("r1");
+        first.level = Some(Level::Info);
+        first.stop = true;
         first.turn = Some(1);
         t.apply(Update::Item(first));
+        // Another Info notice of a worker stays out of the main view.
+        let mut aside = item(4, Kind::Notice, "an aside").agent("r2");
+        aside.level = Some(Level::Info);
+        aside.turn = Some(1);
+        t.apply(Update::Item(aside));
         let main = rows(&mut t, &Filter::Main(View::Full), 70, 10);
         assert!(
             main.iter()
@@ -3192,6 +3208,7 @@ mod tests {
                 .any(|r| r.contains("r1 stopped (the user stopped the worker)")),
             "{main:?}"
         );
+        assert!(!main.iter().any(|r| r.contains("an aside")), "{main:?}");
         // In its own view a worker's lines don't name it or its starter.
         let own = rows(&mut t, &Filter::Worker("r2".into()), 70, 10);
         assert!(

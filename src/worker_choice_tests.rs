@@ -663,6 +663,18 @@ async fn worker_depth_is_kept_and_says_what_it_allows() {
     assert_eq!(harness.session.load_settings().unwrap().worker_depth, 3);
     assert!(harness.live_command("/worker-depth 3", Source::Terminal));
     assert!(last_said(&harness.feed).starts_with("Worker depth is 3 already."));
+    // With every worker on the session's model, none starts workers at any
+    // depth, and the three replies say so.
+    assert!(harness.live_command("/worker-models session", Source::Terminal));
+    let none = "No worker starts workers, because every worker runs the session’s worker model.";
+    for (command, reply) in [
+        ("/worker-depth", format!("Worker depth is 3. {none} /worker-depth 1 to 4 changes it.")),
+        ("/worker-depth 3", format!("Worker depth is 3 already. {none}")),
+        ("/worker-depth 4", format!("Worker depth is now 4. {none}")),
+    ] {
+        assert!(harness.live_command(command, Source::Terminal));
+        assert_eq!(last_said(&harness.feed), reply, "{command}");
+    }
     harness.crew.as_ref().unwrap().shutdown().await;
 }
 
@@ -682,7 +694,7 @@ async fn message_copies_are_on_by_default_and_the_command_sets_them() {
     assert!(harness.live_command("/message-copies off", Source::Terminal));
     assert_eq!(
         last_said(&harness.feed),
-        "Message copies are now off. The agent that started a worker doesn't see the messages you send the worker."
+        "Message copies are now off. The agent that started a worker doesn’t see the messages you send the worker."
     );
     assert!(!harness.settings.message_copies);
     assert!(!harness.session.load_settings().unwrap().message_copies);

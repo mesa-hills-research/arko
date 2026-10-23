@@ -314,7 +314,10 @@ impl remote::Meter for Gauges {
             costs,
             context_tokens: stats.context_tokens,
             plan_usage: stats.plan_usage,
-            workers_running: crew.as_ref().map(|crew| crew.running()).unwrap_or_default(),
+            workers_running: crew
+                .as_ref()
+                .map(|crew| crew.running_with_parents())
+                .unwrap_or_default(),
             workers: crew
                 .filter(|crew| !crew.is_empty())
                 .map(|crew| crew.describe()),

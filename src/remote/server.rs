@@ -600,6 +600,8 @@ impl Stream {
                     .event("worker")
                     .data(serde_json::to_string(&summary).unwrap_or_default()),
             ),
+            // (The page reads a worker's end in its summary.)
+            Update::WorkerEnded { .. } => {}
             Update::Activity => self.send_status(),
             Update::Remove { id } => self.pending.push_back(
                 Event::default()

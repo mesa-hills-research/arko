@@ -39,7 +39,7 @@ pub(crate) use feed::family_order_of;
 pub use feed::{
     Activity, Batches, CallStatus, Delivery, Feed, Item, JobKind, JobStart, JobState, JobSummary,
     Kind, Level, MAIN_AGENT, Question, REFRESH_MESSAGE, Snapshot, Source, Update, WorkerChange,
-    WorkerInfo, WorkerState, WorkerSummary, family_order,
+    WorkerInfo, WorkerState, WorkerSummary, family_order, family_order_with_levels,
 };
 pub(crate) use history::all_items;
 pub use history::items as history;
@@ -118,8 +118,11 @@ pub struct Reading {
     pub context_tokens: Option<usize>,
     /// The plans' usage windows (ChatGPT, Claude), as last reported.
     pub plan_usage: Option<String>,
-    /// The workers running.
-    pub workers_running: Vec<String>,
+    /// The workers running, each by its ID and the ID of the worker that
+    /// started it (none for a worker of the main agent). The web page doesn't
+    /// get it.
+    #[serde(skip)]
+    pub workers_running: Vec<(String, Option<String>)>,
     /// Each worker, a line or two (as `/workers` says them).
     pub workers: Option<String>,
     /// The settings a client may change (with commands).

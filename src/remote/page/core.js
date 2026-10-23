@@ -462,7 +462,7 @@
   function messageCopiesAbout(on) {
     return on
       ? "The agent that started a worker gets a copy of each message you send the worker, with its next news."
-      : "The agent that started a worker doesn't see the messages you send the worker.";
+      : "The agent that started a worker doesn’t see the messages you send the worker.";
   }
 
   /** How long a worker has run at `now`, in all its runs (also those

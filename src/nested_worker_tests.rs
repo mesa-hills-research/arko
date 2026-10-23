@@ -455,6 +455,7 @@ async fn only_a_worker_started_to_nest_below_the_depth_is_offered_the_start_tool
         assert!(r1.iter().any(|name| name == tool), "{tool}");
     }
     assert!(!first_message(&plain.requests("r1")[0]).contains("Workers of your own"));
+    assert!(!harness.feed.worker_summary("r1").unwrap().nested);
     // Its `message_agent` reaches its lead and its peers, not its workers.
     assert_eq!(
         parameter_text(&plain.requests("r1")[0], crew::MESSAGE_AGENT, "to"),
@@ -486,6 +487,9 @@ async fn only_a_worker_started_to_nest_below_the_depth_is_offered_the_start_tool
     let r2 = tools(&nesting, "r2");
     assert_eq!(starts(&r2), 0, "{r2:?}");
     assert!(!first_message(&nesting.requests("r2")[0]).contains("Workers of your own"));
+    // The summaries say it too.
+    let nested = |id| harness.feed.worker_summary(id).unwrap().nested;
+    assert!(nested("r1") && !nested("r2"));
     harness.crew.as_ref().unwrap().shutdown().await;
 }
 
@@ -923,6 +927,18 @@ async fn quitting_counts_the_workers_of_the_whole_tree() {
         .expect("r1 asked to report early");
     let crew = harness.crew.clone().unwrap();
     until(|| crew.running() == ["r1", "r2"]).await;
+    // An app's quit popup and the status say who started each worker.
+    let family = vec![
+        ("r1".to_string(), None),
+        ("r2".to_string(), Some("r1".to_string())),
+    ];
+    let (popup, mut asks) = mpsc::unbounded_channel();
+    harness.quit_popup = Some(popup);
+    harness.ask_about_workers = true;
+    assert!(!harness.may_exit(Some(Vec::new())));
+    assert_eq!(asks.try_recv().unwrap().workers, family);
+    harness.quit_popup = None;
+    harness.exit_warned = false;
     let printed = Printed::default();
     harness.output = Arc::new(Output::new(Some(Box::new(printed.clone())), false));
     assert!(!harness.may_exit(Some(Vec::new())));
@@ -932,7 +948,7 @@ async fn quitting_counts_the_workers_of_the_whole_tree() {
     );
     // The status counts both too.
     let live = remote::Meter::read(harness.gauges.as_ref());
-    assert_eq!(live.workers_running, ["r1", "r2"]);
+    assert_eq!(live.workers_running, family);
     crew.shutdown().await;
 }
 

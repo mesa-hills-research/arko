@@ -98,8 +98,9 @@ pub struct Attachment {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QuitAsk {
     pub jobs: Vec<arko_agents::terminal::BackgroundJob>,
-    /// The workers running, by their IDs.
-    pub workers: Vec<String>,
+    /// The workers running, each by its ID and the ID of the worker that
+    /// started it (none for a worker of the main agent).
+    pub workers: Vec<(String, Option<String>)>,
 }
 
 /// Prints a front end's lines where the front end shows them: the line
