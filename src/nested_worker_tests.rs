@@ -425,6 +425,89 @@ async fn a_worker_started_to_nest_starts_a_worker_whose_report_reaches_it() {
     harness.crew.as_ref().unwrap().shutdown().await;
 }
 
+/// The news of a worker that finished ends with a line on what its run used,
+/// whoever reads it: r2's tokens and cost reach r1 after its report, and r1's
+/// reach the main agent.
+#[tokio::test]
+async fn a_finished_workers_news_ends_with_what_its_run_used() {
+    let script = Script::new(false);
+    let server = script.serve().await;
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, _sender) = open_session(temp.path(), &server);
+    turn(&mut harness, &mut inputs, "Review the files.").await;
+    tokio::time::timeout(Duration::from_secs(20), script.refused.notified())
+        .await
+        .expect("r1 asked to report early");
+    let _ =
+        tokio::time::timeout(Duration::from_secs(30), harness.finish_workers(&mut inputs)).await;
+
+    // r2 made one request, of 50,000 tokens in and 5 out, which cost what
+    // the feed says.
+    let cost = harness.feed.worker_summary("r2").unwrap().cost_billed;
+    let line = format!("r2 used 50k input and 5 output tokens, ${cost:.2}.");
+    let r1 = script.requests("r1");
+    assert!(
+        read(r1.last().unwrap()).contains(&format!("Counted 41 files.\n\n{line}")),
+        "{}",
+        read(r1.last().unwrap())
+    );
+    // The main agent reads r1's line with r1's report (as many requests as
+    // r1 needed to wait for r2), and not r2's.
+    let main = read(script.requests("main").last().unwrap());
+    let (_, after) = main
+        .split_once("Counted 41 files.\n  \n  r1 used ")
+        .unwrap_or_else(|| panic!("{main}"));
+    let line = after.lines().next().unwrap();
+    assert!(
+        line.contains("k input and ") && line.contains(" output tokens, $"),
+        "{line}"
+    );
+    assert!(!main.contains("r2 used"), "{main}");
+    harness.crew.as_ref().unwrap().shutdown().await;
+}
+
+/// A worker that was running when the session closed, with its result
+/// recorded, is settled as finished when the session opens again. Its news,
+/// which the lead never got, ends with the line too.
+#[tokio::test]
+async fn a_restored_workers_news_ends_with_what_its_run_used() {
+    let mut script = Script::new(false);
+    script.r1_start = serde_json::json!({});
+    script.r1_plain = true;
+    let server = script.serve().await;
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, _sender) = open_session(temp.path(), &server);
+    turn(&mut harness, &mut inputs, "Review the files.").await;
+    let _ =
+        tokio::time::timeout(Duration::from_secs(30), harness.finish_workers(&mut inputs)).await;
+    let cost = harness.feed.worker_summary("r1").unwrap().cost_billed;
+    harness.crew.as_ref().unwrap().shutdown().await;
+
+    // As if Arko had ended before r1's news reached the lead.
+    let run_dir = harness.session.run_dir();
+    let latest = harness.session.latest_checkpoint().unwrap();
+    let mut saved: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&latest).unwrap()).unwrap();
+    saved["subagents"]["runs"][0]["state"] = "running".into();
+    saved["subagents"]["mail"] = serde_json::json!([]);
+    std::fs::write(run_dir.join("edited-checkpoint.json"), saved.to_string()).unwrap();
+    std::fs::write(run_dir.join("latest-checkpoint"), "edited-checkpoint.json").unwrap();
+
+    harness.open(true).unwrap();
+    harness.start_new_workers();
+    let workflow = harness.workflow();
+    let news = workflow.pending_news(workflow.subagents()[0].caller_run_id);
+    assert_eq!(news.len(), 1, "{news:?}");
+    assert!(
+        news[0].body.ends_with(&format!(
+            "\n\nr1 used 50k input and 5 output tokens, ${cost:.2}."
+        )),
+        "{}",
+        news[0].body
+    );
+    harness.crew.as_ref().unwrap().shutdown().await;
+}
+
 /// A worker is offered the start tools only when its start said `nested`
 /// and the user's depth lets it start workers, so r2 (at the last level)
 /// and a worker started plainly are not.

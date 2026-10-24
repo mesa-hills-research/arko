@@ -1398,6 +1398,59 @@ impl CostShare {
             self.output / 1000
         )
     }
+
+    /// Adds a call that billed `billed`.
+    fn add(&mut self, usage: &UsageInfo, billed: f64) {
+        self.billed += billed;
+        self.api += at_api_prices(usage, billed);
+        self.input += usage.input_tokens;
+        self.output += usage.output_tokens;
+    }
+}
+
+/// What the run `handle` used (`usage`, its calls added up), in one line that
+/// ends the news its lead gets. It is worded as `/cost` words the workers'
+/// share, with a plan named when it covered the calls (`provider` is the
+/// run's model's). `None` when no call reported tokens.
+// shortcut: a run whose calls mixed billing kinds reads as billed per token,
+// which no run of Arko's can be today.
+pub(crate) fn run_usage_line(
+    handle: &str,
+    usage: &UsageInfo,
+    provider: &Provider,
+) -> Option<String> {
+    if usage.input_tokens + usage.output_tokens == 0 {
+        return None;
+    }
+    let mut used = CostShare::default();
+    used.add(usage, usage.billed());
+    if usage.billing == BillingKind::Subscription {
+        used.plan = Some(plan_name(Some(match provider {
+            Provider::ClaudeCode => SubscriptionPlan::ClaudeCode,
+            _ => SubscriptionPlan::ChatGpt,
+        })));
+    }
+    // (A short run's few tokens are told whole, not as "0k".)
+    let count = |tokens: usize| match tokens {
+        0..1000 => tokens.to_string(),
+        _ => format!("{}k", tokens / 1000),
+    };
+    let cached = match usage.cached_tokens.unwrap_or(0) {
+        0 => String::new(),
+        tokens => format!(" ({} cached)", count(tokens)),
+    };
+    let tokens = format!(
+        "{} input{cached} and {} output tokens",
+        count(used.input),
+        count(used.output)
+    );
+    Some(match used.plan {
+        Some(plan) => format!(
+            "{handle} ran on the {plan}, so nothing was billed per token. It used {tokens}, ≈ ${:.2} at API prices.",
+            used.api
+        ),
+        None => format!("{handle} used {tokens}, ${:.2}.", used.billed),
+    })
 }
 
 /// `/cost`: what the session was billed, and, for what ran on a plan, what
@@ -1434,10 +1487,7 @@ pub fn cost_shares(ledger: &CostLedger, settings: &Settings) -> (CostShare, Cost
         } else {
             (&mut workers, &settings.worker)
         };
-        part.billed += entry.amount;
-        part.api += at_api_prices(usage, entry.amount);
-        part.input += usage.input_tokens;
-        part.output += usage.output_tokens;
+        part.add(usage, entry.amount);
         if usage.billing == BillingKind::Subscription {
             part.plan = plan_of(model);
         }
@@ -2463,6 +2513,59 @@ mod tests {
             .into_iter()
             .map(|line| (line.detail, line.text))
             .collect()
+    }
+
+    /// A run's line says its tokens (the cached part of the input too) and,
+    /// per token, what it billed, or on a plan, that it ran there and what
+    /// it would cost at API prices. A run that reported no tokens has none.
+    #[test]
+    fn a_runs_usage_reads_in_a_line_as_the_cost_does() {
+        let usage = |input, cached, output, cost: f64, billing| UsageInfo {
+            input_tokens: input,
+            output_tokens: output,
+            cached_tokens: cached,
+            total_cost: cost,
+            billing,
+            billed_cost: Some(if billing == BillingKind::Subscription {
+                0.0
+            } else {
+                cost
+            }),
+            ..UsageInfo::default()
+        };
+        let metered = usage(55_000, Some(20_000), 2_500, 0.3, BillingKind::Metered);
+        assert_eq!(
+            run_usage_line("r2", &metered, &Provider::Anthropic).as_deref(),
+            Some("r2 used 55k input (20k cached) and 2k output tokens, $0.30.")
+        );
+        let plan = usage(
+            120_000,
+            Some(100_000),
+            8_000,
+            3.0,
+            BillingKind::Subscription,
+        );
+        for (provider, name) in [
+            (Provider::ClaudeCode, "Claude"),
+            (Provider::OpenAI, "ChatGPT"),
+        ] {
+            assert_eq!(
+                run_usage_line("r1", &plan, &provider),
+                Some(format!(
+                    "r1 ran on the {name} plan, so nothing was billed per token. It used 120k input (100k cached) and 8k output tokens, ≈ $3.00 at API prices."
+                )),
+            );
+        }
+        // A short run's tokens are told whole.
+        let short = usage(10, None, 5, 0.0, BillingKind::Metered);
+        assert_eq!(
+            run_usage_line("r3", &short, &Provider::OpenAI).as_deref(),
+            Some("r3 used 10 input and 5 output tokens, $0.00.")
+        );
+        assert_eq!(
+            run_usage_line("r4", &UsageInfo::default(), &Provider::OpenAI),
+            None
+        );
     }
 
     /// `/cost` on a plan shows what was billed, the API price and the

@@ -599,6 +599,15 @@ impl SubagentHook for StartHook {
         ))
     }
 
+    /// What the worker used, as the last line of the news its starter gets
+    /// when it ends, from its recorded result (so a run the session restores
+    /// has one too). Nothing when its run reported no tokens.
+    fn report_note(&self, record: &SubagentRecord, result: Option<&AgentResult>) -> Option<String> {
+        let models = self.models.lock().unwrap();
+        let provider = &models.runs.get(&record.run_id)?.llm_config.model.provider;
+        crate::providers::run_usage_line(&record.handle, &result?.info().usage, provider)
+    }
+
     /// Only a worker whose setup, as recorded when it started, gives it the
     /// start tools, so the answer is the same each time for a run, also when
     /// the session resumes and whatever the settings are by then. A run
