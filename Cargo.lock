@@ -146,7 +146,7 @@ dependencies = [
 
 [[package]]
 name = "arko-tui"
-version = "0.10.1"
+version = "0.11.0"
 dependencies = [
  "arboard",
  "arko_agents",
@@ -310,9 +310,9 @@ dependencies = [
 
 [[package]]
 name = "arko_workflows"
-version = "0.2.0"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "71f1a6f1557d97ca61f7e20cb6b18e5653efc192a6f807f0de9ab0ee47e0c974"
+checksum = "37c2a72291efaf019c3f637274bf991e82f180da703fd58af2935990d10a5c13"
 dependencies = [
  "arko_agents",
  "arko_ai",
