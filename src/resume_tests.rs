@@ -359,7 +359,7 @@ async fn a_conversation_that_handed_over_goes_on_from_its_report() {
         Conversation::Answered(result) => result.clone(),
         _ => unreachable!(),
     };
-    assert_eq!(handed_over.task.handovers.len(), 1);
+    assert_eq!(handed_over.task().unwrap().handovers.len(), 1);
 
     harness.new_conversation();
     let end = harness
@@ -575,4 +575,60 @@ async fn a_conversation_resumed_is_told_when_no_notes_are_left() {
         request_with(&bodies, "Which fruit?").matches(told).count(),
         1
     );
+}
+
+/// A conversation's saved task is read when the conversation is opened or
+/// gone back to: one that can't be read fails the session's open, as when
+/// every task was read on open, and `/resume` to it says so.
+#[tokio::test]
+async fn a_conversation_whose_task_cant_be_read_says_so() {
+    let temp = tempfile::tempdir().unwrap();
+    let hold = Arc::new(Notify::new());
+    hold.notify_one();
+    let server = ModelServer::start(fruit_model(Bodies::default(), hold)).await;
+    let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
+    harness.turn(Prompt::User("Apples are red.".into()), &mut inputs).await;
+    harness.new_conversation();
+    harness.turn(Prompt::User("Pears are green.".into()), &mut inputs).await;
+    harness.workflow().checkpoint().await.unwrap();
+    let checkpoint = harness.session.latest_checkpoint().unwrap();
+    let state: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(checkpoint).unwrap()).unwrap();
+    let file_of = |summary: &str| {
+        let record = state["agent_runs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|record| record["summary"] == summary)
+            .unwrap();
+        harness.session.run_dir().join(record["task_file"].as_str().unwrap())
+    };
+    let (apples, pears) = (file_of("Apples noted."), file_of("Pears noted."));
+
+    // The earlier conversation's task is read when `/resume` goes back to
+    // it, and the session stays in the current one.
+    std::fs::remove_file(apples).unwrap();
+    harness.open(true).unwrap();
+    assert_eq!(summary(&harness), "Pears noted.");
+    harness.resume_command("1").await;
+    assert!(says(
+        &harness.feed,
+        "Couldn't go back to conversation 1 because its messages can't be read"
+    ));
+    assert_eq!(harness.conversations.current, Some(1));
+    assert_eq!(summary(&harness), "Pears noted.");
+    harness.open(true).unwrap();
+    assert_eq!(summary(&harness), "Pears noted.");
+    // Branching from a conversation whose task can't be read says so.
+    let pears_run = harness.conversation_run();
+    let apples_run = harness.conversations.list[0].runs.last().copied();
+    harness.conversation = conversation_of(harness.workflow(), apples_run);
+    let error = harness.branch(None).unwrap_err();
+    assert!(error.starts_with("Couldn't branch because the conversation's"), "{error}");
+    harness.conversation = conversation_of(harness.workflow(), pears_run);
+
+    // The current one's is read on open.
+    std::fs::remove_file(pears).unwrap();
+    let error = harness.open(true).err().unwrap();
+    assert!(error.contains("task file"), "{error}");
 }

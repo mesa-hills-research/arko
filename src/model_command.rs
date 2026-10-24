@@ -421,7 +421,7 @@ impl Harness {
             || self
                 .workflow
                 .as_ref()
-                .is_some_and(|workflow| !workflow.result().agent_results.is_empty())
+                .is_some_and(|workflow| !workflow.context().agent_results.read().is_empty())
     }
 
     /// The workers' model, as `/model worker` says it.

@@ -150,9 +150,11 @@ pub(crate) const NO_CONVERSATION: &str = "Send a message first, then branch from
 /// settings, as the session's own `Request::Branch` with no message makes
 /// one. Replies the new session's ID. The session is held while it is
 /// read, so no one opens it meanwhile, and an open one is refused
-/// (`Locked`). It reads every run the session saved, so call it off a UI
-/// thread. Workers the session had running when it closed stay with it,
-/// and the branch's conversation doesn't hear from them.
+/// (`Locked`). It reads the session's checkpoint and that conversation's
+/// saved task (every saved task, for a checkpoint an earlier version
+/// saved), so call it off a UI thread. Workers the session had running when
+/// it closed stay with it, and the branch's conversation doesn't hear from
+/// them.
 pub fn branch(root: &Path, id: &str) -> Result<String, BranchError> {
     let session = Session::open(root, id).map_err(BranchError::Io)?;
     let locked = |error| match error {
@@ -187,14 +189,16 @@ fn saved_conversation(
     if let Some(seed) = saved.seed {
         return Ok((Some(seed), saved.conversations));
     }
-    let task = saved.conversations.current_run().and_then(|run| {
+    let result = saved.conversations.current_run().and_then(|run| {
         saved
             .results
             .into_iter()
             .find(|result| result.agent_run_id == run)
             .filter(goes_on)
-            .map(|result| result.task)
     });
+    let task = result
+        .map(|result| result.task().cloned().map_err(|error| error.to_string()))
+        .transpose()?;
     Ok((task, saved.conversations))
 }
 
@@ -302,7 +306,9 @@ impl std::fmt::Debug for SavedConversation {
 /// nothing can still add to it. After `/new`, `None` returns an error until
 /// the new conversation has messages. An explicit number still reads an
 /// earlier conversation. Missing saved data returns an error.
-/// It reads every run the session saved, so call it off a UI thread.
+/// It reads the session's checkpoint and the conversation's saved tasks
+/// (every saved task, for a checkpoint an earlier version saved), so call
+/// it off a UI thread.
 pub fn conversation(
     root: &Path,
     id: &str,
@@ -376,7 +382,10 @@ pub(crate) fn conversation_of(
             .iter()
             .find(|result| result.agent_run_id == *run)
             .ok_or_else(|| unreadable(format!("run {run} is missing")))?;
-        add(&mut found, &result.task);
+        let task = result
+            .task()
+            .map_err(|error| unreadable(error.to_string()))?;
+        add(&mut found, task);
     }
     Ok(found)
 }
@@ -389,7 +398,7 @@ fn goes_on(result: &arko_workflows::prelude::AgentResult) -> bool {
     match result.status {
         AgentRunStatus::Completed | AgentRunStatus::Interrupted => true,
         AgentRunStatus::Cancelled => {
-            result.task.parent.is_none()
+            result.info().parent.is_none()
                 && result
                     .stopped_by
                     .as_ref()

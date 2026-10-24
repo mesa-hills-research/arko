@@ -1122,10 +1122,13 @@ impl Crew {
         let setup = self.run_model(run.run_id);
         let costs = with_costs.then(|| {
             let results = workflow.context().agent_results.read();
+            // Each run's usage added up, without reading its task. A run
+            // whose calls mixed plan and metered billing counts what it was
+            // billed at list prices too.
             results
                 .iter()
                 .filter(|result| result.agent_run_id == run.run_id)
-                .flat_map(|result| result.task.usage_history.iter())
+                .map(|result| &result.info().usage)
                 .fold((0.0, 0.0), |(billed, list), usage| {
                     let paid = usage.billed();
                     (

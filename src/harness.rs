@@ -213,17 +213,25 @@ pub(crate) fn saved_setup(checkpoint: &Path, run_dir: &Path) -> Result<SavedSetu
         serde_json::from_str(&text).map_err(|error| unreadable(error.to_string()))?;
     let mut configs = std::collections::HashMap::new();
     for result in state.agent_results {
-        configs.insert(result.agent_name, result.task.agent_config);
+        configs.insert(
+            result.agent_name.clone(),
+            result.info().agent_config.clone(),
+        );
     }
-    // An agent's latest run holds its configuration, so only that task file
-    // is read, however many runs the session has.
+    // An agent's latest run holds its configuration, so only that run is
+    // read, however many runs the session has: from the checkpoint, which
+    // describes the run's task, or else from its task file.
     let latest: std::collections::HashMap<_, _> = state
         .agent_runs
-        .iter()
-        .map(|run| (&run.agent_name, run))
+        .into_iter()
+        .map(|run| (run.agent_name.clone(), run))
         .collect();
     let images = arko_workflows::persistence::images::ImageFiles::in_run_dir(run_dir);
     for (agent, run) in latest {
+        if let Some(info) = run.info {
+            configs.insert(agent, info.agent_config);
+            continue;
+        }
         let path = run_dir.join(&run.task_file);
         let task = std::fs::read_to_string(&path)
             .map_err(|error| error.to_string())
@@ -238,7 +246,7 @@ pub(crate) fn saved_setup(checkpoint: &Path, run_dir: &Path) -> Result<SavedSetu
                     path.display()
                 ))
             })?;
-        configs.insert(agent.clone(), task.agent_config);
+        configs.insert(agent, task.agent_config);
     }
     Ok(SavedSetup {
         name: state.workflow_name,
@@ -824,6 +832,11 @@ impl Harness {
         // The conversation the session was in goes on.
         self.open_conversations(&workflow, resume);
         let lead = self.conversations.current_run();
+        // Its task is read now, so a task file of it that can't be read fails
+        // the open, as it did when a resume read every task.
+        if let Some(latest) = lead.and_then(|run| workflow.agent_result(run)) {
+            latest.task().map_err(|error| error.to_string())?;
+        }
         self.conversation = conversation_of(&workflow, lead);
         {
             // What the main agent's model accepts, and (resumed) how much
@@ -849,8 +862,8 @@ impl Harness {
                 };
             }
             let task = match &self.conversation {
-                Conversation::Answered(result) => Some(&result.task),
-                Conversation::Stopped(run) => Some(&run.result.task),
+                Conversation::Answered(result) => result.task().ok(),
+                Conversation::Stopped(run) => run.result.task().ok(),
                 Conversation::New => None,
             };
             let size = task.and_then(|task| task.current_conversation_context_size());
@@ -1006,16 +1019,20 @@ impl Harness {
             .conversations
             .current_run()
             .and_then(|run| self.workflow().agent_result(run))
+            && let Ok(task) = run.task()
         {
             self.feed.restore(remote::history(
-                &run.task.conversation.messages,
-                run.task.agent_config.tool_config.ends_task_with_text(),
+                &task.conversation.messages,
+                task.agent_config.tool_config.ends_task_with_text(),
                 &self.images,
             ));
             self.end_restored_jobs(run.agent_run_id);
         }
         if let Conversation::Answered(result) = &self.conversation {
-            if result.task.conversation.messages.is_empty() {
+            if result
+                .task()
+                .is_ok_and(|task| task.conversation.messages.is_empty())
+            {
                 // A branch before its conversation's first message.
                 out.echo(&out.dim("Resumed. Your next message starts this branch's conversation."));
             } else {
@@ -1873,13 +1890,15 @@ impl Harness {
             Conversation::Stopped(run) if run.restart != Restart::Continue => return options,
             Conversation::Stopped(run) => &run.result,
         };
-        let chat = result.task.agent_config.tool_config.chat;
+        let chat = result.info().agent_config.tool_config.chat;
         if !self.keeps_run_configs() || chat == (self.settings.mode == Mode::Chat) {
             return options;
         }
         let options = options.reconfigure(self.main_config.clone());
         if self.settings.mode == Mode::Agent
-            && result.task.current_working_directory != self.settings.workspace
+            && result
+                .task()
+                .is_ok_and(|task| task.current_working_directory != self.settings.workspace)
         {
             options.workspace(&self.settings.workspace)
         } else {
@@ -1977,13 +1996,19 @@ impl Harness {
         if there { Ok(index) } else { Err(gone.into()) }
     }
 
-    /// The task of the conversation the session is in, once it started.
-    fn conversation_task(&self) -> Option<&arko_agents::Task> {
+    /// The latest run of the conversation the session is in, once it
+    /// started.
+    fn conversation_result(&self) -> Option<&AgentResult> {
         match &self.conversation {
             Conversation::New => None,
-            Conversation::Answered(result) => Some(&result.task),
-            Conversation::Stopped(run) => Some(&run.result.task),
+            Conversation::Answered(result) => Some(result),
+            Conversation::Stopped(run) => Some(&run.result),
         }
+    }
+
+    /// The task of the conversation the session is in, once it started.
+    fn conversation_task(&self) -> Option<&arko_agents::Task> {
+        self.conversation_result()?.task().ok()
     }
 
     /// A new session holding the conversation up to just before the user's
@@ -2003,8 +2028,14 @@ impl Harness {
             ));
         }
         let task = self
-            .conversation_task()
-            .ok_or(crate::sessions::NO_CONVERSATION)?;
+            .conversation_result()
+            .ok_or(crate::sessions::NO_CONVERSATION)?
+            .task()
+            .map_err(|error| {
+                format!(
+                    "Couldn't branch because the conversation's messages can't be read ({error})."
+                )
+            })?;
         let index = match before {
             Some(item) => self.message_at(item, "branched from")?,
             None => task.conversation.messages.len(),
@@ -3352,10 +3383,10 @@ impl Harness {
         // and goes on from the report its conversation began from.
         if self.cut_back.is_none()
             && let Conversation::Answered(result) = &self.conversation
-            && result.task.conversation.messages.is_empty()
+            && let Ok(task) = result.task()
+            && task.conversation.messages.is_empty()
         {
-            self.cut_report = result
-                .task
+            self.cut_report = task
                 .handovers
                 .last()
                 .map(|handover| handover.report.clone());
@@ -3398,8 +3429,13 @@ impl Harness {
         // Where this turn's message goes in the conversation.
         let at = cut.unwrap_or(match &conversation {
             Conversation::New => 0,
-            Conversation::Answered(result) => result.task.conversation.messages.len(),
-            Conversation::Stopped(run) => run.result.task.conversation.messages.len(),
+            Conversation::Answered(result) => result
+                .task()
+                .map_or(0, |task| task.conversation.messages.len()),
+            Conversation::Stopped(run) => run
+                .result
+                .task()
+                .map_or(0, |task| task.conversation.messages.len()),
         });
         let mut options = self.continue_options(&conversation);
         if let Some(index) = cut {
@@ -3621,16 +3657,18 @@ impl Harness {
                 // Its task keeps that update for the next turn, which the
                 // job starts as if it finished now.
                 let jobs = self.background.manager();
-                input.late = finished
-                    .into_iter()
-                    .find(|job| waits_with(&result.task, job, jobs.as_deref()));
-                // So does a monitor's news.
-                input.late_alert = alert_waits(
-                    &result.task,
-                    result.agent_run_id,
-                    jobs.as_deref(),
-                    self.warnings_wake(),
-                );
+                if let Ok(task) = result.task() {
+                    input.late = finished
+                        .into_iter()
+                        .find(|job| waits_with(task, job, jobs.as_deref()));
+                    // So does a monitor's news.
+                    input.late_alert = alert_waits(
+                        task,
+                        result.agent_run_id,
+                        jobs.as_deref(),
+                        self.warnings_wake(),
+                    );
+                }
                 self.conversation = Conversation::Answered(result);
                 self.track_conversations();
                 self.retitle(retitle);
@@ -4313,8 +4351,8 @@ impl Harness {
     pub(crate) fn tell_stopped_jobs_again(&mut self, told: bool) {
         let task = match &self.conversation {
             Conversation::New => None,
-            Conversation::Answered(result) => Some(&result.task),
-            Conversation::Stopped(run) => Some(&run.result.task),
+            Conversation::Answered(result) => result.task().ok(),
+            Conversation::Stopped(run) => run.result.task().ok(),
         };
         let held = task.is_some_and(|task| {
             task.conversation
@@ -5414,15 +5452,10 @@ pub(crate) mod tests {
             }));
         }
         // A checkpoint from before task files holds its results' tasks.
-        let legacy = AgentResult {
-            agent_run_id: uuid::Uuid::new_v4(),
-            agent_name: "legacy".into(),
-            status: AgentRunStatus::Completed,
-            summary: String::new(),
-            error: None,
-            task: task(WORKER, "legacy 1"),
-            stopped_by: None,
-        };
+        let mut legacy = AgentResult::of_task("legacy".into(), task(WORKER, "legacy 1"));
+        legacy.agent_run_id = uuid::Uuid::new_v4();
+        legacy.status = AgentRunStatus::Completed;
+        legacy.error = None;
         let checkpoint = run.join("checkpoint.json");
         std::fs::write(
             &checkpoint,
@@ -5446,8 +5479,8 @@ pub(crate) mod tests {
         let mut expected = std::collections::HashMap::new();
         for result in state.agent_results_in(run).unwrap() {
             expected.insert(
-                result.agent_name,
-                serde_json::to_value(&result.task.agent_config).unwrap(),
+                result.agent_name.clone(),
+                serde_json::to_value(&result.task().unwrap().agent_config).unwrap(),
             );
         }
         let configs = |saved: SavedSetup| {
@@ -5467,6 +5500,22 @@ pub(crate) mod tests {
         for file in earlier {
             std::fs::remove_file(file).unwrap();
         }
+        assert_eq!(configs(saved_setup(&checkpoint, run).unwrap()), expected);
+
+        // A checkpoint that describes its runs' tasks gives their
+        // configurations without the task files.
+        let mut described: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&checkpoint).unwrap()).unwrap();
+        for record in described["agent_runs"].as_array_mut().unwrap() {
+            let file = run.join(record["task_file"].as_str().unwrap());
+            if let Ok(json) = std::fs::read_to_string(&file) {
+                let task = serde_json::from_str(&json).unwrap();
+                let info = AgentResult::of_task(String::new(), task).info().clone();
+                record["info"] = serde_json::to_value(info).unwrap();
+                std::fs::remove_file(file).unwrap();
+            }
+        }
+        std::fs::write(&checkpoint, described.to_string()).unwrap();
         assert_eq!(configs(saved_setup(&checkpoint, run).unwrap()), expected);
     }
 
@@ -6748,12 +6797,16 @@ pub(crate) mod tests {
                 .iter_mut()
                 .rfind(|run| run.agent_name == MAIN)
                 .unwrap();
-            lead.status = AgentRunStatus::Failed;
-            lead.task.set_state(arko_agents::TaskState::Failed {
+            let mut task = lead.task().unwrap().clone();
+            task.set_state(arko_agents::TaskState::Failed {
                 reason: "Saved model failure".into(),
                 cause: None,
                 error_kind: None,
             });
+            let mut failed = AgentResult::of_task(lead.agent_name.clone(), task);
+            failed.summary = lead.summary.clone();
+            failed.error = lead.error.clone();
+            *lead = failed;
         }
         harness.workflow().checkpoint().await.unwrap();
         harness.open(true).unwrap();
@@ -7028,7 +7081,12 @@ pub(crate) mod tests {
         let Conversation::Answered(result) = &harness.conversation else {
             unreachable!()
         };
-        let generation = &result.task.agent_config.llm_config.generation_config;
+        let generation = &result
+            .task()
+            .unwrap()
+            .agent_config
+            .llm_config
+            .generation_config;
         assert!(
             matches!(
                 generation.reasoning,
