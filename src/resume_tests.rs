@@ -605,13 +605,27 @@ async fn a_conversation_whose_task_cant_be_read_says_so() {
     };
     let (apples, pears) = (file_of("Apples noted."), file_of("Pears noted."));
 
-    // The earlier conversation's task is read when `/resume` goes back to it.
+    // The earlier conversation's task is read when `/resume` goes back to
+    // it, and the session stays in the current one.
     std::fs::remove_file(apples).unwrap();
     harness.open(true).unwrap();
     assert_eq!(summary(&harness), "Pears noted.");
     harness.resume_command("1").await;
-    assert!(says(&harness.feed, "Couldn't read this conversation's messages"));
-    harness.resume_command("2").await;
+    assert!(says(
+        &harness.feed,
+        "Couldn't go back to conversation 1 because its messages can't be read"
+    ));
+    assert_eq!(harness.conversations.current, Some(1));
+    assert_eq!(summary(&harness), "Pears noted.");
+    harness.open(true).unwrap();
+    assert_eq!(summary(&harness), "Pears noted.");
+    // Branching from a conversation whose task can't be read says so.
+    let pears_run = harness.conversation_run();
+    let apples_run = harness.conversations.list[0].runs.last().copied();
+    harness.conversation = conversation_of(harness.workflow(), apples_run);
+    let error = harness.branch(None).unwrap_err();
+    assert!(error.starts_with("Couldn't branch because the conversation's"), "{error}");
+    harness.conversation = conversation_of(harness.workflow(), pears_run);
 
     // The current one's is read on open.
     std::fs::remove_file(pears).unwrap();

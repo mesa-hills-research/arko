@@ -1996,13 +1996,19 @@ impl Harness {
         if there { Ok(index) } else { Err(gone.into()) }
     }
 
-    /// The task of the conversation the session is in, once it started.
-    fn conversation_task(&self) -> Option<&arko_agents::Task> {
+    /// The latest run of the conversation the session is in, once it
+    /// started.
+    fn conversation_result(&self) -> Option<&AgentResult> {
         match &self.conversation {
             Conversation::New => None,
-            Conversation::Answered(result) => result.task().ok(),
-            Conversation::Stopped(run) => run.result.task().ok(),
+            Conversation::Answered(result) => Some(result),
+            Conversation::Stopped(run) => Some(&run.result),
         }
+    }
+
+    /// The task of the conversation the session is in, once it started.
+    fn conversation_task(&self) -> Option<&arko_agents::Task> {
+        self.conversation_result()?.task().ok()
     }
 
     /// A new session holding the conversation up to just before the user's
@@ -2022,8 +2028,14 @@ impl Harness {
             ));
         }
         let task = self
-            .conversation_task()
-            .ok_or(crate::sessions::NO_CONVERSATION)?;
+            .conversation_result()
+            .ok_or(crate::sessions::NO_CONVERSATION)?
+            .task()
+            .map_err(|error| {
+                format!(
+                    "Couldn't branch because the conversation's messages can't be read ({error})."
+                )
+            })?;
         let index = match before {
             Some(item) => self.message_at(item, "branched from")?,
             None => task.conversation.messages.len(),

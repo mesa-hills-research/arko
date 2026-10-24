@@ -458,15 +458,35 @@ impl Harness {
     /// the workers' news goes to it from now on. Its history shows, for
     /// the clients, and its last reply at the line prompt.
     async fn switch_to(&mut self, index: usize) {
+        let run = self.conversations.list[index].runs.last().copied();
+        let workflow = self.workflow().clone();
+        let result = run.and_then(|run| workflow.agent_result(run));
+        // Its task is read first (off this thread), and a conversation whose
+        // task can't be read isn't gone back to.
+        if let Some(result) = &result {
+            let reading = result.clone();
+            let unreadable = tokio::task::spawn_blocking(move || {
+                reading.task().err().map(|error| error.to_string())
+            })
+            .await
+            .unwrap_or_else(|error| Some(error.to_string()));
+            if let Some(error) = unreadable {
+                self.say(
+                    Level::Error,
+                    &format!(
+                        "Couldn't go back to conversation {} because its messages can't be read ({error}).",
+                        index + 1
+                    ),
+                );
+                return;
+            }
+        }
         self.leave_conversation();
         self.switched = true;
         let record = &mut self.conversations.list[index];
-        let run = record.runs.last().copied();
         let unread = std::mem::take(&mut record.unread);
         self.conversations.current = Some(index);
         self.unread = unread;
-        let workflow = self.workflow().clone();
-        let result = run.and_then(|run| workflow.agent_result(run));
         if let Some(result) = &result {
             // The lines typed during other conversations' turns were for
             // them (and its own unread ones come back above).
@@ -518,16 +538,13 @@ impl Harness {
             &format!("Back to conversation {}{when}.", index + 1),
         );
         if let Some(latest) = latest {
-            match latest.task() {
-                Ok(task) => self.feed.restore(remote::history(
+            // (Read before the switch.)
+            if let Ok(task) = latest.task() {
+                self.feed.restore(remote::history(
                     &task.conversation.messages,
                     task.agent_config.tool_config.ends_task_with_text(),
                     &self.images,
-                )),
-                Err(error) => self.say(
-                    Level::Error,
-                    &format!("Couldn't read this conversation's messages ({error})."),
-                ),
+                ));
             }
             self.end_restored_jobs(latest.agent_run_id);
         }
