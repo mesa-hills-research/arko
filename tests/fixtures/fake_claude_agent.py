@@ -408,7 +408,8 @@ def turn(text, message_uuid=None):
         next_turn()
         sys.exit(upcoming[0]["exit_unrecorded"])
     record(text, message_uuid)
-    if not state.get("listed"):
+    # (A run with no tool server, such as one that names a session, lists none.)
+    if not state.get("listed") and "--mcp-config" in ARGS:
         state["listed"] = True
         listed = ask({"subtype": "mcp_message", "server_name": "arko",
                       "message": {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}})

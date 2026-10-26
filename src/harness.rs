@@ -536,6 +536,8 @@ pub(crate) struct Harness {
     pub(crate) asker: Arc<Asker>,
     /// Arko sends one message and exits (-p).
     pub(crate) one_shot: bool,
+    /// The model naming the session, which closes and stops with it.
+    pub(crate) naming: crate::session_names::naming::Naming,
     /// `/exit` was typed with workers or background jobs running: the next
     /// one quits.
     pub(crate) exit_warned: bool,
@@ -1757,6 +1759,7 @@ impl Harness {
             "/keys" => self.keys_command(argument, source),
             "/openrouter" => self.openrouter_command(argument, source),
             "/chatgpt" => self.chatgpt_command(argument, source),
+            "/session-names" => self.session_names_command(argument, source),
             "/handover" => self.handover_command(argument, source),
             "/text-replies" => self.text_replies_command(argument, source),
             "/cc-compact" => self.cc_compact_command(argument, source),
@@ -3357,6 +3360,7 @@ impl Harness {
                 log::warn!("could not save the session's title: {error}");
             }
             self.publish_title();
+            self.name_by_model(text);
         }
         // The user's message that starts it, which can be edited once the
         // turn says where it is in the conversation.
@@ -4417,12 +4421,20 @@ impl Harness {
 
     /// The current conversation takes the name of `words`, the new first
     /// message of a conversation cut back to its first.
-    fn retitle(&mut self, words: Option<String>) {
+    pub(crate) fn retitle(&mut self, words: Option<String>) {
         let Some(words) = words else {
             return;
         };
+        let first = self.conversations.current == Some(0);
         if let Some(record) = self.conversations.current_mut() {
             record.title = conversations::title_of(&words);
+            // A model's name was of the message that is gone: its run ends
+            // and the new message is named in its place.
+            if first {
+                self.naming.cancel();
+                self.session.clear_generated_name();
+                self.name_by_model(&words);
+            }
             self.save_conversations();
             self.publish_conversations();
             self.publish_title();
@@ -4554,10 +4566,21 @@ pub(crate) fn place(link: &remote::Link) -> String {
         .unwrap_or_default()
 }
 
+/// Shows `session`'s name as its folder holds it now, in `gauges`' status.
+/// For work done off the session's own thread (a model's name arriving).
+pub(crate) fn publish_title_from_disk(session: &Session, gauges: &Gauges) {
+    let Ok(settings) = session.load_settings() else {
+        return;
+    };
+    let conversations = conversations::Conversations::load(&session.dir).unwrap_or_default();
+    *lock(&gauges.title) = crate::sessions::title(session, &conversations, &settings);
+    gauges.touch();
+}
+
 /// The commands that change a setting while the session runs, which take
 /// an argument: `/outside`, `/model`, `/handover`, `/handover-at`, `/keys`.
 /// And `/message`, which works while the agent works too.
-pub(crate) const LIVE_COMMANDS: [&str; 22] = [
+pub(crate) const LIVE_COMMANDS: [&str; 23] = [
     "/outside",
     "/model",
     "/handover",
@@ -4565,6 +4588,7 @@ pub(crate) const LIVE_COMMANDS: [&str; 22] = [
     "/keys",
     "/openrouter",
     "/chatgpt",
+    "/session-names",
     "/text-replies",
     "/cc-compact",
     "/extra-rules",
@@ -5782,6 +5806,7 @@ pub(crate) mod tests {
                 questions: interactive.then_some(questions_sender),
             }),
             one_shot: !interactive,
+            naming: Default::default(),
             exit_warned: false,
             jobs_shown: Vec::new(),
             jobs_listed: Vec::new(),

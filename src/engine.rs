@@ -316,6 +316,7 @@ pub fn spawn(options: Options, prompter: Arc<dyn Prompter>) -> Running {
         .name(name.clone())
         .spawn(move || {
             crate::context::enter(context.clone());
+            let lingering = context.clone();
             let runtime = tokio::runtime::Builder::new_multi_thread()
                 .worker_threads(2)
                 .thread_name(name)
@@ -352,11 +353,15 @@ pub fn spawn(options: Options, prompter: Arc<dyn Prompter>) -> Running {
                 engine.shutdown().await;
                 Some(end)
             });
-            // Whatever the session left running stops here.
-            runtime.shutdown_timeout(std::time::Duration::from_secs(2));
+            // The session is over for its app. A model naming it finishes
+            // first (each way it asks has its own limit), since nothing else
+            // of the session's goes on.
             if let Some(end) = end {
                 let _ = ended_sender.send(end);
             }
+            runtime.block_on(lingering.lingered(crate::session_names::naming::MAX_RUN));
+            // Whatever the session left running stops here.
+            runtime.shutdown_timeout(std::time::Duration::from_secs(2));
         });
     if let Err(error) = thread {
         log::error!("could not start a session's thread: {error}");
@@ -970,6 +975,7 @@ impl Engine {
             crew,
             asker,
             one_shot,
+            naming: Default::default(),
             exit_warned: false,
             jobs_shown: Vec::new(),
             jobs_listed: Vec::new(),
@@ -3139,6 +3145,63 @@ mod tests {
         seam.input.send(Input::Quit(Some(Vec::new()))).unwrap();
         let end = tokio::time::timeout(Duration::from_secs(30), ended).await;
         assert_eq!(end.unwrap().unwrap(), RunEnd::Quit);
+    }
+
+    /// A session an app runs is named by a model after it closes too: its
+    /// thread keeps its runtime for the model that is still working, so the
+    /// name comes and is kept for the next time the session is listed or
+    /// opened. A session deleted by then gets none.
+    #[tokio::test]
+    async fn a_model_s_name_that_comes_after_the_session_closed_is_kept() {
+        use crate::session_names::Way;
+        use crate::session_names::fake::{Fake, Step, name_with};
+        for deleted in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let (server, bodies) = counting_server().await;
+            let (root, project) = (temp.path().join("arko"), temp.path().join("project"));
+            crate::session_names::save(&root, &[Way::ClaudePlan]).unwrap();
+            let gate = Arc::new(tokio::sync::Notify::new());
+            let fake = Fake::new(&[(Way::ClaudePlan, Step::Gated(gate.clone(), "Pear count"))]);
+            name_with(&root, fake.clone());
+            let (seam, ended) = open_app(&root, &project, &server, SessionChoice::New).await;
+            let id = seam.session.id.clone();
+            seam.input
+                .send(Input::Message(app_message("Count the pears.")))
+                .unwrap();
+            answered(&seam, &bodies, 1).await;
+            tokio::time::timeout(Duration::from_secs(10), async {
+                while fake.ways_asked().is_empty() {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .unwrap();
+            quit(seam, ended).await;
+            let title = || {
+                crate::sessions::list(&root)
+                    .into_iter()
+                    .next()
+                    .map(|entry| entry.title)
+            };
+            assert_eq!(title().as_deref(), Some("Count the pears."));
+            if deleted {
+                crate::sessions::delete(&root, &id).unwrap();
+            }
+            // The model answers after the session closed.
+            gate.notify_one();
+            if deleted {
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                assert!(!root.join("sessions").join(&id).exists());
+            } else {
+                tokio::time::timeout(Duration::from_secs(10), async {
+                    while title().as_deref() != Some("Pear count") {
+                        tokio::time::sleep(Duration::from_millis(20)).await;
+                    }
+                })
+                .await
+                .expect("the name came after the close");
+            }
+        }
     }
 
     /// An app edits the user's message, or sends the latest again: the

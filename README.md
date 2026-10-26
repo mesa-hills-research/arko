@@ -64,6 +64,8 @@ them (see [ChatGPT logins](docs/chatgpt-logins.md)).
 
 In a session, `/help` lists the keys and commands, and `/settings` holds the view, the theme, the
 web page, the API keys and the ChatGPT logins. `arko --help` describes every option and setting.
+Sessions are named by the first words of their first message, or by a model if you turn that on
+(see [session names](docs/session-names.md)).
 
 ## Library
 

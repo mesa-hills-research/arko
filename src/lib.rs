@@ -19,8 +19,9 @@
 //! [`Engine::run`], or runs several side by side in one process with
 //! [`spawn`]. The session's [`Seam`] holds the feed of items the app shows
 //! and the channels it sends the user's [`Input`] and its [`Request`]s on.
-//! [`accounts`] adds and removes API keys and logins without a session, and
-//! [`sessions`] lists, renames, branches and deletes saved sessions.
+//! [`accounts`] adds and removes API keys and logins without a session,
+//! [`sessions`] lists, renames, branches and deletes saved sessions, and
+//! [`session_names`] sets how they are named.
 //!
 //! The `tui` feature builds the command line and the terminal's front ends,
 //! and `remote` the web page's server. Both are on by default. An app builds
@@ -74,6 +75,7 @@ pub mod remote;
 #[cfg(test)]
 mod remote_demo;
 mod session;
+pub mod session_names;
 pub mod sessions;
 mod shell;
 mod skills;

@@ -145,6 +145,13 @@ pub const COMMANDS: &[Command] = &[
     Command::session("/skills", "the skills the agents can load"),
     Command::session("/session", "this session's ID, folder and models"),
     Command {
+        name: "/session-names",
+        args: "words|WAY...",
+        about: "name sessions by the first words of their first message, or by a model asked in the background. A WAY is claude-plan, chatgpt-plan, claude-key or openai-key, and the ways are tried in the order given",
+        aliases: &[],
+        runs: Runs::Session,
+    },
+    Command {
         name: "/remote",
         args: "ADDR|qr [INTERFACE]|off|new-key",
         about: "the web page, for a phone or browser",
@@ -410,6 +417,21 @@ pub fn dynamic_choices_typed(
             .iter()
             .map(|key| key.id.to_string())
             .collect(),
+        ("/session-names", words) => {
+            use crate::session_names::Way;
+            let ways = Way::ALL
+                .iter()
+                .map(|way| way.id())
+                .filter(|id| !words.contains(id));
+            match words {
+                [] => std::iter::once("words")
+                    .chain(ways)
+                    .map(String::from)
+                    .collect(),
+                ["words"] => Vec::new(),
+                _ => ways.map(String::from).collect(),
+            }
+        }
         ("/remote", ["qr"]) => {
             let mut names: Vec<String> = reading
                 .page
@@ -600,6 +622,21 @@ mod tests {
         );
         assert!(dynamic_choices(&reading, "/openrouter", &["refresh"]).is_empty());
         assert_eq!(
+            dynamic_choices(&reading, "/session-names", &[]),
+            [
+                "words",
+                "claude-plan",
+                "chatgpt-plan",
+                "claude-key",
+                "openai-key"
+            ]
+        );
+        assert_eq!(
+            dynamic_choices(&reading, "/session-names", &["claude-key", "claude-plan"]),
+            ["chatgpt-plan", "openai-key"]
+        );
+        assert!(dynamic_choices(&reading, "/session-names", &["words"]).is_empty());
+        assert_eq!(
             dynamic_choices(&reading, "/builtin-skills", &[]),
             [
                 "on",
@@ -700,11 +737,17 @@ mod tests {
         let names = |commands: Vec<&Command>| commands.iter().map(|c| c.name).collect::<Vec<_>>();
         assert_eq!(
             names(matching("/s", true)),
-            ["/stop-workers", "/settings", "/skills", "/session"]
+            [
+                "/stop-workers",
+                "/settings",
+                "/skills",
+                "/session",
+                "/session-names"
+            ]
         );
         assert_eq!(
             names(matching("/s", false)),
-            ["/stop-workers", "/skills", "/session"]
+            ["/stop-workers", "/skills", "/session", "/session-names"]
         );
         assert!(matching("/x", true).is_empty());
         let help = help_lines();

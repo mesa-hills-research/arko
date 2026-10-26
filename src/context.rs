@@ -6,6 +6,7 @@
 //! command line, has none: the process's settings are the session's.
 
 use std::cell::RefCell;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::credentials::Env;
@@ -17,6 +18,52 @@ pub(crate) struct SessionContext {
     id: OnceLock<String>,
     /// Its settings and keys, once its folder is known.
     env: Mutex<Option<Env>>,
+    /// The work it started that goes on after it closes.
+    lingering: Lingering,
+}
+
+/// How much work of a session goes on after it closes (a model naming it),
+/// which the thread that runs the session waits for before it stops its
+/// runtime.
+#[derive(Debug, Default)]
+struct Lingering {
+    count: AtomicUsize,
+    done: tokio::sync::Notify,
+}
+
+/// Work of a session that goes on after it closes, for as long as this is
+/// held.
+#[derive(Debug)]
+pub(crate) struct Linger(Arc<SessionContext>);
+
+impl Drop for Linger {
+    fn drop(&mut self) {
+        self.0.lingering.count.fetch_sub(1, Ordering::SeqCst);
+        self.0.lingering.done.notify_waiters();
+    }
+}
+
+impl SessionContext {
+    /// Marks work that goes on after the session closes, until the result
+    /// is dropped.
+    pub(crate) fn linger(self: &Arc<Self>) -> Linger {
+        self.lingering.count.fetch_add(1, Ordering::SeqCst);
+        Linger(self.clone())
+    }
+
+    /// Waits until no work lingers, or `limit` has passed.
+    pub(crate) async fn lingered(&self, limit: std::time::Duration) {
+        let wait = async {
+            loop {
+                let done = self.lingering.done.notified();
+                if self.lingering.count.load(Ordering::SeqCst) == 0 {
+                    return;
+                }
+                done.await;
+            }
+        };
+        let _ = tokio::time::timeout(limit, wait).await;
+    }
 }
 
 thread_local! {
@@ -90,5 +137,38 @@ pub(crate) fn set_env(env: &Env) -> bool {
             true
         }
         None => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::*;
+
+    /// A session's thread waits for the work that lingers after it closes,
+    /// and no longer than the limit.
+    #[tokio::test]
+    async fn work_that_lingers_is_waited_for_up_to_a_limit() {
+        let context = Arc::new(SessionContext::default());
+        // Nothing lingers: no wait.
+        context.lingered(Duration::from_secs(5)).await;
+        let linger = context.linger();
+        let waiting = tokio::spawn({
+            let context = context.clone();
+            async move { context.lingered(Duration::from_secs(30)).await }
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(!waiting.is_finished(), "it waits while the work goes on");
+        drop(linger);
+        tokio::time::timeout(Duration::from_secs(5), waiting)
+            .await
+            .expect("it ends with the work")
+            .unwrap();
+        // Work that doesn't end is waited for up to the limit only.
+        let _forever = context.linger();
+        let started = std::time::Instant::now();
+        context.lingered(Duration::from_millis(100)).await;
+        assert!(started.elapsed() < Duration::from_secs(5));
     }
 }

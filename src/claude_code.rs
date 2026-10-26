@@ -12,6 +12,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use arko_agents::ClaudeCodeSettings;
@@ -97,6 +98,13 @@ impl Ready {
         }
     }
 
+    /// Whether it is signed in with a Claude plan, as `claude auth status`
+    /// said. A login of another kind, or an answer Arko couldn't read, isn't
+    /// confirmed, so its calls may be billed per token.
+    pub fn on_plan(&self) -> bool {
+        self.method.as_deref() == Some("claude.ai")
+    }
+
     /// A warning when it doesn't sign in with a Claude plan, since its calls
     /// may then be billed, which Arko doesn't count.
     pub fn warning(&self) -> Option<String> {
@@ -107,6 +115,53 @@ impl Ready {
             )
         })
     }
+}
+
+/// The variables that can send Claude Code to another login or to a
+/// billed backend (an API key or token of Anthropic's, a gateway, Bedrock,
+/// Vertex or Foundry, a token of the user's own), each set empty, which
+/// Claude Code reads as unset. They are `names` of the environment that
+/// match, and the API key either way. Work that must run on the Claude plan
+/// and cost nothing per token runs Claude Code with them.
+pub(crate) fn plan_only_env(names: impl IntoIterator<Item = String>) -> BTreeMap<String, String> {
+    const OTHERS: [&str; 2] = ["CLAUDE_CODE_OAUTH_TOKEN", "AWS_BEARER_TOKEN_BEDROCK"];
+    names
+        .into_iter()
+        .filter(|name| {
+            name.starts_with("ANTHROPIC_")
+                || name.starts_with("CLAUDE_CODE_USE_")
+                || name.starts_with("CLAUDE_CODE_SKIP_")
+                || OTHERS.contains(&name.as_str())
+        })
+        .chain(std::iter::once(API_KEY.to_string()))
+        .map(|name| (name, String::new()))
+        .collect()
+}
+
+/// [`check`] for work that must run on the Claude plan: Claude Code is run
+/// with [`plan_only_env`], so what it says of its login is the stored
+/// plan's, never one an environment variable gave. It ends at once when
+/// `cancel` is set. The caller still decides with [`Ready::on_plan`], since
+/// a login of another kind is `Ok` here.
+pub(crate) fn check_plan(cancel: &AtomicBool) -> Result<Ready, Problem> {
+    let path = find_cli().ok_or(Problem::Missing)?;
+    check_plan_at(&path, &plan_only_env_here(), cancel)
+}
+
+/// [`plan_only_env`] for this process's environment.
+pub(crate) fn plan_only_env_here() -> BTreeMap<String, String> {
+    plan_only_env(std::env::vars_os().map(|(name, _)| name.to_string_lossy().into_owned()))
+}
+
+fn check_plan_at(
+    path: &Path,
+    env: &BTreeMap<String, String>,
+    cancel: &AtomicBool,
+) -> Result<Ready, Problem> {
+    let version = run_with(path, &["--version"], env, Some(cancel));
+    check_with(path, &version, || {
+        run_with(path, &["auth", "status", "--json"], env, Some(cancel))
+    })
 }
 
 /// Finds `claude` on the PATH and checks that it is signed in.
@@ -141,11 +196,16 @@ static LAST_CHECK: std::sync::Mutex<Option<(Instant, Result<Ready, Problem>)>> =
 /// no model request. An answer Arko can't read doesn't stop the session: the
 /// first turn reports a missing login too.
 pub fn check_at(path: &Path) -> Result<Ready, Problem> {
-    check_with(path, &run(path, &["--version"]))
+    check_with(path, &run(path, &["--version"]), || auth_status(path))
 }
 
-/// [`check_at`], given what `claude --version` gave.
-fn check_with(path: &Path, version: &std::io::Result<String>) -> Result<Ready, Problem> {
+/// [`check_at`], given what `claude --version` gave and how to ask `claude
+/// auth status --json`.
+fn check_with(
+    path: &Path,
+    version: &std::io::Result<String>,
+    auth: impl FnOnce() -> std::io::Result<String>,
+) -> Result<Ready, Problem> {
     match version {
         Ok(text) => match parse_version(text) {
             Some(found) if found < MINIMUM => {
@@ -170,7 +230,7 @@ fn check_with(path: &Path, version: &std::io::Result<String>) -> Result<Ready, P
         method,
         plan,
     };
-    let output = match auth_status(path) {
+    let output = match auth() {
         Ok(output) => output,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return Err(Problem::Missing);
@@ -208,6 +268,17 @@ fn auth_status(path: &Path) -> std::io::Result<String> {
 /// run it: the API key unset, no self-update, at most 15 s (plus up to 2 s
 /// of retries while the program file is still busy).
 fn run(path: &Path, args: &[&str]) -> std::io::Result<String> {
+    run_with(path, args, &BTreeMap::new(), None)
+}
+
+/// [`run`] with the variables `env` set too, and ended at once (with
+/// `ErrorKind::Interrupted`) when `cancel` is set.
+fn run_with(
+    path: &Path,
+    args: &[&str],
+    env: &BTreeMap<String, String>,
+    cancel: Option<&AtomicBool>,
+) -> std::io::Result<String> {
     let launcher = path.extension().is_some_and(|extension| {
         extension.eq_ignore_ascii_case("cmd") || extension.eq_ignore_ascii_case("bat")
     });
@@ -223,6 +294,7 @@ fn run(path: &Path, args: &[&str]) -> std::io::Result<String> {
         .args(args)
         .env(API_KEY, "")
         .env(NO_SELF_UPDATE.0, NO_SELF_UPDATE.1)
+        .envs(env)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -232,6 +304,14 @@ fn run(path: &Path, args: &[&str]) -> std::io::Result<String> {
     loop {
         if child.try_wait()?.is_some() {
             break;
+        }
+        if cancel.is_some_and(|cancel| cancel.load(Ordering::Relaxed)) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Interrupted,
+                "it was stopped",
+            ));
         }
         if started.elapsed() > CHECK_TIMEOUT {
             let _ = child.kill();
@@ -417,7 +497,7 @@ pub fn status() -> ClaudeCodeStatus {
     };
     let version = run(&path, &["--version"]);
     ClaudeCodeStatus {
-        ready: check_with(&path, &version),
+        ready: check_with(&path, &version, || auth_status(&path)),
         on_path: on_path.is_some(),
         version: version
             .ok()
@@ -561,11 +641,14 @@ mod tests {
             "garbage",
             "",
         ] {
-            assert!(check_with(&path, &Ok(version.into())).is_ok(), "{version}");
+            assert!(
+                check_with(&path, &Ok(version.into()), || Ok(String::new())).is_ok(),
+                "{version}"
+            );
         }
         for (version, shown) in [("2.1.307", "2.1.307"), ("2.0.99 (Claude Code)", "2.0.99")] {
             assert_eq!(
-                check_with(&path, &Ok(version.into())),
+                check_with(&path, &Ok(version.into()), || Ok(String::new())),
                 Err(Problem::Outdated {
                     version: shown.into()
                 }),
@@ -573,7 +656,12 @@ mod tests {
             );
         }
         // A start that fails says nothing of the version.
-        assert!(check_with(&path, &Err(std::io::Error::other("busy"))).is_ok());
+        assert!(
+            check_with(&path, &Err(std::io::Error::other("busy")), || Ok(
+                String::new()
+            ))
+            .is_ok()
+        );
 
         // A stand-in `claude` that says 2.1.296 is refused, with this text.
         let old = temp.path().join("old");
@@ -610,5 +698,110 @@ mod tests {
         assert_eq!(settings.cli_path, None, "`claude` on the PATH");
         assert!(!settings.metered_billing, "on the Claude plan");
         assert!(settings.setting_sources.is_empty());
+    }
+
+    /// Work that must not be billed asks which login Claude Code has with
+    /// the variables that can give it another one set empty. Only a Claude
+    /// plan's login counts. An API key's, a login that isn't said and a
+    /// version too old don't.
+    #[cfg(unix)]
+    #[test]
+    fn a_plan_check_needs_a_login_that_is_a_claude_plan() {
+        let temp = tempfile::tempdir().unwrap();
+        let env = plan_only_env(["HOME".to_string()]);
+        let never = AtomicBool::new(false);
+        let on = fake(
+            temp.path(),
+            r#"{"loggedIn": true, "authMethod": "claude.ai", "subscriptionType": "max"}"#,
+        );
+        let ready = check_plan_at(&on, &env, &never).unwrap();
+        assert!(ready.on_plan());
+        let keyed = fake(
+            temp.path(),
+            r#"{"loggedIn": true, "authMethod": "api_key"}"#,
+        );
+        let ready = check_plan_at(&keyed, &env, &never).unwrap();
+        assert!(!ready.on_plan(), "an API key's login is billed per token");
+        let unsaid = fake(temp.path(), "not json");
+        assert!(!check_plan_at(&unsaid, &env, &never).unwrap().on_plan());
+        let out = fake(temp.path(), r#"{"loggedIn": false}"#);
+        assert!(matches!(
+            check_plan_at(&out, &env, &never),
+            Err(Problem::SignedOut(_))
+        ));
+    }
+
+    /// The variables that can give Claude Code another login or a billed
+    /// backend are set empty for plan-only work, whichever are set, and the
+    /// others stay. What `run_with` is given reaches the program.
+    #[cfg(unix)]
+    #[test]
+    fn plan_only_work_clears_the_variables_that_bill_or_sign_in_elsewhere() {
+        let env = plan_only_env(
+            [
+                "PATH",
+                "HOME",
+                "ANTHROPIC_AUTH_TOKEN",
+                "ANTHROPIC_BASE_URL",
+                "ANTHROPIC_CUSTOM_HEADERS",
+                "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+                "CLAUDE_CODE_USE_BEDROCK",
+                "CLAUDE_CODE_USE_VERTEX",
+                "CLAUDE_CODE_USE_FOUNDRY",
+                "CLAUDE_CODE_SKIP_BEDROCK_AUTH",
+                "CLAUDE_CODE_OAUTH_TOKEN",
+                "AWS_BEARER_TOKEN_BEDROCK",
+                "CLAUDE_CODE_ENTRYPOINT",
+            ]
+            .map(String::from),
+        );
+        assert_eq!(
+            env.keys().map(String::as_str).collect::<Vec<_>>(),
+            [
+                "ANTHROPIC_API_KEY",
+                "ANTHROPIC_AUTH_TOKEN",
+                "ANTHROPIC_BASE_URL",
+                "ANTHROPIC_CUSTOM_HEADERS",
+                "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+                "AWS_BEARER_TOKEN_BEDROCK",
+                "CLAUDE_CODE_OAUTH_TOKEN",
+                "CLAUDE_CODE_SKIP_BEDROCK_AUTH",
+                "CLAUDE_CODE_USE_BEDROCK",
+                "CLAUDE_CODE_USE_FOUNDRY",
+                "CLAUDE_CODE_USE_VERTEX",
+            ]
+        );
+        assert!(env.values().all(String::is_empty));
+        assert!(plan_only_env([]).contains_key("ANTHROPIC_API_KEY"));
+        // The variables reach the program.
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("claude");
+        std::fs::write(&path, "#!/bin/sh\necho \"[$PROBE][$ANTHROPIC_API_KEY]\"\n").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let env = BTreeMap::from([("PROBE".to_string(), "seen".to_string())]);
+        assert_eq!(run_with(&path, &[], &env, None).unwrap().trim(), "[seen][]");
+    }
+
+    /// A check that is cancelled ends its program at once.
+    #[cfg(unix)]
+    #[test]
+    fn a_cancelled_check_ends_its_program() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("claude");
+        std::fs::write(&path, "#!/bin/sh\nexec sleep 30\n").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let cancel = AtomicBool::new(false);
+        let started = Instant::now();
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                std::thread::sleep(Duration::from_millis(200));
+                cancel.store(true, Ordering::Relaxed);
+            });
+            let error = run_with(&path, &[], &BTreeMap::new(), Some(&cancel)).unwrap_err();
+            assert_eq!(error.kind(), std::io::ErrorKind::Interrupted);
+        });
+        assert!(started.elapsed() < Duration::from_secs(10));
     }
 }

@@ -865,6 +865,55 @@ mod tests {
         );
     }
 
+    /// The session names menu over an 80-column screen, and over the stand-in
+    /// symbols of terminals that lack the full ones.
+    #[test]
+    fn the_session_names_menu_fits_an_80_column_screen() {
+        use crate::session_names::Way;
+        let mut app = app();
+        let temp = tempfile::tempdir().unwrap();
+        crate::session_names::save(temp.path(), &[Way::ChatGptPlan, Way::ClaudePlan]).unwrap();
+        app.info.root = Some(temp.path().to_path_buf());
+        app.open_names();
+        // Before the check is done, the ways show without what they lack.
+        let rows = screen(&mut app, 80, 24);
+        assert!(
+            rows.iter()
+                .any(|row| row.contains("[x] GPT-6 Luna on the ChatGPT plan"))
+        );
+        assert!(
+            rows.iter().all(|row| !row.contains("No ChatGPT login")),
+            "{rows:#?}"
+        );
+        app.names_checked(crate::tui::names_menu::tests::missing());
+        let rows = screen(&mut app, 80, 24);
+        println!("{}", rows.join("\n"));
+        for want in [
+            "│ ▸ ( ) First words",
+            "│   (•) Named by a model",
+            "│   [x] GPT-6 Luna on the ChatGPT plan",
+            "│       No ChatGPT login",
+            "│   [x] Haiku 5.5 on the Claude plan",
+            "│   [ ] GPT-6 Luna with the OpenAI API key",
+            "│   Then the first words.",
+        ] {
+            assert!(
+                rows.iter().any(|row| row.contains(want)),
+                "{want}: {rows:#?}"
+            );
+        }
+        assert!(rows.iter().all(|row| row.chars().count() <= 80));
+        // Down to a way, where the footer offers moving it.
+        for _ in 0..2 {
+            app.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        }
+        let rows = screen(&mut app, 80, 24);
+        assert!(
+            rows.iter().any(|row| row.contains("Shift+↑ ↓  move")),
+            "{rows:#?}"
+        );
+    }
+
     /// The settings list the ChatGPT logins, in order, on the row of
     /// `/chatgpt`.
     #[test]
@@ -2067,6 +2116,14 @@ mod tests {
             app.overlay = None;
             app.open_keys("", None);
             look(&mut app, "keys");
+            app.overlay = None;
+            let names = tempfile::tempdir().unwrap();
+            crate::session_names::save(names.path(), &[crate::session_names::Way::ClaudePlan])
+                .unwrap();
+            app.info.root = Some(names.path().to_path_buf());
+            app.open_names();
+            app.names_checked(crate::tui::names_menu::tests::missing());
+            look(&mut app, "session names");
             app.overlay = None;
             app.ask_quit(vec![job("sleep 300", Duration::from_secs(150))]);
             look(&mut app, "quit");

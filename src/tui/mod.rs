@@ -20,6 +20,7 @@ mod keys_menu;
 mod markdown;
 mod model_picker;
 mod motion;
+mod names_menu;
 mod openrouter_menu;
 mod overlay;
 mod prefs;
@@ -338,6 +339,9 @@ async fn run(
     let mut burst: Option<Burst> = None;
     // The cache timer's words as last seen: drawn again when they change.
     let mut cache_label = None;
+    // What each way of naming sessions by a model lacks, checked off this
+    // loop's thread (the check runs Claude Code).
+    let (names_found, mut names_checks) = mpsc::unbounded_channel();
     app.set_reading(setup.meter.read());
     // The changes to OpenRouter's settings are made on a thread of their own,
     // one after another, and their results come back here.
@@ -364,6 +368,10 @@ async fn run(
             _ = &mut stop => break,
             Some(ask) = setup.quit_asks.recv() => {
                 app.ask_quit(ask.jobs);
+                draw_now = true;
+            }
+            Some(missing) = names_checks.recv() => {
+                app.names_checked(missing);
                 draw_now = true;
             }
             event = events.next(), if events_open => {
@@ -507,6 +515,15 @@ async fn run(
                     let done = settings_done.clone();
                     settings_worker.submit(move || {
                         let _ = done.send(openrouter_menu::make(&root, &edit));
+                    });
+                }
+                Effect::CheckNames(cancel) => {
+                    let found = names_found.clone();
+                    tokio::task::spawn_blocking(move || {
+                        let missing = crate::session_names::missing_until(&cancel.0);
+                        if !cancel.0.load(std::sync::atomic::Ordering::Relaxed) {
+                            let _ = found.send(missing);
+                        }
                     });
                 }
             }
