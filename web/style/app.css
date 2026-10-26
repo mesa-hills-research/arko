@@ -499,24 +499,25 @@ details.more > summary { width: max-content; padding: 4px 0; color: var(--link);
   display: flex;
   flex-direction: column;
   max-height: min(50dvh, 340px);
-  padding: 4px;
-  border: 1px solid var(--line);
-  border-radius: var(--r-lg);
+  padding: 6px;
+  border-radius: var(--r-xl);
   background: var(--popover);
   color: var(--popover-text);
   box-shadow: var(--shadow);
 }
 .slash-hint { padding: 6px 10px 8px; font-size: 13px; overflow-wrap: anywhere; }
-.slash-hint + .slash-list { margin-top: 2px; padding-top: 4px; border-top: 1px solid var(--line); }
+.slash-hint .slash-about { margin-top: 2px; }
+.slash-hint + .slash-list { margin-top: 2px; padding-top: 6px; border-top: 1px solid var(--line); }
 .slash-list { min-height: 0; margin: 0; padding: 0; overflow-y: auto; overscroll-behavior: contain; list-style: none; }
 .slash-list li {
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
   column-gap: 10px;
-  min-height: 36px;
-  padding: 7px 10px;
-  border-radius: var(--r-md);
+  min-height: 40px;
+  padding: 8px 10px;
+  border-radius: var(--r-lg);
+  cursor: pointer;
 }
 @media (hover: hover) {
   .slash-list li:hover { background: var(--secondary-hover); }
