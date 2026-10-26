@@ -1580,6 +1580,229 @@ mod tests {
         assert_eq!(reset.status.cost, 1.25);
     }
 
+    /// The Rust page reads the workers, the jobs and every part of the status
+    /// it shows, with the values the server wrote. A worker's summary with a
+    /// field it doesn't know fails (in tests).
+    #[tokio::test]
+    async fn the_rust_page_reads_the_workers_jobs_and_status_the_stream_sends() {
+        use super::super::feed::{JobStart, WorkerChange, WorkerInfo};
+        use super::super::protocol::{JobKind, ResetData, WorkerState};
+        use super::super::{AgentStatus, BuiltinSkillSetting, CacheStatus, LiveSettings, Models};
+        let feed = Feed::new("main");
+        feed.worker("r1", "Fix the flaky test", WorkerChange::Started);
+        feed.worker("r2", "Check the docs", WorkerChange::Started);
+        feed.worker_under("r2", "r1");
+        let mut info = WorkerInfo::new();
+        info.model = Some("gpt-6-luna".into());
+        info.effort = Some("high".into());
+        info.profile = Some("quick".into());
+        info.depth = 2;
+        info.costs = Some((0.5, 0.75));
+        feed.worker_info("r2", info);
+        feed.worker(
+            "r2",
+            "Check the docs",
+            WorkerChange::Finished { report: "Done." },
+        );
+        feed.job_started(JobStart::new(
+            uuid::Uuid::new_v4(),
+            "r1",
+            JobKind::Command,
+            "cargo test",
+        ));
+        let reading = Reading {
+            cost: 2.5,
+            api_price: Some(4.0),
+            context_tokens: Some(1200),
+            plan_usage: Some("5h 12%".into()),
+            workers: Some("r1  running".into()),
+            settings: LiveSettings {
+                outside: true,
+                handover_at: 200_000,
+                workers_handover_at: 150_000,
+                text_replies: true,
+                extra_rules: crate::agents::ExtraRules::All,
+                project_instructions: crate::project::Files::Both,
+                worker_project_instructions: true,
+                background_after: 600,
+                monitor_wakes: crate::monitors::Wakes::Always,
+                monitor_wakes_within: Some(7200),
+                worker_models: crate::agents::ModelChoice::Profiles,
+                worker_depth: 3,
+                worker_retry_cap: Some(4),
+                message_copies: true,
+                builtin_skills: true,
+                builtin_skill_list: vec![BuiltinSkillSetting {
+                    name: "ponytail".into(),
+                    on: true,
+                }],
+                ..LiveSettings::default()
+            },
+            movable: vec![7],
+            models: Models {
+                main: "gpt-6-sol".into(),
+                workers: "gpt-6-luna".into(),
+                started: true,
+                has_workers: true,
+                ..Models::default()
+            },
+            agents: vec![AgentStatus {
+                id: "r1".into(),
+                context_tokens: Some(900),
+                context_window: Some(200_000),
+                handover_at: Some(150_000),
+                compacts: true,
+            }],
+            cache: CacheStatus {
+                lifetime: Some(Duration::from_secs(300)),
+                refreshed_at: Some(1000),
+                tokens: Some(1200),
+                miss_cost: Some(0.01),
+                ..CacheStatus::default()
+            },
+            ..Reading::default()
+        };
+        let info = Info {
+            model: "gpt-6-sol".into(),
+            workspace: "/work".into(),
+            session: "s1".into(),
+            app: "Arko Studio".into(),
+        };
+        let served = serve_with(
+            &feed,
+            "127.0.0.1:0",
+            info,
+            Arc::new(Moving(Mutex::new(reading))),
+        );
+        let cookie = served.login().await;
+        let mut stream = served.get("/api/events", Some(&cookie)).await;
+        let mut buffer = String::new();
+        let events = read_until(&mut stream, &mut buffer, |name, _| name == "reset").await;
+        let reset: ResetData = serde_json::from_value(events.last().unwrap().1.clone()).unwrap();
+
+        let r2 = reset
+            .workers
+            .iter()
+            .find(|worker| worker.id == "r2")
+            .unwrap();
+        assert_eq!(
+            (r2.state, r2.report.as_deref(), r2.parent.as_deref()),
+            (WorkerState::Finished, Some("Done."), Some("r1"))
+        );
+        assert_eq!(
+            (
+                r2.model.as_deref(),
+                r2.effort.as_deref(),
+                r2.profile.as_deref(),
+                r2.depth
+            ),
+            (Some("gpt-6-luna"), Some("high"), Some("quick"), 2)
+        );
+        assert_eq!((r2.cost_billed, r2.cost_list), (0.5, 0.75));
+        let r1 = reset
+            .workers
+            .iter()
+            .find(|worker| worker.id == "r1")
+            .unwrap();
+        assert_eq!(
+            (r1.state, r1.family_cost_billed),
+            (WorkerState::Running, 0.5)
+        );
+        assert_eq!(reset.jobs.len(), 1);
+        assert_eq!(
+            (
+                reset.jobs[0].agent.as_str(),
+                reset.jobs[0].kind,
+                reset.jobs[0].label.as_str()
+            ),
+            ("r1", JobKind::Command, "cargo test")
+        );
+
+        let status = reset.status;
+        assert_eq!(
+            (status.cost, status.api_price, status.context_tokens),
+            (2.5, Some(4.0), Some(1200))
+        );
+        assert_eq!(
+            (
+                status.plan_usage.as_deref(),
+                status.workers.as_deref(),
+                status.movable
+            ),
+            (Some("5h 12%"), Some("r1  running"), vec![7])
+        );
+        let settings = status.settings;
+        assert!(settings.outside && settings.text_replies && settings.worker_project_instructions);
+        assert!(
+            settings.message_copies && settings.builtin_skills && settings.builtin_skill_list[0].on
+        );
+        assert_eq!(
+            (
+                settings.handover_at,
+                settings.workers_handover_at,
+                settings.background_after
+            ),
+            (200_000, 150_000, 600)
+        );
+        assert_eq!(
+            (
+                settings.cc_compact,
+                settings.extra_rules.as_deref(),
+                settings.project_instructions.as_deref()
+            ),
+            (Some(false), Some("all"), Some("both"))
+        );
+        assert_eq!(
+            (
+                settings.monitor_wakes.as_deref(),
+                settings.monitor_wakes_within
+            ),
+            (Some("always"), Some(7200))
+        );
+        assert_eq!(
+            (
+                settings.worker_models.as_deref(),
+                settings.worker_depth,
+                settings.worker_retry_cap
+            ),
+            (Some("profiles"), Some(3), Some(4))
+        );
+        assert_eq!(
+            (
+                status.models.main.as_str(),
+                status.models.workers.as_str(),
+                status.models.started,
+                status.models.has_workers
+            ),
+            ("gpt-6-sol", "gpt-6-luna", true, true)
+        );
+        assert_eq!(
+            (
+                status.agents[0].id.as_str(),
+                status.agents[0].context_window,
+                status.agents[0].compacts
+            ),
+            ("r1", Some(200_000), true)
+        );
+        assert_eq!(
+            (
+                status.cache.lifetime,
+                status.cache.refreshed_at,
+                status.cache.tokens,
+                status.cache.miss_cost
+            ),
+            (Some(300_000), Some(1000), Some(1200), Some(0.01))
+        );
+        assert_eq!(
+            (
+                status.info.workspace.as_str(),
+                status.info.session.as_str(),
+                status.info.app.as_str()
+            ),
+            ("/work", "s1", "Arko Studio")
+        );
+    }
+
     /// The page is open to all; the API answers 401 without the key, and
     /// the key buys an HttpOnly, SameSite=Strict cookie that opens it.
     #[tokio::test]
