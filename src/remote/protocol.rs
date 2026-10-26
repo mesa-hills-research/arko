@@ -303,6 +303,15 @@ pub struct QuestionData {
     pub approval: Option<ApprovalData>,
 }
 
+/// What every front end shows, muted, right after the text of a question
+/// that takes any number of its choices.
+pub const CHOOSE_ANY: &str = "Choose any";
+
+/// The choice that saves an approved profile.
+pub const SAVE: &str = "Save";
+/// The choice that doesn't save it.
+pub const DONT_SAVE: &str = "Don't save";
+
 /// A worker profile to approve, with Save or Don't save.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[cfg_attr(test, serde(deny_unknown_fields))]

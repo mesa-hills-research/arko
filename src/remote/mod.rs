@@ -21,7 +21,7 @@ mod history;
 mod links;
 #[cfg(not(feature = "remote"))]
 mod no_server;
-mod protocol;
+pub(crate) mod protocol;
 #[cfg(feature = "remote")]
 mod qr;
 mod render;

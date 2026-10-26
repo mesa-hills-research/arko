@@ -136,14 +136,8 @@ impl Approval {
     }
 }
 
-/// What every front end shows, muted, right after the text of a question
-/// that takes any number of its choices.
-pub const CHOOSE_ANY: &str = "Choose any";
-
-/// The choice that saves an approved profile.
-pub const SAVE: &str = "Save";
-/// The choice that doesn't save it.
-pub const DONT_SAVE: &str = "Don't save";
+// The words every front end shows, in the protocol the web page compiles too.
+pub use crate::remote::protocol::{CHOOSE_ANY, DONT_SAVE, SAVE};
 
 impl AgentQuestion {
     pub(crate) fn of(asked: &AskedQuestion, waits: bool, item: u64) -> Self {

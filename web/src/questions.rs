@@ -12,11 +12,7 @@ use lucide_leptos::{MessageCircleQuestionMark, X};
 use wasm_bindgen::JsCast;
 
 use crate::app::{Cell, page, post};
-use crate::protocol::{ApprovalData, QuestionData};
-
-/// The choice that saves an approved worker profile, and the one that
-/// doesn't.
-pub const SAVE: &str = "Save";
+use crate::protocol::{ApprovalData, CHOOSE_ANY, QuestionData, SAVE};
 
 /// How long after a key the user still counts as typing, so a question
 /// that comes then waits in a chip rather than open the panel (ms).
@@ -617,7 +613,7 @@ fn QuestionView(question: QuestionData, open: Memo<Vec<QuestionData>>) -> impl I
                     // "Choose any" follows the question on its line.
                     <span>
                         {words.clone()}
-                        {question.multiple.then(|| view! { " " <span class="answers-any">"Choose any"</span> })}
+                        {question.multiple.then(|| view! { " " <span class="answers-any">{CHOOSE_ANY}</span> })}
                     </span>
                     {profile}
                 </div>
