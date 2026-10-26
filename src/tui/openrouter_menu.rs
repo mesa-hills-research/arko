@@ -3,7 +3,9 @@
 //! switch toggles and a choice among a few goes to the next. The two lists
 //! of providers open a line to edit. A change is saved at once, and the open
 //! sessions use it from their next request (`openrouter`). The models row
-//! fetches the list again.
+//! fetches the list again. A change is made on the settings as the file has
+//! them, on a thread of its own ([`Worker`]), so that a wait for another
+//! change never stops the keys.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::Frame;
@@ -48,6 +50,123 @@ pub struct OpenRouterMenu {
 /// The row of the models, after the choices.
 const MODELS: usize = Control::ALL.len();
 
+/// What a key did.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Action {
+    Stay,
+    /// Close the menu.
+    Close,
+    /// Make this change to the settings, away from the keys (see
+    /// [`make`]), and tell the menu ([`OpenRouterMenu::done`]).
+    Edit(Edit),
+}
+
+/// A change the menu makes. It is made on the settings as the file has them
+/// when it runs, so what another session saved meanwhile stays, and a choice
+/// that cycles goes on from the one then.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Edit {
+    Zdr,
+    DataCollection,
+    Region,
+    Sort,
+    Precision,
+    Only(Vec<String>),
+    Ignore(Vec<String>),
+}
+
+impl Edit {
+    /// Makes the change in `settings`, and says what it did.
+    pub fn apply(&self, settings: &mut Settings) -> String {
+        let on_off = |on: bool| if on { "on" } else { "off" };
+        match self {
+            Edit::Zdr => {
+                let on = !settings.zdr();
+                settings.set_zdr(on);
+                format!("Zero data retention is {}.", on_off(on))
+            }
+            Edit::DataCollection if settings.data_collection_implied() => {
+                "Zero data retention covers it, so it stays on while that is on.".to_string()
+            }
+            Edit::DataCollection => {
+                let on = !settings.deny_data_collection();
+                settings.set_deny_data_collection(on);
+                format!("No data collection is {}.", on_off(on))
+            }
+            Edit::Region => {
+                let at = Region::ALL
+                    .iter()
+                    .position(|region| *region == settings.region())
+                    .unwrap_or(0);
+                let next = Region::ALL[(at + 1) % Region::ALL.len()];
+                settings.set_region(next);
+                format!("Region is {}.", next.label())
+            }
+            Edit::Sort => {
+                let at = Sort::ALL
+                    .iter()
+                    .position(|sort| *sort == settings.sort())
+                    .unwrap_or(0);
+                let next = Sort::ALL[(at + 1) % Sort::ALL.len()];
+                settings.set_sort(next);
+                format!("Providers go by {}.", next.label().to_lowercase())
+            }
+            Edit::Precision => {
+                // A list written by hand goes to the first choice.
+                let at = Precision::ALL
+                    .iter()
+                    .position(|precision| *precision == settings.precision());
+                let next = Precision::ALL[at.map_or(0, |at| (at + 1) % Precision::ALL.len())];
+                settings.set_precision(next);
+                format!("Precision is {}.", next.label().to_lowercase())
+            }
+            Edit::Only(slugs) => {
+                settings.set_only(slugs.clone());
+                match slugs.as_slice() {
+                    [] => "Any provider may serve requests.".to_string(),
+                    slugs => format!("Only {} serve requests.", crate::and_list(slugs)),
+                }
+            }
+            Edit::Ignore(slugs) => {
+                settings.set_ignore(slugs.clone());
+                match slugs.as_slice() {
+                    [] => "No provider is left out.".to_string(),
+                    slugs => format!("{} never serve requests.", crate::and_list(slugs)),
+                }
+            }
+        }
+    }
+}
+
+/// Makes `edit` in the settings of Arko's folder `root`, under the lock every
+/// change takes, and installs them in the sessions open here. It may wait
+/// for another change, so it runs on a [`Worker`].
+pub fn make(root: &std::path::Path, edit: &Edit) -> Result<(Settings, String), String> {
+    Settings::edit(root, 0, |settings| edit.apply(settings))
+}
+
+/// A thread that makes the changes asked for one after another, in the order
+/// they were asked, so that a wait for another change doesn't stop the keys
+/// and two quick changes don't swap.
+pub struct Worker(std::sync::mpsc::Sender<Box<dyn FnOnce() + Send>>);
+
+impl Worker {
+    pub fn start() -> Self {
+        let (jobs, queue) = std::sync::mpsc::channel::<Box<dyn FnOnce() + Send>>();
+        std::thread::spawn(move || {
+            for job in queue {
+                job();
+            }
+        });
+        Self(jobs)
+    }
+
+    /// Has `job` run after those asked before it, and returns at once.
+    pub fn submit(&self, job: impl FnOnce() + Send + 'static) {
+        let _ = self.0.send(Box::new(job));
+    }
+}
+
 impl OpenRouterMenu {
     /// The menu on the settings in Arko's folder `root`. A file that can't
     /// be read is said, and the menu shows none set.
@@ -85,23 +204,44 @@ impl OpenRouterMenu {
         Control::ALL.get(self.selected).copied()
     }
 
-    /// Makes a change to the settings as the file has them now, so that
-    /// what another session saved meanwhile (the models picked) stays. `make`
-    /// says what was done. A file that can't be read isn't written over.
-    fn edit(&mut self, make: impl FnOnce(&mut Settings) -> String) {
-        let mut settings = match Settings::read_to_use(&self.root) {
-            Ok(settings) => settings,
-            Err(error) => {
-                self.said = Some(Said {
-                    text: error,
-                    failed: true,
-                });
-                return;
+    /// Enter on the choice selected.
+    fn change(&mut self, control: Control) -> Action {
+        match control {
+            Control::Zdr => self.ask(Edit::Zdr),
+            Control::DataCollection => self.ask(Edit::DataCollection),
+            Control::Region => self.ask(Edit::Region),
+            Control::Sort => self.ask(Edit::Sort),
+            Control::Precision => self.ask(Edit::Precision),
+            Control::Only | Control::Ignore => {
+                let current = match control {
+                    Control::Only => self.settings.only(),
+                    _ => self.settings.ignore(),
+                };
+                self.said = None;
+                self.step = Step::Editing {
+                    control,
+                    text: current.join(", "),
+                };
+                Action::Stay
             }
-        };
-        let said = make(&mut settings);
-        match settings.save(&self.root) {
-            Ok(()) => {
+        }
+    }
+
+    /// Asks for `edit`, to be made away from the keys. The menu says so
+    /// until [`done`](Self::done).
+    fn ask(&mut self, edit: Edit) -> Action {
+        self.said = Some(Said {
+            text: "Saving…".to_string(),
+            failed: false,
+        });
+        Action::Edit(edit)
+    }
+
+    /// What the change asked for did: the settings as they are now with what
+    /// it said, or why it wasn't made.
+    pub fn done(&mut self, result: Result<(Settings, String), String>) {
+        match result {
+            Ok((settings, said)) => {
                 self.settings = settings;
                 // The list of models follows the filters.
                 openrouter::refresh_soon(&self.root);
@@ -113,90 +253,27 @@ impl OpenRouterMenu {
             }
             Err(error) => {
                 self.said = Some(Said {
-                    text: format!("Couldn't save the settings ({error})."),
+                    text: error,
                     failed: true,
                 });
             }
         }
     }
 
-    /// Enter on the choice selected.
-    fn change(&mut self, control: Control) {
-        let on_off = |on: bool| if on { "on" } else { "off" };
-        match control {
-            Control::Zdr => self.edit(|settings| {
-                let on = !settings.zdr();
-                settings.set_zdr(on);
-                format!("Zero data retention is {}.", on_off(on))
-            }),
-            Control::DataCollection if self.settings.data_collection_implied() => {
-                self.said = Some(Said {
-                    text: "Zero data retention covers it, so it stays on while that is on."
-                        .to_string(),
-                    failed: false,
-                });
-            }
-            Control::DataCollection => self.edit(|settings| {
-                let on = !settings.deny_data_collection();
-                settings.set_deny_data_collection(on);
-                format!("No data collection is {}.", on_off(on))
-            }),
-            Control::Region => self.edit(|settings| {
-                let at = Region::ALL
-                    .iter()
-                    .position(|region| *region == settings.region())
-                    .unwrap_or(0);
-                let next = Region::ALL[(at + 1) % Region::ALL.len()];
-                settings.set_region(next);
-                format!("Region is {}.", next.label())
-            }),
-            Control::Sort => self.edit(|settings| {
-                let at = Sort::ALL
-                    .iter()
-                    .position(|sort| *sort == settings.sort())
-                    .unwrap_or(0);
-                let next = Sort::ALL[(at + 1) % Sort::ALL.len()];
-                settings.set_sort(next);
-                format!("Providers go by {}.", next.label().to_lowercase())
-            }),
-            Control::Precision => self.edit(|settings| {
-                // A list written by hand goes to the first choice.
-                let at = Precision::ALL
-                    .iter()
-                    .position(|precision| *precision == settings.precision());
-                let next = Precision::ALL[at.map_or(0, |at| (at + 1) % Precision::ALL.len())];
-                settings.set_precision(next);
-                format!("Precision is {}.", next.label().to_lowercase())
-            }),
-            Control::Only | Control::Ignore => {
-                let current = match control {
-                    Control::Only => self.settings.only(),
-                    _ => self.settings.ignore(),
-                };
-                self.said = None;
-                self.step = Step::Editing {
-                    control,
-                    text: current.join(", "),
-                };
-            }
-        }
-    }
-
-    /// A key, in the step open; `close` is Esc or Ctrl+C. Returns whether
-    /// the menu closes.
-    pub fn key(&mut self, key: KeyEvent, close: bool) -> bool {
+    /// A key, in the step open; `close` is Esc or Ctrl+C.
+    pub fn key(&mut self, key: KeyEvent, close: bool) -> Action {
         let ctrl = key
             .modifiers
             .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
         match &mut self.step {
             Step::List => match key.code {
-                _ if close => return true,
+                _ if close => return Action::Close,
                 KeyCode::Up => self.selected = self.selected.saturating_sub(1),
                 KeyCode::Down | KeyCode::Tab => self.selected = (self.selected + 1).min(MODELS),
                 KeyCode::Home | KeyCode::PageUp => self.selected = 0,
                 KeyCode::End | KeyCode::PageDown => self.selected = MODELS,
                 KeyCode::Enter | KeyCode::Right | KeyCode::Char(' ') => match self.control() {
-                    Some(control) => self.change(control),
+                    Some(control) => return self.change(control),
                     None => {
                         // The models row: fetch them again.
                         self.said = Some(Said {
@@ -220,27 +297,16 @@ impl OpenRouterMenu {
                 }
                 KeyCode::Enter => {
                     let (control, slugs) = (*control, openrouter::slugs(text));
-                    let said = match (control, slugs.as_slice()) {
-                        (Control::Only, []) => "Any provider may serve requests.".to_string(),
-                        (Control::Only, slugs) => {
-                            format!("Only {} serve requests.", crate::and_list(slugs))
-                        }
-                        (_, []) => "No provider is left out.".to_string(),
-                        (_, slugs) => format!("{} never serve requests.", crate::and_list(slugs)),
-                    };
                     self.step = Step::List;
-                    self.edit(|settings| {
-                        match control {
-                            Control::Only => settings.set_only(slugs),
-                            _ => settings.set_ignore(slugs),
-                        }
-                        said
+                    return self.ask(match control {
+                        Control::Only => Edit::Only(slugs),
+                        _ => Edit::Ignore(slugs),
                     });
                 }
                 _ => {}
             },
         }
-        false
+        Action::Stay
     }
 
     /// A paste, into the line being edited.
@@ -394,9 +460,20 @@ mod tests {
     use super::*;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
+    use std::time::{Duration, Instant};
 
+    /// A key, with the change it asks for made at once (the screen has a
+    /// thread make it). Returns whether the menu closes.
     fn press(menu: &mut OpenRouterMenu, code: KeyCode) -> bool {
-        menu.key(KeyEvent::new(code, KeyModifiers::NONE), false)
+        match menu.key(KeyEvent::new(code, KeyModifiers::NONE), false) {
+            Action::Close => true,
+            Action::Stay => false,
+            Action::Edit(edit) => {
+                let result = make(&menu.root, &edit);
+                menu.done(result);
+                false
+            }
+        }
     }
 
     fn type_in(menu: &mut OpenRouterMenu, text: &str) {
@@ -637,7 +714,10 @@ mod tests {
             "Fetching OpenRouter's models."
         );
         assert!(!menu.said.as_ref().unwrap().failed);
-        assert!(menu.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), true));
+        assert_eq!(
+            menu.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), true),
+            Action::Close
+        );
     }
 
     /// The models row says how many and how old, or why not.
@@ -675,6 +755,120 @@ mod tests {
             rows.iter()
                 .any(|r| r.contains("Models") && r.contains("2, updated just now")),
             "{rows:#?}"
+        );
+    }
+
+    /// A change made by the menu goes into the settings as the file has them
+    /// when it runs: one made by another session just before stays, and the
+    /// menu's choice goes on from the one then. (The menu once read the file,
+    /// changed one choice and saved all of the routing.)
+    #[test]
+    fn a_change_from_the_menu_keeps_what_another_session_changed_meanwhile() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path().to_path_buf();
+        let mut menu = OpenRouterMenu::open(&root);
+        assert!(!menu.settings.zdr(), "the menu has zero data retention off");
+        // Another session turns zero data retention on, and holds the lock
+        // after it read the file.
+        let (reached, go) = openrouter::pause_next_change(&root);
+        let other = {
+            let root = root.clone();
+            std::thread::spawn(move || Settings::update(&root, |s| s.set_zdr(true)))
+        };
+        reached.recv().unwrap();
+        // The menu's change, on the sort, waits for it, and then goes on.
+        on_row(&mut menu, Control::Sort);
+        let Action::Edit(edit) = menu.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), false)
+        else {
+            panic!("Enter asks for a change");
+        };
+        assert_eq!(edit, Edit::Sort);
+        assert_eq!(menu.said.as_ref().unwrap().text, "Saving…");
+        let made = {
+            let root = root.clone();
+            std::thread::spawn(move || make(&root, &edit))
+        };
+        std::thread::sleep(Duration::from_millis(150));
+        assert!(!made.is_finished(), "it waits for the other change");
+        go.send(()).unwrap();
+        other.join().unwrap().unwrap();
+        let result = made.join().unwrap();
+        menu.done(result);
+        let file: serde_json::Value = file(&root);
+        assert_eq!(file["provider"]["zdr"], true, "{file}");
+        assert_eq!(file["provider"]["sort"], "price", "{file}");
+        assert!(menu.settings.zdr(), "the menu shows what is saved now");
+        assert_eq!(menu.said.as_ref().unwrap().text, "Providers go by price.");
+        // A choice that cycles goes on from where the file has it.
+        Settings::update(&root, |s| s.set_sort(Sort::Latency)).unwrap();
+        let (settings, said) = make(&root, &Edit::Sort).unwrap();
+        assert_eq!(
+            (settings.sort(), said.as_str()),
+            (Sort::Default, "Providers go by default.")
+        );
+    }
+
+    /// The keys aren't held by a wait for the settings' lock: Enter returns
+    /// at once with the change to make, and a thread made for waiting makes
+    /// them in the order they were asked, however long the lock is held.
+    #[test]
+    fn a_held_settings_lock_stops_no_key_and_the_changes_keep_their_order() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path().to_path_buf();
+        std::fs::create_dir_all(&root).unwrap();
+        let mut menu = OpenRouterMenu::open(&root);
+        // Another process holds the file's lock for a while.
+        let lock = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(root.join(format!("{}.lock", openrouter::FILE)))
+            .unwrap();
+        lock.lock().unwrap();
+        let (results, received) = std::sync::mpsc::channel();
+        let worker = Worker::start();
+        let started = Instant::now();
+        for control in [Control::Region, Control::Zdr, Control::Region] {
+            on_row(&mut menu, control);
+            let Action::Edit(edit) =
+                menu.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), false)
+            else {
+                panic!("Enter asks for a change");
+            };
+            let (root, results) = (root.clone(), results.clone());
+            worker.submit(move || {
+                let _ = results.send(make(&root, &edit));
+            });
+        }
+        assert!(
+            started.elapsed() < Duration::from_millis(500),
+            "the keys went through: {:?}",
+            started.elapsed()
+        );
+        assert!(
+            received.try_recv().is_err(),
+            "nothing is made while it is held"
+        );
+        std::thread::sleep(Duration::from_millis(200));
+        drop(lock);
+        let said: Vec<String> = (0..3)
+            .map(|_| {
+                received
+                    .recv_timeout(Duration::from_secs(5))
+                    .unwrap()
+                    .unwrap()
+                    .1
+            })
+            .collect();
+        assert_eq!(
+            said,
+            [
+                "Region is US.",
+                "Zero data retention is on.",
+                "Region is EU."
+            ],
+            "in the order asked"
         );
     }
 }

@@ -339,6 +339,10 @@ async fn run(
     // The cache timer's words as last seen: drawn again when they change.
     let mut cache_label = None;
     app.set_reading(setup.meter.read());
+    // The changes to OpenRouter's settings are made on a thread of their own,
+    // one after another, and their results come back here.
+    let settings_worker = openrouter_menu::Worker::start();
+    let (settings_done, mut settings_results) = mpsc::unbounded_channel();
     loop {
         if draw_now {
             draw(&mut terminal, &mut app);
@@ -402,6 +406,10 @@ async fn run(
                 // Drawn at the next frame: streaming text doesn't redraw at
                 // every chunk.
                 dirty = true;
+            }
+            Some(result) = settings_results.recv() => {
+                app.openrouter_done(result);
+                draw_now = true;
             }
             _ = frames.tick(), if dirty => draw_now = true,
             _ = animation.tick(), if app.transcript.drawn.moving => draw_now = true,
@@ -494,6 +502,12 @@ async fn run(
                     let outcome = setup.keys.remove(key);
                     app.keys_done(key, outcome);
                     app.set_reading(setup.meter.read());
+                }
+                Effect::OpenRouter { root, edit } => {
+                    let done = settings_done.clone();
+                    settings_worker.submit(move || {
+                        let _ = done.send(openrouter_menu::make(&root, &edit));
+                    });
                 }
             }
             draw_now = true;

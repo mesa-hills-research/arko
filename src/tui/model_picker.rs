@@ -137,12 +137,14 @@ impl ModelPicker {
     ) -> Self {
         let (catalog, recent, summary) = match root {
             Some(root) => {
-                openrouter::refresh_soon(root);
-                (
+                // (Reading the settings first, so that the fetch knows them.)
+                let found = (
                     openrouter::catalog(root),
                     openrouter::recent(root),
                     openrouter::Settings::load(root).summary(),
-                )
+                );
+                openrouter::refresh_soon(root);
+                found
             }
             None => (Catalog::default(), Vec::new(), None),
         };

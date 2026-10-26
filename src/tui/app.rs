@@ -99,6 +99,13 @@ pub enum Effect {
     AddKey { key: &'static Key, value: Secret },
     /// The session removes `key`, which Arko saved.
     RemoveKey(&'static Key),
+    /// A change to OpenRouter's settings in Arko's folder `root` is made on
+    /// a thread of its own (it may wait for another change), and the result
+    /// comes to [`App::openrouter_done`].
+    OpenRouter {
+        root: PathBuf,
+        edit: super::openrouter_menu::Edit,
+    },
 }
 
 /// The command menu's state.
@@ -527,6 +534,21 @@ impl App {
             words,
             back_to,
         )));
+    }
+
+    /// A change the OpenRouter menu asked for was made, or wasn't: the menu
+    /// shows it, or, closed, the status line.
+    pub fn openrouter_done(
+        &mut self,
+        result: Result<(crate::openrouter::Settings, String), String>,
+    ) {
+        if let Some(Overlay::OpenRouter(menu)) = &mut self.overlay {
+            menu.done(result);
+            return;
+        }
+        self.say(match result {
+            Ok((_, said)) | Err(said) => said,
+        });
     }
 
     /// What the session did with a key the menu sent: the menu shows it,
@@ -1460,8 +1482,15 @@ impl App {
                 }
             },
             Overlay::OpenRouter(mut menu) => match menu.key(key, close) {
-                true => None,
-                false => Some(Overlay::OpenRouter(menu)),
+                super::openrouter_menu::Action::Close => None,
+                super::openrouter_menu::Action::Stay => Some(Overlay::OpenRouter(menu)),
+                super::openrouter_menu::Action::Edit(edit) => {
+                    self.effects.push(Effect::OpenRouter {
+                        root: menu.root.clone(),
+                        edit,
+                    });
+                    Some(Overlay::OpenRouter(menu))
+                }
             },
             Overlay::Keys(mut menu) => match menu.key(key, close) {
                 keys_menu::Action::Stay => Some(Overlay::Keys(menu)),
@@ -3843,8 +3872,15 @@ pub(super) mod tests {
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         assert!(matches!(&app.overlay, Some(Overlay::OpenRouter(_))));
         assert!(sent(&mut app).is_empty());
-        // A toggle in the menu saves, and Esc closes it.
+        // A toggle in the menu is made away from the keys, and saves. (The
+        // screen has a thread make it, and sends the result back.)
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        let effects = app.take_effects();
+        let [Effect::OpenRouter { root, edit }] = effects.as_slice() else {
+            panic!("{effects:?}");
+        };
+        assert!(!crate::openrouter::Settings::load(temp.path()).zdr());
+        app.openrouter_done(crate::tui::openrouter_menu::make(root, edit));
         assert!(crate::openrouter::Settings::load(temp.path()).zdr());
         press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
         assert!(app.overlay.is_none());
