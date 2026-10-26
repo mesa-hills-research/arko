@@ -477,20 +477,31 @@ pub fn session_key(path: &Path) -> Result<String, String> {
     new_key(path)
 }
 
-/// Ends the page sessions kept in the session's folder `dir`. When the file
-/// can't be removed, it is emptied, and when that fails too, the error says
-/// what to delete.
-pub fn forget_sessions(dir: &Path) -> Result<(), String> {
+/// Ends the page sessions kept in the session's folder `dir`, also in a page
+/// this process serves. When the file can't be deleted, it is emptied, and
+/// when that fails too, the session gets a new key, which ends them because
+/// they go with the key they were opened with. Returns what to tell the user
+/// when the key changed, or the error when the sessions couldn't be ended.
+pub fn forget_sessions(dir: &Path) -> Result<Option<String>, String> {
     let path = dir.join(SESSIONS_FILE);
-    match std::fs::remove_file(&path) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => write_private_replacing(&path, "{}").map_err(|_| {
-            format!(
-                "Couldn't end the web page's saved sessions ({error}). Delete {} to end them.",
-                path.display()
-            )
-        }),
+    #[cfg(feature = "remote")]
+    server::end_sessions_kept_in(&path);
+    let error = match std::fs::remove_file(&path) {
+        Ok(()) => return Ok(None),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => error,
+    };
+    if write_private_replacing(&path, "{}").is_ok() {
+        return Ok(None);
+    }
+    match new_key(&dir.join(KEY_FILE)) {
+        Ok(_) => Ok(Some(format!(
+            "Couldn't delete the web page's saved sessions ({error}), so the session has a new key, which ends them and the old links."
+        ))),
+        Err(key_error) => Err(format!(
+            "Couldn't end the web page's saved sessions ({error}), and {key_error}. Delete {} to end them.",
+            path.display()
+        )),
     }
 }
 
@@ -499,20 +510,26 @@ pub fn new_key(path: &Path) -> Result<String, String> {
     let key = random_token(KEY_BYTES);
     let _ = std::fs::remove_file(path);
     // The page's sessions went with the old key.
-    let _ = std::fs::remove_file(path.with_file_name(SESSIONS_FILE));
+    let sessions = path.with_file_name(SESSIONS_FILE);
+    #[cfg(feature = "remote")]
+    server::end_sessions_kept_in(&sessions);
+    let _ = std::fs::remove_file(&sessions);
     write_private(path, &key)
         .map_err(|error| format!("could not save the key in {} ({error})", path.display()))?;
     Ok(key)
 }
 
 /// Writes `text` to `path` in place of what it held, readable by the user
-/// only: to a file beside it first, then renamed over it.
+/// only, to a file of its own beside it first, then renamed over it.
 pub(crate) fn write_private_replacing(path: &Path, text: &str) -> std::io::Result<()> {
     let mut temporary = path.as_os_str().to_owned();
-    temporary.push(format!(".{}.tmp", std::process::id()));
+    temporary.push(format!(".{}.tmp", random_token(9)));
     let temporary = std::path::PathBuf::from(temporary);
-    let _ = std::fs::remove_file(&temporary);
-    write_private(&temporary, text)?;
+    write_private(&temporary, text).inspect_err(|error| {
+        if error.kind() != std::io::ErrorKind::AlreadyExists {
+            let _ = std::fs::remove_file(&temporary);
+        }
+    })?;
     std::fs::rename(&temporary, path).inspect_err(|_| {
         let _ = std::fs::remove_file(&temporary);
     })
@@ -909,5 +926,49 @@ mod tests {
         assert!(!sessions.exists());
         std::fs::write(&path, "short").unwrap();
         assert_ne!(session_key(&path).unwrap(), "short");
+    }
+
+    /// `/remote off` deletes the saved sessions. When it can't, the session
+    /// gets a new key, which ends them, and when that fails too, it says so.
+    #[test]
+    fn the_saved_sessions_end_or_the_key_changes() {
+        let temp = tempfile::tempdir().unwrap();
+        let key_path = temp.path().join(KEY_FILE);
+        let key = session_key(&key_path).unwrap();
+        let sessions = temp.path().join(SESSIONS_FILE);
+        std::fs::write(&sessions, "{}").unwrap();
+        assert_eq!(forget_sessions(temp.path()), Ok(None));
+        assert!(!sessions.exists());
+        assert_eq!(forget_sessions(temp.path()), Ok(None), "none were saved");
+        assert_eq!(session_key(&key_path).unwrap(), key);
+
+        // A folder in the file's place can't be deleted or replaced.
+        std::fs::create_dir(&sessions).unwrap();
+        std::fs::write(sessions.join("inside"), "").unwrap();
+        let said = forget_sessions(temp.path()).unwrap().unwrap();
+        assert!(
+            said.starts_with("Couldn't delete the web page's saved sessions (")
+                && said.ends_with(
+                    "), so the session has a new key, which ends them and the old links."
+                ),
+            "{said}"
+        );
+        assert_ne!(session_key(&key_path).unwrap(), key);
+        let names: Vec<_> = std::fs::read_dir(temp.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(names.len(), 2, "no file is left behind: {names:?}");
+
+        // Nor can a folder in the key's place.
+        std::fs::remove_file(&key_path).unwrap();
+        std::fs::create_dir(&key_path).unwrap();
+        std::fs::write(key_path.join("inside"), "").unwrap();
+        let error = forget_sessions(temp.path()).unwrap_err();
+        assert!(
+            error.starts_with("Couldn't end the web page's saved sessions (")
+                && error.ends_with(&format!("Delete {} to end them.", sessions.display())),
+            "{error}"
+        );
     }
 }

@@ -1262,6 +1262,69 @@ async fn the_pages_sessions_outlast_a_restart_and_end_when_it_is_turned_off() {
     harness.stop_remote().await;
 }
 
+/// `/remote off` ends the page's saved sessions also when the page isn't
+/// on, as in a session resumed without it, and when they can't be deleted,
+/// the session gets a new key, which ends them.
+#[tokio::test]
+async fn remote_off_ends_the_saved_sessions_when_the_page_isnt_on() {
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, _inputs, _sender) = harness(temp.path(), LLMClient::new(), true);
+    let local = remote::Bind {
+        ip: std::net::Ipv4Addr::LOCALHOST.into(),
+        port: Some(0),
+    };
+    harness.start_remote(local).await;
+    let addr = harness.remote.as_ref().unwrap().addr();
+    let key_path = harness.session.dir.join(remote::KEY_FILE);
+    let key = std::fs::read_to_string(&key_path).unwrap();
+    let http = arko_ai::http_client();
+    let opened = http
+        .post(format!("http://{addr}/api/session"))
+        .header("content-type", "application/json")
+        .body(format!(r#"{{"key": "{}"}}"#, key.trim()))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(opened.status(), 204);
+    let token = opened.headers()["set-cookie"].to_str().unwrap();
+    let token = token.split(';').next().unwrap().split_once('=').unwrap().1;
+    let token = token.to_string();
+    harness.stop_remote().await;
+    let saved = harness.session.dir.join(remote::SESSIONS_FILE);
+    assert!(saved.exists());
+
+    harness
+        .remote_command("/remote off", Source::Terminal)
+        .await;
+    assert!(!saved.exists());
+    harness.start_remote(local).await;
+    let addr = harness.remote.as_ref().unwrap().addr();
+    let checked = http
+        .get(format!("http://{addr}/api/session"))
+        .header("cookie", format!("arko_remote_{}={token}", addr.port()))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(checked.status(), 401);
+    harness.stop_remote().await;
+
+    // A folder in the file's place can't be deleted.
+    std::fs::create_dir(&saved).unwrap();
+    harness
+        .remote_command("/remote off", Source::Terminal)
+        .await;
+    assert_ne!(std::fs::read_to_string(&key_path).unwrap(), key);
+    assert!(
+        says(
+            &harness.feed,
+            "notice",
+            "Couldn't delete the web page's saved sessions"
+        ),
+        "{:?}",
+        texts(&harness.feed, "notice")
+    );
+}
+
 /// Agents in Claude Code are offered Arko's tools only, so outside access
 /// reaches them as it reaches the others: the command guard and the file
 /// tools' hook decide their calls, and they read the note.

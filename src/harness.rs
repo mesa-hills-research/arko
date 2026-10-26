@@ -1412,14 +1412,17 @@ impl Harness {
             }
             qr if qr == "qr" || qr.starts_with("qr ") => self.remote_qr(qr[2..].trim()),
             "off" => {
-                if self.remote.is_some() {
-                    self.stop_page(source).await;
-                    self.output.line(&self.output.dim(
-                        "The web page is off, and its links and sessions no longer work. /remote starts it again.",
-                    ));
-                } else {
-                    self.output.line("The web page isn't on.");
-                }
+                let was_on = self.remote.is_some();
+                // Its saved sessions end also when it isn't on.
+                let ended = self.stop_page(source).await;
+                let text = match (was_on, ended) {
+                    (false, _) => "The web page isn't on.",
+                    (true, true) => {
+                        "The web page is off, and its links and sessions no longer work. /remote starts it again."
+                    }
+                    (true, false) => "The web page is off. /remote starts it again.",
+                };
+                self.output.line(&self.output.dim(text));
             }
             "new-key" => match self.new_page_key(source).await {
                 Err(error) => self.say(Level::Error, &ui::sentence(&error)),
@@ -1459,15 +1462,24 @@ impl Harness {
         }
     }
 
-    /// Stops the web page, telling its clients where the user did it.
-    pub(crate) async fn stop_page(&mut self, source: Source) {
+    /// Stops the web page, telling its clients where the user did it, and
+    /// ends its saved sessions, also when it isn't on (a restart keeps
+    /// them). Returns whether they ended, and says why when they didn't.
+    pub(crate) async fn stop_page(&mut self, source: Source) -> bool {
         if self.remote.is_some() {
             let text = format!("The web page was turned off {}.", self.acted_in(source));
             self.feed.notice(Level::Warn, &text);
             self.stop_remote().await;
-            // Turned off, its sessions end, where a restart keeps them.
-            if let Err(error) = remote::forget_sessions(&self.session.dir) {
+        }
+        match remote::forget_sessions(&self.session.dir) {
+            Ok(None) => true,
+            Ok(Some(new_key)) => {
+                self.feed.notice(Level::Warn, &new_key);
+                true
+            }
+            Err(error) => {
                 self.feed.notice(Level::Error, &error);
+                false
             }
         }
     }
@@ -1615,7 +1627,8 @@ impl Harness {
         page
     }
 
-    /// Stops the web page: its streams end, and its sessions with them.
+    /// Stops the web page, and its streams end. Its saved sessions outlast
+    /// it, for when it starts again (see [`Self::stop_page`]).
     pub(crate) async fn stop_remote(&mut self) {
         if let Some(server) = self.remote.take() {
             lock(&self.gauges.page).take();
