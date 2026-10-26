@@ -216,6 +216,7 @@ pub mod tests {
             call: None,
             job: None,
             pending: false,
+            code: Vec::new(),
         }
     }
 

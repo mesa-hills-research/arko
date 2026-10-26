@@ -15,6 +15,8 @@
 //! page trades it for a session cookie. The page is served without TLS.
 
 mod feed;
+#[cfg(feature = "remote")]
+mod highlight;
 mod history;
 mod links;
 #[cfg(not(feature = "remote"))]

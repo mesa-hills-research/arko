@@ -24,7 +24,8 @@ use subtle::ConstantTimeEq;
 use tokio::sync::{broadcast, mpsc, watch};
 use tokio::task::JoinHandle;
 
-use super::feed::{Activity, Feed, Kind, Update};
+use super::feed::{Activity, Feed, Item, Kind, Update};
+use super::highlight;
 use super::{Action, Info, Meter, Reading};
 
 // The page, written in Rust with Leptos in `web/` and built into `page/`.
@@ -618,8 +619,10 @@ async fn session_open(
 /// workers, the background jobs and the status), then sends `item` (a new
 /// item), `append` (more text for an item), `change` (an item, changed: a
 /// call's outcome), `worker` (a worker's summary), `job` (a background
-/// job's summary) and `status` events. A stream that falls
-/// behind starts over with a `reset`.
+/// job's summary), `code` (the code blocks a streaming text finished,
+/// highlighted) and `status` events. An item's Markdown comes with its
+/// finished code blocks highlighted. A stream that falls behind starts over
+/// with a `reset`.
 async fn events(
     State(app): State<Arc<App>>,
     ConnectInfo(peer): Peer,
@@ -636,6 +639,7 @@ async fn events(
         status: String::new(),
         tick: tokio::time::interval(STATUS_EVERY),
         ending: false,
+        streaming: HashMap::new(),
     };
     stream.reset();
     let events = futures_util::stream::unfold(stream, Stream::next);
@@ -654,6 +658,28 @@ struct Stream {
     tick: tokio::time::Interval,
     /// The server stopped: the stream ends once `pending` is sent.
     ending: bool,
+    /// The texts that may still stream, by item, with how many of their code
+    /// blocks were sent highlighted.
+    streaming: HashMap<u64, (String, usize)>,
+}
+
+/// An item as the page gets it: with its Markdown's finished code blocks
+/// highlighted.
+#[derive(Serialize)]
+struct PageItem<'a> {
+    #[serde(flatten)]
+    item: &'a Item,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    code: Vec<super::protocol::CodeSpans>,
+}
+
+impl<'a> PageItem<'a> {
+    fn of(item: &'a Item) -> Self {
+        PageItem {
+            item,
+            code: highlight::item_code(item),
+        }
+    }
 }
 
 impl Stream {
@@ -664,10 +690,15 @@ impl Stream {
         self.pending.clear();
         self.status = self.app.status(&snapshot.activity);
         let status: serde_json::Value = serde_json::from_str(&self.status).unwrap_or_default();
+        self.streaming.clear();
+        let items: Vec<PageItem> = snapshot.items.iter().map(PageItem::of).collect();
+        for item in &items {
+            self.follow(item);
+        }
         self.pending.push_back(
             Event::default().event("reset").data(
                 serde_json::json!({
-                    "items": snapshot.items,
+                    "items": items,
                     "workers": snapshot.workers,
                     "jobs": snapshot.jobs,
                     "status": status,
@@ -689,10 +720,12 @@ impl Stream {
     fn take(&mut self, update: Update) {
         match update {
             Update::Item(item) => {
+                let page_item = PageItem::of(&item);
+                self.follow(&page_item);
                 self.pending.push_back(
                     Event::default()
                         .event("item")
-                        .data(serde_json::to_string(&item).unwrap_or_default()),
+                        .data(serde_json::to_string(&page_item).unwrap_or_default()),
                 );
                 // A command's answer comes as its setting changes, so the
                 // page shows the new value with it.
@@ -700,16 +733,24 @@ impl Stream {
                     self.send_status();
                 }
             }
-            Update::Append { id, text } => self.pending.push_back(
-                Event::default()
-                    .event("append")
-                    .data(serde_json::json!({ "id": id, "text": text }).to_string()),
-            ),
-            Update::Change(item) => self.pending.push_back(
-                Event::default()
-                    .event("change")
-                    .data(serde_json::to_string(&item).unwrap_or_default()),
-            ),
+            Update::Append { id, text } => {
+                self.pending.push_back(
+                    Event::default()
+                        .event("append")
+                        .data(serde_json::json!({ "id": id, "text": &text }).to_string()),
+                );
+                self.appended(id, &text);
+            }
+            Update::Change(item) => {
+                self.streaming.remove(&item.id);
+                let page_item = PageItem::of(&item);
+                self.follow(&page_item);
+                self.pending.push_back(
+                    Event::default()
+                        .event("change")
+                        .data(serde_json::to_string(&page_item).unwrap_or_default()),
+                );
+            }
             Update::Worker(summary) => self.pending.push_back(
                 Event::default()
                     .event("worker")
@@ -718,11 +759,14 @@ impl Stream {
             // (The page reads a worker's end in its summary.)
             Update::WorkerEnded { .. } => {}
             Update::Activity => self.send_status(),
-            Update::Remove { id } => self.pending.push_back(
-                Event::default()
-                    .event("remove")
-                    .data(serde_json::json!({ "id": id }).to_string()),
-            ),
+            Update::Remove { id } => {
+                self.streaming.remove(&id);
+                self.pending.push_back(
+                    Event::default()
+                        .event("remove")
+                        .data(serde_json::json!({ "id": id }).to_string()),
+                );
+            }
             Update::Job(summary) => self.pending.push_back(
                 Event::default()
                     .event("job")
@@ -730,6 +774,47 @@ impl Stream {
             ),
             // The page starts over from the history as it is now.
             Update::Truncate { .. } => self.reset(),
+        }
+    }
+
+    /// Keeps the text of an item that may still stream (an agent's text or
+    /// thinking), to highlight the code blocks it finishes. A stream follows
+    /// a few at a time, the newest.
+    fn follow(&mut self, page_item: &PageItem) {
+        const FOLLOWED: usize = 8;
+        let item = page_item.item;
+        if !matches!(item.kind, Kind::Text | Kind::Thinking) {
+            return;
+        }
+        self.streaming
+            .insert(item.id, (item.text.clone(), page_item.code.len()));
+        while self.streaming.len() > FOLLOWED {
+            let Some(oldest) = self.streaming.keys().min().copied() else {
+                break;
+            };
+            self.streaming.remove(&oldest);
+        }
+    }
+
+    /// More text for the item `id`: once a code block in it closes, its
+    /// highlighting goes out (`code`).
+    fn appended(&mut self, id: u64, text: &str) {
+        let Some((whole, sent)) = self.streaming.get_mut(&id) else {
+            return;
+        };
+        whole.push_str(text);
+        if !highlight::fence_line_ended(whole, text.len()) {
+            return;
+        }
+        let code = highlight::code_blocks(whole, true);
+        if code.len() > *sent {
+            let fresh = &code[*sent..];
+            *sent = code.len();
+            self.pending.push_back(
+                Event::default()
+                    .event("code")
+                    .data(serde_json::json!({ "id": id, "code": fresh }).to_string()),
+            );
         }
     }
 
@@ -2103,6 +2188,55 @@ mod tests {
                 "compacts": false,
             }])
         );
+    }
+
+    /// An item's Markdown comes with its finished code blocks highlighted,
+    /// and a code block that a streaming text finishes comes highlighted as
+    /// soon as its fence closes.
+    #[tokio::test]
+    async fn code_blocks_come_highlighted_once_finished() {
+        use super::super::protocol::{CodeData, HIGHLIGHT_NAMES, ResetData, code_hash};
+        use arko_agents::AgentEvent;
+        use arko_workflows::WorkflowEvent;
+        let feed = Feed::new("main");
+        feed.reply("Done.\n\n```rust\nfn main() {}\n```");
+        let served = serve(&feed);
+        let cookie = served.login().await;
+        let mut stream = served.get("/api/events", Some(&cookie)).await;
+        let mut buffer = String::new();
+        let events = read_until(&mut stream, &mut buffer, |name, _| name == "reset").await;
+        let reset: ResetData = serde_json::from_value(events.last().unwrap().1.clone()).unwrap();
+        let code = &reset.items[0].code;
+        assert_eq!(code[0].hash, code_hash("fn main() {}\n"));
+        assert!(
+            code[0].spans.contains(&[
+                0,
+                2,
+                HIGHLIGHT_NAMES
+                    .iter()
+                    .position(|name| *name == "keyword")
+                    .unwrap() as u32
+            ]),
+            "{code:?}"
+        );
+
+        feed.turn_started();
+        let chunk = |text: &str| WorkflowEvent {
+            timestamp: chrono::Utc::now(),
+            workflow_run_id: uuid::Uuid::nil(),
+            agent_name: "main".into(),
+            agent_run_id: uuid::Uuid::nil(),
+            event: AgentEvent::AssistantResponseChunk(text.into()),
+        };
+        feed.event(&chunk("Next:\n\n```python\nx = 1\n"), None);
+        feed.event(&chunk("```\nAnd more"), None);
+        let events = read_until(&mut stream, &mut buffer, |name, _| name == "code").await;
+        let names: Vec<&str> = events.iter().map(|(name, _)| name.as_str()).collect();
+        assert_eq!(names, ["status", "item", "append", "code"]);
+        assert!(events[1].1.get("code").is_none(), "an open block waits");
+        let code: CodeData = serde_json::from_value(events[3].1.clone()).unwrap();
+        assert_eq!(code.id, events[1].1["id"].as_u64().unwrap());
+        assert_eq!(code.code[0].hash, code_hash("x = 1\n"));
     }
 
     /// A setting's new value comes with the command's answer, rather than

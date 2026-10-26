@@ -253,6 +253,9 @@ pub struct ItemData {
     pub job: Option<String>,
     #[serde(default)]
     pub pending: bool,
+    /// The highlighting of its Markdown's finished code blocks.
+    #[serde(default)]
+    pub code: Vec<CodeSpans>,
 }
 
 /// More text for an item (`append`).
@@ -477,4 +480,83 @@ where
     T: Deserialize<'de> + Default,
 {
     Ok(Option::<T>::deserialize(deserializer)?.unwrap_or_default())
+}
+
+// ----- code highlighting -----
+
+/// The highlight names of a code block's spans, by their index: GPUI Kit's,
+/// whose styles the themes give (`highlight.syntax`). A capture that isn't
+/// one of them takes the name its first word is (`function.method` is a
+/// `function`), as the kit's themes do.
+pub const HIGHLIGHT_NAMES: [&str; 41] = [
+    "attribute",
+    "boolean",
+    "comment",
+    "comment.doc",
+    "constant",
+    "constructor",
+    "embedded",
+    "emphasis",
+    "emphasis.strong",
+    "enum",
+    "function",
+    "hint",
+    "keyword",
+    "label",
+    "link_text",
+    "link_uri",
+    "number",
+    "operator",
+    "predictive",
+    "preproc",
+    "primary",
+    "property",
+    "punctuation",
+    "punctuation.bracket",
+    "punctuation.delimiter",
+    "punctuation.list_marker",
+    "punctuation.special",
+    "string",
+    "string.escape",
+    "string.regex",
+    "string.special",
+    "string.special.symbol",
+    "tag",
+    "tag.doctype",
+    "text.code.span",
+    "text.literal",
+    "title",
+    "type",
+    "variable",
+    "variable.special",
+    "variant",
+];
+
+/// The highlighting of a code block in an item's Markdown: the code it's
+/// for (its [`code_hash`]) and its spans, each `[start, end, name]` in bytes
+/// of the code, with the name's index in [`HIGHLIGHT_NAMES`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CodeSpans {
+    pub hash: String,
+    pub spans: Vec<[u32; 3]>,
+}
+
+/// More of an item's code blocks, highlighted once they're finished as it
+/// streams (`code`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[allow(dead_code)]
+pub struct CodeData {
+    pub id: u64,
+    pub code: Vec<CodeSpans>,
+}
+
+/// A code block's hash, as [`CodeSpans`] names its code: FNV-1a over its
+/// bytes, in hex.
+pub fn code_hash(code: &str) -> String {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in code.bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0100_0000_01b3);
+    }
+    format!("{hash:016x}")
 }
