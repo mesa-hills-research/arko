@@ -691,7 +691,7 @@ details.more > summary { width: max-content; padding: 4px 0; color: var(--link);
   .chip[aria-pressed="false"]:hover { background: var(--secondary-hover); }
 }
 .chip-default { margin-left: 4px; color: var(--muted); }
-.answers-other, .answers-else {
+.answers-other {
   width: 100%;
   padding: 4px 8px;
   border: 1px solid var(--input-line);
@@ -701,8 +701,7 @@ details.more > summary { width: max-content; padding: 4px 0; color: var(--link);
   color: var(--text);
   font: 16px/24px var(--sans);
 }
-.answers-other:focus, .answers-else:focus { border-color: var(--ring); }
-.answers-else { flex: none; max-height: calc(4lh + 10px); resize: none; }
+.answers-other:focus { border-color: var(--ring); }
 .answers-instructions { display: flex; flex-direction: column; gap: 4px; }
 .answers-label { color: var(--muted); font-size: 12px; }
 .answers-instructions-box { max-height: 10rem; padding: 8px; overflow-y: auto; border-radius: var(--r-md); background: var(--code); font-size: 14px; white-space: pre-wrap; overflow-wrap: anywhere; }

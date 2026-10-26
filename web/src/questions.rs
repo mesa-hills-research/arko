@@ -42,7 +42,6 @@ pub struct Asking {
     pub seen: RwSignal<Vec<String>>,
     /// What's filled in, by question id, so it stays with its question.
     pub drafts: RwSignal<HashMap<String, Draft>>,
-    pub anything_else: RwSignal<String>,
     /// When the message box last had a key (ms), and whether it's empty.
     pub typed_at: RwSignal<f64>,
     pub box_empty: RwSignal<bool>,
@@ -61,7 +60,6 @@ impl Asking {
             attached: RwSignal::new(Vec::new()),
             seen: RwSignal::new(Vec::new()),
             drafts: RwSignal::new(HashMap::new()),
-            anything_else: RwSignal::new(String::new()),
             typed_at: RwSignal::new(0.0),
             box_empty: RwSignal::new(true),
             focused: RwSignal::new(None),
@@ -161,7 +159,6 @@ pub fn text(question: &QuestionData) -> String {
 pub fn answers_body(
     questions: &[QuestionData],
     drafts: &HashMap<String, Draft>,
-    anything_else: &str,
     chosen: Option<(&str, &str)>,
 ) -> Option<(serde_json::Value, Vec<String>)> {
     let mut answers = Vec::new();
@@ -197,15 +194,10 @@ pub fn answers_body(
         answers.push(answer);
         ids.push(question.id.clone());
     }
-    let anything_else = anything_else.trim();
-    if ids.is_empty() && anything_else.is_empty() {
+    if ids.is_empty() {
         return None;
     }
-    let mut body = serde_json::json!({ "answers": answers });
-    if !anything_else.is_empty() {
-        body["anything_else"] = serde_json::json!(anything_else);
-    }
-    Some((body, ids))
+    Some((serde_json::json!({ "answers": answers }), ids))
 }
 
 // ----- what the panel does -----
@@ -320,9 +312,7 @@ pub fn open_panel(card: Option<u64>) {
         .or(open.first())
         .map(|question| question.id.clone());
     let frame = wasm_bindgen::closure::Closure::once_into_js(move || {
-        let field = target
-            .and_then(|id| document().get_element_by_id(&format!("answer-{id}")))
-            .or_else(|| document().get_element_by_id("answers-else"));
+        let field = target.and_then(|id| document().get_element_by_id(&format!("answer-{id}")));
         if let Some(field) = field {
             let options = web_sys::ScrollIntoViewOptions::new();
             options.set_block(web_sys::ScrollLogicalPosition::Nearest);
@@ -393,16 +383,13 @@ fn send(chosen: Option<(String, String)>) {
     let ask = page().ask;
     let questions = open_questions();
     let Some((body, ids)) = ask.drafts.with_untracked(|drafts| {
-        ask.anything_else.with_untracked(|anything_else| {
-            answers_body(
-                &questions,
-                drafts,
-                anything_else,
-                chosen
-                    .as_ref()
-                    .map(|(id, choice)| (id.as_str(), choice.as_str())),
-            )
-        })
+        answers_body(
+            &questions,
+            drafts,
+            chosen
+                .as_ref()
+                .map(|(id, choice)| (id.as_str(), choice.as_str())),
+        )
     }) else {
         return;
     };
@@ -413,12 +400,6 @@ fn send(chosen: Option<(String, String)>) {
         if post("/api/questions/answer", body).await {
             ask.drafts
                 .update(|drafts| drafts.retain(|id, _| !ids.contains(id)));
-            ask.anything_else.set(String::new());
-            if let Some(field) = document().get_element_by_id("answers-else") {
-                field
-                    .unchecked_into::<web_sys::HtmlTextAreaElement>()
-                    .set_value("");
-            }
             if closes {
                 close_panel();
             }
@@ -448,20 +429,11 @@ fn update_draft(id: &str, change: impl FnOnce(&mut Draft)) {
         .update(|drafts| change(drafts.entry(id.to_string()).or_default()));
 }
 
-/// Enter sends where there's a keyboard and a mouse, as in the message box.
-fn enter_sends() -> bool {
-    window()
-        .match_media("(hover: hover) and (pointer: fine)")
-        .ok()
-        .flatten()
-        .is_some_and(|list| list.matches())
-}
-
 // ----- views -----
 
 /// The answer panel above the message box: each open question with its
 /// choices, "You decide" and an Other field, an approval with Save and
-/// Don't save, one "Anything else" box, "Answer in chat" and Send.
+/// Don't save, "Answer in chat" and Send.
 #[component]
 pub fn AnswerPanel() -> impl IntoView {
     let page = page();
@@ -469,11 +441,8 @@ pub fn AnswerPanel() -> impl IntoView {
     let open = Memo::new(move |_| page.status.with(|status| status.questions.clone()));
     let can_send = move || {
         let questions = open.get();
-        ask.drafts.with(|drafts| {
-            ask.anything_else.with(|anything_else| {
-                answers_body(&questions, drafts, anything_else, None).is_some()
-            })
-        })
+        ask.drafts
+            .with(|drafts| answers_body(&questions, drafts, None).is_some())
     };
     let keys = move |event: web_sys::KeyboardEvent| {
         // Esc puts the questions in the message box, to answer in a message.
@@ -483,7 +452,6 @@ pub fn AnswerPanel() -> impl IntoView {
             answer_in_chat();
         }
     };
-    let enter_sends = enter_sends();
     view! {
         <Show when=move || ask.panel.get() && !open.with(Vec::is_empty)>
             <section class="answers" aria-label=move || open.with(|open| asks_text(open)) on:keydown=keys
@@ -503,22 +471,6 @@ pub fn AnswerPanel() -> impl IntoView {
                     <For each=move || open.get() key=|question| question.id.clone() let:question>
                         <QuestionView question=question open=open />
                     </For>
-                    <textarea
-                        id="answers-else"
-                        class="answers-else"
-                        rows="1"
-                        placeholder="Anything else"
-                        aria-label="Anything else"
-                        on:input=move |event| ask.anything_else.set(event_target_value(&event))
-                        on:keydown=move |event: web_sys::KeyboardEvent| {
-                            if event.key() == "Enter" && !event.is_composing()
-                                && (event.ctrl_key() || event.meta_key() || (enter_sends && !event.shift_key() && !event.alt_key()))
-                            {
-                                event.prevent_default();
-                                send(None);
-                            }
-                        }
-                    >{ask.anything_else.get_untracked()}</textarea>
                 </div>
                 <div class="answers-foot">
                     <button type="button" class="btn ghost small" title="Answer in chat (Esc)" on:click=move |_| answer_in_chat()>
@@ -894,7 +846,7 @@ mod tests {
             ),
         ];
         let mut drafts = HashMap::new();
-        assert!(answers_body(&questions, &drafts, " ", None).is_none());
+        assert!(answers_body(&questions, &drafts, None).is_none());
         drafts.insert(
             "q3".to_string(),
             Draft {
@@ -911,7 +863,7 @@ mod tests {
             },
         );
         drafts.insert("q5".to_string(), Draft::default());
-        let (body, ids) = answers_body(&questions, &drafts, "Thanks", None).unwrap();
+        let (body, ids) = answers_body(&questions, &drafts, None).unwrap();
         assert_eq!(
             body,
             serde_json::json!({
@@ -922,12 +874,11 @@ mod tests {
                     { "id": "q5" },
                     { "id": "x1" },
                 ],
-                "anything_else": "Thanks",
             })
         );
         assert_eq!(ids, ["q3", "q4"]);
         // An approval's Save goes with what else is filled in.
-        let (body, ids) = answers_body(&questions, &drafts, "", Some(("x1", SAVE))).unwrap();
+        let (body, ids) = answers_body(&questions, &drafts, Some(("x1", SAVE))).unwrap();
         assert_eq!(
             body["answers"][3],
             serde_json::json!({ "id": "x1", "choices": ["Save"] })
