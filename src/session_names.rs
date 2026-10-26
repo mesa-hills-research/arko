@@ -5,6 +5,7 @@
 //! words stay the name when no way works.
 
 use std::path::Path;
+use std::sync::atomic::AtomicBool;
 
 use serde::{Deserialize, Serialize};
 use unicode_segmentation::UnicodeSegmentation;
@@ -189,25 +190,34 @@ pub fn missing(root: &Path) -> Vec<(Way, Option<String>)> {
 
 /// [`missing`] for the settings this thread reads (a session's).
 pub(crate) fn missing_here() -> Vec<(Way, Option<String>)> {
+    missing_until(&AtomicBool::new(false))
+}
+
+/// [`missing_here`], where the check of Claude Code ends at once when
+/// `cancel` is set (the menu that asked closed).
+pub(crate) fn missing_until(cancel: &AtomicBool) -> Vec<(Way, Option<String>)> {
     Way::ALL
         .into_iter()
-        .map(|way| (way, why_not(way)))
+        .map(|way| (way, why_not(way, cancel)))
         .collect()
 }
 
-fn why_not(way: Way) -> Option<String> {
+fn why_not(way: Way, cancel: &AtomicBool) -> Option<String> {
     match way {
-        Way::ClaudePlan => claude_reason(&claude_code::check_recent()),
+        Way::ClaudePlan => claude_reason(&claude_code::check_plan(cancel)),
         Way::ChatGptPlan => login_reason(&credentials::chatgpt_logins(None)),
         Way::ClaudeKey => key_reason(&credentials::ANTHROPIC),
         Way::OpenAiKey => key_reason(&credentials::OPENAI),
     }
 }
 
+/// What the Claude plan way lacks, from a check of Claude Code made for it
+/// ([`claude_code::check_plan`]). Only a login that is a Claude plan counts.
 fn claude_reason(check: &Result<claude_code::Ready, claude_code::Problem>) -> Option<String> {
     Some(
         match check {
-            Ok(_) => return None,
+            Ok(ready) if ready.on_plan() => return None,
+            Ok(_) => "Claude Code isn't signed in with a Claude plan",
             Err(claude_code::Problem::Missing) => "Claude Code isn't installed",
             Err(claude_code::Problem::SignedOut(_)) => "Claude Code isn't signed in",
             Err(claude_code::Problem::Outdated { .. }) => "Claude Code needs an update",
@@ -553,7 +563,23 @@ mod tests {
             method: None,
             plan: None,
         };
-        assert_eq!(claude_reason(&Ok(ready)), None);
+        // Only a Claude plan's login counts. An API key's, or one Arko
+        // couldn't read, may be billed.
+        assert_eq!(
+            claude_reason(&Ok(ready.clone())).as_deref(),
+            Some("Claude Code isn't signed in with a Claude plan")
+        );
+        let keyed = claude_code::Ready {
+            method: Some("api_key".into()),
+            ..ready.clone()
+        };
+        assert!(claude_reason(&Ok(keyed)).is_some());
+        let plan = claude_code::Ready {
+            method: Some("claude.ai".into()),
+            plan: Some("max".into()),
+            ..ready
+        };
+        assert_eq!(claude_reason(&Ok(plan)), None);
         assert_eq!(
             claude_reason(&Err(Problem::Missing)).as_deref(),
             Some("Claude Code isn't installed")
