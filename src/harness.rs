@@ -1026,6 +1026,7 @@ impl Harness {
 
     /// A new conversation's hint, or a resumed one's history and notice.
     pub(crate) fn banner_end(&self, new: bool) {
+        self.count_questions();
         let out = &self.output;
         if new {
             out.echo(&out.dim(
@@ -1946,6 +1947,26 @@ impl Harness {
                 let _ = reply.send(self.switch_mode(to, workspace));
             }
         }
+    }
+
+    /// A session whose question file is missing or older than the count
+    /// it keeps numbers its next questions after those its conversations'
+    /// tasks asked.
+    fn count_questions(&self) {
+        if !self.feed.questions_need_count() {
+            return;
+        }
+        let last = self
+            .workflow()
+            .context()
+            .agent_results
+            .read()
+            .iter()
+            .filter(|result| result.agent_name == MAIN)
+            .filter_map(|result| result.task().ok().map(|task| task.questions.asked))
+            .max()
+            .unwrap_or(0);
+        self.feed.questions_counted(last);
     }
 
     /// How the conversation goes on: in the session's mode, when it was in
@@ -5722,11 +5743,18 @@ pub(crate) mod tests {
                 ..Default::default()
             },
         }];
+        // The main agent's questions are numbered for the session, one ask
+        // at a time, and open as soon as its task records them, before the
+        // asker's question reaches the screen.
+        assert_eq!(asker.question_numbers(later.agent_run_id, MAIN, 2), Some(1));
+        assert_eq!(asker.question_numbers(later.agent_run_id, MAIN, 1), Some(3));
+        assert_eq!(asker.question_numbers(later.agent_run_id, WORKER, 1), None);
+        asker.questions_recorded(later.agent_run_id, MAIN, &later.asked, false);
+        assert_eq!(
+            asker.open_questions(later.agent_run_id),
+            Some(later.asked.clone())
+        );
         assert_eq!(asker.asked(later.clone()).await.unwrap(), None);
-        // The next questions are numbered after it at once, in every
-        // conversation of the session.
-        assert_eq!(asker.last_question_number(MAIN), 1);
-        assert_eq!(asker.last_question_number(WORKER), 0);
         let question = questions.recv().await.unwrap();
         assert!(question.answer.is_none() && !question.plain());
         feed.ask(later.agent_run_id, &question.asked, false, None);
@@ -7880,6 +7908,83 @@ pub(crate) mod tests {
             "The user answered q1.\nq1 Tabs? Tabs"
         ));
         assert!(!crate::asking::holds_note(&task, "The user dismissed q1."));
+    }
+
+    /// A session whose question file is missing or older than the count it
+    /// keeps numbers its next questions after those its tasks asked.
+    #[tokio::test]
+    async fn a_session_without_its_count_counts_its_tasks_questions() {
+        use crate::mock_model::{ModelServer, complete, tool_call};
+        let server = ModelServer::start(Arc::new(move |_, body: String| {
+            Box::pin(async move {
+                if body.contains("Asked q1 and q2.") {
+                    complete("m2", "Asked.")
+                } else {
+                    tool_call(
+                        "m1",
+                        ASK_USER_TOOL_NAME,
+                        serde_json::json!({"questions": ["Tabs?", "Push now?"]}),
+                    )
+                }
+            })
+        }))
+        .await;
+        let temp = tempfile::tempdir().unwrap();
+        let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
+        let end = tokio::time::timeout(
+            Duration::from_secs(30),
+            harness.turn(Prompt::User("Start.".into()), &mut inputs),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(end, TurnEnd::Answered));
+        // A feed that read an older file, without the count.
+        let older = temp.path().join("older.json");
+        std::fs::write(&older, r#"{"questions": []}"#).unwrap();
+        harness.feed = remote::Feed::new(MAIN);
+        harness.feed.keep_questions(older);
+        assert!(harness.feed.questions_need_count());
+        harness.count_questions();
+        assert!(!harness.feed.questions_need_count());
+        assert_eq!(harness.feed.reserve_question_numbers(1), 3);
+    }
+
+    /// An approval left open when Arko stopped waited in a process that is
+    /// gone: the session closes it as it opens, so only the approval the
+    /// tool asks again can be answered.
+    #[tokio::test]
+    async fn an_approval_left_open_by_a_stop_is_closed_on_reopening() {
+        let temp = tempfile::tempdir().unwrap();
+        let kept = temp.path().join(crate::questions::FILE);
+        let run = uuid::Uuid::new_v4();
+        {
+            let (mut harness, _inputs, _sender) =
+                harness(&temp.path().join("one"), LLMClient::new(), true);
+            harness.feed.keep_questions(kept.clone());
+            let _waiting = ask_approval(&mut harness, run, "reviewer");
+            assert_eq!(harness.feed.open_questions().len(), 1);
+        }
+        let (mut harness, _inputs, _sender) =
+            harness(&temp.path().join("two"), LLMClient::new(), true);
+        harness.feed.keep_questions(kept);
+        harness.feed.questions_run(Some(run));
+        assert!(harness.feed.open_questions().is_empty());
+        assert_eq!(
+            harness.feed.questions()[0].state,
+            crate::questions::QuestionState::Closed { why: None }
+        );
+        let mut answered = ask_approval(&mut harness, run, "reviewer");
+        let open = harness.feed.open_questions();
+        assert_eq!(open.len(), 1);
+        assert!(
+            harness
+                .answer_questions(
+                    answers(vec![chose(&open[0].id, crate::questions::SAVE)]),
+                    Source::Terminal
+                )
+                .is_none()
+        );
+        assert_eq!(answered.try_recv().unwrap(), crate::questions::SAVE);
     }
 
     /// Question ids go on across the session's conversations: a new

@@ -352,7 +352,20 @@ pub(crate) fn conversation_of(
         reports: Vec::new(),
     };
     let add = |found: &mut SavedConversation, task: &arko_agents::Task| {
-        let items = remote::all_items(&task.conversation.messages, settings.text_replies, &images);
+        let mut items =
+            remote::all_items(&task.conversation.messages, settings.text_replies, &images);
+        // Without the session's record of its questions, a card shows them
+        // as text, and a profile's approval card isn't known.
+        items.retain(|item| {
+            !item
+                .questions
+                .iter()
+                .flatten()
+                .any(|question| question.approval.is_some())
+        });
+        for item in &mut items {
+            item.questions = None;
+        }
         let base = found.items.len() as u64;
         let turns = found
             .items

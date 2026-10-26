@@ -268,10 +268,14 @@ pub(crate) fn plain_id() -> String {
 /// The file in a session's folder that keeps its questions.
 pub(crate) const FILE: &str = "questions.json";
 
-/// A question with the conversation (the main agent's run) it belongs to.
+/// A question with the conversation (the main agent's run) it belongs to,
+/// and the ask (its card) it came in, which outlasts the process's feed
+/// items.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Entry {
     run: Uuid,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    card: Option<Uuid>,
     #[serde(flatten)]
     question: AgentQuestion,
 }
@@ -292,9 +296,10 @@ pub(crate) struct Pending {
 struct Saved {
     #[serde(default)]
     questions: Vec<Entry>,
-    /// The highest question number the session has seen.
+    /// The highest question number the session has given out. (A file
+    /// written before it was kept has none.)
     #[serde(default)]
-    last: u32,
+    last: Option<u32>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pending: Vec<Pending>,
 }
@@ -314,6 +319,8 @@ pub(crate) struct Book {
     /// The agent's closings of questions not asked yet here (its ask is on
     /// its way), by run and id.
     closed_early: Vec<(Uuid, String, QuestionState)>,
+    /// The file said how many numbers it gave out.
+    counted: bool,
 }
 
 /// How many settled questions of other conversations a session keeps.
@@ -338,14 +345,35 @@ impl Book {
                     self.entries.push(entry);
                 }
             }
-            self.last = self.last.max(saved.last);
+            self.counted = saved.last.is_some();
+            self.last = self.last.max(saved.last.unwrap_or_default());
             for pending in saved.pending {
                 if !self.pending.iter().any(|known| known.seq == pending.seq) {
                     self.pending.push(pending);
                 }
             }
         }
+        // An approval open in the file waited in a process that is gone:
+        // its tool, run again, asks anew.
+        for entry in &mut self.entries {
+            if entry.question.approval.is_some() && entry.question.state.is_open() {
+                entry.question.state = QuestionState::Closed { why: None };
+                entry.question.waits = false;
+            }
+        }
         self.path = Some(path);
+    }
+
+    /// Whether the numbers given out are to be counted from the tasks: the
+    /// file is missing, or older than the count it keeps.
+    pub(crate) fn needs_count(&self) -> bool {
+        !self.counted
+    }
+
+    /// The tasks gave out numbers up to `last`.
+    pub(crate) fn raise(&mut self, last: u32) {
+        self.last = self.last.max(last);
+        self.counted = true;
     }
 
     /// Writes what it keeps to its file.
@@ -371,7 +399,7 @@ impl Book {
         }
         let saved = Saved {
             questions: self.entries.clone(),
-            last: self.last,
+            last: Some(self.last),
             pending: self.pending.clone(),
         };
         match serde_json::to_string_pretty(&saved) {
@@ -395,24 +423,32 @@ impl Book {
         self.run
     }
 
-    /// The highest question number the session has seen.
-    pub(crate) fn last(&self) -> u32 {
-        self.last
+    /// The number of the first of `count` questions asked now: the next
+    /// ones are numbered after them. (Saved by the caller before it is
+    /// used.)
+    pub(crate) fn reserve(&mut self, count: u32) -> u32 {
+        let first = self.last + 1;
+        self.last += count;
+        first
     }
 
-    /// The questions `asked` were numbered: the next are numbered after
-    /// them.
-    pub(crate) fn count(&mut self, asked: &[AskedQuestion]) {
-        for question in asked {
-            self.last = self.last.max(number_of(&question.id));
-        }
+    /// Run `run` asked `asked` (`wait`: it waits for the answer), which have
+    /// no card yet. Those known already stay as they are.
+    pub(crate) fn register(&mut self, run: Uuid, asked: &[AskedQuestion], wait: bool) {
+        let new: Vec<AgentQuestion> = asked
+            .iter()
+            .filter(|asked| !self.knows(run, &asked.id))
+            .map(|asked| AgentQuestion::of(asked, wait, 0))
+            .collect();
+        self.ask(run, new, None);
     }
 
     /// Run `run` asked `questions` (with their card in `item`, which may
-    /// hold some already). A question asked again (a waiting ask, after a
-    /// resume) keeps its state and gets the card. One the agent closed
-    /// before it got here is closed. The card's questions are numbered.
-    pub(crate) fn ask(&mut self, run: Uuid, questions: Vec<AgentQuestion>) {
+    /// hold some already, and is `card` beyond this process). A question
+    /// asked again (a waiting ask, after a resume, or one registered before
+    /// its card) keeps its state and gets the card. One the agent closed
+    /// before it got here is closed.
+    pub(crate) fn ask(&mut self, run: Uuid, questions: Vec<AgentQuestion>, card: Option<Uuid>) {
         for question in questions {
             let id = question.id.clone();
             self.last = self.last.max(number_of(&id));
@@ -424,6 +460,7 @@ impl Book {
                 Some(entry) => {
                     entry.question.item = question.item;
                     entry.question.waits = question.waits && entry.question.state.is_open();
+                    entry.card = card.or(entry.card);
                 }
                 None => {
                     let mut question = question;
@@ -435,10 +472,46 @@ impl Book {
                         question.state = self.closed_early.remove(at).2;
                         question.waits = false;
                     }
-                    self.entries.push(Entry { run, question });
+                    self.entries.push(Entry {
+                        run,
+                        card,
+                        question,
+                    });
                 }
             }
         }
+    }
+
+    /// The approvals of the current conversation's settled card of a
+    /// profile named `name` that has no item yet (the session's first
+    /// such), which the restored card `item` shows now.
+    pub(crate) fn restore_approval(&mut self, name: &str, item: u64) -> Vec<AgentQuestion> {
+        let run = self.run;
+        let Some(card) = self
+            .entries
+            .iter()
+            .find(|entry| {
+                Some(entry.run) == run
+                    && entry.question.item == 0
+                    && !entry.question.state.is_open()
+                    && entry
+                        .question
+                        .approval
+                        .as_ref()
+                        .is_some_and(|approval| approval.name == name)
+            })
+            .and_then(|entry| entry.card)
+        else {
+            return Vec::new();
+        };
+        let mut found = Vec::new();
+        for entry in &mut self.entries {
+            if entry.card == Some(card) {
+                entry.question.item = item;
+                found.push(entry.question.clone());
+            }
+        }
+        found
     }
 
     /// Numbers the questions of card `item` (1, 2, 3), or none when it has
@@ -707,7 +780,11 @@ mod tests {
         let mut book = Book::default();
         book.keep_in(path.clone());
         book.set_run(Some(run));
-        book.ask(run, vec![on_card("q1", "A?", 7), on_card("q2", "B?", 7)]);
+        book.ask(
+            run,
+            vec![on_card("q1", "A?", 7), on_card("q2", "B?", 7)],
+            None,
+        );
         book.number_card(7);
         let (settled, items) = book.settle(None, &["q1".into(), "q9".into()], |_| {
             QuestionState::Answered {
@@ -748,13 +825,66 @@ mod tests {
         );
         assert!(current[1].state.is_open());
         assert_eq!(current[1].item, 0);
-        assert_eq!(again.last(), 2);
+        assert_eq!(again.reserve(1), 3, "numbered after the questions it keeps");
         assert_eq!(again.queued(run)[0].note, "The user answered q1.");
         assert!(again.queued(Uuid::new_v4()).is_empty());
         assert!(again.ack(&[seq]));
         assert!(again.queued(run).is_empty());
         assert_eq!(again.restored(&["q2".into()], 40)[0].item, 40);
         assert_eq!(again.of_item(40).len(), 1);
+    }
+
+    /// Numbers given out are saved before they are used, so a restart
+    /// before their questions reach the book (and another conversation
+    /// asking first) can't give them again. A file older than the count it
+    /// keeps, or none, asks for the count to come from the tasks.
+    #[test]
+    fn numbers_given_out_are_kept_across_a_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(FILE);
+        let mut book = Book::default();
+        book.keep_in(path.clone());
+        assert!(book.needs_count(), "no file yet");
+        book.raise(0);
+        assert_eq!(book.reserve(2), 1);
+        book.save();
+        let mut again = Book::default();
+        again.keep_in(path);
+        assert!(!again.needs_count());
+        assert_eq!(again.reserve(1), 3);
+        let older = dir.path().join("older.json");
+        std::fs::write(&older, r#"{"questions": []}"#).unwrap();
+        let mut old = Book::default();
+        old.keep_in(older);
+        assert!(old.needs_count());
+        old.raise(7);
+        assert_eq!(old.reserve(1), 8);
+    }
+
+    /// An approval open in the file waited in a process that is gone: it is
+    /// closed as the session opens.
+    #[test]
+    fn an_open_approval_is_closed_on_reading() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(FILE);
+        let run = Uuid::new_v4();
+        let mut book = Book::default();
+        book.keep_in(path.clone());
+        let mut approval = on_card(&plain_id(), "Save it?", 4);
+        approval.approval = Some(Approval {
+            name: "reviewer".into(),
+            ..Approval::default()
+        });
+        book.ask(run, vec![approval, on_card("q1", "A?", 5)], None);
+        book.save();
+        let mut again = Book::default();
+        again.keep_in(path);
+        again.set_run(Some(run));
+        let states: Vec<_> = again.current().into_iter().map(|q| q.state).collect();
+        assert_eq!(
+            states,
+            [QuestionState::Closed { why: None }, QuestionState::Open]
+        );
     }
 
     /// The agent's closing of a question whose ask hasn't reached the book
@@ -768,7 +898,11 @@ mod tests {
             book.close(run, &["q1".into()], Some("Found it".into()))
                 .is_empty()
         );
-        book.ask(run, vec![on_card("q1", "A?", 3), on_card("q2", "B?", 3)]);
+        book.ask(
+            run,
+            vec![on_card("q1", "A?", 3), on_card("q2", "B?", 3)],
+            None,
+        );
         assert_eq!(
             book.current()[0].state,
             QuestionState::Closed {
@@ -795,6 +929,7 @@ mod tests {
             book.ask(
                 run,
                 ids.iter().map(|id| on_card(id, "?", 1)).collect::<Vec<_>>(),
+                None,
             );
             book.settle(None, &ids, |_| QuestionState::Dismissed);
             book.save();

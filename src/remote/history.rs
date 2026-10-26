@@ -217,6 +217,12 @@ fn items_from(
                     {
                         calls.insert(id.clone(), (index, call.name.clone()));
                     }
+                    // The user may have been asked to approve the profile:
+                    // the feed gives this card what the session kept of it,
+                    // or leaves it out.
+                    if call.name == crew::SAVE_WORKER_PROFILE {
+                        push(&mut items, approval_card(&text("name")));
+                    }
                 }
             }
         }
@@ -258,6 +264,19 @@ fn question_card(questions: Option<&serde_json::Value>) -> Item {
     let mut item = Item::new(Kind::Question, text);
     // The questions, for their ids once the result names them.
     item.questions = (!placeholders.is_empty()).then_some(placeholders);
+    item
+}
+
+/// The card of the approval a save of the profile `name` may have asked
+/// for, which the feed fills from what the session kept.
+fn approval_card(name: &str) -> Item {
+    let mut question = crate::questions::AgentQuestion::placeholder("");
+    question.approval = Some(crate::questions::Approval {
+        name: name.to_string(),
+        ..Default::default()
+    });
+    let mut item = Item::new(Kind::Question, String::new());
+    item.questions = Some(vec![question]);
     item
 }
 
