@@ -78,7 +78,8 @@ pub const SYMBOLS_TABLE: &[(char, &str, &str)] = &[
 
 /// A spinner's frames in `symbols`, and how long each shows (in
 /// milliseconds): braille dots where the font has them, else a turning
-/// line.
+/// line. Only the full-screen view draws one.
+#[cfg(any(feature = "tui", test))]
 pub fn spinner_frames(symbols: Symbols) -> (&'static [&'static str], u64) {
     match symbols {
         Symbols::Full => (&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"], 100),
