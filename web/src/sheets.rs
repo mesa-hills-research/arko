@@ -91,7 +91,7 @@ pub fn WorkersSheet() -> impl IntoView {
 
 /// A command sent from the settings, waiting for Arko. The status shows a
 /// setting once it changed, and the lines are what Arko answered in the
-/// transcript (an error for a bad value), shown under the setting.
+/// transcript, shown under the setting when it didn't take (a bad value).
 struct Pending {
     /// Tells it from a command it took the place of.
     id: u64,
@@ -153,8 +153,10 @@ impl Settings {
         window().clear_timeout_with_handle(change.wait);
         self.shows.set(None);
         let said = change.lines.join("\n");
+        // A change that took shows in its control, and Arko's answer goes to
+        // the transcript, so the sheet keeps its layout.
         if ok {
-            self.note(change.note, said, false);
+            self.note(change.note, String::new(), false);
         } else if said.is_empty() {
             self.note(
                 change.note,
