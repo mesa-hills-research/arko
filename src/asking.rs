@@ -10,12 +10,11 @@
 //! reaches the agent with its next turn.
 
 use arko_agents::questions::{self as notes, Answers, AskedQuestion, QuestionAnswer};
-use tokio::sync::oneshot;
 use uuid::Uuid;
 
 use crate::harness::{Conversation, Harness, News, Prompt, TurnEnd};
-use crate::inputs::{Inputs, Question};
-use crate::questions::{AgentQuestion, Pending, QuestionState, is_agent_id};
+use crate::inputs::{Answering, Inputs, Question};
+use crate::questions::{AgentQuestion, ApprovalAnswer, Pending, QuestionState, is_agent_id};
 use crate::remote::{Delivery, Level, Source};
 
 /// A wait for the user's answer: the agent's `ask_user` with `wait`, or an
@@ -24,17 +23,14 @@ pub(crate) struct Waiting {
     /// The conversation that waits.
     pub(crate) run: Uuid,
     pub(crate) ids: Vec<String>,
-    pub(crate) answer: oneshot::Sender<String>,
-    /// An approval: its answer is [`SAVE`](crate::questions::SAVE), nothing,
-    /// or the user's words asking for changes.
-    pub(crate) approval: bool,
+    pub(crate) answer: Answering,
 }
 
 impl Waiting {
     /// Arko asked it, not the agent (an approval, or a question without
-    /// ids): its answer is the user's words alone, not a note.
+    /// ids): its answer is the user's decision or words alone, not a note.
     fn plain(&self) -> bool {
-        self.approval || !self.ids.iter().any(|id| is_agent_id(id))
+        matches!(self.answer, Answering::Approval(_)) || !self.ids.iter().any(|id| is_agent_id(id))
     }
 }
 
@@ -96,7 +92,13 @@ impl Harness {
         }
         let waits = question.answer.is_some();
         let run = question.run;
-        let item = self.feed.ask(run, &asked, waits, question.approval.clone());
+        let item = self.feed.ask(
+            run,
+            &asked,
+            waits,
+            question.approval.clone(),
+            question.call.clone(),
+        );
         let out = &self.output;
         out.echo(&out.bold("  ? Arko asks"));
         let questions: Vec<AgentQuestion> = self
@@ -137,19 +139,16 @@ impl Harness {
                 match given {
                     // (It stays kept until the task holds it.)
                     Some(pending) => {
-                        let _ = answer.send(pending.note);
+                        if let Answering::Text(answer) = answer {
+                            let _ = answer.send(pending.note);
+                        }
                         return;
                     }
                     None => self.feed.reopen_questions(run, &answered),
                 }
             }
         }
-        self.waiting.push(Waiting {
-            run,
-            ids,
-            answer,
-            approval: question.approval.is_some(),
-        });
+        self.waiting.push(Waiting { run, ids, answer });
     }
 
     /// Gives the agent's wait for the questions of `pending` its note (kept
@@ -164,23 +163,34 @@ impl Harness {
             return false;
         };
         let waiting = self.waiting.remove(at);
-        waiting.answer.send(pending.note.clone()).is_ok()
+        match waiting.answer {
+            Answering::Text(answer) => answer.send(pending.note.clone()).is_ok(),
+            Answering::Approval(_) => false,
+        }
     }
 
-    /// Gives the waits Arko asked among `answered` (approvals, questions
-    /// without ids) their answers, as `reply` words each (of its id, and
-    /// whether it is an approval).
+    /// Gives the waits Arko asked among `answered` their answers: an
+    /// approval what `decided` says of its id, a question without ids the
+    /// words `words` gives.
     fn answer_plain_waits(
         &mut self,
         answered: &[String],
-        reply: impl Fn(&str, bool) -> String,
+        decided: impl Fn(&str) -> ApprovalAnswer,
+        words: impl Fn(&str) -> String,
     ) -> bool {
         let mut any = false;
         let mut kept = Vec::new();
         for waiting in std::mem::take(&mut self.waiting) {
             match waiting.ids.iter().find(|id| answered.contains(id)) {
                 Some(id) if waiting.plain() => {
-                    let _ = waiting.answer.send(reply(id, waiting.approval));
+                    match waiting.answer {
+                        Answering::Approval(answer) => {
+                            let _ = answer.send(decided(id));
+                        }
+                        Answering::Text(answer) => {
+                            let _ = answer.send(words(id));
+                        }
+                    }
                     any = true;
                 }
                 _ => kept.push(waiting),
@@ -270,11 +280,15 @@ impl Harness {
             self.feed.user(text, source, Delivery::Answer);
         }
         self.output.echo(&self.output.dim("  ✎ answered"));
-        self.answer_plain_waits(&ids_of(&settled), |id, approval| match answer_of(id) {
-            Some(answer) if approval => crate::questions::approval_reply(answer),
-            Some(answer) => answer.words(None),
-            None => String::new(),
-        });
+        self.answer_plain_waits(
+            &ids_of(&settled),
+            |id| answer_of(id).map_or(ApprovalAnswer::DontSave, crate::questions::approval_reply),
+            |id| {
+                answer_of(id)
+                    .map(|answer| answer.words(None))
+                    .unwrap_or_default()
+            },
+        );
         let pending = pending?;
         if self.answer_agent_wait(&pending) {
             return None;
@@ -303,7 +317,11 @@ impl Harness {
             return None;
         }
         self.user_present();
-        self.answer_plain_waits(&ids_of(&settled), |_, _| String::new());
+        self.answer_plain_waits(
+            &ids_of(&settled),
+            |_| ApprovalAnswer::DontSave,
+            |_| String::new(),
+        );
         let pending = pending?;
         if self.answer_agent_wait(&pending) {
             return None;
@@ -352,13 +370,11 @@ impl Harness {
             )
         };
         let answered = ids_of(&settled);
-        let approved = self.answer_plain_waits(&answered, |_, approval| {
-            if approval {
-                crate::questions::approval_words(text)
-            } else {
-                text.trim().to_string()
-            }
-        });
+        let approved = self.answer_plain_waits(
+            &answered,
+            |_| crate::questions::approval_words(text),
+            |_| text.trim().to_string(),
+        );
         let Some(pending) = pending else {
             if approved {
                 return None;
@@ -406,7 +422,7 @@ impl Harness {
             .partition(|waiting| waiting.answer.is_closed());
         self.waiting = kept;
         for waiting in lost {
-            if waiting.plain() {
+            if matches!(waiting.answer, Answering::Approval(_)) || waiting.plain() {
                 self.feed
                     .settle_questions(Some(waiting.run), &waiting.ids, |_| QuestionState::Closed {
                         why: None,

@@ -219,41 +219,55 @@ pub fn card_line(questions: &[AgentQuestion]) -> String {
     }
 }
 
-/// What the tool that asked for an approval reads of the user's answer:
-/// [`SAVE`] to save, nothing not to, or the user's words, which ask for
-/// changes. Only [`SAVE`] picked alone, or typed alone with nothing picked,
-/// saves. Words beside a pick (or "You decide") never save, whatever they
-/// say. They go back as changes to make, so a contradiction such as Don't
-/// save with "save" typed saves nothing.
-pub(crate) fn approval_reply(answer: &Answer) -> String {
+/// What the user decided about an approval, as the tool that asked reads
+/// it. Typed words are never [`Save`](Self::Save) by themselves, except
+/// "save" typed alone with nothing picked (for front ends that only send
+/// text).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ApprovalAnswer {
+    /// Save it as it is.
+    Save,
+    /// Don't save it.
+    DontSave,
+    /// Don't save it, and change it as the user's words say.
+    Edit(String),
+    /// No answer came (the turn stopped).
+    Unanswered,
+}
+
+/// The decision a user's answer to an approval makes. Only [`SAVE`] picked
+/// alone, or "save" typed alone with nothing picked, saves. Words beside a
+/// pick (or "You decide") ask for changes, whatever they say, so a
+/// contradiction such as Don't save with "Save" typed saves nothing.
+pub(crate) fn approval_reply(answer: &Answer) -> ApprovalAnswer {
     let text = answer.text.as_deref().map(str::trim).unwrap_or_default();
     let picked = !answer.choices.is_empty() || answer.you_decide;
     match (text.is_empty(), picked) {
         (false, false) => approval_words(text),
-        (false, true) => text.to_string(),
+        (false, true) => ApprovalAnswer::Edit(text.to_string()),
         (true, _)
             if !answer.you_decide
                 && answer.choices.len() == 1
                 && answer.choices[0].trim().eq_ignore_ascii_case(SAVE) =>
         {
-            SAVE.to_string()
+            ApprovalAnswer::Save
         }
-        (true, _) => String::new(),
+        (true, _) => ApprovalAnswer::DontSave,
     }
 }
 
-/// [`approval_reply`] of words the user typed: a choice typed alone picks
-/// it, and anything else asks for changes.
-pub(crate) fn approval_words(text: &str) -> String {
+/// [`approval_reply`] of words the user typed alone: a choice typed alone
+/// picks it, and anything else asks for changes.
+pub(crate) fn approval_words(text: &str) -> ApprovalAnswer {
     let choice = text
         .trim()
         .trim_end_matches(['.', '!'])
         .replace('’', "'")
         .to_lowercase();
     match choice.as_str() {
-        "save" => SAVE.to_string(),
-        "don't save" | "dont save" => String::new(),
-        _ => text.trim().to_string(),
+        "save" => ApprovalAnswer::Save,
+        "don't save" | "dont save" => ApprovalAnswer::DontSave,
+        _ => ApprovalAnswer::Edit(text.trim().to_string()),
     }
 }
 
@@ -283,6 +297,10 @@ struct Entry {
     run: Uuid,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     card: Option<Uuid>,
+    /// The model's id of the call an approval was asked for (its profile's
+    /// save), as the conversation records it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    call: Option<String>,
     #[serde(flatten)]
     question: AgentQuestion,
 }
@@ -447,7 +465,7 @@ impl Book {
             .filter(|asked| !self.knows(run, &asked.id))
             .map(|asked| AgentQuestion::of(asked, wait, 0))
             .collect();
-        self.ask(run, new, None);
+        self.ask(run, new, None, None);
     }
 
     /// Run `run` asked `questions` (with their card in `item`, which may
@@ -455,7 +473,13 @@ impl Book {
     /// asked again (a waiting ask, after a resume, or one registered before
     /// its card) keeps its state and gets the card. One the agent closed
     /// before it got here is closed.
-    pub(crate) fn ask(&mut self, run: Uuid, questions: Vec<AgentQuestion>, card: Option<Uuid>) {
+    pub(crate) fn ask(
+        &mut self,
+        run: Uuid,
+        questions: Vec<AgentQuestion>,
+        card: Option<Uuid>,
+        call: Option<String>,
+    ) {
         for question in questions {
             let id = question.id.clone();
             self.last = self.last.max(number_of(&id));
@@ -468,6 +492,7 @@ impl Book {
                     entry.question.item = question.item;
                     entry.question.waits = question.waits && entry.question.state.is_open();
                     entry.card = card.or(entry.card);
+                    entry.call = call.clone().or(entry.call.take());
                 }
                 None => {
                     let mut question = question;
@@ -482,6 +507,7 @@ impl Book {
                     self.entries.push(Entry {
                         run,
                         card,
+                        call: call.clone(),
                         question,
                     });
                 }
@@ -489,23 +515,20 @@ impl Book {
         }
     }
 
-    /// The approvals of the current conversation's settled card of a
-    /// profile named `name` that has no item yet (the session's first
-    /// such), which the restored card `item` shows now.
-    pub(crate) fn restore_approval(&mut self, name: &str, item: u64) -> Vec<AgentQuestion> {
+    /// The approvals of the current conversation's card that the save
+    /// `call` asked (by the model's id of the call), which the restored card
+    /// `item` shows now. None for a save no one was asked about, or whose
+    /// card an earlier save of the same card shows already.
+    pub(crate) fn restore_approval(&mut self, call: &str, item: u64) -> Vec<AgentQuestion> {
         let run = self.run;
         let Some(card) = self
             .entries
             .iter()
             .find(|entry| {
                 Some(entry.run) == run
+                    && entry.question.approval.is_some()
+                    && entry.call.as_deref() == Some(call)
                     && entry.question.item == 0
-                    && !entry.question.state.is_open()
-                    && entry
-                        .question
-                        .approval
-                        .as_ref()
-                        .is_some_and(|approval| approval.name == name)
             })
             .and_then(|entry| entry.card)
         else {
@@ -791,6 +814,7 @@ mod tests {
             run,
             vec![on_card("q1", "A?", 7), on_card("q2", "B?", 7)],
             None,
+            None,
         );
         book.number_card(7);
         let (settled, items) = book.settle(None, &["q1".into(), "q9".into()], |_| {
@@ -882,7 +906,7 @@ mod tests {
             name: "reviewer".into(),
             ..Approval::default()
         });
-        book.ask(run, vec![approval, on_card("q1", "A?", 5)], None);
+        book.ask(run, vec![approval, on_card("q1", "A?", 5)], None, None);
         book.save();
         let mut again = Book::default();
         again.keep_in(path);
@@ -908,6 +932,7 @@ mod tests {
         book.ask(
             run,
             vec![on_card("q1", "A?", 3), on_card("q2", "B?", 3)],
+            None,
             None,
         );
         assert_eq!(
@@ -936,6 +961,7 @@ mod tests {
             book.ask(
                 run,
                 ids.iter().map(|id| on_card(id, "?", 1)).collect::<Vec<_>>(),
+                None,
                 None,
             );
             book.settle(None, &ids, |_| QuestionState::Dismissed);
@@ -1001,26 +1027,31 @@ mod tests {
         };
         // (choices, text, you decide) and what the tool reads: only
         // "Save" alone saves, and words beside a pick go back as changes.
+        use ApprovalAnswer::{DontSave, Edit, Save};
+        let edit = |text: &str| Edit(text.to_string());
         for (choices, text, you_decide, read) in [
-            (&[SAVE][..], None, false, SAVE),
-            (&[SAVE][..], Some("  "), false, SAVE),
-            (&[DONT_SAVE][..], None, false, ""),
-            (&[SAVE, DONT_SAVE][..], None, false, ""),
-            (&[SAVE][..], None, true, ""),
-            (&[][..], None, true, ""),
-            (&[][..], Some("save."), false, SAVE),
-            (&[][..], Some("Don’t save"), false, ""),
-            (&[][..], Some("yes"), false, "yes"),
+            (&[SAVE][..], None, false, Save),
+            (&[SAVE][..], Some("  "), false, Save),
+            (&[DONT_SAVE][..], None, false, DontSave),
+            (&[SAVE, DONT_SAVE][..], None, false, DontSave),
+            (&[SAVE][..], None, true, DontSave),
+            (&[][..], None, true, DontSave),
+            (&[][..], Some("save."), false, Save),
+            (&[][..], Some("SAVE"), false, Save),
+            (&[][..], Some("Don’t save"), false, DontSave),
+            (&[][..], Some("yes"), false, edit("yes")),
             (
                 &[SAVE][..],
                 Some("yes, but high effort"),
                 false,
-                "yes, but high effort",
+                edit("yes, but high effort"),
             ),
-            (&[DONT_SAVE][..], Some("save"), false, "save"),
-            (&[DONT_SAVE][..], Some("Save"), true, "Save"),
-            (&[][..], Some("save"), true, "save"),
-            (&[SAVE][..], Some("save"), false, "save"),
+            (&[DONT_SAVE][..], Some("save"), false, edit("save")),
+            (&[DONT_SAVE][..], Some("Save"), false, edit("Save")),
+            (&[DONT_SAVE][..], Some("SAVE"), false, edit("SAVE")),
+            (&[DONT_SAVE][..], Some("Save"), true, edit("Save")),
+            (&[][..], Some("Save"), true, edit("Save")),
+            (&[SAVE][..], Some("Save"), false, edit("Save")),
         ] {
             assert_eq!(
                 picked(choices, text, you_decide),

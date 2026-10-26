@@ -524,7 +524,23 @@ async fn a_profile_for_every_session_is_put_to_the_user_as_a_question() {
     // (The input stays open while the turns end: a closed one quits.)
     let sender = input.clone();
     let answers = tokio::spawn(async move {
-        for reply in [None, Some("no, use medium effort"), Some("Save")] {
+        // From the panel: (choices, typed words, you decide), each a
+        // contradiction. Then typed answers.
+        let panel = |choices: &[&str], text: &str, you_decide: bool| {
+            Err((
+                choices.iter().map(|choice| choice.to_string()).collect::<Vec<_>>(),
+                text.to_string(),
+                you_decide,
+            ))
+        };
+        for reply in [
+            panel(&[crate::questions::DONT_SAVE], "save", false),
+            panel(&[crate::questions::DONT_SAVE], "SAVE", false),
+            panel(&[], "Save", true),
+            panel(&[crate::questions::SAVE], "Save", false),
+            Ok("no, use medium effort"),
+            Ok("Save"),
+        ] {
             until(|| feed.activity().question.is_some()).await;
             let question = feed.activity().question.unwrap();
             assert!(
@@ -536,21 +552,20 @@ async fn a_profile_for_every_session_is_put_to_the_user_as_a_question() {
             );
             assert!(question.text.contains("Instructions\nYou judge 3D models."));
             match reply {
-                Some(reply) => sender
+                Ok(reply) => sender
                     .send(Input::Answer {
                         question: question.id,
                         text: reply.into(),
                     })
                     .unwrap(),
-                // The panel: Don't save picked, and "save" typed beside it.
-                None => sender
+                Err((choices, text, you_decide)) => sender
                     .send(Input::AnswerQuestions(crate::questions::Answers {
                         answers: vec![crate::questions::QuestionAnswer::new(
                             feed.open_questions()[0].id.clone(),
                             crate::questions::Answer {
-                                choices: vec![crate::questions::DONT_SAVE.into()],
-                                text: Some("save".into()),
-                                you_decide: false,
+                                choices,
+                                text: Some(text),
+                                you_decide,
                             },
                         )],
                         anything_else: None,
@@ -562,12 +577,15 @@ async fn a_profile_for_every_session_is_put_to_the_user_as_a_question() {
         }
     });
     let saved = harness.root.join("profiles").join("3d-judge.md");
-    start_worker(&mut harness, &mut inputs, "Start by saving a profile for everyone.").await;
-    assert_eq!(
-        last_result(&seen),
-        "The user didn't save 3d-judge for every project and asked for changes: \"save\". Make them and call save_worker_profile again, which shows them the changed profile."
-    );
-    assert!(!saved.exists());
+    // Words beside a pick are changes to make, whatever they say.
+    for words in ["save", "SAVE", "Save", "Save"] {
+        start_worker(&mut harness, &mut inputs, "Start by saving a profile for everyone.").await;
+        assert_eq!(
+            last_result(&seen),
+            format!("The user didn't save 3d-judge for every project and asked for changes: \"{words}\". Make them and call save_worker_profile again, which shows them the changed profile.")
+        );
+        assert!(!saved.exists());
+    }
     start_worker(&mut harness, &mut inputs, "Start by saving a profile for everyone.").await;
     assert_eq!(
         last_result(&seen),

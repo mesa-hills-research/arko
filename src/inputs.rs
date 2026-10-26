@@ -328,9 +328,31 @@ pub(crate) struct Question {
     /// isn't the agent's (`q1`).
     pub(crate) asked: Vec<arko_agents::questions::AskedQuestion>,
     /// Where the answer goes, when the agent waits for it.
-    pub(crate) answer: Option<oneshot::Sender<String>>,
+    pub(crate) answer: Option<Answering>,
     /// What Arko asks the user to approve.
     pub(crate) approval: Option<crate::questions::Approval>,
+    /// The model's id of the call that asked (the save an approval is for),
+    /// as the conversation records it.
+    pub(crate) call: Option<String>,
+}
+
+/// Where the answer to questions the agent waits for goes.
+pub(crate) enum Answering {
+    /// The agent's wait (`ask_user` with `wait`, or a question without
+    /// ids): the answer as text.
+    Text(oneshot::Sender<String>),
+    /// An approval: what the user decided.
+    Approval(oneshot::Sender<crate::questions::ApprovalAnswer>),
+}
+
+impl Answering {
+    /// The wait is gone (its turn stopped).
+    pub(crate) fn is_closed(&self) -> bool {
+        match self {
+            Self::Text(answer) => answer.is_closed(),
+            Self::Approval(answer) => answer.is_closed(),
+        }
+    }
 }
 
 impl Question {
@@ -372,15 +394,19 @@ impl Asker {
         self.questions.is_some()
     }
 
-    /// Asks the user to approve `approval` for run `run`, as `question`
-    /// words it, and waits for the answer: [`SAVE`](crate::questions::SAVE)
-    /// to save it, nothing not to, or words asking for changes.
+    /// Asks the user to approve `approval` for run `run` (the save `call`
+    /// asks it for), as `question` words it, and waits for what they
+    /// decide.
     pub(crate) async fn approve(
         &self,
         run: uuid::Uuid,
+        call: Option<String>,
         question: String,
         approval: crate::questions::Approval,
-    ) -> Result<String, String> {
+    ) -> crate::questions::ApprovalAnswer {
+        let Some(questions) = &self.questions else {
+            return crate::questions::ApprovalAnswer::Unanswered;
+        };
         let asked = vec![arko_agents::questions::AskedQuestion {
             id: crate::questions::PLAIN_ID.to_string(),
             question: arko_agents::questions::Question {
@@ -392,7 +418,20 @@ impl Asker {
                 ..Default::default()
             },
         }];
-        self.put(run, asked, Some(approval)).await
+        let (answer, answered) = oneshot::channel();
+        let question = Question {
+            run,
+            asked,
+            answer: Some(Answering::Approval(answer)),
+            approval: Some(approval),
+            call,
+        };
+        if questions.send(question).is_err() {
+            return crate::questions::ApprovalAnswer::Unanswered;
+        }
+        answered
+            .await
+            .unwrap_or(crate::questions::ApprovalAnswer::Unanswered)
     }
 
     /// Puts `asked` to the user and waits for the answer.
@@ -400,7 +439,6 @@ impl Asker {
         &self,
         run: uuid::Uuid,
         asked: Vec<arko_agents::questions::AskedQuestion>,
-        approval: Option<crate::questions::Approval>,
     ) -> Result<String, String> {
         let Some(questions) = &self.questions else {
             return Ok(CANT_ASK.to_string());
@@ -409,8 +447,9 @@ impl Asker {
         let question = Question {
             run,
             asked,
-            answer: Some(answer),
-            approval,
+            answer: Some(Answering::Text(answer)),
+            approval: None,
+            call: None,
         };
         if questions.send(question).is_err() {
             return Ok(CANT_ASK.to_string());
@@ -428,8 +467,7 @@ pub(crate) const CANT_ASK: &str = "No one can answer questions in this session (
 #[async_trait::async_trait]
 impl UserInputHandler for Asker {
     async fn respond(&self, request: UserInputRequest) -> Result<String, String> {
-        self.put(request.agent_run_id, asked_of(&request), None)
-            .await
+        self.put(request.agent_run_id, asked_of(&request)).await
     }
 
     /// The questions go to the user, and their answers reach the agent
@@ -443,6 +481,7 @@ impl UserInputHandler for Asker {
             asked: asked_of(&request),
             answer: None,
             approval: None,
+            call: None,
         };
         if questions.send(question).is_err() {
             return Ok(Some(CANT_ASK.to_string()));

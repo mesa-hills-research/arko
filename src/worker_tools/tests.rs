@@ -1,6 +1,21 @@
 use std::time::Duration;
 
 use super::*;
+use crate::questions::ApprovalAnswer;
+
+/// Gives an approval its answer, as the user's decision.
+trait Decide {
+    fn decide(self, answer: ApprovalAnswer);
+}
+
+impl Decide for crate::inputs::Answering {
+    fn decide(self, answer: ApprovalAnswer) {
+        match self {
+            crate::inputs::Answering::Approval(sender) => sender.send(answer).unwrap(),
+            crate::inputs::Answering::Text(_) => panic!("not an approval"),
+        }
+    }
+}
 use crate::agents::{ExtraRules, ModelSettings, resolve_model};
 use crate::crew::{NewWorkers, Setup, WorkerSetup};
 use crate::profiles::Roots;
@@ -496,11 +511,7 @@ async fn a_profile_with_no_scope_is_kept_with_the_project_and_asks_when_git_trac
             .text()
             .contains("worker profile audit in this project's")
     );
-    question
-        .answer
-        .unwrap()
-        .send(crate::questions::SAVE.into())
-        .unwrap();
+    question.answer.unwrap().decide(ApprovalAnswer::Save);
     assert!(within(asking).await.unwrap().is_ok());
 }
 
@@ -548,8 +559,7 @@ async fn a_profile_for_every_session_waits_for_the_users_save() {
     question
         .answer
         .unwrap()
-        .send("yes, but use medium effort".into())
-        .unwrap();
+        .decide(ApprovalAnswer::Edit("yes, but use medium effort".into()));
     assert_eq!(
         within(asking).await.unwrap().unwrap(),
         "The user didn't save 3d-judge for every project and asked for changes: \"yes, but use medium effort\". Make them and call save_worker_profile again, which shows them the changed profile."
@@ -572,8 +582,7 @@ async fn a_profile_for_every_session_waits_for_the_users_save() {
         .unwrap()
         .answer
         .unwrap()
-        .send(crate::questions::SAVE.into())
-        .unwrap();
+        .decide(ApprovalAnswer::Save);
     let result = within(asking).await.unwrap().unwrap();
     assert!(
         result.starts_with("Saved the worker profile 3d-judge in the user's Arko folder, for every project. start_agent takes it by name."),
@@ -611,11 +620,7 @@ async fn a_profile_for_every_session_waits_for_the_users_save() {
             .text()
             .contains("in this project's .agents/profiles folder")
     );
-    question
-        .answer
-        .unwrap()
-        .send(crate::questions::SAVE.into())
-        .unwrap();
+    question.answer.unwrap().decide(ApprovalAnswer::Save);
     assert!(
         asking
             .await
@@ -652,8 +657,7 @@ async fn an_empty_answer_or_no_one_to_ask_saves_nothing() {
         .unwrap()
         .answer
         .unwrap()
-        .send(String::new())
-        .unwrap();
+        .decide(ApprovalAnswer::DontSave);
     assert_eq!(
         within(asking).await.unwrap().unwrap(),
         "The user chose not to save audit for every project, so don't ask again unless they want it. You may save it for this session with scope session."
@@ -875,8 +879,7 @@ async fn a_saved_profile_hidden_by_a_nearer_one_says_so() {
         .unwrap()
         .answer
         .unwrap()
-        .send(crate::questions::SAVE.into())
-        .unwrap();
+        .decide(ApprovalAnswer::Save);
     let result = within(asking).await.unwrap().unwrap();
     assert!(
         result.contains(

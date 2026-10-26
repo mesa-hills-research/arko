@@ -2359,10 +2359,15 @@ impl Feed {
             item.at = at;
             // A card's questions as the session kept them.
             if let Some(questions) = item.questions.take() {
-                // A profile saved after its approval: the card of its
-                // approval, unless no one was asked.
-                if let Some(approval) = questions.first().and_then(|q| q.approval.as_ref()) {
-                    let kept = state.questions.restore_approval(&approval.name, item.id);
+                // A profile's save: the card of the approval it asked for
+                // (by the call's id, which the placeholder carries), unless
+                // no one was asked.
+                if let Some(call) = questions
+                    .first()
+                    .filter(|question| question.approval.is_some())
+                    .map(|question| question.id.clone())
+                {
+                    let kept = state.questions.restore_approval(&call, item.id);
                     if kept.is_empty() {
                         continue;
                     }
@@ -2553,6 +2558,7 @@ impl Feed {
         asked: &[crate::questions::AskedQuestion],
         waits: bool,
         approval: Option<crate::questions::Approval>,
+        call: Option<String>,
     ) -> u64 {
         let item = {
             let mut state = self.lock();
@@ -2598,6 +2604,7 @@ impl Feed {
                     })
                     .collect(),
                 Some(key),
+                call,
             );
             state.questions.number_card(item);
             state.questions.save();
@@ -2618,7 +2625,7 @@ impl Feed {
     #[doc(hidden)]
     pub fn ask_questions(&self, asked: &[crate::questions::AskedQuestion], waits: bool) -> u64 {
         let run = self.lock().questions.run().unwrap_or_else(Uuid::nil);
-        self.ask(run, asked, waits, None)
+        self.ask(run, asked, waits, None, None)
     }
 
     /// Sets the current conversation's question `id` to `state`, as an
@@ -2736,7 +2743,7 @@ impl Feed {
             if missing.is_empty() {
                 return;
             }
-            state.questions.ask(run, missing, None);
+            state.questions.ask(run, missing, None, None);
             state.questions.save();
         }
         self.question_activity();
@@ -4854,6 +4861,7 @@ mod tests {
             &[asked("q1", "Tabs or spaces?"), asked("q2", "Push now?")],
             true,
             None,
+            None,
         );
         let since = feed.activity().since;
         assert_eq!(
@@ -4965,6 +4973,7 @@ mod tests {
             &[asked("q1", "Tabs or spaces?"), asked("q2", "Push now?")],
             false,
             None,
+            None,
         );
         first.settle_questions(None, &["q1".into()], |_| QuestionState::Dismissed);
 
@@ -5016,8 +5025,9 @@ mod tests {
     }
 
     /// A resumed session's transcript shows the record of each approval
-    /// card where the agent's save of its profile was, once, and nothing
-    /// for a save no one was asked about.
+    /// card right after the save that asked it, found by the call's id,
+    /// once, and nothing for the other saves of the same profile: one for
+    /// the session, which asked no one, and one that failed.
     #[test]
     fn a_resumed_session_shows_its_approval_records() {
         use crate::profiles::{Place, Profile};
@@ -5029,7 +5039,7 @@ mod tests {
         let first = Feed::new("main");
         first.keep_questions(path.clone());
         first.questions_run(Some(run));
-        let ask = |name: &str| {
+        let ask = |name: &str, call: &str| {
             first.ask(
                 run,
                 &[asked(&crate::questions::plain_id(), "Save it?")],
@@ -5038,10 +5048,11 @@ mod tests {
                     &Profile::new(name, "Reviews"),
                     Place::User,
                 )),
+                Some(call.to_string()),
             )
         };
-        let card = ask("one");
-        assert_eq!(ask("two"), card);
+        let card = ask("reviewer", "b");
+        assert_eq!(ask("tester", "c"), card);
         let ids: Vec<String> = first.open_questions().into_iter().map(|q| q.id).collect();
         first.settle_questions(None, &ids[..1], |_| QuestionState::Answered {
             answer: "Save".into(),
@@ -5059,35 +5070,53 @@ mod tests {
             }))
             .unwrap()
         };
-        let mut saves = Message::new_assistant("");
-        saves.tool_calls = vec![save("a", "one"), save("b", "two"), save("c", "quick")];
-        let results = ["a", "b", "c"]
-            .map(|id| {
-                Content::ToolResult(ToolResult::new(
-                    Some(id.into()),
-                    crate::crew::SAVE_WORKER_PROFILE,
-                    "Saved.",
-                ))
-            })
-            .to_vec();
+        let result = |id: &str, failed: bool| {
+            let mut result =
+                ToolResult::new(Some(id.into()), crate::crew::SAVE_WORKER_PROFILE, "Done.");
+            result.is_error = failed;
+            Content::ToolResult(result)
+        };
+        let saves = |calls: Vec<ToolCall>| {
+            let mut message = Message::new_assistant("");
+            message.tool_calls = calls;
+            message
+        };
         again.restore(crate::remote::history(
             &[
                 Message::new_user("Start."),
-                saves,
-                Message::new_user_with_contents(results),
+                // For the session: no one was asked.
+                saves(vec![save("a", "reviewer")]),
+                Message::new_user_with_contents(vec![result("a", false)]),
+                saves(vec![save("f", "reviewer")]),
+                Message::new_user_with_contents(vec![result("f", true)]),
+                saves(vec![save("b", "reviewer"), save("c", "tester")]),
+                Message::new_user_with_contents(vec![result("b", false), result("c", false)]),
             ],
             false,
             &crate::images::Images::default(),
         ));
         let (snapshot, _) = again.subscribe();
-        let cards: Vec<_> = snapshot
-            .items
+        let kinds: Vec<Kind> = snapshot.items.iter().map(|item| item.kind).collect();
+        let at = kinds
             .iter()
-            .filter(|item| item.kind == Kind::Question)
-            .collect();
-        assert_eq!(cards.len(), 1);
-        assert_eq!(cards[0].text, "Arko asked to save 2 worker profiles");
-        let states: Vec<_> = cards[0]
+            .position(|kind| *kind == Kind::Question)
+            .unwrap();
+        assert_eq!(
+            kinds.iter().filter(|kind| **kind == Kind::Question).count(),
+            1
+        );
+        // After the third save's call, b's.
+        assert_eq!(
+            kinds[..at]
+                .iter()
+                .filter(|kind| **kind == Kind::Call)
+                .count(),
+            3,
+            "{kinds:?}"
+        );
+        let card = &snapshot.items[at];
+        assert_eq!(card.text, "Arko asked to save 2 worker profiles");
+        let states: Vec<_> = card
             .questions
             .as_ref()
             .unwrap()
@@ -5122,8 +5151,8 @@ mod tests {
         };
         let (asked_a, a) = approval("one");
         let (asked_b, b) = approval("two");
-        let card = feed.ask(run, &asked_a, true, a);
-        assert_eq!(feed.ask(run, &asked_b, true, b), card);
+        let card = feed.ask(run, &asked_a, true, a, None);
+        assert_eq!(feed.ask(run, &asked_b, true, b, None), card);
         let item = feed.main_item(card).unwrap();
         assert_eq!(item.text, "Arko asked to save 2 worker profiles");
         let questions = item.questions.unwrap();
@@ -5138,7 +5167,7 @@ mod tests {
             QuestionState::Dismissed
         });
         let (asked_c, c) = approval("three");
-        assert_ne!(feed.ask(run, &asked_c, true, c), card);
+        assert_ne!(feed.ask(run, &asked_c, true, c, None), card);
     }
 
     /// A worker gets a placeholder in the main transcript where it starts

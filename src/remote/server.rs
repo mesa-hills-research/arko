@@ -1913,6 +1913,7 @@ mod tests {
             }],
             false,
             None,
+            None,
         );
         let response = served
             .post(
@@ -2003,7 +2004,7 @@ mod tests {
                 ..Default::default()
             },
         };
-        feed.ask(run, &[asked("q1"), asked("q2")], false, None);
+        feed.ask(run, &[asked("q1"), asked("q2")], false, None, None);
         let response = served
             .post("/api/questions/answer", Some(&cookie), answer)
             .await;

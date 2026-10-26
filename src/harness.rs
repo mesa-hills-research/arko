@@ -5749,7 +5749,10 @@ pub(crate) mod tests {
         let question = questions.recv().await.unwrap();
         assert_eq!(question.text(), "Tabs or spaces?");
         assert!(question.plain(), "Arko's own question, without an id");
-        question.answer.unwrap().send("spaces".into()).unwrap();
+        let Some(crate::inputs::Answering::Text(answer)) = question.answer else {
+            panic!("a wait for text");
+        };
+        answer.send("spaces".into()).unwrap();
         assert_eq!(asking.await.unwrap().unwrap(), "spaces");
 
         // Asked without waiting: the asker returns at once, and the answers
@@ -5777,7 +5780,7 @@ pub(crate) mod tests {
         assert_eq!(asker.asked(later.clone()).await.unwrap(), None);
         let question = questions.recv().await.unwrap();
         assert!(question.answer.is_none() && !question.plain());
-        feed.ask(later.agent_run_id, &question.asked, false, None);
+        feed.ask(later.agent_run_id, &question.asked, false, None, None);
         assert_eq!(
             asker.open_questions(later.agent_run_id),
             Some(later.asked.clone())
@@ -7319,6 +7322,7 @@ pub(crate) mod tests {
             asked: one_question(id, text),
             answer: None,
             approval: None,
+            call: None,
         });
     }
 
@@ -7328,7 +7332,7 @@ pub(crate) mod tests {
         harness: &mut Harness,
         run: uuid::Uuid,
         name: &str,
-    ) -> tokio::sync::oneshot::Receiver<String> {
+    ) -> tokio::sync::oneshot::Receiver<crate::questions::ApprovalAnswer> {
         let (answer, answered) = tokio::sync::oneshot::channel();
         let profile = crate::profiles::Profile::new(name, "Reviews");
         harness.question_asked(Question {
@@ -7337,11 +7341,12 @@ pub(crate) mod tests {
                 crate::questions::PLAIN_ID,
                 &crate::profiles::approval_text(&profile, crate::profiles::Place::User),
             ),
-            answer: Some(answer),
+            answer: Some(crate::inputs::Answering::Approval(answer)),
             approval: Some(crate::profiles::approval(
                 &profile,
                 crate::profiles::Place::User,
             )),
+            call: None,
         });
         answered
     }
@@ -7620,7 +7625,11 @@ pub(crate) mod tests {
                 .unwrap();
             assert_eq!(
                 answered.try_recv().unwrap(),
-                if approve { crate::questions::SAVE } else { "" },
+                if approve {
+                    crate::questions::ApprovalAnswer::Save
+                } else {
+                    crate::questions::ApprovalAnswer::DontSave
+                },
                 "approve {approve}, reversed {reversed}"
             );
             assert_eq!(
@@ -7644,8 +7653,9 @@ pub(crate) mod tests {
             harness.question_asked(Question {
                 run,
                 asked: one_question(crate::questions::PLAIN_ID, "Which file?"),
-                answer: Some(answer),
+                answer: Some(crate::inputs::Answering::Text(answer)),
                 approval: None,
+                call: None,
             });
             let id = harness.feed.open_questions()[0].id.clone();
             assert!(!crate::questions::is_agent_id(&id));
@@ -7692,8 +7702,14 @@ pub(crate) mod tests {
                 .is_none(),
             "nothing for the agent beside the approvals"
         );
-        assert_eq!(first.try_recv().unwrap(), crate::questions::SAVE);
-        assert_eq!(second.try_recv().unwrap(), "Use high effort");
+        assert_eq!(
+            first.try_recv().unwrap(),
+            crate::questions::ApprovalAnswer::Save
+        );
+        assert_eq!(
+            second.try_recv().unwrap(),
+            crate::questions::ApprovalAnswer::Edit("Use high effort".into())
+        );
         assert!(harness.waiting.is_empty());
     }
 
@@ -7795,7 +7811,10 @@ pub(crate) mod tests {
         assert_eq!(harness.card_answered(card), None);
         // A message without questions attached is the approval's answer.
         assert_eq!(harness.reply_text("save", &[]), None);
-        assert_eq!(answered.try_recv().unwrap(), crate::questions::SAVE);
+        assert_eq!(
+            answered.try_recv().unwrap(),
+            crate::questions::ApprovalAnswer::Save
+        );
     }
 
     /// The questions shown are the current conversation's, and an answer
@@ -7906,8 +7925,9 @@ pub(crate) mod tests {
         harness.question_asked(Question {
             run,
             asked: one_question("q1", "Tabs?"),
-            answer: Some(answer),
+            answer: Some(crate::inputs::Answering::Text(answer)),
             approval: None,
+            call: None,
         });
         assert_eq!(
             answered.try_recv().unwrap(),
@@ -7989,8 +8009,9 @@ pub(crate) mod tests {
         harness.question_asked(Question {
             run,
             asked: one_question("q1", "Tabs or spaces?"),
-            answer: Some(answer),
+            answer: Some(crate::inputs::Answering::Text(answer)),
             approval: None,
+            call: None,
         });
         assert!(
             harness
@@ -8056,12 +8077,16 @@ pub(crate) mod tests {
         .unwrap();
         assert!(matches!(end, TurnEnd::Answered));
         let run = harness.conversations.current_run().unwrap();
+        harness.feed.ask(
+            run,
+            &one_question("q1", "Tabs or spaces?"),
+            false,
+            None,
+            None,
+        );
         harness
             .feed
-            .ask(run, &one_question("q1", "Tabs or spaces?"), false, None);
-        harness
-            .feed
-            .ask(run, &one_question("q2", "Push now?"), false, None);
+            .ask(run, &one_question("q2", "Push now?"), false, None, None);
         // Settled and kept at once, so a restart before the turn takes it
         // still has it.
         let reply = harness.reply_text("Spaces.", &["q2".into()]).unwrap();
@@ -8223,7 +8248,10 @@ pub(crate) mod tests {
                 )
                 .is_none()
         );
-        assert_eq!(answered.try_recv().unwrap(), crate::questions::SAVE);
+        assert_eq!(
+            answered.try_recv().unwrap(),
+            crate::questions::ApprovalAnswer::Save
+        );
     }
 
     /// Question ids go on across the session's conversations: a new
