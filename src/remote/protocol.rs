@@ -260,6 +260,63 @@ pub struct ItemData {
     /// The highlighting of its Markdown's finished code blocks.
     #[serde(default)]
     pub code: Vec<CodeSpans>,
+    /// A question card's questions, with what became of each. `None` for a
+    /// question asked before questions had ids.
+    #[serde(default)]
+    pub questions: Option<Vec<QuestionData>>,
+}
+
+/// One of the main agent's questions, as a card and the status give it.
+/// The user never sees its `id`: a question shows its `number` in its ask
+/// (1, 2, 3), or none when it came alone.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[cfg_attr(test, serde(deny_unknown_fields))]
+#[allow(dead_code)]
+pub struct QuestionData {
+    pub id: String,
+    pub question: String,
+    #[serde(default)]
+    pub choices: Vec<String>,
+    /// Several choices may be picked.
+    #[serde(default)]
+    pub multiple: bool,
+    /// What "You decide" means.
+    #[serde(default)]
+    pub default: Option<String>,
+    /// `open`, `answered` (with `answer`), `answered_in_message`, `closed`
+    /// (with `why`) or `dismissed`.
+    pub state: String,
+    #[serde(default)]
+    pub answer: Option<String>,
+    #[serde(default)]
+    pub why: Option<String>,
+    /// The agent waits for the answer.
+    #[serde(default)]
+    pub waits: bool,
+    /// The item of its question card.
+    #[serde(default)]
+    pub item: u64,
+    #[serde(default)]
+    pub number: Option<u32>,
+    /// A worker profile Arko asks the user to approve, for the agent.
+    #[serde(default)]
+    pub approval: Option<ApprovalData>,
+}
+
+/// A worker profile to approve, with Save or Don't save.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[cfg_attr(test, serde(deny_unknown_fields))]
+#[allow(dead_code)]
+pub struct ApprovalData {
+    pub name: String,
+    pub model: String,
+    #[serde(default)]
+    pub effort: Option<String>,
+    /// "this project" or "every project".
+    pub scope: String,
+    pub description: String,
+    #[serde(default)]
+    pub instructions: String,
 }
 
 /// More text for an item (`append`).
@@ -339,6 +396,10 @@ pub struct StatusData {
     pub cache: CacheData,
     #[serde(deserialize_with = "lenient")]
     pub info: InfoData,
+    /// The current conversation's questions that wait for the user, in the
+    /// order asked.
+    #[serde(deserialize_with = "lenient")]
+    pub questions: Vec<QuestionData>,
 }
 
 /// The session's settings a client may change, with commands.

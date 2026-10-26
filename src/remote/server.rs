@@ -1768,6 +1768,66 @@ mod tests {
             (Some("1 failed"), Some(6), true)
         );
 
+        // A question card's questions, in every state and with every field.
+        let questions: Vec<crate::questions::AgentQuestion> = serde_json::from_value(serde_json::json!([
+            {"id": "q3", "question": "Tabs or spaces?", "choices": ["Tabs", "Spaces"], "multiple": true,
+             "default": "Spaces", "state": "open", "waits": true, "item": 8, "number": 1},
+            {"id": "q4", "question": "Push?", "state": "answered", "answer": "You decide", "item": 8, "number": 2},
+            {"id": "q5", "question": "Branch?", "state": "closed", "why": "In the README", "item": 8, "number": 3},
+            {"id": "q6", "question": "Rename?", "state": "answered_in_message", "item": 8, "number": 4},
+            {"id": "q7", "question": "Release?", "state": "dismissed", "item": 8, "number": 5},
+            {"id": "x1a2b3c4d", "question": "Save it?", "choices": ["Save", "Don't save"], "state": "open",
+             "waits": true, "item": 8, "number": 6,
+             "approval": {"name": "3d-judge", "model": "sol", "effort": "high", "scope": "every project",
+                          "description": "Judges 3D results", "instructions": "You judge 3D models."}},
+        ]))
+        .unwrap();
+        let mut card = Item::new(Kind::Question, crate::questions::card_line(&questions));
+        card.id = 8;
+        card.questions = Some(questions);
+        let read: ItemData = serde_json::from_value(serde_json::to_value(&card).unwrap()).unwrap();
+        let questions = read.questions.unwrap();
+        assert_eq!(read.text, "Arko asked 6 questions");
+        assert_eq!(
+            (
+                questions[0].choices.len(),
+                questions[0].multiple,
+                questions[0].default.as_deref(),
+                questions[0].waits
+            ),
+            (2, true, Some("Spaces"), true)
+        );
+        let states: Vec<(&str, Option<&str>, Option<&str>, Option<u32>)> = questions
+            .iter()
+            .map(|question| {
+                (
+                    question.state.as_str(),
+                    question.answer.as_deref(),
+                    question.why.as_deref(),
+                    question.number,
+                )
+            })
+            .collect();
+        assert_eq!(
+            states[..5],
+            [
+                ("open", None, None, Some(1)),
+                ("answered", Some("You decide"), None, Some(2)),
+                ("closed", None, Some("In the README"), Some(3)),
+                ("answered_in_message", None, None, Some(4)),
+                ("dismissed", None, None, Some(5)),
+            ]
+        );
+        let approval = questions[5].approval.as_ref().unwrap();
+        assert_eq!(
+            (
+                approval.name.as_str(),
+                approval.effort.as_deref(),
+                approval.instructions.as_str()
+            ),
+            ("3d-judge", Some("high"), "You judge 3D models.")
+        );
+
         let feed = Feed::new("main");
         feed.notice(Level::Info, "Resumed.");
         feed.user("Hello", Source::Web, Delivery::Turn);
@@ -1841,6 +1901,10 @@ mod tests {
                 ..LiveSettings::default()
             },
             movable: vec![7],
+            questions: serde_json::from_value(serde_json::json!([
+                {"id": "q3", "question": "Tabs or spaces?", "state": "open", "item": 9}
+            ]))
+            .unwrap(),
             models: Models {
                 main: "gpt-6-sol".into(),
                 workers: "gpt-6-luna".into(),
@@ -1995,6 +2059,7 @@ mod tests {
             ),
             (Some(300_000), Some(1000), Some(1200), Some(0.01))
         );
+        assert_eq!(status.questions[0].question, "Tabs or spaces?");
         assert_eq!(
             (
                 status.info.workspace.as_str(),
