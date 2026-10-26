@@ -48,6 +48,7 @@ as CSS variables that `web/theme-css` writes. Each variable takes the first toke
 | `--switch-off`, `--switch-thumb` | `switch.background`, `switch.thumb.background` | A switch that is off, and its knob |
 | `--thumb`, `--thumb-hover` | `scrollbar.thumb.background`, `…hover.background` | Scrollbars |
 | `--popover`, `--popover-text` | `popover.background`, `popover.foreground` | Menus, popovers, sheets |
+| `--outline` | `muted.foreground` mixed half into `border` | A chosen segment's outline, a medium grey |
 | `--radius`, `--radius-lg` | `radius` (6), `radius.lg` (8) | See [Shape](#shape) |
 | `--syn-…` | `highlight.syntax.…`, else its first word's (`string.escape` takes `string`) | Code's highlighting |
 
@@ -110,6 +111,7 @@ Each web component matches a GPUI Kit component and its variants.
 | `.chip` | `Button` small ghost with a label, or `Tag` | Short state or choice in a bar |
 | `.field` | `Input`, `InputGroup` | Pill on the web page, `md` in Studio |
 | `Select` | `Select` | A button whose list floats over the page, anchored to it, below or above it where there's more room, drawn as the command menu with its shadow, and a filter for a long list. Arrows, Home, End, Enter, Esc and typing a name work |
+| `.views` | `ButtonGroup` of ghost buttons | The chosen view outlined in `--outline`, the others plain. A menu on phones |
 | `.menu` | `PopupMenu` | Rows 32 px, a check slot on the leading side |
 | `.popover` | `Popover` | `lg` radius, the popover surface, a shadow |
 | `.answers` | Studio's answer panel | Above the message box, non-modal, at most 60 % of the screen with its questions scrolling, numbered in their ask, never by id |
