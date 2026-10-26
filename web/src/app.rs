@@ -76,6 +76,8 @@ pub struct Page {
     /// Text came below since the reader left the bottom.
     pub grew: RwSignal<bool>,
     pub pinned: RwSignal<bool>,
+    /// The docked question is folded to its label.
+    pub ask_folded: RwSignal<bool>,
 }
 
 thread_local! {
@@ -117,6 +119,7 @@ impl Page {
             seen: RwSignal::new(0),
             grew: RwSignal::new(false),
             pinned: RwSignal::new(true),
+            ask_folded: RwSignal::new(false),
         };
         PAGE.with(|cell| cell.set(Some(page)));
         page

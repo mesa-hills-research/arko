@@ -319,6 +319,14 @@ fn choices_of(name: &str, before: &[String], typed: &str, came: RwSignal<u32>) -
     known
 }
 
+/// Puts the focus in the message box.
+pub fn focus() {
+    use wasm_bindgen::JsCast;
+    if let Some(area) = document().query_selector(".compose textarea").ok().flatten() {
+        let _ = area.unchecked_into::<web_sys::HtmlElement>().focus();
+    }
+}
+
 /// Waits `ms`.
 pub async fn gloo_wait(ms: i32) {
     let promise = js_sys::Promise::new(&mut |resolve, _| {
@@ -332,7 +340,7 @@ pub async fn gloo_wait(ms: i32) {
 #[component]
 fn Ask() -> impl IntoView {
     let page = page();
-    let folded = RwSignal::new(false);
+    let folded = page.ask_folded;
     let question = move || page.status.with(|status| status.question.clone());
     // A new question shows unfolded.
     Effect::new(move |previous: Option<Option<u64>>| {
