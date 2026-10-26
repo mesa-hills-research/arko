@@ -514,8 +514,8 @@ async fn the_main_agent_lists_the_options_saves_a_profile_and_starts_a_worker_wi
 
 /// A profile for every session reaches the user as an approval, which they
 /// answer as the agent's `ask_user` questions. Words of their own ask the
-/// agent for changes and save nothing, and Save saves the file in Arko's
-/// folder.
+/// agent for changes and save nothing, as does "save" typed beside Don't
+/// save picked, and Save saves the file in Arko's folder.
 #[tokio::test]
 async fn a_profile_for_every_session_is_put_to_the_user_as_a_question() {
     let temp = tempfile::tempdir().unwrap();
@@ -524,7 +524,7 @@ async fn a_profile_for_every_session_is_put_to_the_user_as_a_question() {
     // (The input stays open while the turns end: a closed one quits.)
     let sender = input.clone();
     let answers = tokio::spawn(async move {
-        for reply in ["no, use medium effort", "Save"] {
+        for reply in [None, Some("no, use medium effort"), Some("Save")] {
             until(|| feed.activity().question.is_some()).await;
             let question = feed.activity().question.unwrap();
             assert!(
@@ -535,17 +535,39 @@ async fn a_profile_for_every_session_is_put_to_the_user_as_a_question() {
                 question.text
             );
             assert!(question.text.contains("Instructions\nYou judge 3D models."));
-            sender
-                .send(Input::Answer {
-                    question: question.id,
-                    text: reply.into(),
-                })
-                .unwrap();
+            match reply {
+                Some(reply) => sender
+                    .send(Input::Answer {
+                        question: question.id,
+                        text: reply.into(),
+                    })
+                    .unwrap(),
+                // The panel: Don't save picked, and "save" typed beside it.
+                None => sender
+                    .send(Input::AnswerQuestions(crate::questions::Answers {
+                        answers: vec![crate::questions::QuestionAnswer::new(
+                            feed.open_questions()[0].id.clone(),
+                            crate::questions::Answer {
+                                choices: vec![crate::questions::DONT_SAVE.into()],
+                                text: Some("save".into()),
+                                you_decide: false,
+                            },
+                        )],
+                        anything_else: None,
+                    }))
+                    .unwrap(),
+            }
             // (The next question may be up before this one is seen gone.)
             until(|| feed.activity().question.map(|asked| asked.id) != Some(question.id)).await;
         }
     });
     let saved = harness.root.join("profiles").join("3d-judge.md");
+    start_worker(&mut harness, &mut inputs, "Start by saving a profile for everyone.").await;
+    assert_eq!(
+        last_result(&seen),
+        "The user didn't save 3d-judge for every project and asked for changes: \"save\". Make them and call save_worker_profile again, which shows them the changed profile."
+    );
+    assert!(!saved.exists());
     start_worker(&mut harness, &mut inputs, "Start by saving a profile for everyone.").await;
     assert_eq!(
         last_result(&seen),

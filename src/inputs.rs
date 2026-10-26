@@ -417,14 +417,6 @@ impl Asker {
         }
         Ok(answered.await.unwrap_or_else(|_| NO_ANSWER.to_string()))
     }
-
-    /// The next questions are numbered after `asked`, as soon as the agent
-    /// asked them.
-    fn count(&self, asked: &[arko_agents::questions::AskedQuestion]) {
-        if let Some(feed) = &self.feed {
-            feed.count_questions(asked);
-        }
-    }
 }
 
 /// The answer when the question went unanswered (the turn stopped).
@@ -436,7 +428,6 @@ pub(crate) const CANT_ASK: &str = "No one can answer questions in this session (
 #[async_trait::async_trait]
 impl UserInputHandler for Asker {
     async fn respond(&self, request: UserInputRequest) -> Result<String, String> {
-        self.count(&request.asked);
         self.put(request.agent_run_id, asked_of(&request), None)
             .await
     }
@@ -444,7 +435,6 @@ impl UserInputHandler for Asker {
     /// The questions go to the user, and their answers reach the agent
     /// later, as notes.
     async fn asked(&self, request: UserInputRequest) -> Result<Option<String>, String> {
-        self.count(&request.asked);
         let Some(questions) = &self.questions else {
             return Ok(Some(CANT_ASK.to_string()));
         };
@@ -477,11 +467,26 @@ impl UserInputHandler for Asker {
     }
 
     /// The main agent's questions are numbered across the session's
-    /// conversations.
-    fn last_question_number(&self, agent_name: &str) -> u32 {
-        match &self.feed {
-            Some(feed) if agent_name == crate::agents::MAIN => feed.last_question_number(),
-            _ => 0,
+    /// conversations, one ask at a time.
+    fn question_numbers(&self, _run: uuid::Uuid, agent_name: &str, count: u32) -> Option<u32> {
+        let feed = self.feed.as_ref()?;
+        (agent_name == crate::agents::MAIN).then(|| feed.reserve_question_numbers(count))
+    }
+
+    /// The main agent's questions are open in the session as soon as its
+    /// task records them, before their card shows (see
+    /// [`open_questions`](Self::open_questions)).
+    fn questions_recorded(
+        &self,
+        run: uuid::Uuid,
+        agent_name: &str,
+        asked: &[arko_agents::questions::AskedQuestion],
+        wait: bool,
+    ) {
+        if let Some(feed) = &self.feed
+            && agent_name == crate::agents::MAIN
+        {
+            feed.record_asked(run, asked, wait);
         }
     }
 }

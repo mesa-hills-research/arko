@@ -60,9 +60,9 @@ impl Draft {
 pub struct Panel {
     /// The panel shows and has the keys.
     pub open: bool,
-    /// The question with the keys (its place among the open ones), or
-    /// "Anything else" after them.
-    pub focus: usize,
+    /// The question with the keys (by its id, so it keeps them as other
+    /// questions come and go), or "Anything else" after them.
+    pub focus: Focus,
     /// The focused question's Other field has the keys, not its chips:
     /// digits are text there.
     pub typing: bool,
@@ -87,6 +87,16 @@ pub struct Panel {
     /// The window Alt+Q opened the panel over, which comes back when the
     /// panel closes.
     pub behind: Option<Overlay>,
+}
+
+/// What has the panel's keys.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum Focus {
+    /// The question with this id.
+    Question(String),
+    /// "Anything else", after the questions.
+    #[default]
+    AnythingElse,
 }
 
 /// The chip above the message box, when the panel is closed.
@@ -128,6 +138,19 @@ impl App {
     /// The main agent's open questions.
     pub fn open_questions(&self) -> &[AgentQuestion] {
         &self.reading.questions
+    }
+
+    /// The place of the question with the panel's keys among the open
+    /// ones, or after them for "Anything else".
+    pub fn focus_index(&self) -> usize {
+        let questions = self.open_questions();
+        match &self.panel.focus {
+            Focus::Question(id) => questions
+                .iter()
+                .position(|question| &question.id == id)
+                .unwrap_or(questions.len()),
+            Focus::AnythingElse => questions.len(),
+        }
     }
 
     /// Whether the agent waits for an answer.
@@ -179,6 +202,17 @@ impl App {
             self.panel.anything_else.clear();
             return;
         }
+        // The question being answered was answered elsewhere, or closed:
+        // what is typed next doesn't go to another one.
+        if let Focus::Question(id) = &self.panel.focus
+            && !open.contains(id)
+        {
+            self.focus_on(0);
+            if self.panel.open {
+                self.close_panel();
+                self.say("That question is no longer open");
+            }
+        }
         let quiet = self.panel.last_key.is_none_or(|at| at.elapsed() >= QUIET);
         let unseen = self
             .open_questions()
@@ -193,10 +227,6 @@ impl App {
             && self.panel.attached.is_empty()
         {
             self.open_panel_at(first);
-        }
-        let last = self.open_questions().len();
-        if self.panel.focus > last {
-            self.focus_on(last);
         }
     }
 
@@ -259,9 +289,13 @@ impl App {
     /// The question at `at` (or "Anything else" after them) gets the keys,
     /// in its chips, or in its Other field when it has no choices.
     pub(super) fn focus_on(&mut self, at: usize) {
-        self.panel.focus = at;
+        let question = self.open_questions().get(at).cloned();
+        self.panel.typing = question.as_ref().is_some_and(types_first);
+        self.panel.focus = match question {
+            Some(question) => Focus::Question(question.id),
+            None => Focus::AnythingElse,
+        };
         self.panel.scroll = 0;
-        self.panel.typing = self.open_questions().get(at).is_some_and(types_first);
     }
 
     /// The panel closes, and the window it opened over comes back.
@@ -315,20 +349,26 @@ impl App {
         self.say("Dismissed. Arko goes on with its defaults");
     }
 
-    /// Enter in the panel: sends what's filled in. The questions left
-    /// unanswered stay open.
+    /// Enter in the panel: sends what's filled in, naming every question
+    /// it shows (which ties "Anything else" to their conversation). The
+    /// questions left unanswered stay open.
     fn send_answers(&mut self) {
         let answers: Vec<QuestionAnswer> = self
             .open_questions()
             .iter()
-            .filter_map(|question| {
-                let answer = self.panel.drafts.get(&question.id)?.answer(question);
-                (!answer.is_empty()).then(|| QuestionAnswer::new(question.id.clone(), answer))
+            .map(|question| {
+                let answer = self
+                    .panel
+                    .drafts
+                    .get(&question.id)
+                    .map(|draft| draft.answer(question))
+                    .unwrap_or_default();
+                QuestionAnswer::new(question.id.clone(), answer)
             })
             .collect();
         let anything_else =
             Some(self.panel.anything_else.trim().to_string()).filter(|text| !text.is_empty());
-        if answers.is_empty() && anything_else.is_none() {
+        if answers.iter().all(|given| given.answer.is_empty()) && anything_else.is_none() {
             self.say("Nothing to send yet. Pick a choice, or type an answer");
             return;
         }
@@ -347,8 +387,9 @@ impl App {
     /// The text field with the keys: the focused question's Other, or
     /// "Anything else".
     fn field(&mut self) -> &mut String {
+        let at = self.focus_index();
         let questions = &self.reading.questions;
-        match questions.get(self.panel.focus) {
+        match questions.get(at) {
             Some(question) => {
                 &mut self
                     .panel
@@ -371,7 +412,7 @@ impl App {
 
     /// Typing an answer of its own leaves "You decide".
     fn typed_in_panel(&mut self) {
-        if let Some(question) = self.reading.questions.get(self.panel.focus) {
+        if let Some(question) = self.reading.questions.get(self.focus_index()) {
             let id = question.id.clone();
             if let Some(draft) = self.panel.drafts.get_mut(&id) {
                 draft.you_decide = false;
@@ -382,7 +423,7 @@ impl App {
     /// Picks chip `at` of the focused question: a choice, or "You decide"
     /// after them.
     fn pick(&mut self, at: usize) {
-        let Some(question) = self.reading.questions.get(self.panel.focus).cloned() else {
+        let Some(question) = self.reading.questions.get(self.focus_index()).cloned() else {
             return;
         };
         let draft = self.panel.drafts.entry(question.id.clone()).or_default();
@@ -408,22 +449,22 @@ impl App {
     /// ↓ and Tab: from a question's chips to its Other field, and from
     /// there to the next question (or "Anything else", then the first).
     fn focus_down(&mut self) {
-        let count = self.open_questions().len();
-        if self.panel.focus < count && !self.panel.typing {
+        let (count, at) = (self.open_questions().len(), self.focus_index());
+        if at < count && !self.panel.typing {
             self.panel.typing = true;
         } else {
-            self.focus_on((self.panel.focus + 1) % (count + 1));
+            self.focus_on((at + 1) % (count + 1));
         }
     }
 
     /// ↑ and Shift+Tab: the other way.
     fn focus_up(&mut self) {
-        let count = self.open_questions().len();
-        if self.panel.focus < count && self.panel.typing {
+        let (count, at) = (self.open_questions().len(), self.focus_index());
+        if at < count && self.panel.typing {
             self.panel.typing = false;
         } else {
-            self.focus_on((self.panel.focus + count) % (count + 1));
-            self.panel.typing = self.panel.focus < count;
+            self.focus_on((at + count) % (count + 1));
+            self.panel.typing = self.focus_index() < count;
         }
     }
 
@@ -435,9 +476,9 @@ impl App {
         }
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let alt = key.modifiers.contains(KeyModifiers::ALT);
-        let questions = self.open_questions();
-        let chip_count = questions
-            .get(self.panel.focus)
+        let chip_count = self
+            .open_questions()
+            .get(self.focus_index())
             .map(|question| chips(question).len());
         match key.code {
             KeyCode::Esc => self.answer_in_chat(),
@@ -505,6 +546,7 @@ pub fn draw_panel(frame: &mut Frame, app: &mut App, above: Rect, previous: Optio
     if questions.is_empty() || above.height < 4 {
         return 0;
     }
+    let focus = app.focus_index();
     let inner_width = (above.width as usize).saturating_sub(4).max(8);
     // At most two thirds of the screen: a window that keeps the focused
     // row in sight.
@@ -515,7 +557,7 @@ pub fn draw_panel(frame: &mut Frame, app: &mut App, above: Rect, previous: Optio
     let mut cursor: Option<(usize, u16)> = None;
     let marker = crate::glyphs::render("› ").into_owned();
     for (at, question) in questions.iter().enumerate() {
-        let focused = app.panel.focus == at;
+        let focused = focus == at;
         // The questions of another ask come after a blank line.
         if at > 0 && questions[at - 1].item != question.item {
             lines.push(Line::default());
@@ -631,7 +673,7 @@ pub fn draw_panel(frame: &mut Frame, app: &mut App, above: Rect, previous: Optio
         }
         spans_of.push((first, lines.len()));
     }
-    let focused_else = app.panel.focus >= questions.len();
+    let focused_else = focus >= questions.len();
     let label = if focused_else {
         format!("{marker}Anything else  ")
     } else {
@@ -657,7 +699,7 @@ pub fn draw_panel(frame: &mut Frame, app: &mut App, above: Rect, previous: Optio
     ]));
     // The focused question in sight from its start, and further down the
     // page (PgDn) for what doesn't fit.
-    let (focus_first, focus_end) = spans_of[app.panel.focus.min(spans_of.len() - 1)];
+    let (focus_first, focus_end) = spans_of[focus.min(spans_of.len() - 1)];
     let last_skip = lines.len().saturating_sub(room);
     let skip = focus_end.saturating_sub(room).min(focus_first);
     app.panel.scroll = app.panel.scroll.min(last_skip - skip.min(last_skip));

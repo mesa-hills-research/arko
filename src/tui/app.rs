@@ -2853,10 +2853,10 @@ pub(super) mod tests {
         press(&mut app, KeyCode::Char('1'), KeyModifiers::NONE);
         assert_eq!(app.panel.drafts["q1"].chosen, [0]);
         press(&mut app, KeyCode::Down, KeyModifiers::NONE);
-        assert!(app.panel.typing && app.panel.focus == 0);
+        assert!(app.panel.typing && app.focus_index() == 0);
         press(&mut app, KeyCode::Down, KeyModifiers::NONE);
         // q2 has no choices: its Other field has the keys.
-        assert!(app.panel.typing && app.panel.focus == 1);
+        assert!(app.panel.typing && app.focus_index() == 1);
         type_text(&mut app, "2 hours");
         assert_eq!(app.panel.drafts["q2"].other, "2 hours");
         // Up in its chips, 1 is "You decide", and typing leaves it.
@@ -2922,6 +2922,38 @@ pub(super) mod tests {
         press(&mut app, KeyCode::Down, KeyModifiers::NONE);
         type_text(&mut app, "1");
         assert_eq!(app.panel.drafts["q1"].other, "421");
+    }
+
+    /// The panel's keys stay with the question being answered while others
+    /// are answered elsewhere (the web page), and when that question itself
+    /// is answered elsewhere, the panel closes rather than give the keys to
+    /// another one.
+    #[test]
+    fn the_panel_keeps_its_question_as_others_are_answered_elsewhere() {
+        let mut app = app();
+        let mut reading = asking();
+        let mut third = reading.questions[1].clone();
+        third.id = "q3".into();
+        third.question = "Push now?".into();
+        third.number = Some(3);
+        reading.questions.push(third);
+        app.set_reading(reading.clone());
+        app.focus_on(1);
+        type_text(&mut app, "ab");
+        // The page answers q1.
+        reading.questions.remove(0);
+        app.set_reading(reading.clone());
+        type_text(&mut app, "c");
+        assert_eq!(app.panel.drafts["q2"].other, "abc");
+        assert!(!app.panel.drafts.contains_key("q3"));
+        // Then q2, the one being answered here.
+        reading.questions.remove(0);
+        app.set_reading(reading);
+        assert!(!app.panel.open);
+        assert_eq!(app.hint(), Some("That question is no longer open"));
+        type_text(&mut app, "d");
+        assert!(!app.panel.drafts.contains_key("q3"));
+        assert_eq!(app.editor.shown(), "d");
     }
 
     /// Alt+Q opens the panel over the command menu, and the panel has the

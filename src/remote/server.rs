@@ -972,9 +972,10 @@ fn not_open() -> Response {
 }
 
 /// `POST /api/questions/answer` with
-/// `{"answers": [{"id": "q3", "choices": ["Spaces"]}, {"id": "q4", "you_decide": true}, {"id": "q5", "text": "..."}], "anything_else": "..."}`:
-/// the answer panel's answers to the main agent's open questions. Those
-/// unanswered stay open. 409 when none of them is open.
+/// `{"answers": [{"id": "q3", "choices": ["Spaces"]}, {"id": "q4", "you_decide": true}, {"id": "q5", "text": "..."}, {"id": "q6"}], "anything_else": "..."}`:
+/// the answer panel's answers to the main agent's open questions, naming
+/// every question it shows (`{"id": "q6"}` unanswered). Those unanswered
+/// stay open. 409 when none of the questions it names is open.
 async fn answer_questions(
     State(app): State<Arc<App>>,
     ConnectInfo(peer): Peer,
@@ -994,12 +995,14 @@ async fn answer_questions(
         )
             .into_response();
     };
+    // It names the questions it is about, answered or not, which binds
+    // "anything else" to their conversation.
     let open = app.feed.open_questions();
-    let answers_open = answers.answers.iter().any(|given| {
-        !given.answer.is_empty() && open.iter().any(|question| question.id == given.id)
-    });
-    let writes_about_open = answers.answers.is_empty() && !open.is_empty();
-    if !answers_open && !writes_about_open {
+    if !answers
+        .answers
+        .iter()
+        .any(|given| open.iter().any(|question| question.id == given.id))
+    {
         return not_open();
     }
     app.act(Action::AnswerQuestions(answers))
@@ -2724,6 +2727,28 @@ mod tests {
             )
             .await;
         assert_eq!(response.status(), StatusCode::CONFLICT);
+        // "Anything else" goes with the questions shown, answered or not,
+        // and without them, it isn't taken.
+        let response = served
+            .post(
+                "/api/questions/answer",
+                Some(&cookie),
+                r#"{"anything_else": "Keep it short."}"#,
+            )
+            .await;
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let response = served
+            .post(
+                "/api/questions/answer",
+                Some(&cookie),
+                r#"{"answers": [{"id": "q1"}], "anything_else": "Keep it short."}"#,
+            )
+            .await;
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        assert!(matches!(
+            served.actions.recv().await.unwrap(),
+            Action::AnswerQuestions(_)
+        ));
 
         let response = served
             .post(

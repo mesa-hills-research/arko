@@ -944,8 +944,9 @@ struct State {
     activity: Activity,
     /// The main agent's questions.
     questions: crate::questions::Book,
-    /// The latest card of approvals, which approvals asked with them join.
-    approval_card: Option<u64>,
+    /// The latest card of approvals (its item and the key the session keeps
+    /// it by), which approvals asked with them join.
+    approval_card: Option<(u64, Uuid)>,
     turn: Option<u64>,
     /// The user's message started the turn `turn`, which hasn't begun yet.
     turn_opened: bool,
@@ -2155,15 +2156,26 @@ impl Feed {
             item.at = at;
             // A card's questions as the session kept them.
             if let Some(questions) = item.questions.take() {
-                let ids = questions
-                    .into_iter()
-                    .map(|question| question.id)
-                    .collect::<Vec<_>>();
-                // (Questions the session no longer keeps show as text.)
-                let kept = state.questions.restored(&ids, item.id);
-                if !kept.is_empty() {
+                // A profile saved after its approval: the card of its
+                // approval, unless no one was asked.
+                if let Some(approval) = questions.first().and_then(|q| q.approval.as_ref()) {
+                    let kept = state.questions.restore_approval(&approval.name, item.id);
+                    if kept.is_empty() {
+                        continue;
+                    }
                     item.text = crate::questions::card_line(&kept);
                     item.questions = Some(kept);
+                } else {
+                    let ids = questions
+                        .into_iter()
+                        .map(|question| question.id)
+                        .collect::<Vec<_>>();
+                    // (Questions the session no longer keeps show as text.)
+                    let kept = state.questions.restored(&ids, item.id);
+                    if !kept.is_empty() {
+                        item.text = crate::questions::card_line(&kept);
+                        item.questions = Some(kept);
+                    }
                 }
             }
             state.next_id = state.next_id.max(item.id);
@@ -2383,7 +2395,7 @@ impl Feed {
             if state.questions.run().is_none() {
                 state.questions.set_run(Some(run));
             }
-            let joins = state.approval_card.filter(|card| {
+            let joins = state.approval_card.filter(|(card, _)| {
                 let questions = state.questions.of_item(*card);
                 approval.is_some()
                     && state.main.items.back().is_some_and(|last| last.id == *card)
@@ -2402,11 +2414,14 @@ impl Feed {
                     question
                 })
                 .collect();
-            let item = match joins {
+            let (item, key) = match joins {
                 Some(card) => card,
-                None => self.push(
-                    &mut state,
-                    Item::new(Kind::Question, crate::questions::card_line(&questions)),
+                None => (
+                    self.push(
+                        &mut state,
+                        Item::new(Kind::Question, crate::questions::card_line(&questions)),
+                    ),
+                    Uuid::new_v4(),
                 ),
             };
             state.questions.ask(
@@ -2418,11 +2433,12 @@ impl Feed {
                         question
                     })
                     .collect(),
+                Some(key),
             );
             state.questions.number_card(item);
             state.questions.save();
             if approval.is_some() {
-                state.approval_card = Some(item);
+                state.approval_card = Some((item, key));
             }
             self.refresh_card(&mut state, item);
             item
@@ -2477,15 +2493,42 @@ impl Feed {
         self.lock().questions.run()
     }
 
-    /// The highest question number the session has seen.
-    pub(crate) fn last_question_number(&self) -> u32 {
-        self.lock().questions.last()
+    /// The number of the first of `count` questions the main agent asks
+    /// now, saved before it is used, so no other ask gets it.
+    pub(crate) fn reserve_question_numbers(&self, count: u32) -> u32 {
+        let mut state = self.lock();
+        let first = state.questions.reserve(count);
+        state.questions.save();
+        first
     }
 
-    /// The questions `asked` were numbered, and the next are numbered after
-    /// them, whether or not they reached the feed yet.
-    pub(crate) fn count_questions(&self, asked: &[crate::questions::AskedQuestion]) {
-        self.lock().questions.count(asked);
+    /// Run `run` asked `asked` (`wait`: it waits for the answer), as its
+    /// task records them: they are open at once (their card follows).
+    pub(crate) fn record_asked(
+        &self,
+        run: Uuid,
+        asked: &[crate::questions::AskedQuestion],
+        wait: bool,
+    ) {
+        {
+            let mut state = self.lock();
+            state.questions.register(run, asked, wait);
+            state.questions.save();
+        }
+        self.question_activity();
+    }
+
+    /// Whether the numbers given out are to be counted from the tasks (an
+    /// older or missing file).
+    pub(crate) fn questions_need_count(&self) -> bool {
+        self.lock().questions.needs_count()
+    }
+
+    /// The tasks gave out question numbers up to `last`.
+    pub(crate) fn questions_counted(&self, last: u32) {
+        let mut state = self.lock();
+        state.questions.raise(last);
+        state.questions.save();
     }
 
     /// The agent no longer waits on the questions `ids` (the turn that
@@ -2529,7 +2572,7 @@ impl Feed {
             if missing.is_empty() {
                 return;
             }
-            state.questions.ask(run, missing);
+            state.questions.ask(run, missing, None);
             state.questions.save();
         }
         self.question_activity();
@@ -4867,6 +4910,96 @@ mod tests {
         assert_eq!(again.open_questions()[0].number, Some(2));
         // (The agent doesn't wait on them.)
         assert_eq!(again.activity().question, None);
+    }
+
+    /// A resumed session's transcript shows the record of each approval
+    /// card where the agent's save of its profile was, once, and nothing
+    /// for a save no one was asked about.
+    #[test]
+    fn a_resumed_session_shows_its_approval_records() {
+        use crate::profiles::{Place, Profile};
+        use crate::questions::QuestionState;
+        use arko_ai::{Content, Message, ToolCall, ToolResult};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(crate::questions::FILE);
+        let run = Uuid::new_v4();
+        let first = Feed::new("main");
+        first.keep_questions(path.clone());
+        first.questions_run(Some(run));
+        let ask = |name: &str| {
+            first.ask(
+                run,
+                &[asked(&crate::questions::plain_id(), "Save it?")],
+                true,
+                Some(crate::profiles::approval(
+                    &Profile::new(name, "Reviews"),
+                    Place::User,
+                )),
+            )
+        };
+        let card = ask("one");
+        assert_eq!(ask("two"), card);
+        let ids: Vec<String> = first.open_questions().into_iter().map(|q| q.id).collect();
+        first.settle_questions(None, &ids[..1], |_| QuestionState::Answered {
+            answer: "Save".into(),
+        });
+        first.settle_questions(None, &ids[1..], |_| QuestionState::Dismissed);
+
+        let again = Feed::new("main");
+        again.keep_questions(path);
+        again.questions_run(Some(run));
+        let save = |id: &str, name: &str| {
+            serde_json::from_value::<ToolCall>(serde_json::json!({
+                "id": id,
+                "name": crate::crew::SAVE_WORKER_PROFILE,
+                "arguments": {"name": name, "description": "Reviews"}
+            }))
+            .unwrap()
+        };
+        let mut saves = Message::new_assistant("");
+        saves.tool_calls = vec![save("a", "one"), save("b", "two"), save("c", "quick")];
+        let results = ["a", "b", "c"]
+            .map(|id| {
+                Content::ToolResult(ToolResult::new(
+                    Some(id.into()),
+                    crate::crew::SAVE_WORKER_PROFILE,
+                    "Saved.",
+                ))
+            })
+            .to_vec();
+        again.restore(crate::remote::history(
+            &[
+                Message::new_user("Start."),
+                saves,
+                Message::new_user_with_contents(results),
+            ],
+            false,
+            &crate::images::Images::default(),
+        ));
+        let (snapshot, _) = again.subscribe();
+        let cards: Vec<_> = snapshot
+            .items
+            .iter()
+            .filter(|item| item.kind == Kind::Question)
+            .collect();
+        assert_eq!(cards.len(), 1);
+        assert_eq!(cards[0].text, "Arko asked to save 2 worker profiles");
+        let states: Vec<_> = cards[0]
+            .questions
+            .as_ref()
+            .unwrap()
+            .iter()
+            .map(|question| question.state.clone())
+            .collect();
+        assert_eq!(
+            states,
+            [
+                QuestionState::Answered {
+                    answer: "Save".into()
+                },
+                QuestionState::Dismissed
+            ]
+        );
     }
 
     /// Approvals asked together share one card, a choice each, numbered.
