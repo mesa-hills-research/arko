@@ -116,6 +116,7 @@ Each web component matches a GPUI Kit component and its variants.
 | `.menu` | `PopupMenu` | Rows 32 px, a check slot on the leading side |
 | `.popover` | `Popover` | `lg` radius, the popover surface, a shadow |
 | `.answers` | Studio's answer panel | Above the message box, non-modal, at most 60 % of the screen with its questions scrolling, numbered in their ask, never by id |
+| `.record-box` | The terminal's settled ask | A question card once any of its questions is settled, boxed as the panel is but in the hairline, its text as a muted heading, then each settled question with its outcome |
 | `.sheet` | `Sheet` | From the bottom on phones, centered on wide screens, with a hairline in `--line` as the popovers have |
 | `.card` | `GroupBox` | Surface and hairline, no shadow |
 | `title` and `aria-label` | `Tooltip` | Required on icon-only buttons |

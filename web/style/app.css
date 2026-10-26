@@ -317,8 +317,8 @@ kbd {
 .label { display: block; margin-bottom: 2px; color: var(--muted); font-size: 12px; font-weight: 600; }
 .row.message .label { color: var(--link); }
 /* A question card: one quiet line where the agent asked, which opens the
-   answer panel while it has questions open, then the record of those
-   settled. */
+   answer panel while all its questions are open, then the record of those
+   settled, boxed as the panel is. */
 .asked { display: inline-flex; align-items: center; gap: 6px; padding: 2px 0; border: 0; background: none; color: var(--muted); font-size: 14px; cursor: pointer; }
 .asked svg { color: var(--warn-mark); }
 .asked:disabled { cursor: default; }
@@ -326,9 +326,11 @@ kbd {
 @media (hover: hover) {
   .asked:not(:disabled):hover { color: var(--text); }
 }
-.record { margin: 4px 0 0; padding: 0; list-style: none; }
-.record:empty { display: none; }
-.record li { display: flex; gap: 6px; margin: 6px 0; }
+/* The hairline, not the accent, since a record needs nothing from the user. */
+.record-box { padding: 12px; border: 1px solid var(--line); border-radius: var(--r-lg); }
+.record-title { margin: 0; color: var(--muted); font-size: 14px; font-weight: 600; }
+.record { display: flex; flex-direction: column; gap: 12px; margin: 12px 0 0; padding: 0; list-style: none; }
+.record li { display: flex; gap: 6px; }
 .record-number { flex: none; min-width: 16px; color: var(--muted); }
 .record-outcome { color: var(--muted); font-size: 14px; }
 .record-outcome.answer { color: var(--text); }

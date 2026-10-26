@@ -714,15 +714,24 @@ pub fn Replying() -> impl IntoView {
     }
 }
 
-/// A question card in the transcript: one quiet line where the agent asked
-/// ("Arko asked 2 questions"), which opens the panel on the card while it
-/// has questions open, and under it the record of those settled, each with
-/// what became of it. A card without its questions (asked before they had
-/// ids) shows its text.
+/// A question card in the transcript. While all its questions are open, one
+/// quiet line where the agent asked ("Arko asked 2 questions") opens the
+/// panel on the card. Once any is settled, the card is their record, boxed
+/// as the panel is, with each settled question and what became of it (the
+/// open ones are in the panel). A card without its questions (asked before
+/// they had ids) shows its text.
 pub fn card_view(id: u64, cell: Cell) -> AnyView {
     let data = cell.data;
     // (A card comes first with its line, and its questions follow.)
     let legacy = Memo::new(move |_| data.with(|item| item.questions.is_none()));
+    let recorded = Memo::new(move |_| {
+        data.with(|item| {
+            item.questions
+                .iter()
+                .flatten()
+                .any(|question| question.state != "open")
+        })
+    });
     let open = move || {
         data.with(|item| {
             item.questions
@@ -749,27 +758,35 @@ pub fn card_view(id: u64, cell: Cell) -> AnyView {
             }
             .into_any();
         }
+        if !recorded.get() {
+            return view! {
+                <button type="button" class="asked" disabled=move || !open() title=move || if open() { "Answer (Alt+Q)" } else { "" }
+                    on:click=move |_| open_panel(Some(id))>
+                    <MessageCircleQuestionMark size=16 />
+                    <span>{move || data.with(|item| item.text.clone())}</span>
+                </button>
+            }
+            .into_any();
+        }
         view! {
-            <button type="button" class="asked" disabled=move || !open() title=move || if open() { "Answer (Alt+Q)" } else { "" }
-                on:click=move |_| open_panel(Some(id))>
-                <MessageCircleQuestionMark size=16 />
-                <span>{move || data.with(|item| item.text.clone())}</span>
-            </button>
-            <ol class="record">
-                {move || settled().into_iter().map(|question| {
-                    let outcome = outcome(&question).unwrap_or_default();
-                    let answered = question.state == "answered";
-                    view! {
-                        <li>
-                            <span class="record-number">{question.number.map(|number| format!("{number}."))}</span>
-                            <div>
-                                <div>{text(&question)}</div>
-                                <div class="record-outcome" class:answer=answered>{outcome}</div>
-                            </div>
-                        </li>
-                    }
-                }).collect_view()}
-            </ol>
+            <div class="record-box">
+                <h3 class="record-title">{move || data.with(|item| item.text.clone())}</h3>
+                <ol class="record">
+                    {move || settled().into_iter().map(|question| {
+                        let outcome = outcome(&question).unwrap_or_default();
+                        let answered = question.state == "answered";
+                        view! {
+                            <li>
+                                <span class="record-number">{question.number.map(|number| format!("{number}."))}</span>
+                                <div>
+                                    <div>{text(&question)}</div>
+                                    <div class="record-outcome" class:answer=answered>{outcome}</div>
+                                </div>
+                            </li>
+                        }
+                    }).collect_view()}
+                </ol>
+            </div>
         }
         .into_any()
     })
