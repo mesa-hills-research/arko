@@ -30,6 +30,14 @@ pub(crate) struct Waiting {
     pub(crate) approval: bool,
 }
 
+impl Waiting {
+    /// Arko asked it, not the agent (an approval, or a question without
+    /// ids): its answer is the user's words alone, not a note.
+    fn plain(&self) -> bool {
+        self.approval || !self.ids.iter().any(|id| is_agent_id(id))
+    }
+}
+
 /// A note about the agent's questions for it to read (answers, a
 /// dismissal), kept as `seq` until it has.
 pub(crate) struct AnswerNote {
@@ -141,7 +149,7 @@ impl Harness {
     /// False when it doesn't wait for them (or its wait is gone).
     fn answer_agent_wait(&mut self, pending: &Pending) -> bool {
         let Some(at) = self.waiting.iter().position(|waiting| {
-            !waiting.approval
+            !waiting.plain()
                 && waiting.run == pending.run
                 && waiting.ids.iter().any(|id| pending.ids.contains(id))
         }) else {
@@ -155,15 +163,20 @@ impl Harness {
         true
     }
 
-    /// Gives the approvals among `answered` their answers, as `reply` words
-    /// each.
-    fn answer_approvals(&mut self, answered: &[String], reply: impl Fn(&str) -> String) -> bool {
+    /// Gives the waits Arko asked among `answered` (approvals, questions
+    /// without ids) their answers, as `reply` words each (of its id, and
+    /// whether it is an approval).
+    fn answer_plain_waits(
+        &mut self,
+        answered: &[String],
+        reply: impl Fn(&str, bool) -> String,
+    ) -> bool {
         let mut any = false;
         let mut kept = Vec::new();
         for waiting in std::mem::take(&mut self.waiting) {
             match waiting.ids.iter().find(|id| answered.contains(id)) {
-                Some(id) if waiting.approval => {
-                    let _ = waiting.answer.send(reply(id));
+                Some(id) if waiting.plain() => {
+                    let _ = waiting.answer.send(reply(id, waiting.approval));
                     any = true;
                 }
                 _ => kept.push(waiting),
@@ -244,10 +257,10 @@ impl Harness {
             self.feed.user(text, source, Delivery::Answer);
         }
         self.output.echo(&self.output.dim("  ✎ answered"));
-        self.answer_approvals(&ids_of(&settled), |id| {
-            answer_of(id)
-                .map(crate::questions::approval_reply)
-                .unwrap_or_default()
+        self.answer_plain_waits(&ids_of(&settled), |id, approval| match answer_of(id) {
+            Some(answer) if approval => crate::questions::approval_reply(answer),
+            Some(answer) => answer.words(None),
+            None => String::new(),
         });
         let pending = pending?;
         if self.answer_agent_wait(&pending) {
@@ -277,7 +290,7 @@ impl Harness {
             return None;
         }
         self.user_present();
-        self.answer_approvals(&ids_of(&settled), |_| String::new());
+        self.answer_plain_waits(&ids_of(&settled), |_, _| String::new());
         let pending = pending?;
         if self.answer_agent_wait(&pending) {
             return None;
@@ -315,13 +328,21 @@ impl Harness {
                     .settle_questions(run, &ids, |_| QuestionState::AnsweredInMessage),
             )
         };
-        let approved = self.answer_approvals(&answered, |_| crate::questions::approval_words(text));
+        let approved = self.answer_plain_waits(&answered, |_, approval| {
+            if approval {
+                crate::questions::approval_words(text)
+            } else {
+                text.trim().to_string()
+            }
+        });
         let agent = agent_ids(&answered);
         let still = agent_ids(&ids_of(&self.feed.open_questions()));
         let labelled = notes::still_open(&notes::message_answers(&agent, text), &still);
-        if let Some(at) = self.waiting.iter().position(|waiting| {
-            !waiting.approval && waiting.ids.iter().any(|id| agent.contains(id))
-        }) {
+        if let Some(at) = self
+            .waiting
+            .iter()
+            .position(|waiting| !waiting.plain() && waiting.ids.iter().any(|id| agent.contains(id)))
+        {
             let waiting = self.waiting.remove(at);
             if waiting.answer.send(labelled.clone()).is_ok() {
                 return None;
@@ -352,8 +373,8 @@ impl Harness {
         Some(open)
     }
 
-    /// After a turn: the waits that can no longer be answered end. An
-    /// approval Arko asked for one is closed. The agent's questions stay
+    /// After a turn: the waits that can no longer be answered end. A
+    /// question Arko asked for one (an approval) is closed. The agent's questions stay
     /// open, and a resumed task asks again.
     pub(crate) fn end_lost_wait(&mut self) {
         let (lost, kept): (Vec<Waiting>, Vec<Waiting>) = std::mem::take(&mut self.waiting)
@@ -361,7 +382,7 @@ impl Harness {
             .partition(|waiting| waiting.answer.is_closed());
         self.waiting = kept;
         for waiting in lost {
-            if waiting.approval {
+            if waiting.plain() {
                 self.feed
                     .settle_questions(Some(waiting.run), &waiting.ids, |_| QuestionState::Closed {
                         why: None,
