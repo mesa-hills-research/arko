@@ -175,24 +175,26 @@ pub fn stop_in(root: &Path) {
 
 fn stop(root: Option<&Path>) {
     let here = |of: &Path| root.is_none_or(|root| root == of);
-    let handles: Vec<AbortHandle> = lock(&RUNNING.tasks)
-        .values()
-        .filter(|(of, _)| here(of))
-        .filter_map(|(_, handle)| handle.clone())
-        .collect();
-    for handle in handles {
-        handle.abort();
-    }
     let mut tasks = lock(&RUNNING.tasks);
     let deadline = std::time::Instant::now() + Duration::from_secs(2);
-    while tasks.values().any(|(of, _)| here(of)) {
+    loop {
+        // Every round, since a run that was starting gets its handle a
+        // moment after it is listed.
+        for (_, handle) in tasks.values().filter(|(of, _)| here(of)) {
+            if let Some(handle) = handle {
+                handle.abort();
+            }
+        }
+        if !tasks.values().any(|(of, _)| here(of)) {
+            break;
+        }
         let left = deadline.saturating_duration_since(std::time::Instant::now());
         if left.is_zero() {
             break;
         }
         tasks = RUNNING
             .ended
-            .wait_timeout(tasks, left)
+            .wait_timeout(tasks, left.min(Duration::from_millis(10)))
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .0;
     }
@@ -239,13 +241,19 @@ impl Naming {
         let linger = crate::context::handle().map(|context| context.linger());
         let id = RUNNING.next.fetch_add(1, Ordering::Relaxed);
         lock(&RUNNING.tasks).insert(id, (run.root.clone(), None));
+        // Moved into the task, so it leaves the running ones when the task is
+        // dropped, also when it is stopped before it first runs.
+        let place = Place(id);
         let spawned = tokio::spawn(async move {
-            let _place = Place(id);
+            let _place = place;
             let _linger = linger;
-            // Wanted while no edit started another run and the folder is there.
+            // Wanted while no edit started another run and the session is
+            // there. A deleted session's folder can stay for the worktrees it
+            // kept, so its settings file says whether it is.
+            let settings = run.session.dir.join(crate::session::SETTINGS_FILE);
             let wanted = {
-                let (current, dir) = (current.clone(), run.session.dir.clone());
-                move || *lock(&current) == generation && dir.is_dir()
+                let (current, settings) = (current.clone(), settings.clone());
+                move || *lock(&current) == generation && settings.is_file()
             };
             let enabled = {
                 let root = run.root.clone();
@@ -263,7 +271,7 @@ impl Naming {
             // Under the lock an edit takes, so a run that was replaced in the
             // meantime writes nothing.
             let number = lock(&current);
-            if *number != generation || !run.session.dir.is_dir() {
+            if *number != generation || !settings.is_file() {
                 return;
             }
             let first_line = crate::conversations::title_of(&run.text);
@@ -957,6 +965,59 @@ mod tests {
         assert!(!dir.join("generated-title").exists());
     }
 
+    /// A deleted session whose folder stays for the worktrees it kept is
+    /// gone too: no paid way is asked for it, and no name is written there.
+    #[tokio::test]
+    async fn a_deleted_session_whose_folder_stays_is_asked_no_more_ways() {
+        let temp = tempfile::tempdir().unwrap();
+        let (mut harness, mut inputs, _keep) =
+            session_naming_by(temp.path(), &[Way::ClaudePlan, Way::ClaudeKey]).await;
+        let gate = Arc::new(tokio::sync::Notify::new());
+        let fake = Fake::new(&[
+            (Way::ClaudePlan, Step::GatedFail(gate.clone())),
+            (Way::ClaudeKey, Step::Answer("Paid name")),
+        ]);
+        name_with(&harness.root, fake.clone());
+        first_message(&mut harness, &mut inputs).await;
+        until(|| fake.ways_asked().len() == 1).await;
+        let dir = harness.session.dir.clone();
+        // What deleting leaves when it keeps a worktree: the folder, without
+        // the session's own files.
+        std::fs::remove_file(dir.join(crate::session::SETTINGS_FILE)).unwrap();
+        gate.notify_one();
+        until(|| !harness.naming.running()).await;
+        assert_eq!(fake.ways_asked(), [Way::ClaudePlan]);
+        assert!(!dir.join("generated-title").exists());
+    }
+
+    /// A quit stops a run that was listed before its handle was: it aborts
+    /// it once the handle comes, well before its wait runs out.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_quit_stops_a_run_whose_handle_comes_late() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().to_path_buf();
+        let id = RUNNING.next.fetch_add(1, Ordering::Relaxed);
+        lock(&RUNNING.tasks).insert(id, (root.clone(), None));
+        let place = Place(id);
+        let task = tokio::spawn(async move {
+            let _place = place;
+            tokio::time::sleep(Duration::from_secs(30)).await;
+        });
+        let started = std::time::Instant::now();
+        let stopping = tokio::task::spawn_blocking({
+            let root = root.clone();
+            move || crate::session_names::stop_in(&root)
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        if let Some((_, slot)) = lock(&RUNNING.tasks).get_mut(&id) {
+            *slot = Some(task.abort_handle());
+        }
+        stopping.await.unwrap();
+        assert!(started.elapsed() < Duration::from_millis(1500));
+        assert!(task.await.unwrap_err().is_cancelled());
+        assert!(!lock(&RUNNING.tasks).contains_key(&id));
+    }
+
     /// Stopping the namings of one Arko folder leaves those of another to
     /// finish, and the ones stopped write nothing.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -970,6 +1031,8 @@ mod tests {
             .await;
             let (harness, inputs, sender) =
                 crate::tests::harness(temp.path(), server.client(), true);
+            // A session's settings are saved as it opens, and say it is there.
+            harness.session.save_settings(&harness.settings).unwrap();
             crate::session_names::save(&harness.root, &[Way::ClaudePlan]).unwrap();
             let gate = Arc::new(tokio::sync::Notify::new());
             let fake = Fake::new(&[(Way::ClaudePlan, Step::Gated(gate.clone(), "A name"))]);
