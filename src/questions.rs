@@ -221,17 +221,24 @@ pub fn card_line(questions: &[AgentQuestion]) -> String {
 
 /// What the tool that asked for an approval reads of the user's answer:
 /// [`SAVE`] to save, nothing not to, or the user's words, which ask for
-/// changes. Only [`SAVE`] picked alone (or typed alone) saves.
+/// changes. Only [`SAVE`] picked alone, or typed alone with nothing picked,
+/// saves. Words beside a pick (or "You decide") never save, whatever they
+/// say. They go back as changes to make, so a contradiction such as Don't
+/// save with "save" typed saves nothing.
 pub(crate) fn approval_reply(answer: &Answer) -> String {
-    match answer.text.as_deref().map(str::trim) {
-        Some(text) if !text.is_empty() => approval_words(text),
-        _ if !answer.you_decide
-            && answer.choices.len() == 1
-            && answer.choices[0].trim().eq_ignore_ascii_case(SAVE) =>
+    let text = answer.text.as_deref().map(str::trim).unwrap_or_default();
+    let picked = !answer.choices.is_empty() || answer.you_decide;
+    match (text.is_empty(), picked) {
+        (false, false) => approval_words(text),
+        (false, true) => text.to_string(),
+        (true, _)
+            if !answer.you_decide
+                && answer.choices.len() == 1
+                && answer.choices[0].trim().eq_ignore_ascii_case(SAVE) =>
         {
             SAVE.to_string()
         }
-        _ => String::new(),
+        (true, _) => String::new(),
     }
 }
 
@@ -992,15 +999,34 @@ mod tests {
                 you_decide,
             })
         };
-        assert_eq!(picked(&[SAVE], None, false), SAVE);
-        assert_eq!(picked(&[DONT_SAVE], None, false), "");
-        assert_eq!(picked(&[SAVE], None, true), "");
-        assert_eq!(picked(&[], Some("save."), false), SAVE);
-        assert_eq!(
-            picked(&[SAVE], Some("yes, but high effort"), false),
-            "yes, but high effort"
-        );
-        assert_eq!(approval_words("Don’t save"), "");
-        assert_eq!(approval_words("yes"), "yes");
+        // (choices, text, you decide) and what the tool reads: only
+        // "Save" alone saves, and words beside a pick go back as changes.
+        for (choices, text, you_decide, read) in [
+            (&[SAVE][..], None, false, SAVE),
+            (&[SAVE][..], Some("  "), false, SAVE),
+            (&[DONT_SAVE][..], None, false, ""),
+            (&[SAVE, DONT_SAVE][..], None, false, ""),
+            (&[SAVE][..], None, true, ""),
+            (&[][..], None, true, ""),
+            (&[][..], Some("save."), false, SAVE),
+            (&[][..], Some("Don’t save"), false, ""),
+            (&[][..], Some("yes"), false, "yes"),
+            (
+                &[SAVE][..],
+                Some("yes, but high effort"),
+                false,
+                "yes, but high effort",
+            ),
+            (&[DONT_SAVE][..], Some("save"), false, "save"),
+            (&[DONT_SAVE][..], Some("Save"), true, "Save"),
+            (&[][..], Some("save"), true, "save"),
+            (&[SAVE][..], Some("save"), false, "save"),
+        ] {
+            assert_eq!(
+                picked(choices, text, you_decide),
+                read,
+                "{choices:?} {text:?} {you_decide}"
+            );
+        }
     }
 }
