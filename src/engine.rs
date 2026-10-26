@@ -623,6 +623,18 @@ impl Engine {
         for model in [&settings.worker.model, &settings.main.model] {
             crate::openrouter::remember(&root, model);
         }
+        // Under US or EU each model goes to the address the list of models
+        // names, which a new session read as it checked its models. A resumed
+        // one reads it now, so that its first request goes to the right one.
+        let routing = crate::openrouter::Settings::load(&root);
+        if !new
+            && routing.region() == crate::openrouter::Region::UsOrEu
+            && [&settings.main.model, &settings.worker.model]
+                .iter()
+                .any(|model| model.to_lowercase().starts_with(providers::OPENROUTER))
+        {
+            let _ = crate::openrouter::checked(&root, &routing, None).await;
+        }
         let provider_setup = providers::Setup::new(settings.openai_auth);
         {
             // Settings the agents can't be built with leave no session behind.
