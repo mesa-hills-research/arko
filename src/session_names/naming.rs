@@ -3,14 +3,18 @@
 //! that can't run, fails or stalls hands over to the next, and the first
 //! words stay the name when none works. The run belongs to the
 //! session ([`Naming`]). It goes on after the session closes, and editing
-//! the first message or turning a way off stops what it would still do.
+//! the first message, deleting the session or turning a way off stops what
+//! it would still do. Only quitting the app stops a request that is under
+//! way ([`stop_all`]).
 
-use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Condvar, LazyLock, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use tokio::task::JoinHandle;
+use tokio::task::{AbortHandle, JoinHandle};
 
 use super::live::Live;
 use super::{Way, cut_words};
@@ -46,15 +50,26 @@ pub(crate) enum Failure {
 #[async_trait]
 pub(crate) trait Ask: Send + Sync {
     /// The model's answer to the first message `message`, as it wrote it.
-    async fn ask(&self, way: Way, message: &str) -> Result<String, Failure>;
+    /// `still` says whether the way is still wanted (it is turned on, and the
+    /// session is there and still has that first message). A way that
+    /// prepares before it sends asks it again just before it sends, since
+    /// a message goes to a provider only while the way is wanted.
+    async fn ask(
+        &self,
+        way: Way,
+        message: &str,
+        still: &(dyn Fn() -> bool + Send + Sync),
+    ) -> Result<String, Failure>;
 }
 
 /// A name for a conversation that starts with `message`, from the first of
 /// the ways `enabled` lists that gives one, or `None` when none does. A way
 /// hands over to the next when it can't run, fails or gives no usable name,
-/// and a way that stalls fails by itself ([`STALL`]). The list is read again
-/// before each way, so a way turned off while an earlier one worked is not
-/// asked, and an answer from a way turned off meanwhile is not taken.
+/// and a way that stalls fails by itself ([`STALL`]). The list is read
+/// again before each way, and again by the way just before it sends, so a
+/// way turned off while an earlier one worked, or while this one prepared,
+/// is not asked, and an answer from a way turned off meanwhile is not taken.
+/// The list is empty once the run is no longer wanted at all.
 pub(crate) async fn generate(
     enabled: &(dyn Fn() -> Vec<Way> + Send + Sync),
     message: &str,
@@ -65,9 +80,10 @@ pub(crate) async fn generate(
     loop {
         let way = enabled().into_iter().find(|way| !tried.contains(way))?;
         tried.push(way);
-        match asker.ask(way, &message).await {
+        let still = move || enabled().contains(&way);
+        match asker.ask(way, &message, &still).await {
             Ok(answer) => match clean(&answer) {
-                Some(name) if enabled().contains(&way) => return Some(name),
+                Some(name) if still() => return Some(name),
                 Some(_) => return None,
                 None => log::debug!("session names: {} gave no usable name", way.id()),
             },
@@ -101,24 +117,83 @@ pub(crate) fn clean(answer: &str) -> Option<String> {
 /// run that makes progress is not cut off sooner by the ways.
 pub(crate) const MAX_RUN: Duration = Duration::from_secs(10 * 60);
 
-/// The naming of one session. A run goes on after the session closes or
-/// another is shown, since the name is for the session's next opening, and
-/// it ends when it has a name, when each way has failed or stalled, when the
-/// first message is edited ([`Naming::cancel`]), or when the process exits.
-/// It writes the name only if it is still the latest run and the session's
-/// folder is there, and it never makes the folder.
-#[derive(Default)]
-pub(crate) struct Naming {
-    /// Which run may write, and the latest one, to end it when the first
-    /// message is edited.
-    state: Arc<Mutex<State>>,
-    task: Mutex<Option<JoinHandle<()>>>,
+/// What the naming of a saved session shares in this process, found by the
+/// session's folder: the number of the run that may write its name. Every
+/// harness that has the session open, and every run that goes on after one
+/// closed, sees the same number, so a run started before the session was
+/// closed and opened again is told by an edit made after. The run checks it
+/// and writes under the lock that an edit takes to change it.
+type Generation = Arc<Mutex<u64>>;
+
+fn generation_of(dir: &Path) -> Generation {
+    static SESSIONS: LazyLock<Mutex<HashMap<PathBuf, Generation>>> = LazyLock::new(Mutex::default);
+    lock(&SESSIONS)
+        .entry(dir.to_path_buf())
+        .or_default()
+        .clone()
 }
 
+/// The runs going on in this process, which quitting stops.
+struct Running {
+    /// Each by its number, with what aborts it once it is spawned.
+    tasks: Mutex<HashMap<u64, Option<AbortHandle>>>,
+    ended: Condvar,
+    next: AtomicU64,
+}
+
+static RUNNING: LazyLock<Running> = LazyLock::new(|| Running {
+    tasks: Mutex::default(),
+    ended: Condvar::new(),
+    next: AtomicU64::new(1),
+});
+
+/// A run's place among the running, which it gives up as it ends (done,
+/// stopped, or dropped with its runtime).
+struct Place(u64);
+
+impl Drop for Place {
+    fn drop(&mut self) {
+        lock(&RUNNING.tasks).remove(&self.0);
+        RUNNING.ended.notify_all();
+    }
+}
+
+/// Stops every naming that is going on in this process: the requests under
+/// way, and the Claude Code each of them runs, which ends with its request.
+/// It returns when they have ended, or after two seconds. Quit calls it. A
+/// request under way is otherwise left to finish, while the app runs.
+pub fn stop_all() {
+    let handles: Vec<AbortHandle> = lock(&RUNNING.tasks).values().flatten().cloned().collect();
+    for handle in handles {
+        handle.abort();
+    }
+    let mut tasks = lock(&RUNNING.tasks);
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    while !tasks.is_empty() {
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        if left.is_zero() {
+            break;
+        }
+        tasks = RUNNING
+            .ended
+            .wait_timeout(tasks, left)
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .0;
+    }
+}
+
+/// The naming of one session, as one harness holds it. A run goes on after
+/// the session closes or another is shown, since the name is for the
+/// session's next opening, and it ends when it has a name, when each way
+/// has failed or stalled, when the first message is edited
+/// ([`Naming::cancel`], in any harness of the session), when the session's
+/// folder is gone, or when the app quits ([`stop_all`]). It writes the name
+/// only if it is still the latest run and the folder is there, and never
+/// makes the folder.
 #[derive(Default)]
-struct State {
-    /// Which start the run allowed to write is.
-    generation: u64,
+pub(crate) struct Naming {
+    /// This harness's latest run, to end it when it is replaced.
+    task: Mutex<Option<JoinHandle<()>>>,
 }
 
 /// What a run needs, to ask and to show the name it gets.
@@ -131,12 +206,14 @@ pub(crate) struct Run {
 }
 
 impl Naming {
-    /// Starts naming from `run.text`, in place of the run in flight.
+    /// Starts naming from `run.text`, in place of any run in flight for the
+    /// session.
     pub(crate) fn start(&self, run: Run) {
+        let current = generation_of(&run.session.dir);
         let generation = {
-            let mut state = lock(&self.state);
-            state.generation += 1;
-            state.generation
+            let mut number = lock(&current);
+            *number += 1;
+            *number
         };
         let mut task = lock(&self.task);
         if let Some(old) = task.take() {
@@ -144,36 +221,63 @@ impl Naming {
         }
         // A session's thread keeps its runtime for this after it closes.
         let linger = crate::context::handle().map(|context| context.linger());
-        let state = self.state.clone();
-        *task = Some(tokio::spawn(async move {
+        let id = RUNNING.next.fetch_add(1, Ordering::Relaxed);
+        lock(&RUNNING.tasks).insert(id, None);
+        let spawned = tokio::spawn(async move {
+            let _place = Place(id);
             let _linger = linger;
+            // Wanted while no edit started another run and the folder is there.
+            let wanted = {
+                let (current, dir) = (current.clone(), run.session.dir.clone());
+                move || *lock(&current) == generation && dir.is_dir()
+            };
             let enabled = {
                 let root = run.root.clone();
-                move || super::load(&root)
+                move || {
+                    if wanted() {
+                        super::load(&root)
+                    } else {
+                        Vec::new()
+                    }
+                }
             };
             let Some(name) = generate(&enabled, &run.text, run.asker.as_ref()).await else {
                 return;
             };
-            // Under the lock a new start or an edit takes, so a run that
-            // was replaced in the meantime writes nothing.
-            let state = lock(&state);
-            if state.generation != generation || !run.session.dir.is_dir() {
+            // Under the lock an edit takes, so a run that was replaced in the
+            // meantime writes nothing.
+            let number = lock(&current);
+            if *number != generation || !run.session.dir.is_dir() {
                 return;
             }
-            match run.session.set_generated_name(&name) {
+            let first_line = crate::conversations::title_of(&run.text);
+            match run.session.set_generated_name_for(&name, &first_line) {
                 Ok(()) => crate::harness::publish_title_from_disk(&run.session, &run.gauges),
                 Err(error) => log::warn!("could not keep the session's name: {error}"),
             }
-        }));
+        });
+        if let Some(slot) = lock(&RUNNING.tasks).get_mut(&id) {
+            *slot = Some(spawned.abort_handle());
+        }
+        *task = Some(spawned);
     }
 
-    /// Ends the run in flight and any name it would still give (the first
-    /// message was edited).
-    pub(crate) fn cancel(&self) {
-        lock(&self.state).generation += 1;
+    /// Ends any run in flight for the session in `dir`, in this harness or
+    /// one that closed (the first message was edited): the runs ask no more
+    /// ways and write no name.
+    pub(crate) fn cancel(&self, dir: &Path) {
+        *lock(&generation_of(dir)) += 1;
         if let Some(task) = lock(&self.task).take() {
             task.abort();
         }
+    }
+
+    /// Whether this harness's latest run is going on (tests).
+    #[cfg(test)]
+    pub(crate) fn running(&self) -> bool {
+        lock(&self.task)
+            .as_ref()
+            .is_some_and(|task| !task.is_finished())
     }
 }
 
@@ -810,5 +914,30 @@ mod tests {
             assert!(!dir.exists(), "closed: {closed}");
             drop(open);
         }
+    }
+
+    /// A session deleted while its model works is asked no more ways: a way
+    /// that bills is never asked for a session that is gone, and the run
+    /// ends.
+    #[tokio::test]
+    async fn a_session_that_is_deleted_is_asked_no_more_ways() {
+        let temp = tempfile::tempdir().unwrap();
+        let (mut harness, mut inputs, _keep) =
+            session_naming_by(temp.path(), &[Way::ClaudePlan, Way::ClaudeKey]).await;
+        let gate = Arc::new(tokio::sync::Notify::new());
+        let fake = Fake::new(&[
+            (Way::ClaudePlan, Step::GatedFail(gate.clone())),
+            (Way::ClaudeKey, Step::Answer("Paid name")),
+        ]);
+        name_with(&harness.root, fake.clone());
+        first_message(&mut harness, &mut inputs).await;
+        until(|| fake.ways_asked().len() == 1).await;
+        let dir = harness.session.dir.clone();
+        std::fs::remove_dir_all(&dir).unwrap();
+        // The plan way fails now, and the paid way would be next.
+        gate.notify_one();
+        until(|| !harness.naming.running()).await;
+        assert_eq!(fake.ways_asked(), [Way::ClaudePlan]);
+        assert!(!dir.join("generated-title").exists());
     }
 }

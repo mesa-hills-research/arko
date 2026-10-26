@@ -4419,14 +4419,17 @@ impl Harness {
         let first = self.conversations.current == Some(0);
         if let Some(record) = self.conversations.current_mut() {
             record.title = conversations::title_of(&words);
-            // A model's name was of the message that is gone: its run ends
-            // and the new message is named in its place.
+            // Saved first: a name kept for the old words is not shown once
+            // the title says they changed, by any process that reads it.
+            self.save_conversations();
+            // A model's name was of the message that is gone: the runs for it
+            // end (also those of this session in an earlier harness that
+            // are still going) and the new message is named in its place.
             if first {
-                self.naming.cancel();
+                self.naming.cancel(&self.session.dir);
                 self.session.clear_generated_name();
                 self.name_by_model(&words);
             }
-            self.save_conversations();
             self.publish_conversations();
             self.publish_title();
         }

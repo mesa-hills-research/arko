@@ -3184,6 +3184,126 @@ mod tests {
         }
     }
 
+    /// The first message of a session is edited after the session was closed
+    /// and opened again, while the first run of its model is still going on
+    /// in the first session's thread. That run never names the session,
+    /// whichever answer comes first, and a replacement that fails leaves the
+    /// first words.
+    #[tokio::test]
+    async fn an_edit_after_reopening_ends_the_naming_that_went_on_from_before() {
+        use crate::session_names::Way;
+        use crate::session_names::fake::{Fake, Step, name_with};
+        for replacement_fails in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let (server, bodies) = counting_server().await;
+            let (root, project) = (temp.path().join("arko"), temp.path().join("project"));
+            crate::session_names::save(&root, &[Way::ClaudePlan]).unwrap();
+            let (old, new) = (
+                Arc::new(tokio::sync::Notify::new()),
+                Arc::new(tokio::sync::Notify::new()),
+            );
+            // The first ask is for the first words, the second for the edit.
+            let fake = Fake::new(&[(
+                Way::ClaudePlan,
+                if replacement_fails {
+                    Step::GatedFail(new.clone())
+                } else {
+                    Step::Gated(new.clone(), "New name")
+                },
+            )]);
+            fake.next(Way::ClaudePlan, Step::Gated(old.clone(), "Old name"));
+            name_with(&root, fake.clone());
+            let (seam, ended) = open_app(&root, &project, &server, SessionChoice::New).await;
+            let id = seam.session.id.clone();
+            seam.input
+                .send(Input::Message(app_message("Count the pears.")))
+                .unwrap();
+            answered(&seam, &bodies, 1).await;
+            wait_for(|| fake.ways_asked().len() == 1).await;
+            // The session closes and opens again. Its first run goes on.
+            quit(seam, ended).await;
+            let (seam, ended) = open_app(&root, &project, &server, SessionChoice::Resume(id)).await;
+            resumed(&seam).await;
+            let first = user_item(&seam, "Count the pears.");
+            assert_eq!(edit(&seam, first.id, "Count the apples.").await, Ok(()));
+            answered(&seam, &bodies, 2).await;
+            wait_for(|| fake.ways_asked().len() == 2).await;
+            let title = || crate::sessions::list(&root).remove(0).title;
+            // The replacement answers, or fails, and then the old run does.
+            new.notify_one();
+            if replacement_fails {
+                tokio::time::sleep(Duration::from_millis(300)).await;
+            } else {
+                wait_for(|| title() == "New name").await;
+            }
+            old.notify_one();
+            // The first run is still there to be answered.
+            wait_for(|| {
+                fake.given
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|name| name == "Old name")
+            })
+            .await;
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            let expected = if replacement_fails {
+                "Count the apples."
+            } else {
+                "New name"
+            };
+            assert_eq!(title(), expected, "replacement fails: {replacement_fails}");
+            quit(seam, ended).await;
+            assert_eq!(title(), expected);
+        }
+    }
+
+    /// A session that closed and was deleted while its model works is asked
+    /// no more ways, a way that bills included.
+    #[tokio::test]
+    async fn a_closed_session_that_is_deleted_is_asked_no_more_ways() {
+        use crate::session_names::Way;
+        use crate::session_names::fake::{Fake, Step, name_with};
+        let temp = tempfile::tempdir().unwrap();
+        let (server, bodies) = counting_server().await;
+        let (root, project) = (temp.path().join("arko"), temp.path().join("project"));
+        crate::session_names::save(&root, &[Way::ClaudePlan, Way::ClaudeKey]).unwrap();
+        let gate = Arc::new(tokio::sync::Notify::new());
+        let fake = Fake::new(&[
+            (Way::ClaudePlan, Step::GatedFail(gate.clone())),
+            (Way::ClaudeKey, Step::Answer("Paid name")),
+        ]);
+        name_with(&root, fake.clone());
+        let (seam, ended) = open_app(&root, &project, &server, SessionChoice::New).await;
+        let id = seam.session.id.clone();
+        seam.input
+            .send(Input::Message(app_message("Count the pears.")))
+            .unwrap();
+        answered(&seam, &bodies, 1).await;
+        wait_for(|| fake.ways_asked().len() == 1).await;
+        quit(seam, ended).await;
+        crate::sessions::delete(&root, &id).unwrap();
+        gate.notify_one();
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        assert_eq!(
+            fake.ways_asked(),
+            [Way::ClaudePlan],
+            "no way for a deleted session"
+        );
+        assert!(!root.join("sessions").join(&id).exists());
+    }
+
+    /// Waits up to 10 s for `done`.
+    async fn wait_for(mut done: impl FnMut() -> bool) {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while !done() {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("it didn't happen in time");
+    }
+
     /// An app edits the user's message, or sends the latest again: the
     /// conversation is cut back to just before it and goes on from the new
     /// message, in the model's requests and in the feed. Only the user's

@@ -42,6 +42,8 @@ pub(crate) enum Step {
 pub(crate) struct Fake {
     steps: Mutex<HashMap<Way, VecDeque<Step>>>,
     pub(crate) asked: Mutex<Vec<(Way, String)>>,
+    /// The answers a way gave, once its gate opened.
+    pub(crate) given: Mutex<Vec<String>>,
 }
 
 impl Fake {
@@ -83,7 +85,12 @@ impl Fake {
 
 #[async_trait]
 impl Ask for Fake {
-    async fn ask(&self, way: Way, message: &str) -> Result<String, Failure> {
+    async fn ask(
+        &self,
+        way: Way,
+        message: &str,
+        _still: &(dyn Fn() -> bool + Send + Sync),
+    ) -> Result<String, Failure> {
         self.asked.lock().unwrap().push((way, message.to_string()));
         let step = {
             let mut steps = self.steps.lock().unwrap();
@@ -98,6 +105,7 @@ impl Ask for Fake {
             Some(Step::Answer(text)) => Ok(text.to_string()),
             Some(Step::Gated(gate, text)) => {
                 gate.notified().await;
+                self.given.lock().unwrap().push(text.to_string());
                 Ok(text.to_string())
             }
             Some(Step::GatedFail(gate)) => {

@@ -439,6 +439,9 @@ pub fn cli_main() -> ExitCode {
         }
     };
     let code = runtime.block_on(run(args));
+    // A name a model is still being asked for ends with the process, and so
+    // does the Claude Code it runs.
+    crate::session_names::stop_all();
     // The line editor's thread may still be reading, in raw mode.
     term::restore();
     let code = match code {

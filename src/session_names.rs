@@ -19,6 +19,8 @@ pub(crate) mod fake;
 mod live;
 pub(crate) mod naming;
 
+pub use naming::stop_all;
+
 /// The file in Arko's folder that holds the ways.
 const FILE: &str = "session-names.json";
 
