@@ -40,6 +40,7 @@ const VARIABLES: &[(&str, &[&str])] = &[
         "secondary-hover",
         &["secondary.hover.background", "secondary.background"],
     ),
+    ("muted-bg", &["muted.background", "secondary.background"]),
     ("text", &["foreground"]),
     ("muted", &["muted.foreground"]),
     ("line", &["border"]),
@@ -208,6 +209,14 @@ fn block(theme: &Theme, fallback: &Theme, indent: &str) -> String {
             .unwrap_or_else(|| fail(&format!("{} sets none of {tokens:?}", theme.name)));
         css.push_str(&format!("{indent}--{name}: {color};\n"));
     }
+    // A chosen segment's outline is the field border where a theme sets one
+    // apart from its hairline. Elsewhere the page mixes one, as `initial`
+    // leaves the variable unset (not the default theme's).
+    let border = color(&theme.value, "border").unwrap_or_default();
+    let outline = color(&theme.value, "input.border")
+        .filter(|outline| !outline.eq_ignore_ascii_case(&border))
+        .unwrap_or_else(|| "initial".into());
+    css.push_str(&format!("{indent}--outline: {outline};\n"));
     // The kit's radii (6 and 8 unless the theme says, 0 squares them).
     for (name, key, default) in [("radius", "radius", 6.0), ("radius-lg", "radius.lg", 8.0)] {
         let radius = theme.value[key].as_f64().unwrap_or(default);

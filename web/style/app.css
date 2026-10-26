@@ -24,9 +24,6 @@
   /* A pill or circle, square in a theme with radius 0. */
   --r-full: calc(var(--radius) * 999);
   --shadow: 0 8px 28px rgba(0, 0, 0, 0.16), 0 1px 3px rgba(0, 0, 0, 0.08);
-  /* A chosen segment's outline, halfway from the hairline to muted text, so
-     a medium grey in light themes and its counterpart in dark ones. */
-  --outline: color-mix(in oklab, var(--muted) 50%, var(--line));
 }
 
 /* Laptops, desktops and landscape tablets: a column that grows with the
@@ -227,7 +224,12 @@ kbd {
   font-size: 13px;
   font-weight: 500;
 }
-.views button[aria-checked="true"] { border-color: var(--outline); }
+/* The outline is the theme's field border, or, where that is its hairline,
+   halfway from the hairline to muted text. */
+.views button[aria-checked="true"] {
+  border-color: var(--outline, color-mix(in oklab, var(--muted) 50%, var(--line)));
+  background: var(--muted-bg);
+}
 .view-pick { position: relative; }
 @media (min-width: 720px) {
   .views { display: flex; }

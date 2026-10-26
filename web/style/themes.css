@@ -7,10 +7,11 @@
   --code: #EFEFEF;
   --secondary: #E0E0E0;
   --secondary-hover: #E5E5E5;
+  --muted-bg: #EAEAEA;
   --text: #000000;
   --muted: #696969;
   --line: #D2D2D2;
-  --input-line: #D2D2D2;
+  --input-line: #BCBCBC;
   --accent: #0060de;
   --on-accent: #FFFFFF;
   --link: #0060de;
@@ -26,6 +27,7 @@
   --switch-thumb: #F9F9F9;
   --popover: #F5F5F5;
   --popover-text: #000000;
+  --outline: #BCBCBC;
   --radius: 6px;
   --radius-lg: 8px;
   --shine-toward: var(--bg);
@@ -69,10 +71,11 @@
     --code: #232323;
     --secondary: #353535;
     --secondary-hover: #35353599;
+    --muted-bg: #202020;
     --text: #DEDEDE;
     --muted: #9D9D9D;
     --line: #303030;
-    --input-line: #303030;
+    --input-line: #4C4C4C;
     --accent: #006EE5;
     --on-accent: #F2F9FF;
     --link: #419CFF;
@@ -88,6 +91,7 @@
     --switch-thumb: #DAECFF;
     --popover: #101010;
     --popover-text: #CACCCA;
+    --outline: #4C4C4C;
     --radius: 6px;
     --radius-lg: 8px;
     --shine-toward: var(--text);
