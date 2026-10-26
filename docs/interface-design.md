@@ -112,7 +112,7 @@ Each web component matches a GPUI Kit component and its variants.
 | `Select` | `Select` | A button whose list opens in place below it, drawn as the command menu, with a filter for a long list. Arrows, Home, End, Enter, Esc and typing a name work |
 | `.menu` | `PopupMenu` | Rows 32 px, a check slot on the leading side |
 | `.popover` | `Popover` | `lg` radius, the popover surface, a shadow |
-| `.sheet` | `Sheet` | From the bottom on phones, centered on wide screens |
+| `.sheet` | `Sheet` | From the bottom on phones, centered on wide screens, with a hairline in `--line` as the popovers have |
 | `.card` | `GroupBox` | Surface and hairline, no shadow |
 | `title` and `aria-label` | `Tooltip` | Required on icon-only buttons |
 | `kbd` | `Kbd` | One key cap per chord, mono |

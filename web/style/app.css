@@ -663,7 +663,9 @@ dialog.sheet {
   margin: auto auto 0;
   padding: 0;
   overflow: hidden;
-  border: 0;
+  /* A hairline, as the other popovers have, where it meets the page. */
+  border: 1px solid var(--line);
+  border-bottom-width: 0;
   border-radius: var(--r-xl) var(--r-xl) 0 0;
   background: var(--popover);
   color: var(--popover-text);
@@ -672,7 +674,7 @@ dialog.sheet {
 dialog.sheet[open] { display: flex; flex-direction: column; animation: fade 0.15s ease-out; }
 dialog.sheet::backdrop { background: rgba(0, 0, 0, 0.36); }
 @media (min-width: 720px) {
-  dialog.sheet { margin: auto; border-radius: var(--r-xl); max-height: 80vh; }
+  dialog.sheet { margin: auto; border-bottom-width: 1px; border-radius: var(--r-xl); max-height: 80vh; }
 }
 .sheet-head {
   display: flex;
