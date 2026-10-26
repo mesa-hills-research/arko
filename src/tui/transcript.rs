@@ -1989,7 +1989,13 @@ fn record_lines(
     width: usize,
 ) -> Vec<Wrapped> {
     let set = theme.borders();
-    let border = theme.accent();
+    // Settled questions need nothing more from the user, so the box is
+    // drawn as quietly as an overlay's, not in the open panel's accent.
+    let border = Style::new().fg(if theme.is_terminal() {
+        ratatui::style::Color::Reset
+    } else {
+        theme.border
+    });
     // As wide as the transcript, with the same margin on the right as on
     // the left.
     let outer = width.saturating_sub(2 * MARGIN).max(24);
@@ -2003,10 +2009,7 @@ fn record_lines(
         if let Some(title) = title {
             let title = cut_end(&rendered(title), outer.saturating_sub(4));
             used += text_width(&title) + 2;
-            spans.push(Span::styled(
-                format!(" {title} "),
-                border.add_modifier(Modifier::BOLD),
-            ));
+            spans.push(Span::styled(format!(" {title} "), theme.dim()));
         }
         spans.push(Span::styled(
             set.horizontal_top.repeat(outer.saturating_sub(used)),
