@@ -1227,7 +1227,8 @@ fn size_of(text: &str) -> String {
 /// The question that asks the user to approve the main agent's save of
 /// `profile` in `place`. It reads the same in the terminal, on the web page
 /// and in an app, and carries the whole profile so the user judges its
-/// instructions as well as its model. Answer it with [`is_approval`].
+/// instructions as well as its model. [`approval`] has its parts for an
+/// approval card.
 pub fn approval_text(profile: &Profile, place: Place) -> String {
     let wherever = match place {
         Place::User => "in your Arko folder, for every project",
@@ -1263,22 +1264,24 @@ pub fn approval_text(profile: &Profile, place: Place) -> String {
             size_of(instructions)
         ));
     }
-    text.push_str("\nReply yes to save it, or tell the agent what to change.");
-    text
+    text.trim_end().to_string()
 }
 
-/// Whether the user's answer to [`approval_text`] approves it. That is
-/// "yes", "y", "ok", "okay" or "allow", in any case, with punctuation after
-/// and then "please" or "thanks" if the user likes ("Yes, please!"). Anything
-/// else is the user's feedback for the agent, so "yes, but use high effort"
-/// saves nothing.
-pub fn is_approval(answer: &str) -> bool {
-    let lowered = answer.to_lowercase();
-    let mut words = lowered
-        .split(|c: char| c.is_whitespace() || c.is_ascii_punctuation())
-        .filter(|word| !word.is_empty());
-    matches!(words.next(), Some("yes" | "y" | "ok" | "okay" | "allow"))
-        && words.all(|word| matches!(word, "please" | "thanks"))
+/// What an approval card shows of the main agent's save of `profile` in
+/// `place`, which is its name, model, effort, scope, description and
+/// instructions.
+pub fn approval(profile: &Profile, place: Place) -> crate::questions::Approval {
+    crate::questions::Approval {
+        name: profile.name.clone(),
+        model: profile
+            .model
+            .clone()
+            .unwrap_or_else(|| "the session's worker model".into()),
+        effort: profile.effort.map(|effort| effort.to_string()),
+        scope: place.reach().to_string(),
+        description: one_line(&profile.description),
+        instructions: profile.instructions.trim().to_string(),
+    }
 }
 
 #[cfg(test)]

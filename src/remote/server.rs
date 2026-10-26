@@ -809,13 +809,12 @@ async fn answer_questions(
 
 #[derive(Deserialize)]
 struct DismissBody {
-    /// The questions to dismiss. None, or empty, dismisses every open one.
-    #[serde(default)]
+    /// The questions to dismiss.
     ids: Vec<String>,
 }
 
-/// `POST /api/questions/dismiss` with `{"ids": ["q5"]}`, or `{}` for every
-/// open question: "Not now". 409 when none of them is open.
+/// `POST /api/questions/dismiss` with `{"ids": ["q5"]}`: "Not now". 409
+/// when none of them is open.
 async fn dismiss_questions(
     State(app): State<Arc<App>>,
     ConnectInfo(peer): Peer,
@@ -825,21 +824,15 @@ async fn dismiss_questions(
     if let Err(refusal) = app.authorize(&headers, peer.ip()) {
         return refusal.into_response();
     }
-    let ids = if body.iter().all(u8::is_ascii_whitespace) {
-        Vec::new()
-    } else {
-        match serde_json::from_slice::<DismissBody>(&body) {
-            Ok(DismissBody { ids }) => ids,
-            Err(_) => {
-                return (StatusCode::BAD_REQUEST, error_body("send {\"ids\": [...]}"))
-                    .into_response();
-            }
-        }
+    let Some(ids) = serde_json::from_slice::<DismissBody>(&body)
+        .ok()
+        .map(|body| body.ids)
+        .filter(|ids| !ids.is_empty())
+    else {
+        return (StatusCode::BAD_REQUEST, error_body("send {\"ids\": [...]}")).into_response();
     };
     let open = app.feed.open_questions();
-    if open.is_empty()
-        || (!ids.is_empty() && !ids.iter().any(|id| open.iter().any(|q| &q.id == id)))
-    {
+    if !ids.iter().any(|id| open.iter().any(|q| &q.id == id)) {
         return not_open();
     }
     app.act(Action::DismissQuestions(ids))
@@ -1916,6 +1909,7 @@ mod tests {
                 },
             }],
             false,
+            None,
         );
         let response = served
             .post(
@@ -1989,7 +1983,11 @@ mod tests {
             .await;
         assert_eq!(response.status(), StatusCode::CONFLICT);
         let response = served
-            .post("/api/questions/dismiss", Some(&cookie), "")
+            .post(
+                "/api/questions/dismiss",
+                Some(&cookie),
+                r#"{"ids": ["q1"]}"#,
+            )
             .await;
         assert_eq!(response.status(), StatusCode::CONFLICT);
 
@@ -2002,7 +2000,7 @@ mod tests {
                 ..Default::default()
             },
         };
-        feed.ask(run, &[asked("q1"), asked("q2")], false);
+        feed.ask(run, &[asked("q1"), asked("q2")], false, None);
         let response = served
             .post("/api/questions/answer", Some(&cookie), answer)
             .await;
@@ -2044,15 +2042,25 @@ mod tests {
             .await;
         assert_eq!(response.status(), StatusCode::CONFLICT);
 
-        for (body, ids) in [("", vec![]), (r#"{"ids": ["q2"]}"#, vec!["q2".to_string()])] {
+        let response = served
+            .post(
+                "/api/questions/dismiss",
+                Some(&cookie),
+                r#"{"ids": ["q2"]}"#,
+            )
+            .await;
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        assert_eq!(
+            served.actions.recv().await.unwrap(),
+            Action::DismissQuestions(vec!["q2".to_string()])
+        );
+        // Every question is named: a page can't dismiss questions it
+        // doesn't show (another conversation's).
+        for body in ["", "{}", r#"{"ids": []}"#] {
             let response = served
                 .post("/api/questions/dismiss", Some(&cookie), body)
                 .await;
-            assert_eq!(response.status(), StatusCode::ACCEPTED, "{body}");
-            assert_eq!(
-                served.actions.recv().await.unwrap(),
-                Action::DismissQuestions(ids)
-            );
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{body}");
         }
         let response = served
             .post(

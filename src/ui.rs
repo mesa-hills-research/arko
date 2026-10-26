@@ -80,9 +80,9 @@ pub enum Input {
     /// unanswered stay open. Answers to questions that aren't open are
     /// dropped. See [`crate::questions`].
     AnswerQuestions(crate::questions::Answers),
-    /// The user dismisses the main agent's questions `ids` ("Not now"), or
-    /// all its open questions when `ids` is empty. The agent is told, and
-    /// goes on with its defaults.
+    /// The user dismisses the main agent's questions `ids` ("Not now"). The
+    /// agent is told, and goes on with its defaults. An approval dismissed
+    /// isn't saved. Ids that aren't open are dropped.
     DismissQuestions(Vec<String>),
 }
 
