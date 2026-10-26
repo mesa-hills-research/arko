@@ -393,12 +393,16 @@ fn send(chosen: Option<(String, String)>) {
     ask.answering
         .update(|answering| answering.extend(ids.iter().cloned()));
     spawn_local(async move {
+        // What's typed stays until Arko has it, and the panel with it.
         if post("/api/questions/answer", body).await {
             ask.drafts
                 .update(|drafts| drafts.retain(|id, _| !ids.contains(id)));
             if closes {
                 close_panel();
             }
+        } else {
+            ask.answering
+                .update(|answering| answering.retain(|id| !ids.contains(id)));
         }
     });
 }
@@ -409,12 +413,19 @@ fn not_now(ids: Vec<String>) {
     if ids.is_empty() {
         return;
     }
-    page()
-        .ask
-        .answering
+    let ask = page().ask;
+    ask.answering
         .update(|answering| answering.extend(ids.iter().cloned()));
     spawn_local(async move {
-        post("/api/questions/dismiss", serde_json::json!({ "ids": ids })).await;
+        if !post(
+            "/api/questions/dismiss",
+            serde_json::json!({ "ids": ids.clone() }),
+        )
+        .await
+        {
+            ask.answering
+                .update(|answering| answering.retain(|id| !ids.contains(id)));
+        }
     });
 }
 
