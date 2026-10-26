@@ -554,3 +554,193 @@ async fn a_key_replaced_while_the_settings_cant_be_read_installs_no_unrestricted
     assert_eq!(options.provider.unwrap().zdr, Some(true));
     assert!(fresh.reaches(&arko_ai::Provider::OpenRouter));
 }
+
+/// Another process holds the settings file's lock for `held`: for this long
+/// a change must wait.
+fn hold_the_settings_lock(root: &std::path::Path, held: Duration) -> std::thread::JoinHandle<()> {
+    std::fs::create_dir_all(root).unwrap();
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(root.join(format!("{}.lock", crate::openrouter::FILE)))
+        .unwrap();
+    file.lock().unwrap();
+    std::thread::spawn(move || {
+        std::thread::sleep(held);
+        drop(file);
+    })
+}
+
+/// A task that counts, as an async heartbeat: it stops if the thread the
+/// runtime has is held up.
+fn heartbeat() -> (
+    Arc<std::sync::atomic::AtomicUsize>,
+    tokio::task::JoinHandle<()>,
+) {
+    let beats = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counting = beats.clone();
+    let task = tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            counting.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    });
+    (beats, task)
+}
+
+/// `/openrouter` waits for the settings' lock away from the session's tasks:
+/// while another process holds it, the session goes on (a heartbeat keeps
+/// beating), and the change is made, installed and said once it lets go.
+#[tokio::test]
+async fn the_openrouter_command_waits_for_the_lock_without_holding_up_the_session() {
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, _inputs, _sender) = harness(temp.path(), LLMClient::new(), false);
+    let root = harness.root.clone();
+    harness
+        .keys
+        .apply(&credentials::OPENROUTER, Some("sk-or-test"));
+    harness.keys.share_async(root.clone()).await;
+    let holder = hold_the_settings_lock(&root, Duration::from_millis(600));
+    let (beats, task) = heartbeat();
+    harness
+        .openrouter_live("/openrouter zdr on", "zdr on", Source::Terminal)
+        .await;
+    let beaten = beats.load(std::sync::atomic::Ordering::SeqCst);
+    task.abort();
+    holder.join().unwrap();
+    assert!(beaten >= 20, "the session's tasks went on: {beaten} beats");
+    assert!(
+        last_said(&harness.feed).starts_with("Zero data retention is on."),
+        "{}",
+        last_said(&harness.feed)
+    );
+    assert!(crate::openrouter::Settings::read(&root).unwrap().zdr());
+    let (_, options) = harness.keys.installed().unwrap();
+    assert_eq!(
+        options.provider.unwrap().zdr,
+        Some(true),
+        "installed when said"
+    );
+}
+
+/// A session starting takes the settings it missed on a thread made for
+/// waiting, so a change in progress doesn't stop the tasks, and it is done
+/// once they are taken.
+#[tokio::test]
+async fn a_session_starting_waits_for_a_change_in_progress_without_stopping_tasks() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("arko");
+    let keys = crate::keys::Keys::new(Arc::new(LLMClient::new()), None, None, None);
+    keys.apply(&credentials::OPENROUTER, Some("sk-or-test"));
+    crate::openrouter::Settings::update(&root, |settings| settings.set_zdr(true)).unwrap();
+    // A change is in progress in this process: it has the folder's lock.
+    let (reached, go) = crate::openrouter::pause_next_change(&root);
+    let change = {
+        let root = root.clone();
+        std::thread::spawn(move || {
+            crate::openrouter::Settings::update(&root, |settings| {
+                settings.set_deny_data_collection(true)
+            })
+        })
+    };
+    reached.recv().unwrap();
+    let (beats, task) = heartbeat();
+    let starting = {
+        let (keys, root) = (keys.clone(), root.clone());
+        tokio::spawn(async move { keys.share_async(root).await })
+    };
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(!starting.is_finished(), "it waits for the change");
+    assert!(
+        beats.load(std::sync::atomic::Ordering::SeqCst) >= 15,
+        "and the tasks go on"
+    );
+    go.send(()).unwrap();
+    starting.await.unwrap();
+    change.join().unwrap().unwrap();
+    task.abort();
+    let provider = keys.installed().unwrap().1.provider.unwrap();
+    assert_eq!(provider.zdr, Some(true));
+    assert_eq!(
+        provider.data_collection,
+        Some(arko_ai::DataCollection::Deny),
+        "with the change it waited for"
+    );
+}
+
+/// A file emptied or blanked, as a truncated write leaves it, isn't "no
+/// settings": a client that has the restrictions keeps them when a key is
+/// replaced, and a session without one gets none.
+#[tokio::test]
+async fn an_emptied_settings_file_installs_no_unrestricted_client() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("arko");
+    crate::openrouter::Settings::update(&root, |settings| settings.set_zdr(true)).unwrap();
+    let session = |root: &std::path::Path| {
+        let keys = crate::keys::Keys::new(Arc::new(LLMClient::new()), None, None, None);
+        keys.share(root.to_path_buf());
+        keys
+    };
+    let keys = session(&root);
+    keys.apply(&credentials::OPENROUTER, Some("sk-or-old"));
+    let file = root.join(crate::openrouter::FILE);
+    for text in ["", "   \n"] {
+        std::fs::write(&file, text).unwrap();
+        let said = keys.apply(&credentials::OPENROUTER, Some("sk-or-new"));
+        assert!(said.contains("can't be read"), "{text:?}: {said}");
+        let (key, options) = keys.installed().unwrap();
+        assert_eq!(key, "sk-or-old", "{text:?}");
+        assert_eq!(options.provider.unwrap().zdr, Some(true), "{text:?}");
+        let fresh = session(&root);
+        let said = fresh.apply(&credentials::OPENROUTER, Some("sk-or-key"));
+        assert!(
+            said.contains("can't be used until it is fixed"),
+            "{text:?}: {said}"
+        );
+        assert!(fresh.installed().is_none() && !fresh.reaches(&arko_ai::Provider::OpenRouter));
+    }
+}
+
+/// A key removed, then added again while the settings can't be read, comes
+/// back once the file is fixed and changed: the replacement is installed,
+/// and the removal no longer holds.
+#[tokio::test]
+async fn a_key_added_after_its_removal_returns_once_the_settings_are_fixed() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("arko");
+    crate::openrouter::Settings::update(&root, |settings| settings.set_zdr(true)).unwrap();
+    let keys = crate::keys::Keys::new(Arc::new(LLMClient::new()), None, None, None);
+    keys.share(root.clone());
+    keys.apply(&credentials::OPENROUTER, Some("sk-or-old"));
+    assert!(keys.reaches(&arko_ai::Provider::OpenRouter));
+    keys.apply(&credentials::OPENROUTER, None);
+    assert!(!keys.reaches(&arko_ai::Provider::OpenRouter), "removed");
+
+    std::fs::write(root.join(crate::openrouter::FILE), "").unwrap();
+    let said = keys.apply(&credentials::OPENROUTER, Some("sk-or-new"));
+    assert!(said.contains("can't be used until it is fixed"), "{said}");
+    assert!(!keys.reaches(&arko_ai::Provider::OpenRouter));
+    assert_eq!(
+        keys.installed().unwrap().0,
+        "sk-or-old",
+        "nothing new installed"
+    );
+
+    std::fs::write(
+        root.join(crate::openrouter::FILE),
+        r#"{"provider": {"zdr": true}}"#,
+    )
+    .unwrap();
+    crate::openrouter::Settings::update(&root, |settings| {
+        settings.set_sort(crate::openrouter::Sort::Latency)
+    })
+    .unwrap();
+    assert!(keys.reaches(&arko_ai::Provider::OpenRouter), "it is back");
+    let (key, options) = keys.installed().unwrap();
+    assert_eq!(key, "sk-or-new");
+    let provider = options.provider.unwrap();
+    assert_eq!(provider.zdr, Some(true));
+    assert!(provider.sort.is_some());
+}

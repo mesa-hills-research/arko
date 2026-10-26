@@ -2132,6 +2132,17 @@ mod tests {
             }
             _ => panic!("a session on OpenRouter needs the file read"),
         }
+        // A file emptied or blanked, as a truncated write leaves it, is no
+        // better: it isn't "no settings".
+        for text in ["", " \n "] {
+            std::fs::write(root.path().join(crate::openrouter::FILE), text).unwrap();
+            let client = build(&opus).ok().expect("a session on Opus starts");
+            assert!(!client.has_provider(&Provider::OpenRouter), "{text:?}");
+            assert!(
+                matches!(build(&on_openrouter), Err(Failure::Other(_))),
+                "{text:?}"
+            );
+        }
         // Fixed: the client carries what the file says.
         std::fs::write(
             root.path().join(crate::openrouter::FILE),

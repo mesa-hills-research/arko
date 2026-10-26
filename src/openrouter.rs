@@ -480,35 +480,38 @@ impl Settings {
     pub fn load(root: &Path) -> Self {
         Self::read(root).unwrap_or_else(|error| {
             log::warn!("openrouter: {error}");
-            Self::default()
+            // (Known, for what only needs to know which models to list, and
+            // not read again at every draw.)
+            let settings = Self::default();
+            crate::lock(&CACHE).insert(folder(root), settings.clone());
+            settings
         })
     }
 
-    /// The settings in Arko's folder `root`. A missing file means none set,
-    /// and one that can't be read is an error that says so.
+    /// The settings in Arko's folder `root`. A missing file means none set.
+    /// Any file there that isn't settings, an empty one too, is an error that
+    /// says so.
     pub fn read(root: &Path) -> Result<Self, String> {
+        #[cfg(test)]
+        {
+            *crate::lock(&READS).entry(folder(root)).or_default() += 1;
+        }
         let path = root.join(FILE);
-        let text = match std::fs::read_to_string(&path) {
-            Ok(text) => text,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
-            Err(error) => return Err(format!("{} can't be read ({error})", path.display())),
-        };
-        let settings = match text.trim() {
-            "" => Self::default(),
-            _ => serde_json::from_str(&text)
+        let settings = match std::fs::read_to_string(&path) {
+            Ok(text) => serde_json::from_str(&text)
                 .map_err(|error| format!("{} can't be read ({error})", path.display()))?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Self::default(),
+            Err(error) => return Err(format!("{} can't be read ({error})", path.display())),
         };
         crate::lock(&CACHE).insert(folder(root), settings.clone());
         Ok(settings)
     }
 
-    /// The settings as this process last read or saved them, which needs no
-    /// file access (drawing and completing use it), else as the file has
-    /// them. A change another Arko process made shows once something reads
-    /// the file ([`load`](Self::load)).
-    pub(crate) fn cached(root: &Path) -> Self {
-        let kept = crate::lock(&CACHE).get(&folder(root)).cloned();
-        kept.unwrap_or_else(|| Self::load(root))
+    /// The settings as this process last read or saved them, with no file
+    /// access, or `None` before it has. Nothing that draws reads a file, so
+    /// it asks this (see [`settings_in_memory`]).
+    pub(crate) fn cached(root: &Path) -> Option<Self> {
+        crate::lock(&CACHE).get(&folder(root)).cloned()
     }
 
     /// [`read`](Self::read), for what must not go by a guess, with what to do
@@ -539,10 +542,13 @@ impl Settings {
         origin: u64,
         change: impl FnOnce(&mut Settings) -> R,
     ) -> Result<(Settings, R), String> {
-        let _here = lock_root(root);
+        // (A wait for the folder's lock is bounded, the other processes'
+        // too, so a change that can't be made says so.)
+        let give_up = Instant::now() + lock_wait();
+        let _here = lock_root_by(root, give_up)?;
         std::fs::create_dir_all(root)
             .map_err(|error| format!("Couldn't save the settings ({error})."))?;
-        let _elsewhere = FileLock::acquire(root)?;
+        let _elsewhere = FileLock::acquire(root, give_up)?;
         let mut settings = Self::read_to_use(root)?;
         #[cfg(test)]
         pause(root);
@@ -855,49 +861,83 @@ fn folder(root: &Path) -> PathBuf {
 /// A session also takes it as a key is replaced, so that the key and the
 /// settings it installs are the latest of both.
 pub(crate) fn lock_root(root: &Path) -> std::sync::MutexGuard<'static, ()> {
-    static LOCKS: LazyLock<Mutex<HashMap<PathBuf, &'static Mutex<()>>>> =
-        LazyLock::new(Mutex::default);
-    let lock: &'static Mutex<()> = crate::lock(&LOCKS)
-        .entry(folder(root))
-        .or_insert_with(|| Box::leak(Box::new(Mutex::new(()))));
-    crate::lock(lock)
+    crate::lock(root_lock(root))
 }
 
-/// A lock file beside the settings, for other Arko processes: a change waits
-/// while one holds it. One older than ten seconds belongs to a process that
-/// died, and is taken over.
-struct FileLock(PathBuf);
+fn root_lock(root: &Path) -> &'static Mutex<()> {
+    static LOCKS: LazyLock<Mutex<HashMap<PathBuf, &'static Mutex<()>>>> =
+        LazyLock::new(Mutex::default);
+    crate::lock(&LOCKS)
+        .entry(folder(root))
+        .or_insert_with(|| Box::leak(Box::new(Mutex::new(()))))
+}
+
+/// How long a change waits for the folder's lock, in this process and in
+/// others, before it says the settings are in use.
+fn lock_wait() -> Duration {
+    #[cfg(test)]
+    if let Some(wait) = LOCK_WAIT.with(std::cell::Cell::get) {
+        return wait;
+    }
+    Duration::from_secs(5)
+}
+
+/// [`lock_root`], waiting until `give_up` at most.
+fn lock_root_by(
+    root: &Path,
+    give_up: Instant,
+) -> Result<std::sync::MutexGuard<'static, ()>, String> {
+    let lock = root_lock(root);
+    loop {
+        match lock.try_lock() {
+            Ok(guard) => return Ok(guard),
+            Err(std::sync::TryLockError::Poisoned(poisoned)) => return Ok(poisoned.into_inner()),
+            Err(std::sync::TryLockError::WouldBlock) if Instant::now() < give_up => {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            Err(std::sync::TryLockError::WouldBlock) => return Err(in_use(root)),
+        }
+    }
+}
+
+fn in_use(root: &Path) -> String {
+    format!(
+        "{} is in use by another change. Try again.",
+        root.join(FILE).display()
+    )
+}
+
+/// A lock on a file beside the settings, for the other Arko processes: a
+/// change waits while one holds it. The operating system holds the lock for
+/// the open file, and lets it go when this ends or the process does. The
+/// file stays.
+struct FileLock(std::fs::File);
 
 impl FileLock {
-    fn acquire(root: &Path) -> Result<Self, String> {
+    fn acquire(root: &Path, give_up: Instant) -> Result<Self, String> {
         let path = root.join(format!("{FILE}.lock"));
-        let give_up = Instant::now() + Duration::from_secs(5);
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&path)
+            .map_err(|error| format!("Couldn't lock {} ({error}).", path.display()))?;
         loop {
-            match std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&path)
-            {
-                Ok(_) => return Ok(Self(path)),
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                    let old = std::fs::metadata(&path)
-                        .and_then(|meta| meta.modified())
-                        .ok()
-                        .and_then(|at| at.elapsed().ok())
-                        .is_some_and(|age| age > Duration::from_secs(10));
-                    if old {
-                        let _ = std::fs::remove_file(&path);
-                    } else if Instant::now() > give_up {
-                        return Err(format!(
-                            "{} is in use by another Arko. Try again.",
-                            root.join(FILE).display()
-                        ));
-                    } else {
-                        std::thread::sleep(Duration::from_millis(10));
-                    }
+            match file.try_lock() {
+                Ok(()) => return Ok(Self(file)),
+                Err(std::fs::TryLockError::WouldBlock) if Instant::now() < give_up => {
+                    std::thread::sleep(Duration::from_millis(10));
                 }
-                Err(error) => {
-                    return Err(format!("Couldn't save the settings ({error})."));
+                Err(std::fs::TryLockError::WouldBlock) => return Err(in_use(root)),
+                // (A file system without locks has the one in this process.)
+                Err(std::fs::TryLockError::Error(error))
+                    if error.kind() == std::io::ErrorKind::Unsupported =>
+                {
+                    return Ok(Self(file));
+                }
+                Err(std::fs::TryLockError::Error(error)) => {
+                    return Err(format!("Couldn't lock {} ({error}).", path.display()));
                 }
             }
         }
@@ -906,7 +946,7 @@ impl FileLock {
 
 impl Drop for FileLock {
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
+        let _ = self.0.unlock();
     }
 }
 
@@ -934,6 +974,23 @@ fn notify(root: &Path, settings: &Settings, origin: u64) {
     for keys in sessions {
         keys.use_openrouter_settings(settings, keys.id() != origin);
     }
+}
+
+/// How many times each folder's settings file was read (tests).
+#[cfg(test)]
+static READS: LazyLock<Mutex<HashMap<PathBuf, usize>>> = LazyLock::new(Mutex::default);
+
+/// How many times the settings file of `root` was read (tests).
+#[cfg(test)]
+fn reads_of(root: &Path) -> usize {
+    crate::lock(&READS).get(&folder(root)).copied().unwrap_or(0)
+}
+
+// For tests, on the thread: how long a change waits for the lock instead of
+// the usual.
+#[cfg(test)]
+thread_local! {
+    static LOCK_WAIT: std::cell::Cell<Option<Duration>> = const { std::cell::Cell::new(None) };
 }
 
 /// Stops the change in Arko's folder `root` that reads next, once it has
@@ -1165,64 +1222,101 @@ impl Change {
     }
 }
 
+/// What `/openrouter ARGUMENT` does and says, as session number `origin` (see
+/// `Keys::id`) of Arko's folder `root`, whose `feed` hears of a fetch. It
+/// may wait for another change to the settings, so it runs where waiting is
+/// all right (see `Harness::openrouter_live`).
+pub(crate) fn run_command(
+    root: &Path,
+    origin: u64,
+    feed: &crate::remote::Feed,
+    argument: &str,
+) -> Result<String, String> {
+    if argument.is_empty() {
+        return show(root);
+    }
+    let change = parse(argument)?;
+    if change == Change::Refresh {
+        // The models come in the background.
+        let (root, feed) = (root.to_path_buf(), feed.clone());
+        std::thread::spawn(move || {
+            let catalog = refresh_blocking(&root, true);
+            let (level, text) = match catalog.problem {
+                Some(problem) => (crate::remote::Level::Warn, format!("{problem}.")),
+                None => (
+                    crate::remote::Level::Info,
+                    format!(
+                        "OpenRouter lists {} models that take tool calls.",
+                        catalog.models.len()
+                    ),
+                ),
+            };
+            feed.notice(level, &text);
+        });
+        return Ok("Fetching OpenRouter's models.".to_string());
+    }
+    // Saved, and installed in every session open here, this one too, before
+    // it says so.
+    let (_, said) = Settings::edit(root, origin, |settings| change.apply(settings))?;
+    let said = said.unwrap_or_default();
+    // (The list of models follows the filters.)
+    refresh_soon(root);
+    Ok(format!(
+        "{said} Open sessions use it from their next request."
+    ))
+}
+
+/// The settings and the forms that change them, as lines.
+fn show(root: &Path) -> Result<String, String> {
+    let settings = Settings::read(root)?;
+    let mut lines = vec!["OpenRouter".to_string()];
+    lines.extend(settings.lines(Some(&catalog(root).summary())));
+    lines.push(String::new());
+    lines.extend(FORMS.iter().map(|form| form.to_string()));
+    lines.push(String::new());
+    lines.push(
+        "Your OpenRouter account's own privacy settings at openrouter.ai apply too. Open sessions use a change from their next request.".to_string(),
+    );
+    Ok(lines.join("\n"))
+}
+
 impl crate::Harness {
     /// `/openrouter`, typed at the line prompt or sent from the page or an
     /// app: says the settings and the forms that change them, or changes one
     /// (the full-screen view has its own menu, opened by `/openrouter` alone).
-    /// The open sessions of this process use a change from their next request.
+    /// The open sessions of this process use a change from their next
+    /// request. This one waits for the change on this thread, where a session
+    /// that runs tasks uses [`openrouter_live`](Self::openrouter_live).
     pub(crate) fn openrouter_command(&mut self, argument: &str, source: crate::remote::Source) {
-        let result = if argument.is_empty() {
-            self.show_openrouter()
-        } else {
-            self.change_openrouter(argument)
-        };
+        let result = run_command(&self.root, self.keys.id(), &self.feed, argument);
         self.setting_reply(result, source, false);
     }
 
-    fn show_openrouter(&self) -> Result<String, String> {
-        let settings = Settings::read(&self.root)?;
-        let mut lines = vec!["OpenRouter".to_string()];
-        lines.extend(settings.lines(Some(&catalog(&self.root).summary())));
-        lines.push(String::new());
-        lines.extend(FORMS.iter().map(|form| form.to_string()));
-        lines.push(String::new());
-        lines.push(
-            "Your OpenRouter account's own privacy settings at openrouter.ai apply too. Open sessions use a change from their next request.".to_string(),
+    /// [`openrouter_command`](Self::openrouter_command) for a line the session
+    /// reads: the change waits for its lock on a thread made for waiting, so
+    /// the session's tasks go on, and it is said once it is made and installed.
+    pub(crate) async fn openrouter_live(
+        &mut self,
+        command: &str,
+        argument: &str,
+        source: crate::remote::Source,
+    ) {
+        self.feed
+            .user(command, source, crate::remote::Delivery::Command);
+        let (root, origin, feed, argument) = (
+            self.root.clone(),
+            self.keys.id(),
+            self.feed.clone(),
+            argument.to_string(),
         );
-        Ok(lines.join("\n"))
-    }
-
-    fn change_openrouter(&mut self, argument: &str) -> Result<String, String> {
-        let change = parse(argument)?;
-        let root = self.root.clone();
-        if change == Change::Refresh {
-            // The models come in the background.
-            let feed = self.feed.clone();
-            std::thread::spawn(move || {
-                let catalog = refresh_blocking(&root, true);
-                let (level, text) = match catalog.problem {
-                    Some(problem) => (crate::remote::Level::Warn, format!("{problem}.")),
-                    None => (
-                        crate::remote::Level::Info,
-                        format!(
-                            "OpenRouter lists {} models that take tool calls.",
-                            catalog.models.len()
-                        ),
-                    ),
-                };
-                feed.notice(level, &text);
-            });
-            return Ok("Fetching OpenRouter's models.".to_string());
-        }
-        // Saved, and installed in every session open here, this one too, before
-        // it says so.
-        let (_, said) = Settings::edit(&root, self.keys.id(), |settings| change.apply(settings))?;
-        let said = said.unwrap_or_default();
-        // (The list of models follows the filters.)
-        refresh_soon(&self.root);
-        Ok(format!(
-            "{said} Open sessions use it from their next request."
-        ))
+        let result =
+            tokio::task::spawn_blocking(move || run_command(&root, origin, &feed, &argument))
+                .await
+                .unwrap_or_else(|_| Err("The change stopped.".to_string()));
+        self.setting_reply(result, source, false);
+        // (A setting it changed shows in the status and the details.)
+        self.gauges.touch();
+        self.publish_details();
     }
 }
 
@@ -1474,7 +1568,31 @@ pub fn loading() -> bool {
 /// Whether the models the settings in Arko's folder `root` allow are being
 /// fetched. It needs no file access, so a view can ask as it draws.
 pub fn loading_for(root: &Path) -> bool {
-    fetching(&Settings::cached(root).filters(None))
+    settings_in_memory(root, false).is_some_and(|settings| fetching(&settings.filters(None)))
+}
+
+/// The settings as this process has them, for what draws: no file is read
+/// here. Before they have been read it asks for them in the background (and
+/// for the models once they are, with `models`) and says nothing yet, and a
+/// view finds out when [`generation`] moves.
+fn settings_in_memory(root: &Path, models: bool) -> Option<Settings> {
+    if let Some(settings) = Settings::cached(root) {
+        return Some(settings);
+    }
+    static READING: LazyLock<Mutex<std::collections::HashSet<PathBuf>>> =
+        LazyLock::new(Mutex::default);
+    if crate::lock(&READING).insert(folder(root)) {
+        let root = root.to_path_buf();
+        std::thread::spawn(move || {
+            let settings = Settings::load(&root);
+            crate::lock(&READING).remove(&folder(&root));
+            GENERATION.fetch_add(1, Ordering::Relaxed);
+            if models {
+                refresh_key_soon(settings.filters(None), &root);
+            }
+        });
+    }
+    None
 }
 
 fn fetching(key: &Key) -> bool {
@@ -1611,7 +1729,11 @@ pub fn completions(root: &Path, typed: &str) -> Vec<String> {
     if !prefix.starts_with(crate::providers::OPENROUTER) {
         return Vec::new();
     }
-    let key = Settings::cached(root).filters(None);
+    // (Before the settings are known, nothing yet.)
+    let Some(settings) = settings_in_memory(root, true) else {
+        return Vec::new();
+    };
+    let key = settings.filters(None);
     refresh_key_soon(key.clone(), root);
     snapshot(&key)
         .models
@@ -1626,7 +1748,9 @@ pub fn completions(root: &Path, typed: &str) -> Vec<String> {
 /// returns at once. A view draws what is in memory ([`catalog`]) and
 /// again when [`generation`] moves.
 pub fn refresh_soon(root: &Path) {
-    refresh_key_soon(Settings::cached(root).filters(None), root);
+    if let Some(settings) = settings_in_memory(root, true) {
+        refresh_key_soon(settings.filters(None), root);
+    }
 }
 
 /// [`refresh_soon`] for the models of `key`. A fetch of other models going
@@ -2332,29 +2456,145 @@ mod tests {
     }
 
     /// Another Arko process holds the file's lock: a change waits for it, and
-    /// takes over a lock a process that died left.
+    /// goes on once it lets go. A holder that has held it longer than the old
+    /// stale age, as the file's age says, is still the holder: nothing takes
+    /// the lock over, the wait ends with a clear error, and the lock file is
+    /// never removed.
     #[test]
-    fn a_change_waits_for_another_process_and_takes_over_a_dead_ones_lock() {
+    fn a_live_holder_keeps_the_lock_and_a_waiter_gives_up_cleanly() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().to_path_buf();
-        let lock = root.join(format!("{FILE}.lock"));
-        std::fs::write(&lock, "").unwrap();
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join(format!("{FILE}.lock"));
+        let held = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&path)
+            .unwrap();
+        held.lock().unwrap();
+        // Long held, as far as the file's age says.
+        held.set_modified(SystemTime::now() - Duration::from_secs(120))
+            .unwrap();
+        LOCK_WAIT.with(|wait| wait.set(Some(Duration::from_millis(400))));
+        let started = Instant::now();
+        let error = Settings::update(&root, |s| s.set_zdr(true)).unwrap_err();
+        assert!(error.contains("is in use by another change"), "{error}");
+        let waited = started.elapsed();
+        assert!(
+            waited >= Duration::from_millis(350) && waited < Duration::from_secs(5),
+            "{waited:?}"
+        );
+        assert!(path.exists(), "the lock file stays");
+        assert!(!Settings::read(&root).unwrap().zdr(), "nothing was changed");
+
+        // A change made while the holder lets go goes on, and so does the
+        // one after it.
+        LOCK_WAIT.with(|wait| wait.set(Some(Duration::from_secs(5))));
         let waiting = {
             let root = root.clone();
             std::thread::spawn(move || Settings::update(&root, |s| s.set_zdr(true)))
         };
         std::thread::sleep(Duration::from_millis(150));
-        assert!(!waiting.is_finished(), "another process holds the lock");
-        std::fs::remove_file(&lock).unwrap();
+        assert!(!waiting.is_finished(), "the holder is still there");
+        drop(held);
         waiting.join().unwrap().unwrap();
-        assert!(!lock.exists(), "the lock is let go");
         assert!(Settings::read(&root).unwrap().zdr());
-        // A lock left by a process long gone is taken over.
-        let file = std::fs::File::create(&lock).unwrap();
-        file.set_modified(SystemTime::now() - Duration::from_secs(60))
-            .unwrap();
         Settings::update(&root, |s| s.set_zdr(false)).unwrap();
-        assert!(!Settings::read(&root).unwrap().zdr());
+        assert!(path.exists(), "the lock file is never removed");
+    }
+
+    /// A change waits for a change going on in this process too, for a
+    /// bounded time.
+    #[test]
+    fn a_change_waits_for_one_in_this_process_a_bounded_time() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().to_path_buf();
+        let (reached, go) = pause_next_change(&root);
+        let first = {
+            let root = root.clone();
+            std::thread::spawn(move || Settings::update(&root, |s| s.set_zdr(true)))
+        };
+        reached.recv().unwrap();
+        LOCK_WAIT.with(|wait| wait.set(Some(Duration::from_millis(300))));
+        let error = Settings::update(&root, |s| s.set_deny_data_collection(true)).unwrap_err();
+        assert!(error.contains("is in use by another change"), "{error}");
+        go.send(()).unwrap();
+        first.join().unwrap().unwrap();
+        let now = Settings::read(&root).unwrap();
+        assert!(now.zdr() && !now.deny_data_collection());
+    }
+
+    /// A lock that can't be made is an error at once, not a wait.
+    #[test]
+    fn a_lock_that_cant_be_made_is_an_error_and_not_a_wait() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(temp.path().join(format!("{FILE}.lock"))).unwrap();
+        let started = Instant::now();
+        let error = Settings::update(temp.path(), |s| s.set_zdr(true)).unwrap_err();
+        assert!(error.contains("Couldn't lock"), "{error}");
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    /// An empty file, or one of blanks, isn't settings: only a missing file
+    /// is none set. (A truncated file must not read as unrestricted.)
+    #[test]
+    fn an_empty_file_isnt_settings_and_only_a_missing_one_is_none_set() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        assert_eq!(Settings::read(root).unwrap(), Settings::default());
+        for text in ["", "  \n\t ", "\n"] {
+            std::fs::write(root.join(FILE), text).unwrap();
+            let error = Settings::read(root).unwrap_err();
+            assert!(
+                error.contains("openrouter.json can't be read"),
+                "{text:?}: {error}"
+            );
+            assert!(
+                Settings::read_to_use(root)
+                    .unwrap_err()
+                    .contains("Fix the file")
+            );
+            let error = Settings::update(root, |s| s.set_zdr(true)).unwrap_err();
+            assert!(error.contains("can't be read"), "{error}");
+            assert_eq!(std::fs::read_to_string(root.join(FILE)).unwrap(), text);
+        }
+        std::fs::remove_file(root.join(FILE)).unwrap();
+        assert_eq!(Settings::read(root).unwrap(), Settings::default());
+    }
+
+    /// What draws asks the settings as this process has them, and reads no
+    /// file when it has none yet: it asks for them in the background, says
+    /// nothing meanwhile, and asks only once, an unreadable file too.
+    #[test]
+    fn what_draws_reads_no_file_before_the_settings_are_known() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("never-read");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join(FILE), "{ oops").unwrap();
+        assert_eq!(reads_of(&root), 0);
+        for _ in 0..5 {
+            assert!(completions(&root, "openrouter:moon").is_empty());
+            assert!(!loading_for(&root));
+        }
+        // The background read, once.
+        let started = Instant::now();
+        while Settings::cached(&root).is_none() {
+            assert!(
+                started.elapsed() < Duration::from_secs(5),
+                "the settings are read"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let reads = reads_of(&root);
+        assert!(reads >= 1);
+        for _ in 0..5 {
+            assert!(completions(&root, "openrouter:moon").is_empty());
+            assert!(!loading_for(&root));
+        }
+        std::thread::sleep(Duration::from_millis(100));
+        assert_eq!(reads_of(&root), reads, "no further read as it draws");
     }
 
     #[test]

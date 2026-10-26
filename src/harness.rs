@@ -1278,6 +1278,10 @@ impl Harness {
                     self.remote_command(command, source).await;
                     continue;
                 }
+                if let Some(argument) = openrouter_words(command) {
+                    self.openrouter_live(command, argument, source).await;
+                    continue;
+                }
                 if self.live_command(command, source) {
                     continue;
                 }
@@ -3575,6 +3579,10 @@ impl Harness {
                             self.remote_command(command, source).await;
                             continue;
                         }
+                        if let Some(argument) = openrouter_words(command) {
+                            self.openrouter_live(command, argument, source).await;
+                            continue;
+                        }
                         if self.live_command(command, source) {
                             continue;
                         }
@@ -4626,6 +4634,14 @@ pub(crate) fn handover_text(asked: handover::Asked, compacts: bool) -> &'static 
 
 /// A live command, alone or with its argument: the command and the
 /// argument.
+/// `/openrouter`'s words, when the line is that command, which the session
+/// runs where it can wait.
+fn openrouter_words(text: &str) -> Option<&str> {
+    split_live_command(text)
+        .filter(|(name, _)| *name == "/openrouter")
+        .map(|(_, argument)| argument)
+}
+
 pub(crate) fn split_live_command(text: &str) -> Option<(&str, &str)> {
     let (name, argument) = text.split_once(' ').unwrap_or((text, ""));
     LIVE_COMMANDS

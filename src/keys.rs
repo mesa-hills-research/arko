@@ -210,14 +210,38 @@ impl Keys {
     /// Arko's folder `root` in this process, both ways. A key added in one
     /// is used by all of them at once, as if added in each.
     pub fn share(self: &Arc<Self>, root: std::path::PathBuf) {
-        if self.shared.set(root.clone()).is_err() {
+        if !self.start_sharing(&root) {
             return;
         }
+        self.hear_openrouter(&root);
+    }
+
+    /// [`share`](Self::share) for a session starting in a task: the OpenRouter
+    /// settings, which may wait for a change in progress, are taken on a
+    /// thread that can wait. It returns once they are.
+    pub(crate) async fn share_async(self: &Arc<Self>, root: std::path::PathBuf) {
+        if !self.start_sharing(&root) {
+            return;
+        }
+        let keys = self.clone();
+        let _ = tokio::task::spawn_blocking(move || keys.hear_openrouter(&root)).await;
+    }
+
+    /// Hears of OpenRouter settings saved from now on, and takes the ones
+    /// saved since the client was made (the session starts in between).
+    fn hear_openrouter(self: &Arc<Self>, root: &std::path::Path) {
+        crate::openrouter::register(root, self);
+        self.reconcile_openrouter(root);
+    }
+
+    /// Starts sharing the keys and logins on Arko's folder `root`. Returns
+    /// false when it was already.
+    fn start_sharing(self: &Arc<Self>, root: &std::path::Path) -> bool {
+        if self.shared.set(root.to_path_buf()).is_err() {
+            return false;
+        }
+        let root = root.to_path_buf();
         self.share_logins(root.clone());
-        // Hears of OpenRouter settings saved from now on, and takes the ones
-        // saved since the client was made (the session starts in between).
-        crate::openrouter::register(&root, self);
-        self.reconcile_openrouter(&root);
         let mut changes = credentials::changes();
         let keys = Arc::downgrade(self);
         tokio::spawn(async move {
@@ -256,6 +280,7 @@ impl Keys {
                 ));
             }
         });
+        true
     }
 
     /// Tells the other sessions on Arko's folder of a key added or removed
@@ -606,14 +631,11 @@ impl Keys {
         settings: &crate::openrouter::Settings,
         announce: bool,
     ) {
-        let kept = {
-            let state = self.state();
-            (!state.withdrawn.contains(&Provider::OpenRouter))
-                .then(|| state.openrouter.clone())
-                .flatten()
-        };
+        // A key added after one was removed waits here too, for settings that
+        // can be read (removing clears the key kept, so one that is there
+        // was added since).
+        let kept = self.state().openrouter.clone();
         let reaches = self.reaches(&Provider::OpenRouter);
-        // (A key replaced while the settings couldn't be read waits for them.)
         let key = match (kept, reaches) {
             (Some(key), _) => Some(key),
             (None, true) => crate::context::within(self.context.clone(), || {
@@ -625,6 +647,9 @@ impl Keys {
             return;
         };
         self.install_openrouter(&key, settings);
+        self.state()
+            .withdrawn
+            .retain(|withdrawn| *withdrawn != Provider::OpenRouter);
         if announce {
             self.notice(
                 "OpenRouter settings changed. This session uses them from its next request.",
