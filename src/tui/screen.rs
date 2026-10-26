@@ -1,6 +1,7 @@
 //! The screen's layout and its quiet parts: from the bottom, the input
 //! box, the status line above it, and above that what docks there for a
-//! while (the agent's question, the command menu, the worker switcher);
+//! while (the answer panel or its chip, the command menu, the worker
+//! switcher);
 //! the transcript takes the rest. The transcript is what the reader is
 //! there for: everything else stays small.
 
@@ -8,13 +9,10 @@ use ratatui::Frame;
 use ratatui::layout::{Position, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear};
 
 use super::app::{App, ListRow};
 use super::cache;
-use super::markdown;
 use super::overlay::{self, hints};
-use super::select::Docked;
 use super::theme::Theme;
 use super::transcript::{self, View};
 use super::wrap::{self, width as text_width};
@@ -84,10 +82,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let previous = app.docked.take();
     let docked = if !app.menu_items().is_empty() {
         draw_menu(frame, app, above)
-    } else if app.question_shown().is_some() {
-        draw_question(frame, app, above, previous)
+    } else if app.panel.open && !app.open_questions().is_empty() {
+        super::questions::draw_panel(frame, app, above, previous)
     } else {
-        0
+        super::questions::draw_chip(frame, app, above)
     };
 
     let transcript = Rect::new(above.x, above.y, above.width, above.height - docked);
@@ -131,8 +129,8 @@ fn draw_input(
     let rect = Rect::new(area.x, area.y + 1, area.width, area.height - 2);
     let height = rect.height;
     let prompt = glyphs::render("› ").into_owned();
-    let answering = app.activity.question.is_some();
-    let prompt_style = if app.list_focus.is_some() {
+    let answering = app.agent_waits();
+    let prompt_style = if app.list_focus.is_some() || app.panel.open {
         theme.dim()
     } else if answering {
         theme.accent().add_modifier(Modifier::BOLD)
@@ -148,7 +146,9 @@ fn draw_input(
     let x = rect.x + 3;
     let width = rect.width.saturating_sub(4);
     if app.editor.is_empty() {
-        let placeholder = if answering {
+        let placeholder = if !app.panel.attached.is_empty() {
+            "Your answer".to_string()
+        } else if answering {
             "Answer the agent's question".to_string()
         } else if let Some(id) = &app.watching {
             format!("Message {id}")
@@ -184,7 +184,7 @@ fn draw_input(
             );
         }
     }
-    if app.overlay.is_none() && app.list_focus.is_none() {
+    if app.overlay.is_none() && app.list_focus.is_none() && !app.panel.open {
         let column = (cursor.1 as u16).min(width.saturating_sub(1));
         frame.set_cursor_position(Position {
             x: x + column,
@@ -464,7 +464,7 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
     let worker_state = watched
         .as_ref()
         .map(|watched| watched.state(theme, &dot, chrono::Utc::now().timestamp_millis()));
-    if app.activity.question.is_some() {
+    if app.agent_waits() {
         // (A worker's view leaves the main agent's question open, and the
         // box answers it.)
         let asks = if watched.is_some() {
@@ -590,9 +590,9 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
             &[("Ctrl+B", "background"), ("Esc", "back")]
         } else if app.watching.is_some() {
             &[("Esc", "back")]
-        } else if app.activity.working && app.activity.question.is_none() && app.command_running() {
+        } else if app.activity.working && !app.agent_waits() && app.command_running() {
             &[("Ctrl+B", "background"), ("Ctrl+C", "stop")]
-        } else if app.activity.working && app.activity.question.is_none() {
+        } else if app.activity.working && !app.agent_waits() {
             &[("Ctrl+C", "stop")]
         } else {
             &[]
@@ -639,84 +639,6 @@ fn clock(seconds: u64) -> String {
         60..=3599 => format!("{}m{:02}s", seconds / 60, seconds % 60),
         _ => format!("{}h{:02}m", seconds / 3600, seconds % 3600 / 60),
     }
-}
-
-/// The agent's question, docked above the status line: the input box is
-/// the answer box while it is open. Returns the rows it takes.
-fn draw_question(frame: &mut Frame, app: &mut App, above: Rect, previous: Option<Docked>) -> u16 {
-    let theme = app.theme.clone();
-    let theme = &theme;
-    let Some(question) = app.question_shown() else {
-        return 0;
-    };
-    let id = question.id;
-    let inner_width = (above.width as usize).saturating_sub(4).max(4);
-    let mut lines = markdown::render(&question.text, theme.text(), theme, inner_width);
-    let room = (above.height as usize / 2).saturating_sub(2).max(1);
-    if lines.len() > room {
-        lines.truncate(room.saturating_sub(1));
-        // (Not the question's text: a copy leaves it out.)
-        let mut more = wrap::Wrapped::line(vec![Span::styled(
-            glyphs::render("… (the whole question is in the transcript)").into_owned(),
-            theme.dim(),
-        )]);
-        more.bare = true;
-        lines.push(more);
-    }
-    let height = (lines.len() as u16 + 2).min(above.height);
-    let rect = Rect::new(above.x, above.bottom() - height, above.width, height);
-    frame.render_widget(Clear, rect);
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_set(theme.borders())
-        .border_style(theme.accent())
-        .style(theme.base())
-        .title(Line::from(Span::styled(
-            " The agent asks ",
-            theme.accent().add_modifier(Modifier::BOLD),
-        )));
-    let inner = block.inner(rect);
-    frame.render_widget(block, rect);
-    lines.truncate(inner.height as usize);
-    for (row, line) in lines.iter().enumerate() {
-        frame.buffer_mut().set_line(
-            inner.x + 1,
-            inner.y + row as u16,
-            &Line::from(line.spans.clone()),
-            inner.width.saturating_sub(1),
-        );
-    }
-    // Its text is selected as the transcript's is: what was highlighted
-    // stays while the same question shows the same way.
-    let area = Rect::new(
-        inner.x + 1,
-        inner.y,
-        inner.width.saturating_sub(1),
-        lines.len() as u16,
-    );
-    let selection = previous
-        .filter(|docked| docked.id == id && docked.area == area && docked.lines == lines)
-        .and_then(|docked| docked.selection);
-    let docked = Docked {
-        id,
-        area,
-        lines,
-        selection,
-    };
-    docked.draw_selection(frame.buffer_mut(), theme);
-    app.docked = Some(docked);
-    let keys = Line::from({
-        let mut spans = hints(theme, &[("Enter", "answer"), ("Esc", "later")]);
-        spans.push(Span::raw(" "));
-        spans
-    });
-    let width = keys.width() as u16;
-    if width + 4 < rect.width {
-        frame
-            .buffer_mut()
-            .set_line(rect.right() - width - 2, rect.bottom() - 1, &keys, width);
-    }
-    height
 }
 
 /// The commands matching what is typed, above the status line. Returns the
@@ -1708,6 +1630,7 @@ mod tests {
                 text: "Tabs or spaces?".into(),
             }),
         });
+        app.reading.questions = waiting("Tabs or spaces?");
         let rows = screen(&mut app, 100, 14);
         assert!(
             status_row(&rows)
@@ -1821,27 +1744,60 @@ mod tests {
     }
 
     #[test]
-    fn the_question_docks_above_the_status_line() {
+    fn the_answer_panel_docks_above_the_status_line() {
         let mut app = app();
-        app.set_activity(Activity {
-            working: true,
-            since: None,
-            question: Some(Question {
-                id: 1,
-                text: "Tabs or spaces?".into(),
-            }),
-        });
-        let rows = screen(&mut app, 50, 10);
-        assert!(rows[2].contains("The agent asks"), "{rows:?}");
-        assert!(rows[3].contains("Tabs or spaces?"));
-        assert!(rows[4].contains("Enter  answer"));
-        assert_eq!(rows[5], "─".repeat(50));
-        assert_eq!(rows[6], " ● asks you");
-        assert_eq!(rows[8], " › Answer the agent's question");
+        app.set_reading(crate::tui::app::tests::asking());
+        assert!(app.panel.open);
+        let rows = screen(&mut app, 60, 24);
+        let at = rows
+            .iter()
+            .position(|row| row.contains("Arko asks 2 questions"))
+            .unwrap_or_else(|| panic!("{rows:#?}"));
+        let panel = rows[at..].join("\n");
+        assert!(panel.contains("› q1 Tabs or spaces?"), "{panel}");
+        assert!(
+            panel.contains(" 1 Tabs   2 Spaces   3 You decide (Spaces)"),
+            "{panel}"
+        );
+        assert!(
+            panel.contains("Other  type an answer of your own"),
+            "{panel}"
+        );
+        assert!(panel.contains("  q2 Which branch?"), "{panel}");
+        assert!(panel.contains(" 1 You decide "), "{panel}");
+        assert!(panel.contains("Anything else"), "{panel}");
+        assert!(panel.contains("Esc  answer in chat"), "{panel}");
+        // Esc: the questions go with the next message, as the chip says.
         app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-        let rows = screen(&mut app, 50, 10);
-        assert!(!rows.iter().any(|row| row.contains("Tabs or spaces?")));
-        assert_eq!(rows[6], " ● asks you");
+        let rows = screen(&mut app, 60, 24);
+        assert!(!rows.iter().any(|row| row.contains("Which branch?")));
+        let chip = rows
+            .iter()
+            .find(|row| row.contains("Replying to 2 questions ×"))
+            .unwrap_or_else(|| panic!("{rows:#?}"));
+        assert!(chip.contains("Backspace  take off"), "{chip}");
+        assert!(
+            rows.iter().any(|row| row.starts_with(" › Your answer")),
+            "{rows:#?}"
+        );
+        // Taken off, the quiet chip offers the panel and "Not now".
+        app.key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+        let rows = screen(&mut app, 60, 24);
+        let chip = rows
+            .iter()
+            .find(|row| row.contains("2 open questions"))
+            .unwrap_or_else(|| panic!("{rows:#?}"));
+        assert!(chip.contains("Alt+Q  answer"), "{chip}");
+        assert!(chip.contains("Ctrl+N  not now"), "{chip}");
+    }
+
+    /// Open questions the agent waits on, as the status has them.
+    fn waiting(question: &str) -> Vec<crate::questions::AgentQuestion> {
+        let mut questions = crate::tui::app::tests::asking().questions;
+        questions.truncate(1);
+        questions[0].question = question.into();
+        questions[0].waits = true;
+        questions
     }
 
     /// The settings rows for the workers carry the library's names and
@@ -1970,13 +1926,13 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         let mut app = app();
-        app.set_activity(Activity {
-            working: true,
-            since: None,
-            question: Some(Question {
-                id: 1,
-                text: crate::profiles::approval_text(&profile, Place::User),
-            }),
+        let mut asked = waiting(&crate::profiles::approval_text(&profile, Place::User));
+        asked[0].id = "x0a1b2c3d".into();
+        asked[0].choices = vec!["Yes".into(), "No".into()];
+        asked[0].default = None;
+        app.set_reading(crate::remote::Reading {
+            questions: asked,
+            ..Default::default()
         });
         for (width, height) in [(80, 24), (100, 24), (120, 30)] {
             let rows = screen(&mut app, width, height).join("\n");
@@ -2338,6 +2294,10 @@ mod tests {
             id: 1,
             text: "Tabs or spaces?".into(),
         });
+        app.set_reading(crate::remote::Reading {
+            questions: waiting("Tabs or spaces?"),
+            ..Default::default()
+        });
         app.set_activity(activity);
         let rows = screen(&mut app, 50, 10);
         assert!(!working(&rows), "{rows:?}");
@@ -2510,18 +2470,14 @@ mod tests {
     /// line, joined again where the box wrapped it. A key clears the
     /// highlight.
     #[test]
-    fn the_docked_questions_text_selects_and_copies() {
+    fn the_answer_panels_text_selects_and_copies() {
         use crate::tui::app::Effect;
         use crossterm::event::{MouseButton, MouseEventKind};
         let mut app = app();
         let text = "Tabs or spaces for the **new** files? The old ones use tabs, so I'd keep them.";
-        app.set_activity(Activity {
-            working: true,
-            since: None,
-            question: Some(Question {
-                id: 1,
-                text: text.into(),
-            }),
+        app.set_reading(crate::remote::Reading {
+            questions: waiting(text),
+            ..Default::default()
         });
         let rows = screen(&mut app, 50, 20);
         let y = rows.iter().position(|row| row.contains("Tabs or")).unwrap();
@@ -2568,11 +2524,15 @@ mod tests {
             screen(&mut app, 50, 20);
             mouse(&mut app, MouseEventKind::Up(left), x + 1, y);
         }
-        let whole = text.replace("**", "");
-        let length = format!("{} characters", whole.chars().count());
-        assert_eq!(
-            app.take_effects(),
-            [copy("Tabs", "4 characters"), copy(&whole, &length)]
+        let copies = app.take_effects();
+        assert_eq!(copies[0], copy("Tabs", "4 characters"));
+        // The line is the question's row, as the panel shows it.
+        let Effect::Copy { text: line, .. } = &copies[1] else {
+            panic!("{copies:?}");
+        };
+        assert!(
+            line.starts_with("› q1 Tabs or spaces for the new"),
+            "{line}"
         );
         // A click elsewhere clears it.
         mouse(&mut app, MouseEventKind::Down(left), 5, 0);

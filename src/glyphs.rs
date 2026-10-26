@@ -38,6 +38,7 @@ pub const SYMBOLS_TABLE: &[(char, &str, &str)] = &[
     ('✉', "►", ">>"),
     ('✗', "×", "x"),
     ('✓', "√", "v"),
+    ('×', "×", "x"),
     ('■', "■", "#"),
     ('✎', "+", "+"),
     ('⇠', "←", "<-"),
@@ -265,6 +266,7 @@ pub(crate) mod tests {
             ("tui/overlay.rs", include_str!("tui/overlay.rs")),
             ("tui/screen.rs", include_str!("tui/screen.rs")),
             ("tui/mod.rs", include_str!("tui/mod.rs")),
+            ("tui/questions.rs", include_str!("tui/questions.rs")),
         ] {
             for c in source.chars().filter(|c| !c.is_ascii()) {
                 // Letters (in test strings and names) are shown as they are.

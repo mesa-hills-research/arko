@@ -299,6 +299,12 @@ fn quit(frame: &mut Frame, app: &App, area: Rect, choice: usize, dont_ask: bool)
     );
 }
 
+/// What Alt+Q does. Mac terminals send Option as Alt only when set to.
+#[cfg(target_os = "macos")]
+const ALT_Q: &str = "open the answer panel for the agent's questions (Option+Q, where Option works as Alt: in the Terminal app, turn on Use Option as Meta key)";
+#[cfg(not(target_os = "macos"))]
+const ALT_Q: &str = "open the answer panel for the agent's questions";
+
 /// The keys, with why each is what it is in a word, and the commands.
 pub const KEYS: &[(&str, &str)] = &[
     (
@@ -343,7 +349,11 @@ pub const KEYS: &[(&str, &str)] = &[
         "Ctrl+T",
         "the agent list, where Tab and Shift+Tab move through it and Enter shows a worker's own work",
     ),
-    ("Esc", "close, go back, or put the agent's question off"),
+    ("Alt+Q", ALT_Q),
+    (
+        "Esc",
+        "close, go back, or leave the answer panel to answer in a message",
+    ),
     ("Ctrl+C", "stop the turn, else clear the box"),
     ("Ctrl+D", "quit, when the box is empty (as /exit)"),
     ("Ctrl+L", "draw the screen again"),

@@ -1661,7 +1661,27 @@ fn entry_lines(
                 "The agent asks".to_string(),
                 theme.accent().add_modifier(Modifier::BOLD),
             )])];
-            lines.extend(markdown::render(&item.text, theme.text(), theme, inner));
+            match &item.questions {
+                // Each question, with what became of it.
+                Some(questions) => {
+                    for question in questions {
+                        let text = if crate::questions::is_agent_id(&question.id) {
+                            format!("{} {}", question.id, question.question)
+                        } else {
+                            question.question.clone()
+                        };
+                        lines.extend(markdown::render(&text, theme.text(), theme, inner));
+                        if let Some(state) = question_state(&question.state) {
+                            lines.extend(
+                                wrap::wrap(&[Span::styled(rendered(state), theme.dim())], inner, 0)
+                                    .into_iter()
+                                    .map(Wrapped::line),
+                            );
+                        }
+                    }
+                }
+                None => lines.extend(markdown::render(&item.text, theme.text(), theme, inner)),
+            }
             wrap::prefixed(lines, mark("?", theme.accent()), blank())
         }
         Kind::Call => {
@@ -2174,6 +2194,20 @@ fn heading_lines(worker: &WorkerSummary, theme: &Theme, width: usize) -> Vec<Wra
     )
 }
 
+/// What became of a question, as its card says it under the question
+/// (`None` while it is open).
+fn question_state(state: &crate::questions::QuestionState) -> Option<String> {
+    use crate::questions::QuestionState;
+    Some(match state {
+        QuestionState::Open => return None,
+        QuestionState::Answered { answer } => format!("answered · {answer}"),
+        QuestionState::AnsweredInMessage => "answered in your message".to_string(),
+        QuestionState::Closed { why: Some(why) } => format!("closed by the agent · {why}"),
+        QuestionState::Closed { why: None } => "closed by the agent".to_string(),
+        QuestionState::Dismissed => "dismissed".to_string(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2202,6 +2236,41 @@ mod tests {
 
     fn full() -> Filter {
         Filter::Main(View::Full)
+    }
+
+    /// A question card shows each question with what became of it, and
+    /// changes as that does.
+    #[test]
+    fn a_question_card_shows_each_questions_state() {
+        use crate::questions::QuestionState;
+        let mut t = Transcript::new();
+        let mut card = item(1, Kind::Question, "q1 Tabs or spaces?\nq2 Push now?");
+        let mut questions = crate::tui::app::tests::asking().questions;
+        questions[1].question = "Push now?".into();
+        card.questions = Some(questions.clone());
+        t.apply(Update::Item(card.clone()));
+        assert_eq!(
+            rows(&mut t, &full(), 40, 3),
+            ["? The agent asks", "  q1 Tabs or spaces?", "  q2 Push now?"]
+        );
+        questions[0].state = QuestionState::Answered {
+            answer: "Spaces".into(),
+        };
+        questions[1].state = QuestionState::Closed {
+            why: Some("Found it".into()),
+        };
+        card.questions = Some(questions);
+        t.apply(Update::Change(card));
+        assert_eq!(
+            rows(&mut t, &full(), 40, 5),
+            [
+                "? The agent asks",
+                "  q1 Tabs or spaces?",
+                "  answered · Spaces",
+                "  q2 Push now?",
+                "  closed by the agent · Found it"
+            ]
+        );
     }
 
     /// A message a worker got shows in its own view with whose it is, and

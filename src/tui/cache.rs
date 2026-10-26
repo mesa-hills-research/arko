@@ -225,6 +225,10 @@ pub(super) mod tests {
                 text: "Tabs or spaces?".into(),
             }),
         });
+        let mut questions = crate::tui::app::tests::asking().questions;
+        questions.truncate(1);
+        questions[0].waits = true;
+        app.reading.questions = questions;
         let (rows, _) = drawn(&mut app, 120, 8);
         let status = status_row(&rows);
         assert!(
