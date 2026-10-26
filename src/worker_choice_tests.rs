@@ -512,9 +512,10 @@ async fn the_main_agent_lists_the_options_saves_a_profile_and_starts_a_worker_wi
     harness.crew.as_ref().unwrap().shutdown().await;
 }
 
-/// A profile for every session reaches the user as a question, the same one
-/// the agent's `ask_user` makes. A reply that is not a plain yes is feedback
-/// and saves nothing, and a yes saves the file in Arko's folder.
+/// A profile for every session reaches the user as an approval, which they
+/// answer as the agent's `ask_user` questions. Words of their own ask the
+/// agent for changes and save nothing, and Save saves the file in Arko's
+/// folder.
 #[tokio::test]
 async fn a_profile_for_every_session_is_put_to_the_user_as_a_question() {
     let temp = tempfile::tempdir().unwrap();
@@ -523,7 +524,7 @@ async fn a_profile_for_every_session_is_put_to_the_user_as_a_question() {
     // (The input stays open while the turns end: a closed one quits.)
     let sender = input.clone();
     let answers = tokio::spawn(async move {
-        for reply in ["no, use medium effort", "Yes"] {
+        for reply in ["no, use medium effort", "Save"] {
             until(|| feed.activity().question.is_some()).await;
             let question = feed.activity().question.unwrap();
             assert!(
@@ -548,7 +549,7 @@ async fn a_profile_for_every_session_is_put_to_the_user_as_a_question() {
     start_worker(&mut harness, &mut inputs, "Start by saving a profile for everyone.").await;
     assert_eq!(
         last_result(&seen),
-        "The user didn't save 3d-judge for every project and answered \"no, use medium effort\". Only a plain yes saves it. If they asked for a change, make it and ask again. If they meant yes, ask again and tell them to answer yes. Or save it for this session with scope session."
+        "The user didn't save 3d-judge for every project and asked for changes: \"no, use medium effort\". Make them and call save_worker_profile again, which shows them the changed profile."
     );
     assert!(!saved.exists());
     start_worker(&mut harness, &mut inputs, "Start by saving a profile for everyone.").await;

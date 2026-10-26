@@ -2766,6 +2766,8 @@ pub(super) mod tests {
                     state: QuestionState::Open,
                     waits: false,
                     item: 7,
+                    number: Some(1),
+                    approval: None,
                 },
                 AgentQuestion {
                     id: "q2".into(),
@@ -2776,6 +2778,8 @@ pub(super) mod tests {
                     state: QuestionState::Open,
                     waits: false,
                     item: 7,
+                    number: Some(2),
+                    approval: None,
                 },
             ],
             ..Reading::default()

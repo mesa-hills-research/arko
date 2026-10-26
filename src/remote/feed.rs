@@ -1149,6 +1149,8 @@ struct State {
     activity: Activity,
     /// The main agent's questions.
     questions: crate::questions::Book,
+    /// The latest card of approvals, which approvals asked with them join.
+    approval_card: Option<u64>,
     turn: Option<u64>,
     /// The user's message started the turn `turn`, which hasn't begun yet.
     turn_opened: bool,
@@ -1576,9 +1578,15 @@ impl Feed {
         // The main agent closed questions: their cards say so.
         if let AgentEvent::QuestionsClosed { ids, why } = &event.event {
             if label.is_none() && event.agent_name == self.inner.main {
-                self.settle_questions(Some(event.agent_run_id), ids, |_| {
-                    crate::questions::QuestionState::Closed { why: why.clone() }
-                });
+                {
+                    let mut state = self.lock();
+                    let items = state.questions.close(event.agent_run_id, ids, why.clone());
+                    state.questions.save();
+                    for item in items {
+                        self.refresh_card(&mut state, item);
+                    }
+                }
+                self.question_activity();
             }
             return;
         }
@@ -2354,8 +2362,12 @@ impl Feed {
                     .into_iter()
                     .map(|question| question.id)
                     .collect::<Vec<_>>();
+                // (Questions the session no longer keeps show as text.)
                 let kept = state.questions.restored(&ids, item.id);
-                item.questions = (!kept.is_empty()).then_some(kept);
+                if !kept.is_empty() {
+                    item.text = crate::questions::card_line(&kept);
+                    item.questions = Some(kept);
+                }
             }
             state.next_id = state.next_id.max(item.id);
             state.turn = state.turn.max(item.turn);
@@ -2519,43 +2531,68 @@ impl Feed {
     }
 
     /// Run `run` of the main agent asks `asked` (`waits`: it waits for the
-    /// answer). Their card goes in the transcript, and its item is returned.
+    /// answer), or Arko asks the user to approve `approval` for it. Their
+    /// card goes in the transcript, and its item is returned. An approval
+    /// asked while the card of another (with all its approvals open) is the
+    /// latest joins that card.
     pub(crate) fn ask(
         &self,
         run: Uuid,
         asked: &[crate::questions::AskedQuestion],
         waits: bool,
+        approval: Option<crate::questions::Approval>,
     ) -> u64 {
-        let id = {
+        let item = {
             let mut state = self.lock();
             if state.questions.run().is_none() {
                 state.questions.set_run(Some(run));
             }
-            // Arko's own question shows without its id.
-            let text = if asked
+            let joins = state.approval_card.filter(|card| {
+                let questions = state.questions.of_item(*card);
+                approval.is_some()
+                    && state.main.items.back().is_some_and(|last| last.id == *card)
+                    && questions
+                        .first()
+                        .is_some_and(|first| state.questions.knows(run, &first.id))
+                    && questions
+                        .iter()
+                        .all(|question| question.approval.is_some() && question.state.is_open())
+            });
+            let questions: Vec<_> = asked
                 .iter()
-                .all(|question| crate::questions::is_agent_id(&question.id))
-            {
-                arko_agents::questions::questions_text(asked)
-            } else {
-                asked
-                    .iter()
-                    .map(|question| question.question.question.trim())
-                    .collect::<Vec<_>>()
-                    .join("\n")
+                .map(|asked| {
+                    let mut question = crate::questions::AgentQuestion::of(asked, waits, 0);
+                    question.approval = approval.clone();
+                    question
+                })
+                .collect();
+            let item = match joins {
+                Some(card) => card,
+                None => self.push(
+                    &mut state,
+                    Item::new(Kind::Question, crate::questions::card_line(&questions)),
+                ),
             };
-            let id = self.push(&mut state, Item::new(Kind::Question, text));
-            state.questions.ask(run, asked, waits, id);
-            let questions = state.questions.of_item(id);
-            if let Some(item) = state.main.find(id) {
-                item.questions = Some(questions);
-                let item = item.clone();
-                self.send(Update::Change(item));
+            state.questions.ask(
+                run,
+                questions
+                    .into_iter()
+                    .map(|mut question| {
+                        question.item = item;
+                        question
+                    })
+                    .collect(),
+            );
+            state.questions.number_card(item);
+            state.questions.save();
+            if approval.is_some() {
+                state.approval_card = Some(item);
             }
-            id
+            self.refresh_card(&mut state, item);
+            item
         };
         self.question_activity();
-        id
+        item
     }
 
     /// The main agent asks `asked` (`waits`: it waits for the answer), in
@@ -2565,7 +2602,7 @@ impl Feed {
     #[doc(hidden)]
     pub fn ask_questions(&self, asked: &[crate::questions::AskedQuestion], waits: bool) -> u64 {
         let run = self.lock().questions.run().unwrap_or_else(Uuid::nil);
-        self.ask(run, asked, waits)
+        self.ask(run, asked, waits, None)
     }
 
     /// Sets the current conversation's question `id` to `state`, as an
@@ -2576,6 +2613,7 @@ impl Feed {
         {
             let mut state_now = self.lock();
             if let Some(item) = state_now.questions.set_state(id, state) {
+                state_now.questions.save();
                 self.refresh_card(&mut state_now, item);
             }
         }
@@ -2593,9 +2631,25 @@ impl Feed {
         self.lock().questions.open()
     }
 
-    /// The ids of run `run`'s open questions.
-    pub(crate) fn open_question_ids(&self, run: Uuid) -> Vec<String> {
-        self.lock().questions.open_ids_of(run)
+    /// Run `run`'s open questions.
+    pub(crate) fn open_questions_of(&self, run: Uuid) -> Vec<crate::questions::AgentQuestion> {
+        self.lock().questions.open_of(Some(run))
+    }
+
+    /// The conversation whose questions are shown.
+    pub(crate) fn questions_conversation(&self) -> Option<Uuid> {
+        self.lock().questions.run()
+    }
+
+    /// The highest question number the session has seen.
+    pub(crate) fn last_question_number(&self) -> u32 {
+        self.lock().questions.last()
+    }
+
+    /// The questions `asked` were numbered, and the next are numbered after
+    /// them, whether or not they reached the feed yet.
+    pub(crate) fn count_questions(&self, asked: &[crate::questions::AskedQuestion]) {
+        self.lock().questions.count(asked);
     }
 
     /// The agent no longer waits on the questions `ids` (the turn that
@@ -2603,9 +2657,44 @@ impl Feed {
     pub(crate) fn questions_unwaited(&self, ids: &[String]) {
         {
             let mut state = self.lock();
-            for item in state.questions.unwait(ids) {
+            let items = state.questions.unwait(ids);
+            state.questions.save();
+            for item in items {
                 self.refresh_card(&mut state, item);
             }
+        }
+        self.question_activity();
+    }
+
+    /// Run `run`'s questions `ids` are open again.
+    pub(crate) fn reopen_questions(&self, run: Uuid, ids: &[String]) {
+        {
+            let mut state = self.lock();
+            let items = state.questions.reopen(run, ids);
+            state.questions.save();
+            for item in items {
+                self.refresh_card(&mut state, item);
+            }
+        }
+        self.question_activity();
+    }
+
+    /// Run `run` asked `asked`, as its task says, though the session didn't
+    /// keep them (its file was lost, or Arko stopped as they were asked):
+    /// they are open again, without a card.
+    pub(crate) fn questions_found(&self, run: Uuid, asked: &[crate::questions::AskedQuestion]) {
+        {
+            let mut state = self.lock();
+            let missing: Vec<_> = asked
+                .iter()
+                .filter(|asked| !state.questions.knows(run, &asked.id))
+                .map(|asked| crate::questions::AgentQuestion::of(asked, false, 0))
+                .collect();
+            if missing.is_empty() {
+                return;
+            }
+            state.questions.ask(run, missing);
+            state.questions.save();
         }
         self.question_activity();
     }
@@ -2624,24 +2713,76 @@ impl Feed {
         ids: &[String],
         to: impl FnMut(&crate::questions::AgentQuestion) -> crate::questions::QuestionState,
     ) -> Vec<crate::questions::AgentQuestion> {
-        let settled = {
+        self.settle_noting(run, ids, to, |_, _| None).0
+    }
+
+    /// [`settle_questions`](Self::settle_questions), and the note `note`
+    /// writes of the questions it settled (and those still open), about
+    /// some ids, which is kept for the agent with them (saved at once) until
+    /// [`ack_notes`](Self::ack_notes).
+    pub(crate) fn settle_noting(
+        &self,
+        run: Option<Uuid>,
+        ids: &[String],
+        to: impl FnMut(&crate::questions::AgentQuestion) -> crate::questions::QuestionState,
+        note: impl FnOnce(
+            &[crate::questions::AgentQuestion],
+            &[crate::questions::AgentQuestion],
+        ) -> Option<(Vec<String>, String)>,
+    ) -> (
+        Vec<crate::questions::AgentQuestion>,
+        Option<crate::questions::Pending>,
+    ) {
+        let (settled, pending) = {
             let mut state = self.lock();
+            let run = run.or(state.questions.run());
             let (settled, items) = state.questions.settle(run, ids, to);
+            let open = state.questions.open_of(run);
+            let pending = match (run, note(&settled, &open)) {
+                (Some(run), Some((ids, note))) => {
+                    let seq = state.questions.queue(run, ids.clone(), note.clone());
+                    Some(crate::questions::Pending {
+                        seq,
+                        run,
+                        ids,
+                        note,
+                    })
+                }
+                _ => None,
+            };
+            if !settled.is_empty() || pending.is_some() {
+                state.questions.save();
+            }
             for item in items {
                 self.refresh_card(&mut state, item);
             }
-            settled
+            (settled, pending)
         };
         if !settled.is_empty() {
             self.question_activity();
         }
-        settled
+        (settled, pending)
+    }
+
+    /// The notes about run `run`'s questions the agent hasn't read, oldest
+    /// first.
+    pub(crate) fn queued_notes(&self, run: Uuid) -> Vec<crate::questions::Pending> {
+        self.lock().questions.queued(run)
+    }
+
+    /// The agent has the notes `seqs`.
+    pub(crate) fn ack_notes(&self, seqs: &[u64]) {
+        let mut state = self.lock();
+        if state.questions.ack(seqs) {
+            state.questions.save();
+        }
     }
 
     /// The card `item` shows its questions as they are now.
     fn refresh_card(&self, state: &mut State, item: u64) {
         let questions = state.questions.of_item(item);
         if let Some(card) = state.main.find(item) {
+            card.text = crate::questions::card_line(&questions);
             card.questions = Some(questions);
             let card = card.clone();
             self.send(Update::Change(card));
@@ -2649,7 +2790,7 @@ impl Feed {
     }
 
     /// The activity's question is the latest card with questions open that
-    /// the agent waits on.
+    /// the agent waits on, with those questions as the user reads them.
     fn question_activity(&self) {
         let latest = {
             let state = self.lock();
@@ -2657,13 +2798,18 @@ impl Feed {
             open.iter()
                 .rev()
                 .find(|question| question.item != 0 && question.waits)
-                .and_then(|question| {
-                    let index = state.main.index(question.item)?;
-                    let card = &state.main.items[index];
-                    Some(Question {
-                        id: card.id,
-                        text: card.text.clone(),
-                    })
+                .map(|waited| Question {
+                    id: waited.item,
+                    text: open
+                        .iter()
+                        .filter(|question| question.item == waited.item)
+                        .map(|question| match question.approval {
+                            // The whole of what it approves.
+                            Some(_) => question.question.clone(),
+                            None => question.numbered(),
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n"),
                 })
         };
         self.set_activity(|activity| activity.question = latest);
@@ -4664,6 +4810,7 @@ mod tests {
             run,
             &[asked("q1", "Tabs or spaces?"), asked("q2", "Push now?")],
             true,
+            None,
         );
         let since = feed.activity().since;
         assert_eq!(
@@ -4673,12 +4820,12 @@ mod tests {
                 since,
                 question: Some(Question {
                     id: card,
-                    text:
-                        "q1 Tabs or spaces?\n   Default: Spaces\nq2 Push now?\n   Default: Spaces"
-                            .into()
+                    text: "1. Tabs or spaces?\n2. Push now?".into()
                 })
             }
         );
+        // While they are open, the card is one line.
+        assert_eq!(feed.main_item(card).unwrap().text, "Arko asked 2 questions");
         let card_now = |updates: &mut broadcast::Receiver<Update>| {
             let mut last = None;
             while let Ok(update) = updates.try_recv() {
@@ -4774,6 +4921,7 @@ mod tests {
             run,
             &[asked("q1", "Tabs or spaces?"), asked("q2", "Push now?")],
             false,
+            None,
         );
         first.settle_questions(None, &["q1".into()], |_| QuestionState::Dismissed);
 
@@ -4817,9 +4965,47 @@ mod tests {
             .map(|question| question.state.clone())
             .collect::<Vec<_>>();
         assert_eq!(states, [QuestionState::Dismissed, QuestionState::Open]);
+        assert_eq!(card.text, "Arko asked 2 questions");
         assert_eq!(again.open_questions()[0].item, card.id);
+        assert_eq!(again.open_questions()[0].number, Some(2));
         // (The agent doesn't wait on them.)
         assert_eq!(again.activity().question, None);
+    }
+
+    /// Approvals asked together share one card, a choice each, numbered.
+    /// One asked after the card's approvals were answered gets its own.
+    #[test]
+    fn approvals_asked_together_share_a_card() {
+        use crate::profiles::{Place, Profile};
+        use crate::questions::QuestionState;
+        let feed = Feed::new("main");
+        let run = Uuid::new_v4();
+        let approval = |name: &str| {
+            let profile = Profile::new(name, "Reviews");
+            (
+                vec![asked(&crate::questions::plain_id(), "Save it?")],
+                Some(crate::profiles::approval(&profile, Place::User)),
+            )
+        };
+        let (asked_a, a) = approval("one");
+        let (asked_b, b) = approval("two");
+        let card = feed.ask(run, &asked_a, true, a);
+        assert_eq!(feed.ask(run, &asked_b, true, b), card);
+        let item = feed.main_item(card).unwrap();
+        assert_eq!(item.text, "Arko asked to save 2 worker profiles");
+        let questions = item.questions.unwrap();
+        assert_eq!(
+            questions.iter().map(|q| q.numbered()).collect::<Vec<_>>(),
+            [
+                "1. Save the worker profile one for every project?",
+                "2. Save the worker profile two for every project?"
+            ]
+        );
+        feed.settle_questions(None, &[questions[0].id.clone()], |_| {
+            QuestionState::Dismissed
+        });
+        let (asked_c, c) = approval("three");
+        assert_ne!(feed.ask(run, &asked_c, true, c), card);
     }
 
     /// A worker gets a placeholder in the main transcript where it starts
