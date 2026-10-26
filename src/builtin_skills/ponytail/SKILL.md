@@ -94,3 +94,25 @@ Take the first option that fully and properly does the job.
 
 Never cut validation at trust boundaries, error handling that prevents data loss, security,
 accessibility, the calibration real hardware needs, or anything the user asked for.
+
+## Naming
+
+Names in code, files, directories, scripts, branches and commit subjects say exactly what a thing is
+or does, in the words the project and its domain already use.
+
+- Look the term up first. Search the code and its docs for the word the project already uses for
+  the concept, and use it. A new concept gets a new term, used the same way everywhere.
+- Use the domain's established vocabulary. A script that deploys dashboards is
+  `deploy_dashboards.sh`, not `push_dashboards.sh`.
+- Functions that act are verbs (`load_settings`), things are nouns (`SessionStore`), booleans are
+  predicates (`is_alive`, `has_session`), and a quantity whose unit isn't obvious names it
+  (`timeout_secs`).
+- Choose the precise word over a vague one, such as `handle`, `process`, `do`, `manage`, `data`,
+  `info`, `util` or `helper`, whenever a precise one exists.
+- No slang, jokes or cute names (`nuke`, `yolo`, `magic`), no history (`new_`, `old_`, `v2`,
+  `final`), and no abbreviations beyond the universal ones (`id`, `url`, `http`).
+- Length follows scope. A three-line closure can say `n`, and anything public says in full what it
+  is.
+- A branch names its change (`openrouter-routing`), and a script its action and object.
+- Rename when the meaning changes, everywhere the name is used. A name that no longer tells the
+  truth is a bug.
