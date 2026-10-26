@@ -1,9 +1,237 @@
 //! How sessions are named. By default a session takes the first words of
 //! its first message ([`short_name`]). The user can turn on naming by a
-//! model instead, which runs in the background and falls back to the first
-//! words when no way of asking one works.
+//! model instead, with an ordered list of [`Way`]s to ask, kept in the Arko
+//! folder ([`load`], [`save`]). It runs in the background, and the first
+//! words stay the name when no way works.
 
+use std::path::Path;
+
+use serde::{Deserialize, Serialize};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+
+use crate::{claude_code, credentials};
+
+/// The file in Arko's folder that holds the ways.
+const FILE: &str = "session-names.json";
+
+/// One way of asking a model for a session's name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum Way {
+    /// Haiku 5.5 in Claude Code, on the user's Claude plan.
+    #[serde(rename = "claude-plan")]
+    ClaudePlan,
+    /// GPT-6 Luna on the user's ChatGPT plan, through the ChatGPT login.
+    #[serde(rename = "chatgpt-plan")]
+    ChatGptPlan,
+    /// Haiku 5.5 with the Anthropic API key, billed per token.
+    #[serde(rename = "claude-key")]
+    ClaudeKey,
+    /// GPT-6 Luna with the OpenAI API key, billed per token.
+    #[serde(rename = "openai-key")]
+    OpenAiKey,
+}
+
+impl Way {
+    /// The four ways, in the order they are offered.
+    pub const ALL: [Way; 4] = [
+        Way::ClaudePlan,
+        Way::ChatGptPlan,
+        Way::ClaudeKey,
+        Way::OpenAiKey,
+    ];
+
+    /// The word that names it in a command and in the file.
+    pub fn id(self) -> &'static str {
+        match self {
+            Way::ClaudePlan => "claude-plan",
+            Way::ChatGptPlan => "chatgpt-plan",
+            Way::ClaudeKey => "claude-key",
+            Way::OpenAiKey => "openai-key",
+        }
+    }
+
+    /// What it does, for a list.
+    pub fn label(self) -> &'static str {
+        match self {
+            Way::ClaudePlan => "Haiku 5.5 on the Claude plan",
+            Way::ChatGptPlan => "GPT-6 Luna on the ChatGPT plan",
+            Way::ClaudeKey => "Haiku 5.5 with the Anthropic API key",
+            Way::OpenAiKey => "GPT-6 Luna with the OpenAI API key",
+        }
+    }
+
+    /// The way `word` names.
+    pub fn from_id(word: &str) -> Option<Way> {
+        Way::ALL.into_iter().find(|way| way.id() == word)
+    }
+
+    /// Whether it bills per token, which is why turning naming on leaves it
+    /// off.
+    pub fn billed(self) -> bool {
+        matches!(self, Way::ClaudeKey | Way::OpenAiKey)
+    }
+}
+
+/// What turning naming by a model on starts with, the two ways that use a
+/// plan.
+pub fn default_ways() -> Vec<Way> {
+    Way::ALL.into_iter().filter(|way| !way.billed()).collect()
+}
+
+#[derive(Serialize)]
+struct Saved {
+    ways: Vec<Way>,
+}
+
+/// The ways to ask for a name, in the order to try them. None means the
+/// session takes the first words of its first message. A missing or
+/// unreadable file is none, and a way this version doesn't know is left out.
+pub fn load(root: &Path) -> Vec<Way> {
+    let Ok(text) = std::fs::read_to_string(root.join(FILE)) else {
+        return Vec::new();
+    };
+    // Read one way at a time, so a way a later version adds doesn't spoil the list.
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return Vec::new();
+    };
+    let mut ways = Vec::new();
+    for way in value
+        .get("ways")
+        .and_then(|ways| ways.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|way| serde_json::from_value::<Way>(way.clone()).ok())
+    {
+        if !ways.contains(&way) {
+            ways.push(way);
+        }
+    }
+    ways
+}
+
+/// Keeps `ways` as the ones to ask, in this order (none for the first
+/// words). A way listed twice counts once.
+pub fn save(root: &Path, ways: &[Way]) -> Result<(), String> {
+    let mut unique = Vec::new();
+    for way in ways {
+        if !unique.contains(way) {
+            unique.push(*way);
+        }
+    }
+    let text = serde_json::to_string_pretty(&Saved { ways: unique })
+        .map_err(|error| format!("Couldn't save the session names ({error})"))?;
+    std::fs::create_dir_all(root)
+        .and_then(|()| crate::session::write_whole(&root.join(FILE), text.as_bytes()))
+        .map_err(|error| format!("Couldn't save the session names ({error})"))
+}
+
+/// The four ways as a list shows them. The ones on come first, in their
+/// order, and then the others in the usual order. The second value says
+/// whether it is on.
+pub fn arranged(ways: &[Way]) -> Vec<(Way, bool)> {
+    ways.iter()
+        .map(|way| (*way, true))
+        .chain(
+            Way::ALL
+                .into_iter()
+                .filter(|way| !ways.contains(way))
+                .map(|way| (way, false)),
+        )
+        .collect()
+}
+
+/// The ways a `/session-names` line names. `words` is none, and the other
+/// forms list the ways in the order to try them.
+pub fn parse(words: &[&str]) -> Result<Vec<Way>, String> {
+    let mut ways = Vec::new();
+    if words == ["words"] {
+        return Ok(ways);
+    }
+    for word in words {
+        let way = Way::from_id(word)
+            .ok_or_else(|| format!("`{word}` is not a way to name a session. {USAGE}"))?;
+        if !ways.contains(&way) {
+            ways.push(way);
+        }
+    }
+    Ok(ways)
+}
+
+/// What `/session-names` takes.
+pub const USAGE: &str = "/session-names words names sessions by their first words. /session-names claude-plan chatgpt-plan claude-key openai-key names them by a model, trying the ways in the order given.";
+
+/// The setting in a sentence, for a command's reply.
+pub fn describe(ways: &[Way]) -> String {
+    if ways.is_empty() {
+        return "Sessions are named by the first words of their first message.".to_string();
+    }
+    let tries: Vec<&str> = ways.iter().map(|way| way.label()).collect();
+    format!(
+        "Sessions are named by a model, trying {}. The first words are the last resort.",
+        tries.join(", then ")
+    )
+}
+
+/// What each way needs that is missing now, for a list to say beside it
+/// (`None` when it can run). It reads the Arko folder's keys and ChatGPT
+/// logins as they are, and runs `claude` to check Claude Code (up to 15 s
+/// each time), so call it off a UI thread.
+pub fn missing(root: &Path) -> Vec<(Way, Option<String>)> {
+    crate::context::with_env(
+        credentials::Env::for_folder_in(None, true, Some(root)),
+        missing_here,
+    )
+}
+
+/// [`missing`] for the settings this thread reads (a session's).
+pub(crate) fn missing_here() -> Vec<(Way, Option<String>)> {
+    Way::ALL
+        .into_iter()
+        .map(|way| (way, why_not(way)))
+        .collect()
+}
+
+fn why_not(way: Way) -> Option<String> {
+    match way {
+        Way::ClaudePlan => claude_reason(&claude_code::check_recent()),
+        Way::ChatGptPlan => login_reason(&credentials::chatgpt_logins(None)),
+        Way::ClaudeKey => key_reason(&credentials::ANTHROPIC),
+        Way::OpenAiKey => key_reason(&credentials::OPENAI),
+    }
+}
+
+fn claude_reason(check: &Result<claude_code::Ready, claude_code::Problem>) -> Option<String> {
+    Some(
+        match check {
+            Ok(_) => return None,
+            Err(claude_code::Problem::Missing) => "Claude Code isn't installed",
+            Err(claude_code::Problem::SignedOut(_)) => "Claude Code isn't signed in",
+            Err(claude_code::Problem::Outdated { .. }) => "Claude Code needs an update",
+        }
+        .to_string(),
+    )
+}
+
+fn login_reason(logins: &[credentials::ChatGptLogin]) -> Option<String> {
+    use credentials::LoginState;
+    if logins.iter().any(|login| login.state == LoginState::Ready) {
+        return None;
+    }
+    let broken = logins
+        .iter()
+        .any(|login| matches!(login.state, LoginState::Invalid(_)));
+    Some(if broken {
+        "The ChatGPT login doesn't work".to_string()
+    } else {
+        "No ChatGPT login".to_string()
+    })
+}
+
+fn key_reason(key: &credentials::Key) -> Option<String> {
+    credentials::key_value(key)
+        .is_none()
+        .then(|| format!("No {} API key", key.provider))
+}
 
 /// How many columns a name made from the first words takes at most,
 /// including its "…".
@@ -158,5 +386,157 @@ mod tests {
         // The family itself is kept when it fits.
         let kept = short_name(&format!("{family} {}", "word ".repeat(10)));
         assert!(kept.starts_with(family), "{kept}");
+    }
+
+    fn temp_root() -> (tempfile::TempDir, std::path::PathBuf) {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("arko");
+        (temp, root)
+    }
+
+    #[test]
+    fn no_file_means_the_first_words() {
+        let (_temp, root) = temp_root();
+        assert_eq!(load(&root), Vec::<Way>::new());
+    }
+
+    #[test]
+    fn the_ways_are_saved_and_loaded_in_their_order() {
+        let (_temp, root) = temp_root();
+        let ways = [Way::OpenAiKey, Way::ClaudePlan, Way::ChatGptPlan];
+        save(&root, &ways).unwrap();
+        assert_eq!(load(&root), ways);
+        let text = std::fs::read_to_string(root.join("session-names.json")).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(
+            value["ways"],
+            serde_json::json!(["openai-key", "claude-plan", "chatgpt-plan"])
+        );
+        // None goes back to the first words.
+        save(&root, &[]).unwrap();
+        assert_eq!(load(&root), Vec::<Way>::new());
+    }
+
+    #[test]
+    fn a_way_listed_twice_counts_once() {
+        let (_temp, root) = temp_root();
+        save(&root, &[Way::ClaudeKey, Way::ClaudePlan, Way::ClaudeKey]).unwrap();
+        assert_eq!(load(&root), [Way::ClaudeKey, Way::ClaudePlan]);
+    }
+
+    #[test]
+    fn a_file_that_cant_be_read_means_the_first_words() {
+        let (_temp, root) = temp_root();
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("session-names.json");
+        for text in ["", "not json", "[]", r#"{"ways": "claude-plan"}"#] {
+            std::fs::write(&path, text).unwrap();
+            assert_eq!(load(&root), Vec::<Way>::new(), "{text}");
+        }
+        // A way this version doesn't know is skipped and the others stay.
+        std::fs::write(
+            &path,
+            r#"{"ways": ["claude-plan", "gemini-key", 7, "openai-key", "claude-plan"]}"#,
+        )
+        .unwrap();
+        assert_eq!(load(&root), [Way::ClaudePlan, Way::OpenAiKey]);
+    }
+
+    #[test]
+    fn turning_it_on_starts_with_the_two_plan_ways() {
+        assert_eq!(default_ways(), [Way::ClaudePlan, Way::ChatGptPlan]);
+        assert!(Way::ClaudeKey.billed() && Way::OpenAiKey.billed());
+    }
+
+    #[test]
+    fn the_ways_on_come_first_in_their_order() {
+        assert_eq!(
+            arranged(&[Way::OpenAiKey, Way::ClaudePlan]),
+            [
+                (Way::OpenAiKey, true),
+                (Way::ClaudePlan, true),
+                (Way::ChatGptPlan, false),
+                (Way::ClaudeKey, false),
+            ]
+        );
+        assert_eq!(arranged(&[]).len(), 4);
+        assert!(arranged(&[]).iter().all(|(_, on)| !on));
+    }
+
+    #[test]
+    fn a_line_names_the_ways_or_the_first_words() {
+        assert_eq!(parse(&["words"]), Ok(Vec::new()));
+        assert_eq!(parse(&[]), Ok(Vec::new()));
+        assert_eq!(
+            parse(&["claude-key", "chatgpt-plan", "claude-key"]),
+            Ok(vec![Way::ClaudeKey, Way::ChatGptPlan])
+        );
+        let error = parse(&["claude-plan", "haiku"]).unwrap_err();
+        assert!(error.starts_with("`haiku` is not a way"), "{error}");
+        assert!(error.contains(USAGE));
+        for way in Way::ALL {
+            assert_eq!(Way::from_id(way.id()), Some(way));
+        }
+    }
+
+    #[test]
+    fn the_setting_is_said_in_a_sentence() {
+        assert_eq!(
+            describe(&[]),
+            "Sessions are named by the first words of their first message."
+        );
+        assert_eq!(
+            describe(&[Way::ClaudePlan, Way::OpenAiKey]),
+            "Sessions are named by a model, trying Haiku 5.5 on the Claude plan, then GPT-6 Luna with the OpenAI API key. The first words are the last resort."
+        );
+    }
+
+    #[test]
+    fn what_a_way_needs_is_said_in_a_few_words() {
+        use claude_code::Problem;
+        use credentials::{ChatGptLogin, LoginSource, LoginState};
+        let ready = claude_code::Ready {
+            path: "claude".into(),
+            method: None,
+            plan: None,
+        };
+        assert_eq!(claude_reason(&Ok(ready)), None);
+        assert_eq!(
+            claude_reason(&Err(Problem::Missing)).as_deref(),
+            Some("Claude Code isn't installed")
+        );
+        assert_eq!(
+            claude_reason(&Err(Problem::SignedOut("claude".into()))).as_deref(),
+            Some("Claude Code isn't signed in")
+        );
+        assert_eq!(
+            claude_reason(&Err(Problem::Outdated {
+                version: "2.0.0".into()
+            }))
+            .as_deref(),
+            Some("Claude Code needs an update")
+        );
+        let login = |state| ChatGptLogin {
+            path: None,
+            source: LoginSource::Default,
+            state,
+        };
+        assert_eq!(login_reason(&[]).as_deref(), Some("No ChatGPT login"));
+        assert_eq!(
+            login_reason(&[login(LoginState::Missing)]).as_deref(),
+            Some("No ChatGPT login")
+        );
+        assert_eq!(
+            login_reason(&[login(LoginState::Invalid("x".into()))]).as_deref(),
+            Some("The ChatGPT login doesn't work")
+        );
+        // One that works is enough.
+        assert_eq!(
+            login_reason(&[
+                login(LoginState::Invalid("x".into())),
+                login(LoginState::Ready)
+            ]),
+            None
+        );
     }
 }
