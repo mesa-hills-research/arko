@@ -318,18 +318,48 @@ pub(crate) async fn wake(woken: &mut Option<mpsc::UnboundedReceiver<()>>) {
     std::future::pending::<()>().await;
 }
 
-/// A question the main agent asks with `ask_user`, and where its answer
-/// goes.
+/// Questions the main agent asks with `ask_user` (or a question Arko asks
+/// for it, such as approving a worker profile), and, when it waits for the
+/// answer, where the answer goes.
 pub(crate) struct Question {
-    pub(crate) text: String,
-    pub(crate) answer: oneshot::Sender<String>,
+    /// The run that asks: the main agent's conversation.
+    pub(crate) run: uuid::Uuid,
+    /// The questions with their ids. A question Arko asks has an id that
+    /// isn't the agent's (`q1`), and its answer goes back as the user's
+    /// words alone.
+    pub(crate) asked: Vec<arko_agents::questions::AskedQuestion>,
+    /// Where the answer goes, when the agent waits for it.
+    pub(crate) answer: Option<oneshot::Sender<String>>,
 }
 
-/// Answers the main agent's `ask_user` questions: the user types the
-/// answer at the prompt. Without a terminal, the agent is told that no one
-/// can answer. It always answers: an error would fail the turn.
+impl Question {
+    /// The questions' text, one per line.
+    #[cfg(test)]
+    pub(crate) fn text(&self) -> String {
+        self.asked
+            .iter()
+            .map(|question| question.question.question.clone())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// Whether Arko asks it, not the agent: its answer is the user's words.
+    pub(crate) fn plain(&self) -> bool {
+        !self
+            .asked
+            .iter()
+            .all(|question| crate::questions::is_agent_id(&question.id))
+    }
+}
+
+/// Puts the main agent's `ask_user` questions to the user. The answers to
+/// those it waits for go back as the answer, and the others reach it later
+/// as notes. Without a terminal, the agent is told that no one can answer.
+/// It always answers: an error would fail the turn.
 pub(crate) struct Asker {
     pub(crate) questions: Option<mpsc::UnboundedSender<Question>>,
+    /// The feed, which says which questions are still open.
+    pub(crate) feed: Option<crate::remote::Feed>,
 }
 
 impl Asker {
@@ -351,8 +381,9 @@ impl UserInputHandler for Asker {
         };
         let (answer, answered) = oneshot::channel();
         let question = Question {
-            text: request.questions,
-            answer,
+            run: request.agent_run_id,
+            asked: asked_of(&request),
+            answer: Some(answer),
         };
         if questions.send(question).is_err() {
             return Ok(CANT_ASK.to_string());
@@ -361,4 +392,41 @@ impl UserInputHandler for Asker {
             .await
             .unwrap_or_else(|_| "(The user didn't answer.)".to_string()))
     }
+
+    /// The questions go to the user, and their answers reach the agent
+    /// later, as notes.
+    async fn asked(&self, request: UserInputRequest) -> Result<Option<String>, String> {
+        let Some(questions) = &self.questions else {
+            return Ok(Some(CANT_ASK.to_string()));
+        };
+        let question = Question {
+            run: request.agent_run_id,
+            asked: asked_of(&request),
+            answer: None,
+        };
+        if questions.send(question).is_err() {
+            return Ok(Some(CANT_ASK.to_string()));
+        }
+        Ok(None)
+    }
+
+    fn open_questions(&self, agent_run_id: uuid::Uuid) -> Option<Vec<String>> {
+        self.feed
+            .as_ref()
+            .map(|feed| feed.open_question_ids(agent_run_id))
+    }
+}
+
+/// The questions of `request`, or its text as one question.
+fn asked_of(request: &UserInputRequest) -> Vec<arko_agents::questions::AskedQuestion> {
+    if !request.asked.is_empty() {
+        return request.asked.clone();
+    }
+    vec![arko_agents::questions::AskedQuestion {
+        id: crate::questions::PLAIN_ID.to_string(),
+        question: arko_agents::questions::Question {
+            question: request.questions.trim().to_string(),
+            ..Default::default()
+        },
+    }]
 }

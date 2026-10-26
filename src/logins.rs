@@ -860,6 +860,7 @@ mod tests {
             .send(crate::Input::Message(crate::Message {
                 text: "Hi.".into(),
                 images: Vec::new(),
+                answers: Vec::new(),
             }))
             .unwrap();
         let line = tokio::time::timeout(std::time::Duration::from_secs(30), async {

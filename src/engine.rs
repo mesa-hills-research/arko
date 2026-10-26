@@ -897,7 +897,10 @@ impl Engine {
         let (questions_sender, questions) = mpsc::unbounded_channel();
         let asker = Arc::new(Asker {
             questions: interactive.then_some(questions_sender),
+            feed: Some(feed.clone()),
         });
+        // The main agent's questions, kept with the session.
+        feed.keep_questions(session.dir.join(crate::questions::FILE));
         // The workers, and those of a resumed session.
         let (crew, woken) = if settings.max_workers > 0 {
             let (crew, woken) = Crew::new(crew::Setup {
@@ -992,6 +995,9 @@ impl Engine {
             background: managers.background.clone(),
             interrupted_told: false,
             user_active_at: std::time::SystemTime::now(),
+            waiting: None,
+            answers: Vec::new(),
+            labelled: None,
         };
         // A chat has no project.
         if !chat {
@@ -2648,7 +2654,7 @@ mod tests {
                     tool_call(
                         "m1",
                         ASK_USER_TOOL_NAME,
-                        serde_json::json!({"questions": "Tabs or spaces?"}),
+                        serde_json::json!({"questions": "Tabs or spaces?", "wait": true}),
                     )
                 }
             })
@@ -2679,6 +2685,7 @@ mod tests {
             .send(Input::Message(crate::ui::Message {
                 text: "Indent the file.".into(),
                 images: Vec::new(),
+                answers: Vec::new(),
             }))
             .unwrap();
         let question = tokio::time::timeout(wait, async {
@@ -2691,7 +2698,7 @@ mod tests {
         })
         .await
         .unwrap();
-        assert_eq!(question.text, "Tabs or spaces?");
+        assert_eq!(question.text, "q1 Tabs or spaces?");
         assert!(seam.feed.activity().since.is_some(), "the turn's start");
         seam.input
             .send(Input::Answer {
@@ -2781,6 +2788,7 @@ mod tests {
                 .send(Input::Message(crate::ui::Message {
                     text: text.into(),
                     images: Vec::new(),
+                    answers: Vec::new(),
                 }))
                 .unwrap();
             let replies = || {
@@ -2976,6 +2984,7 @@ mod tests {
         crate::ui::Message {
             text: text.into(),
             images: Vec::new(),
+            answers: Vec::new(),
         }
     }
 
@@ -3577,6 +3586,7 @@ mod tests {
             .send(Input::Message(crate::ui::Message {
                 text: "Look at this.".into(),
                 images: vec![attachment],
+                answers: Vec::new(),
             }))
             .unwrap();
         let first = answered(&seam, &bodies, 1).await;
@@ -3856,6 +3866,7 @@ mod tests {
                 .send(Input::Message(crate::ui::Message {
                     text: text.into(),
                     images: Vec::new(),
+                    answers: Vec::new(),
                 }))
                 .unwrap();
             let feed = seam.feed.clone();
@@ -3893,6 +3904,7 @@ mod tests {
             .send(Input::Message(crate::ui::Message {
                 text: "Slowly.".into(),
                 images: Vec::new(),
+                answers: Vec::new(),
             }))
             .unwrap();
         tokio::time::timeout(wait, async {
@@ -4536,6 +4548,7 @@ mod tests {
                 .send(Input::Message(crate::ui::Message {
                     text: text.into(),
                     images: Vec::new(),
+                    answers: Vec::new(),
                 }))
                 .unwrap();
             tokio::time::timeout(wait, async {
@@ -4559,6 +4572,7 @@ mod tests {
             .send(Input::Message(crate::ui::Message {
                 text: "Hello again. And more.".into(),
                 images: Vec::new(),
+                answers: Vec::new(),
             }))
             .unwrap();
         tokio::time::timeout(wait, async {

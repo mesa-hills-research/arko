@@ -611,7 +611,16 @@ impl Tool for SaveWorkerProfile {
                     workflow_run_id: uuid::Uuid::nil(),
                     agent_run_id: context.task_id,
                     agent_name: context.agent_name.to_string(),
+                    asked: vec![arko_agents::questions::AskedQuestion {
+                        id: crate::questions::PLAIN_ID.to_string(),
+                        question: arko_agents::questions::Question {
+                            question: question.clone(),
+                            choices: vec!["Yes".into(), "No".into()],
+                            ..Default::default()
+                        },
+                    }],
                     questions: question,
+                    wait: true,
                 })
                 .await
                 .map_err(refused)?;

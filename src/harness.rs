@@ -6,7 +6,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use arko_agents::Tool;
-use arko_agents::builtins::{APPLY_DIFF_TOOL_NAME, ASK_USER_TOOL_NAME, EDIT_FILE_TOOL_NAME};
+use arko_agents::builtins::{
+    APPLY_DIFF_TOOL_NAME, ASK_USER_TOOL_NAME, CLOSE_QUESTIONS_TOOL_NAME, EDIT_FILE_TOOL_NAME,
+};
 use arko_agents::terminal::{MonitorTool, TerminalConfig, TerminalManager, TerminalTool};
 use arko_ai::LLMClient;
 use arko_workflows::notes::Note;
@@ -333,6 +335,9 @@ pub(crate) fn unoffered_with(
     if missing.contains(&ASK_USER_TOOL_NAME) {
         parts.push("questions to you (ask_user)".to_string());
     }
+    if missing.contains(&CLOSE_QUESTIONS_TOOL_NAME) && !missing.contains(&ASK_USER_TOOL_NAME) {
+        parts.push("questions that don't stop its work (close_questions)".to_string());
+    }
     if missing.contains(&message::MESSAGE_USER) {
         parts.push("answers to you while it works (message_user)".to_string());
     }
@@ -372,6 +377,7 @@ pub(crate) fn unoffered_with(
             || agents::FILE_TOOL_NAMES.contains(&name)
             || MonitorTool::NAMES.contains(&name)
             || name == ASK_USER_TOOL_NAME
+            || name == CLOSE_QUESTIONS_TOOL_NAME
             || name == message::MESSAGE_USER
             || kept_notes::TOOL_NAMES.contains(&name)
     };
@@ -428,6 +434,9 @@ pub(crate) enum Prompt {
     Monitor(Opening),
     /// A turn Arko stopped in the middle of goes on, without a message.
     Recover,
+    /// The user answered or dismissed the agent's questions, without a
+    /// message: the notes that say so follow.
+    Answers,
 }
 
 impl Prompt {
@@ -439,7 +448,7 @@ impl Prompt {
             Prompt::News { resent: true } => Some(Opening::ResentNews),
             Prompt::Jobs => Some(Opening::Job),
             Prompt::Monitor(opening) => Some(*opening),
-            Prompt::User(_) | Prompt::Unread | Prompt::Recover => None,
+            Prompt::User(_) | Prompt::Unread | Prompt::Recover | Prompt::Answers => None,
         }
     }
 }
@@ -593,6 +602,14 @@ pub(crate) struct Harness {
     /// or the session opened: monitors' warnings wake the agent only for a
     /// while after it.
     pub(crate) user_active_at: std::time::SystemTime,
+    /// The main agent's questions it waits for the answer to.
+    pub(crate) waiting: Option<crate::asking::Waiting>,
+    /// Notes of the user's answers and dismissals that wait for the next
+    /// turn.
+    pub(crate) answers: Vec<String>,
+    /// The user's message starting the next turn as the agent reads it,
+    /// labelled with the questions it answers and those still open.
+    pub(crate) labelled: Option<String>,
 }
 
 impl Harness {
@@ -1017,6 +1034,7 @@ impl Harness {
         }
         // The conversation so far, for the clients (the web page, the
         // full-screen view): they start with what was said.
+        self.show_questions_of(self.conversations.current_run());
         if let Some(run) = self
             .conversations
             .current_run()
@@ -1147,7 +1165,7 @@ impl Harness {
     pub(crate) async fn repl(&mut self, input: &mut Inputs) {
         let mut last_interrupt: Option<Instant> = None;
         loop {
-            let (line, source) = match input.next_event(true).await {
+            let (line, source, attached) = match input.next_event(true).await {
                 Event::Woken => {
                     if let News::Exit = self.deliver_news(input).await {
                         break;
@@ -1170,9 +1188,9 @@ impl Harness {
                     self.move_to_background(&agent);
                     continue;
                 }
+                // (Asked as the turn ended.)
                 Event::Question(question) => {
-                    // No turn runs: no one waits for the answer.
-                    drop(question);
+                    self.question_asked(question);
                     continue;
                 }
                 Event::Request(request) => {
@@ -1234,20 +1252,59 @@ impl Harness {
                     continue;
                 }
                 Event::Input(Some(Input::Line(line))) => {
-                    (input.coalesce(line).await, self.input_source)
+                    (input.coalesce(line).await, self.input_source, Vec::new())
                 }
-                Event::Input(Some(Input::Message(message))) => match self.message_text(message) {
-                    Some(text) => (text, self.input_source),
-                    None => continue,
-                },
-                Event::Input(Some(Input::Answer { .. })) => {
-                    self.feed
-                        .notice(Level::Warn, "That question is no longer asked.");
+                Event::Input(Some(Input::Message(message))) => {
+                    let answers = message.answers.clone();
+                    match self.message_text(message) {
+                        Some(text) => (text, self.input_source, answers),
+                        None => continue,
+                    }
+                }
+                Event::Input(Some(Input::Answer { question, text })) => {
+                    let answers = self.card_open_ids(question);
+                    (text, self.input_source, answers)
+                }
+                Event::Input(Some(Input::AnswerQuestions(answers))) => {
+                    let source = self.input_source;
+                    if let Some(note) = self.answer_questions(answers, source)
+                        && let News::Exit = self.deliver_answers(note, input).await
+                    {
+                        break;
+                    }
+                    continue;
+                }
+                Event::Input(Some(Input::DismissQuestions(ids))) => {
+                    if let Some(note) = self.dismiss_questions(ids)
+                        && let News::Exit = self.deliver_answers(note, input).await
+                    {
+                        break;
+                    }
                     continue;
                 }
                 Event::Remote(Action::Message(text)) => {
                     self.echo_web(&text);
-                    (text, Source::Web)
+                    (text, Source::Web, Vec::new())
+                }
+                Event::Remote(Action::Reply { text, answers }) => {
+                    self.echo_web(&text);
+                    (text, Source::Web, answers)
+                }
+                Event::Remote(Action::AnswerQuestions(answers)) => {
+                    if let Some(note) = self.answer_questions(answers, Source::Web)
+                        && let News::Exit = self.deliver_answers(note, input).await
+                    {
+                        break;
+                    }
+                    continue;
+                }
+                Event::Remote(Action::DismissQuestions(ids)) => {
+                    if let Some(note) = self.dismiss_questions(ids)
+                        && let News::Exit = self.deliver_answers(note, input).await
+                    {
+                        break;
+                    }
+                    continue;
                 }
                 // (The page's stop never quits Arko.)
                 Event::Remote(Action::Stop) => {
@@ -1258,10 +1315,10 @@ impl Harness {
                     self.page_job_action(action);
                     continue;
                 }
-                Event::Remote(Action::Answer { .. }) => {
-                    self.feed
-                        .notice(Level::Warn, "That question is no longer asked.");
-                    continue;
+                Event::Remote(Action::Answer { question, text }) => {
+                    self.echo_web(&text);
+                    let answers = self.card_open_ids(question);
+                    (text, Source::Web, answers)
                 }
             };
             let text = line.trim();
@@ -1313,6 +1370,7 @@ impl Harness {
             // the message carries it.
             self.feed.notes_sent(&self.unread);
             self.feed.user_with(text, source, Delivery::Turn, shown);
+            self.labelled = self.reply_text(text, &attached);
             if let TurnEnd::Exit = self.turn(Prompt::User(text.to_string()), input).await {
                 break;
             }
@@ -2358,40 +2416,6 @@ impl Harness {
         let title = crate::sessions::title(&self.session, &self.conversations, &self.settings);
         *lock(&self.gauges.title) = title;
         self.gauges.touch();
-    }
-
-    /// The answer `text`, from `source`, to the question `question`: given
-    /// to the agent when it is the one it waits for (`answering`), else the
-    /// user is told the question is no longer asked.
-    pub(crate) fn answer(
-        &mut self,
-        answering: &mut Option<(u64, oneshot::Sender<String>)>,
-        question: u64,
-        text: &str,
-        source: Source,
-    ) {
-        match answering.take() {
-            Some((id, answer)) if id == question => {
-                self.user_present();
-                if source == Source::Web {
-                    self.echo_web(text);
-                }
-                let given = text.trim().to_string();
-                if answer.send(given.clone()).is_ok() {
-                    self.output.echo(&self.output.dim("  ✎ answered"));
-                    self.feed.answered(id, &given, source);
-                } else {
-                    self.feed.question_closed(id);
-                    self.feed
-                        .notice(Level::Warn, "That question is no longer asked.");
-                }
-            }
-            other => {
-                *answering = other;
-                self.feed
-                    .notice(Level::Warn, "That question is no longer asked.");
-            }
-        }
     }
 
     /// The text of an app's message, with its images kept to go with it,
@@ -3482,35 +3506,26 @@ impl Harness {
         };
         tokio::pin!(call);
         let mut notes: Vec<(u64, String)> = Vec::new();
+        // The notes of the user's answers and dismissals.
+        let mut answer_notes: Vec<(u64, String)> = Vec::new();
         let mut queued: Vec<String> = Vec::new();
         let mut stopping = false;
         let mut exit = false;
-        // The agent's question the next line answers, with the ID the
-        // remote page knows it by.
-        let mut answering: Option<(u64, oneshot::Sender<String>)> = None;
         let outcome = loop {
             tokio::select! {
                 outcome = &mut call => break outcome,
                 event = input.next_event(false) => {
-                    let (line, source) = match event {
+                    let (line, source, attached) = match event {
                         Event::Request(request) => {
                             Box::pin(self.request(request, input.waiting())).await;
                             continue;
                         }
                         Event::Question(question) => {
-                            if question.answer.is_closed() {
+                            if question.answer.as_ref().is_some_and(|answer| answer.is_closed()) {
                                 continue;
                             }
                             self.flush_printer().await;
-                            self.output.echo(&self.output.bold("  ? The agent asks"));
-                            for line in question.text.trim().lines() {
-                                self.output.echo(&format!("    {line}"));
-                            }
-                            self.output.echo(&self.output.dim("  (Type your answer and press Enter.)"));
-                            let id = self.feed.question(&question.text);
-                            if let Some((old, _)) = answering.replace((id, question.answer)) {
-                                self.feed.question_closed(old);
-                            }
+                            self.question_asked(question);
                             continue;
                         }
                         Event::Woken | Event::Finished(_) | Event::Alert(_) => continue,
@@ -3519,31 +3534,56 @@ impl Harness {
                             continue;
                         }
                         Event::Input(Some(Input::Line(line))) => {
-                            (input.coalesce(line).await, self.input_source)
+                            (input.coalesce(line).await, self.input_source, Vec::new())
                         }
                         Event::Input(Some(Input::Message(message))) => {
+                            let answers = message.answers.clone();
                             match self.message_text(message) {
-                                Some(text) => (text, self.input_source),
+                                Some(text) => (text, self.input_source, answers),
                                 None => continue,
                             }
                         }
                         Event::Remote(Action::Message(text)) => {
                             self.echo_web(&text);
-                            (text, Source::Web)
+                            (text, Source::Web, Vec::new())
+                        }
+                        Event::Remote(Action::Reply { text, answers }) => {
+                            self.echo_web(&text);
+                            (text, Source::Web, answers)
                         }
                         Event::Remote(Action::Answer { question, text }) => {
-                            self.answer(&mut answering, question, &text, Source::Web);
+                            self.echo_web(&text);
+                            let answers = self.card_open_ids(question);
+                            (text, Source::Web, answers)
+                        }
+                        Event::Input(Some(Input::Answer { question, text })) => {
+                            let answers = self.card_open_ids(question);
+                            (text, self.input_source, answers)
+                        }
+                        Event::Input(Some(Input::AnswerQuestions(answers))) => {
+                            let source = self.input_source;
+                            if let Some(note) = self.answer_questions(answers, source) {
+                                self.post_answer_note(&workflow, note, &mut answer_notes);
+                            }
+                            continue;
+                        }
+                        Event::Remote(Action::AnswerQuestions(answers)) => {
+                            if let Some(note) = self.answer_questions(answers, Source::Web) {
+                                self.post_answer_note(&workflow, note, &mut answer_notes);
+                            }
+                            continue;
+                        }
+                        Event::Input(Some(Input::DismissQuestions(ids)))
+                        | Event::Remote(Action::DismissQuestions(ids)) => {
+                            if let Some(note) = self.dismiss_questions(ids) {
+                                self.post_answer_note(&workflow, note, &mut answer_notes);
+                            }
                             continue;
                         }
                         Event::Remote(
                             action @ (Action::Background { .. } | Action::StopJob { .. }),
                         ) => {
                             self.page_job_action(action);
-                            continue;
-                        }
-                        Event::Input(Some(Input::Answer { question, text })) => {
-                            let source = self.input_source;
-                            self.answer(&mut answering, question, &text, source);
                             continue;
                         }
                         Event::Input(Some(Input::Interrupt)) | Event::Remote(Action::Stop) => {
@@ -3605,26 +3645,18 @@ impl Harness {
                         }
                         continue;
                     }
-                    let text = match answering.take() {
-                        Some((id, answer)) => match answer.send(text) {
-                            Ok(()) => {
-                                self.output.echo(&self.output.dim("  ✎ answered"));
-                                self.feed.answered(id, line.trim(), source);
-                                continue;
-                            }
-                            // The question was dropped (a stop).
-                            Err(text) => {
-                                self.feed.question_closed(id);
-                                text
-                            }
-                        },
-                        None => text,
+                    // A message that answers questions the agent waits for
+                    // is the answer.
+                    let Some(labelled) = self.reply_text(&text, &attached) else {
+                        self.output.echo(&self.output.dim("  ✎ answered"));
+                        self.feed.user(line.trim(), source, Delivery::Answer);
+                        continue;
                     };
                     if self.queue_lines {
                         self.feed.user(&text, source, Delivery::Queued);
                         queued.push(text);
                     } else {
-                        let note = Note::new(text.clone()).to([MAIN]).once().images(images);
+                        let note = Note::new(labelled).to([MAIN]).once().images(images);
                         match workflow.post_note(note) {
                             Ok(seq) => {
                                 self.output.echo(&self.output.dim(
@@ -3651,9 +3683,9 @@ impl Harness {
                 "the turn's task failed ({error})"
             )))
         });
-        if let Some((id, _)) = answering.take() {
-            self.feed.question_closed(id);
-        }
+        self.end_lost_wait();
+        // The answers the agent didn't read go with its next turn.
+        self.answers.extend(unread_notes(&answer_notes, &workflow));
         let end = match outcome {
             Ok(result) => {
                 self.output.echo("");
@@ -3682,6 +3714,7 @@ impl Harness {
                         self.warnings_wake(),
                     );
                 }
+                self.show_questions_of(Some(result.agent_run_id));
                 self.conversation = Conversation::Answered(result);
                 self.track_conversations();
                 self.retitle(retitle);
@@ -3728,7 +3761,28 @@ impl Harness {
         if matches!(end, TurnEnd::Answered) && !self.unread.is_empty() {
             return Box::pin(self.turn(Prompt::Unread, input)).await;
         }
+        // So do the user's answers the agent didn't read.
+        if matches!(end, TurnEnd::Answered) && !self.answers.is_empty() {
+            return Box::pin(self.turn(Prompt::Answers, input)).await;
+        }
         end
+    }
+
+    /// Posts `note`, about the agent's questions, for the agent to read at
+    /// its next step, and keeps it in `notes` to see whether it did.
+    fn post_answer_note(
+        &mut self,
+        workflow: &Workflow,
+        note: String,
+        notes: &mut Vec<(u64, String)>,
+    ) {
+        match workflow.post_note(Note::new(note.clone()).to([MAIN]).once()) {
+            Ok(posted) => notes.push((posted.seq, note)),
+            Err(error) => {
+                log::warn!("could not pass the answers on ({error})");
+                self.answers.push(note);
+            }
+        }
     }
 
     /// Whether the workers have news for the main agent, or will have.
@@ -4212,8 +4266,19 @@ impl Harness {
                 Event::Remote(action @ (Action::Background { .. } | Action::StopJob { .. })) => {
                     self.page_job_action(action)
                 }
-                Event::Remote(Action::Message(_) | Action::Answer { .. })
-                | Event::Input(Some(Input::Message(_) | Input::Answer { .. })) => {
+                Event::Remote(
+                    Action::Message(_)
+                    | Action::Answer { .. }
+                    | Action::Reply { .. }
+                    | Action::AnswerQuestions(_)
+                    | Action::DismissQuestions(_),
+                )
+                | Event::Input(Some(
+                    Input::Message(_)
+                    | Input::Answer { .. }
+                    | Input::AnswerQuestions(_)
+                    | Input::DismissQuestions(_),
+                )) => {
                     self.feed.notice(
                         Level::Warn,
                         "Arko is only waiting for the workers now, so messages aren't taken.",
@@ -4239,8 +4304,13 @@ impl Harness {
         let opening = prompt.opening();
         let message = match prompt {
             Prompt::Recover => return String::new(),
-            Prompt::User(message) => Some(message),
-            Prompt::News { .. } | Prompt::Jobs | Prompt::Unread | Prompt::Monitor(_) => None,
+            // As the agent reads it, with the questions it answers.
+            Prompt::User(message) => Some(self.labelled.take().unwrap_or(message)),
+            Prompt::News { .. }
+            | Prompt::Jobs
+            | Prompt::Unread
+            | Prompt::Monitor(_)
+            | Prompt::Answers => None,
         };
         let mut parts = Vec::new();
         // (A conversation cut back to its first message starts over.)
@@ -4251,8 +4321,9 @@ impl Harness {
         if starts && let Some(kept) = self.kept.for_lead() {
             parts.push(kept);
         }
-        if !self.unread.is_empty() {
-            let unread = std::mem::take(&mut self.unread);
+        // The user's answers to the agent's questions, each a note.
+        let answers = std::mem::take(&mut self.answers);
+        if !self.unread.is_empty() || !answers.is_empty() {
             // They were posted as one-time notes too: the run this message
             // continues would get them a second time.
             let continued = match &self.conversation {
@@ -4263,6 +4334,10 @@ impl Harness {
             if let Some(run) = continued {
                 self.workflow().skip_one_time_notes(run);
             }
+        }
+        parts.extend(answers);
+        if !self.unread.is_empty() {
+            let unread = std::mem::take(&mut self.unread);
             self.feed.notes_sent(&unread);
             parts.push(format!(
                 "# What I typed during your last turn, which you didn't get to read\n\n{}",
@@ -5576,6 +5651,8 @@ pub(crate) mod tests {
             agent_run_id: uuid::Uuid::new_v4(),
             agent_name: MAIN.into(),
             questions: questions.into(),
+            asked: Vec::new(),
+            wait: true,
         }
     }
 
@@ -5584,21 +5661,51 @@ pub(crate) mod tests {
     /// asker never fails the turn.
     #[tokio::test]
     async fn the_agents_questions_are_answered_at_the_prompt() {
-        let alone = Asker { questions: None };
+        let alone = Asker {
+            questions: None,
+            feed: None,
+        };
         assert_eq!(alone.respond(request("Which?")).await.unwrap(), CANT_ASK);
+        assert_eq!(
+            alone.asked(request("Which?")).await.unwrap().as_deref(),
+            Some(CANT_ASK)
+        );
 
         let (sender, mut questions) = mpsc::unbounded_channel();
+        let feed = remote::Feed::new(MAIN);
         let asker = Arc::new(Asker {
             questions: Some(sender),
+            feed: Some(feed.clone()),
         });
         let asking = tokio::spawn({
             let asker = asker.clone();
             async move { asker.respond(request("Tabs or spaces?")).await }
         });
         let question = questions.recv().await.unwrap();
-        assert_eq!(question.text, "Tabs or spaces?");
-        question.answer.send("spaces".into()).unwrap();
+        assert_eq!(question.text(), "Tabs or spaces?");
+        assert!(question.plain(), "Arko's own question, without an id");
+        question.answer.unwrap().send("spaces".into()).unwrap();
         assert_eq!(asking.await.unwrap().unwrap(), "spaces");
+
+        // Asked without waiting: the asker returns at once, and the answers
+        // come later. The feed says which are open.
+        let mut later = request("");
+        later.wait = false;
+        later.asked = vec![arko_agents::questions::AskedQuestion {
+            id: "q1".into(),
+            question: arko_agents::questions::Question {
+                question: "Push now?".into(),
+                ..Default::default()
+            },
+        }];
+        assert_eq!(asker.asked(later.clone()).await.unwrap(), None);
+        let question = questions.recv().await.unwrap();
+        assert!(question.answer.is_none() && !question.plain());
+        feed.ask(later.agent_run_id, &question.asked, false);
+        assert_eq!(
+            asker.open_questions(later.agent_run_id),
+            Some(vec!["q1".to_string()])
+        );
 
         let asking = tokio::spawn({
             let asker = asker.clone();
@@ -5806,6 +5913,7 @@ pub(crate) mod tests {
             pending_refs: Vec::new(),
             crew: Some(crew),
             asker: Arc::new(Asker {
+                feed: Some(feed.clone()),
                 questions: interactive.then_some(questions_sender),
             }),
             one_shot: !interactive,
@@ -5826,6 +5934,9 @@ pub(crate) mod tests {
             background,
             interrupted_told: false,
             user_active_at: std::time::SystemTime::now(),
+            waiting: None,
+            answers: Vec::new(),
+            labelled: None,
         };
         harness.open(false).unwrap();
         let inputs = Inputs {
@@ -7043,7 +7154,7 @@ pub(crate) mod tests {
                     tool_call(
                         "m1",
                         ASK_USER_TOOL_NAME,
-                        serde_json::json!({"questions": "Tabs or spaces?"}),
+                        serde_json::json!({"questions": "Tabs or spaces?", "wait": true}),
                     )
                 }
             })
@@ -7067,6 +7178,270 @@ pub(crate) mod tests {
         .unwrap();
         assert!(matches!(end, TurnEnd::Answered));
         assert_eq!(summary(&harness), "Indented with two spaces.");
+        drop(answering.await.unwrap());
+    }
+
+    /// The agent's questions as the feed has them, once the asker's question
+    /// reached the harness (as the turn ended, it may come after).
+    async fn asked(
+        harness: &mut Harness,
+        inputs: &mut Inputs,
+    ) -> Vec<crate::questions::AgentQuestion> {
+        if harness.feed.open_questions().is_empty() {
+            match tokio::time::timeout(Duration::from_secs(10), inputs.next_event(false))
+                .await
+                .unwrap()
+            {
+                Event::Question(question) => harness.question_asked(question),
+                _ => panic!("expected the agent's question"),
+            }
+        }
+        harness.feed.open_questions()
+    }
+
+    /// Asked without waiting, the questions don't stop the turn. Answers
+    /// from the panel reach the idle agent as one note, which starts a turn
+    /// as a worker's report does. A message names the questions still
+    /// open, and one sent with them attached answers them. "Not now"
+    /// dismisses the rest, and every card follows.
+    #[tokio::test]
+    async fn questions_asked_without_waiting_are_answered_later() {
+        use crate::mock_model::{ModelServer, complete, tool_call};
+        use crate::questions::{Answer, Answers, QuestionAnswer, QuestionState};
+        let server = ModelServer::start(Arc::new(move |_, body: String| {
+            Box::pin(async move {
+                if body.contains("The user answered q1.") {
+                    complete("m3", "Used spaces.")
+                } else if body.contains("Asked q1 and q2.") {
+                    complete("m2", "Asked, and going on.")
+                } else {
+                    tool_call(
+                        "m1",
+                        ASK_USER_TOOL_NAME,
+                        serde_json::json!({"questions": [
+                            {"question": "Tabs or spaces?", "choices": ["Tabs", "Spaces"], "default": "Spaces"},
+                            {"question": "Push now?", "default": "not yet"}
+                        ]}),
+                    )
+                }
+            })
+        }))
+        .await;
+        let temp = tempfile::tempdir().unwrap();
+        let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
+        let end = tokio::time::timeout(
+            Duration::from_secs(30),
+            harness.turn(Prompt::User("Indent the file.".into()), &mut inputs),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(end, TurnEnd::Answered));
+        assert_eq!(summary(&harness), "Asked, and going on.");
+        let open = asked(&mut harness, &mut inputs).await;
+        assert_eq!(
+            open.iter().map(|q| q.id.as_str()).collect::<Vec<_>>(),
+            ["q1", "q2"]
+        );
+        assert_eq!(open[0].choices, ["Tabs", "Spaces"]);
+        assert!(!open[0].waits);
+        // The status has them.
+        let reading = remote::Meter::read(harness.gauges.as_ref());
+        assert_eq!(reading.questions, open);
+
+        // A message without them names them at its end.
+        assert_eq!(
+            harness.reply_text("Hello.", &[]).as_deref(),
+            Some("Hello.\n\n(Still open: q1 and q2.)")
+        );
+        // The panel's answer to q1 goes to the idle agent in a turn.
+        let note = harness
+            .answer_questions(
+                Answers {
+                    answers: vec![QuestionAnswer::new(
+                        "q1",
+                        Answer {
+                            choices: vec!["Spaces".into()],
+                            ..Answer::default()
+                        },
+                    )],
+                    anything_else: None,
+                },
+                Source::Terminal,
+            )
+            .unwrap();
+        assert_eq!(
+            note,
+            "The user answered q1.\nq1 Tabs or spaces? Spaces\nStill open: q2."
+        );
+        let news = tokio::time::timeout(
+            Duration::from_secs(30),
+            harness.deliver_answers(note, &mut inputs),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(news, News::Done));
+        assert_eq!(summary(&harness), "Used spaces.");
+        let card = harness.feed.questions()[0].item;
+        let states = |harness: &Harness| {
+            harness
+                .feed
+                .card_questions(card)
+                .into_iter()
+                .map(|question| question.state)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            states(&harness),
+            [
+                QuestionState::Answered {
+                    answer: "Spaces".into()
+                },
+                QuestionState::Open
+            ]
+        );
+        // A message with q2 attached answers it.
+        assert_eq!(
+            harness.reply_text("Not yet.", &["q2".into()]).as_deref(),
+            Some("(This message answers q2.)\nNot yet.")
+        );
+        assert_eq!(states(&harness)[1], QuestionState::AnsweredInMessage);
+        assert_eq!(
+            harness.reply_text("Thanks.", &["q2".into()]).as_deref(),
+            Some("Thanks.")
+        );
+        // "Not now" dismisses the open ones, and the agent hears so.
+        let run = harness.conversations.current_run().unwrap();
+        harness.feed.ask(
+            run,
+            &[arko_agents::questions::AskedQuestion {
+                id: "q3".into(),
+                question: arko_agents::questions::Question {
+                    question: "Which branch?".into(),
+                    ..Default::default()
+                },
+            }],
+            false,
+        );
+        assert_eq!(
+            harness.dismiss_questions(Vec::new()).as_deref(),
+            Some("The user dismissed q3.")
+        );
+        assert!(harness.feed.open_questions().is_empty());
+        assert_eq!(harness.dismiss_questions(Vec::new()), None);
+    }
+
+    /// While the agent works, the panel's answers reach it as a note at its
+    /// next step.
+    #[tokio::test]
+    async fn answers_reach_a_working_agent_as_a_note() {
+        use crate::mock_model::{ModelServer, complete, tool_call};
+        let server = ModelServer::start(Arc::new(move |_, body: String| {
+            Box::pin(async move {
+                if body.contains("The user answered q1.") {
+                    complete("m3", "Used the answer.")
+                } else if body.contains("Asked q1.") {
+                    // Working, until the answer comes.
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                    tool_call(
+                        "m2",
+                        crate::message::MESSAGE_USER,
+                        serde_json::json!({"message": "Still working."}),
+                    )
+                } else {
+                    tool_call(
+                        "m1",
+                        ASK_USER_TOOL_NAME,
+                        serde_json::json!({"questions": ["Tabs or spaces?"]}),
+                    )
+                }
+            })
+        }))
+        .await;
+        let temp = tempfile::tempdir().unwrap();
+        let (mut harness, mut inputs, sender) = harness(temp.path(), server.client(), true);
+        let feed = harness.feed.clone();
+        let answering = tokio::spawn(async move {
+            while feed.open_questions().is_empty() {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            sender
+                .send(Input::AnswerQuestions(crate::questions::Answers {
+                    answers: vec![crate::questions::QuestionAnswer::new(
+                        "q1",
+                        crate::questions::Answer {
+                            text: Some("Tabs".into()),
+                            ..Default::default()
+                        },
+                    )],
+                    anything_else: None,
+                }))
+                .unwrap();
+            sender
+        });
+        let end = tokio::time::timeout(
+            Duration::from_secs(30),
+            harness.turn(Prompt::User("Indent the file.".into()), &mut inputs),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(end, TurnEnd::Answered));
+        assert_eq!(summary(&harness), "Used the answer.");
+        drop(answering.await.unwrap());
+    }
+
+    /// A question the agent waits for (`wait: true`) takes the panel's
+    /// answer at once, as the note.
+    #[tokio::test]
+    async fn a_question_waited_for_takes_the_panels_answer() {
+        use crate::mock_model::{ModelServer, complete, tool_call};
+        let server = ModelServer::start(Arc::new(move |_, body: String| {
+            Box::pin(async move {
+                if body.contains("q1 Push now? You decide (you said you'd assume: not yet)") {
+                    complete("m2", "Not pushing yet.")
+                } else {
+                    tool_call(
+                        "m1",
+                        ASK_USER_TOOL_NAME,
+                        serde_json::json!({
+                            "questions": [{"question": "Push now?", "default": "not yet"}],
+                            "wait": true
+                        }),
+                    )
+                }
+            })
+        }))
+        .await;
+        let temp = tempfile::tempdir().unwrap();
+        let (mut harness, mut inputs, sender) = harness(temp.path(), server.client(), true);
+        let feed = harness.feed.clone();
+        let answering = tokio::spawn(async move {
+            while feed.open_questions().is_empty() {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            assert!(feed.open_questions()[0].waits);
+            sender
+                .send(Input::AnswerQuestions(crate::questions::Answers {
+                    answers: vec![crate::questions::QuestionAnswer::new(
+                        "q1",
+                        crate::questions::Answer {
+                            you_decide: true,
+                            ..Default::default()
+                        },
+                    )],
+                    anything_else: None,
+                }))
+                .unwrap();
+            sender
+        });
+        let end = tokio::time::timeout(
+            Duration::from_secs(30),
+            harness.turn(Prompt::User("Ship it?".into()), &mut inputs),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(end, TurnEnd::Answered));
+        assert_eq!(summary(&harness), "Not pushing yet.");
+        assert!(harness.waiting.is_none());
         drop(answering.await.unwrap());
     }
 
@@ -7357,7 +7732,7 @@ pub(crate) mod tests {
                     tool_call(
                         "m1",
                         ASK_USER_TOOL_NAME,
-                        serde_json::json!({"questions": "Tabs or spaces?"}),
+                        serde_json::json!({"questions": "Tabs or spaces?", "wait": true}),
                     )
                 }
             })
@@ -7370,7 +7745,7 @@ pub(crate) mod tests {
         let answering = tokio::spawn(async move {
             until(|| feed.activity().question.is_some()).await;
             let question = feed.activity().question.unwrap();
-            assert_eq!(question.text, "Tabs or spaces?");
+            assert_eq!(question.text, "q1 Tabs or spaces?");
             let response = http
                 .post(format!("{base}/api/answer"))
                 .header("cookie", cookie)
@@ -7393,7 +7768,7 @@ pub(crate) mod tests {
         assert_eq!(summary(&harness), "Indented with two spaces.");
         answering.await.unwrap();
         let feed = &harness.feed;
-        assert!(has(feed, "question", "Tabs or spaces?", ""));
+        assert!(has(feed, "question", "q1 Tabs or spaces?", ""));
         assert!(has(feed, "user", "Two spaces, please.", "answer"));
         assert!(has(feed, "reply", "Indented with two spaces.", ""));
         assert_eq!(shown(feed).last().unwrap().0, "turn");

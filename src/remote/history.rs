@@ -100,8 +100,10 @@ fn items_from(
                             else {
                                 continue;
                             };
-                            // (The answer comes as a message of the user's.)
+                            // The questions' ids are in the result. (The
+                            // answers come as the user's messages and notes.)
                             if tool == ASK_USER_TOOL_NAME {
+                                card_ids(&mut items[index], &result.output);
                                 continue;
                             }
                             let outcome = if result.is_error {
@@ -185,7 +187,7 @@ fn items_from(
                     };
                     let item = match call.name.as_str() {
                         "complete_task" => Some(Item::new(Kind::Reply, text("summary"))),
-                        ASK_USER_TOOL_NAME => Some(Item::new(Kind::Question, text("questions"))),
+                        ASK_USER_TOOL_NAME => Some(question_card(parameters.get("questions"))),
                         name => render::call(name, &parameters, &running),
                     };
                     if call.name == crew::STOP_AGENT {
@@ -222,6 +224,52 @@ fn items_from(
         }
     }
     items
+}
+
+/// The card of an `ask_user` call that asked `questions` (a list, or one
+/// question as text).
+fn question_card(questions: Option<&serde_json::Value>) -> Item {
+    let text = match questions.map(arko_agents::questions::parse_questions) {
+        Some(Ok(asked)) => asked
+            .iter()
+            .map(|question| question.question.trim().to_string())
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => String::new(),
+    };
+    let mut item = Item::new(Kind::Question, text);
+    // The questions, for their ids once the result names them.
+    item.questions = questions
+        .and_then(|questions| arko_agents::questions::parse_questions(questions).ok())
+        .map(|asked| {
+            asked
+                .into_iter()
+                .map(|question| crate::questions::AgentQuestion::placeholder(&question.question))
+                .collect()
+        });
+    item
+}
+
+/// Gives the questions of `card` the ids its `ask_user` result names, and
+/// its text the ids too. Without ids (a question asked before questions had
+/// them), the card has none.
+fn card_ids(card: &mut Item, result: &str) {
+    let ids = crate::questions::ids_in_result(result);
+    let Some(questions) = card.questions.as_mut() else {
+        return;
+    };
+    if ids.len() != questions.len() {
+        card.questions = None;
+        return;
+    }
+    for (question, id) in questions.iter_mut().zip(ids) {
+        question.id = id;
+    }
+    card.text = questions
+        .iter()
+        .map(|question| format!("{} {}", question.id, question.question))
+        .collect::<Vec<_>>()
+        .join("\n");
 }
 
 /// Follows the runs the agent has going through the results of its calls.
@@ -1033,5 +1081,47 @@ mod tests {
                 (Kind::Reply, Some(2)),
             ]
         );
+    }
+
+    /// An ask's card holds its questions with the ids its result names, in
+    /// both forms of `ask_user`, and a question asked before ids has none.
+    #[test]
+    fn question_cards_take_their_ids_from_the_result() {
+        for (arguments, output, ids) in [
+            (
+                serde_json::json!({"questions": [{"question": "Tabs or spaces?"}, "Push now?"]}),
+                "Asked q3 and q4. Their answers reach you as a note, so go on with your work.",
+                Some(vec!["q3", "q4"]),
+            ),
+            (
+                serde_json::json!({"questions": "Which file?", "wait": true}),
+                "q5 Which file?",
+                Some(vec!["q5"]),
+            ),
+            (
+                serde_json::json!({"questions": "Which file?"}),
+                "Which file?",
+                None,
+            ),
+        ] {
+            let mut ask = Message::new_assistant("");
+            ask.tool_calls = vec![call("ask", ASK_USER_TOOL_NAME, arguments)];
+            let result = Message::new_user_with_contents(vec![Content::ToolResult(
+                ToolResult::new(Some("ask".into()), ASK_USER_TOOL_NAME, output),
+            )]);
+            let messages = vec![Message::new_user("Start."), ask, result];
+            let items = all_items(&messages, false, &Images::default());
+            let card = items
+                .iter()
+                .find(|item| item.kind == Kind::Question)
+                .unwrap();
+            assert_eq!(
+                card.questions
+                    .as_ref()
+                    .map(|questions| questions.iter().map(|q| q.id.as_str()).collect::<Vec<_>>()),
+                ids,
+                "{output}"
+            );
+        }
     }
 }

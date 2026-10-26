@@ -258,6 +258,11 @@ pub struct Item {
     /// it ([`Update::Item`]), with a new `id` and this unset.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub pending: bool,
+    /// A question card's questions (`Kind::Question`), each with its id
+    /// and what became of it, updated as that changes ([`Update::Change`]).
+    /// `None` for a question asked before questions had ids.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub questions: Option<Vec<crate::questions::AgentQuestion>>,
 }
 
 impl Item {
@@ -289,6 +294,7 @@ impl Item {
             call: None,
             job: None,
             pending: false,
+            questions: None,
         }
     }
 
@@ -360,7 +366,8 @@ impl Item {
     }
 }
 
-/// The question the main agent waits on.
+/// The latest of the main agent's questions still open: its card's item
+/// `id`, and its text.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Question {
     pub id: u64,
@@ -371,6 +378,8 @@ pub struct Question {
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct Activity {
     pub working: bool,
+    /// The latest question card with questions still open. The open
+    /// questions themselves are [`Reading::questions`](crate::remote::Reading::questions).
     pub question: Option<Question>,
     /// When the turn started (Unix milliseconds), while one runs.
     pub since: Option<i64>,
@@ -1137,7 +1146,8 @@ struct State {
     /// The provider's refusal of reasoning summaries was told.
     thinking_refused: bool,
     activity: Activity,
-    next_question: u64,
+    /// The main agent's questions.
+    questions: crate::questions::Book,
     turn: Option<u64>,
     /// The user's message started the turn `turn`, which hasn't begun yet.
     turn_opened: bool,
@@ -1562,6 +1572,15 @@ impl Feed {
     /// A workflow's event. `label` names the worker whose run sent it (the
     /// runs of other agents than the main one are workers too).
     pub fn event(&self, event: &WorkflowEvent, label: Option<&str>) {
+        // The main agent closed questions: their cards say so.
+        if let AgentEvent::QuestionsClosed { ids, why } = &event.event {
+            if label.is_none() && event.agent_name == self.inner.main {
+                self.settle_questions(Some(event.agent_run_id), ids, |_| {
+                    crate::questions::QuestionState::Closed { why: why.clone() }
+                });
+            }
+            return;
+        }
         let mut state = self.lock();
         let agent = match label {
             Some(label) => label.to_string(),
@@ -2328,12 +2347,23 @@ impl Feed {
             item.call = item.call.map(|call| call + base);
             item.turn = item.turn.map(|turn| turn + turns);
             item.at = at;
+            // A card's questions as the session kept them.
+            if let Some(questions) = item.questions.take() {
+                let ids = questions
+                    .into_iter()
+                    .map(|question| question.id)
+                    .collect::<Vec<_>>();
+                let kept = state.questions.restored(&ids, item.id);
+                item.questions = (!kept.is_empty()).then_some(kept);
+            }
             state.next_id = state.next_id.max(item.id);
             state.turn = state.turn.max(item.turn);
             let (lane, budget) = state.lane(&item.agent);
             lane.push(item.clone(), budget);
             self.send(Update::Item(item));
         }
+        drop(state);
+        self.question_activity();
     }
 
     /// The conversation changes here, and `text` says to what ("New
@@ -2462,42 +2492,143 @@ impl Feed {
         self.set_activity(|activity| {
             activity.working = false;
             activity.since = None;
-            activity.question = None;
         });
+        self.question_activity();
     }
 
-    /// The main agent asks `text`. Returns the question's ID, which an
-    /// answer from the page names.
-    pub fn question(&self, text: &str) -> u64 {
+    // ----- questions -----
+
+    /// Keeps the main agent's questions in `path` (in the session's
+    /// folder), and reads those it kept.
+    pub(crate) fn keep_questions(&self, path: std::path::PathBuf) {
+        self.lock().questions.keep_in(path);
+    }
+
+    /// The main agent's conversation is now run `run`'s (`None`: a new one
+    /// that hasn't started): its questions are the ones shown.
+    pub(crate) fn questions_run(&self, run: Option<Uuid>) {
+        {
+            let mut state = self.lock();
+            if state.questions.run() == run {
+                return;
+            }
+            state.questions.set_run(run);
+        }
+        self.question_activity();
+    }
+
+    /// Run `run` of the main agent asks `asked` (`waits`: it waits for the
+    /// answer). Their card goes in the transcript, and its item is returned.
+    pub(crate) fn ask(
+        &self,
+        run: Uuid,
+        asked: &[crate::questions::AskedQuestion],
+        waits: bool,
+    ) -> u64 {
         let id = {
             let mut state = self.lock();
-            state.next_question += 1;
-            let id = state.next_question;
-            self.push(&mut state, Item::new(Kind::Question, text.trim()));
+            if state.questions.run().is_none() {
+                state.questions.set_run(Some(run));
+            }
+            // Arko's own question shows without its id.
+            let text = if asked
+                .iter()
+                .all(|question| crate::questions::is_agent_id(&question.id))
+            {
+                arko_agents::questions::questions_text(asked)
+            } else {
+                asked
+                    .iter()
+                    .map(|question| question.question.question.trim())
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            };
+            let id = self.push(&mut state, Item::new(Kind::Question, text));
+            state.questions.ask(run, asked, waits, id);
+            let questions = state.questions.of_item(id);
+            if let Some(item) = state.main.find(id) {
+                item.questions = Some(questions);
+                let item = item.clone();
+                self.send(Update::Change(item));
+            }
             id
         };
-        self.set_activity(|activity| {
-            activity.question = Some(Question {
-                id,
-                text: text.trim().to_string(),
-            });
-        });
+        self.question_activity();
         id
     }
 
-    /// The question `id` was answered with `text`.
-    pub fn answered(&self, id: u64, text: &str, source: Source) {
-        self.user(text, source, Delivery::Answer);
-        self.question_closed(id);
+    /// The main agent's questions of the current conversation, in the
+    /// order asked, whatever became of them.
+    pub fn questions(&self) -> Vec<crate::questions::AgentQuestion> {
+        self.lock().questions.current()
     }
 
-    /// The question `id` is no longer asked.
-    pub fn question_closed(&self, id: u64) {
-        self.set_activity(|activity| {
-            if activity.question.as_ref().is_some_and(|q| q.id == id) {
-                activity.question = None;
+    /// The current conversation's questions that wait for the user.
+    pub fn open_questions(&self) -> Vec<crate::questions::AgentQuestion> {
+        self.lock().questions.open()
+    }
+
+    /// The ids of run `run`'s open questions.
+    pub(crate) fn open_question_ids(&self, run: Uuid) -> Vec<String> {
+        self.lock().questions.open_ids_of(run)
+    }
+
+    /// The questions of the card `item`.
+    pub(crate) fn card_questions(&self, item: u64) -> Vec<crate::questions::AgentQuestion> {
+        self.lock().questions.of_item(item)
+    }
+
+    /// The open questions among `ids` (of run `run`, else of the current
+    /// conversation) become what `to` gives each, and their cards change.
+    /// Returns them as they were.
+    pub(crate) fn settle_questions(
+        &self,
+        run: Option<Uuid>,
+        ids: &[String],
+        to: impl FnMut(&crate::questions::AgentQuestion) -> crate::questions::QuestionState,
+    ) -> Vec<crate::questions::AgentQuestion> {
+        let settled = {
+            let mut state = self.lock();
+            let (settled, items) = state.questions.settle(run, ids, to);
+            for item in items {
+                self.refresh_card(&mut state, item);
             }
-        });
+            settled
+        };
+        if !settled.is_empty() {
+            self.question_activity();
+        }
+        settled
+    }
+
+    /// The card `item` shows its questions as they are now.
+    fn refresh_card(&self, state: &mut State, item: u64) {
+        let questions = state.questions.of_item(item);
+        if let Some(card) = state.main.find(item) {
+            card.questions = Some(questions);
+            let card = card.clone();
+            self.send(Update::Change(card));
+        }
+    }
+
+    /// The activity's question is the latest card with questions open.
+    fn question_activity(&self) {
+        let latest = {
+            let state = self.lock();
+            let open = state.questions.open();
+            open.iter()
+                .rev()
+                .find(|question| question.item != 0)
+                .and_then(|question| {
+                    let index = state.main.index(question.item)?;
+                    let card = &state.main.items[index];
+                    Some(Question {
+                        id: card.id,
+                        text: card.text.clone(),
+                    })
+                })
+        };
+        self.set_activity(|activity| activity.question = latest);
     }
 
     // ----- workers -----
@@ -4467,31 +4598,162 @@ mod tests {
         );
     }
 
-    /// A question is the activity until it is answered, or the turn ends.
+    fn asked(id: &str, question: &str) -> crate::questions::AskedQuestion {
+        crate::questions::AskedQuestion {
+            id: id.into(),
+            question: arko_agents::questions::Question {
+                question: question.into(),
+                default: Some("Spaces".into()),
+                ..Default::default()
+            },
+        }
+    }
+
+    /// An ask's card holds its questions with their states, which change
+    /// as the user answers, dismisses, or the agent closes them. The
+    /// latest card with questions open is the activity's, also after the
+    /// turn, and the open questions are the conversation's.
     #[test]
-    fn questions_are_open_until_answered() {
+    fn question_cards_follow_each_questions_state() {
+        use crate::questions::QuestionState;
         let feed = Feed::new("main");
+        // The test events' run.
+        let run = Uuid::nil();
+        feed.questions_run(Some(run));
         feed.turn_started();
-        let id = feed.question("Tabs or spaces?");
+        let (_, mut updates) = feed.subscribe();
+        let card = feed.ask(
+            run,
+            &[asked("q1", "Tabs or spaces?"), asked("q2", "Push now?")],
+            false,
+        );
         let since = feed.activity().since;
-        assert!(since.is_some(), "the turn's start");
         assert_eq!(
             feed.activity(),
             Activity {
                 working: true,
                 since,
                 question: Some(Question {
-                    id,
-                    text: "Tabs or spaces?".into()
+                    id: card,
+                    text:
+                        "q1 Tabs or spaces?\n   Default: Spaces\nq2 Push now?\n   Default: Spaces"
+                            .into()
                 })
             }
         );
-        feed.answered(id, "spaces", Source::Web);
-        assert_eq!(feed.activity().question, None);
-        let again = feed.question("Sure?");
-        assert_ne!(again, id);
+        let card_now = |updates: &mut broadcast::Receiver<Update>| {
+            let mut last = None;
+            while let Ok(update) = updates.try_recv() {
+                if let Update::Item(item) | Update::Change(item) = update
+                    && item.id == card
+                {
+                    last = item.questions;
+                }
+            }
+            last.unwrap()
+        };
+        assert!(card_now(&mut updates).iter().all(|q| q.state.is_open()));
+        feed.settle_questions(None, &["q1".into()], |_| QuestionState::Answered {
+            answer: "Spaces".into(),
+        });
+        let questions = card_now(&mut updates);
+        assert_eq!(
+            questions[0].state,
+            QuestionState::Answered {
+                answer: "Spaces".into()
+            }
+        );
+        assert!(questions[1].state.is_open());
+        assert_eq!(feed.open_questions().len(), 1);
+        // Open after the turn, as its questions are.
         feed.turn_ended("3 s", None);
+        assert_eq!(feed.activity().question.unwrap().id, card);
+        // The agent closed the other.
+        feed.event(
+            &event(
+                "main",
+                AgentEvent::QuestionsClosed {
+                    ids: vec!["q2".into()],
+                    why: Some("Found it".into()),
+                },
+            ),
+            None,
+        );
+        assert_eq!(
+            card_now(&mut updates)[1].state,
+            QuestionState::Closed {
+                why: Some("Found it".into())
+            }
+        );
         assert_eq!(feed.activity(), Activity::default());
+        assert!(feed.open_questions().is_empty());
+        // Another conversation's questions aren't shown.
+        feed.questions_run(Some(Uuid::new_v4()));
+        assert!(feed.questions().is_empty());
+    }
+
+    /// A resumed session's question cards, made from its conversation,
+    /// show what became of each question as the session kept it, and its
+    /// open questions are open again.
+    #[test]
+    fn a_resumed_sessions_cards_keep_their_questions_states() {
+        use crate::questions::QuestionState;
+        use arko_ai::{Content, Message, ToolCall, ToolResult};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(crate::questions::FILE);
+        let run = Uuid::new_v4();
+        let first = Feed::new("main");
+        first.keep_questions(path.clone());
+        first.questions_run(Some(run));
+        first.ask(
+            run,
+            &[asked("q1", "Tabs or spaces?"), asked("q2", "Push now?")],
+            false,
+        );
+        first.settle_questions(None, &["q1".into()], |_| QuestionState::Dismissed);
+
+        let again = Feed::new("main");
+        again.keep_questions(path);
+        again.questions_run(Some(run));
+        let mut ask = Message::new_assistant("");
+        ask.tool_calls = vec![
+            serde_json::from_value::<ToolCall>(serde_json::json!({
+                "id": "ask",
+                "name": "ask_user",
+                "arguments": {"questions": ["Tabs or spaces?", "Push now?"]}
+            }))
+            .unwrap(),
+        ];
+        let messages = vec![
+            Message::new_user("Start."),
+            ask,
+            Message::new_user_with_contents(vec![Content::ToolResult(ToolResult::new(
+                Some("ask".into()),
+                "ask_user",
+                "Asked q1 and q2. Their answers reach you as a note, so go on with your work.",
+            ))]),
+        ];
+        again.restore(crate::remote::history(
+            &messages,
+            false,
+            &crate::images::Images::default(),
+        ));
+        let (snapshot, _) = again.subscribe();
+        let card = snapshot
+            .items
+            .iter()
+            .find(|item| item.kind == Kind::Question)
+            .unwrap();
+        let states = card
+            .questions
+            .as_ref()
+            .unwrap()
+            .iter()
+            .map(|question| question.state.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(states, [QuestionState::Dismissed, QuestionState::Open]);
+        assert_eq!(again.open_questions()[0].item, card.id);
+        assert_eq!(again.activity().question.unwrap().id, card.id);
     }
 
     /// A worker gets a placeholder in the main transcript where it starts

@@ -390,6 +390,7 @@ impl Harness {
         }
         self.publish_conversations();
         self.feed.conversation("New conversation");
+        self.show_questions_of(None);
         let mut text = "The next message starts a new conversation.".to_string();
         if !self.conversations.list.is_empty() {
             text.push_str(" /resume goes back to the last one.");
@@ -537,6 +538,7 @@ impl Harness {
             Level::Info,
             &format!("Back to conversation {}{when}.", index + 1),
         );
+        self.show_questions_of(latest.map(|latest| latest.agent_run_id));
         if let Some(latest) = latest {
             // (Read before the switch.)
             if let Ok(task) = latest.task() {

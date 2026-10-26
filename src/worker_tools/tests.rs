@@ -276,6 +276,7 @@ fn fixture(choice: ModelChoice, can_ask: bool) -> Fixture {
     let (sender, questions) = tokio::sync::mpsc::unbounded_channel();
     let asker = Arc::new(Asker {
         questions: can_ask.then_some(sender),
+        feed: None,
     });
     let mut tools = tools(
         crew.clone(),
@@ -491,10 +492,10 @@ async fn a_profile_with_no_scope_is_kept_with_the_project_and_asks_when_git_trac
     let question = within(questions.recv()).await.unwrap();
     assert!(
         question
-            .text
+            .text()
             .contains("worker profile audit in this project's")
     );
-    question.answer.send("yes".into()).unwrap();
+    question.answer.unwrap().send("yes".into()).unwrap();
     assert!(within(asking).await.unwrap().is_ok());
 }
 
@@ -521,19 +522,20 @@ async fn a_profile_for_every_session_waits_for_the_users_yes() {
     };
     let question = within(questions.recv()).await.unwrap();
     assert!(
-        question.text.starts_with(
+        question.text().starts_with(
             "The main agent wants to save the worker profile 3d-judge in your Arko folder, for every project.\n\nJudges 3D results against a reference image\nRuns on sol at high effort."
         ),
         "{}",
-        question.text
+        question.text()
     );
     assert!(
         question
-            .text
+            .text()
             .ends_with("Reply yes to save it, or tell the agent what to change.")
     );
     question
         .answer
+        .unwrap()
         .send("yes, but use medium effort".into())
         .unwrap();
     assert_eq!(
@@ -559,6 +561,7 @@ async fn a_profile_for_every_session_waits_for_the_users_yes() {
         .await
         .unwrap()
         .answer
+        .unwrap()
         .send("Yes.".into())
         .unwrap();
     let result = within(asking).await.unwrap().unwrap();
@@ -595,10 +598,10 @@ async fn a_profile_for_every_session_waits_for_the_users_yes() {
     let question = within(questions.recv()).await.unwrap();
     assert!(
         question
-            .text
+            .text()
             .contains("in this project's .agents/profiles folder")
     );
-    question.answer.send("ok".into()).unwrap();
+    question.answer.unwrap().send("ok".into()).unwrap();
     assert!(
         asking
             .await
@@ -634,6 +637,7 @@ async fn an_empty_answer_or_no_one_to_ask_saves_nothing() {
         .await
         .unwrap()
         .answer
+        .unwrap()
         .send("  ".into())
         .unwrap();
     assert_eq!(
@@ -856,6 +860,7 @@ async fn a_saved_profile_hidden_by_a_nearer_one_says_so() {
         .await
         .unwrap()
         .answer
+        .unwrap()
         .send("yes".into())
         .unwrap();
     let result = within(asking).await.unwrap().unwrap();
