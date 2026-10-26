@@ -23,6 +23,7 @@
   --thumb: #C8C8C8;
   --thumb-hover: #C8C8C8;
   --switch-off: #D4D4D4;
+  --switch-thumb: #F9F9F9;
   --popover: #F5F5F5;
   --popover-text: #000000;
   --radius: 6px;
@@ -55,6 +56,7 @@
     --thumb: #9F9F9F;
     --thumb-hover: #9F9F9F;
     --switch-off: #393939;
+    --switch-thumb: #DAECFF;
     --popover: #101010;
     --popover-text: #CACCCA;
     --radius: 6px;

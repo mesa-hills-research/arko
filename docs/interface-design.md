@@ -44,7 +44,8 @@ as CSS variables that `web/theme-css` writes. Each variable takes the first toke
 | `--warn` | `warning.background`, `base.yellow` | Text that needs attention |
 | `--warn-mark` | `base.yellow` | A question's bar and marks (not text) |
 | `--error` | `base.red`, `danger.background` | Failures, destructive actions |
-| `--success` | `success.background`, `base.green` | Used sparingly |
+| `--success` | `success.background`, `base.green` | A call that succeeded, used sparingly |
+| `--switch-off`, `--switch-thumb` | `switch.background`, `switch.thumb.background` | A switch that is off, and its knob |
 | `--thumb`, `--thumb-hover` | `scrollbar.thumb.background`, `…hover.background` | Scrollbars |
 | `--popover`, `--popover-text` | `popover.background`, `popover.foreground` | Menus, popovers, sheets |
 | `--radius`, `--radius-lg` | `radius` (6), `radius.lg` (8) | See [Shape](#shape) |
@@ -53,6 +54,11 @@ A theme that sets none of a variable's tokens takes the default theme's of the s
 gradient gives its first color. The defaults are macOS Classic Light and Dark, which follow the
 system's setting. The web page keeps a chosen theme in the browser's localStorage and loads the
 other themes' variables only once one is chosen.
+
+Every color on the page is one of these tokens. Something brought over from another interface or
+an earlier page keeps its shape but not its colors. It takes the token that means the same thing
+there, so it follows the chosen theme. The one fixed color is the white behind a QR code, which
+reads only dark on light.
 
 Status colors only carry their meaning, and never alone. A failed call has its red mark and the
 word ("exit 1").

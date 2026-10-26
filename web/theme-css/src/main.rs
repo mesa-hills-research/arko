@@ -59,6 +59,7 @@ const VARIABLES: &[(&str, &[&str])] = &[
         ],
     ),
     ("switch-off", &["switch.background", "secondary.background"]),
+    ("switch-thumb", &["switch.thumb.background", "background"]),
     ("popover", &["popover.background", "background"]),
     ("popover-text", &["popover.foreground", "foreground"]),
 ];

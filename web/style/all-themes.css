@@ -23,6 +23,7 @@
   --thumb: #A4ADB973;
   --thumb-hover: #CBD5E199;
   --switch-off: #D5DAE2;
+  --switch-thumb: #FFFFFF;
   --popover: #FFFFFF;
   --popover-text: #020617;
   --radius: 6px;
@@ -54,6 +55,7 @@
   --thumb: #5c61664c;
   --thumb-hover: #5c61664c;
   --switch-off: #ECECED;
+  --switch-thumb: #FCFCFC;
   --popover: #ECECED;
   --popover-text: #5C6773;
   --radius: 6px;
@@ -85,6 +87,7 @@
   --thumb: #949494;
   --thumb-hover: #696969;
   --switch-off: #949494;
+  --switch-thumb: #FFFFFF;
   --popover: #FFFFFF;
   --popover-text: #000000;
   --radius: 6px;
@@ -116,6 +119,7 @@
   --thumb: #acb0be;
   --thumb-hover: #acb0be;
   --switch-off: #c0c6d2;
+  --switch-thumb: #E5E9EF;
   --popover: #E5E9EF;
   --popover-text: #4c4f69;
   --radius: 6px;
@@ -147,6 +151,7 @@
   --thumb: #B7ADA4;
   --thumb-hover: #978A81;
   --switch-off: #D0C8BF;
+  --switch-thumb: #FFFFFF;
   --popover: #FEFBF5;
   --popover-text: #36241D;
   --radius: 6px;
@@ -178,6 +183,7 @@
   --thumb: #D7D5C4;
   --thumb-hover: #D7D5C4;
   --switch-off: #ded7ba;
+  --switch-thumb: #FEFCEE;
   --popover: #FEFCEE;
   --popover-text: #5F6D75;
   --radius: 6px;
@@ -209,6 +215,7 @@
   --thumb: #A6B3AA;
   --thumb-hover: #819188;
   --switch-off: #C2CCC4;
+  --switch-thumb: #FFFFFF;
   --popover: #F7FCF7;
   --popover-text: #172E25;
   --radius: 6px;
@@ -240,6 +247,7 @@
   --thumb: #D9D7CC;
   --thumb-hover: #DAD8CE;
   --switch-off: #D9D7CD;
+  --switch-thumb: #FFFCF0;
   --popover: #FFFCF0;
   --popover-text: #100F0F;
   --radius: 6px;
@@ -271,6 +279,7 @@
   --thumb: #ABABAB;
   --thumb-hover: #86888B;
   --switch-off: #C7C6C3;
+  --switch-thumb: #FFFFFF;
   --popover: #FCFAF4;
   --popover-text: #1C222E;
   --radius: 6px;
@@ -302,6 +311,7 @@
   --thumb: #A19F9C;
   --thumb-hover: #7B7A78;
   --switch-off: #BEBCB8;
+  --switch-thumb: #FFFFFF;
   --popover: #F7F5F1;
   --popover-text: #121212;
   --radius: 6px;
@@ -333,6 +343,7 @@
   --thumb: #A9B3BD;
   --thumb-hover: #85929E;
   --switch-off: #C4CDD4;
+  --switch-thumb: #FFFFFF;
   --popover: #F9FCFE;
   --popover-text: #1E2F41;
   --radius: 6px;
@@ -364,6 +375,7 @@
   --thumb: #d5c4a1;
   --thumb-hover: #d5c4a1;
   --switch-off: #EBDBB2;
+  --switch-thumb: #fbf1c7;
   --popover: #fbf1c7;
   --popover-text: #3c3836;
   --radius: 6px;
@@ -395,6 +407,7 @@
   --thumb: #A8B3AE;
   --thumb-hover: #82918A;
   --switch-off: #C5CDCB;
+  --switch-thumb: #FFFFFF;
   --popover: #FFFFFF;
   --popover-text: #132C20;
   --radius: 6px;
@@ -426,6 +439,7 @@
   --thumb: #8f8f8f;
   --thumb-hover: #8f8f8f;
   --switch-off: #C2C2C2;
+  --switch-thumb: #E4E4E4;
   --popover: #E4E4E4;
   --popover-text: #1c1c1c;
   --radius: 6px;
@@ -457,6 +471,7 @@
   --thumb: #AEACA8;
   --thumb-hover: #898883;
   --switch-off: #CAC8C4;
+  --switch-thumb: #FFFFFF;
   --popover: #FCFCF9;
   --popover-text: #211F1B;
   --radius: 6px;
@@ -488,6 +503,7 @@
   --thumb: #B19D88;
   --thumb-hover: #967F6B;
   --switch-off: #C7B49E;
+  --switch-thumb: #F6EDE0;
   --popover: #EFE3CF;
   --popover-text: #422616;
   --radius: 6px;
@@ -519,6 +535,7 @@
   --thumb: #C8C8C8;
   --thumb-hover: #C8C8C8;
   --switch-off: #D4D4D4;
+  --switch-thumb: #F9F9F9;
   --popover: #F5F5F5;
   --popover-text: #000000;
   --radius: 6px;
@@ -550,6 +567,7 @@
   --thumb: #C2C2C4;
   --thumb-hover: #9C9C9F;
   --switch-off: #D9D9DB;
+  --switch-thumb: #FFFFFF;
   --popover: #F7F7F7;
   --popover-text: #1D1D1F;
   --radius: 6px;
@@ -581,6 +599,7 @@
   --thumb: #c0c0c0;
   --thumb-hover: #c0c0c0;
   --switch-off: #c4c4c4;
+  --switch-thumb: #E7E7E7;
   --popover: #E4E4E4;
   --popover-text: #383a42;
   --radius: 6px;
@@ -612,6 +631,7 @@
   --thumb: #BAAC9F;
   --thumb-hover: #9B8A7F;
   --switch-off: #D2C6B9;
+  --switch-thumb: #FFFFFF;
   --popover: #FCF6ED;
   --popover-text: #3D281F;
   --radius: 6px;
@@ -643,6 +663,7 @@
   --thumb: #ADADB0;
   --thumb-hover: #ADADB0;
   --switch-off: #E4DEDA;
+  --switch-thumb: #FEFAF9;
   --popover: #FEFAF9;
   --popover-text: #0a0a0a;
   --radius: 6px;
@@ -674,6 +695,7 @@
   --thumb: #AAAAB8;
   --thumb-hover: #848496;
   --switch-off: #C8C8D2;
+  --switch-thumb: #FFFFFF;
   --popover: #FFFFFF;
   --popover-text: #191731;
   --radius: 6px;
@@ -705,6 +727,7 @@
   --thumb: #A0B3B9;
   --thumb-hover: #7A919A;
   --switch-off: #BDCDD1;
+  --switch-thumb: #FFFFFF;
   --popover: #F7FDFD;
   --popover-text: #072D3D;
   --radius: 6px;
@@ -736,6 +759,7 @@
   --thumb: #d5cbaf;
   --thumb-hover: #d5cbaf;
   --switch-off: #D9D1B9;
+  --switch-thumb: #FDF6E3;
   --popover: #fdf6e3;
   --popover-text: #073642;
   --radius: 6px;
@@ -767,6 +791,7 @@
   --thumb: #BBB1BE;
   --thumb-hover: #9B91A1;
   --switch-off: #D3C9D4;
+  --switch-thumb: #FFFFFF;
   --popover: #FDF8FD;
   --popover-text: #3D324B;
   --radius: 6px;
@@ -798,6 +823,7 @@
   --thumb: #7A7A7A;
   --thumb-hover: #666666;
   --switch-off: #BEBEBE;
+  --switch-thumb: #FFFFFF;
   --popover: #F2F2F2;
   --popover-text: #000000;
   --radius: 0px;
@@ -829,6 +855,7 @@
   --thumb: #606060;
   --thumb-hover: #606060;
   --switch-off: #252a2b;
+  --switch-thumb: #040404;
   --popover: #040404;
   --popover-text: #feffff;
   --radius: 6px;
@@ -860,6 +887,7 @@
   --thumb: #555465;
   --thumb-hover: #555465;
   --switch-off: #383661;
+  --switch-thumb: #1f1d45;
   --popover: #1f1d45;
   --popover-text: #C7C7D4;
   --radius: 6px;
@@ -891,6 +919,7 @@
   --thumb: #504945;
   --thumb-hover: #504945;
   --switch-off: #393532;
+  --switch-thumb: #1C1C1C;
   --popover: #1C1C1C;
   --popover-text: #9E9E9E;
   --radius: 6px;
@@ -922,6 +951,7 @@
   --thumb: #303030;
   --thumb-hover: #303030;
   --switch-off: #2e3030;
+  --switch-thumb: #121314;
   --popover: #121314;
   --popover-text: #cccccc;
   --radius: 6px;
@@ -953,6 +983,7 @@
   --thumb: #66696C;
   --thumb-hover: #838689;
   --switch-off: #585B5E;
+  --switch-thumb: #F4F5F7;
   --popover: #3A3D41;
   --popover-text: #E8EBEF;
   --radius: 6px;
@@ -984,6 +1015,7 @@
   --thumb: #bfbdb64c;
   --thumb-hover: #bfbdb64c;
   --switch-off: #2c2e35;
+  --switch-thumb: #0D1016;
   --popover: #0D1016;
   --popover-text: #B3B1AD;
   --radius: 6px;
@@ -1015,6 +1047,7 @@
   --thumb: #5A5A5A;
   --thumb-hover: #5D5D5D;
   --switch-off: #5A5A5A;
+  --switch-thumb: #FFFFFF;
   --popover: #121212;
   --popover-text: #FFFFFF;
   --radius: 6px;
@@ -1046,6 +1079,7 @@
   --thumb: #51576d;
   --thumb-hover: #51576d;
   --switch-off: #3a3d4f;
+  --switch-thumb: #232634;
   --popover: #1E202B;
   --popover-text: #c6d0f5;
   --radius: 6px;
@@ -1077,6 +1111,7 @@
   --thumb: #494d64;
   --thumb-hover: #494d64;
   --switch-off: #363a4f;
+  --switch-thumb: #1E2030;
   --popover: #1E2030;
   --popover-text: #cad3f5;
   --radius: 6px;
@@ -1108,6 +1143,7 @@
   --thumb: #4e4e5e;
   --thumb-hover: #4e4e5e;
   --switch-off: #302d41;
+  --switch-thumb: #181825;
   --popover: #1e1e2e;
   --popover-text: #cdd6f4;
   --radius: 6px;
@@ -1139,6 +1175,7 @@
   --thumb: #564E47;
   --thumb-hover: #766E65;
   --switch-off: #473F39;
+  --switch-thumb: #F5EFE7;
   --popover: #29211C;
   --popover-text: #EAE0CF;
   --radius: 6px;
@@ -1170,6 +1207,7 @@
   --thumb: #485156;
   --thumb-hover: #485156;
   --switch-off: #3A4649;
+  --switch-thumb: #262E34;
   --popover: #262E34;
   --popover-text: #d3c6aa;
   --radius: 6px;
@@ -1201,6 +1239,7 @@
   --thumb: #3e3e3e;
   --thumb-hover: #3e3e3e;
   --switch-off: #2d2d2ddd;
+  --switch-thumb: #000000;
   --popover: #090909;
   --popover-text: #FFFFCE;
   --radius: 6px;
@@ -1232,6 +1271,7 @@
   --thumb: #49554D;
   --thumb-hover: #69756A;
   --switch-off: #3A463E;
+  --switch-thumb: #EDF2EA;
   --popover: #192922;
   --popover-text: #DAE5D5;
   --radius: 6px;
@@ -1263,6 +1303,7 @@
   --thumb: #2F2E2D;
   --thumb-hover: #343331;
   --switch-off: #302D2C;
+  --switch-thumb: #100F0F;
   --popover: #100F0F;
   --popover-text: #CECDC3;
   --radius: 6px;
@@ -1294,6 +1335,7 @@
   --thumb: #515252;
   --thumb-hover: #72716E;
   --switch-off: #424345;
+  --switch-thumb: #F3F0E8;
   --popover: #21252D;
   --popover-text: #E8E1D1;
   --radius: 6px;
@@ -1325,6 +1367,7 @@
   --thumb: #49545D;
   --thumb-hover: #68747D;
   --switch-off: #3A454E;
+  --switch-thumb: #ECF3F7;
   --popover: #1C2832;
   --popover-text: #D9E7EE;
   --radius: 6px;
@@ -1356,6 +1399,7 @@
   --thumb: #504945;
   --thumb-hover: #504945;
   --switch-off: #393938;
+  --switch-thumb: #1d2021;
   --popover: #1d2021;
   --popover-text: #ebdbb2;
   --radius: 6px;
@@ -1387,6 +1431,7 @@
   --thumb: #726E69;
   --thumb-hover: #726E69;
   --switch-off: #1b1b1b;
+  --switch-thumb: #010101;
   --popover: #010101;
   --popover-text: #a8a49d;
   --radius: 6px;
@@ -1418,6 +1463,7 @@
   --thumb: #4E474A;
   --thumb-hover: #706968;
   --switch-off: #3E373B;
+  --switch-thumb: #F4F2EA;
   --popover: #22192D;
   --popover-text: #EAE4D6;
   --radius: 6px;
@@ -1449,6 +1495,7 @@
   --thumb: #4A5B4F;
   --thumb-hover: #6D7C70;
   --switch-off: #394C3F;
+  --switch-thumb: #F6F7F4;
   --popover: #0E2B1B;
   --popover-text: #EDF0E8;
   --radius: 6px;
@@ -1480,6 +1527,7 @@
   --thumb: #5f5f5f;
   --thumb-hover: #5f5f5f;
   --switch-off: #35383D;
+  --switch-thumb: #1D1F21;
   --popover: #1D1F21;
   --popover-text: #e8e8e8;
   --radius: 6px;
@@ -1511,6 +1559,7 @@
   --thumb: #6e6e6e;
   --thumb-hover: #6e6e6e;
   --switch-off: #313131;
+  --switch-thumb: #151515;
   --popover: #151515;
   --popover-text: #e8e8e8;
   --radius: 6px;
@@ -1542,6 +1591,7 @@
   --thumb: #726E69;
   --thumb-hover: #726E69;
   --switch-off: #2f2e2a;
+  --switch-thumb: #0e100a;
   --popover: #0e100a;
   --popover-text: #f7f7f7;
   --radius: 6px;
@@ -1573,6 +1623,7 @@
   --thumb: #5E5D59;
   --thumb-hover: #7E7D78;
   --switch-off: #4F4D4A;
+  --switch-thumb: #F8F7F2;
   --popover: #2C2B29;
   --popover-text: #F1EFE6;
   --radius: 6px;
@@ -1604,6 +1655,7 @@
   --thumb: #574836;
   --thumb-hover: #78654E;
   --switch-off: #48392A;
+  --switch-thumb: #EED3AC;
   --popover: #2A1D13;
   --popover-text: #ECD0A5;
   --radius: 6px;
@@ -1635,6 +1687,7 @@
   --thumb: #9F9F9F;
   --thumb-hover: #9F9F9F;
   --switch-off: #393939;
+  --switch-thumb: #DAECFF;
   --popover: #101010;
   --popover-text: #CACCCA;
   --radius: 6px;
@@ -1666,6 +1719,7 @@
   --thumb: #5C5C5E;
   --thumb-hover: #7C7C80;
   --switch-off: #4A4A4C;
+  --switch-thumb: #E4E4E4;
   --popover: #2C2C2D;
   --popover-text: #DFDFE0;
   --radius: 6px;
@@ -1697,6 +1751,7 @@
   --thumb: #444444;
   --thumb-hover: #444444;
   --switch-off: #353535;
+  --switch-thumb: #1A1A1A;
   --popover: #1A1A1A;
   --popover-text: #abb2bf;
   --radius: 6px;
@@ -1728,6 +1783,7 @@
   --thumb: #5D5148;
   --thumb-hover: #7D7064;
   --switch-off: #4E423A;
+  --switch-thumb: #F5EFE5;
   --popover: #32241E;
   --popover-text: #ECE0CC;
   --radius: 6px;
@@ -1759,6 +1815,7 @@
   --thumb: #475165;
   --thumb-hover: #687284;
   --switch-off: #374155;
+  --switch-thumb: #F0F4F8;
   --popover: #16213A;
   --popover-text: #E1E9F2;
   --radius: 6px;
@@ -1790,6 +1847,7 @@
   --thumb: #4b4b4b;
   --thumb-hover: #4b4b4b;
   --switch-off: #333739;
+  --switch-thumb: #1b1d1e;
   --popover: #1b1d1e;
   --popover-text: #f8f8f2;
   --radius: 6px;
@@ -1821,6 +1879,7 @@
   --thumb: #292929;
   --thumb-hover: #4E4E4E;
   --switch-off: #272727;
+  --switch-thumb: #EBEBEB;
   --popover: #0F0F0F;
   --popover-text: #D7D7D7;
   --radius: 6px;
@@ -1852,6 +1911,7 @@
   --thumb: #4C4C5D;
   --thumb-hover: #6E6E7F;
   --switch-off: #3C3C4D;
+  --switch-thumb: #F4F4FA;
   --popover: #1C1B32;
   --popover-text: #EAEAF5;
   --radius: 6px;
@@ -1883,6 +1943,7 @@
   --thumb: #543C1F;
   --thumb-hover: #79582E;
   --switch-off: #432F18;
+  --switch-thumb: #FFDEB5;
   --popover: #221509;
   --popover-text: #FFBC63;
   --radius: 6px;
@@ -1914,6 +1975,7 @@
   --thumb: #284F31;
   --thumb-hover: #3D7348;
   --switch-off: #1E3E26;
+  --switch-thumb: #C8FBCD;
   --popover: #0A1D11;
   --popover-text: #87F49A;
   --radius: 6px;
@@ -1945,6 +2007,7 @@
   --thumb: #3B545A;
   --thumb-hover: #5D757A;
   --switch-off: #2B444A;
+  --switch-thumb: #EAF6F7;
   --popover: #04232C;
   --popover-text: #D6EDEE;
   --radius: 6px;
@@ -1976,6 +2039,7 @@
   --thumb: #586e75;
   --thumb-hover: #586e75;
   --switch-off: #104451;
+  --switch-thumb: #002B36;
   --popover: #002b36;
   --popover-text: #fdf6e3;
   --radius: 6px;
@@ -2007,6 +2071,7 @@
   --thumb: #5C5564;
   --thumb-hover: #7C7382;
   --switch-off: #4D4656;
+  --switch-thumb: #F6EFF5;
   --popover: #2E273A;
   --popover-text: #EDE0EB;
   --radius: 6px;
@@ -2038,6 +2103,7 @@
   --thumb: #25313b;
   --thumb-hover: #25313b;
   --switch-off: #2a2c52;
+  --switch-thumb: #0F111B;
   --popover: #0F111B;
   --popover-text: #a3a49d;
   --radius: 6px;
@@ -2069,6 +2135,7 @@
   --thumb: #444b6a;
   --thumb-hover: #444b6a;
   --switch-off: #383c55;
+  --switch-thumb: #222436;
   --popover: #222436;
   --popover-text: #c0caf5;
   --radius: 6px;
@@ -2100,6 +2167,7 @@
   --thumb: #414868;
   --thumb-hover: #414868;
   --switch-off: #2f3549;
+  --switch-thumb: #1a1b26;
   --popover: #1a1b26;
   --popover-text: #c0caf5;
   --radius: 6px;
@@ -2131,6 +2199,7 @@
   --thumb: #414868;
   --thumb-hover: #414868;
   --switch-off: #393f58;
+  --switch-thumb: #24283b;
   --popover: #24283b;
   --popover-text: #c0caf5;
   --radius: 6px;
@@ -2162,6 +2231,7 @@
   --thumb: #3e3e3e;
   --thumb-hover: #3e3e3e;
   --switch-off: #313131;
+  --switch-thumb: #141414;
   --popover: #141414;
   --popover-text: #dcdcdc;
   --radius: 6px;
@@ -2193,6 +2263,7 @@
   --thumb: #858585;
   --thumb-hover: #A3A3A3;
   --switch-off: #484848;
+  --switch-thumb: #FFFFFF;
   --popover: #2B2B2B;
   --popover-text: #FFFFFF;
   --radius: 0px;
