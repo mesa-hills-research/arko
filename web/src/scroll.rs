@@ -12,10 +12,14 @@ use wasm_bindgen::closure::Closure;
 use web_sys::{Element, ScrollBehavior, ScrollToOptions, WheelEvent};
 
 /// The springs' stiffness, critically damped so they never overshoot. A
-/// jump settles in about half a second, and the wheel's spring, stiffer,
-/// follows the wheel within about 0.2 s.
-const JUMP_STIFFNESS: f64 = 230.0;
+/// jump settles in about 0.35 s, and the wheel's spring follows the wheel
+/// within about 0.2 s.
+const JUMP_STIFFNESS: f64 = 700.0;
 const WHEEL_STIFFNESS: f64 = 520.0;
+/// A jump from further than this many screens away first moves to this
+/// close at once, so it takes the same short time from anywhere.
+const JUMP_FAR: f64 = 2.0;
+const JUMP_NEAR: f64 = 1.5;
 /// Within this many pixels of the bottom, new output is followed.
 const NEAR_BOTTOM: f64 = 48.0;
 
@@ -197,6 +201,11 @@ pub fn jump_to_latest() {
     STATE.with(|state| {
         let mut state = state.borrow_mut();
         let Some(log) = state.log.clone() else { return };
+        let screen = log.client_height() as f64;
+        if bottom(&log) - log.scroll_top() as f64 > JUMP_FAR * screen {
+            scroll_to(&log, bottom(&log) - JUMP_NEAR * screen);
+            state.running = false;
+        }
         if !state.running {
             state.position = log.scroll_top() as f64;
             state.velocity = 0.0;
@@ -271,7 +280,7 @@ fn tick(now: f64) {
             state.target = max;
         }
         let dt = state.last_frame.map_or(1.0 / 60.0, |last| {
-            ((now - last) / 1000.0).clamp(0.001, 0.032)
+            ((now - last) / 1000.0).clamp(0.001, 0.05)
         });
         state.last_frame = Some(now);
         let damping = 2.0 * state.stiffness.sqrt();

@@ -366,7 +366,7 @@ fn App() -> impl IntoView {
         >
             <Header page=page theme=theme />
             <Transcript page=page />
-            <Composer />
+            <Composer page=page />
         </Show>
     }
 }
@@ -467,12 +467,15 @@ fn row_view(row: Row) -> AnyView {
             </div>
         }
         .into_any(),
-        Kind::Text | Kind::Reply | Kind::Message | Kind::Question => view! {
-            <div
-                class="row md"
-                class:question=row.kind == Kind::Question
-                inner_html=move || markdown::to_html(&text.get())
-            ></div>
+        Kind::Question => view! {
+            <div class="row question">
+                <span class="label">"The agent asks"</span>
+                <div class="md" inner_html=move || markdown::to_html(&text.get())></div>
+            </div>
+        }
+        .into_any(),
+        Kind::Text | Kind::Reply | Kind::Message => view! {
+            <div class="row md" inner_html=move || markdown::to_html(&text.get())></div>
         }
         .into_any(),
         Kind::Call => {
@@ -521,7 +524,7 @@ fn row_view(row: Row) -> AnyView {
 }
 
 #[component]
-fn Composer() -> impl IntoView {
+fn Composer(page: Page) -> impl IntoView {
     let input: NodeRef<leptos::html::Textarea> = NodeRef::new();
     let empty = RwSignal::new(true);
     // The text reached the box's height, which the expand button lifts.
@@ -536,10 +539,12 @@ fn Composer() -> impl IntoView {
         .ok()
         .flatten()
         .is_some_and(|list| list.matches());
-    let placeholder = if enter_sends {
-        "Message (Shift+Enter for a new line)"
-    } else {
-        "Message"
+    let question = move || page.status.with(|status| status.question.clone());
+    let placeholder = move || match question() {
+        Some(_) => "Your answer",
+        None if page.status.with(|status| status.working) => "Add to the task",
+        None if enter_sends => "Message (Shift+Enter for a new line)",
+        None => "Message",
     };
 
     let resize = move || {
@@ -563,9 +568,16 @@ fn Composer() -> impl IntoView {
             return;
         }
         sending.set(true);
+        // While the agent asks, what's typed is the answer.
+        let (path, body) = match question() {
+            Some(asked) => (
+                "/api/answer",
+                serde_json::json!({ "question": asked.id, "text": text }),
+            ),
+            None => ("/api/message", serde_json::json!({ "text": text })),
+        };
         spawn_local(async move {
-            let body = serde_json::json!({ "text": text }).to_string();
-            match request("POST", "/api/message", Some(body)).await {
+            match request("POST", path, Some(body.to_string())).await {
                 Some(202) => {
                     error.set(None);
                     area.set_value("");
@@ -577,6 +589,7 @@ fn Composer() -> impl IntoView {
                 Some(401) => error.set(Some(
                     "Couldn’t send. The session ended, so open the link again.",
                 )),
+                Some(409) => error.set(Some("That question is no longer asked.")),
                 Some(_) => error.set(Some("Couldn’t send the message.")),
                 None => error.set(Some("Couldn’t send. Arko isn’t reachable.")),
             }
@@ -587,6 +600,7 @@ fn Composer() -> impl IntoView {
     view! {
         <footer class="bottom">
             <div class="column">
+                <Ask page=page />
                 <p class="error" role="alert" class:shown=move || error.get().is_some()>
                     {move || error.get()}
                 </p>
@@ -598,10 +612,11 @@ fn Composer() -> impl IntoView {
                         send();
                     }
                 >
+                    <div class="field">
                     <textarea
                         node_ref=input
                         rows="1"
-                        aria-label="Message"
+                        aria-label=placeholder
                         placeholder=placeholder
                         enterkeyhint=if enter_sends { "send" } else { "enter" }
                         on:input=move |_| resize()
@@ -630,10 +645,11 @@ fn Composer() -> impl IntoView {
                             <Minimize2 size=16 />
                         </Show>
                     </button>
+                    </div>
                     <button
                         type="submit"
                         class="icon send"
-                        aria-label="Send"
+                        aria-label=move || if question().is_some() { "Answer" } else { "Send" }
                         disabled=move || empty.get() || sending.get()
                     >
                         <ArrowUp size=18 />
@@ -641,6 +657,45 @@ fn Composer() -> impl IntoView {
                 </form>
             </div>
         </footer>
+    }
+}
+
+/// The agent's question, docked above the message box while it waits for
+/// the answer.
+#[component]
+fn Ask(page: Page) -> impl IntoView {
+    let folded = RwSignal::new(false);
+    let question = move || page.status.with(|status| status.question.clone());
+    // A new question shows unfolded.
+    Effect::new(move |previous: Option<Option<u64>>| {
+        let id = question().map(|asked| asked.id);
+        if previous.is_some_and(|previous| previous != id) {
+            folded.set(false);
+        }
+        id
+    });
+    view! {
+        <Show when=move || question().is_some()>
+            <section class="ask" class:folded=move || folded.get() aria-live="polite">
+                <div class="ask-head">
+                    <span class="ask-label">"The agent asks"</span>
+                    <button
+                        type="button"
+                        class="link"
+                        aria-expanded=move || (!folded.get()).to_string()
+                        on:click=move |_| folded.update(|folded| *folded = !*folded)
+                    >
+                        {move || if folded.get() { "Show" } else { "Hide" }}
+                    </button>
+                </div>
+                <div
+                    class="ask-text md"
+                    inner_html=move || {
+                        question().map(|asked| markdown::to_html(&asked.text)).unwrap_or_default()
+                    }
+                ></div>
+            </section>
+        </Show>
     }
 }
 

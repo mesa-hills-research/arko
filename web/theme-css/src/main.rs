@@ -35,6 +35,7 @@ const VARIABLES: &[(&str, &[&str])] = &[
     ("tint", &["list.active.background"]),
     ("ring", &["ring", "base.blue"]),
     ("warn", &["warning.background", "base.yellow"]),
+    ("warn-mark", &["base.yellow", "warning.background"]),
     ("error", &["base.red", "danger.background"]),
     ("success", &["success.background", "base.green"]),
     (

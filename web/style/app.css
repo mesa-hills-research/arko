@@ -82,10 +82,7 @@ button { font: inherit; color: inherit; }
   background: transparent;
   cursor: pointer;
 }
-.icon:focus-visible, .jump:focus-visible, .menu button:focus-visible {
-  outline: 2px solid var(--ring);
-  outline-offset: 1px;
-}
+:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
 @media (hover: hover) {
   .icon:hover { background: var(--secondary-hover); }
 }
@@ -168,7 +165,9 @@ button { font: inherit; color: inherit; }
 .md table { border-collapse: collapse; }
 .md td { padding: 4px 8px; border: 1px solid var(--line); }
 .md hr { border: 0; border-top: 1px solid var(--line); }
-.md.question { padding-left: 12px; border-left: 3px solid var(--accent); }
+.question { padding: 2px 0 2px 12px; border-left: 3px solid var(--warn-mark); }
+.label { display: block; margin-bottom: 2px; color: var(--muted); font-size: 12px; font-weight: 600; }
+.question .label { color: var(--warn); }
 
 .call {
   display: flex;
@@ -248,19 +247,22 @@ button { font: inherit; color: inherit; }
 .error { display: none; margin: 0 0 6px; color: var(--error); font-size: 14px; }
 .error.shown { display: block; }
 
-.compose {
+.compose { display: flex; align-items: flex-end; gap: 8px; }
+
+/* The field holds the text and, on a desktop, the expand button. Its 20px
+   radius and the 40px round send button beside it are the current page's. */
+.field {
   display: flex;
+  flex: 1;
   align-items: flex-end;
-  gap: 4px;
-  padding: 5px 5px 5px 14px;
+  min-width: 0;
   border: 1px solid var(--input-line);
-  border-radius: 22px;
+  border-radius: 20px;
   background: var(--surface);
 }
-/* A ring that doesn't move anything. */
-.compose:focus-within { border-color: var(--ring); box-shadow: 0 0 0 1px var(--ring); }
+.field:focus-within { border-color: var(--ring); }
 
-.compose textarea {
+.field textarea {
   display: block;
   flex: 1;
   min-width: 0;
@@ -269,26 +271,27 @@ button { font: inherit; color: inherit; }
   /* Six lines, then it scrolls. */
   max-height: calc(6lh + 16px);
   margin: 0;
-  padding: 8px 0;
+  padding: 8px 14px;
   border: 0;
+  border-radius: 20px;
   outline: 0;
   background: transparent;
   color: inherit;
   resize: none;
   overflow-y: hidden;
 }
-.compose textarea::placeholder { color: var(--muted); }
+.field textarea::placeholder { color: var(--muted); }
 .compose.expanded textarea { min-height: 50dvh; max-height: 70dvh; }
 
-.expand { display: none; }
+.expand { display: none; width: 30px; height: 30px; margin: 4px 5px 4px 0; border-radius: 15px; color: var(--muted); }
 @media (hover: hover) and (pointer: fine) {
   .expand.shown { display: inline-grid; }
 }
 
 .send {
-  width: 36px;
-  height: 36px;
-  border-radius: 50%;
+  width: 40px;
+  height: 40px;
+  border-radius: 20px;
   background: var(--accent);
   color: var(--on-accent);
 }
@@ -297,21 +300,35 @@ button { font: inherit; color: inherit; }
   .send:not(:disabled):hover { background: var(--accent); filter: brightness(1.08); }
 }
 
+/* The agent's question, docked above the message box. */
+.ask {
+  margin-bottom: 8px;
+  padding: 8px 12px 10px;
+  border-left: 3px solid var(--warn-mark);
+  border-radius: 4px 10px 10px 4px;
+  background: var(--surface);
+}
+.ask-head { display: flex; align-items: center; justify-content: space-between; }
+.ask-label { color: var(--warn); font-size: 13px; font-weight: 600; }
+.ask-text { max-height: 30vh; margin-top: 2px; overflow-y: auto; }
+.ask.folded .ask-text { display: none; }
+.link { padding: 0; border: 0; background: none; color: var(--link); font-size: 13px; cursor: pointer; }
+
 /* ----- scrollbars -----
    Thin and rounded, inset from the corners, where the system's own are
    boxy. Apple's overlay scrollbars stay as they are (the page marks Apple
    systems with .apple), and Firefox takes the standard properties. */
 
 html:not(.apple) .log::-webkit-scrollbar,
-html:not(.apple) .compose textarea::-webkit-scrollbar,
+html:not(.apple) .field textarea::-webkit-scrollbar,
 html:not(.apple) .block::-webkit-scrollbar,
 html:not(.apple) .md pre::-webkit-scrollbar { width: 10px; height: 10px; }
 html:not(.apple) .log::-webkit-scrollbar-track,
-html:not(.apple) .compose textarea::-webkit-scrollbar-track,
+html:not(.apple) .field textarea::-webkit-scrollbar-track,
 html:not(.apple) .block::-webkit-scrollbar-track,
 html:not(.apple) .md pre::-webkit-scrollbar-track { margin: 4px; background: transparent; }
 html:not(.apple) .log::-webkit-scrollbar-thumb,
-html:not(.apple) .compose textarea::-webkit-scrollbar-thumb,
+html:not(.apple) .field textarea::-webkit-scrollbar-thumb,
 html:not(.apple) .block::-webkit-scrollbar-thumb,
 html:not(.apple) .md pre::-webkit-scrollbar-thumb {
   min-height: 24px;
@@ -320,11 +337,11 @@ html:not(.apple) .md pre::-webkit-scrollbar-thumb {
   background: var(--thumb) padding-box;
 }
 html:not(.apple) .log::-webkit-scrollbar-thumb:hover,
-html:not(.apple) .compose textarea::-webkit-scrollbar-thumb:hover { background: var(--thumb-hover) padding-box; }
+html:not(.apple) .field textarea::-webkit-scrollbar-thumb:hover { background: var(--thumb-hover) padding-box; }
 html:not(.apple) ::-webkit-scrollbar-corner { background: transparent; }
 
 @supports not selector(::-webkit-scrollbar) {
-  .log, .compose textarea, .block, .md pre {
+  .log, .field textarea, .block, .md pre {
     scrollbar-width: thin;
     scrollbar-color: var(--thumb) transparent;
   }
@@ -336,7 +353,7 @@ html:not(.apple) ::-webkit-scrollbar-corner { background: transparent; }
   .bar { height: 40px; }
   .rows { padding-top: 8px; }
   .bottom { padding-top: 6px; }
-  .compose textarea { max-height: calc(3lh + 16px); }
+  .field textarea { max-height: calc(3lh + 16px); }
 }
 
 .lock {

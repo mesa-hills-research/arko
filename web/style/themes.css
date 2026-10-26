@@ -17,6 +17,7 @@
   --tint: #0060de20;
   --ring: #0060de;
   --warn: #826E00;
+  --warn-mark: #A98F00;
   --error: #d21f07;
   --success: #278000;
   --thumb: #C8C8C8;
@@ -44,6 +45,7 @@
     --tint: #1B6BE433;
     --ring: #077CFD;
     --warn: #FFC600;
+    --warn-mark: #FFC600;
     --error: #FF5257;
     --success: #30D158;
     --thumb: #9F9F9F;
@@ -71,6 +73,7 @@
   --tint: #1B6BE433;
   --ring: #077CFD;
   --warn: #FFC600;
+  --warn-mark: #FFC600;
   --error: #FF5257;
   --success: #30D158;
   --thumb: #9F9F9F;
