@@ -63,6 +63,7 @@ mod model_command;
 pub mod models;
 pub mod monitors;
 mod openings;
+pub mod openrouter;
 mod options;
 mod outside;
 pub mod profiles;

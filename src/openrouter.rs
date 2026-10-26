@@ -1,0 +1,2175 @@
+//! OpenRouter's routing settings and its list of models, for every front end.
+//!
+//! The settings are one file in Arko's folder, `openrouter.json`, which
+//! [`Settings`] reads and writes. They say which providers may serve a
+//! request (zero data retention, no data collection, a region, the providers
+//! to use or to leave out, how to order them, how precise they are). Every
+//! OpenRouter client Arko builds carries them, and a change saved here
+//! reaches the sessions open in this process from their next request. Another
+//! Arko process reads them when its next session starts.
+//!
+//! The list of models is OpenRouter's own (`GET /models`, which needs no
+//! key), filtered by what the settings rule out. It is kept in memory for the
+//! process and fetched again when it is older than ten minutes. Reading it
+//! with [`catalog`] never waits for the network. [`refresh`] fetches it when
+//! it is due, and a request to a model never waits on either.
+
+use std::collections::HashMap;
+use std::path::Path;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, LazyLock, Mutex};
+use std::time::{Duration, Instant, SystemTime};
+
+use arko_ai::providers::openrouter::Quantization;
+use arko_ai::{
+    DataCollection, Model, OpenRouterCatalog, OpenRouterClient, OpenRouterOptions,
+    ProviderPreferences, SortBy,
+};
+use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
+
+/// The file in Arko's folder that holds the [`Settings`].
+pub const FILE: &str = "openrouter.json";
+
+/// How many models [`Settings::recent`] keeps.
+pub const RECENT: usize = 8;
+
+/// How long the list of models is good for.
+const FRESH: Duration = Duration::from_secs(10 * 60);
+
+/// How long Arko waits after a failed fetch before it tries again by itself.
+const RETRY: Duration = Duration::from_secs(30);
+
+/// How long Arko waits for OpenRouter's list.
+const TIMEOUT: Duration = Duration::from_secs(10);
+
+/// The most a list may hold once unpacked, in bytes.
+const MOST: u64 = 64 * 1024 * 1024;
+
+/// OpenRouter's address, and its regional ones.
+const HOST: &str = arko_ai::providers::openrouter::OPENROUTER_BASE_URL;
+const US_HOST: &str = "https://us.openrouter.ai/api/v1";
+const EU_HOST: &str = "https://eu.openrouter.ai/api/v1";
+
+// ----- the choices -----
+
+/// Where OpenRouter may serve requests from. A region is a different address
+/// (`us.openrouter.ai`), which OpenRouter offers on its Business and
+/// Enterprise plans, and fewer models are available in it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Region {
+    #[default]
+    Any,
+    Us,
+    Eu,
+    /// Each model is served from the US when OpenRouter offers it there, else
+    /// from the EU, and from nowhere else.
+    UsOrEu,
+}
+
+impl Region {
+    pub const ALL: [Region; 4] = [Region::Any, Region::Us, Region::Eu, Region::UsOrEu];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Region::Any => "Any",
+            Region::Us => "US",
+            Region::Eu => "EU",
+            Region::UsOrEu => "US or EU",
+        }
+    }
+
+    /// The word `/openrouter region` takes.
+    pub fn word(self) -> &'static str {
+        match self {
+            Region::Any => "any",
+            Region::Us => "us",
+            Region::Eu => "eu",
+            Region::UsOrEu => "us-or-eu",
+        }
+    }
+
+    fn is_any(&self) -> bool {
+        *self == Region::Any
+    }
+}
+
+/// A regional address a request goes to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Zone {
+    Us,
+    Eu,
+}
+
+impl Zone {
+    pub fn label(self) -> &'static str {
+        match self {
+            Zone::Us => "US",
+            Zone::Eu => "EU",
+        }
+    }
+
+    /// The address that serves the models in this zone.
+    pub fn base_url(self) -> &'static str {
+        match self {
+            Zone::Us => US_HOST,
+            Zone::Eu => EU_HOST,
+        }
+    }
+}
+
+/// How OpenRouter orders the providers that can serve a request.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Sort {
+    /// OpenRouter chooses.
+    #[default]
+    Default,
+    Price,
+    Throughput,
+    Latency,
+}
+
+impl Sort {
+    pub const ALL: [Sort; 4] = [Sort::Default, Sort::Price, Sort::Throughput, Sort::Latency];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Sort::Default => "Default",
+            Sort::Price => "Price",
+            Sort::Throughput => "Throughput",
+            Sort::Latency => "Latency",
+        }
+    }
+
+    /// The word `/openrouter sort` takes.
+    pub fn word(self) -> &'static str {
+        match self {
+            Sort::Default => "default",
+            Sort::Price => "price",
+            Sort::Throughput => "throughput",
+            Sort::Latency => "latency",
+        }
+    }
+
+    fn by(self) -> Option<SortBy> {
+        match self {
+            Sort::Default => None,
+            Sort::Price => Some(SortBy::Price),
+            Sort::Throughput => Some(SortBy::Throughput),
+            Sort::Latency => Some(SortBy::Latency),
+        }
+    }
+}
+
+/// How precise the weights a provider serves must be at least. `unknown`
+/// stays allowed in both, because the providers of closed models report no
+/// precision.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Precision {
+    #[default]
+    Any,
+    /// 8-bit floating point or more.
+    Fp8,
+    /// 16-bit floating point or more.
+    Bf16,
+    /// A list written by hand in the file, which Arko keeps as it is. It
+    /// can't be chosen.
+    Custom,
+}
+
+impl Precision {
+    /// The choices.
+    pub const ALL: [Precision; 3] = [Precision::Any, Precision::Fp8, Precision::Bf16];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Precision::Any => "Any",
+            Precision::Fp8 => "8-bit or more",
+            Precision::Bf16 => "16-bit or more",
+            Precision::Custom => "Custom",
+        }
+    }
+
+    /// The word `/openrouter precision` takes.
+    pub fn word(self) -> &'static str {
+        match self {
+            Precision::Any => "any",
+            Precision::Fp8 => "fp8",
+            Precision::Bf16 => "bf16",
+            Precision::Custom => "custom",
+        }
+    }
+
+    /// The `quantizations` the choice sends.
+    fn quantizations(self) -> Option<Vec<Quantization>> {
+        use Quantization::*;
+        match self {
+            Precision::Any | Precision::Custom => None,
+            Precision::Fp8 => Some(vec![Fp8, Mxfp8, Fp16, Bf16, Fp32, Unknown]),
+            Precision::Bf16 => Some(vec![Fp16, Bf16, Fp32, Unknown]),
+        }
+    }
+
+    fn of(quantizations: Option<&[Quantization]>) -> Self {
+        let Some(list) = quantizations else {
+            return Precision::Any;
+        };
+        let same = |choice: Precision| {
+            choice.quantizations().is_some_and(|wanted| {
+                wanted.len() == list.len() && wanted.iter().all(|one| list.contains(one))
+            })
+        };
+        [Precision::Fp8, Precision::Bf16]
+            .into_iter()
+            .find(|choice| same(*choice))
+            .unwrap_or(Precision::Custom)
+    }
+}
+
+/// One of the seven choices the settings show, for a front end that lists
+/// them all alike.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Control {
+    Zdr,
+    DataCollection,
+    Region,
+    Sort,
+    Precision,
+    Only,
+    Ignore,
+}
+
+impl Control {
+    pub const ALL: [Control; 7] = [
+        Control::Zdr,
+        Control::DataCollection,
+        Control::Region,
+        Control::Sort,
+        Control::Precision,
+        Control::Only,
+        Control::Ignore,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Control::Zdr => "Zero data retention",
+            Control::DataCollection => "No data collection",
+            Control::Region => "Region",
+            Control::Sort => "Providers by",
+            Control::Precision => "Precision",
+            Control::Only => "Only these providers",
+            Control::Ignore => "Never these providers",
+        }
+    }
+
+    /// What the choice does, in a sentence or two.
+    pub fn about(self) -> &'static str {
+        match self {
+            Control::Zdr => {
+                "Only providers that keep no data. Fewer models offer it, and it limits the list of models."
+            }
+            Control::DataCollection => {
+                "Only providers that don't collect your prompts. Zero data retention covers it."
+            }
+            Control::Region => {
+                "Keeps requests in a region. It needs OpenRouter's Business or Enterprise plan, fewer models offer it, and it limits the list of models. US or EU uses the US for the models offered there, and the EU for the rest."
+            }
+            Control::Sort => "How OpenRouter orders the providers. Default lets it choose.",
+            Control::Precision => "The least precise weights a provider may serve.",
+            Control::Only => {
+                "Provider slugs separated by commas, such as anthropic, google-vertex. No other provider serves a request."
+            }
+            Control::Ignore => "Provider slugs separated by commas. These never serve a request.",
+        }
+    }
+
+    /// The word `/openrouter` takes for it.
+    pub fn word(self) -> &'static str {
+        match self {
+            Control::Zdr => "zdr",
+            Control::DataCollection => "data-collection",
+            Control::Region => "region",
+            Control::Sort => "sort",
+            Control::Precision => "precision",
+            Control::Only => "only",
+            Control::Ignore => "ignore",
+        }
+    }
+
+    /// The choice as `settings` has it, for a row.
+    pub fn value(self, settings: &Settings) -> String {
+        let on = |on: bool| if on { "On" } else { "Off" }.to_string();
+        let list = |slugs: &[String], none: &str| match slugs {
+            [] => none.to_string(),
+            slugs => slugs.join(", "),
+        };
+        match self {
+            Control::Zdr => on(settings.zdr()),
+            Control::DataCollection => {
+                on(settings.deny_data_collection() || settings.data_collection_implied())
+            }
+            Control::Region => settings.region().label().to_string(),
+            Control::Sort => settings.sort().label().to_string(),
+            Control::Precision => settings.precision().label().to_string(),
+            Control::Only => list(settings.only(), "Any"),
+            Control::Ignore => list(settings.ignore(), "None"),
+        }
+    }
+}
+
+// ----- the settings -----
+
+/// The routing settings, as `openrouter.json` holds them. A file written by
+/// hand may hold more than the seven choices (`max_price`, `allow_fallbacks`
+/// and the rest of OpenRouter's `provider` object), and Arko keeps it.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Settings {
+    #[serde(default, skip_serializing_if = "Region::is_any")]
+    region: Region,
+    #[serde(default, skip_serializing_if = "ProviderPreferences::is_empty")]
+    provider: ProviderPreferences,
+    /// The models picked, newest first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    recent: Vec<Recent>,
+    /// Whatever else the file holds.
+    #[serde(flatten)]
+    other: Map<String, Value>,
+}
+
+/// A model picked, with what OpenRouter said of it then, so that the models
+/// picked show their details and size a handover without the list of models.
+/// The file holds a slug alone or an object with `slug`, `label`, `context`,
+/// `input_price` and `output_price`.
+#[derive(Debug, Clone, PartialEq)]
+struct Recent {
+    slug: String,
+    label: Option<String>,
+    context: Option<u64>,
+    input_price: Option<f64>,
+    output_price: Option<f64>,
+}
+
+/// How a [`Recent`] is written, as a slug alone or as an object.
+#[derive(Serialize, Deserialize)]
+#[serde(untagged)]
+enum RecentFile {
+    Slug(String),
+    Details {
+        slug: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        label: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        context: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        input_price: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        output_price: Option<f64>,
+    },
+}
+
+impl From<RecentFile> for Recent {
+    fn from(file: RecentFile) -> Self {
+        match file {
+            RecentFile::Slug(slug) => Recent::new(slug),
+            RecentFile::Details {
+                slug,
+                label,
+                context,
+                input_price,
+                output_price,
+            } => Recent {
+                slug,
+                label,
+                context,
+                input_price,
+                output_price,
+            },
+        }
+    }
+}
+
+impl From<&Recent> for RecentFile {
+    fn from(recent: &Recent) -> Self {
+        if recent.label.is_none()
+            && recent.context.is_none()
+            && recent.input_price.is_none()
+            && recent.output_price.is_none()
+        {
+            return RecentFile::Slug(recent.slug.clone());
+        }
+        RecentFile::Details {
+            slug: recent.slug.clone(),
+            label: recent.label.clone(),
+            context: recent.context,
+            input_price: recent.input_price,
+            output_price: recent.output_price,
+        }
+    }
+}
+
+impl Serialize for Recent {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        RecentFile::from(self).serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for Recent {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        RecentFile::deserialize(deserializer).map(Recent::from)
+    }
+}
+
+impl Recent {
+    fn new(slug: String) -> Self {
+        Self {
+            slug,
+            label: None,
+            context: None,
+            input_price: None,
+            output_price: None,
+        }
+    }
+
+    /// The details `listed` gives (those it has).
+    fn of(listed: &Listed) -> Self {
+        Self {
+            slug: listed.slug().to_string(),
+            label: Some(listed.label.clone()),
+            context: listed.context,
+            input_price: listed.input_price,
+            output_price: listed.output_price,
+        }
+    }
+
+    fn listed(&self) -> Listed {
+        Listed {
+            name: format!("{}{}", crate::providers::OPENROUTER, self.slug),
+            label: self.label.clone().unwrap_or_else(|| {
+                crate::models::display_name(&format!("openrouter:{}", self.slug))
+            }),
+            context: self.context,
+            input_price: self.input_price,
+            output_price: self.output_price,
+            zone: None,
+        }
+    }
+}
+
+/// What a front end passes to [`Settings::set_only`] and
+/// [`Settings::set_ignore`], read from text (`anthropic, google-vertex`).
+pub fn slugs(text: &str) -> Vec<String> {
+    let mut slugs: Vec<String> = Vec::new();
+    for slug in text
+        .split(|c: char| c == ',' || c.is_whitespace())
+        .map(|slug| slug.trim().to_lowercase())
+        .filter(|slug| !slug.is_empty() && slug != "none")
+    {
+        if !slugs.contains(&slug) {
+            slugs.push(slug);
+        }
+    }
+    slugs
+}
+
+impl Settings {
+    /// The settings in Arko's folder `root`, or none set when the file is
+    /// missing or can't be read ([`read`](Self::read) says why).
+    pub fn load(root: &Path) -> Self {
+        Self::read(root).unwrap_or_else(|error| {
+            log::warn!("openrouter: {error}");
+            Self::default()
+        })
+    }
+
+    /// The settings in Arko's folder `root`. A missing file means none set,
+    /// and one that can't be read is an error that says so.
+    pub fn read(root: &Path) -> Result<Self, String> {
+        let path = root.join(FILE);
+        let text = match std::fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(Self::default());
+            }
+            Err(error) => return Err(format!("{} can't be read ({error})", path.display())),
+        };
+        serde_json::from_str(&text)
+            .map_err(|error| format!("{} can't be read ({error})", path.display()))
+    }
+
+    /// Saves them in Arko's folder `root`, and tells the sessions open in
+    /// this process, which use them from their next request.
+    pub fn save(&self, root: &Path) -> std::io::Result<()> {
+        self.write(root)?;
+        announce(root);
+        Ok(())
+    }
+
+    fn write(&self, root: &Path) -> std::io::Result<()> {
+        std::fs::create_dir_all(root)?;
+        let text = serde_json::to_string_pretty(self)?;
+        crate::session::write_whole(&root.join(FILE), (text + "\n").as_bytes())
+    }
+
+    /// Zero data retention: only providers that keep no data serve a
+    /// request, and the list of models shows only the models offered so.
+    pub fn zdr(&self) -> bool {
+        self.provider.zdr == Some(true)
+    }
+
+    pub fn set_zdr(&mut self, on: bool) {
+        self.provider.zdr = on.then_some(true);
+    }
+
+    /// No data collection: only providers that don't collect prompts serve a
+    /// request.
+    pub fn deny_data_collection(&self) -> bool {
+        self.provider.data_collection == Some(DataCollection::Deny)
+    }
+
+    /// Whether no data collection holds because zero data retention is on,
+    /// which covers it. The file keeps the two apart, so a front end shows
+    /// the choice on, and not to be changed, while this is so.
+    pub fn data_collection_implied(&self) -> bool {
+        self.zdr()
+    }
+
+    pub fn set_deny_data_collection(&mut self, on: bool) {
+        self.provider.data_collection = on.then_some(DataCollection::Deny);
+    }
+
+    pub fn region(&self) -> Region {
+        self.region
+    }
+
+    pub fn set_region(&mut self, region: Region) {
+        self.region = region;
+    }
+
+    pub fn sort(&self) -> Sort {
+        match self.provider.sort.and_then(|sort| sort.by()) {
+            Some(SortBy::Price) => Sort::Price,
+            Some(SortBy::Throughput) => Sort::Throughput,
+            Some(SortBy::Latency) => Sort::Latency,
+            _ => Sort::Default,
+        }
+    }
+
+    pub fn set_sort(&mut self, sort: Sort) {
+        self.provider.sort = sort.by().map(Into::into);
+    }
+
+    pub fn precision(&self) -> Precision {
+        Precision::of(self.provider.quantizations.as_deref())
+    }
+
+    /// Sets the precision. `Custom` can't be chosen, so it changes nothing.
+    pub fn set_precision(&mut self, precision: Precision) {
+        if precision != Precision::Custom {
+            self.provider.quantizations = precision.quantizations();
+        }
+    }
+
+    /// The only providers that may serve a request, none meaning any.
+    pub fn only(&self) -> &[String] {
+        self.provider.only.as_deref().unwrap_or_default()
+    }
+
+    pub fn set_only(&mut self, providers: Vec<String>) {
+        self.provider.only = (!providers.is_empty()).then_some(providers);
+    }
+
+    /// The providers that never serve a request.
+    pub fn ignore(&self) -> &[String] {
+        self.provider.ignore.as_deref().unwrap_or_default()
+    }
+
+    pub fn set_ignore(&mut self, providers: Vec<String>) {
+        self.provider.ignore = (!providers.is_empty()).then_some(providers);
+    }
+
+    /// The OpenRouter models picked, newest first, at most [`RECENT`], with
+    /// what OpenRouter said of each when it was picked.
+    pub fn recent(&self) -> Vec<Listed> {
+        self.recent.iter().map(Recent::listed).collect()
+    }
+
+    /// The models picked as `/model` takes them (`openrouter:slug`).
+    pub fn recent_names(&self) -> Vec<String> {
+        self.recent
+            .iter()
+            .map(|recent| format!("{}{}", crate::providers::OPENROUTER, recent.slug))
+            .collect()
+    }
+
+    /// Puts `slug` first among the models picked, with `listed`'s details
+    /// (else those it had). Returns whether that changed the list.
+    fn remember(&mut self, slug: &str, listed: Option<&Listed>) -> bool {
+        let before = self.recent.clone();
+        let earlier = self.recent.iter().find(|one| one.slug == slug).cloned();
+        self.recent.retain(|one| one.slug != slug);
+        let recent = match (listed, earlier) {
+            (Some(listed), _) => Recent::of(listed),
+            (None, Some(earlier)) => earlier,
+            (None, None) => Recent::new(slug.to_string()),
+        };
+        self.recent.insert(0, recent);
+        self.recent.truncate(RECENT);
+        self.recent != before
+    }
+
+    /// Brings the details of the models picked up to date with `listed`.
+    /// Returns whether any changed.
+    fn refresh_recent(&mut self, listed: &[Listed]) -> bool {
+        let mut changed = false;
+        for recent in &mut self.recent {
+            let Some(found) = listed.iter().find(|one| one.slug() == recent.slug) else {
+                continue;
+            };
+            let now = Recent::of(found);
+            if *recent != now {
+                *recent = now;
+                changed = true;
+            }
+        }
+        changed
+    }
+
+    /// What is set, in a few words (`Zero data retention, US only`), or
+    /// `None` when nothing is.
+    pub fn summary(&self) -> Option<String> {
+        let mut parts: Vec<String> = Vec::new();
+        if self.zdr() {
+            parts.push("zero data retention".into());
+        }
+        if self.deny_data_collection() && !self.data_collection_implied() {
+            parts.push("no data collection".into());
+        }
+        match self.region {
+            Region::Any => {}
+            Region::Us => parts.push("US only".into()),
+            Region::Eu => parts.push("EU only".into()),
+            Region::UsOrEu => parts.push("US or EU only".into()),
+        }
+        match self.sort() {
+            Sort::Default => {}
+            sort => parts.push(format!("{} first", sort.label().to_lowercase())),
+        }
+        match self.precision() {
+            Precision::Any => {}
+            Precision::Custom => parts.push("custom precision".into()),
+            precision => parts.push(precision.label().to_lowercase()),
+        }
+        let few = |slugs: &[String]| match slugs.len() {
+            0..=3 => crate::and_list(slugs),
+            count => format!("{count} providers"),
+        };
+        if !self.only().is_empty() {
+            parts.push(format!("only {}", few(self.only())));
+        }
+        if !self.ignore().is_empty() {
+            parts.push(format!("never {}", few(self.ignore())));
+        }
+        let text = parts.join(", ");
+        let mut chars = text.chars();
+        let first = chars.next()?;
+        Some(first.to_uppercase().chain(chars).collect())
+    }
+
+    /// What every OpenRouter request carries.
+    pub fn options(&self) -> OpenRouterOptions {
+        OpenRouterOptions {
+            provider: (!self.provider.is_empty()).then(|| self.provider.clone()),
+            ..OpenRouterOptions::default()
+        }
+    }
+
+    /// The address that serves every model, when one does (not US or EU,
+    /// where each model has its own).
+    pub fn base_url(&self) -> &'static str {
+        match self.region {
+            Region::Any => HOST,
+            Region::Us | Region::UsOrEu => US_HOST,
+            Region::Eu => EU_HOST,
+        }
+    }
+
+    /// The settings as lines, a choice to a line, for a front end without a
+    /// menu.
+    pub fn lines(&self) -> Vec<String> {
+        let width = Control::ALL
+            .iter()
+            .map(|control| control.label().len())
+            .max()
+            .unwrap_or(0);
+        Control::ALL
+            .iter()
+            .map(|control| {
+                format!(
+                    "  {:<width$}  {}",
+                    control.label(),
+                    control.value(self),
+                    width = width
+                )
+            })
+            .collect()
+    }
+
+    /// What decides the list of models: the choices that rule models out.
+    fn filters(&self, local: Option<&str>) -> Key {
+        Key {
+            local: local.map(str::to_string),
+            region: self.region,
+            zdr: self.zdr(),
+        }
+    }
+}
+
+// ----- the clients -----
+
+/// A client for OpenRouter with `settings` (read from `root` when `None`).
+/// Every client Arko builds comes from here, so that the settings reach
+/// each request. A region sends the requests to its address. US or EU sends
+/// each model to the address that offers it, as the list of models says.
+pub(crate) fn client_with(key: &str, settings: &Settings, local: Option<&str>) -> OpenRouterClient {
+    let client = OpenRouterClient::new(key).with_default_options(settings.options());
+    match local {
+        // (Tests: a local server serves everything.)
+        Some(url) => client.with_base_url(url),
+        None if settings.region == Region::UsOrEu => {
+            // The US address, unless the models in memory say the EU's.
+            client
+                .with_base_url(US_HOST)
+                .with_base_url_for(eu_only(settings.filters(None)))
+        }
+        None => client.with_base_url(settings.base_url()),
+    }
+}
+
+/// Sends a model to the EU address when the models in memory for `key` put it
+/// there, which is when the EU offers it and the US doesn't. It reads memory
+/// and never waits, so a request before the models are loaded goes to the
+/// US, which is the safe side.
+fn eu_only(key: Key) -> impl Fn(&str) -> Option<String> + Send + Sync + 'static {
+    move |slug| (zone_of(&key, slug) == Some(Zone::Eu)).then(|| EU_HOST.to_string())
+}
+
+/// The zone the models in memory put `slug` in, when they hold it.
+fn zone_of(key: &Key, slug: &str) -> Option<Zone> {
+    let memory = memory();
+    let zones = &memory.get(key)?.loaded.as_ref()?.zones;
+    zones
+        .get(slug)
+        .or_else(|| zones.get(slug.split_once(':')?.0))
+        .copied()
+}
+
+/// The client for the settings in Arko's folder `root`.
+pub(crate) fn client(key: &str, root: &Path) -> OpenRouterClient {
+    client_with(key, &Settings::load(root), None)
+}
+
+/// Tells the sessions open in this process that the settings in `root`
+/// changed.
+fn announce(root: &Path) {
+    let _ = change_sender().send(root.to_path_buf());
+}
+
+fn change_sender() -> &'static tokio::sync::broadcast::Sender<std::path::PathBuf> {
+    static SENDER: std::sync::OnceLock<tokio::sync::broadcast::Sender<std::path::PathBuf>> =
+        std::sync::OnceLock::new();
+    SENDER.get_or_init(|| tokio::sync::broadcast::channel(16).0)
+}
+
+/// The Arko folders whose settings are saved in this process from now on.
+pub(crate) fn changes() -> tokio::sync::broadcast::Receiver<std::path::PathBuf> {
+    change_sender().subscribe()
+}
+
+/// Keeps `model` (as `/model` takes it) among the models picked, when it is
+/// an OpenRouter model, with what the models in memory say of it. It saves
+/// without telling the open sessions, since nothing is routed differently.
+pub fn remember(root: &Path, model: &str) {
+    remember_in(root, model, None);
+}
+
+fn remember_in(root: &Path, model: &str, local: Option<&str>) {
+    let Some(slug) = crate::providers::strip_prefix(model, crate::providers::OPENROUTER) else {
+        return;
+    };
+    let Ok(mut settings) = Settings::read(root) else {
+        return;
+    };
+    let listed = listed_in_memory(&settings.filters(local), slug);
+    if settings.remember(slug, listed.as_ref())
+        && let Err(error) = settings.write(root)
+    {
+        log::warn!("openrouter: couldn't keep the model picked ({error})");
+    }
+}
+
+/// The models picked in Arko's folder `root`, newest first, with their
+/// details.
+pub fn recent(root: &Path) -> Vec<Listed> {
+    Settings::load(root).recent()
+}
+
+/// The models picked are brought up to date with a list just fetched.
+fn update_recent(root: &Path, listed: &[Listed]) {
+    let Ok(mut settings) = Settings::read(root) else {
+        return;
+    };
+    if settings.refresh_recent(listed)
+        && let Err(error) = settings.write(root)
+    {
+        log::warn!("openrouter: couldn't update the models picked ({error})");
+    }
+}
+
+// ----- the models -----
+
+/// A model OpenRouter lists, for a picker.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Listed {
+    /// As `/model` takes it: `openrouter:moonshotai/kimi-k3`.
+    pub name: String,
+    /// What people call it (`Kimi K3`), without its maker's name before it.
+    pub label: String,
+    /// The most input it takes, in tokens.
+    pub context: Option<u64>,
+    /// What a million input and output tokens cost, in US dollars, when
+    /// OpenRouter says.
+    pub input_price: Option<f64>,
+    pub output_price: Option<f64>,
+    /// The regional address its requests go to (with a US, EU or US or EU
+    /// region), none with any region.
+    pub zone: Option<Zone>,
+}
+
+impl Listed {
+    /// The slug (`moonshotai/kimi-k3`).
+    pub fn slug(&self) -> &str {
+        self.name
+            .strip_prefix(crate::providers::OPENROUTER)
+            .unwrap_or(&self.name)
+    }
+
+    /// What to know before choosing it, as a line (`262k context, $0.60 in
+    /// and $2.50 out per million tokens`), empty when OpenRouter says
+    /// nothing.
+    pub fn details(&self) -> String {
+        let mut parts = Vec::new();
+        if let Some(context) = self.context {
+            parts.push(format!("{} context", tokens(context)));
+        }
+        match (self.input_price, self.output_price) {
+            (Some(input), Some(output)) if input == 0.0 && output == 0.0 => {
+                parts.push("free".into());
+            }
+            (Some(input), Some(output)) => parts.push(format!(
+                "{} in and {} out per million tokens",
+                price(input),
+                price(output)
+            )),
+            _ => {}
+        }
+        parts.join(", ")
+    }
+
+    /// The context and prices in few characters (`262k · $0.60/$2.50`), for
+    /// a column. Empty when OpenRouter says nothing.
+    pub fn short(&self) -> String {
+        let mut parts = Vec::new();
+        if let Some(context) = self.context {
+            parts.push(tokens(context));
+        }
+        match (self.input_price, self.output_price) {
+            (Some(input), Some(output)) if input == 0.0 && output == 0.0 => {
+                parts.push("free".into());
+            }
+            (Some(input), Some(output)) => {
+                parts.push(format!("{}/{}", price(input), price(output)));
+            }
+            _ => {}
+        }
+        parts.join(" · ")
+    }
+
+    /// Whether every word of `query` is in its name or slug, in any case.
+    pub fn matches(&self, query: &str) -> bool {
+        let label = self.label.to_lowercase();
+        let slug = self.slug().to_lowercase();
+        query
+            .split_whitespace()
+            .map(str::to_lowercase)
+            .all(|word| label.contains(&word) || slug.contains(&word))
+    }
+}
+
+/// `262k`, `1M`: a number of tokens in few characters.
+fn tokens(count: u64) -> String {
+    if count >= 1_000_000 {
+        let millions = format!("{:.1}", count as f64 / 1_000_000.0);
+        format!("{}M", millions.trim_end_matches('0').trim_end_matches('.'))
+    } else {
+        format!("{}k", (count + 500) / 1000)
+    }
+}
+
+/// `$0.60`, `$15.00`, `$0.075`: a price in dollars with at least cents.
+fn price(dollars: f64) -> String {
+    let mut text = format!("{dollars:.4}");
+    while text.ends_with('0')
+        && text
+            .split_once('.')
+            .is_some_and(|(_, cents)| cents.len() > 2)
+    {
+        text.pop();
+    }
+    format!("${text}")
+}
+
+/// OpenRouter's models that take tool calls (which Arko's agents work
+/// through) and that the settings allow, as they are in memory.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Catalog {
+    /// The models, in OpenRouter's order (the newest first).
+    pub models: Vec<Listed>,
+    /// When they were fetched, once they have been.
+    pub fetched: Option<SystemTime>,
+    /// Why the list can't be had or is out of date, when it is so.
+    pub problem: Option<String>,
+}
+
+impl Catalog {
+    /// The model `name` (`openrouter:slug`, or just the slug).
+    pub fn get(&self, name: &str) -> Option<&Listed> {
+        let slug = name
+            .strip_prefix(crate::providers::OPENROUTER)
+            .unwrap_or(name);
+        self.models.iter().find(|model| model.slug() == slug)
+    }
+
+    /// The models whose name or slug holds every word of `query`, those that
+    /// start with it first. Every model for a query without words.
+    pub fn search(&self, query: &str) -> Vec<&Listed> {
+        let query = query.trim().to_lowercase();
+        let mut found: Vec<&Listed> = self
+            .models
+            .iter()
+            .filter(|model| model.matches(&query))
+            .collect();
+        if !query.is_empty() {
+            // (A stable sort keeps OpenRouter's order within each part.)
+            found.sort_by_key(|model| {
+                !(model.slug().to_lowercase().starts_with(&query)
+                    || model.label.to_lowercase().starts_with(&query))
+            });
+        }
+        found
+    }
+
+    /// How long ago it was fetched (`updated 2 hours ago`), once it was.
+    pub fn updated(&self) -> Option<String> {
+        let seconds = SystemTime::now()
+            .duration_since(self.fetched?)
+            .ok()?
+            .as_secs();
+        let ago = |count: u64, unit: &str| {
+            format!(
+                "updated {count} {unit}{} ago",
+                if count == 1 { "" } else { "s" }
+            )
+        };
+        Some(match seconds {
+            0..=59 => "updated just now".to_string(),
+            60..=3599 => ago(seconds / 60, "minute"),
+            3600..=86399 => ago(seconds / 3600, "hour"),
+            _ => ago(seconds / 86400, "day"),
+        })
+    }
+
+    /// What the models row says (`301, updated 2 hours ago`).
+    pub fn summary(&self) -> String {
+        match (self.models.len(), self.updated()) {
+            (0, _) => "not loaded".to_string(),
+            (count, Some(updated)) => format!("{count}, {updated}"),
+            (count, None) => count.to_string(),
+        }
+    }
+}
+
+/// What decides the models listed: the filters, and (tests) the server.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct Key {
+    local: Option<String>,
+    region: Region,
+    zdr: bool,
+}
+
+impl Key {
+    /// The address of each list to fetch, with the zone its models are in.
+    fn lists(&self) -> Vec<(Option<Zone>, String)> {
+        let at = |zone: Option<Zone>| match (&self.local, zone) {
+            (Some(url), None) => url.clone(),
+            (Some(url), Some(Zone::Us)) => format!("{url}/us"),
+            (Some(url), Some(Zone::Eu)) => format!("{url}/eu"),
+            (None, None) => HOST.to_string(),
+            (None, Some(zone)) => zone.base_url().to_string(),
+        };
+        match self.region {
+            Region::Any => vec![(None, at(None))],
+            Region::Us => vec![(Some(Zone::Us), at(Some(Zone::Us)))],
+            Region::Eu => vec![(Some(Zone::Eu), at(Some(Zone::Eu)))],
+            Region::UsOrEu => vec![
+                (Some(Zone::Us), at(Some(Zone::Us))),
+                (Some(Zone::Eu), at(Some(Zone::Eu))),
+            ],
+        }
+    }
+}
+
+/// A list fetched.
+#[derive(Clone)]
+struct Loaded {
+    at: Instant,
+    fetched: SystemTime,
+    listed: Arc<Vec<Listed>>,
+    catalog: Arc<OpenRouterCatalog>,
+    /// The zone of each model by its ID, for the models with one.
+    zones: HashMap<String, Zone>,
+}
+
+#[derive(Default)]
+struct Entry {
+    loaded: Option<Loaded>,
+    /// When the last fetch failed, and why.
+    failed: Option<(Instant, String)>,
+}
+
+static MEMORY: LazyLock<Mutex<HashMap<Key, Entry>>> = LazyLock::new(Mutex::default);
+/// How many fetches are going on or waiting.
+static FETCHING: AtomicUsize = AtomicUsize::new(0);
+/// Counts what changed in memory, for a view to draw again.
+static GENERATION: AtomicU64 = AtomicU64::new(0);
+
+fn memory() -> std::sync::MutexGuard<'static, HashMap<Key, Entry>> {
+    crate::lock(&MEMORY)
+}
+
+/// Counts the changes to the models in memory, so that a view knows when
+/// to draw them again.
+pub fn generation() -> u64 {
+    GENERATION.load(Ordering::Relaxed)
+}
+
+/// Whether a fetch of the models is going on in this process.
+pub fn loading() -> bool {
+    FETCHING.load(Ordering::Relaxed) > 0
+}
+
+fn snapshot(key: &Key) -> Catalog {
+    let memory = memory();
+    let Some(entry) = memory.get(key) else {
+        return Catalog::default();
+    };
+    Catalog {
+        models: entry
+            .loaded
+            .as_ref()
+            .map(|loaded| loaded.listed.to_vec())
+            .unwrap_or_default(),
+        fetched: entry.loaded.as_ref().map(|loaded| loaded.fetched),
+        problem: entry.failed.as_ref().map(|(_, why)| problem(why, entry)),
+    }
+}
+
+/// What a failed fetch says, as a sentence.
+fn problem(why: &str, entry: &Entry) -> String {
+    match entry.loaded {
+        Some(_) => format!("Couldn't update the models ({why})"),
+        None => format!("Couldn't load the models ({why})"),
+    }
+}
+
+fn is_fresh(key: &Key) -> bool {
+    memory()
+        .get(key)
+        .and_then(|entry| entry.loaded.as_ref())
+        .is_some_and(|loaded| loaded.at.elapsed() < FRESH)
+}
+
+fn failed_lately(key: &Key) -> bool {
+    memory()
+        .get(key)
+        .and_then(|entry| entry.failed.as_ref())
+        .is_some_and(|(at, _)| at.elapsed() < RETRY)
+}
+
+/// The models OpenRouter lists that take tool calls and that the settings in
+/// Arko's folder `root` allow, as they are in memory. It never waits for the
+/// network. The list is empty until [`refresh`] has fetched it.
+pub fn catalog(root: &Path) -> Catalog {
+    snapshot(&Settings::load(root).filters(None))
+}
+
+/// [`catalog`], fetching the models first when they are older than ten
+/// minutes (or `force`). The list the settings rule out isn't kept, so a
+/// change of region or zero data retention fetches again. A failure leaves
+/// the list as it was, with [`Catalog::problem`] saying why.
+pub async fn refresh(root: &Path, force: bool) -> Catalog {
+    refresh_at(&Settings::load(root).filters(None), force, Some(root)).await
+}
+
+/// [`refresh`], for an app's background thread: it waits for the fetch
+/// (ten seconds at most) on a runtime of its own.
+pub fn refresh_blocking(root: &Path, force: bool) -> Catalog {
+    let key = Settings::load(root).filters(None);
+    blocking(key, force, root.to_path_buf())
+}
+
+fn blocking(key: Key, force: bool, root: std::path::PathBuf) -> Catalog {
+    // (On a thread of its own, so that this works inside a runtime too.)
+    let fetched = std::thread::spawn(move || {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map(|runtime| runtime.block_on(refresh_at(&key, force, Some(&root))))
+    })
+    .join();
+    match fetched {
+        Ok(Ok(catalog)) => catalog,
+        _ => Catalog {
+            problem: Some("Couldn't load the models (the fetch stopped)".into()),
+            ..Catalog::default()
+        },
+    }
+}
+
+/// Starts fetching the models in the background when they are due, and
+/// returns at once. A view draws what is in memory ([`catalog`]) and
+/// again when [`generation`] moves.
+pub fn refresh_soon(root: &Path) {
+    let key = Settings::load(root).filters(None);
+    if (is_fresh(&key) && !failed_lately(&key)) || failed_lately(&key) || loading() {
+        return;
+    }
+    // (A runtime of its own: the caller may have none.)
+    let root = root.to_path_buf();
+    std::thread::spawn(move || {
+        blocking(key, false, root);
+    });
+}
+
+async fn refresh_at(key: &Key, force: bool, root: Option<&Path>) -> Catalog {
+    if !force && (is_fresh(key) || failed_lately(key)) {
+        return snapshot(key);
+    }
+    static ONE_AT_A_TIME: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    struct Counted;
+    impl Counted {
+        fn start() -> Self {
+            FETCHING.fetch_add(1, Ordering::Relaxed);
+            Counted
+        }
+    }
+    impl Drop for Counted {
+        fn drop(&mut self) {
+            FETCHING.fetch_sub(1, Ordering::Relaxed);
+            GENERATION.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+    let _counted = Counted::start();
+    let _turn = ONE_AT_A_TIME.lock().await;
+    // Another call may have fetched while this one waited.
+    if !force && (is_fresh(key) || failed_lately(key)) {
+        return snapshot(key);
+    }
+    match fetch(key).await {
+        Ok((listed, catalog, zones)) => {
+            if let Some(root) = root {
+                // The models picked take what OpenRouter says now.
+                update_recent(root, &listed);
+            }
+            let mut memory = memory();
+            let entry = memory.entry(key.clone()).or_default();
+            entry.loaded = Some(Loaded {
+                at: Instant::now(),
+                fetched: SystemTime::now(),
+                listed: Arc::new(listed),
+                catalog: Arc::new(catalog),
+                zones,
+            });
+            entry.failed = None;
+        }
+        Err(why) => {
+            log::warn!("openrouter: the models weren't fetched ({why})");
+            memory().entry(key.clone()).or_default().failed = Some((Instant::now(), why));
+        }
+    }
+    snapshot(key)
+}
+
+/// The lists for `key` fetched, and read.
+async fn fetch(
+    key: &Key,
+) -> Result<(Vec<Listed>, OpenRouterCatalog, HashMap<String, Zone>), String> {
+    let lists = key.lists();
+    let fetches = lists.iter().map(|(_, url)| fetch_list(url, key.zdr));
+    let results = futures_util::future::join_all(fetches).await;
+    let mut entries: Vec<Value> = Vec::new();
+    let mut zones: HashMap<String, Zone> = HashMap::new();
+    for ((zone, _), result) in lists.iter().zip(results) {
+        // (All of them, or none: a half is a different list.)
+        for entry in result? {
+            let Some(id) = entry.get("id").and_then(Value::as_str).map(str::to_string) else {
+                continue;
+            };
+            // The first zone to list a model keeps it (the US before the EU).
+            if let Some(zone) = zone
+                && !zones.contains_key(&id)
+            {
+                zones.insert(id, *zone);
+                entries.push(entry);
+            } else if zone.is_none() {
+                entries.push(entry);
+            }
+        }
+    }
+    let body = serde_json::json!({ "data": entries }).to_string();
+    let catalog = OpenRouterCatalog::from_json(&body)
+        .map_err(|error| format!("its list couldn't be read, {error}"))?;
+    let listed = catalog
+        .models()
+        .iter()
+        .map(|model| listed(model, zones.get(&model.id).copied()))
+        .collect();
+    Ok((listed, catalog, zones))
+}
+
+/// One list from `base`, without the entries that aren't models of their own
+/// (`:batch` runs the same model at a delay).
+async fn fetch_list(base: &str, zdr: bool) -> Result<Vec<Value>, String> {
+    let url = format!(
+        "{}/models?supported_parameters=tools{}",
+        base.trim_end_matches('/'),
+        if zdr { "&zdr=true" } else { "" }
+    );
+    let client = arko_ai::http_client_builder()
+        .timeout(TIMEOUT)
+        .build()
+        .map_err(|error| error.to_string())?;
+    // (Without reqwest's decompression, so that the body comes as sent.)
+    let response = client
+        .get(&url)
+        .header("Accept-Encoding", "gzip")
+        .send()
+        .await
+        .map_err(reached)?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "OpenRouter answered {}",
+            response.status().as_u16()
+        ));
+    }
+    let gzip = response
+        .headers()
+        .get("content-encoding")
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.eq_ignore_ascii_case("gzip"));
+    let body = response.bytes().await.map_err(reached)?;
+    let text = if gzip {
+        use std::io::Read;
+        let mut text = Vec::new();
+        flate2::read::GzDecoder::new(&body[..])
+            .take(MOST)
+            .read_to_end(&mut text)
+            .map_err(|error| format!("its list wasn't readable, {error}"))?;
+        text
+    } else {
+        body.to_vec()
+    };
+    let mut value: Value = serde_json::from_slice(&text)
+        .map_err(|error| format!("its list wasn't readable, {error}"))?;
+    let Some(Value::Array(entries)) = value.get_mut("data").map(Value::take) else {
+        return Err("its list held no models".to_string());
+    };
+    Ok(entries
+        .into_iter()
+        .filter(|entry| {
+            entry
+                .get("id")
+                .and_then(Value::as_str)
+                .is_some_and(|id| !id.ends_with(":batch"))
+        })
+        .map(slim)
+        .collect())
+}
+
+/// Why OpenRouter wasn't reached, in a few words.
+fn reached(error: reqwest::Error) -> String {
+    if error.is_timeout() {
+        "it didn't answer in 10 s".to_string()
+    } else if error.is_connect() {
+        "it couldn't be reached".to_string()
+    } else {
+        error.without_url().to_string()
+    }
+}
+
+/// An entry without what Arko doesn't read (the descriptions and
+/// benchmarks make most of a list).
+fn slim(entry: Value) -> Value {
+    const KEEP: [&str; 10] = [
+        "id",
+        "canonical_slug",
+        "name",
+        "context_length",
+        "architecture",
+        "pricing",
+        "top_provider",
+        "supported_parameters",
+        "reasoning",
+        "expiration_date",
+    ];
+    match entry {
+        Value::Object(fields) => Value::Object(
+            fields
+                .into_iter()
+                .filter(|(name, _)| KEEP.contains(&name.as_str()) || name == "alias_target")
+                .collect(),
+        ),
+        other => other,
+    }
+}
+
+fn listed(model: &Model, zone: Option<Zone>) -> Listed {
+    let info = model.openrouter.as_ref();
+    let label = info
+        .and_then(|info| info.name.as_deref())
+        .map(|name| name.split_once(": ").map_or(name, |(_, label)| label))
+        .map(str::to_string)
+        .unwrap_or_else(|| crate::models::display_name(&format!("openrouter:{}", model.id)));
+    let known = info.is_some_and(|info| info.pricing_known);
+    Listed {
+        name: format!("{}{}", crate::providers::OPENROUTER, model.id),
+        label,
+        context: (model.max_input_tokens > 0).then_some(model.max_input_tokens as u64),
+        input_price: known.then_some(model.pricing.input_cost_per_million),
+        output_price: known.then_some(model.pricing.output_cost_per_million),
+        zone,
+    }
+}
+
+/// What the models in memory say of `slug`, however old they are.
+fn listed_in_memory(key: &Key, slug: &str) -> Option<Listed> {
+    let memory = memory();
+    let loaded = memory.get(key)?.loaded.as_ref()?;
+    loaded.listed.iter().find(|one| one.slug() == slug).cloned()
+}
+
+/// The model `slug` as the models in memory for the settings in Arko's
+/// folder `root` hold it (however old they are), else with what was kept
+/// when it was picked, for its context window. `None` when neither knows it.
+pub(crate) fn known(root: &Path, slug: &str) -> Option<Model> {
+    known_in(root, slug, None)
+}
+
+fn known_in(root: &Path, slug: &str, local: Option<&str>) -> Option<Model> {
+    let settings = Settings::load(root);
+    let live = memory()
+        .get(&settings.filters(local))
+        .and_then(|entry| entry.loaded.as_ref())
+        .and_then(|loaded| loaded.catalog.get(slug));
+    live.or_else(|| {
+        let recent = settings.recent.iter().find(|one| one.slug == slug)?;
+        let mut model = Model::openrouter(slug);
+        model.max_input_tokens = recent.context? as usize;
+        Some(model)
+    })
+}
+
+/// The catalog for a session start's check: refreshed when due. `local` is
+/// a server standing in for OpenRouter (tests).
+pub(crate) async fn checked(
+    root: &Path,
+    settings: &Settings,
+    local: Option<&str>,
+) -> Result<Arc<OpenRouterCatalog>, String> {
+    let key = settings.filters(local);
+    let catalog = refresh_at(&key, false, Some(root)).await;
+    let loaded = memory()
+        .get(&key)
+        .and_then(|entry| entry.loaded.as_ref())
+        .map(|loaded| loaded.catalog.clone());
+    match loaded {
+        Some(loaded) => Ok(loaded),
+        None => Err(catalog
+            .problem
+            .unwrap_or_else(|| "it gave no models".to_string())),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    /// A model as OpenRouter lists it, with fields Arko doesn't read.
+    fn entry(id: &str, name: &str, context: u64, prompt: &str, completion: &str) -> Value {
+        json!({
+            "id": id,
+            "canonical_slug": format!("{id}-20261001"),
+            "name": name,
+            "description": "A long description.",
+            "context_length": context,
+            "architecture": {"input_modalities": ["text", "image"], "output_modalities": ["text"]},
+            "pricing": {"prompt": prompt, "completion": completion},
+            "top_provider": {"context_length": context, "max_completion_tokens": 8000},
+            "supported_parameters": ["tools", "reasoning"],
+            "benchmarks": {"design_arena": [1, 2, 3]},
+        })
+    }
+
+    fn list(entries: Vec<Value>) -> Vec<u8> {
+        json!({ "data": entries }).to_string().into_bytes()
+    }
+
+    fn gzipped(bytes: &[u8]) -> Vec<u8> {
+        use std::io::Write;
+        let mut gzip = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        gzip.write_all(bytes).unwrap();
+        gzip.finish().unwrap()
+    }
+
+    /// A local server standing in for OpenRouter. A route is a path prefix,
+    /// the status and the body (gzipped when it says so).
+    struct Server {
+        url: String,
+        heads: Arc<Mutex<Vec<String>>>,
+        task: tokio::task::JoinHandle<()>,
+    }
+
+    impl Server {
+        async fn start(routes: Vec<(&'static str, u16, Vec<u8>, bool)>) -> Self {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("http://{}", listener.local_addr().unwrap());
+            let heads = Arc::new(Mutex::new(Vec::new()));
+            let seen = heads.clone();
+            let task = tokio::spawn(async move {
+                while let Ok((mut socket, _)) = listener.accept().await {
+                    let (routes, seen) = (routes.clone(), seen.clone());
+                    tokio::spawn(async move {
+                        let mut request = vec![0; 8192];
+                        let n = socket.read(&mut request).await.unwrap_or(0);
+                        let head = String::from_utf8_lossy(&request[..n]).to_string();
+                        let path = head.split_whitespace().nth(1).unwrap_or("").to_string();
+                        crate::lock(&seen).push(head);
+                        let (status, body, gzip) = routes
+                            .iter()
+                            .find(|(prefix, ..)| path.starts_with(prefix))
+                            .map(|(_, status, body, gzip)| (*status, body.clone(), *gzip))
+                            .unwrap_or((404, b"{}".to_vec(), false));
+                        let encoding = if gzip {
+                            "Content-Encoding: gzip\r\n"
+                        } else {
+                            ""
+                        };
+                        let head = format!(
+                            "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\n{encoding}Content-Length: {}\r\nConnection: close\r\n\r\n",
+                            body.len()
+                        );
+                        let _ = socket.write_all(head.as_bytes()).await;
+                        let _ = socket.write_all(&body).await;
+                    });
+                }
+            });
+            Self { url, heads, task }
+        }
+
+        fn requests(&self) -> Vec<String> {
+            crate::lock(&self.heads).clone()
+        }
+
+        /// The paths asked for, as `/models?...`.
+        fn paths(&self) -> Vec<String> {
+            self.requests()
+                .iter()
+                .map(|head| head.split_whitespace().nth(1).unwrap().to_string())
+                .collect()
+        }
+    }
+
+    impl Drop for Server {
+        fn drop(&mut self) {
+            self.task.abort();
+        }
+    }
+
+    fn key(settings: &Settings, server: &Server) -> Key {
+        settings.filters(Some(&server.url))
+    }
+
+    /// The seven choices are saved as OpenRouter's `provider` object and
+    /// read back, and what the file holds besides stays as it was.
+    #[test]
+    fn settings_are_kept_and_a_field_written_by_hand_stays() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        assert_eq!(Settings::load(root), Settings::default());
+        assert_eq!(Settings::default().summary(), None);
+        std::fs::write(
+            root.join(FILE),
+            r#"{"provider": {"max_price": {"prompt": 3.0}, "allow_fallbacks": false, "order": ["azure"]},
+                "recent": ["z-ai/glm-5", {"slug": "moonshotai/kimi-k3", "label": "Kimi K3", "context": 262144, "input_price": 0.6, "output_price": 2.5}],
+                "something_new": {"a": 1}}"#,
+        )
+        .unwrap();
+        let mut settings = Settings::read(root).unwrap();
+        settings.set_zdr(true);
+        settings.set_deny_data_collection(true);
+        settings.set_region(Region::UsOrEu);
+        settings.set_sort(Sort::Throughput);
+        settings.set_precision(Precision::Fp8);
+        settings.set_only(slugs("Anthropic, google-vertex"));
+        settings.set_ignore(slugs("some-provider"));
+        settings.save(root).unwrap();
+
+        let text = std::fs::read_to_string(root.join(FILE)).unwrap();
+        let file: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(file["region"], "us-or-eu");
+        assert_eq!(file["provider"]["zdr"], true);
+        assert_eq!(file["provider"]["data_collection"], "deny");
+        assert_eq!(file["provider"]["sort"], "throughput");
+        assert_eq!(
+            file["provider"]["quantizations"],
+            json!(["fp8", "mxfp8", "fp16", "bf16", "fp32", "unknown"])
+        );
+        assert_eq!(
+            file["provider"]["only"],
+            json!(["anthropic", "google-vertex"])
+        );
+        assert_eq!(file["provider"]["ignore"], json!(["some-provider"]));
+        // What the controls don't show is kept.
+        assert_eq!(file["provider"]["max_price"], json!({"prompt": 3.0}));
+        assert_eq!(file["provider"]["allow_fallbacks"], false);
+        assert_eq!(file["provider"]["order"], json!(["azure"]));
+        assert_eq!(file["something_new"], json!({"a": 1}));
+        // A slug alone stays a slug, and a snapshot stays as written.
+        assert_eq!(
+            file["recent"],
+            json!([
+                "z-ai/glm-5",
+                {"slug": "moonshotai/kimi-k3", "label": "Kimi K3", "context": 262144,
+                 "input_price": 0.6, "output_price": 2.5}
+            ])
+        );
+
+        let again = Settings::read(root).unwrap();
+        assert_eq!(again, settings);
+        assert!(again.zdr() && again.deny_data_collection());
+        assert_eq!(again.region(), Region::UsOrEu);
+        assert_eq!(again.sort(), Sort::Throughput);
+        assert_eq!(again.precision(), Precision::Fp8);
+
+        // Turned off, a choice leaves the file.
+        let mut off = again;
+        off.set_zdr(false);
+        off.set_deny_data_collection(false);
+        off.set_region(Region::Any);
+        off.set_sort(Sort::Default);
+        off.set_precision(Precision::Any);
+        off.set_only(Vec::new());
+        off.set_ignore(Vec::new());
+        off.save(root).unwrap();
+        let file: Value =
+            serde_json::from_str(&std::fs::read_to_string(root.join(FILE)).unwrap()).unwrap();
+        assert_eq!(
+            file["provider"],
+            json!({"max_price": {"prompt": 3.0}, "allow_fallbacks": false, "order": ["azure"]})
+        );
+        assert!(file.get("region").is_none());
+    }
+
+    /// A file that can't be read is an error for whoever must not guess
+    /// (a session start), and none set for a view.
+    #[test]
+    fn a_file_that_cant_be_read_is_an_error_and_not_a_guess() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join(FILE), "{ not json").unwrap();
+        let error = Settings::read(temp.path()).unwrap_err();
+        assert!(error.contains("openrouter.json can't be read"), "{error}");
+        assert_eq!(Settings::load(temp.path()), Settings::default());
+        std::fs::write(temp.path().join(FILE), r#"{"region": "mars"}"#).unwrap();
+        assert!(Settings::read(temp.path()).is_err());
+    }
+
+    #[test]
+    fn a_precision_written_by_hand_is_custom_and_kept() {
+        let mut settings: Settings =
+            serde_json::from_str(r#"{"provider": {"quantizations": ["int8"]}}"#).unwrap();
+        assert_eq!(settings.precision(), Precision::Custom);
+        settings.set_precision(Precision::Custom);
+        assert_eq!(settings.precision(), Precision::Custom);
+        settings.set_precision(Precision::Bf16);
+        assert_eq!(settings.precision(), Precision::Bf16);
+        // The order of the list doesn't matter.
+        let shuffled: Settings = serde_json::from_str(
+            r#"{"provider": {"quantizations": ["unknown", "fp32", "bf16", "fp16"]}}"#,
+        )
+        .unwrap();
+        assert_eq!(shuffled.precision(), Precision::Bf16);
+    }
+
+    #[test]
+    fn what_is_set_is_said_in_a_few_words() {
+        let mut settings = Settings::default();
+        settings.set_zdr(true);
+        settings.set_region(Region::Us);
+        assert_eq!(
+            settings.summary().as_deref(),
+            Some("Zero data retention, US only")
+        );
+        settings.set_region(Region::UsOrEu);
+        settings.set_deny_data_collection(true);
+        settings.set_sort(Sort::Price);
+        settings.set_precision(Precision::Bf16);
+        settings.set_only(slugs("anthropic google-vertex"));
+        settings.set_ignore(slugs("a b c d"));
+        assert_eq!(
+            settings.summary().as_deref(),
+            Some(
+                "Zero data retention, US or EU only, price first, 16-bit or more, only anthropic and google-vertex, never 4 providers"
+            )
+        );
+        assert_eq!(slugs("none"), Vec::<String>::new());
+        assert_eq!(slugs("a, a,b"), ["a", "b"]);
+        let lines = settings.lines();
+        assert_eq!(lines.len(), 7);
+        assert!(
+            lines[2].contains("Region") && lines[2].ends_with("US or EU"),
+            "{lines:?}"
+        );
+    }
+
+    /// The models picked come first, newest first, once each, eight at most.
+    #[test]
+    fn the_models_picked_are_remembered_newest_first_eight_at_most() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        for n in 0..10 {
+            remember(root, &format!("openrouter:acme/model-{n}"));
+        }
+        remember(root, "claude-opus-5-5");
+        remember(root, "openrouter:acme/model-5");
+        remember(root, "OpenRouter:acme/model-5");
+        let settings = Settings::load(root);
+        assert_eq!(settings.recent().len(), RECENT);
+        assert_eq!(
+            settings.recent_names()[..3],
+            [
+                "openrouter:acme/model-5",
+                "openrouter:acme/model-9",
+                "openrouter:acme/model-8"
+            ]
+        );
+        assert!(
+            !settings
+                .recent_names()
+                .contains(&"openrouter:acme/model-1".to_string())
+        );
+        assert_eq!(recent(root).len(), RECENT);
+    }
+
+    /// A saved change is announced to the sessions open in this process,
+    /// and a model picked isn't (nothing is routed differently).
+    #[tokio::test]
+    async fn a_saved_change_is_announced_and_a_model_picked_is_not() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().to_path_buf();
+        let mut heard = changes();
+        remember(&root, "openrouter:acme/model");
+        assert!(heard.try_recv().is_err());
+        let mut settings = Settings::load(&root);
+        settings.set_zdr(true);
+        settings.save(&root).unwrap();
+        assert_eq!(heard.recv().await.unwrap(), root);
+    }
+
+    #[test]
+    fn requests_carry_the_settings_and_the_region_sets_the_address() {
+        let mut settings = Settings::default();
+        assert_eq!(settings.base_url(), "https://openrouter.ai/api/v1");
+        assert_eq!(settings.options().provider, None);
+        settings.set_zdr(true);
+        settings.set_sort(Sort::Latency);
+        let provider = settings.options().provider.unwrap();
+        assert_eq!(provider.zdr, Some(true));
+        assert_eq!(
+            provider.sort.and_then(|sort| sort.by()),
+            Some(SortBy::Latency)
+        );
+        settings.set_region(Region::Us);
+        assert_eq!(settings.base_url(), "https://us.openrouter.ai/api/v1");
+        settings.set_region(Region::Eu);
+        assert_eq!(settings.base_url(), "https://eu.openrouter.ai/api/v1");
+        // US or EU starts at the US, and the models only the EU offers go
+        // to the EU (see `a_list_for_us_or_eu_is_both_regions_lists`).
+        settings.set_region(Region::UsOrEu);
+        assert_eq!(settings.base_url(), "https://us.openrouter.ai/api/v1");
+    }
+
+    #[test]
+    fn a_model_is_described_for_choosing() {
+        let model = |context, input, output| Listed {
+            name: "openrouter:moonshotai/kimi-k3".into(),
+            label: "Kimi K3".into(),
+            context,
+            input_price: input,
+            output_price: output,
+            zone: None,
+        };
+        let kimi = model(Some(262_144), Some(0.6), Some(2.5));
+        assert_eq!(kimi.slug(), "moonshotai/kimi-k3");
+        assert_eq!(
+            kimi.details(),
+            "262k context, $0.60 in and $2.50 out per million tokens"
+        );
+        assert_eq!(kimi.short(), "262k · $0.60/$2.50");
+        let big = model(Some(1_048_576), Some(15.0), Some(0.075));
+        assert_eq!(big.short(), "1M · $15.00/$0.075");
+        assert_eq!(model(Some(2_000_000), None, None).short(), "2M");
+        assert_eq!(model(None, None, None).details(), "");
+        assert_eq!(
+            model(Some(131_072), Some(0.0), Some(0.0)).details(),
+            "131k context, free"
+        );
+        assert!(kimi.matches("kimi"));
+        assert!(kimi.matches("KIMI moonshot"));
+        assert!(kimi.matches("k3"));
+        assert!(!kimi.matches("glm"));
+    }
+
+    fn catalog_of(names: &[(&str, &str)]) -> Catalog {
+        Catalog {
+            models: names
+                .iter()
+                .map(|(slug, label)| Listed {
+                    name: format!("openrouter:{slug}"),
+                    label: label.to_string(),
+                    context: None,
+                    input_price: None,
+                    output_price: None,
+                    zone: None,
+                })
+                .collect(),
+            ..Catalog::default()
+        }
+    }
+
+    #[test]
+    fn the_list_is_searched_by_name_and_slug_with_the_best_matches_first() {
+        let catalog = catalog_of(&[
+            ("acme/big-kimi-clone", "Big Kimi Clone"),
+            ("moonshotai/kimi-k3", "Kimi K3"),
+            ("z-ai/glm-5", "GLM 5"),
+        ]);
+        let slugs = |query| {
+            catalog
+                .search(query)
+                .iter()
+                .map(|model| model.slug().to_string())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            slugs(""),
+            ["acme/big-kimi-clone", "moonshotai/kimi-k3", "z-ai/glm-5"]
+        );
+        assert_eq!(slugs("kimi"), ["moonshotai/kimi-k3", "acme/big-kimi-clone"]);
+        assert_eq!(slugs("z-ai glm"), ["z-ai/glm-5"]);
+        assert!(slugs("nothing").is_empty());
+        assert_eq!(
+            catalog
+                .get("openrouter:z-ai/glm-5")
+                .map(|m| m.label.as_str()),
+            Some("GLM 5")
+        );
+        assert!(catalog.get("z-ai/glm-5").is_some());
+        assert!(catalog.get("z-ai/glm-6").is_none());
+    }
+
+    #[test]
+    fn a_catalog_says_when_it_was_fetched() {
+        let mut catalog = catalog_of(&[("a/b", "B")]);
+        assert_eq!(catalog.updated(), None);
+        assert_eq!(catalog.summary(), "1");
+        let ago = |seconds| Some(SystemTime::now() - Duration::from_secs(seconds));
+        for (seconds, said) in [
+            (5, "updated just now"),
+            (60, "updated 1 minute ago"),
+            (7300, "updated 2 hours ago"),
+            (3 * 86400, "updated 3 days ago"),
+        ] {
+            catalog.fetched = ago(seconds);
+            assert_eq!(catalog.updated().as_deref(), Some(said));
+        }
+        assert_eq!(catalog.summary(), "1, updated 3 days ago");
+        assert_eq!(Catalog::default().summary(), "not loaded");
+    }
+
+    /// The list is fetched with the filters, without a key and gzipped, the
+    /// `:batch` rows are left out, and it is kept in memory for ten minutes.
+    #[tokio::test]
+    async fn the_list_is_fetched_filtered_and_kept_in_memory() {
+        let body = list(vec![
+            entry(
+                "moonshotai/kimi-k3",
+                "MoonshotAI: Kimi K3",
+                262_144,
+                "0.0000006",
+                "0.0000025",
+            ),
+            entry(
+                "anthropic/claude-opus-5.5:batch",
+                "Batch",
+                1_000_000,
+                "0.000001",
+                "0.000005",
+            ),
+            entry(
+                "acme/free-one:free",
+                "Acme: Free One (free)",
+                32_768,
+                "0",
+                "0",
+            ),
+        ]);
+        let server = Server::start(vec![("/models", 200, gzipped(&body), true)]).await;
+        let mut settings = Settings::default();
+        let key = key(&settings, &server);
+        assert_eq!(snapshot(&key), Catalog::default());
+
+        let catalog = refresh_at(&key, false, None).await;
+        assert_eq!(catalog.problem, None);
+        assert!(catalog.fetched.is_some());
+        let names: Vec<&str> = catalog.models.iter().map(|m| m.name.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "openrouter:moonshotai/kimi-k3",
+                "openrouter:acme/free-one:free"
+            ],
+            "the :batch row is left out"
+        );
+        let kimi = &catalog.models[0];
+        assert_eq!(kimi.label, "Kimi K3");
+        assert_eq!(kimi.context, Some(262_144));
+        assert_eq!(kimi.input_price, Some(0.6));
+        assert_eq!(kimi.output_price, Some(2.5));
+        assert_eq!(kimi.zone, None);
+        assert_eq!(catalog.models[1].details(), "33k context, free");
+
+        let requests = server.requests();
+        assert_eq!(server.paths(), ["/models?supported_parameters=tools"]);
+        let head = requests[0].to_ascii_lowercase();
+        assert!(!head.contains("authorization"), "no key is sent: {head}");
+        assert!(head.contains("accept-encoding: gzip"), "{head}");
+
+        // Fresh: no second fetch, but a forced one fetches.
+        assert_eq!(refresh_at(&key, false, None).await, catalog);
+        assert_eq!(server.requests().len(), 1);
+        refresh_at(&key, true, None).await;
+        assert_eq!(server.requests().len(), 2);
+
+        // Zero data retention is another list, fetched with `zdr=true`.
+        settings.set_zdr(true);
+        let zdr = self::key(&settings, &server);
+        assert_eq!(snapshot(&zdr).models.len(), 0);
+        refresh_at(&zdr, false, None).await;
+        assert_eq!(
+            server.paths().last().unwrap(),
+            "/models?supported_parameters=tools&zdr=true"
+        );
+        assert_eq!(snapshot(&zdr).models.len(), 2);
+    }
+
+    /// The list is plain JSON too, and a list that is old is fetched again.
+    #[tokio::test]
+    async fn an_old_list_is_fetched_again_and_a_plain_body_is_read() {
+        let body = list(vec![entry("a/b", "A: B", 8_000, "0.000001", "0.000002")]);
+        let server = Server::start(vec![("/models", 200, body, false)]).await;
+        let key = key(&Settings::default(), &server);
+        refresh_at(&key, false, None).await;
+        assert_eq!(server.requests().len(), 1);
+        // Ten minutes on.
+        memory().get_mut(&key).unwrap().loaded.as_mut().unwrap().at -=
+            FRESH + Duration::from_secs(1);
+        assert!(!is_fresh(&key));
+        refresh_at(&key, false, None).await;
+        assert_eq!(server.requests().len(), 2);
+        assert!(is_fresh(&key));
+    }
+
+    /// A fetch that fails leaves the list as it was and says why, and isn't
+    /// tried again for a while unless asked.
+    #[tokio::test]
+    async fn a_failed_fetch_keeps_the_list_and_says_why() {
+        let body = list(vec![entry("a/b", "A: B", 8_000, "0.000001", "0.000002")]);
+        let server = Server::start(vec![("/models", 200, body, false)]).await;
+        let key = key(&Settings::default(), &server);
+        refresh_at(&key, false, None).await;
+        drop(server);
+
+        let broken = Server::start(vec![("/models", 503, b"{}".to_vec(), false)]).await;
+        let broken_key = Key {
+            local: Some(broken.url.clone()),
+            ..key.clone()
+        };
+        let catalog = refresh_at(&broken_key, false, None).await;
+        assert!(catalog.models.is_empty());
+        assert_eq!(
+            catalog.problem.as_deref(),
+            Some("Couldn't load the models (OpenRouter answered 503)")
+        );
+        assert_eq!(broken.requests().len(), 1);
+        // Not again at once.
+        refresh_at(&broken_key, false, None).await;
+        assert_eq!(broken.requests().len(), 1);
+        refresh_at(&broken_key, true, None).await;
+        assert_eq!(broken.requests().len(), 2);
+
+        // With a list in memory, the failure says the update failed.
+        memory().get_mut(&key).unwrap().loaded.as_mut().unwrap().at -=
+            FRESH + Duration::from_secs(1);
+        let catalog = refresh_at(&key, false, None).await;
+        assert_eq!(catalog.models.len(), 1, "the list stays");
+        let problem = catalog.problem.unwrap();
+        assert!(
+            problem.starts_with("Couldn't update the models ("),
+            "{problem}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_list_that_isnt_a_list_is_a_problem() {
+        let server = Server::start(vec![("/models", 200, b"[1]".to_vec(), false)]).await;
+        let key = key(&Settings::default(), &server);
+        let catalog = refresh_at(&key, false, None).await;
+        assert!(catalog.models.is_empty());
+        assert_eq!(
+            catalog.problem.as_deref(),
+            Some("Couldn't load the models (its list held no models)")
+        );
+    }
+
+    /// US or EU lists the models of both regions, each with the zone it is
+    /// served from. A model both offer goes to the US.
+    #[tokio::test]
+    async fn a_list_for_us_or_eu_is_both_regions_lists() {
+        let us = list(vec![
+            entry(
+                "anthropic/claude-opus-5.5",
+                "Anthropic: Claude Opus 5.5",
+                1_000_000,
+                "0.000005",
+                "0.000025",
+            ),
+            entry("acme/both", "Acme: Both", 64_000, "0.000001", "0.000002"),
+        ]);
+        let eu = list(vec![
+            entry("acme/both", "Acme: Both", 64_000, "0.000001", "0.000002"),
+            entry(
+                "mistralai/eu-only",
+                "Mistral: EU Only",
+                128_000,
+                "0.000001",
+                "0.000002",
+            ),
+        ]);
+        let server = Server::start(vec![
+            ("/us/models", 200, gzipped(&us), true),
+            ("/eu/models", 200, gzipped(&eu), true),
+        ])
+        .await;
+        let mut settings = Settings::default();
+        settings.set_region(Region::UsOrEu);
+        settings.set_zdr(true);
+        let key = key(&settings, &server);
+        let catalog = refresh_at(&key, false, None).await;
+        assert_eq!(catalog.problem, None);
+        let zones: Vec<(&str, Option<Zone>)> = catalog
+            .models
+            .iter()
+            .map(|model| (model.slug(), model.zone))
+            .collect();
+        assert_eq!(
+            zones,
+            [
+                ("anthropic/claude-opus-5.5", Some(Zone::Us)),
+                ("acme/both", Some(Zone::Us)),
+                ("mistralai/eu-only", Some(Zone::Eu)),
+            ]
+        );
+        let mut paths = server.paths();
+        paths.sort();
+        assert_eq!(
+            paths,
+            [
+                "/eu/models?supported_parameters=tools&zdr=true",
+                "/us/models?supported_parameters=tools&zdr=true"
+            ]
+        );
+
+        // The models only the EU offers are sent there, the rest to the US,
+        // and a model not listed (or no list yet) to the US.
+        let eu_only = eu_only(key.clone());
+        assert_eq!(eu_only("mistralai/eu-only"), Some(EU_HOST.to_string()));
+        assert_eq!(
+            eu_only("mistralai/eu-only:thinking"),
+            Some(EU_HOST.to_string())
+        );
+        assert_eq!(eu_only("acme/both"), None);
+        assert_eq!(eu_only("anthropic/claude-opus-5.5:floor"), None);
+        assert_eq!(eu_only("nobody/unlisted"), None);
+        let nothing = Key {
+            local: Some("http://127.0.0.1:1".into()),
+            ..key
+        };
+        assert_eq!(self::eu_only(nothing)("mistralai/eu-only"), None);
+    }
+
+    /// One region's list failing leaves the whole list as it was, since half
+    /// of it would send a model to the wrong place.
+    #[tokio::test]
+    async fn a_list_for_us_or_eu_needs_both_regions() {
+        let us = list(vec![entry("a/b", "A: B", 8_000, "0.000001", "0.000002")]);
+        let server = Server::start(vec![
+            ("/us/models", 200, us, false),
+            ("/eu/models", 500, b"{}".to_vec(), false),
+        ])
+        .await;
+        let mut settings = Settings::default();
+        settings.set_region(Region::UsOrEu);
+        let catalog = refresh_at(&key(&settings, &server), false, None).await;
+        assert!(catalog.models.is_empty());
+        assert_eq!(
+            catalog.problem.as_deref(),
+            Some("Couldn't load the models (OpenRouter answered 500)")
+        );
+    }
+
+    #[tokio::test]
+    async fn the_models_in_memory_size_a_models_context() {
+        let temp = tempfile::tempdir().unwrap();
+        let body = list(vec![entry("a/b", "A: B", 128_000, "0.000001", "0.000002")]);
+        let server = Server::start(vec![("/models", 200, body, false)]).await;
+        let settings = Settings::default();
+        let catalog = checked(temp.path(), &settings, Some(&server.url))
+            .await
+            .unwrap();
+        assert_eq!(catalog.get("a/b").unwrap().max_input_tokens, 128_000);
+        let unreachable = checked(temp.path(), &settings, Some("http://127.0.0.1:1")).await;
+        assert!(unreachable.is_err());
+    }
+
+    /// A model picked keeps what OpenRouter said of it, from the models in
+    /// memory, and the models fetched later bring it up to date.
+    #[tokio::test]
+    async fn a_model_picked_keeps_what_openrouter_said_of_it() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let body = list(vec![entry(
+            "moonshotai/kimi-k3",
+            "MoonshotAI: Kimi K3",
+            262_144,
+            "0.0000006",
+            "0.0000025",
+        )]);
+        let server = Server::start(vec![("/models", 200, body, false)]).await;
+        let key = key(&Settings::default(), &server);
+
+        // Before the models are known, the slug alone is kept, and what
+        // the models say of it later fills in.
+        remember_in(root, "openrouter:moonshotai/kimi-k3", Some(&server.url));
+        let file = std::fs::read_to_string(root.join(FILE)).unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&file).unwrap()["recent"],
+            json!(["moonshotai/kimi-k3"])
+        );
+        assert_eq!(recent(root)[0].label, "Kimi K3", "from the slug");
+        assert_eq!(recent(root)[0].context, None);
+        assert!(known_in(root, "moonshotai/kimi-k3", Some(&server.url)).is_none());
+
+        refresh_at(&key, false, Some(root)).await;
+        let kimi = &recent(root)[0];
+        assert_eq!(kimi.name, "openrouter:moonshotai/kimi-k3");
+        assert_eq!(kimi.label, "Kimi K3");
+        assert_eq!(kimi.context, Some(262_144));
+        assert_eq!(
+            (kimi.input_price, kimi.output_price),
+            (Some(0.6), Some(2.5))
+        );
+        assert_eq!(
+            kimi.details(),
+            "262k context, $0.60 in and $2.50 out per million tokens"
+        );
+
+        // Picked with the models in memory: the details are written.
+        remember_in(root, "openrouter:other/unlisted", Some(&server.url));
+        remember_in(root, "openrouter:moonshotai/kimi-k3", Some(&server.url));
+        let file: Value =
+            serde_json::from_str(&std::fs::read_to_string(root.join(FILE)).unwrap()).unwrap();
+        assert_eq!(
+            file["recent"][0],
+            json!({"slug": "moonshotai/kimi-k3", "label": "Kimi K3", "context": 262144,
+                   "input_price": 0.6, "output_price": 2.5})
+        );
+        assert_eq!(file["recent"][1], "other/unlisted");
+
+        // A model not listed (or no longer) keeps what it had.
+        assert!(known_in(root, "other/unlisted", Some(&server.url)).is_none());
+        assert_eq!(
+            known_in(root, "moonshotai/kimi-k3", Some(&server.url))
+                .unwrap()
+                .max_input_tokens,
+            262_144
+        );
+    }
+
+    /// Without the models in memory, a model picked sizes a handover from
+    /// what was kept.
+    #[test]
+    fn a_model_picked_gives_its_context_without_the_models_in_memory() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            temp.path().join(FILE),
+            r#"{"recent": [{"slug": "acme/kept", "context": 131072}, "acme/bare"]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            known(temp.path(), "acme/kept").unwrap().max_input_tokens,
+            131_072
+        );
+        assert!(known(temp.path(), "acme/bare").is_none());
+        assert!(known(temp.path(), "acme/unknown").is_none());
+    }
+
+    /// Zero data retention covers no data collection, and the file keeps
+    /// the two apart.
+    #[test]
+    fn zero_data_retention_covers_no_data_collection() {
+        let mut settings = Settings::default();
+        assert!(!settings.data_collection_implied());
+        assert_eq!(Control::DataCollection.value(&settings), "Off");
+        settings.set_zdr(true);
+        assert!(settings.data_collection_implied());
+        assert!(!settings.deny_data_collection());
+        assert_eq!(Control::DataCollection.value(&settings), "On");
+        assert_eq!(settings.summary().as_deref(), Some("Zero data retention"));
+        settings.set_deny_data_collection(true);
+        assert_eq!(settings.summary().as_deref(), Some("Zero data retention"));
+        settings.set_zdr(false);
+        assert_eq!(settings.summary().as_deref(), Some("No data collection"));
+    }
+}

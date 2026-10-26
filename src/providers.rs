@@ -170,7 +170,7 @@ fn distance(a: &str, b: &str) -> usize {
     row[b.len()]
 }
 
-fn strip_prefix<'a>(name: &'a str, prefix: &str) -> Option<&'a str> {
+pub(crate) fn strip_prefix<'a>(name: &'a str, prefix: &str) -> Option<&'a str> {
     let head = name.get(..prefix.len())?;
     head.eq_ignore_ascii_case(prefix)
         .then(|| name[prefix.len()..].trim())
