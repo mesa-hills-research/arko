@@ -66,22 +66,40 @@ pub enum Input {
     /// note while it works, and runs as a command when it is one. Unlike a
     /// line, it is whole and isn't joined with what comes right after it.
     Message(Message),
-    /// The answer to the agent's question `question` (the ID the feed gave
-    /// it).
+    /// `text` answers the open questions of the question card `question`
+    /// (its item), as a message sent with them attached
+    /// ([`Message::answers`]) does.
     Answer {
         question: u64,
         text: String,
     },
+    /// The user's answers to the main agent's questions, from an answer
+    /// panel. They reach the agent as one note (at once when it waits for
+    /// them, else at its next step, and an idle agent starts a turn), and
+    /// the questions answered are no longer open. The questions left
+    /// unanswered stay open. Answers to questions that aren't open are
+    /// dropped. See [`crate::questions`].
+    AnswerQuestions(crate::questions::Answers),
+    /// The user dismisses the main agent's questions `ids` ("Not now"). The
+    /// agent is told, and goes on with its defaults. An approval dismissed
+    /// isn't saved. Ids that aren't open are dropped.
+    DismissQuestions(Vec<String>),
 }
 
 /// A message from an app, with what is attached to it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Message {
     pub text: String,
     /// Images to send with it. The message isn't sent when the main agent's
     /// model takes no images or not their type
     /// ([`image_refusal`](crate::models::image_refusal)).
     pub images: Vec<Attachment>,
+    /// The ids of the main agent's open questions the message answers (the
+    /// "Replying to" chip). The agent reads it labelled as their answer,
+    /// "(This message answers q3 and q4.)", and they are no longer open. A
+    /// message without them names the questions still open at its end,
+    /// "(Still open: q5.)".
+    pub answers: Vec<String>,
 }
 
 /// A file attached to a message, with its bytes, its type and its name.

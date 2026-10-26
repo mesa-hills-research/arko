@@ -71,9 +71,12 @@ fn items_from(
     // wait without ids waits for. (A run that reported in a note, between
     // two waits, stays in until a wait's result lists what still runs.)
     let mut running: Vec<String> = Vec::new();
+    // The user's answers to questions the agent waited for.
+    let answers = waited_answers(messages);
     for (index, message) in messages.iter().enumerate() {
         let start = items.len();
         if starts_turn(message)
+            && !answers.contains(&index)
             && (ended
                 || message
                     .content
@@ -100,8 +103,10 @@ fn items_from(
                             else {
                                 continue;
                             };
-                            // (The answer comes as a message of the user's.)
+                            // The questions' ids are in the result. (The
+                            // answers come as the user's messages and notes.)
                             if tool == ASK_USER_TOOL_NAME {
+                                card_ids(&mut items[index], &result.output);
                                 continue;
                             }
                             let outcome = if result.is_error {
@@ -130,6 +135,11 @@ fn items_from(
                                 push(&mut items, block);
                             }
                         }
+                        Content::Text(text) if answers.contains(&index) => {
+                            for item in answer_items(text) {
+                                mine = Some(push(&mut items, item));
+                            }
+                        }
                         Content::Text(text) => {
                             for (mut item, editable) in user_items(text) {
                                 // A message that started a turn can be
@@ -151,7 +161,7 @@ fn items_from(
                 }
             }
             Role::Assistant => {
-                let reply = text_replies && is_reply(messages, index);
+                let reply = text_replies && is_reply(messages, index, &answers);
                 if reply {
                     let text: String = message
                         .content
@@ -185,7 +195,7 @@ fn items_from(
                     };
                     let item = match call.name.as_str() {
                         "complete_task" => Some(Item::new(Kind::Reply, text("summary"))),
-                        ASK_USER_TOOL_NAME => Some(Item::new(Kind::Question, text("questions"))),
+                        ASK_USER_TOOL_NAME => Some(question_card(parameters.get("questions"))),
                         name => render::call(name, &parameters, &running),
                     };
                     if call.name == crew::STOP_AGENT {
@@ -215,13 +225,57 @@ fn items_from(
                 .tool_calls
                 .iter()
                 .any(|call| call.name == "complete_task")
-                || (text_replies && is_reply(messages, index));
+                || (text_replies && is_reply(messages, index, &answers));
         }
         for item in &mut items[start..] {
             item.turn = turn;
         }
     }
     items
+}
+
+/// The card of an `ask_user` call that asked `questions` (a list, or one
+/// question as text). Its text is the questions as the user reads them,
+/// which it shows when the session no longer keeps what became of them.
+fn question_card(questions: Option<&serde_json::Value>) -> Item {
+    let asked = questions
+        .and_then(|questions| arko_agents::questions::parse_questions(questions).ok())
+        .unwrap_or_default();
+    let mut placeholders: Vec<crate::questions::AgentQuestion> = asked
+        .iter()
+        .map(|question| crate::questions::AgentQuestion::placeholder(&question.question))
+        .collect();
+    if placeholders.len() > 1 {
+        for (number, question) in (1..).zip(&mut placeholders) {
+            question.number = Some(number);
+        }
+    }
+    let text = placeholders
+        .iter()
+        .map(crate::questions::AgentQuestion::numbered)
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut item = Item::new(Kind::Question, text);
+    // The questions, for their ids once the result names them.
+    item.questions = (!placeholders.is_empty()).then_some(placeholders);
+    item
+}
+
+/// Gives the questions of `card` the ids its `ask_user` result names.
+/// Without ids (a question asked before questions had them), the card has
+/// none.
+fn card_ids(card: &mut Item, result: &str) {
+    let ids = crate::questions::ids_in_result(result);
+    let Some(questions) = card.questions.as_mut() else {
+        return;
+    };
+    if ids.len() != questions.len() {
+        card.questions = None;
+        return;
+    }
+    for (question, id) in questions.iter_mut().zip(ids) {
+        question.id = id;
+    }
 }
 
 /// Follows the runs the agent has going through the results of its calls.
@@ -265,11 +319,39 @@ fn reopened(text: &str) -> bool {
 /// text. That's text alone, with neither the answer to its question after
 /// it nor more of its response. Claude Code's agents save the text of a
 /// response apart from its calls, as a message of its own before them.
-fn is_reply(messages: &[Message], index: usize) -> bool {
+fn is_reply(messages: &[Message], index: usize, answers: &[usize]) -> bool {
     messages[index].tool_calls.is_empty()
-        && messages
-            .get(index + 1)
-            .is_none_or(|next| next.role != Role::Assistant && !is_answer(next))
+        && messages.get(index + 1).is_none_or(|next| {
+            next.role != Role::Assistant && !is_answer(next) && !answers.contains(&(index + 1))
+        })
+}
+
+/// The messages that answer questions the agent waited for: the first
+/// message of the user's own text after an `ask_user` result that didn't
+/// return at once (context updates come apart from it).
+fn waited_answers(messages: &[Message]) -> Vec<usize> {
+    let mut waiting = false;
+    let mut answers = Vec::new();
+    for (index, message) in messages.iter().enumerate() {
+        if message.role != Role::User {
+            continue;
+        }
+        for content in &message.content {
+            match content {
+                Content::ToolResult(result) if result.name == ASK_USER_TOOL_NAME => {
+                    waiting = !crate::questions::returned_at_once(&result.output);
+                }
+                Content::Text(text)
+                    if waiting && !text.trim_start().starts_with("# Workflow context update") =>
+                {
+                    answers.push(index);
+                    waiting = false;
+                }
+                _ => {}
+            }
+        }
+    }
+    answers
 }
 
 /// Whether `message` can begin a turn: a message from the user's side with
@@ -337,10 +419,13 @@ fn user_items(text: &str) -> Vec<(Item, bool)> {
     let items = match reopened_with(update) {
         Some((prompt, rest)) => {
             let mut items = composed(prompt);
-            items.extend(operator_notes(rest).into_iter().map(note));
+            items.extend(operator_notes(rest).into_iter().filter_map(note));
             items
         }
-        None => operator_notes(update).into_iter().map(note).collect(),
+        None => operator_notes(update)
+            .into_iter()
+            .filter_map(note)
+            .collect(),
     };
     items.into_iter().map(|item| (item, false)).collect()
 }
@@ -401,7 +486,11 @@ fn is_news(text: &str) -> bool {
 /// The items of a message Arko composed: the notes in its section of what
 /// the user typed during the last turn, then the user's words.
 fn composed(text: &str) -> Vec<Item> {
-    let mut items: Vec<Item> = unread_notes(text).into_iter().map(note).collect();
+    let mut items: Vec<Item> = answer_notes_in(text)
+        .iter()
+        .map(|text| answer_item(text))
+        .collect();
+    items.extend(unread_notes(text).into_iter().filter_map(note));
     items.extend(user_item(text));
     items
 }
@@ -465,12 +554,113 @@ fn operator_notes(update: &str) -> Vec<String> {
         .collect()
 }
 
-/// A note the user typed during a turn, as the live transcript shows it.
-fn note(text: String) -> Item {
-    let mut item = Item::new(Kind::User, text);
+/// A note the user typed during a turn, as the live transcript shows it:
+/// the user's words, or, for a note Arko wrote about the agent's questions,
+/// what the user wrote besides the answers.
+fn note(text: String) -> Option<Item> {
+    if let Some(besides) = answer_note(&text) {
+        return besides.map(|text| answer_item(&text));
+    }
+    let mut item = Item::new(Kind::User, unlabelled(&text));
     item.source = Some(Source::Terminal);
     item.delivery = Some(Delivery::Note);
+    Some(item)
+}
+
+/// The items of the user's answer to questions the agent waited for: what
+/// they wrote besides, or their message.
+fn answer_items(text: &str) -> Vec<Item> {
+    match answer_note(text) {
+        Some(besides) => besides.iter().map(|text| answer_item(text)).collect(),
+        None => {
+            let words = unlabelled(text);
+            if words.is_empty() {
+                Vec::new()
+            } else {
+                vec![answer_item(words)]
+            }
+        }
+    }
+}
+
+fn answer_item(text: &str) -> Item {
+    let mut item = Item::new(Kind::User, text.trim());
+    item.source = Some(Source::Terminal);
+    item.delivery = Some(Delivery::Answer);
     item
+}
+
+/// How the notes Arko writes about the agent's questions begin.
+const ANSWER_NOTES: [&str; 3] = [
+    "The user answered q",
+    "The user dismissed q",
+    "The user wrote about your questions.",
+];
+
+/// What the user wrote besides their answers ("Anything else") in a note
+/// Arko wrote about the agent's questions, or `None` when `text` isn't
+/// such a note.
+fn answer_note(text: &str) -> Option<Option<String>> {
+    let text = text.trim();
+    if !ANSWER_NOTES.iter().any(|start| text.starts_with(start)) {
+        return None;
+    }
+    let lines: Vec<&str> = text.lines().collect();
+    let Some(at) = lines
+        .iter()
+        .position(|line| line.starts_with("Anything else: "))
+    else {
+        return Some(None);
+    };
+    let mut words = vec![&lines[at]["Anything else: ".len()..]];
+    words.extend(
+        lines[at + 1..]
+            .iter()
+            .take_while(|line| !line.starts_with("Still open: ")),
+    );
+    let words = words.join("\n").trim().to_string();
+    Some((!words.is_empty()).then_some(words))
+}
+
+/// The notes about the agent's questions at the start of a message Arko
+/// composed (before its sections), each what the user wrote besides.
+fn answer_notes_in(text: &str) -> Vec<String> {
+    let mut found = Vec::new();
+    let mut note: Option<Vec<&str>> = None;
+    for part in text.split("\n\n") {
+        let starts = ANSWER_NOTES.iter().any(|start| part.starts_with(start));
+        if starts || part.starts_with("# ") {
+            found.extend(
+                note.take()
+                    .and_then(|note| answer_note(&note.join("\n\n")).flatten()),
+            );
+        }
+        if starts {
+            note = Some(vec![part]);
+        } else if let Some(note) = note.as_mut() {
+            note.push(part);
+        }
+    }
+    found.extend(note.and_then(|note| answer_note(&note.join("\n\n")).flatten()));
+    found
+}
+
+/// The user's words of a message Arko labelled for the agent, without
+/// "(This message answers q3.)" before them and "(Still open: q5.)" after
+/// them.
+fn unlabelled(text: &str) -> &str {
+    let mut text = text.trim();
+    if text.starts_with("(This message answers q")
+        && let Some((_, words)) = text.split_once(".)\n")
+    {
+        text = words;
+    }
+    if text.ends_with(".)")
+        && let Some(at) = text.rfind("\n\n(Still open: q")
+    {
+        text = &text[..at];
+    }
+    text.trim()
 }
 
 /// What the user wrote, from a message of theirs. Arko's composed message
@@ -502,14 +692,15 @@ fn user_item(text: &str) -> Option<Item> {
             if let Some(opening) = Opening::of(text) {
                 return Some(Item::new(Kind::Notice, opening.notice()).level(super::Level::Info));
             }
-            // Only Arko's own sections: no words of the user's.
-            if text.starts_with("# ") {
+            // Only Arko's own sections, or its notes about the agent's
+            // questions: no words of the user's.
+            if text.starts_with("# ") || ANSWER_NOTES.iter().any(|start| text.starts_with(start)) {
                 return None;
             }
             text
         }
     };
-    let mut item = Item::new(Kind::User, mine.trim());
+    let mut item = Item::new(Kind::User, unlabelled(mine));
     item.source = Some(Source::Terminal);
     // (Sessions saved before it was reworded have the earlier text.)
     let refresh = [super::feed::REFRESH_MESSAGE, EARLIER_REFRESH_MESSAGE];
@@ -1033,5 +1224,190 @@ mod tests {
                 (Kind::Reply, Some(2)),
             ]
         );
+    }
+
+    /// An ask's card holds its questions with the ids its result names, in
+    /// both forms of `ask_user`, and a question asked before ids has none.
+    #[test]
+    fn question_cards_take_their_ids_from_the_result() {
+        for (arguments, output, ids) in [
+            (
+                serde_json::json!({"questions": [{"question": "Tabs or spaces?"}, "Push now?"]}),
+                "Asked q3 and q4. Their answers reach you as a note, so go on with your work.",
+                Some(vec!["q3", "q4"]),
+            ),
+            (
+                serde_json::json!({"questions": "Which file?", "wait": true}),
+                "q5 Which file?",
+                Some(vec!["q5"]),
+            ),
+            (
+                serde_json::json!({"questions": "Which file?"}),
+                "Which file?",
+                None,
+            ),
+        ] {
+            let mut ask = Message::new_assistant("");
+            ask.tool_calls = vec![call("ask", ASK_USER_TOOL_NAME, arguments)];
+            let result = Message::new_user_with_contents(vec![Content::ToolResult(
+                ToolResult::new(Some("ask".into()), ASK_USER_TOOL_NAME, output),
+            )]);
+            let messages = vec![Message::new_user("Start."), ask, result];
+            let items = all_items(&messages, false, &Images::default());
+            let card = items
+                .iter()
+                .find(|item| item.kind == Kind::Question)
+                .unwrap();
+            assert_eq!(
+                card.questions
+                    .as_ref()
+                    .map(|questions| questions.iter().map(|q| q.id.as_str()).collect::<Vec<_>>()),
+                ids,
+                "{output}"
+            );
+        }
+    }
+
+    fn texts(items: &[Item]) -> Vec<(Kind, &str, Option<Delivery>, Option<u64>)> {
+        items
+            .iter()
+            .map(|item| (item.kind, item.text.as_str(), item.delivery, item.turn))
+            .collect()
+    }
+
+    fn completed(summary: &str) -> Message {
+        let mut done = Message::new_assistant("");
+        done.content.clear();
+        done.tool_calls = vec![call(
+            &format!("done-{summary}"),
+            "complete_task",
+            serde_json::json!({"summary": summary}),
+        )];
+        done
+    }
+
+    /// What Arko added for the agent around the user's words (the
+    /// questions a message answers, those still open) is left out, and its
+    /// notes about the agent's questions show only what the user wrote
+    /// besides their answers, as the live transcript showed them.
+    #[test]
+    fn a_resumed_history_shows_the_users_words_without_arkos_labels() {
+        let messages = vec![
+            Message::new_user("(This message answers q1.)\nSpaces, please."),
+            completed("One."),
+            Message::new_user("Hello.\n\n(Still open: q2.)"),
+            completed("Two."),
+            Message::new_user(
+                "# Workflow context update\n\n- Note 1 from the operator (the person running this workflow), at 10:00:\n  The user answered q2.\n  q2 Push now? Not yet\n  Anything else: Keep it short.\n- Note 2 from the operator (the person running this workflow), at 10:01:\n  (This message answers q3.)\n  main\n\n  (Still open: q4.)",
+            ),
+            completed("Three."),
+            Message::new_user(
+                "The user dismissed q4.\n\nThe user wrote about your questions.\nAnything else: Thanks.",
+            ),
+            completed("Four."),
+            Message::new_user(
+                "The user answered q5.\nq5 Why? Because\n\n# My message\n\n(This message answers q6.)\nAnd this.\n\n(Still open: q7.)",
+            ),
+            completed("Five."),
+        ];
+        let items = all_items(&messages, false, &Images::default());
+        let users: Vec<_> = texts(&items)
+            .into_iter()
+            .filter(|(kind, ..)| *kind == Kind::User)
+            .map(|(_, text, delivery, _)| (text, delivery))
+            .collect();
+        assert_eq!(
+            users,
+            [
+                ("Spaces, please.", Some(Delivery::Turn)),
+                ("Hello.", Some(Delivery::Turn)),
+                ("Keep it short.", Some(Delivery::Answer)),
+                ("main", Some(Delivery::Note)),
+                ("Thanks.", Some(Delivery::Answer)),
+                ("And this.", Some(Delivery::Turn)),
+            ]
+        );
+    }
+
+    /// The answer to questions the agent waited for stays in their turn, in
+    /// both forms Arko sends it: a note of the answers, or the user's
+    /// message.
+    #[test]
+    fn a_waited_answer_stays_in_its_turn() {
+        for (answer, shown) in [
+            (
+                "The user answered q1.\nq1 Which file? README.md\nAnything else: Quick.",
+                "Quick.",
+            ),
+            ("(This message answers q1.)\nREADME.md", "README.md"),
+        ] {
+            let mut ask = Message::new_assistant("");
+            ask.tool_calls = vec![call(
+                "ask",
+                ASK_USER_TOOL_NAME,
+                serde_json::json!({"questions": ["Which file?"], "wait": true}),
+            )];
+            let messages = vec![
+                Message::new_user("Start."),
+                ask,
+                Message::new_user_with_contents(vec![Content::ToolResult(ToolResult::new(
+                    Some("ask".into()),
+                    ASK_USER_TOOL_NAME,
+                    "q1 Which file?",
+                ))]),
+                Message::new_user(answer),
+                completed("Done."),
+            ];
+            let items = all_items(&messages, false, &Images::default());
+            assert_eq!(
+                texts(&items),
+                [
+                    (Kind::User, "Start.", Some(Delivery::Turn), Some(1)),
+                    (Kind::Question, "Which file?", None, Some(1)),
+                    (Kind::User, shown, Some(Delivery::Answer), Some(1)),
+                    (Kind::Reply, "Done.", None, Some(1)),
+                ],
+                "{answer}"
+            );
+            assert_eq!(items[1].questions.as_ref().unwrap()[0].id, "q1");
+        }
+    }
+
+    /// In Claude Code the agent ends its turn after asking: its text before
+    /// the answer isn't its reply, the answer keeps the turn, and the card
+    /// takes its id from the call's result.
+    #[test]
+    fn a_waited_answer_in_claude_code_stays_in_its_turn() {
+        let mut ask = Message::new_assistant("");
+        ask.tool_calls = vec![call(
+            "ask",
+            ASK_USER_TOOL_NAME,
+            serde_json::json!({"questions": ["Which file?"], "wait": true}),
+        )];
+        let messages = vec![
+            Message::new_user("Start."),
+            Message::new_assistant("Let me ask."),
+            ask,
+            Message::new_user_with_contents(vec![Content::ToolResult(ToolResult::new(
+                Some("ask".into()),
+                ASK_USER_TOOL_NAME,
+                "Asked q1. End your turn now without calling tools, and the answer arrives as the next message.",
+            ))]),
+            Message::new_assistant("Waiting for your answer."),
+            Message::new_user("The user answered q1.\nq1 Which file? README.md"),
+            Message::new_assistant("Used README.md."),
+        ];
+        let items = all_items(&messages, true, &Images::default());
+        assert_eq!(
+            texts(&items),
+            [
+                (Kind::User, "Start.", Some(Delivery::Turn), Some(1)),
+                (Kind::Text, "Let me ask.", None, Some(1)),
+                (Kind::Question, "Which file?", None, Some(1)),
+                (Kind::Text, "Waiting for your answer.", None, Some(1)),
+                (Kind::Reply, "Used README.md.", None, Some(1)),
+            ]
+        );
+        assert_eq!(items[2].questions.as_ref().unwrap()[0].id, "q1");
     }
 }

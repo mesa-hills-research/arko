@@ -8,9 +8,7 @@ mod tests {
     use ratatui::backend::TestBackend;
 
     use crate::glyphs::{Symbols, tests::choose_symbols};
-    use crate::remote::{
-        Activity, CallStatus, Delivery, Item, Kind, Question, Update, WorkerState,
-    };
+    use crate::remote::{Activity, CallStatus, Delivery, Item, Kind, Update, WorkerState};
     use crate::tui::app::{App, Info, tests::worker};
     use crate::tui::input::{Editor, History};
     use crate::tui::screen::draw;
@@ -282,14 +280,9 @@ mod tests {
             assert!(!is_rule(&rows[next], 80), "{above:?}\n{}", rows.join("\n"));
         }
         let mut app = working(Above::User, false, View::Full);
-        app.set_activity(Activity {
-            working: true,
-            since: None,
-            question: Some(Question {
-                id: 1,
-                text: "Tabs or spaces?".into(),
-            }),
-        });
+        let mut reading = crate::tui::app::tests::asking();
+        reading.questions[0].waits = true;
+        app.set_reading(reading);
         let rows = screen(&mut app, 80, 24);
         assert!(padding(&rows).is_none(), "{}", rows.join("\n"));
     }

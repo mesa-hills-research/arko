@@ -261,6 +261,14 @@ fn router(app: Arc<App>) -> Router {
         .route("/api/events", get(events))
         .route("/api/message", axum::routing::post(message))
         .route("/api/answer", axum::routing::post(answer))
+        .route(
+            "/api/questions/answer",
+            axum::routing::post(answer_questions),
+        )
+        .route(
+            "/api/questions/dismiss",
+            axum::routing::post(dismiss_questions),
+        )
         .route("/api/stop", axum::routing::post(stop))
         .route("/api/background", axum::routing::post(background))
         .route("/api/jobs/stop", axum::routing::post(stop_job))
@@ -859,6 +867,10 @@ struct MessageBody {
     /// to that worker, as the full-screen view sends it.
     #[serde(default)]
     to: Option<String>,
+    /// The main agent's open questions the message answers (the
+    /// "Replying to" chip).
+    #[serde(default)]
+    answers: Vec<String>,
 }
 
 /// The text as typed: line ends as `\n`, and not blank.
@@ -877,10 +889,21 @@ async fn message(
     if let Err(refusal) = app.authorize(&headers, peer.ip()) {
         return refusal.into_response();
     }
-    match serde_json::from_slice::<MessageBody>(&body)
-        .ok()
-        .and_then(|body| Some((typed(&body.text)?, body.to)))
+    let Ok(body) = serde_json::from_slice::<MessageBody>(&body) else {
+        return (StatusCode::BAD_REQUEST, error_body("send {\"text\": ...}")).into_response();
+    };
+    // A reply to the main agent's questions.
+    if !body.answers.is_empty()
+        && body.to.is_none()
+        && let Some(text) = typed(&body.text)
+        && crate::commands::find(&text).is_none()
     {
+        return app.act(Action::Reply {
+            text,
+            answers: body.answers,
+        });
+    }
+    match typed(&body.text).map(|text| (text, body.to)) {
         // Text like "/usr/bin is missing" is a message, not a command.
         Some((text, Some(worker)))
             if crate::commands::find(&text).is_none()
@@ -924,11 +947,11 @@ async fn answer(
         )
             .into_response();
     };
-    if app
+    if !app
         .feed
-        .activity()
-        .question
-        .is_none_or(|asked| asked.id != question)
+        .card_questions(question)
+        .iter()
+        .any(|asked| asked.state.is_open())
     {
         return (
             StatusCode::CONFLICT,
@@ -937,6 +960,80 @@ async fn answer(
             .into_response();
     }
     app.act(Action::Answer { question, text })
+}
+
+/// The 409 for questions that aren't open.
+fn not_open() -> Response {
+    (
+        StatusCode::CONFLICT,
+        error_body("those questions are no longer open"),
+    )
+        .into_response()
+}
+
+/// `POST /api/questions/answer` with
+/// `{"answers": [{"id": "q3", "choices": ["Spaces"]}, {"id": "q4", "you_decide": true}, {"id": "q5", "text": "..."}], "anything_else": "..."}`:
+/// the answer panel's answers to the main agent's open questions. Those
+/// unanswered stay open. 409 when none of them is open.
+async fn answer_questions(
+    State(app): State<Arc<App>>,
+    ConnectInfo(peer): Peer,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    if let Err(refusal) = app.authorize(&headers, peer.ip()) {
+        return refusal.into_response();
+    }
+    let Some(answers) = serde_json::from_slice::<crate::questions::Answers>(&body)
+        .ok()
+        .filter(|answers| !answers.is_empty())
+    else {
+        return (
+            StatusCode::BAD_REQUEST,
+            error_body("send {\"answers\": [{\"id\": \"q1\", \"choices\": [...], \"text\": ..., \"you_decide\": true}], \"anything_else\": ...}"),
+        )
+            .into_response();
+    };
+    let open = app.feed.open_questions();
+    let answers_open = answers.answers.iter().any(|given| {
+        !given.answer.is_empty() && open.iter().any(|question| question.id == given.id)
+    });
+    let writes_about_open = answers.answers.is_empty() && !open.is_empty();
+    if !answers_open && !writes_about_open {
+        return not_open();
+    }
+    app.act(Action::AnswerQuestions(answers))
+}
+
+#[derive(Deserialize)]
+struct DismissBody {
+    /// The questions to dismiss.
+    ids: Vec<String>,
+}
+
+/// `POST /api/questions/dismiss` with `{"ids": ["q5"]}`: "Not now". 409
+/// when none of them is open.
+async fn dismiss_questions(
+    State(app): State<Arc<App>>,
+    ConnectInfo(peer): Peer,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    if let Err(refusal) = app.authorize(&headers, peer.ip()) {
+        return refusal.into_response();
+    }
+    let Some(ids) = serde_json::from_slice::<DismissBody>(&body)
+        .ok()
+        .map(|body| body.ids)
+        .filter(|ids| !ids.is_empty())
+    else {
+        return (StatusCode::BAD_REQUEST, error_body("send {\"ids\": [...]}")).into_response();
+    };
+    let open = app.feed.open_questions();
+    if !ids.iter().any(|id| open.iter().any(|q| &q.id == id)) {
+        return not_open();
+    }
+    app.act(Action::DismissQuestions(ids))
 }
 
 /// A link to the page for `GET /api/links`.
@@ -2417,7 +2514,21 @@ mod tests {
             )
             .await;
         assert_eq!(response.status(), StatusCode::CONFLICT);
-        let id = feed.question("Tabs or spaces?");
+        let run = uuid::Uuid::new_v4();
+        feed.questions_run(Some(run));
+        let id = feed.ask(
+            run,
+            &[crate::questions::AskedQuestion {
+                id: "q1".into(),
+                question: arko_agents::questions::Question {
+                    question: "Tabs or spaces?".into(),
+                    choices: vec!["Tabs".into(), "Spaces".into()],
+                    ..Default::default()
+                },
+            }],
+            false,
+            None,
+        );
         let response = served
             .post(
                 "/api/answer",
@@ -2470,6 +2581,131 @@ mod tests {
         }
         // Without the session's cookie, nothing moves or stops.
         let response = served.post("/api/background", None, "{}").await;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    /// The answer panel's endpoints: answers (per question a choice, text
+    /// or "you decide", and "anything else"), dismissals and a message
+    /// that answers questions become their actions. Questions that aren't
+    /// open get a 409, a body that says nothing a 400.
+    #[tokio::test]
+    async fn questions_are_answered_dismissed_and_replied_to() {
+        use crate::questions::{Answer, Answers, QuestionAnswer};
+        let feed = Feed::new("main");
+        let mut served = serve(&feed);
+        let cookie = served.login().await;
+        let answer = r#"{"answers": [{"id": "q1", "choices": ["Spaces"]}, {"id": "q2", "you_decide": true}], "anything_else": "Keep it short."}"#;
+        // Nothing is open yet.
+        let response = served
+            .post("/api/questions/answer", Some(&cookie), answer)
+            .await;
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let response = served
+            .post(
+                "/api/questions/dismiss",
+                Some(&cookie),
+                r#"{"ids": ["q1"]}"#,
+            )
+            .await;
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+
+        let run = uuid::Uuid::new_v4();
+        feed.questions_run(Some(run));
+        let asked = |id: &str| crate::questions::AskedQuestion {
+            id: id.into(),
+            question: arko_agents::questions::Question {
+                question: format!("{id}?"),
+                ..Default::default()
+            },
+        };
+        feed.ask(run, &[asked("q1"), asked("q2")], false, None);
+        let response = served
+            .post("/api/questions/answer", Some(&cookie), answer)
+            .await;
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        assert_eq!(
+            served.actions.recv().await.unwrap(),
+            Action::AnswerQuestions(Answers {
+                answers: vec![
+                    QuestionAnswer::new(
+                        "q1",
+                        Answer {
+                            choices: vec!["Spaces".into()],
+                            ..Answer::default()
+                        }
+                    ),
+                    QuestionAnswer::new(
+                        "q2",
+                        Answer {
+                            you_decide: true,
+                            ..Answer::default()
+                        }
+                    ),
+                ],
+                anything_else: Some("Keep it short.".into()),
+            })
+        );
+        for bad in ["{}", r#"{"answers": [{"id": "q1"}]}"#, "nonsense"] {
+            let response = served
+                .post("/api/questions/answer", Some(&cookie), bad)
+                .await;
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{bad}");
+        }
+        let response = served
+            .post(
+                "/api/questions/answer",
+                Some(&cookie),
+                r#"{"answers": [{"id": "q9", "text": "Yes"}]}"#,
+            )
+            .await;
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+
+        let response = served
+            .post(
+                "/api/questions/dismiss",
+                Some(&cookie),
+                r#"{"ids": ["q2"]}"#,
+            )
+            .await;
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        assert_eq!(
+            served.actions.recv().await.unwrap(),
+            Action::DismissQuestions(vec!["q2".to_string()])
+        );
+        // Every question is named: a page can't dismiss questions it
+        // doesn't show (another conversation's).
+        for body in ["", "{}", r#"{"ids": []}"#] {
+            let response = served
+                .post("/api/questions/dismiss", Some(&cookie), body)
+                .await;
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{body}");
+        }
+        let response = served
+            .post(
+                "/api/questions/dismiss",
+                Some(&cookie),
+                r#"{"ids": ["q7"]}"#,
+            )
+            .await;
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+
+        let response = served
+            .post(
+                "/api/message",
+                Some(&cookie),
+                r#"{"text": "Spaces, and push.", "answers": ["q1", "q2"]}"#,
+            )
+            .await;
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        assert_eq!(
+            served.actions.recv().await.unwrap(),
+            Action::Reply {
+                text: "Spaces, and push.".into(),
+                answers: vec!["q1".into(), "q2".into()]
+            }
+        );
+        // Without the session's cookie, nothing is answered.
+        let response = served.post("/api/questions/answer", None, answer).await;
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 

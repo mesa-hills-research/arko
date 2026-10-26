@@ -104,7 +104,8 @@ pub enum CallStatus {
     Failed,
 }
 
-/// The question the main agent waits on.
+/// The question card the main agent waits on: its item `id`, and its
+/// text.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Question {
     pub id: u64,
@@ -115,6 +116,9 @@ pub struct Question {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Activity {
     pub working: bool,
+    /// The question card the main agent waits on (it asked with `wait`).
+    /// All its open questions, those it doesn't wait on too, are the
+    /// status's `questions`.
     pub question: Option<Question>,
     /// When the turn started (Unix milliseconds), while one runs.
     pub since: Option<i64>,

@@ -24,6 +24,7 @@ mod names_menu;
 mod openrouter_menu;
 mod overlay;
 mod prefs;
+mod questions;
 mod resume_picker;
 mod screen;
 mod select;
@@ -390,14 +391,17 @@ async fn run(
             update = updates.recv() => {
                 match update {
                     Ok(update) => {
+                        let mut asked = asks(&update);
                         bell |= app.update(update, || setup.feed.activity());
                         // Those waiting too, before the next frame.
                         while let Ok(update) = updates.try_recv() {
+                            asked |= asks(&update);
                             bell |= app.update(update, || setup.feed.activity());
                         }
                         // The web page just started says so in the feed:
-                        // its links show at once.
-                        if app.waits_for_page() {
+                        // its links show at once. So do the agent's
+                        // questions, in the answer panel.
+                        if app.waits_for_page() || asked {
                             app.set_reading(setup.meter.read());
                         }
                     }
@@ -468,6 +472,7 @@ async fn run(
                 draw_now = true;
             }
         }
+        bell |= app.take_ring();
         if bell {
             let _ = std::io::stdout().write_all(b"\x07");
         }
@@ -539,6 +544,16 @@ async fn run(
 /// task, not with a no-op waker: the stream registers the waker of its
 /// first pending poll only, so a no-op one would leave the next keys unread
 /// until something else woke the loop, crossterm/src/event/stream.rs:112-131.)
+/// Whether `update` is of a question card: the agent asked, or its
+/// questions changed.
+fn asks(update: &remote::Update) -> bool {
+    matches!(
+        update,
+        remote::Update::Item(item) | remote::Update::Change(item)
+            if item.kind == remote::Kind::Question
+    )
+}
+
 async fn waiting(events: &mut EventStream) -> Vec<Event> {
     let mut batch = Vec::new();
     while let Ok(Some(Ok(event))) = tokio::time::timeout(Duration::ZERO, events.next()).await {
