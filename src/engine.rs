@@ -996,7 +996,6 @@ impl Engine {
             interrupted_told: false,
             user_active_at: std::time::SystemTime::now(),
             waiting: Vec::new(),
-            delivered: Vec::new(),
             labelled: None,
         };
         // A chat has no project.

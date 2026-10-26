@@ -45,6 +45,14 @@ pub(crate) struct AnswerNote {
     pub(crate) note: String,
 }
 
+/// A message of the user's as the agent reads it, and the number it is
+/// kept under until the agent has it, when it answers questions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Reply {
+    pub(crate) text: String,
+    pub(crate) kept: Option<u64>,
+}
+
 /// Those of `ids` the agent's `ask_user` gave (not Arko's own questions).
 fn agent_ids(ids: &[String]) -> Vec<String> {
     ids.iter().filter(|id| is_agent_id(id)).cloned().collect()
@@ -127,10 +135,9 @@ impl Harness {
                     .into_iter()
                     .find(|pending| pending.ids.iter().any(|id| answered.contains(id)));
                 match given {
+                    // (It stays kept until the task holds it.)
                     Some(pending) => {
-                        if answer.send(pending.note).is_ok() {
-                            self.delivered.push(pending.seq);
-                        }
+                        let _ = answer.send(pending.note);
                         return;
                     }
                     None => self.feed.reopen_questions(run, &answered),
@@ -145,8 +152,9 @@ impl Harness {
         });
     }
 
-    /// Gives the agent's wait for the questions of `pending` its note.
-    /// False when it doesn't wait for them (or its wait is gone).
+    /// Gives the agent's wait for the questions of `pending` its note (kept
+    /// until the task holds it). False when it doesn't wait for them (or
+    /// its wait is gone).
     fn answer_agent_wait(&mut self, pending: &Pending) -> bool {
         let Some(at) = self.waiting.iter().position(|waiting| {
             !waiting.plain()
@@ -156,11 +164,7 @@ impl Harness {
             return false;
         };
         let waiting = self.waiting.remove(at);
-        if waiting.answer.send(pending.note.clone()).is_err() {
-            return false;
-        }
-        self.delivered.push(pending.seq);
-        true
+        waiting.answer.send(pending.note.clone()).is_ok()
     }
 
     /// Gives the waits Arko asked among `answered` (approvals, questions
@@ -313,10 +317,11 @@ impl Harness {
     /// A message the user sends (to start a turn, or as a note) with the
     /// questions `attached` (the "Replying to" chip), or, without any, while
     /// the agent waits for an answer, which it is. The questions it answers
-    /// are no longer open. Returns the message as the agent reads it
-    /// ("(This message answers q3.)" before it, "(Still open: q5.)" after
-    /// it), or `None` when it went to the agent's wait.
-    pub(crate) fn reply_text(&mut self, text: &str, attached: &[String]) -> Option<String> {
+    /// are no longer open, and the message as the agent reads it ("(This
+    /// message answers q3.)" before it, "(Still open: q5.)" after it) is
+    /// kept with them until the agent's task holds it. Returns that message,
+    /// or `None` when it went to a wait.
+    pub(crate) fn reply_text(&mut self, text: &str, attached: &[String]) -> Option<Reply> {
         let run = self.feed.questions_conversation();
         // Only a message without questions attached answers the waits.
         let ids: Vec<String> = if attached.is_empty() {
@@ -328,15 +333,25 @@ impl Harness {
         } else {
             attached.to_vec()
         };
-        let answered = if ids.is_empty() {
-            Vec::new()
+        let (settled, pending) = if ids.is_empty() {
+            (Vec::new(), None)
         } else {
-            ids_of(
-                &self
-                    .feed
-                    .settle_questions(run, &ids, |_| QuestionState::AnsweredInMessage),
+            self.feed.settle_noting(
+                run,
+                &ids,
+                |_| QuestionState::AnsweredInMessage,
+                |settled, open| {
+                    let agent = agent_ids(&ids_of(settled));
+                    let still = agent_ids(&ids_of(open));
+                    (!agent.is_empty()).then(|| {
+                        let labelled =
+                            notes::still_open(&notes::message_answers(&agent, text), &still);
+                        (agent, labelled)
+                    })
+                },
             )
         };
+        let answered = ids_of(&settled);
         let approved = self.answer_plain_waits(&answered, |_, approval| {
             if approval {
                 crate::questions::approval_words(text)
@@ -344,23 +359,23 @@ impl Harness {
                 text.trim().to_string()
             }
         });
-        let agent = agent_ids(&answered);
-        let still = agent_ids(&ids_of(&self.feed.open_questions()));
-        let labelled = notes::still_open(&notes::message_answers(&agent, text), &still);
-        if let Some(at) = self
-            .waiting
-            .iter()
-            .position(|waiting| !waiting.plain() && waiting.ids.iter().any(|id| agent.contains(id)))
-        {
-            let waiting = self.waiting.remove(at);
-            if waiting.answer.send(labelled.clone()).is_ok() {
+        let Some(pending) = pending else {
+            if approved {
                 return None;
             }
-        }
-        if approved && agent.is_empty() {
+            let still = agent_ids(&ids_of(&self.feed.open_questions()));
+            return Some(Reply {
+                text: notes::still_open(text, &still),
+                kept: None,
+            });
+        };
+        if self.answer_agent_wait(&pending) {
             return None;
         }
-        Some(labelled)
+        Some(Reply {
+            text: pending.note,
+            kept: Some(pending.seq),
+        })
     }
 
     /// The open questions of the card `item`, which an answer to it from
@@ -422,16 +437,48 @@ impl Harness {
     }
 
     /// The notes about the conversation `run`'s questions the agent hasn't
-    /// read, which go with its next message: they count as delivered once
-    /// the turn ends.
-    pub(crate) fn take_answer_notes(&mut self, run: Option<Uuid>) -> Vec<String> {
+    /// read (but `skip`, the message that goes with them), which go with
+    /// its next message. They stay kept until its task holds them (see
+    /// [`settle_answer_notes`](Self::settle_answer_notes)).
+    pub(crate) fn take_answer_notes(
+        &mut self,
+        run: Option<Uuid>,
+        skip: Option<u64>,
+    ) -> Vec<String> {
         let Some(run) = run else {
             return Vec::new();
         };
-        let queued = self.feed.queued_notes(run);
-        self.delivered
-            .extend(queued.iter().map(|pending| pending.seq));
-        queued.into_iter().map(|pending| pending.note).collect()
+        self.feed
+            .queued_notes(run)
+            .into_iter()
+            .filter(|pending| Some(pending.seq) != skip)
+            .map(|pending| pending.note)
+            .collect()
+    }
+
+    /// After a turn, the notes about the current conversation's questions
+    /// that reached the agent leave: those its saved task holds (a message,
+    /// a wait's answer, a note it read), and `read`, the notes posted in the
+    /// turn the agent read before its task was saved. Those that didn't
+    /// (the turn failed or stopped first) stay for its next turn.
+    pub(crate) fn settle_answer_notes(&self, read: &[u64]) {
+        let Some(run) = self.conversation_run() else {
+            return;
+        };
+        let task = self.conversation_task();
+        let reached: Vec<u64> = self
+            .feed
+            .queued_notes(run)
+            .into_iter()
+            .filter(|pending| {
+                read.contains(&pending.seq)
+                    || task.is_some_and(|task| holds_note(task, &pending.note))
+            })
+            .map(|pending| pending.seq)
+            .collect();
+        if !reached.is_empty() {
+            self.feed.ack_notes(&reached);
+        }
     }
 
     /// The questions of the conversation `run` are the ones shown. Its
