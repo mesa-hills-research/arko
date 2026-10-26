@@ -4166,8 +4166,9 @@ pub(super) mod tests {
         assert!(open.rows.iter().any(|row| matches!(row, model_picker::Row::Unavailable { needs, .. } if needs == "GEMINI_API_KEY")));
         assert!(sent(&mut app).is_empty());
         // Up to sol, then its efforts, on the effort now.
-        press(&mut app, KeyCode::Up, KeyModifiers::NONE);
-        press(&mut app, KeyCode::Up, KeyModifiers::NONE);
+        for _ in 0..3 {
+            press(&mut app, KeyCode::Up, KeyModifiers::NONE);
+        }
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         let efforts = picker(&app);
         assert_eq!(efforts.title(), "Main agent's effort on gpt-6.1-sol");

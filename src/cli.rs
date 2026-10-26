@@ -34,7 +34,7 @@ pub(crate) struct Args {
     pub(crate) prompt: Option<String>,
 
     /// The model, as an ID or alias (opus, fable, sonnet, haiku, mythos, sol,
-    /// astra, luna, gemini, flash), openrouter:<slug> for a model on
+    /// astra, terra, luna, gemini, flash), openrouter:<slug> for a model on
     /// OpenRouter (openrouter:anthropic/claude-opus-5.5), or cc:<model> for
     /// a Claude model in your installed Claude Code, on your Claude plan
     /// (cc:opus, cc:fable, cc:haiku). Claude Mythos 5.1 (mythos) needs access

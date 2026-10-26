@@ -1130,6 +1130,7 @@ mod tests {
     fn aliases_and_ids_name_models_of_every_provider() {
         assert_eq!(resolve_model("opus").unwrap().id, "claude-opus-5-5");
         assert_eq!(resolve_model("Sol").unwrap().id, "gpt-6.1-sol");
+        assert_eq!(resolve_model("Terra").unwrap().id, "gpt-6.1-terra");
         assert_eq!(
             resolve_model("claude-fable-5-1").unwrap().id,
             "claude-fable-5-1"
@@ -1893,6 +1894,7 @@ mod tests {
             "sonnet",
             "sol",
             "astra",
+            "terra",
             "gemini",
             "openrouter:anthropic/claude-opus-5.5",
         ] {
@@ -1908,7 +1910,7 @@ mod tests {
     #[test]
     fn the_default_leaves_large_models_as_they_were() {
         for name in [
-            "opus", "cc:opus", "cc:fable", "sonnet", "sol", "astra", "gemini",
+            "opus", "cc:opus", "cc:fable", "sonnet", "sol", "astra", "terra", "gemini",
         ] {
             let big = model(name, false);
             let configs = |extra_rules| {

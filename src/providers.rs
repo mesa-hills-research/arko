@@ -47,7 +47,7 @@ pub const CLAUDE_CODE: &str = "cc:";
 const CLAUDE_CODE_LONG: &str = "claude-code:";
 
 /// Short names for the models people use most.
-pub const ALIASES: [(&str, &str); 10] = [
+pub const ALIASES: [(&str, &str); 11] = [
     ("opus", "claude-opus-5-5"),
     ("fable", "claude-fable-5-1"),
     ("sonnet", "claude-sonnet-5-5"),
@@ -55,6 +55,7 @@ pub const ALIASES: [(&str, &str); 10] = [
     ("mythos", "claude-mythos-5-1"),
     ("sol", "gpt-6.1-sol"),
     ("astra", "gpt-6-astra"),
+    ("terra", "gpt-6.1-terra"),
     ("luna", "gpt-6-luna"),
     ("gemini", "gemini-3.1-pro-preview"),
     ("flash", "gemini-3.8-flash"),
@@ -848,6 +849,7 @@ pub fn model_menu(
             &[
                 ("gpt-6.1-sol", "sol"),
                 ("gpt-6-astra", "astra"),
+                ("gpt-6.1-terra", "terra"),
                 ("gpt-6-luna", "luna"),
             ],
         ),
@@ -1767,6 +1769,8 @@ mod tests {
             ("opus", Provider::Anthropic, "claude-opus-5-5"),
             ("Fable", Provider::Anthropic, "claude-fable-5-1"),
             ("sol", Provider::OpenAI, "gpt-6.1-sol"),
+            ("Terra", Provider::OpenAI, "gpt-6.1-terra"),
+            ("gpt-6.1-terra", Provider::OpenAI, "gpt-6.1-terra"),
             ("gpt-6-luna", Provider::OpenAI, "gpt-6-luna"),
             ("gemini", Provider::Google, "gemini-3.1-pro-preview"),
             ("flash", Provider::Google, "gemini-3.8-flash"),
@@ -2516,6 +2520,10 @@ mod tests {
         sol.fast = true;
         session.main = sol;
         assert!(check_openai_choices(&session).is_ok());
+        let mut terra = model("terra");
+        terra.fast = true;
+        session.main = terra;
+        assert!(check_openai_choices(&session).is_ok());
     }
 
     fn last(main: &str, worker: Option<&str>) -> Option<LastModels> {
@@ -2926,6 +2934,7 @@ mod tests {
         assert_eq!(efforts("opus"), [Low, Medium, High, Xhigh, Max]);
         assert_eq!(efforts("cc:fable"), [Low, Medium, High, Xhigh, Max]);
         assert_eq!(efforts("sol"), [Low, Medium, High, Xhigh, Max]);
+        assert_eq!(efforts("terra"), [Low, Medium, High, Xhigh, Max]);
         assert_eq!(
             efforts("gpt-5.4-nano-2026-03-17"),
             [Low, Medium, High, Xhigh]
@@ -2971,7 +2980,13 @@ mod tests {
             .collect();
         assert_eq!(
             names,
-            ["gpt-6.1-sol", "gpt-6-astra", "gpt-6-luna", "gpt-5.6-terra"]
+            [
+                "gpt-6.1-sol",
+                "gpt-6-astra",
+                "gpt-6.1-terra",
+                "gpt-6-luna",
+                "gpt-5.6-terra"
+            ]
         );
         assert!(menu[1..].iter().all(|group| group.needs.is_some()));
         assert_eq!(menu[1].name, "Claude Code, on your Claude plan");

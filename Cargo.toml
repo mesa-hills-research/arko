@@ -41,7 +41,7 @@ testing = []
 [dependencies]
 # The framework, from crates.io. CONTRIBUTING.md shows how to build against
 # a local checkout of it.
-arko_ai = "0.2.1"
+arko_ai = "0.2.2"
 arko_agents = "0.2.2"
 arko_workflows = "0.3.1"
 arko_index = "0.3.0"

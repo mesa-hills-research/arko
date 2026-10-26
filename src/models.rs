@@ -226,6 +226,7 @@ mod tests {
             "Opus 5.5"
         );
         assert_eq!(display_name("luna"), "GPT-6 Luna");
+        assert_eq!(display_name("terra"), "GPT-6.1 Terra");
         assert_eq!(display_name("cc:opus"), "Opus 5.5");
     }
 
