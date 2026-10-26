@@ -581,14 +581,14 @@ async fn a_profile_for_every_session_is_put_to_the_user_as_a_question() {
         start_worker(&mut harness, &mut inputs, "Start by saving a profile for everyone.").await;
         assert_eq!(
             last_result(&seen),
-            format!("The user didn't save 3d-judge for every project and asked for changes: \"{words}\". Make them and call save_worker_profile again, which shows them the changed profile.")
+            format!("The user didn't save 3d-judge for every project and wrote \"{words}\". If those words ask for changes to the profile, make them and call save_worker_profile again, which shows them the changed profile. If they don't (a new request, or words about something else), they are a message to you, not changes. Respond to it, call save_worker_profile again with the same profile, and end with a short reminder that it is still waiting for their decision.")
         );
         assert!(!saved.exists());
     }
     start_worker(&mut harness, &mut inputs, "Start by saving a profile for everyone.").await;
     assert_eq!(
         last_result(&seen),
-        "The user didn't save 3d-judge for every project and asked for changes: \"no, use medium effort\". Make them and call save_worker_profile again, which shows them the changed profile."
+        "The user didn't save 3d-judge for every project and wrote \"no, use medium effort\". If those words ask for changes to the profile, make them and call save_worker_profile again, which shows them the changed profile. If they don't (a new request, or words about something else), they are a message to you, not changes. Respond to it, call save_worker_profile again with the same profile, and end with a short reminder that it is still waiting for their decision."
     );
     assert!(!saved.exists());
     start_worker(&mut harness, &mut inputs, "Start by saving a profile for everyone.").await;

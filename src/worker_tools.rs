@@ -630,13 +630,12 @@ impl Tool for SaveWorkerProfile {
                     ));
                 }
                 ApprovalAnswer::Edit(said) => {
-                    // What they asked for is only the agent's to read.
-                    self.0.crew.notice(
-                        Level::Info,
-                        "Not saved. Arko changes the profile and asks again.",
-                    );
+                    // What they wrote is only the agent's to read.
+                    self.0
+                        .crew
+                        .notice(Level::Info, "Not saved. Arko asks again.");
                     return Ok(format!(
-                        "The user didn't save {} for {} and asked for changes: \"{}\". Make them and call save_worker_profile again, which shows them the changed profile.",
+                        "The user didn't save {} for {} and wrote \"{}\". If those words ask for changes to the profile, make them and call save_worker_profile again, which shows them the changed profile. If they don't (a new request, or words about something else), they are a message to you, not changes. Respond to it, call save_worker_profile again with the same profile, and end with a short reminder that it is still waiting for their decision.",
                         profile.name,
                         place.reach(),
                         cut(&said, 500)

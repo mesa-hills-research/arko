@@ -562,14 +562,11 @@ async fn a_profile_for_every_session_waits_for_the_users_save() {
         .decide(ApprovalAnswer::Edit("yes, but use medium effort".into()));
     assert_eq!(
         within(asking).await.unwrap().unwrap(),
-        "The user didn't save 3d-judge for every project and asked for changes: \"yes, but use medium effort\". Make them and call save_worker_profile again, which shows them the changed profile."
+        "The user didn't save 3d-judge for every project and wrote \"yes, but use medium effort\". If those words ask for changes to the profile, make them and call save_worker_profile again, which shows them the changed profile. If they don't (a new request, or words about something else), they are a message to you, not changes. Respond to it, call save_worker_profile again with the same profile, and end with a short reminder that it is still waiting for their decision."
     );
     assert!(profiles::read(&fixture.basis.roots, "3d-judge").is_err());
     // The user is told in the transcript that nothing was saved.
-    assert_eq!(
-        shown(&fixture.feed),
-        ["Not saved. Arko changes the profile and asks again."]
-    );
+    assert_eq!(shown(&fixture.feed), ["Not saved. Arko asks again."]);
 
     // Save saves it, in the user's place.
     let asking = {

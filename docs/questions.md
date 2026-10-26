@@ -8,8 +8,8 @@ don't answer. When the agent can't go on at all without an answer, it asks with 
 Arko asks you too, before the agent saves a worker profile for the project or for every project.
 That approval shows the profile's name, where it is kept, its model and effort, what it is for and
 its instructions, with Save and Don't save. Only Save saves it. Words you type instead go back to
-the agent as changes to make, and it asks again with the changed profile. Profiles the agent
-saves together come in one card, with a choice for each.
+the agent. It makes the changes they ask for, or replies when they are about something else, and
+asks again. Profiles the agent saves together come in one card, with a choice for each.
 
 ## Answering in the full-screen view
 
@@ -58,7 +58,9 @@ Still open: q5.
 
 A message you send with the questions attached starts with "(This message answers q3 and q4.)".
 Any other message ends with the questions still open, "(Still open: q5.)". "Not now" tells the
-agent "The user dismissed q5." A resumed session's transcript shows your messages as you wrote
+agent "The user dismissed q5." A reply that isn't an answer, such as a new request, leaves the
+question unanswered. The agent replies to it, asks the question again in the same words, and
+reminds you that it is still waiting for your answer. A resumed session's transcript shows your messages as you wrote
 them.
 
 The session keeps its questions in its folder (`questions.json`), with the answers the agent hasn't
