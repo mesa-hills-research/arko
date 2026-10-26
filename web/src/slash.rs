@@ -145,9 +145,9 @@ mod tests {
     #[test]
     fn after_a_command_and_a_space_the_menu_shows_the_words_its_arguments_may_be() {
         let list = commands();
-        let mut asked = Vec::new();
+        let asked = std::cell::RefCell::new(Vec::new());
         let mut choices = |name: &str, before: &[String], typed: &str| {
-            asked.push((name.to_string(), before.to_vec(), typed.to_string()));
+            asked.borrow_mut().push((name.to_string(), before.to_vec(), typed.to_string()));
             Some(vec!["r1".to_string(), "r10".to_string(), "r2".to_string()])
         };
         let menu = menu(&list, "/message r", &mut choices).unwrap();
@@ -158,7 +158,7 @@ mod tests {
         // A word typed whole is sent as it is.
         let menu = super::menu(&list, "/message r1", &mut choices).unwrap();
         assert_eq!(menu.selected, None);
-        assert_eq!(asked[0], ("/message".to_string(), vec![], "r".to_string()));
+        assert_eq!(asked.borrow()[0], ("/message".to_string(), vec![], "r".to_string()));
         // Past the words, free text asks for nothing.
         assert!(super::menu(&list, "/message r1 hello there", &mut choices).is_none());
     }

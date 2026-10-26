@@ -87,16 +87,18 @@ thread_local! {
     /// A stream came through once, so a key that's refused now is one that
     /// ended.
     static EVER_LIVE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// The one page, also for callbacks and tasks outside any component.
+    static PAGE: std::cell::Cell<Option<Page>> = const { std::cell::Cell::new(None) };
 }
 
 pub fn page() -> Page {
-    expect_context::<Page>()
+    PAGE.with(|page| page.get()).expect("the page starts before its views")
 }
 
 impl Page {
     pub fn new() -> Page {
         let view = local_get(VIEW).as_deref().and_then(View::from_key).unwrap_or(View::Full);
-        Page {
+        let page = Page {
             status: RwSignal::new(StatusData::default()),
             connection: RwSignal::new(Connection::Connecting),
             locked: RwSignal::new(None),
@@ -115,7 +117,9 @@ impl Page {
             seen: RwSignal::new(0),
             grew: RwSignal::new(false),
             pinned: RwSignal::new(true),
-        }
+        };
+        PAGE.with(|cell| cell.set(Some(page)));
+        page
     }
 
     /// Arko's time now (ms).

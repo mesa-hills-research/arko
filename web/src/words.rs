@@ -402,7 +402,7 @@ pub fn clock(ms: f64) -> String {
 
 /// "cache 3:12", counted up to the next second, or "cache expired".
 pub fn cache_label(left: f64) -> String {
-    if left <= 0.0 { "cache expired".into() } else { format!("cache {}", clock(left + 999.0)) }
+    if left <= 0.0 { "cache expired".into() } else { format!("cache {}", clock((left / 1000.0).ceil() * 1000.0)) }
 }
 
 /// The timer's last minute warns.

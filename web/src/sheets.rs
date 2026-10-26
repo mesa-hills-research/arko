@@ -724,7 +724,7 @@ fn LinkCard(link: LinkData) -> impl IntoView {
                 <div class="link-where">{link.interface.clone().unwrap_or_else(|| "Link".into())}</div>
                 <div class="link-kind">{kind}</div>
                 <input class="link-url" readonly value=link.url.clone() aria-label="Link"
-                    on:focus=move |event| { let _ = event_target::<web_sys::HtmlInputElement>(&event).select(); } />
+                    on:focus=move |event| { event_target::<web_sys::HtmlInputElement>(&event).select(); } />
                 <button type="button" class="btn small" on:click=move |_| {
                     let clipboard = window().navigator().clipboard();
                     let _ = clipboard.write_text(&url);

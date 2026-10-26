@@ -51,6 +51,8 @@ mod next {
     pub const WASM: &[u8] = include_bytes!("next/arko-web_bg.wasm");
     pub const STYLE: &str = include_str!("next/app.css");
     pub const THEMES: &str = include_str!("next/themes.css");
+    /// Every theme's colors, loaded once a theme is chosen.
+    pub const ALL_THEMES: &str = include_str!("next/all-themes.css");
     /// The current page's policy, plus WebAssembly.
     pub const POLICY: &str = "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; connect-src 'self'; img-src 'self'; font-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 }
@@ -205,6 +207,12 @@ fn router(app: Arc<App>) -> Router {
             "/next/themes.css",
             get(|headers: HeaderMap| async move {
                 packed(&headers, next::THEMES.as_bytes(), "text/css; charset=utf-8")
+            }),
+        )
+        .route(
+            "/next/all-themes.css",
+            get(|headers: HeaderMap| async move {
+                packed(&headers, next::ALL_THEMES.as_bytes(), "text/css; charset=utf-8")
             }),
         )
         .route(

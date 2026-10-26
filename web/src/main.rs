@@ -1,5 +1,9 @@
 //! Arko's remote page, in Rust with Leptos.
 
+// Callbacks kept for the page's life have long types, and naming each once
+// would only move them.
+#![allow(clippy::type_complexity)]
+
 mod app;
 mod chrome;
 mod composer;
@@ -41,7 +45,6 @@ fn main() {
 #[component]
 fn App() -> impl IntoView {
     let page = Page::new();
-    provide_context(page);
     let key = app::take_key();
     spawn_local(app::start(page, key));
     listen(page);

@@ -59,10 +59,13 @@ pub fn Composer() -> impl IntoView {
         let element: &web_sys::Element = area.as_ref();
         let focused = document().active_element().is_some_and(|active| &active == element);
         let mut next = None;
-        if value.starts_with('/') && asking().is_none() && focused && closed_for.get_untracked().as_deref() != Some(value.as_str()) {
-            if let Some(commands) = page.commands.get_untracked() {
-                next = slash::menu(&commands, &value, &mut |name, before, typed| choices_of(name, before, typed, choices_came));
-            }
+        if value.starts_with('/')
+            && asking().is_none()
+            && focused
+            && closed_for.get_untracked().as_deref() != Some(value.as_str())
+            && let Some(commands) = page.commands.get_untracked()
+        {
+            next = slash::menu(&commands, &value, &mut |name, before, typed| choices_of(name, before, typed, choices_came));
         }
         if !value.starts_with('/') {
             CHOICES.with(|choices| choices.borrow_mut().clear());
