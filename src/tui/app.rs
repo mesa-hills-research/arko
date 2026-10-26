@@ -2841,8 +2841,9 @@ pub(super) mod tests {
 
     /// Number keys pick a question's choices, or "You decide" after them.
     /// ↓ goes from a question's choices to its Other field, where what is
-    /// typed is the answer, digits too, then on to the next question and
-    /// "Anything else". A question without choices takes typing at once.
+    /// typed is the answer, digits too, then on to the next question, and
+    /// after the last back to the first. A question without choices takes
+    /// typing at once.
     /// Enter sends what's filled in.
     #[test]
     fn the_panel_picks_choices_and_sends_what_is_filled_in() {
@@ -2869,7 +2870,7 @@ pub(super) mod tests {
         type_text(&mut app, "n 2");
         assert!(!app.panel.drafts["q2"].you_decide);
         press(&mut app, KeyCode::Tab, KeyModifiers::NONE);
-        type_text(&mut app, "Thanks.");
+        assert!(!app.panel.typing && app.focus_index() == 0);
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         assert_eq!(
             inputs(&mut app),
@@ -2890,7 +2891,6 @@ pub(super) mod tests {
                         }
                     ),
                 ],
-                anything_else: Some("Thanks.".into()),
             })]
         );
         assert!(!app.panel.open);

@@ -603,39 +603,44 @@ impl Tool for SaveWorkerProfile {
                     "No one can approve it in this session. Save it for the session, or tell the user the setup you want.",
                 ));
             }
+            use crate::questions::ApprovalAnswer;
             let answer = self
                 .0
                 .asker
                 .approve(
                     context.task_id,
+                    context.call_id.clone(),
                     profiles::approval_text(&profile, place),
                     profiles::approval(&profile, place),
                 )
-                .await
-                .map_err(refused)?;
-            if answer != crate::questions::SAVE {
-                let said = answer.trim();
-                return Ok(if said == crate::inputs::NO_ANSWER {
-                    format!("The user didn't answer, so {} wasn't saved.", profile.name)
-                } else if said.is_empty() {
-                    format!(
+                .await;
+            match answer {
+                ApprovalAnswer::Save => {}
+                ApprovalAnswer::Unanswered => {
+                    return Ok(format!(
+                        "The user didn't answer, so {} wasn't saved.",
+                        profile.name
+                    ));
+                }
+                ApprovalAnswer::DontSave => {
+                    return Ok(format!(
                         "The user chose not to save {} for {}, so don't ask again unless they want it. You may save it for this session with scope session.",
                         profile.name,
                         place.reach()
-                    )
-                } else {
-                    // What they asked for is only the agent's to read.
-                    self.0.crew.notice(
-                        Level::Info,
-                        "Not saved. Arko changes the profile and asks again.",
-                    );
-                    format!(
-                        "The user didn't save {} for {} and asked for changes: \"{}\". Make them and call save_worker_profile again, which shows them the changed profile.",
+                    ));
+                }
+                ApprovalAnswer::Edit(said) => {
+                    // What they wrote is only the agent's to read.
+                    self.0
+                        .crew
+                        .notice(Level::Info, "Not saved. Arko asks again.");
+                    return Ok(format!(
+                        "The user didn't save {} for {} and wrote \"{}\". If those words ask for changes to the profile, make them and call save_worker_profile again, which shows them the changed profile. If they don't (a new request, or words about something else), they are a message to you, not changes. Respond to it, call save_worker_profile again with the same profile, and end with a short reminder that it is still waiting for their decision.",
                         profile.name,
                         place.reach(),
-                        cut(said, 500)
-                    )
-                });
+                        cut(&said, 500)
+                    ));
+                }
             }
         }
         let saved =

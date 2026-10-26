@@ -136,6 +136,10 @@ impl Approval {
     }
 }
 
+/// What every front end shows, muted, right after the text of a question
+/// that takes any number of its choices.
+pub const CHOOSE_ANY: &str = "Choose any";
+
 /// The choice that saves an approved profile.
 pub const SAVE: &str = "Save";
 /// The choice that doesn't save it.
@@ -219,41 +223,55 @@ pub fn card_line(questions: &[AgentQuestion]) -> String {
     }
 }
 
-/// What the tool that asked for an approval reads of the user's answer:
-/// [`SAVE`] to save, nothing not to, or the user's words, which ask for
-/// changes. Only [`SAVE`] picked alone, or typed alone with nothing picked,
-/// saves. Words beside a pick (or "You decide") never save, whatever they
-/// say. They go back as changes to make, so a contradiction such as Don't
-/// save with "save" typed saves nothing.
-pub(crate) fn approval_reply(answer: &Answer) -> String {
+/// What the user decided about an approval, as the tool that asked reads
+/// it. Typed words are never [`Save`](Self::Save) by themselves, except
+/// "save" typed alone with nothing picked (for front ends that only send
+/// text).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ApprovalAnswer {
+    /// Save it as it is.
+    Save,
+    /// Don't save it.
+    DontSave,
+    /// Don't save it, and change it as the user's words say.
+    Edit(String),
+    /// No answer came (the turn stopped).
+    Unanswered,
+}
+
+/// The decision a user's answer to an approval makes. Only [`SAVE`] picked
+/// alone, or "save" typed alone with nothing picked, saves. Words beside a
+/// pick (or "You decide") ask for changes, whatever they say, so a
+/// contradiction such as Don't save with "Save" typed saves nothing.
+pub(crate) fn approval_reply(answer: &Answer) -> ApprovalAnswer {
     let text = answer.text.as_deref().map(str::trim).unwrap_or_default();
     let picked = !answer.choices.is_empty() || answer.you_decide;
     match (text.is_empty(), picked) {
         (false, false) => approval_words(text),
-        (false, true) => text.to_string(),
+        (false, true) => ApprovalAnswer::Edit(text.to_string()),
         (true, _)
             if !answer.you_decide
                 && answer.choices.len() == 1
                 && answer.choices[0].trim().eq_ignore_ascii_case(SAVE) =>
         {
-            SAVE.to_string()
+            ApprovalAnswer::Save
         }
-        (true, _) => String::new(),
+        (true, _) => ApprovalAnswer::DontSave,
     }
 }
 
-/// [`approval_reply`] of words the user typed: a choice typed alone picks
-/// it, and anything else asks for changes.
-pub(crate) fn approval_words(text: &str) -> String {
+/// [`approval_reply`] of words the user typed alone: a choice typed alone
+/// picks it, and anything else asks for changes.
+pub(crate) fn approval_words(text: &str) -> ApprovalAnswer {
     let choice = text
         .trim()
         .trim_end_matches(['.', '!'])
         .replace('’', "'")
         .to_lowercase();
     match choice.as_str() {
-        "save" => SAVE.to_string(),
-        "don't save" | "dont save" => String::new(),
-        _ => text.trim().to_string(),
+        "save" => ApprovalAnswer::Save,
+        "don't save" | "dont save" => ApprovalAnswer::DontSave,
+        _ => ApprovalAnswer::Edit(text.trim().to_string()),
     }
 }
 
@@ -283,21 +301,38 @@ struct Entry {
     run: Uuid,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     card: Option<Uuid>,
+    /// The model's id of the call an approval was asked for (its profile's
+    /// save), as the conversation records it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    call: Option<String>,
     #[serde(flatten)]
     question: AgentQuestion,
 }
 
-/// A note about the questions `ids` for run `run` that the agent hasn't
-/// surely read: an answer, a dismissal. It goes with the next turn of its
-/// conversation, and leaves once the conversation holds it.
+/// A note about run `run`'s questions `ids` for its agent (answers, a
+/// dismissal, a message that answers them), kept until the run has been
+/// given it. It travels as one workflow note for that run alone, which the
+/// workflow numbers and counts as given, in its own saved state, once the
+/// run takes it at a turn boundary.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Pending {
-    pub(crate) seq: u64,
+    /// Its own id, which no other delivery has.
+    #[serde(default = "Uuid::new_v4")]
+    pub(crate) id: Uuid,
     pub(crate) run: Uuid,
     #[serde(default)]
     pub(crate) ids: Vec<String>,
     pub(crate) note: String,
+    /// The workflow note that carries it, once posted: its id and number.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) posted: Option<(Uuid, u64)>,
 }
+
+/// What the agent's wait for its questions reads once the user answered
+/// or dismissed them. What they said comes as the note for its run, so it
+/// reaches the agent once, however the wait ends.
+pub(crate) const WAIT_ANSWERED: &str =
+    "The user replied to your questions. What they said is in the note that follows.";
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct Saved {
@@ -355,7 +390,7 @@ impl Book {
             self.counted = saved.last.is_some();
             self.last = self.last.max(saved.last.unwrap_or_default());
             for pending in saved.pending {
-                if !self.pending.iter().any(|known| known.seq == pending.seq) {
+                if !self.pending.iter().any(|known| known.id == pending.id) {
                     self.pending.push(pending);
                 }
             }
@@ -447,7 +482,7 @@ impl Book {
             .filter(|asked| !self.knows(run, &asked.id))
             .map(|asked| AgentQuestion::of(asked, wait, 0))
             .collect();
-        self.ask(run, new, None);
+        self.ask(run, new, None, None);
     }
 
     /// Run `run` asked `questions` (with their card in `item`, which may
@@ -455,7 +490,13 @@ impl Book {
     /// asked again (a waiting ask, after a resume, or one registered before
     /// its card) keeps its state and gets the card. One the agent closed
     /// before it got here is closed.
-    pub(crate) fn ask(&mut self, run: Uuid, questions: Vec<AgentQuestion>, card: Option<Uuid>) {
+    pub(crate) fn ask(
+        &mut self,
+        run: Uuid,
+        questions: Vec<AgentQuestion>,
+        card: Option<Uuid>,
+        call: Option<String>,
+    ) {
         for question in questions {
             let id = question.id.clone();
             self.last = self.last.max(number_of(&id));
@@ -468,6 +509,7 @@ impl Book {
                     entry.question.item = question.item;
                     entry.question.waits = question.waits && entry.question.state.is_open();
                     entry.card = card.or(entry.card);
+                    entry.call = call.clone().or(entry.call.take());
                 }
                 None => {
                     let mut question = question;
@@ -482,6 +524,7 @@ impl Book {
                     self.entries.push(Entry {
                         run,
                         card,
+                        call: call.clone(),
                         question,
                     });
                 }
@@ -489,23 +532,20 @@ impl Book {
         }
     }
 
-    /// The approvals of the current conversation's settled card of a
-    /// profile named `name` that has no item yet (the session's first
-    /// such), which the restored card `item` shows now.
-    pub(crate) fn restore_approval(&mut self, name: &str, item: u64) -> Vec<AgentQuestion> {
+    /// The approvals of the current conversation's card that the save
+    /// `call` asked (by the model's id of the call), which the restored card
+    /// `item` shows now. None for a save no one was asked about, or whose
+    /// card an earlier save of the same card shows already.
+    pub(crate) fn restore_approval(&mut self, call: &str, item: u64) -> Vec<AgentQuestion> {
         let run = self.run;
         let Some(card) = self
             .entries
             .iter()
             .find(|entry| {
                 Some(entry.run) == run
+                    && entry.question.approval.is_some()
+                    && entry.call.as_deref() == Some(call)
                     && entry.question.item == 0
-                    && !entry.question.state.is_open()
-                    && entry
-                        .question
-                        .approval
-                        .as_ref()
-                        .is_some_and(|approval| approval.name == name)
             })
             .and_then(|entry| entry.card)
         else {
@@ -622,24 +662,6 @@ impl Book {
         items
     }
 
-    /// Run `run`'s questions `ids` are open again (their answer can't be
-    /// told to the agent). Returns their cards.
-    pub(crate) fn reopen(&mut self, run: Uuid, ids: &[String]) -> Vec<u64> {
-        let mut items = Vec::new();
-        for entry in &mut self.entries {
-            if entry.run == run
-                && ids.contains(&entry.question.id)
-                && !entry.question.state.is_open()
-            {
-                entry.question.state = QuestionState::Open;
-                if !items.contains(&entry.question.item) {
-                    items.push(entry.question.item);
-                }
-            }
-        }
-        items
-    }
-
     /// The current conversation's questions `ids` are no longer waited on.
     /// Returns their cards.
     pub(crate) fn unwait(&mut self, ids: &[String]) -> Vec<u64> {
@@ -684,26 +706,21 @@ impl Book {
 
     // ----- the notes the agent hasn't read -----
 
-    /// Keeps `note`, about run `run`'s questions `ids`, until the agent has
-    /// it. Returns its number.
-    pub(crate) fn queue(&mut self, run: Uuid, ids: Vec<String>, note: String) -> u64 {
-        let seq = self
-            .pending
-            .iter()
-            .map(|pending| pending.seq)
-            .max()
-            .unwrap_or(0)
-            + 1;
-        self.pending.push(Pending {
-            seq,
+    /// Keeps `note`, about run `run`'s questions `ids`, until the run has
+    /// been given it.
+    pub(crate) fn queue(&mut self, run: Uuid, ids: Vec<String>, note: String) -> Pending {
+        let pending = Pending {
+            id: Uuid::new_v4(),
             run,
             ids,
             note,
-        });
-        seq
+            posted: None,
+        };
+        self.pending.push(pending.clone());
+        pending
     }
 
-    /// Run `run`'s notes the agent hasn't read, oldest first.
+    /// Run `run`'s kept notes, oldest first.
     pub(crate) fn queued(&self, run: Uuid) -> Vec<Pending> {
         self.pending
             .iter()
@@ -712,10 +729,24 @@ impl Book {
             .collect()
     }
 
-    /// The agent has the notes `seqs`. Returns whether any was kept.
-    pub(crate) fn ack(&mut self, seqs: &[u64]) -> bool {
+    /// Every kept note, oldest first.
+    pub(crate) fn all_queued(&self) -> Vec<Pending> {
+        self.pending.clone()
+    }
+
+    /// The kept note `id` travels as the workflow note `note`, numbered
+    /// `seq` (or, with `None`, no longer: it is posted again).
+    pub(crate) fn posted(&mut self, id: Uuid, posted: Option<(Uuid, u64)>) {
+        if let Some(pending) = self.pending.iter_mut().find(|pending| pending.id == id) {
+            pending.posted = posted;
+        }
+    }
+
+    /// The runs have been given the notes `ids`. Returns whether any was
+    /// kept.
+    pub(crate) fn ack(&mut self, ids: &[Uuid]) -> bool {
         let before = self.pending.len();
-        self.pending.retain(|pending| !seqs.contains(&pending.seq));
+        self.pending.retain(|pending| !ids.contains(&pending.id));
         self.pending.len() != before
     }
 }
@@ -791,6 +822,7 @@ mod tests {
             run,
             vec![on_card("q1", "A?", 7), on_card("q2", "B?", 7)],
             None,
+            None,
         );
         book.number_card(7);
         let (settled, items) = book.settle(None, &["q1".into(), "q9".into()], |_| {
@@ -806,7 +838,10 @@ mod tests {
                 .0
                 .is_empty()
         );
-        let seq = book.queue(run, vec!["q1".into()], "The user answered q1.".into());
+        let kept = book.queue(run, vec!["q1".into()], "The user answered q1.".into());
+        // A note with the same words is a delivery of its own.
+        let twin = book.queue(run, vec!["q1".into()], "The user answered q1.".into());
+        assert_ne!(kept.id, twin.id);
         book.save();
         assert_eq!(
             book.open_of(Some(run))
@@ -835,7 +870,9 @@ mod tests {
         assert_eq!(again.reserve(1), 3, "numbered after the questions it keeps");
         assert_eq!(again.queued(run)[0].note, "The user answered q1.");
         assert!(again.queued(Uuid::new_v4()).is_empty());
-        assert!(again.ack(&[seq]));
+        assert!(again.ack(&[kept.id]));
+        assert_eq!(again.queued(run), std::slice::from_ref(&twin));
+        assert!(again.ack(&[twin.id]));
         assert!(again.queued(run).is_empty());
         assert_eq!(again.restored(&["q2".into()], 40)[0].item, 40);
         assert_eq!(again.of_item(40).len(), 1);
@@ -882,7 +919,7 @@ mod tests {
             name: "reviewer".into(),
             ..Approval::default()
         });
-        book.ask(run, vec![approval, on_card("q1", "A?", 5)], None);
+        book.ask(run, vec![approval, on_card("q1", "A?", 5)], None, None);
         book.save();
         let mut again = Book::default();
         again.keep_in(path);
@@ -908,6 +945,7 @@ mod tests {
         book.ask(
             run,
             vec![on_card("q1", "A?", 3), on_card("q2", "B?", 3)],
+            None,
             None,
         );
         assert_eq!(
@@ -937,6 +975,7 @@ mod tests {
                 run,
                 ids.iter().map(|id| on_card(id, "?", 1)).collect::<Vec<_>>(),
                 None,
+                None,
             );
             book.settle(None, &ids, |_| QuestionState::Dismissed);
             book.save();
@@ -947,6 +986,56 @@ mod tests {
         assert_eq!(again.current().len(), KEPT + 10);
         again.set_run(Some(other));
         assert_eq!(again.current().len(), KEPT);
+    }
+
+    /// How long a save of a large book takes, which runs under the feed's
+    /// lock: run with --ignored --nocapture for the times, with 500
+    /// questions in the current conversation, 500 in others, and 20 kept
+    /// notes, written to the disk the build uses.
+    #[test]
+    #[ignore]
+    fn a_large_books_save_takes() {
+        let dir = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+        let path = dir.path().join(FILE);
+        let (run, other) = (Uuid::new_v4(), Uuid::new_v4());
+        let mut book = Book::default();
+        book.keep_in(path);
+        book.set_run(Some(run));
+        let words = "Should the parser keep comments that sit between attributes, or drop them as it does now? It matters for the formatter, which round-trips the file.";
+        for (run, first) in [(other, 0), (run, 500)] {
+            let questions: Vec<AgentQuestion> = (first..first + 500)
+                .map(|n| {
+                    let mut question = on_card(&format!("q{}", n + 1), words, n as u64 / 3 + 1);
+                    question.choices = vec!["Keep them".into(), "Drop them".into()];
+                    question.default = Some("Keep them".into());
+                    question
+                })
+                .collect();
+            let ids: Vec<String> = questions.iter().map(|q| q.id.clone()).collect();
+            book.ask(run, questions, Some(Uuid::new_v4()), None);
+            book.settle(Some(run), &ids[..400], |_| QuestionState::Answered {
+                answer: "Keep them".into(),
+            });
+        }
+        for _ in 0..20 {
+            book.queue(run, vec!["q900".into()], words.repeat(3));
+        }
+        let saves = 200;
+        let mut times = Vec::new();
+        for _ in 0..saves {
+            let start = std::time::Instant::now();
+            book.save();
+            times.push(start.elapsed());
+        }
+        times.sort();
+        let bytes = std::fs::metadata(dir.path().join(FILE)).unwrap().len();
+        println!(
+            "{saves} saves of a {} KB file: median {:?}, 95th percentile {:?}, max {:?}",
+            bytes / 1024,
+            times[saves / 2],
+            times[saves * 95 / 100],
+            times[saves - 1]
+        );
     }
 
     #[test]
@@ -1001,26 +1090,31 @@ mod tests {
         };
         // (choices, text, you decide) and what the tool reads: only
         // "Save" alone saves, and words beside a pick go back as changes.
+        use ApprovalAnswer::{DontSave, Edit, Save};
+        let edit = |text: &str| Edit(text.to_string());
         for (choices, text, you_decide, read) in [
-            (&[SAVE][..], None, false, SAVE),
-            (&[SAVE][..], Some("  "), false, SAVE),
-            (&[DONT_SAVE][..], None, false, ""),
-            (&[SAVE, DONT_SAVE][..], None, false, ""),
-            (&[SAVE][..], None, true, ""),
-            (&[][..], None, true, ""),
-            (&[][..], Some("save."), false, SAVE),
-            (&[][..], Some("Don’t save"), false, ""),
-            (&[][..], Some("yes"), false, "yes"),
+            (&[SAVE][..], None, false, Save),
+            (&[SAVE][..], Some("  "), false, Save),
+            (&[DONT_SAVE][..], None, false, DontSave),
+            (&[SAVE, DONT_SAVE][..], None, false, DontSave),
+            (&[SAVE][..], None, true, DontSave),
+            (&[][..], None, true, DontSave),
+            (&[][..], Some("save."), false, Save),
+            (&[][..], Some("SAVE"), false, Save),
+            (&[][..], Some("Don’t save"), false, DontSave),
+            (&[][..], Some("yes"), false, edit("yes")),
             (
                 &[SAVE][..],
                 Some("yes, but high effort"),
                 false,
-                "yes, but high effort",
+                edit("yes, but high effort"),
             ),
-            (&[DONT_SAVE][..], Some("save"), false, "save"),
-            (&[DONT_SAVE][..], Some("Save"), true, "Save"),
-            (&[][..], Some("save"), true, "save"),
-            (&[SAVE][..], Some("save"), false, "save"),
+            (&[DONT_SAVE][..], Some("save"), false, edit("save")),
+            (&[DONT_SAVE][..], Some("Save"), false, edit("Save")),
+            (&[DONT_SAVE][..], Some("SAVE"), false, edit("SAVE")),
+            (&[DONT_SAVE][..], Some("Save"), true, edit("Save")),
+            (&[][..], Some("Save"), true, edit("Save")),
+            (&[SAVE][..], Some("Save"), false, edit("Save")),
         ] {
             assert_eq!(
                 picked(choices, text, you_decide),

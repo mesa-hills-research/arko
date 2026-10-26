@@ -448,7 +448,8 @@ impl Prompt {
             Prompt::News { resent: true } => Some(Opening::ResentNews),
             Prompt::Jobs => Some(Opening::Job),
             Prompt::Monitor(opening) => Some(*opening),
-            Prompt::User(_) | Prompt::Unread | Prompt::Recover | Prompt::Answers => None,
+            Prompt::Answers => Some(Opening::Answers),
+            Prompt::User(_) | Prompt::Unread | Prompt::Recover => None,
         }
     }
 }
@@ -607,7 +608,7 @@ pub(crate) struct Harness {
     pub(crate) waiting: Vec<crate::asking::Waiting>,
     /// The user's message starting the next turn as the agent reads it,
     /// labelled with the questions it answers and those still open.
-    pub(crate) labelled: Option<crate::asking::Reply>,
+    pub(crate) labelled: Option<String>,
 }
 
 impl Harness {
@@ -1024,6 +1025,9 @@ impl Harness {
     /// A new conversation's hint, or a resumed one's history and notice.
     pub(crate) fn banner_end(&self, new: bool) {
         self.count_questions();
+        // Notes kept for the agent that Arko stopped before posting, or the
+        // workflow before saving, are posted now.
+        self.settle_answer_notes();
         let out = &self.output;
         if new {
             out.echo(&out.dim(
@@ -1267,8 +1271,7 @@ impl Harness {
                     (text, self.input_source, answers)
                 }
                 Event::Input(Some(Input::AnswerQuestions(answers))) => {
-                    let source = self.input_source;
-                    if self.answer_questions(answers, source).is_some()
+                    if self.answer_questions(answers).is_some()
                         && let News::Exit = self.deliver_answers(input).await
                     {
                         break;
@@ -1292,7 +1295,7 @@ impl Harness {
                     (text, Source::Web, answers)
                 }
                 Event::Remote(Action::AnswerQuestions(answers)) => {
-                    if self.answer_questions(answers, Source::Web).is_some()
+                    if self.answer_questions(answers).is_some()
                         && let News::Exit = self.deliver_answers(input).await
                     {
                         break;
@@ -1373,8 +1376,16 @@ impl Harness {
             // the message carries it.
             self.feed.notes_sent(&self.unread);
             self.feed.user_with(text, source, Delivery::Turn, shown);
-            self.labelled = self.reply_text(text, &attached);
-            if let TurnEnd::Exit = self.turn(Prompt::User(text.to_string()), input).await {
+            // A message that answers questions reaches the agent as their
+            // note, which a turn of its own delivers.
+            let prompt = match self.reply_text(text, &attached) {
+                Some(reply) if !reply.kept => {
+                    self.labelled = Some(reply.text);
+                    Prompt::User(text.to_string())
+                }
+                _ => Prompt::Answers,
+            };
+            if let TurnEnd::Exit = self.turn(prompt, input).await {
                 break;
             }
             if let News::Exit = self.deliver_news(input).await {
@@ -3383,6 +3394,7 @@ impl Harness {
     /// One turn: the message goes to the main agent, and its reply is
     /// printed.
     pub(crate) async fn turn(&mut self, prompt: Prompt, input: &mut Inputs) -> TurnEnd {
+        let answers_turn = matches!(prompt, Prompt::Answers);
         // A turn Arko stopped in the middle of (a crash) goes on where it
         // was saved, without a message: the message follows it.
         if !matches!(prompt, Prompt::Recover)
@@ -3529,11 +3541,9 @@ impl Harness {
         };
         tokio::pin!(call);
         let mut notes: Vec<(u64, String)> = Vec::new();
-        // The notes of the user's answers and dismissals.
-        // The notes of the user's answers and dismissals posted in it, with
-        // the numbers they are kept under.
-        let mut answer_notes: Vec<(u64, u64)> = Vec::new();
-        let mut queued: Vec<(String, crate::asking::Reply)> = Vec::new();
+        // Lines typed without a terminal, each its own turn later, with the
+        // message as the agent reads it.
+        let mut queued: Vec<(String, String)> = Vec::new();
         let mut stopping = false;
         let mut exit = false;
         let outcome = loop {
@@ -3589,24 +3599,15 @@ impl Harness {
                             };
                             (text, self.input_source, answers)
                         }
-                        Event::Input(Some(Input::AnswerQuestions(answers))) => {
-                            let source = self.input_source;
-                            if let Some(note) = self.answer_questions(answers, source) {
-                                self.post_answer_note(&workflow, note, &mut answer_notes);
-                            }
-                            continue;
-                        }
-                        Event::Remote(Action::AnswerQuestions(answers)) => {
-                            if let Some(note) = self.answer_questions(answers, Source::Web) {
-                                self.post_answer_note(&workflow, note, &mut answer_notes);
-                            }
+                        // Their note reaches the agent at its next step.
+                        Event::Input(Some(Input::AnswerQuestions(answers)))
+                        | Event::Remote(Action::AnswerQuestions(answers)) => {
+                            self.answer_questions(answers);
                             continue;
                         }
                         Event::Input(Some(Input::DismissQuestions(ids)))
                         | Event::Remote(Action::DismissQuestions(ids)) => {
-                            if let Some(note) = self.dismiss_questions(ids) {
-                                self.post_answer_note(&workflow, note, &mut answer_notes);
-                            }
+                            self.dismiss_questions(ids);
                             continue;
                         }
                         Event::Remote(
@@ -3681,9 +3682,28 @@ impl Harness {
                         self.feed.user(line.trim(), source, Delivery::Answer);
                         continue;
                     };
-                    if self.queue_lines {
+                    // One that answers questions went as their note, which
+                    // the agent reads at its next step (its images with
+                    // it, in a note of their own).
+                    if labelled.kept {
+                        self.output.echo(&self.output.dim(
+                            "  ✎ added to the task, and the agent reads it at its next step",
+                        ));
+                        self.feed.user(&text, source, Delivery::Note);
+                        if !images.is_empty()
+                            && let Some(run) = self.feed.questions_conversation()
+                            && let Err(error) = workflow.post_note(
+                                Note::new("").to([MAIN]).for_run(run).images(images),
+                            )
+                        {
+                            self.say(
+                                Level::Error,
+                                &format!("  could not pass the images on ({error})"),
+                            );
+                        }
+                    } else if self.queue_lines {
                         self.feed.user(&text, source, Delivery::Queued);
-                        queued.push((text, labelled));
+                        queued.push((text, labelled.text));
                     } else {
                         let note = Note::new(labelled.text).to([MAIN]).once().images(images);
                         match workflow.post_note(note) {
@@ -3692,12 +3712,7 @@ impl Harness {
                                     "  ✎ added to the task, and the agent reads it at its next step",
                                 ));
                                 self.feed.note(&text, source, seq.seq, shown);
-                                // One that answers questions is kept with
-                                // them until the agent has it.
-                                match labelled.kept {
-                                    Some(kept) => answer_notes.push((seq.seq, kept)),
-                                    None => notes.push((seq.seq, text)),
-                                }
+                                notes.push((seq.seq, text));
                             }
                             Err(error) => self.say(
                                 Level::Error,
@@ -3718,24 +3733,6 @@ impl Harness {
             )))
         });
         self.end_lost_wait();
-        // The answers posted in the turn that the agent read, when its run
-        // ended with its task saved.
-        let saved = outcome.is_ok()
-            || (stopping
-                && matches!(
-                    outcome,
-                    Err(WorkflowError::AgentStopped { .. } | WorkflowError::Cancelled)
-                ));
-        let read: Vec<u64> = if saved {
-            let unread = unread_notes(&answer_notes, &workflow);
-            answer_notes
-                .iter()
-                .map(|(_, kept)| *kept)
-                .filter(|kept| !unread.contains(kept))
-                .collect()
-        } else {
-            Vec::new()
-        };
         let end = match outcome {
             Ok(result) => {
                 self.output.echo("");
@@ -3792,9 +3789,9 @@ impl Harness {
                 TurnEnd::Failed
             }
         };
-        // The answers the agent now has leave, and the others stay for its
-        // next turn.
-        self.settle_answer_notes(&read);
+        // The answers the agent was given leave, and the others stay for
+        // its next turn.
+        self.settle_answer_notes();
         self.footer(spent_before, started);
         self.tell_monitors_of_the_cache();
         if let Some(item) = user_item {
@@ -3817,30 +3814,17 @@ impl Harness {
         if matches!(end, TurnEnd::Answered) && !self.unread.is_empty() {
             return Box::pin(self.turn(Prompt::Unread, input)).await;
         }
-        // So do the user's answers the agent didn't read.
+        // So do the user's answers the agent wasn't given before its turn
+        // ended (a turn for them gives them at its start).
         if matches!(end, TurnEnd::Answered)
+            && !answers_turn
             && self
                 .conversation_run()
-                .is_some_and(|run| !self.feed.queued_notes(run).is_empty())
+                .is_some_and(|run| self.notes_waiting(run))
         {
             return Box::pin(self.turn(Prompt::Answers, input)).await;
         }
         end
-    }
-
-    /// Posts `note`, about the agent's questions, for the agent to read at
-    /// its next step, and keeps it in `notes` to see whether it did. (One
-    /// that can't be posted goes with the next turn.)
-    fn post_answer_note(
-        &mut self,
-        workflow: &Workflow,
-        note: crate::asking::AnswerNote,
-        notes: &mut Vec<(u64, u64)>,
-    ) {
-        match workflow.post_note(Note::new(note.note).to([MAIN]).once()) {
-            Ok(posted) => notes.push((posted.seq, note.seq)),
-            Err(error) => log::warn!("could not pass the answers on ({error})"),
-        }
     }
 
     /// Whether the workers have news for the main agent, or will have.
@@ -4360,17 +4344,10 @@ impl Harness {
     /// Recovery keeps the existing prompt.
     pub(crate) fn compose(&mut self, prompt: Prompt) -> String {
         let opening = prompt.opening();
-        // The user's message as the agent reads it, with the questions it
-        // answers, and the number it is kept under with them.
-        let labelled = match prompt {
-            Prompt::Recover => return String::new(),
-            Prompt::User(_) => self.labelled.take(),
-            _ => None,
-        };
-        let kept = labelled.as_ref().and_then(|labelled| labelled.kept);
         let message = match prompt {
             Prompt::Recover => return String::new(),
-            Prompt::User(message) => Some(labelled.map_or(message, |labelled| labelled.text)),
+            // As the agent reads it, with the questions still open.
+            Prompt::User(message) => Some(self.labelled.take().unwrap_or(message)),
             Prompt::News { .. }
             | Prompt::Jobs
             | Prompt::Unread
@@ -4386,12 +4363,10 @@ impl Harness {
         if starts && let Some(kept) = self.kept.for_lead() {
             parts.push(kept);
         }
-        // The user's answers to the agent's questions it hasn't read, each
-        // a note.
-        let answers = self.take_answer_notes(self.conversation_run(), kept);
-        if !self.unread.is_empty() || !answers.is_empty() {
+        if !self.unread.is_empty() {
             // They were posted as one-time notes too: the run this message
-            // continues would get them a second time.
+            // continues would get them a second time. (The notes of the
+            // user's answers are for the run alone, and still reach it.)
             let continued = match &self.conversation {
                 Conversation::New => None,
                 Conversation::Answered(result) => Some(result.agent_run_id),
@@ -4401,7 +4376,6 @@ impl Harness {
                 self.workflow().skip_one_time_notes(run);
             }
         }
-        parts.extend(answers);
         if !self.unread.is_empty() {
             let unread = std::mem::take(&mut self.unread);
             self.feed.notes_sent(&unread);
@@ -5753,7 +5727,10 @@ pub(crate) mod tests {
         let question = questions.recv().await.unwrap();
         assert_eq!(question.text(), "Tabs or spaces?");
         assert!(question.plain(), "Arko's own question, without an id");
-        question.answer.unwrap().send("spaces".into()).unwrap();
+        let Some(crate::inputs::Answering::Text(answer)) = question.answer else {
+            panic!("a wait for text");
+        };
+        answer.send("spaces".into()).unwrap();
         assert_eq!(asking.await.unwrap().unwrap(), "spaces");
 
         // Asked without waiting: the asker returns at once, and the answers
@@ -5781,7 +5758,7 @@ pub(crate) mod tests {
         assert_eq!(asker.asked(later.clone()).await.unwrap(), None);
         let question = questions.recv().await.unwrap();
         assert!(question.answer.is_none() && !question.plain());
-        feed.ask(later.agent_run_id, &question.asked, false, None);
+        feed.ask(later.agent_run_id, &question.asked, false, None, None);
         assert_eq!(
             asker.open_questions(later.agent_run_id),
             Some(later.asked.clone())
@@ -7299,10 +7276,7 @@ pub(crate) mod tests {
     }
 
     fn answers(given: Vec<crate::questions::QuestionAnswer>) -> crate::questions::Answers {
-        crate::questions::Answers {
-            answers: given,
-            anything_else: None,
-        }
+        crate::questions::Answers { answers: given }
     }
 
     fn one_question(id: &str, text: &str) -> Vec<arko_agents::questions::AskedQuestion> {
@@ -7323,6 +7297,7 @@ pub(crate) mod tests {
             asked: one_question(id, text),
             answer: None,
             approval: None,
+            call: None,
         });
     }
 
@@ -7332,7 +7307,7 @@ pub(crate) mod tests {
         harness: &mut Harness,
         run: uuid::Uuid,
         name: &str,
-    ) -> tokio::sync::oneshot::Receiver<String> {
+    ) -> tokio::sync::oneshot::Receiver<crate::questions::ApprovalAnswer> {
         let (answer, answered) = tokio::sync::oneshot::channel();
         let profile = crate::profiles::Profile::new(name, "Reviews");
         harness.question_asked(Question {
@@ -7341,11 +7316,12 @@ pub(crate) mod tests {
                 crate::questions::PLAIN_ID,
                 &crate::profiles::approval_text(&profile, crate::profiles::Place::User),
             ),
-            answer: Some(answer),
+            answer: Some(crate::inputs::Answering::Approval(answer)),
             approval: Some(crate::profiles::approval(
                 &profile,
                 crate::profiles::Place::User,
             )),
+            call: None,
         });
         answered
     }
@@ -7414,10 +7390,10 @@ pub(crate) mod tests {
         );
         // The panel's answer to q1 goes to the idle agent in a turn.
         let note = harness
-            .answer_questions(answers(vec![chose("q1", "Spaces")]), Source::Terminal)
+            .answer_questions(answers(vec![chose("q1", "Spaces")]))
             .unwrap();
         assert_eq!(
-            note.note,
+            note,
             "The user answered q1.\nq1 Tabs or spaces? Spaces\nStill open: q2."
         );
         let news = tokio::time::timeout(
@@ -7469,10 +7445,7 @@ pub(crate) mod tests {
         // so.
         ask_later(&mut harness, run, "q3", "Which branch?");
         assert_eq!(
-            harness
-                .dismiss_questions(vec!["q3".into()])
-                .map(|note| note.note)
-                .as_deref(),
+            harness.dismiss_questions(vec!["q3".into()]).as_deref(),
             Some("The user dismissed q3.")
         );
         assert!(harness.feed.open_questions().is_empty());
@@ -7619,18 +7592,17 @@ pub(crate) mod tests {
             if reversed {
                 given.reverse();
             }
-            let note = harness
-                .answer_questions(answers(given), Source::Terminal)
-                .unwrap();
+            let note = harness.answer_questions(answers(given)).unwrap();
             assert_eq!(
                 answered.try_recv().unwrap(),
-                if approve { crate::questions::SAVE } else { "" },
+                if approve {
+                    crate::questions::ApprovalAnswer::Save
+                } else {
+                    crate::questions::ApprovalAnswer::DontSave
+                },
                 "approve {approve}, reversed {reversed}"
             );
-            assert_eq!(
-                note.note,
-                format!("The user answered q1.\nq1 Push now? {other}")
-            );
+            assert_eq!(note, format!("The user answered q1.\nq1 Push now? {other}"));
             assert!(harness.waiting.is_empty());
         }
     }
@@ -7648,15 +7620,16 @@ pub(crate) mod tests {
             harness.question_asked(Question {
                 run,
                 asked: one_question(crate::questions::PLAIN_ID, "Which file?"),
-                answer: Some(answer),
+                answer: Some(crate::inputs::Answering::Text(answer)),
                 approval: None,
+                call: None,
             });
             let id = harness.feed.open_questions()[0].id.clone();
             assert!(!crate::questions::is_agent_id(&id));
             if from_panel {
                 assert!(
                     harness
-                        .answer_questions(answers(vec![text_answer(&id, "main.rs")]), Source::Web)
+                        .answer_questions(answers(vec![text_answer(&id, "main.rs")]))
                         .is_none()
                 );
             } else {
@@ -7686,18 +7659,21 @@ pub(crate) mod tests {
         );
         assert!(
             harness
-                .answer_questions(
-                    answers(vec![
-                        chose(&open[0].id, crate::questions::SAVE),
-                        text_answer(&open[1].id, "Use high effort"),
-                    ]),
-                    Source::Terminal,
-                )
+                .answer_questions(answers(vec![
+                    chose(&open[0].id, crate::questions::SAVE),
+                    text_answer(&open[1].id, "Use high effort"),
+                ]),)
                 .is_none(),
             "nothing for the agent beside the approvals"
         );
-        assert_eq!(first.try_recv().unwrap(), crate::questions::SAVE);
-        assert_eq!(second.try_recv().unwrap(), "Use high effort");
+        assert_eq!(
+            first.try_recv().unwrap(),
+            crate::questions::ApprovalAnswer::Save
+        );
+        assert_eq!(
+            second.try_recv().unwrap(),
+            crate::questions::ApprovalAnswer::Edit("Use high effort".into())
+        );
         assert!(harness.waiting.is_empty());
     }
 
@@ -7737,20 +7713,20 @@ pub(crate) mod tests {
         // An answer to it comes too late.
         assert!(
             harness
-                .answer_questions(answers(vec![text_answer("q1", "main.rs")]), Source::Web)
+                .answer_questions(answers(vec![text_answer("q1", "main.rs")]))
                 .is_none()
         );
         // Answered first, the agent's closing changes nothing, and the
         // second answer is dropped.
         ask_later(&mut harness, run, "q2", "Tabs?");
-        let first = harness.answer_questions(
-            answers(vec![text_answer("q2", "Tabs"), text_answer("q2", "Spaces")]),
-            Source::Terminal,
-        );
-        assert_eq!(first.unwrap().note, "The user answered q2.\nq2 Tabs? Tabs");
+        let first = harness.answer_questions(answers(vec![
+            text_answer("q2", "Tabs"),
+            text_answer("q2", "Spaces"),
+        ]));
+        assert_eq!(first.unwrap(), "The user answered q2.\nq2 Tabs? Tabs");
         assert!(
             harness
-                .answer_questions(answers(vec![text_answer("q2", "Tabs")]), Source::Web)
+                .answer_questions(answers(vec![text_answer("q2", "Tabs")]))
                 .is_none()
         );
         harness.feed.event(
@@ -7799,7 +7775,10 @@ pub(crate) mod tests {
         assert_eq!(harness.card_answered(card), None);
         // A message without questions attached is the approval's answer.
         assert_eq!(harness.reply_text("save", &[]), None);
-        assert_eq!(answered.try_recv().unwrap(), crate::questions::SAVE);
+        assert_eq!(
+            answered.try_recv().unwrap(),
+            crate::questions::ApprovalAnswer::Save
+        );
     }
 
     /// The questions shown are the current conversation's, and an answer
@@ -7816,34 +7795,42 @@ pub(crate) mod tests {
         ask_later(&mut harness, second, "q1", "Which branch?");
         harness.feed.questions_run(Some(first));
         let note = harness
-            .answer_questions(answers(vec![text_answer("q1", "Tabs")]), Source::Web)
+            .answer_questions(answers(vec![text_answer("q1", "Tabs")]))
             .unwrap();
-        assert_eq!(note.note, "The user answered q1.\nq1 Tabs? Tabs");
+        assert_eq!(note, "The user answered q1.\nq1 Tabs? Tabs");
         assert!(harness.dismiss_questions(vec!["q1".into()]).is_none());
         assert_eq!(harness.feed.open_questions_of(second).len(), 1);
         assert_eq!(harness.feed.queued_notes(first).len(), 1);
         assert!(harness.feed.queued_notes(second).is_empty());
     }
 
-    /// An answer kept for a conversation goes with that conversation's
-    /// next message only: a new conversation's (after /new) doesn't take
-    /// it, and the conversation, gone back to (/resume), does. So do
-    /// dismissals.
+    /// The answers kept for a conversation go to its run alone, as notes
+    /// for that run: a new conversation's turn (after /new) doesn't get
+    /// them, and the conversation, gone back to (/resume), does, once each.
     #[tokio::test]
-    async fn kept_answers_go_with_their_own_conversation() {
+    async fn kept_answers_go_to_their_own_conversation() {
         use crate::mock_model::{ModelServer, complete, tool_call};
-        let server = ModelServer::start(Arc::new(move |_, body: String| {
-            Box::pin(async move {
-                if body.contains("Asked q1 and q2.") {
-                    complete("m2", "Asked.")
-                } else {
-                    tool_call(
-                        "m1",
-                        ASK_USER_TOOL_NAME,
-                        serde_json::json!({"questions": ["Tabs?", "Push now?"]}),
-                    )
-                }
-            })
+        let bodies: Arc<Mutex<Vec<String>>> = Arc::default();
+        let server = ModelServer::start(Arc::new({
+            let bodies = bodies.clone();
+            move |_, body: String| {
+                bodies.lock().unwrap().push(body.clone());
+                Box::pin(async move {
+                    if body.contains("The user answered q1.") {
+                        complete("m4", "Got them.")
+                    } else if body.contains("Something else.") {
+                        complete("m3", "Other.")
+                    } else if body.contains("Asked q1 and q2.") {
+                        complete("m2", "Asked.")
+                    } else {
+                        tool_call(
+                            "m1",
+                            ASK_USER_TOOL_NAME,
+                            serde_json::json!({"questions": ["Tabs?", "Push now?"]}),
+                        )
+                    }
+                })
+            }
         }))
         .await;
         let temp = tempfile::tempdir().unwrap();
@@ -7856,31 +7843,44 @@ pub(crate) mod tests {
         .unwrap();
         assert!(matches!(end, TurnEnd::Answered));
         asked(&mut harness, &mut inputs).await;
+        let first_run = harness.conversations.current_run().unwrap();
         assert!(
             harness
-                .answer_questions(answers(vec![text_answer("q1", "Tabs")]), Source::Terminal)
+                .answer_questions(answers(vec![text_answer("q1", "Tabs")]))
                 .is_some()
         );
         assert!(harness.dismiss_questions(vec!["q2".into()]).is_some());
         let first = std::mem::replace(&mut harness.conversation, Conversation::New);
         harness.new_conversation();
-        let message = harness.compose(Prompt::User("Something else.".into()));
-        assert!(!message.contains("The user answered q1."), "{message}");
-        assert!(!message.contains("The user dismissed q2."), "{message}");
+        let end = tokio::time::timeout(
+            Duration::from_secs(30),
+            harness.turn(Prompt::User("Something else.".into()), &mut inputs),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(end, TurnEnd::Answered));
+        assert_eq!(summary(&harness), "Other.", "the other run got no answer");
         harness.conversation = first;
-        let message = harness.compose(Prompt::User("Back again.".into()));
-        assert!(
-            message.contains("The user answered q1.\nq1 Tabs? Tabs"),
-            "{message}"
-        );
-        assert!(message.contains("The user dismissed q2."), "{message}");
+        harness.show_questions_of(Some(first_run));
+        let news = tokio::time::timeout(
+            Duration::from_secs(30),
+            harness.deliver_answers(&mut inputs),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(news, News::Done));
+        assert_eq!(summary(&harness), "Got them.");
+        let last = bodies.lock().unwrap().last().unwrap().clone();
+        assert_eq!(last.matches("The user answered q1.").count(), 1, "{last}");
+        assert_eq!(last.matches("The user dismissed q2.").count(), 1, "{last}");
+        assert!(harness.feed.queued_notes(first_run).is_empty());
     }
 
-    /// An answer is kept with the questions' states, so it survives a quit:
-    /// a stopped conversation's answer goes with its next message after a
-    /// restart, a wait its task takes up again gets it, and a question its
-    /// task holds that the session lost is open again. A note the task
-    /// already holds isn't given twice.
+    /// A kept answer whose workflow note is lost (Arko stopped before the
+    /// workflow saved it) is posted again as the session opens, a wait a
+    /// resumed task takes up again for answered questions gets the reply
+    /// that their note follows, and a question its task holds open that
+    /// the session lost is open again.
     #[tokio::test]
     async fn an_answer_survives_a_restart() {
         let temp = tempfile::tempdir().unwrap();
@@ -7893,7 +7893,7 @@ pub(crate) mod tests {
             ask_later(&mut harness, run, "q1", "Tabs?");
             assert!(
                 harness
-                    .answer_questions(answers(vec![text_answer("q1", "Tabs")]), Source::Terminal)
+                    .answer_questions(answers(vec![text_answer("q1", "Tabs")]))
                     .is_some()
             );
         }
@@ -7901,57 +7901,48 @@ pub(crate) mod tests {
             harness(&temp.path().join("two"), LLMClient::new(), true);
         harness.feed.keep_questions(kept);
         harness.feed.questions_run(Some(run));
-        assert_eq!(
-            harness.feed.queued_notes(run)[0].note,
-            "The user answered q1.\nq1 Tabs? Tabs"
-        );
+        let note = "The user answered q1.\nq1 Tabs? Tabs";
+        assert_eq!(harness.feed.queued_notes(run)[0].note, note);
+        harness.settle_answer_notes();
+        let carried = |harness: &Harness| {
+            harness
+                .workflow()
+                .notes()
+                .into_iter()
+                .filter(|posted| posted.note.text == note && posted.note.run == Some(run))
+                .count()
+        };
+        assert_eq!(carried(&harness), 1, "posted again, once");
+        harness.settle_answer_notes();
+        assert_eq!(carried(&harness), 1);
         // The task waited for it, and its wait comes back.
         let (answer, mut answered) = tokio::sync::oneshot::channel();
         harness.question_asked(Question {
             run,
             asked: one_question("q1", "Tabs?"),
-            answer: Some(answer),
+            answer: Some(crate::inputs::Answering::Text(answer)),
             approval: None,
+            call: None,
         });
         assert_eq!(
             answered.try_recv().unwrap(),
-            "The user answered q1.\nq1 Tabs? Tabs"
+            crate::questions::WAIT_ANSWERED
         );
         assert!(harness.waiting.is_empty());
-        // Or it goes with the next message, as kept.
-        assert_eq!(
-            harness.take_answer_notes(Some(run), None),
-            ["The user answered q1.\nq1 Tabs? Tabs"]
-        );
+        assert_eq!(carried(&harness), 1);
         // A question the task holds open that the session lost.
         harness
             .feed
             .questions_found(run, &one_question("q4", "Which branch?"));
         assert_eq!(harness.feed.open_questions()[0].id, "q4");
-        // A note the conversation holds is delivered.
-        let mut task = arko_agents::Task::new(
-            harness.main_config.clone(),
-            "Start.".into(),
-            temp.path().to_path_buf(),
-            None,
-        );
-        task.conversation.messages.push(arko_ai::Message::new_user(
-            "# Workflow context update\n\n- Note 1 from the operator (the person running this workflow), at 10:00:\n  The user answered q1.\n  q1 Tabs? Tabs",
-        ));
-        assert!(crate::asking::holds_note(
-            &task,
-            "The user answered q1.\nq1 Tabs? Tabs"
-        ));
-        assert!(!crate::asking::holds_note(&task, "The user dismissed q1."));
     }
 
-    /// An answer stays kept until the agent's task holds it: not when it
-    /// was given to a wait that the turn's stop then dropped, nor when it
-    /// went with a message whose turn failed before its task took it. A
-    /// restart keeps it, it goes once with the next turn, and it leaves
-    /// once the task holds it.
+    /// An answer stays kept until its run is given its note, by the
+    /// workflow's own count, not by what the conversation's text holds: a
+    /// wait that the turn's stop dropped doesn't count. Each answer reaches
+    /// the agent once.
     #[tokio::test]
-    async fn an_answer_is_kept_until_the_task_holds_it() {
+    async fn an_answer_is_kept_until_its_run_is_given_it() {
         use crate::mock_model::{ModelServer, complete, tool_call};
         let bodies: Arc<Mutex<Vec<String>>> = Arc::default();
         let server = ModelServer::start(Arc::new({
@@ -7959,8 +7950,8 @@ pub(crate) mod tests {
             move |_, body: String| {
                 bodies.lock().unwrap().push(body.clone());
                 Box::pin(async move {
-                    if body.contains("The user answered q1.") {
-                        complete("m3", "Got it.")
+                    if body.contains("The user answered q") {
+                        complete("m3", "Noted.")
                     } else if body.contains("Asked q1.") {
                         complete("m2", "Asked.")
                     } else {
@@ -7987,34 +7978,103 @@ pub(crate) mod tests {
         assert!(matches!(end, TurnEnd::Answered));
         asked(&mut harness, &mut inputs).await;
         let run = harness.conversations.current_run().unwrap();
-        // The task waits for q1 (as a resumed task would), the answer goes
-        // to its wait, and the turn's stop drops it before the task takes it.
+        // The task waits for q1 (as a resumed task would). The answer's
+        // note is posted, the wait hears it follows, and the turn's stop
+        // drops the wait before the task takes anything.
         let (answer, answered) = tokio::sync::oneshot::channel();
         harness.question_asked(Question {
             run,
             asked: one_question("q1", "Tabs or spaces?"),
-            answer: Some(answer),
+            answer: Some(crate::inputs::Answering::Text(answer)),
             approval: None,
+            call: None,
         });
         assert!(
             harness
-                .answer_questions(answers(vec![text_answer("q1", "Spaces")]), Source::Terminal)
-                .is_none()
+                .answer_questions(answers(vec![text_answer("q1", "Spaces")]))
+                .is_some()
         );
         drop(answered);
-        harness.settle_answer_notes(&[]);
-        let note = "The user answered q1.\nq1 Tabs or spaces? Spaces";
-        assert_eq!(harness.take_answer_notes(Some(run), None), [note]);
-        // A turn that failed before its task took the message: composed,
-        // and still kept.
-        assert!(harness.compose(Prompt::Answers).contains(note));
-        harness.settle_answer_notes(&[]);
+        harness.settle_answer_notes();
         assert_eq!(harness.feed.queued_notes(run).len(), 1);
-        // Arko restarts: the session keeps it once.
+        assert!(harness.notes_waiting(run));
+        // Arko restarts: the session keeps it.
         let restarted = remote::Feed::new(MAIN);
         restarted.keep_questions(kept);
         assert_eq!(restarted.queued_notes(run).len(), 1);
-        // It goes with the next turn, once, and leaves as the task holds it.
+        // It goes with the next turn, once, and leaves.
+        async fn deliver(harness: &mut Harness, inputs: &mut Inputs) {
+            let news =
+                tokio::time::timeout(Duration::from_secs(30), harness.deliver_answers(inputs))
+                    .await
+                    .unwrap();
+            assert!(matches!(news, News::Done));
+        }
+        deliver(&mut harness, &mut inputs).await;
+        let last = bodies.lock().unwrap().last().unwrap().clone();
+        assert_eq!(last.matches("The user answered q1.").count(), 1, "{last}");
+        assert!(harness.feed.queued_notes(run).is_empty());
+        // The next answer is a delivery of its own, kept until its run is
+        // given it.
+        ask_later(&mut harness, run, "q2", "Push now?");
+        assert!(
+            harness
+                .answer_questions(answers(vec![text_answer("q2", "Not yet")]))
+                .is_some()
+        );
+        harness.settle_answer_notes();
+        assert_eq!(harness.feed.queued_notes(run).len(), 1, "not given yet");
+        deliver(&mut harness, &mut inputs).await;
+        let last = bodies.lock().unwrap().last().unwrap().clone();
+        for answer in ["The user answered q1.", "The user answered q2."] {
+            assert_eq!(last.matches(answer).count(), 1, "{answer}\n{last}");
+        }
+        assert!(harness.feed.queued_notes(run).is_empty());
+    }
+
+    /// A kept note that its run was given leaves on the workflow's count,
+    /// so one left in the session's file by a stop right after (the
+    /// conversation may since have been compacted or handed over, and no
+    /// longer hold its words) isn't posted again.
+    #[tokio::test]
+    async fn a_note_given_before_a_stop_is_not_given_again() {
+        use crate::mock_model::{ModelServer, complete, tool_call};
+        let server = ModelServer::start(Arc::new(move |_, body: String| {
+            Box::pin(async move {
+                if body.contains("The user answered q1.") {
+                    complete("m3", "Got it.")
+                } else if body.contains("Asked q1.") {
+                    complete("m2", "Asked.")
+                } else {
+                    tool_call(
+                        "m1",
+                        ASK_USER_TOOL_NAME,
+                        serde_json::json!({"questions": ["Tabs or spaces?"]}),
+                    )
+                }
+            })
+        }))
+        .await;
+        let temp = tempfile::tempdir().unwrap();
+        let kept = temp.path().join(crate::questions::FILE);
+        let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
+        harness.feed.keep_questions(kept.clone());
+        let end = tokio::time::timeout(
+            Duration::from_secs(30),
+            harness.turn(Prompt::User("Start.".into()), &mut inputs),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(end, TurnEnd::Answered));
+        asked(&mut harness, &mut inputs).await;
+        let run = harness.conversations.current_run().unwrap();
+        assert!(
+            harness
+                .answer_questions(answers(vec![text_answer("q1", "Spaces")]))
+                .is_some()
+        );
+        // The session's file as a stop right after the delivery leaves it.
+        let before = std::fs::read(&kept).unwrap();
         let news = tokio::time::timeout(
             Duration::from_secs(30),
             harness.deliver_answers(&mut inputs),
@@ -8022,36 +8082,87 @@ pub(crate) mod tests {
         .await
         .unwrap();
         assert!(matches!(news, News::Done));
-        assert_eq!(summary(&harness), "Got it.");
-        let last = bodies.lock().unwrap().last().unwrap().clone();
-        assert_eq!(last.matches("The user answered q1.").count(), 1, "{last}");
+        let posted = harness.workflow().notes().len();
+        std::fs::write(&kept, before).unwrap();
+        harness.feed = remote::Feed::new(MAIN);
+        harness.feed.keep_questions(kept);
+        assert_eq!(harness.feed.queued_notes(run).len(), 1);
+        harness.settle_answer_notes();
         assert!(harness.feed.queued_notes(run).is_empty());
+        assert_eq!(
+            harness.workflow().notes().len(),
+            posted,
+            "nothing posted again"
+        );
+        assert!(!harness.notes_waiting(run));
     }
 
-    /// A message that answers questions is kept with them until the agent's
-    /// task holds it, as the agent reads it, and a message queued while the
-    /// agent works keeps its label for its own turn.
+    /// An answer given after the agent's question was recorded but before
+    /// its wait reached the harness goes once: as the note, which the wait,
+    /// once up, hears follows.
     #[tokio::test]
-    async fn a_message_that_answers_questions_is_kept_and_keeps_its_label() {
+    async fn an_answer_before_its_wait_is_up_goes_once() {
+        let temp = tempfile::tempdir().unwrap();
+        let (mut harness, _inputs, _sender) = harness(temp.path(), LLMClient::new(), true);
+        let run = uuid::Uuid::new_v4();
+        harness.feed.questions_run(Some(run));
+        harness
+            .feed
+            .record_asked(run, &one_question("q1", "Which file?"), true);
+        assert!(
+            harness
+                .answer_questions(answers(vec![text_answer("q1", "main.rs")]),)
+                .is_some()
+        );
+        let (answer, mut answered) = tokio::sync::oneshot::channel();
+        harness.question_asked(Question {
+            run,
+            asked: one_question("q1", "Which file?"),
+            answer: Some(crate::inputs::Answering::Text(answer)),
+            approval: None,
+            call: None,
+        });
+        assert_eq!(
+            answered.try_recv().unwrap(),
+            crate::questions::WAIT_ANSWERED
+        );
+        let notes = harness.workflow().notes();
+        assert_eq!(
+            notes
+                .iter()
+                .filter(|posted| posted.note.text.contains("q1 Which file? main.rs"))
+                .count(),
+            1
+        );
+    }
+
+    /// Two messages typed during a turn, each answering a question, reach
+    /// the agent once each, as their notes, and queue no turns of their
+    /// own.
+    #[tokio::test]
+    async fn two_messages_that_answer_questions_reach_the_agent_once_each() {
         use crate::mock_model::{ModelServer, complete};
-        let server = ModelServer::start(Arc::new(move |_, body: String| {
-            Box::pin(async move {
-                if body.contains("(This message answers q1.)") {
-                    complete("m3", "Used spaces.")
-                } else if body.contains("Second.") {
-                    tokio::time::sleep(Duration::from_millis(300)).await;
-                    complete("m2", "Two.")
-                } else {
-                    complete("m1", "One.")
-                }
-            })
+        let bodies: Arc<Mutex<Vec<String>>> = Arc::default();
+        let server = ModelServer::start(Arc::new({
+            let bodies = bodies.clone();
+            move |_, body: String| {
+                bodies.lock().unwrap().push(body.clone());
+                Box::pin(async move {
+                    if body.contains("(This message answers q1.)") {
+                        complete("m3", "Used both.")
+                    } else if body.contains("Second.") {
+                        tokio::time::sleep(Duration::from_millis(400)).await;
+                        complete("m2", "Two.")
+                    } else {
+                        complete("m1", "One.")
+                    }
+                })
+            }
         }))
         .await;
         let temp = tempfile::tempdir().unwrap();
-        let kept = temp.path().join(crate::questions::FILE);
         // Without a terminal, what is typed during a turn waits for its own.
         let (mut harness, mut inputs, sender) = harness(temp.path(), server.client(), false);
-        harness.feed.keep_questions(kept.clone());
         let end = tokio::time::timeout(
             Duration::from_secs(30),
             harness.turn(Prompt::User("First.".into()), &mut inputs),
@@ -8060,36 +8171,30 @@ pub(crate) mod tests {
         .unwrap();
         assert!(matches!(end, TurnEnd::Answered));
         let run = harness.conversations.current_run().unwrap();
-        harness
-            .feed
-            .ask(run, &one_question("q1", "Tabs or spaces?"), false, None);
-        harness
-            .feed
-            .ask(run, &one_question("q2", "Push now?"), false, None);
-        // Settled and kept at once, so a restart before the turn takes it
-        // still has it.
-        let reply = harness.reply_text("Spaces.", &["q2".into()]).unwrap();
-        assert_eq!(
-            reply.text,
-            "(This message answers q2.)\nSpaces.\n\n(Still open: q1.)"
+        harness.feed.ask(
+            run,
+            &one_question("q1", "Tabs or spaces?"),
+            false,
+            None,
+            None,
         );
-        let restarted = remote::Feed::new(MAIN);
-        restarted.keep_questions(kept);
-        assert_eq!(restarted.queued_notes(run)[0].note, reply.text);
-        assert_eq!(Some(restarted.queued_notes(run)[0].seq), reply.kept);
-        // Queued during a turn, the message keeps its label.
+        harness
+            .feed
+            .ask(run, &one_question("q2", "Push now?"), false, None, None);
         let feed = harness.feed.clone();
         let typing = tokio::spawn(async move {
             while !feed.activity().working {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
-            sender
-                .send(Input::Message(crate::ui::Message {
-                    text: "Spaces, please.".into(),
-                    answers: vec!["q1".into()],
-                    ..Default::default()
-                }))
-                .unwrap();
+            for (text, id) in [("Spaces, please.", "q1"), ("Not yet.", "q2")] {
+                sender
+                    .send(Input::Message(crate::ui::Message {
+                        text: text.into(),
+                        answers: vec![id.into()],
+                        ..Default::default()
+                    }))
+                    .unwrap();
+            }
             sender
         });
         let end = tokio::time::timeout(
@@ -8099,57 +8204,48 @@ pub(crate) mod tests {
         .await
         .unwrap();
         assert!(matches!(end, TurnEnd::Answered));
-        assert_eq!(summary(&harness), "Used spaces.");
+        assert_eq!(summary(&harness), "Used both.");
+        let last = bodies.lock().unwrap().last().unwrap().clone();
+        for label in ["(This message answers q1.)", "(This message answers q2.)"] {
+            assert_eq!(last.matches(label).count(), 1, "{label}\n{last}");
+        }
+        assert_eq!(bodies.lock().unwrap().len(), 3, "no turn of their own");
         assert!(harness.feed.queued_notes(run).is_empty());
         drop(typing.await.unwrap());
     }
 
-    /// What the user wrote besides their answers goes only with a
-    /// submission that names a question of the current conversation:
-    /// alone, or naming another conversation's questions (sent before a
-    /// /new or a /resume), it is dropped, even while the current
-    /// conversation has a question open.
+    /// A submission answers only the current conversation's questions:
+    /// one sent before a /new or a /resume, about another conversation's
+    /// questions, is dropped, even while the current conversation has a
+    /// question open.
     #[tokio::test]
-    async fn anything_else_stays_with_the_questions_it_names() {
+    async fn answers_go_only_to_the_current_conversations_questions() {
         let temp = tempfile::tempdir().unwrap();
         let (mut harness, _inputs, _sender) = harness(temp.path(), LLMClient::new(), true);
         let (first, second) = (uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
         ask_later(&mut harness, first, "q1", "Tabs?");
         harness.feed.questions_run(Some(second));
         ask_later(&mut harness, second, "q2", "Which branch?");
-        let besides = |given: Vec<crate::questions::QuestionAnswer>| crate::questions::Answers {
-            answers: given,
-            anything_else: Some("Keep it short.".into()),
-        };
-        let unanswered = |id: &str| {
-            crate::questions::QuestionAnswer::new(id, crate::questions::Answer::default())
-        };
-        // In the second conversation: the first's submissions are dropped.
-        for submission in [
-            besides(Vec::new()),
-            besides(vec![unanswered("q1")]),
-            besides(vec![text_answer("q1", "Tabs")]),
-        ] {
-            assert!(harness.answer_questions(submission, Source::Web).is_none());
-        }
+        assert!(
+            harness
+                .answer_questions(answers(vec![text_answer("q1", "Tabs")]))
+                .is_none()
+        );
         assert!(harness.feed.queued_notes(first).is_empty());
         assert!(harness.feed.queued_notes(second).is_empty());
         // After /new, nothing is the current conversation's.
         harness.feed.questions_run(None);
         assert!(
             harness
-                .answer_questions(besides(vec![unanswered("q2")]), Source::Web)
+                .answer_questions(answers(vec![text_answer("q2", "main")]))
                 .is_none()
         );
-        // Back in the first, a submission naming its question goes.
+        // Back in the first, its question is answered.
         harness.feed.questions_run(Some(first));
         let note = harness
-            .answer_questions(besides(vec![unanswered("q1")]), Source::Web)
+            .answer_questions(answers(vec![text_answer("q1", "Tabs")]))
             .unwrap();
-        assert_eq!(
-            note.note,
-            "The user wrote about your questions.\nAnything else: Keep it short.\nStill open: q1."
-        );
+        assert_eq!(note, "The user answered q1.\nq1 Tabs? Tabs");
         assert!(harness.feed.queued_notes(second).is_empty());
     }
 
@@ -8221,13 +8317,13 @@ pub(crate) mod tests {
         assert_eq!(open.len(), 1);
         assert!(
             harness
-                .answer_questions(
-                    answers(vec![chose(&open[0].id, crate::questions::SAVE)]),
-                    Source::Terminal
-                )
+                .answer_questions(answers(vec![chose(&open[0].id, crate::questions::SAVE)]),)
                 .is_none()
         );
-        assert_eq!(answered.try_recv().unwrap(), crate::questions::SAVE);
+        assert_eq!(
+            answered.try_recv().unwrap(),
+            crate::questions::ApprovalAnswer::Save
+        );
     }
 
     /// Question ids go on across the session's conversations: a new

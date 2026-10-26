@@ -4569,7 +4569,6 @@ mod tests {
                         ..Default::default()
                     },
                 )],
-                anything_else: None,
             }))
             .unwrap();
         let fresh = tokio::time::timeout(Duration::from_secs(30), async {

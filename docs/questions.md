@@ -7,20 +7,21 @@ don't answer. When the agent can't go on at all without an answer, it asks with 
 
 Arko asks you too, before the agent saves a worker profile for the project or for every project.
 That approval shows the profile's name, where it is kept, its model and effort, what it is for and
-its instructions, with Save and Don't save. Only Save saves it. Anything you type instead goes back
-to the agent as changes to make, and it asks again with the changed profile. Profiles the agent
-saves together come in one card, with a choice for each.
+its instructions, with Save and Don't save. Only Save saves it. Words you type instead go back to
+the agent. It makes the changes they ask for, or replies when they are about something else, and
+asks again. Profiles the agent saves together come in one card, with a choice for each.
 
 ## Answering in the full-screen view
 
 New questions open the answer panel above the message box when you aren't typing. While you type,
 a chip says "Arko asks 2 questions" instead, and Alt+Q opens the panel. The questions of one ask are
-numbered 1, 2, 3, and a question asked alone has no number.
+numbered 1, 2, 3, and a question asked alone has no number. A question that takes more than one of
+its suggested answers says "Choose any" after its text.
 
 | Key | In the answer panel |
 |---|---|
 | 1 to 9 | Pick a suggested answer, or "You decide" after them (the agent goes with its default) |
-| ↓, Tab | From a question's answers to its Other field, then on to the next question and "Anything else" |
+| ↓, Tab | From a question's answers to its Other field, then on to the next question, and from the last back to the first |
 | ↑, Shift+Tab | Back |
 | Typing | An answer of your own (Other). A question without suggested answers takes typing at once |
 | PgUp, PgDn | Scroll a long question, such as a profile's instructions |
@@ -35,27 +36,31 @@ is Option+Q, which needs Option to work as Alt. In the Terminal app, turn on Use
 
 A question shows in one place at a time. While it is open it is in the answer panel, and the
 transcript has one quiet line where it was asked ("Arko asked 2 questions"). Click that line to
-open the panel. Once a question is answered, closed or dismissed, the line shows it with what became
-of it. It can be answered, answered in your message, closed by the agent (it found the answer or
-the question no longer matters), or dismissed.
+open the panel. Once a question is answered, closed or dismissed, the line becomes the ask's record,
+a box like the panel with each settled question, numbered, and what became of it. It can be
+answered, answered in your message, closed by the agent (it found the answer or the question no
+longer matters), or dismissed. The text of the panel and of the record selects with the mouse and
+copies as the rest of the transcript does.
 
 ## What the agent reads
 
 Each question has an id that is unique in the session (`q1`, `q2`, ...), which the agent uses and
 you don't see. Each time you send answers, the agent gets one note. An idle agent starts a turn with
-it, as it does with a worker's report.
+it, as it does with a worker's report. An agent that waits for the answers hears that you replied,
+and the note follows.
 
 ```
 The user answered q3 and q4.
 q3 Tabs or spaces? Spaces
 q4 Push now? You decide (you said you'd assume: not yet)
-Anything else: Keep the old API one more release.
 Still open: q5.
 ```
 
 A message you send with the questions attached starts with "(This message answers q3 and q4.)".
 Any other message ends with the questions still open, "(Still open: q5.)". "Not now" tells the
-agent "The user dismissed q5." A resumed session's transcript shows your messages as you wrote
+agent "The user dismissed q5." A reply that isn't an answer, such as a new request, leaves the
+question unanswered. The agent replies to it, asks the question again in the same words, and
+reminds you that it is still waiting for your answer. A resumed session's transcript shows your messages as you wrote
 them.
 
 The session keeps its questions in its folder (`questions.json`), with the answers the agent hasn't
@@ -70,17 +75,18 @@ Workers ask the agent that started them, not you, with the same ids, suggested a
 The web page's status (`Reading::questions`) lists the open questions with their ids, numbers,
 suggested answers, `multiple`, default and state, and each ask's feed item (`Item::questions`) has
 all of its questions, updated as they change. `Activity::question` is the card the agent waits on,
-if any.
+if any. A question with `multiple` shows "Choose any" (`arko::questions::CHOOSE_ANY`), muted, right
+after its text.
 
 | Request | Body |
 |---|---|
-| `POST /api/questions/answer` | `{"answers": [{"id": "q3", "choices": ["Spaces"]}, {"id": "q4", "you_decide": true}, {"id": "q5", "text": "main"}, {"id": "q6"}], "anything_else": "..."}` |
+| `POST /api/questions/answer` | `{"answers": [{"id": "q3", "choices": ["Spaces"]}, {"id": "q4", "you_decide": true}, {"id": "q5", "text": "main"}, {"id": "q6"}]}` |
 | `POST /api/questions/dismiss` | `{"ids": ["q5"]}` |
 | `POST /api/message` | `{"text": "...", "answers": ["q3", "q4"]}` answers them in a message |
 
 Both answer a 409 when none of the questions is open. An answer names every question its panel
-shows, an unanswered one by its id alone (`{"id": "q6"}`), and "anything else" goes only with
-questions open in the current conversation.
+shows, an unanswered one by its id alone (`{"id": "q6"}`), and one with nothing filled in gets a
+400.
 
 An app does the same with `Input::AnswerQuestions`, `Input::DismissQuestions` and
 `Message::answers`. The types are in `arko::questions`.

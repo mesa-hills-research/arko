@@ -1,9 +1,8 @@
 //! The answer panel: the main agent's open questions, in a box above the
 //! message box. It opens by itself when questions come while the user isn't
 //! typing, else a chip says so, and Alt+Q opens it. Each question shows its
-//! choices as chips that number keys pick, an Other field and "You decide",
-//! and one "Anything else" box comes last. An approval shows what it
-//! approves, with Save and Don't save. Enter sends what's filled in. Esc
+//! choices as chips that number keys pick, an Other field and "You decide".
+//! An approval shows what it approves, with Save and Don't save. Enter sends what's filled in. Esc
 //! answers in chat instead: the questions are attached to the message box
 //! ("Replying to 2 questions"), and Backspace in an empty box takes them
 //! off. Ctrl+N dismisses them ("Not now").
@@ -26,7 +25,7 @@ use super::markdown;
 use super::overlay::{Overlay, hints};
 use super::select::Docked;
 use super::wrap;
-use crate::questions::{AgentQuestion, Answer, Answers, QuestionAnswer};
+use crate::questions::{AgentQuestion, Answer, Answers, CHOOSE_ANY, QuestionAnswer};
 use crate::ui::Input;
 
 /// The panel opens by itself only after this long without a key.
@@ -60,15 +59,14 @@ impl Draft {
 pub struct Panel {
     /// The panel shows and has the keys.
     pub open: bool,
-    /// The question with the keys (by its id, so it keeps them as other
-    /// questions come and go), or "Anything else" after them.
-    pub focus: Focus,
+    /// The question with the keys, by its id, so it keeps them as other
+    /// questions come and go.
+    pub focus: Option<String>,
     /// The focused question's Other field has the keys, not its chips:
     /// digits are text there.
     pub typing: bool,
     /// What is filled in, by question.
     pub drafts: HashMap<String, Draft>,
-    pub anything_else: String,
     /// The questions attached to the message box: the next message answers
     /// them.
     pub attached: Vec<String>,
@@ -87,16 +85,6 @@ pub struct Panel {
     /// The window Alt+Q opened the panel over, which comes back when the
     /// panel closes.
     pub behind: Option<Overlay>,
-}
-
-/// What has the panel's keys.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub enum Focus {
-    /// The question with this id.
-    Question(String),
-    /// "Anything else", after the questions.
-    #[default]
-    AnythingElse,
 }
 
 /// The chip above the message box, when the panel is closed.
@@ -141,16 +129,17 @@ impl App {
     }
 
     /// The place of the question with the panel's keys among the open
-    /// ones, or after them for "Anything else".
+    /// ones (the first when it has none).
     pub fn focus_index(&self) -> usize {
-        let questions = self.open_questions();
-        match &self.panel.focus {
-            Focus::Question(id) => questions
-                .iter()
-                .position(|question| &question.id == id)
-                .unwrap_or(questions.len()),
-            Focus::AnythingElse => questions.len(),
-        }
+        self.panel
+            .focus
+            .as_ref()
+            .and_then(|id| {
+                self.open_questions()
+                    .iter()
+                    .position(|question| &question.id == id)
+            })
+            .unwrap_or(0)
     }
 
     /// Whether the agent waits for an answer.
@@ -199,12 +188,11 @@ impl App {
             if self.panel.open {
                 self.close_panel();
             }
-            self.panel.anything_else.clear();
             return;
         }
         // The question being answered was answered elsewhere, or closed:
         // what is typed next doesn't go to another one.
-        if let Focus::Question(id) = &self.panel.focus
+        if let Some(id) = &self.panel.focus
             && !open.contains(id)
         {
             self.focus_on(0);
@@ -286,15 +274,12 @@ impl App {
         self.panel.seen.extend(ids);
     }
 
-    /// The question at `at` (or "Anything else" after them) gets the keys,
-    /// in its chips, or in its Other field when it has no choices.
+    /// The question at `at` gets the keys, in its chips, or in its Other
+    /// field when it has no choices.
     pub(super) fn focus_on(&mut self, at: usize) {
         let question = self.open_questions().get(at).cloned();
         self.panel.typing = question.as_ref().is_some_and(types_first);
-        self.panel.focus = match question {
-            Some(question) => Focus::Question(question.id),
-            None => Focus::AnythingElse,
-        };
+        self.panel.focus = question.map(|question| question.id);
         self.panel.scroll = 0;
     }
 
@@ -344,14 +329,12 @@ impl App {
         self.close_panel();
         self.panel.attached.clear();
         self.panel.drafts.clear();
-        self.panel.anything_else.clear();
         self.effects_push(Effect::Input(Input::DismissQuestions(ids)));
         self.say("Dismissed. Arko goes on with its defaults");
     }
 
     /// Enter in the panel: sends what's filled in, naming every question
-    /// it shows (which ties "Anything else" to their conversation). The
-    /// questions left unanswered stay open.
+    /// it shows. The questions left unanswered stay open.
     fn send_answers(&mut self) {
         let answers: Vec<QuestionAnswer> = self
             .open_questions()
@@ -366,47 +349,31 @@ impl App {
                 QuestionAnswer::new(question.id.clone(), answer)
             })
             .collect();
-        let anything_else =
-            Some(self.panel.anything_else.trim().to_string()).filter(|text| !text.is_empty());
-        if answers.iter().all(|given| given.answer.is_empty()) && anything_else.is_none() {
+        if answers.iter().all(|given| given.answer.is_empty()) {
             self.say("Nothing to send yet. Pick a choice, or type an answer");
             return;
         }
         for given in &answers {
             self.panel.drafts.remove(&given.id);
         }
-        self.panel.anything_else.clear();
         self.close_panel();
-        self.effects_push(Effect::Input(Input::AnswerQuestions(Answers {
-            answers,
-            anything_else,
-        })));
+        self.effects_push(Effect::Input(Input::AnswerQuestions(Answers { answers })));
         self.transcript.follow();
     }
 
-    /// The text field with the keys: the focused question's Other, or
-    /// "Anything else".
-    fn field(&mut self) -> &mut String {
-        let at = self.focus_index();
-        let questions = &self.reading.questions;
-        match questions.get(at) {
-            Some(question) => {
-                &mut self
-                    .panel
-                    .drafts
-                    .entry(question.id.clone())
-                    .or_default()
-                    .other
-            }
-            None => &mut self.panel.anything_else,
-        }
+    /// The text field with the keys: the focused question's Other.
+    fn field(&mut self) -> Option<&mut String> {
+        let id = self.open_questions().get(self.focus_index())?.id.clone();
+        Some(&mut self.panel.drafts.entry(id).or_default().other)
     }
 
     /// A paste while the panel has the keys: into its field, on one line.
     pub(super) fn panel_paste(&mut self, text: &str) {
         let text = text.replace(['\r', '\n'], " ");
         self.panel.typing = true;
-        self.field().push_str(&text);
+        if let Some(field) = self.field() {
+            field.push_str(&text);
+        }
         self.typed_in_panel();
     }
 
@@ -447,24 +414,24 @@ impl App {
     }
 
     /// ↓ and Tab: from a question's chips to its Other field, and from
-    /// there to the next question (or "Anything else", then the first).
+    /// there to the next question (after the last, the first).
     fn focus_down(&mut self) {
-        let (count, at) = (self.open_questions().len(), self.focus_index());
-        if at < count && !self.panel.typing {
-            self.panel.typing = true;
+        let (count, at) = (self.open_questions().len().max(1), self.focus_index());
+        if self.panel.typing {
+            self.focus_on((at + 1) % count);
         } else {
-            self.focus_on((at + 1) % (count + 1));
+            self.panel.typing = true;
         }
     }
 
     /// ↑ and Shift+Tab: the other way.
     fn focus_up(&mut self) {
-        let (count, at) = (self.open_questions().len(), self.focus_index());
-        if at < count && self.panel.typing {
+        let (count, at) = (self.open_questions().len().max(1), self.focus_index());
+        if self.panel.typing {
             self.panel.typing = false;
         } else {
-            self.focus_on((at + count) % (count + 1));
-            self.panel.typing = self.focus_index() < count;
+            self.focus_on((at + count - 1) % count);
+            self.panel.typing = true;
         }
     }
 
@@ -489,8 +456,10 @@ impl App {
             KeyCode::Up | KeyCode::BackTab => self.focus_up(),
             KeyCode::PageDown => self.panel.scroll += 5,
             KeyCode::PageUp => self.panel.scroll = self.panel.scroll.saturating_sub(5),
-            KeyCode::Backspace if self.panel.typing || chip_count.is_none() => {
-                self.field().pop();
+            KeyCode::Backspace if self.panel.typing => {
+                if let Some(field) = self.field() {
+                    field.pop();
+                }
             }
             // In the chips, a number picks one.
             KeyCode::Char(c @ '1'..='9')
@@ -501,10 +470,12 @@ impl App {
             {
                 self.pick(c as usize - '1' as usize);
             }
-            // Anything else typed goes in the Other field.
+            // Any other character typed goes in the Other field.
             KeyCode::Char(c) if !ctrl && !alt => {
                 self.panel.typing = true;
-                self.field().push(c);
+                if let Some(field) = self.field() {
+                    field.push(c);
+                }
                 self.typed_in_panel();
             }
             // Keys that work whatever the panel shows.
@@ -600,6 +571,22 @@ pub fn draw_panel(frame: &mut Frame, app: &mut App, above: Rect, previous: Optio
         if text.is_empty() {
             text.push(wrap::Wrapped::line(Vec::new()));
         }
+        // A question that takes any number of its choices says so after
+        // its text, on its line when it fits.
+        if question.multiple && !question.choices.is_empty() && question.approval.is_none() {
+            let hint = Span::styled(CHOOSE_ANY.to_string(), theme.dim());
+            let last = text.last_mut().expect("a line at least");
+            let used: usize = last
+                .spans
+                .iter()
+                .map(|span| wrap::width(&span.content))
+                .sum();
+            if used + 2 + wrap::width(CHOOSE_ANY) <= width {
+                last.spans.extend([Span::raw("  "), hint]);
+            } else {
+                text.push(wrap::Wrapped::line(vec![hint]));
+            }
+        }
         for (row, wrapped) in text.into_iter().enumerate() {
             let mut spans = if row == 0 {
                 vec![Span::raw("  "), Span::styled(number.clone(), style)]
@@ -673,30 +660,6 @@ pub fn draw_panel(frame: &mut Frame, app: &mut App, above: Rect, previous: Optio
         }
         spans_of.push((first, lines.len()));
     }
-    let focused_else = focus >= questions.len();
-    let label = if focused_else {
-        format!("{marker}Anything else  ")
-    } else {
-        "  Anything else  ".to_string()
-    };
-    if focused_else {
-        cursor = Some((
-            lines.len(),
-            (wrap::width(&label) + wrap::width(&app.panel.anything_else)) as u16,
-        ));
-    }
-    spans_of.push((lines.len(), lines.len() + 1));
-    lines.push(Line::from(vec![
-        Span::styled(
-            label,
-            if focused_else {
-                theme.accent().add_modifier(Modifier::BOLD)
-            } else {
-                theme.dim()
-            },
-        ),
-        Span::styled(app.panel.anything_else.clone(), theme.text()),
-    ]));
     // The focused question in sight from its start, and further down the
     // page (PgDn) for what doesn't fit.
     let (focus_first, focus_end) = spans_of[focus.min(spans_of.len() - 1)];
