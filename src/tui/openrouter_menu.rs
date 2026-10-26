@@ -252,7 +252,7 @@ impl OpenRouterMenu {
 
     /// The models row's value.
     fn models_value(&self) -> String {
-        if self.catalog.models.is_empty() && openrouter::loading() {
+        if self.catalog.models.is_empty() && openrouter::loading_for(&self.root) {
             return "loading".to_string();
         }
         self.catalog.summary()
@@ -659,9 +659,18 @@ mod tests {
             text.contains("Couldn't load the models (it couldn't be reached). Enter tries again."),
             "{rows:#?}"
         );
+        // The menu, open, takes the models once they are fetched, with no key
+        // pressed, as the view finds out they have come.
+        let mut app = crate::tui::app::tests::app();
+        app.info.root = Some(root.path().to_path_buf());
+        app.overlay = Some(crate::tui::overlay::Overlay::OpenRouter(menu));
+        let _ = app.openrouter_moved();
         openrouter::seed_for_tests(&settings, &["a/b", "c/d"]);
-        menu.refresh_catalog();
-        let rows = screen(&menu);
+        assert!(app.openrouter_moved());
+        let Some(crate::tui::overlay::Overlay::OpenRouter(menu)) = &app.overlay else {
+            panic!("the menu is open");
+        };
+        let rows = screen(menu);
         assert!(
             rows.iter()
                 .any(|r| r.contains("Models") && r.contains("2, updated just now")),

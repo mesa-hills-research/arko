@@ -64,11 +64,14 @@ pub enum Step {
     /// OpenRouter's models, filtered by what is typed (by name and slug),
     /// with the one selected among those that match.
     Browse { filter: String, selected: usize },
-    /// The efforts `model` takes; `selected` past them is Back.
+    /// The efforts `model` takes; `selected` past them is Back. `last` is
+    /// the one it ran at last (found as the step opens, since drawing reads
+    /// no file).
     Efforts {
         model: String,
         efforts: Vec<Effort>,
         selected: usize,
+        last: Option<Effort>,
     },
 }
 
@@ -214,6 +217,11 @@ impl ModelPicker {
         }
     }
 
+    /// Whether the models the settings need are being fetched.
+    fn loading(&self) -> bool {
+        self.root.as_deref().is_some_and(openrouter::loading_for)
+    }
+
     /// What OpenRouter says of the model `name`, in few characters, from
     /// its list in memory or else from when it was picked.
     fn details(&self, name: &str) -> String {
@@ -266,6 +274,7 @@ impl ModelPicker {
             model: name,
             efforts,
             selected,
+            last,
         };
         Outcome::Stay
     }
@@ -417,6 +426,7 @@ impl ModelPicker {
                 model,
                 efforts,
                 selected,
+                ..
             } => {
                 let back = efforts.len();
                 // Back goes to the models, or to the list they were chosen
@@ -596,7 +606,7 @@ pub fn draw(frame: &mut Frame, theme: &Theme, area: Rect, picker: &ModelPicker) 
                             marker(chosen),
                             Span::styled(glyphs::render(&text).into_owned(), style),
                         ];
-                        if count == 0 && openrouter::loading() {
+                        if count == 0 && picker.loading() {
                             spans.push(Span::styled("  loading", theme.dim()));
                         }
                         lines.push(Line::from(spans));
@@ -670,7 +680,7 @@ pub fn draw(frame: &mut Frame, theme: &Theme, area: Rect, picker: &ModelPicker) 
                 }
             };
             if found.is_empty() {
-                let none = match (&picker.catalog.problem, total, openrouter::loading()) {
+                let none = match (&picker.catalog.problem, total, picker.loading()) {
                     (_, 0, true) => {
                         say(&mut lines, "Loading OpenRouter's models…", theme.dim());
                         None
@@ -768,13 +778,10 @@ pub fn draw(frame: &mut Frame, theme: &Theme, area: Rect, picker: &ModelPicker) 
             model,
             efforts,
             selected,
+            last,
         } => {
             keys = &[("↑ ↓", "choose"), ("Enter", "apply"), ("Esc", "back")];
             let same_model = *model == picker.model && !picker.follows;
-            let last = picker
-                .root
-                .as_deref()
-                .and_then(|root| providers::LastModels::effort_of(root, model));
             for (n, effort) in efforts.iter().enumerate() {
                 let chosen = n == *selected;
                 if chosen {
@@ -792,7 +799,7 @@ pub fn draw(frame: &mut Frame, theme: &Theme, area: Rect, picker: &ModelPicker) 
                 ];
                 if same_model && effort.to_string() == picker.effort {
                     spans.push(Span::styled("  now", theme.accent()));
-                } else if last == Some(*effort) {
+                } else if *last == Some(*effort) {
                     spans.push(Span::styled("  last used", theme.dim()));
                 }
                 lines.push(Line::from(spans));

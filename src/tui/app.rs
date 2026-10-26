@@ -497,6 +497,13 @@ impl App {
             Some(Overlay::OpenRouter(menu)) => menu.refresh_catalog(),
             _ => {}
         }
+        // A fetch that ended may leave the models the settings need now
+        // unfetched (they changed meanwhile): they are asked for again.
+        if let (Some(root), Some(Overlay::Model(_) | Overlay::OpenRouter(_))) =
+            (&self.info.root, &self.overlay)
+        {
+            crate::openrouter::refresh_soon(root);
+        }
         true
     }
 
@@ -3806,6 +3813,15 @@ pub(super) mod tests {
         app.editor.clear();
         type_text(&mut app, "/model worker openrouter:z");
         assert_eq!(app.ghost().as_deref(), Some("-ai/glm-5"));
+        app.editor.clear();
+        // Drawing asks for the completions at every frame, which takes no
+        // file: the settings are as this process has them.
+        std::fs::remove_dir_all(temp.path()).unwrap();
+        type_text(&mut app, "/model openrouter:z");
+        for _ in 0..3 {
+            assert_eq!(app.ghost().as_deref(), Some("-ai/glm-5"));
+        }
+        assert!(!temp.path().exists(), "no file was made either");
         app.editor.clear();
         // A letter or two doesn't bring the list in.
         type_text(&mut app, "/model o");
