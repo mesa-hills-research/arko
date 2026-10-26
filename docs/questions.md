@@ -7,8 +7,8 @@ don't answer. When the agent can't go on at all without an answer, it asks with 
 
 Arko asks you too, before the agent saves a worker profile for the project or for every project.
 That approval shows the profile's name, where it is kept, its model and effort, what it is for and
-its instructions, with Save and Don't save. Only Save saves it. Anything you type instead goes back
-to the agent as changes to make, and it asks again with the changed profile. Profiles the agent
+its instructions, with Save and Don't save. Only Save saves it. Words you type instead go back to
+the agent as changes to make, and it asks again with the changed profile. Profiles the agent
 saves together come in one card, with a choice for each.
 
 ## Answering in the full-screen view
@@ -46,7 +46,8 @@ copies as the rest of the transcript does.
 
 Each question has an id that is unique in the session (`q1`, `q2`, ...), which the agent uses and
 you don't see. Each time you send answers, the agent gets one note. An idle agent starts a turn with
-it, as it does with a worker's report.
+it, as it does with a worker's report. An agent that waits for the answers hears that you replied,
+and the note follows.
 
 ```
 The user answered q3 and q4.
