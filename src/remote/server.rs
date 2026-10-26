@@ -1800,7 +1800,7 @@ mod tests {
             ),
             (2, true, Some("Spaces"), true)
         );
-        let states: Vec<(&str, Option<&str>, Option<&str>, Option<u32>)> = questions
+        let states: Vec<_> = questions
             .iter()
             .map(|question| {
                 (
