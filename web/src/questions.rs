@@ -662,10 +662,13 @@ fn QuestionView(question: QuestionData, open: Memo<Vec<QuestionData>>) -> impl I
             <div class="answers-ask">
                 {question.number.map(|number| view! { <span class="answers-number">{format!("{number}.")}</span> })}
                 <div class="answers-words">
-                    <span>{words.clone()}</span>
+                    // "Choose any" follows the question on its line.
+                    <span>
+                        {words.clone()}
+                        {question.multiple.then(|| view! { " " <span class="answers-any">"Choose any"</span> })}
+                    </span>
                     {profile}
                 </div>
-                {question.multiple.then(|| view! { <span class="answers-any">"Choose any"</span> })}
             </div>
             <div class="answers-chips">{chips}{you_decide}</div>
             <input

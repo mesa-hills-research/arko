@@ -682,7 +682,7 @@ details.more > summary { width: max-content; padding: 4px 0; color: var(--link);
 .answers-number { flex: none; min-width: 16px; color: var(--muted); }
 .answers-words { display: flex; flex: 1; flex-direction: column; min-width: 0; overflow-wrap: anywhere; }
 .answers-runs { color: var(--muted); }
-.answers-any { flex: none; color: var(--muted); font-size: 12px; }
+.answers-any { color: var(--muted); font-size: 13px; white-space: nowrap; }
 .answers-chips { display: flex; flex-wrap: wrap; gap: 4px; }
 .answers-chips .btn { min-height: 28px; }
 .chip { min-height: 28px; padding: 0 10px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface); font-size: 14px; }
