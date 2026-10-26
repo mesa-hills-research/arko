@@ -2192,7 +2192,15 @@ impl Feed {
             return;
         }
         let mut state = self.lock();
-        let id = self.push(&mut state, Item::new(Kind::Notice, text).level(Level::Warn));
+        let item = Item::new(Kind::Notice, text).level(Level::Warn);
+        // The model may still send some of its response: it goes on in the
+        // text it was in, above this line, as the turn ends.
+        let open = state.open_text.get(&item.agent).copied();
+        let agent = item.agent.clone();
+        let id = self.push(&mut state, item);
+        if let Some(open) = open {
+            state.open_text.insert(agent, open);
+        }
         state.stopping = Some(id);
     }
 
@@ -4332,6 +4340,30 @@ mod tests {
                 "Stopped the turn.",
                 "Something between.",
                 "Stopped the turn."
+            ]
+        );
+    }
+
+    /// Text that streams in after the user stopped the turn still goes in
+    /// the reply it belongs to, above the line that says the turn stopped.
+    #[test]
+    fn late_text_of_a_stopped_turn_joins_its_reply_above_the_stop() {
+        let feed = Feed::new("main");
+        feed.turn_started();
+        feed.event(&event("main", chunk("Here it")), None);
+        feed.turn_stopping("  Stopping the turn…");
+        feed.event(&event("main", chunk(" is, so")), None);
+        feed.turn_stopped("Stopped the turn.");
+        let items = feed.subscribe().0.items;
+        let shown: Vec<(Kind, &str)> = items
+            .iter()
+            .map(|item| (item.kind, item.text.as_str()))
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                (Kind::Text, "Here it is, so"),
+                (Kind::Notice, "Stopped the turn.")
             ]
         );
     }
