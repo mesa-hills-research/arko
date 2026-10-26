@@ -542,29 +542,30 @@ details.more > summary { width: max-content; padding: 4px 0; color: var(--link);
 .compose { position: relative; display: flex; align-items: flex-end; gap: 8px; }
 
 /* The field holds the text and, on a desktop, the expand button. A 40 px
-   pill, with the round send button beside it. */
+   pill, with the send button beside it, a 40 px circle. Both stay round in
+   every theme, so they match. */
 .field {
   display: flex;
   flex: 1;
   align-items: flex-end;
   min-width: 0;
   border: 1px solid var(--input-line);
-  border-radius: var(--r-full);
+  border-radius: 20px;
   background: var(--surface);
 }
-.compose.expanded .field, .field:has(textarea[style*="overflow-y: auto"]) { border-radius: var(--r-xl); }
 .field:focus-within { border-color: var(--ring); }
 
 .field textarea {
   display: block;
   flex: 1;
   min-width: 0;
-  /* 16px keeps iOS from zooming in on focus. */
-  font: 16px/1.45 var(--sans);
+  /* 16px keeps iOS from zooming in on focus. A line and the padding make
+     the 40 px field with its border. */
+  font: 16px/24px var(--sans);
   /* Six lines, then it scrolls. */
-  max-height: calc(6lh + 16px);
+  max-height: calc(6lh + 14px);
   margin: 0;
-  padding: 8px 14px;
+  padding: 7px 14px;
   border: 0;
   border-radius: inherit;
   outline: 0;
@@ -580,8 +581,8 @@ details.more > summary { width: max-content; padding: 4px 0; color: var(--link);
   .expand.shown { display: inline-flex; }
 }
 
-.send { width: 40px; min-height: 40px; border-radius: var(--r-full); }
-.stop { min-height: 40px; padding: 0 14px 0 12px; border-radius: var(--r-full); }
+.compose .send { flex: 0 0 40px; width: 40px; height: 40px; min-height: 0; padding: 0; border-radius: 50%; }
+.compose .stop { height: 40px; min-height: 0; padding: 0 14px 0 12px; border-radius: 20px; }
 .stop svg { fill: currentColor; }
 
 /* The command menu opens above the box. */
@@ -820,7 +821,7 @@ html:not(.apple) ::-webkit-scrollbar-corner { background: transparent; }
   .bar { min-height: 40px; }
   .rows { padding-top: 8px; }
   .bottom { padding-top: 6px; }
-  .field textarea { max-height: calc(3lh + 16px); }
+  .field textarea { max-height: calc(3lh + 14px); }
 }
 
 @media (prefers-reduced-motion: reduce) {
