@@ -13,6 +13,7 @@ use crate::app::{STORE, Sheet, get_json, local_get, local_set, on_item, page, po
 use crate::composer::gloo_wait;
 use crate::layout::View;
 use crate::protocol::{Delivery, ItemData, Kind, Level, LinkData, SettingsData};
+use crate::select::{Choice, Select};
 use crate::theme_list::THEMES;
 use crate::transcript::{WorkerCard, show_worker};
 use crate::words;
@@ -379,19 +380,20 @@ fn Change(
     }
 }
 
-/// A select on a touch screen lets go of the focus once a choice is made.
-/// iOS keeps it focused after its picker closes, and its next tap then only
-/// takes the focus away, so reopening it took two taps. (With a keyboard, the
-/// focus stays for the next choice.)
-fn let_go(event: &leptos::ev::Event) {
-    let touch = window()
-        .match_media("(any-pointer: coarse)")
-        .ok()
-        .flatten()
-        .is_some_and(|list| list.matches());
-    if touch {
-        let _ = event_target::<web_sys::HtmlElement>(event).blur();
-    }
+/// The themes to pick from: the system's pair, then the light ones and the
+/// dark ones.
+fn theme_choices() -> Vec<Choice> {
+    let system = Choice {
+        value: String::new(),
+        name: "System".into(),
+        group: None,
+    };
+    let themes = THEMES.iter().map(|(name, slug, dark)| Choice {
+        value: slug.to_string(),
+        name: name.to_string(),
+        group: Some(if *dark { "Dark" } else { "Light" }),
+    });
+    std::iter::once(system).chain(themes).collect()
 }
 
 /// Applies a theme by its slug (none for the system's pair), and keeps it
@@ -462,10 +464,10 @@ fn SettingsBody() -> impl IntoView {
     let started = move || page.status.with(|status| status.models.started);
     let has_workers = move || page.status.with(|status| status.models.has_workers);
     let info = move || page.status.with(|status| status.info.clone());
-    let theme = local_get(THEME).unwrap_or_default();
+    let theme = RwSignal::new(local_get(THEME).unwrap_or_default());
     let outside_confirm = RwSignal::new(false);
     let handover_confirm = RwSignal::new(false);
-    let whose: NodeRef<leptos::html::Select> = NodeRef::new();
+    let whose = RwSignal::new(String::new());
     let links = RwSignal::new(None::<Vec<LinkData>>);
     spawn_local(async move {
         links.set(get_json::<Vec<LinkData>>("/api/links", None).await);
@@ -489,24 +491,13 @@ fn SettingsBody() -> impl IntoView {
     view! {
         <section class="group">
             <h3>"Appearance"</h3>
-            // (Not a label around the select, and nothing written to it after a
-            // pick: either can make iOS take two taps to open it again.)
             <div class="setting">
-                <span class="setting-text"><span class="setting-name" id="theme-name">"Theme"</span></span>
-                <select class="select" aria-labelledby="theme-name" on:change=move |event| {
-                    let value = event_target_value(&event);
-                    apply_theme((!value.is_empty()).then_some(value.as_str()));
-                    let_go(&event);
-                }>
-                    <option value="" selected=theme.is_empty()>"System"</option>
-                    {[(false, "Light"), (true, "Dark")].map(|(dark, group)| view! {
-                        <optgroup label=group>
-                            {THEMES.iter().filter(|(_, _, mode)| *mode == dark).map(|(name, slug, _)| view! {
-                                <option value=*slug selected=theme == *slug>{*name}</option>
-                            }).collect_view()}
-                        </optgroup>
-                    })}
-                </select>
+                <span class="setting-text"><span class="setting-name">"Theme"</span></span>
+                <Select label="Theme" choices=theme_choices() filter=true value=theme
+                    choose=move |value: String| {
+                        apply_theme((!value.is_empty()).then_some(value.as_str()));
+                        theme.set(value);
+                    } />
             </div>
             <Options label="View" key="view"
                 options=View::ALL.iter().map(|view| (view.key().to_string(), view.name().to_string(), view.about().to_string())).collect()
@@ -696,18 +687,17 @@ fn SettingsBody() -> impl IntoView {
             <Change label="Tokens" placeholder="250k" empty="Give a size, such as 200k." note="handover"
                 send=move |size| {
                     let before = (s().handover_at, s().workers_handover_at);
-                    let whose = whose.get_untracked().map(|select| select.value()).unwrap_or_default();
+                    let whose = whose.get_untracked();
                     let target = if whose.is_empty() { String::new() } else { format!("{whose} ") };
                     settings.command(format!("/handover-at {target}{size}"), "handover",
                         Some(Box::new(move |s| (s.handover_at, s.workers_handover_at) != before)), None);
                 } />
             <Show when=has_workers>
                 <div class="setting"><span class="setting-text"><span class="setting-name">"Whose size"</span></span>
-                    <select class="select" node_ref=whose aria-label="Whose size" on:change=|event| let_go(&event)>
-                        <option value="">"Both"</option>
-                        <option value="main">"Main agent"</option>
-                        <option value="workers">"Workers"</option>
-                    </select>
+                    <Select label="Whose size" value=whose choose=move |value: String| whose.set(value)
+                        choices=[("", "Both"), ("main", "Main agent"), ("workers", "Workers")]
+                            .map(|(value, name)| Choice { value: value.into(), name: name.into(), group: None })
+                            .to_vec() />
                 </div>
             </Show>
             <div class="setting">

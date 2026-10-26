@@ -10,6 +10,7 @@ mod composer;
 mod layout;
 mod markdown;
 mod scroll;
+mod select;
 mod sheets;
 mod slash;
 mod store;
@@ -107,30 +108,6 @@ fn listen(page: Page) {
         }
         .unchecked_ref(),
     );
-    // iOS keeps a select focused once its picker closes, also when it's
-    // dismissed without a pick, and the next tap on it then only takes the
-    // focus away. On a touch screen a tap first lets go of a focused select,
-    // so the same tap opens it again.
-    let touch = window
-        .match_media("(any-pointer: coarse)")
-        .ok()
-        .flatten()
-        .is_some_and(|list| list.matches());
-    if touch {
-        let closure = Closure::<dyn FnMut()>::new(|| {
-            if let Some(active) = document().active_element()
-                && active.tag_name() == "SELECT"
-            {
-                let _ = active.unchecked_into::<web_sys::HtmlElement>().blur();
-            }
-        });
-        let _ = document().add_event_listener_with_callback_and_bool(
-            "pointerdown",
-            closure.as_ref().unchecked_ref(),
-            true,
-        );
-        closure.forget();
-    }
     // A link that differs only after the # (a new key after Arko restarted)
     // doesn't load the page again: trade its key and connect again.
     on(

@@ -117,13 +117,61 @@ kbd {
   .btn::after { content: ""; position: absolute; inset: min(0px, (100% - 40px) / 2); }
 }
 
-.select {
+/* The page's select: a button, and its list of choices opening in place
+   below it, drawn as the command menu is. In a setting's row the list takes
+   the row's whole width. */
+.select-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 180px;
+  max-width: 100%;
   min-height: 32px;
-  padding: 0 8px;
+  padding: 0 8px 0 10px;
   border: 1px solid var(--input-line);
   border-radius: var(--r-md);
   background: var(--surface);
   font-size: 16px;
+  text-align: left;
+}
+.select-button[aria-expanded="true"] { border-color: var(--ring); }
+.select-button svg { color: var(--muted); }
+.select-value { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.setting:has(> .select-pop) { flex-wrap: wrap; }
+.select-scrim { position: fixed; inset: 0; z-index: 20; }
+.select-pop {
+  position: relative;
+  z-index: 21;
+  flex: 1 0 100%;
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-xl);
+  background: var(--popover);
+  color: var(--popover-text);
+  box-shadow: var(--shadow);
+}
+.select-filter {
+  width: 100%;
+  margin-bottom: 6px;
+  padding: 6px 10px;
+  border: 1px solid var(--input-line);
+  border-radius: var(--r-md);
+  outline: 0;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 16px;
+}
+.select-filter:focus { border-color: var(--ring); }
+.select-list { max-height: min(40dvh, 320px); margin: 0; padding: 0; overflow-y: auto; overscroll-behavior: contain; outline: 0; list-style: none; }
+.select-list [role="option"] { display: flex; align-items: center; gap: 8px; min-height: 40px; padding: 8px 10px; border-radius: var(--r-lg); cursor: pointer; }
+.select-list [role="option"].active { background: var(--secondary-hover); }
+.select-list [role="option"][aria-selected="true"] { background: var(--tint); }
+.select-check { display: inline-grid; flex: none; place-items: center; width: 16px; color: var(--link); }
+.select-group { padding: 10px 10px 4px; color: var(--muted); font-size: 12px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; }
+.select-empty { padding: 8px 10px; color: var(--muted); }
+@media (pointer: coarse) {
+  .select-list [role="option"] { min-height: 44px; }
 }
 
 /* ----- header ----- */
@@ -748,19 +796,19 @@ dialog.sheet::backdrop { background: rgba(0, 0, 0, 0.36); }
    boxy. Apple's overlay scrollbars stay as they are (the page marks Apple
    systems with .apple), and Firefox takes the standard properties. */
 
-html:not(.apple) :is(.log, .field textarea, pre, .sheet-body, .slash-list, .ask-text)::-webkit-scrollbar { width: 10px; height: 10px; }
-html:not(.apple) :is(.log, .field textarea, pre, .sheet-body, .slash-list, .ask-text)::-webkit-scrollbar-track { margin: 4px; background: transparent; }
-html:not(.apple) :is(.log, .field textarea, pre, .sheet-body, .slash-list, .ask-text)::-webkit-scrollbar-thumb {
+html:not(.apple) :is(.log, .field textarea, pre, .sheet-body, .slash-list, .select-list, .ask-text)::-webkit-scrollbar { width: 10px; height: 10px; }
+html:not(.apple) :is(.log, .field textarea, pre, .sheet-body, .slash-list, .select-list, .ask-text)::-webkit-scrollbar-track { margin: 4px; background: transparent; }
+html:not(.apple) :is(.log, .field textarea, pre, .sheet-body, .slash-list, .select-list, .ask-text)::-webkit-scrollbar-thumb {
   min-height: 24px;
   border: 3px solid transparent;
   border-radius: 999px;
   background: var(--thumb) padding-box;
 }
-html:not(.apple) :is(.log, .field textarea, pre, .sheet-body, .slash-list, .ask-text)::-webkit-scrollbar-thumb:hover { background: var(--thumb-hover) padding-box; }
+html:not(.apple) :is(.log, .field textarea, pre, .sheet-body, .slash-list, .select-list, .ask-text)::-webkit-scrollbar-thumb:hover { background: var(--thumb-hover) padding-box; }
 html:not(.apple) ::-webkit-scrollbar-corner { background: transparent; }
 
 @supports not selector(::-webkit-scrollbar) {
-  .log, .field textarea, pre, .sheet-body, .slash-list, .ask-text {
+  .log, .field textarea, pre, .sheet-body, .slash-list, .select-list, .ask-text {
     scrollbar-width: thin;
     scrollbar-color: var(--thumb) transparent;
   }
