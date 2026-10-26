@@ -73,6 +73,7 @@ pub mod remote;
 #[cfg(test)]
 mod remote_demo;
 mod session;
+pub mod session_names;
 pub mod sessions;
 mod shell;
 mod skills;

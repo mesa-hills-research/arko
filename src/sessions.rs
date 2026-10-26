@@ -15,6 +15,7 @@ use crate::remote;
 pub use crate::remote::ConversationEntry;
 use crate::session::{self, Session};
 pub use crate::session::{Holder, Mode, data_root};
+use crate::session_names::short_name;
 
 /// A session, as the list shows it.
 #[derive(Debug, Clone, PartialEq)]
@@ -22,8 +23,9 @@ pub struct SessionEntry {
     pub id: String,
     pub dir: PathBuf,
     /// Its name. That's the one the user gave it, else a branch's ("Branch
-    /// of …"), else its current conversation's (the first line of its first
-    /// message), else "New session" (or "New chat").
+    /// of …"), else the first words of its current conversation's first
+    /// message (at most 30 columns, with "…" when cut), else "New session"
+    /// (or "New chat").
     pub title: String,
     pub mode: Mode,
     /// Where its agents work, or `None` for a chat.
@@ -83,9 +85,10 @@ pub fn list(root: &Path) -> Vec<SessionEntry> {
 }
 
 /// The name of `session`, with its `conversations` and `settings`. That's
-/// the one the user gave it, else a branch's ("Branch of …"), else its
-/// current conversation's (the first line of its first message), else the
-/// one its settings keep, else "New session" (or "New chat").
+/// the one the user gave it, else a branch's ("Branch of …"), else the
+/// first words of its current conversation's first message (cut for a
+/// name, see [`crate::session_names::short_name`]), else those its settings
+/// keep, else "New session" (or "New chat").
 pub(crate) fn title(
     session: &Session,
     conversations: &Conversations,
@@ -103,10 +106,11 @@ pub(crate) fn title(
             conversations
                 .current
                 .and_then(|index| conversations.list.get(index))
-                .map(|record| record.title.clone())
+                .map(|record| record.title.as_str())
                 .filter(|title| !title.is_empty())
+                .map(short_name)
         })
-        .or_else(|| settings.title.clone())
+        .or_else(|| settings.title.as_deref().map(short_name))
         .unwrap_or_else(|| match settings.mode {
             Mode::Agent => "New session".to_string(),
             Mode::Chat => "New chat".to_string(),
@@ -826,6 +830,59 @@ mod tests {
         assert!(!first.dir.exists());
         assert_eq!(list(&root).len(), 1);
         assert!(workspace.is_dir(), "the workspace stays");
+    }
+
+    /// A session is named by the first words of its first message, cut for a
+    /// name, while its conversation keeps the whole first line. A name the
+    /// user gave and a branch's name are not cut.
+    #[test]
+    fn a_session_is_named_by_the_first_words_of_its_first_message() {
+        let temp = tempfile::tempdir().unwrap();
+        let session = Session::create(temp.path()).unwrap();
+        let line = "Fix the flaky scroll test in the sidebar before the release";
+        session
+            .save_settings(&Settings {
+                title: Some(crate::ui::cut(line, 80)),
+                ..settings(temp.path())
+            })
+            .unwrap();
+        // Before the conversation is saved, its first message names it.
+        let listed = || list(temp.path()).remove(0);
+        assert_eq!(listed().title, "Fix the flaky scroll test in…");
+        let conversations = Conversations {
+            list: vec![crate::conversations::Record {
+                runs: Vec::new(),
+                title: crate::conversations::title_of(line),
+                unread: Vec::new(),
+            }],
+            current: Some(0),
+        };
+        conversations.save(&session.dir).unwrap();
+        let entry = listed();
+        assert_eq!(entry.title, "Fix the flaky scroll test in…");
+        assert_eq!(entry.conversations[0].title, line, "the whole line stays");
+        rename(
+            temp.path(),
+            &session.id,
+            "A name of the user's own making, kept whole",
+        )
+        .unwrap();
+        assert_eq!(
+            listed().title,
+            "A name of the user's own making, kept whole"
+        );
+        let branched = Settings {
+            title: Some("Branch of Fix the flaky scroll test in…".into()),
+            branched_from: Some(session.id.clone()),
+            ..settings(temp.path())
+        };
+        let branch = Session::create(temp.path()).unwrap();
+        branch.save_settings(&branched).unwrap();
+        let entry = list(temp.path())
+            .into_iter()
+            .find(|entry| entry.id == branch.id)
+            .unwrap();
+        assert_eq!(entry.title, "Branch of Fix the flaky scroll test in…");
     }
 
     /// An Arko from before session locks holds only its terminal's: the
