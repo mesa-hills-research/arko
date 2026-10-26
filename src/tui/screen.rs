@@ -47,6 +47,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     app.input_width = text_width;
     let mut input = app.editor.lines(text_width, theme.text(), theme.key());
     let (mut cursor_row, cursor_column) = app.editor.position(text_width);
+    // The cursor after a full last row is on a row of its own.
+    if cursor_row == input.len() {
+        input.push(Vec::new());
+    }
     let most = INPUT_LINES.min(area.height as usize / 4).max(1);
     if input.len() > most {
         // Scrolled to keep the cursor in sight.
@@ -918,6 +922,49 @@ mod tests {
         assert_eq!(row(10), "   Methodology");
         let cursor = terminal.get_cursor_position().unwrap();
         assert_eq!((cursor.x, cursor.y), (14, 10));
+    }
+
+    /// Text that fills the input box's row exactly leaves the cursor no cell
+    /// there, so the cursor starts the next row instead of covering the last
+    /// character, and the next character goes where it is.
+    #[test]
+    fn the_cursor_after_a_full_row_starts_the_next_one() {
+        let mut app = app();
+        // 26 columns: the width of a 30-column screen's box.
+        for c in "abcdefghijklmnopqrstuvwxyz".chars() {
+            app.editor.insert(c);
+        }
+        let mut terminal = Terminal::new(TestBackend::new(30, 12)).unwrap();
+        let mut drawn = |app: &mut App| {
+            terminal.draw(|frame| draw(frame, app)).unwrap();
+            let buffer = terminal.backend().buffer().clone();
+            let row = |y: u16| {
+                (0..30)
+                    .map(|x| buffer[(x, y)].symbol().to_string())
+                    .collect::<String>()
+                    .trim_end()
+                    .to_string()
+            };
+            let cursor = terminal.get_cursor_position().unwrap();
+            (row(9), row(10), (cursor.x, cursor.y))
+        };
+        assert_eq!(
+            drawn(&mut app),
+            (
+                " › abcdefghijklmnopqrstuvwxyz".to_string(),
+                String::new(),
+                (3, 10)
+            )
+        );
+        app.editor.insert('!');
+        assert_eq!(
+            drawn(&mut app),
+            (
+                " › abcdefghijklmnopqrstuvwxyz".to_string(),
+                "   !".to_string(),
+                (4, 10)
+            )
+        );
     }
 
     /// A list taller than its area counts what it hides above and below

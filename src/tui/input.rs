@@ -418,9 +418,14 @@ impl Editor {
                     column += self.width_of(self.text[index]);
                 }
             }
-            // After the last character.
+            // After the last character. A full row leaves the cursor no
+            // cell, so it starts the next row, where the next character goes.
             if row == last {
-                return (row, column);
+                return if column >= width {
+                    (row + 1, 0)
+                } else {
+                    (row, column)
+                };
             }
         }
         (0, 0)
@@ -608,6 +613,23 @@ mod tests {
             .collect()
     }
 
+    /// A row filled exactly, by narrow or wide characters, leaves the cursor
+    /// at its end no cell, so it is at the start of the next row.
+    #[test]
+    fn the_cursor_after_a_full_row_is_on_the_next() {
+        let mut e = editor();
+        typed(&mut e, "See the wrappe");
+        assert_eq!(rows(&e, 14), ["See the wrappe"]);
+        assert_eq!(e.position(14), (1, 0));
+        typed(&mut e, "d");
+        assert_eq!(e.position(14), (1, 7));
+        let mut e = editor();
+        typed(&mut e, "日本語の文章で");
+        assert_eq!(e.position(14), (1, 0));
+        e.left();
+        assert_eq!(e.position(14), (0, 12));
+    }
+
     /// The box wraps at spaces: a word that crosses the edge moves whole
     /// to the next row as it is typed, comes back as it is deleted, and
     /// the cursor stays where it was in the text. Only a word longer than
@@ -667,7 +689,8 @@ mod tests {
         typed(&mut e, "now");
         assert_eq!(e.shown(), "see [pasted 20 lines]now");
         assert_eq!(e.rows(20).len(), 2);
-        assert_eq!(e.position(20), (1, 20));
+        // The second row is full, so the cursor after it starts a third.
+        assert_eq!(e.position(20), (2, 0));
     }
 
     #[test]
