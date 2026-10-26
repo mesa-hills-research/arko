@@ -547,6 +547,7 @@ details.more > summary { width: max-content; padding: 4px 0; color: var(--link);
   flex-direction: column;
   max-height: min(50dvh, 340px);
   padding: 6px;
+  border: 1px solid var(--line);
   border-radius: var(--r-xl);
   background: var(--popover);
   color: var(--popover-text);
