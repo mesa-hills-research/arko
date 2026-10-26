@@ -924,23 +924,39 @@ impl FileLock {
             .open(&path)
             .map_err(|error| format!("Couldn't lock {} ({error}).", path.display()))?;
         loop {
-            match file.try_lock() {
+            let attempt = Self::try_lock(&file);
+            match attempt {
                 Ok(()) => return Ok(Self(file)),
                 Err(std::fs::TryLockError::WouldBlock) if Instant::now() < give_up => {
                     std::thread::sleep(Duration::from_millis(10));
                 }
                 Err(std::fs::TryLockError::WouldBlock) => return Err(in_use(root)),
-                // (A file system without locks has the one in this process.)
+                // Without locks, another Arko process could change the file
+                // under this one, and the privacy settings may be in it.
                 Err(std::fs::TryLockError::Error(error))
                     if error.kind() == std::io::ErrorKind::Unsupported =>
                 {
-                    return Ok(Self(file));
+                    return Err(format!(
+                        "The file system of {} can't lock files, so the OpenRouter settings can't be changed there.",
+                        root.display()
+                    ));
                 }
                 Err(std::fs::TryLockError::Error(error)) => {
                     return Err(format!("Couldn't lock {} ({error}).", path.display()));
                 }
             }
         }
+    }
+}
+
+impl FileLock {
+    /// [`File::try_lock`], or (tests) the error the test chose.
+    fn try_lock(file: &std::fs::File) -> Result<(), std::fs::TryLockError> {
+        #[cfg(test)]
+        if let Some(kind) = LOCK_FAILS.with(std::cell::Cell::get) {
+            return Err(std::fs::TryLockError::Error(std::io::Error::from(kind)));
+        }
+        file.try_lock()
     }
 }
 
@@ -987,10 +1003,13 @@ fn reads_of(root: &Path) -> usize {
 }
 
 // For tests, on the thread: how long a change waits for the lock instead of
-// the usual.
+// the usual, and what the lock on a file fails with.
 #[cfg(test)]
 thread_local! {
     static LOCK_WAIT: std::cell::Cell<Option<Duration>> = const { std::cell::Cell::new(None) };
+    /// The error the lock on a file fails with on the thread, instead.
+    static LOCK_FAILS: std::cell::Cell<Option<std::io::ErrorKind>> =
+        const { std::cell::Cell::new(None) };
 }
 
 /// Stops the change in Arko's folder `root` that reads next, once it has
@@ -2503,6 +2522,50 @@ mod tests {
         assert!(Settings::read(&root).unwrap().zdr());
         Settings::update(&root, |s| s.set_zdr(false)).unwrap();
         assert!(path.exists(), "the lock file is never removed");
+    }
+
+    /// A file system that can't lock files can't have the settings changed:
+    /// another Arko process could change the file meanwhile, and the privacy
+    /// settings may be in it. Nothing is written, no client is installed, and
+    /// the message says why. Any other lock error fails the same way.
+    #[tokio::test]
+    async fn a_file_system_without_locks_changes_nothing_and_installs_nothing() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("arko");
+        Settings::update(&root, |s| s.set_zdr(true)).unwrap();
+        let (keys, _feed) = session(&root);
+        let before = std::fs::read_to_string(root.join(FILE)).unwrap();
+        let installed = keys.installed().unwrap();
+        for (kind, said) in [
+            (
+                std::io::ErrorKind::Unsupported,
+                "can't lock files, so the OpenRouter settings can't be changed there.",
+            ),
+            (std::io::ErrorKind::PermissionDenied, "Couldn't lock"),
+        ] {
+            LOCK_FAILS.with(|fails| fails.set(Some(kind)));
+            let error = Settings::update(&root, |s| s.set_zdr(false)).unwrap_err();
+            assert!(error.contains(said), "{kind:?}: {error}");
+            // The models picked are kept the same way, so nothing is written
+            // behind its back either.
+            remember(&root, "openrouter:acme/model");
+            LOCK_FAILS.with(|fails| fails.set(None));
+            assert_eq!(std::fs::read_to_string(root.join(FILE)).unwrap(), before);
+            assert_eq!(
+                keys.installed().unwrap(),
+                installed,
+                "no client was installed"
+            );
+        }
+        // And on a folder with no file yet: none is made.
+        let empty = temp.path().join("empty");
+        LOCK_FAILS.with(|fails| fails.set(Some(std::io::ErrorKind::Unsupported)));
+        assert!(Settings::update(&empty, |s| s.set_zdr(true)).is_err());
+        LOCK_FAILS.with(|fails| fails.set(None));
+        assert!(!empty.join(FILE).exists());
+        // With locks again, it goes on.
+        Settings::update(&root, |s| s.set_zdr(false)).unwrap();
+        assert!(!zdr_installed(&keys));
     }
 
     /// A change waits for a change going on in this process too, for a

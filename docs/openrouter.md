@@ -30,7 +30,8 @@ privacy settings of your OpenRouter account apply too, and these settings only t
 
 Open sessions use a change from their next request, in the terminal and in an app. Another Arko
 process reads it when its next session starts. A session that can't read the file doesn't start on
-an OpenRouter model.
+an OpenRouter model, and a folder on a file system that can't lock files can't have the settings
+changed.
 
 ## The file
 
