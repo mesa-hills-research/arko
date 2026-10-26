@@ -19,6 +19,9 @@ pub(crate) const SETTINGS_FILE: &str = "session.json";
 /// The name the user gave the session, when they renamed it: apart from
 /// its settings, which the session rewrites while it runs.
 const TITLE_FILE: &str = "title";
+/// The name a model gave the session (see `session_names`): apart from the
+/// user's, which it never replaces.
+const NAME_FILE: &str = "generated-title";
 
 /// What a session is, an agent working in a folder with its tools and
 /// workers or a chat with no tools.
@@ -356,6 +359,26 @@ impl Session {
             .ok()
             .map(|title| title.trim().to_string())
             .filter(|title| !title.is_empty())
+    }
+
+    /// The name a model gave the session, if one did.
+    pub fn generated_name(&self) -> Option<String> {
+        std::fs::read_to_string(self.dir.join(NAME_FILE))
+            .ok()
+            .map(|name| name.trim().to_string())
+            .filter(|name| !name.is_empty())
+    }
+
+    /// Keeps `name` as the name a model gave the session. The name the user
+    /// gave comes before it, and stays.
+    pub fn set_generated_name(&self, name: &str) -> Result<(), String> {
+        write_whole(&self.dir.join(NAME_FILE), name.trim().as_bytes())
+            .map_err(|error| format!("could not keep the session's name ({error})"))
+    }
+
+    /// Forgets the name a model gave the session.
+    pub fn clear_generated_name(&self) {
+        let _ = std::fs::remove_file(self.dir.join(NAME_FILE));
     }
 
     /// Renames the session `title` (an empty title: back to the one it

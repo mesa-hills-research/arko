@@ -11,6 +11,8 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::{claude_code, credentials};
 
+mod naming;
+
 /// The file in Arko's folder that holds the ways.
 const FILE: &str = "session-names.json";
 

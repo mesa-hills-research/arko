@@ -3352,6 +3352,7 @@ impl Harness {
                 log::warn!("could not save the session's title: {error}");
             }
             self.publish_title();
+            self.name_by_model(text);
         }
         // The user's message that starts it, which can be edited once the
         // turn says where it is in the conversation.
@@ -4408,12 +4409,19 @@ impl Harness {
 
     /// The current conversation takes the name of `words`, the new first
     /// message of a conversation cut back to its first.
-    fn retitle(&mut self, words: Option<String>) {
+    pub(crate) fn retitle(&mut self, words: Option<String>) {
         let Some(words) = words else {
             return;
         };
+        let first = self.conversations.current == Some(0);
         if let Some(record) = self.conversations.current_mut() {
             record.title = conversations::title_of(&words);
+            // A model's name was of the message that is gone: the new one
+            // is named in its place.
+            if first {
+                self.session.clear_generated_name();
+                self.name_by_model(&words);
+            }
             self.save_conversations();
             self.publish_conversations();
             self.publish_title();
@@ -4543,6 +4551,17 @@ pub(crate) fn place(link: &remote::Link) -> String {
         .as_ref()
         .map(|name| format!(" ({name}, {})", link.kind.label()))
         .unwrap_or_default()
+}
+
+/// Shows `session`'s name as its folder holds it now, in `gauges`' status.
+/// For work done off the session's own thread (a model's name arriving).
+pub(crate) fn publish_title_from_disk(session: &Session, gauges: &Gauges) {
+    let Ok(settings) = session.load_settings() else {
+        return;
+    };
+    let conversations = conversations::Conversations::load(&session.dir).unwrap_or_default();
+    *lock(&gauges.title) = crate::sessions::title(session, &conversations, &settings);
+    gauges.touch();
 }
 
 /// The commands that change a setting while the session runs, which take

@@ -23,9 +23,9 @@ pub struct SessionEntry {
     pub id: String,
     pub dir: PathBuf,
     /// Its name. That's the one the user gave it, else a branch's ("Branch
-    /// of …"), else the first words of its current conversation's first
-    /// message (at most 30 columns, with "…" when cut), else "New session"
-    /// (or "New chat").
+    /// of …"), else the one a model gave it, else the first words of its
+    /// current conversation's first message (at most 30 columns, with "…"
+    /// when cut), else "New session" (or "New chat").
     pub title: String,
     pub mode: Mode,
     /// Where its agents work, or `None` for a chat.
@@ -85,10 +85,11 @@ pub fn list(root: &Path) -> Vec<SessionEntry> {
 }
 
 /// The name of `session`, with its `conversations` and `settings`. That's
-/// the one the user gave it, else a branch's ("Branch of …"), else the
-/// first words of its current conversation's first message (cut for a
-/// name, see [`crate::session_names::short_name`]), else those its settings
-/// keep, else "New session" (or "New chat").
+/// the one the user gave it, else a branch's ("Branch of …"), else the one
+/// a model gave it (see [`crate::session_names`]), else the first words of
+/// its current conversation's first message (cut for a name, see
+/// [`crate::session_names::short_name`]), else those its settings keep,
+/// else "New session" (or "New chat").
 pub(crate) fn title(
     session: &Session,
     conversations: &Conversations,
@@ -102,6 +103,7 @@ pub(crate) fn title(
                 .clone()
                 .filter(|_| settings.branched_from.is_some())
         })
+        .or_else(|| session.generated_name())
         .or_else(|| {
             conversations
                 .current
