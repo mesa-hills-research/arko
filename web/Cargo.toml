@@ -60,6 +60,7 @@ web-sys = { version = "0.3", features = [
     "HtmlDialogElement",
     "History",
     "ScrollIntoViewOptions",
+    "FocusEvent",
     "ScrollLogicalPosition",
 ] }
 

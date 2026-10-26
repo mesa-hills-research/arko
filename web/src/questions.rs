@@ -46,6 +46,12 @@ pub struct Asking {
     /// When the message box last had a key (ms), and whether it's empty.
     pub typed_at: RwSignal<f64>,
     pub box_empty: RwSignal<bool>,
+    /// The question whose part has the keyboard in the panel.
+    pub focused: RwSignal<Option<String>>,
+    /// The questions this page answered or dismissed, until they're settled.
+    pub answering: RwSignal<Vec<String>>,
+    /// A word on the questions, above the message box for a moment.
+    pub note: RwSignal<Option<String>>,
 }
 
 impl Asking {
@@ -58,6 +64,9 @@ impl Asking {
             anything_else: RwSignal::new(String::new()),
             typed_at: RwSignal::new(0.0),
             box_empty: RwSignal::new(true),
+            focused: RwSignal::new(None),
+            answering: RwSignal::new(Vec::new()),
+            note: RwSignal::new(None),
         }
     }
 }
@@ -235,6 +244,29 @@ pub fn follow() {
             ask.attached
                 .update(|attached| attached.retain(|id| open.contains(id)));
         }
+        // The question being typed in was settled elsewhere (another
+        // screen, or the agent): the panel closes, rather than move the
+        // typing to another question.
+        let gone = ask.focused.get_untracked().filter(|id| {
+            !open.contains(id)
+                && !ask
+                    .answering
+                    .with_untracked(|answering| answering.contains(id))
+        });
+        if ask
+            .answering
+            .with_untracked(|answering| answering.iter().any(|id| !open.contains(id)))
+        {
+            ask.answering
+                .update(|answering| answering.retain(|id| open.contains(id)));
+        }
+        if gone.is_some() && ask.panel.get_untracked() {
+            ask.focused.set(None);
+            ask.panel.set(false);
+            say("That question is no longer open.");
+            crate::composer::focus();
+            return;
+        }
         if open.is_empty() {
             ask.panel.set(false);
             return;
@@ -301,12 +333,38 @@ pub fn open_panel(card: Option<u64>) {
     let _ = window().request_animation_frame(frame.unchecked_ref());
 }
 
+/// The question an element of the panel belongs to, by its id.
+fn question_of(target: Option<web_sys::EventTarget>) -> Option<String> {
+    target?
+        .dyn_into::<web_sys::Element>()
+        .ok()?
+        .closest("[data-question]")
+        .ok()??
+        .get_attribute("data-question")
+}
+
+/// Says `words` above the message box for a few seconds.
+fn say(words: &str) {
+    let note = page().ask.note;
+    note.set(Some(words.to_string()));
+    let words = words.to_string();
+    spawn_local(async move {
+        crate::composer::gloo_wait(5000).await;
+        if note.get_untracked().as_deref() == Some(words.as_str()) {
+            note.set(None);
+        }
+    });
+}
+
 /// Closes the panel, the questions left as they are (×). The keyboard goes
 /// back to the message box if the panel had it.
 fn close_panel() {
-    let had = document()
-        .active_element()
-        .is_some_and(|active| active.closest(".answers").ok().flatten().is_some());
+    // (Once its questions are settled the panel may be gone already, with
+    // the keyboard nowhere.)
+    let body = document().body().map(web_sys::Element::from);
+    let had = document().active_element().is_none_or(|active| {
+        Some(&active) == body.as_ref() || active.closest(".answers").ok().flatten().is_some()
+    });
     page().ask.panel.set(false);
     if had {
         crate::composer::focus();
@@ -349,6 +407,8 @@ fn send(chosen: Option<(String, String)>) {
         return;
     };
     let closes = chosen.is_none();
+    ask.answering
+        .update(|answering| answering.extend(ids.iter().cloned()));
     spawn_local(async move {
         if post("/api/questions/answer", body).await {
             ask.drafts
@@ -372,6 +432,10 @@ fn not_now(ids: Vec<String>) {
     if ids.is_empty() {
         return;
     }
+    page()
+        .ask
+        .answering
+        .update(|answering| answering.extend(ids.iter().cloned()));
     spawn_local(async move {
         post("/api/questions/dismiss", serde_json::json!({ "ids": ids })).await;
     });
@@ -422,7 +486,13 @@ pub fn AnswerPanel() -> impl IntoView {
     let enter_sends = enter_sends();
     view! {
         <Show when=move || ask.panel.get() && !open.with(Vec::is_empty)>
-            <section class="answers" aria-label=move || open.with(|open| asks_text(open)) on:keydown=keys>
+            <section class="answers" aria-label=move || open.with(|open| asks_text(open)) on:keydown=keys
+                on:focusin=move |event| ask.focused.set(question_of(event.target()))
+                on:focusout=move |event: web_sys::FocusEvent| {
+                    if question_of(event.related_target()).is_none() {
+                        ask.focused.set(None);
+                    }
+                }>
                 <div class="answers-head">
                     <h2 class="answers-title">{move || open.with(|open| asks_text(open))}</h2>
                     <button type="button" class="btn ghost icon small" aria-label="Close" title="Close" on:click=move |_| close_panel()>
@@ -588,7 +658,7 @@ fn QuestionView(question: QuestionData, open: Memo<Vec<QuestionData>>) -> impl I
     let initial = draft().other;
     let label = format!("{}, other answer", words.lines().next().unwrap_or_default());
     view! {
-        <div class="answers-question" class:batch=batch id=format!("question-{id}") role="group" aria-label=words.clone()>
+        <div class="answers-question" class:batch=batch id=format!("question-{id}") data-question=id.clone() role="group" aria-label=words.clone()>
             <div class="answers-ask">
                 {question.number.map(|number| view! { <span class="answers-number">{format!("{number}.")}</span> })}
                 <div class="answers-words">

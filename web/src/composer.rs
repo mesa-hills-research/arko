@@ -218,6 +218,7 @@ pub fn Composer() -> impl IntoView {
             <div class="column">
                 <crate::questions::AnswerPanel />
                 <crate::questions::QuestionsChip />
+                {move || page.ask.note.get().map(|note| view! { <p class="note-line" role="status">{note}</p> })}
                 {move || page.error.get().map(|error| view! { <p class="error" role="alert">{error}</p> })}
                 <crate::questions::Replying />
                 <form
