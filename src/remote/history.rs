@@ -588,8 +588,12 @@ fn note(text: String) -> Option<Item> {
 }
 
 /// The items of the user's answer to questions the agent waited for: what
-/// they wrote besides, or their message.
+/// they wrote besides, or their message. (The wait's own reply, whose note
+/// follows, has none.)
 fn answer_items(text: &str) -> Vec<Item> {
+    if text.trim().ends_with(crate::questions::WAIT_ANSWERED) {
+        return Vec::new();
+    }
     match answer_note(text) {
         Some(besides) => besides.iter().map(|text| answer_item(text)).collect(),
         None => {

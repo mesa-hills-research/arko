@@ -2716,19 +2716,6 @@ impl Feed {
         self.question_activity();
     }
 
-    /// Run `run`'s questions `ids` are open again.
-    pub(crate) fn reopen_questions(&self, run: Uuid, ids: &[String]) {
-        {
-            let mut state = self.lock();
-            let items = state.questions.reopen(run, ids);
-            state.questions.save();
-            for item in items {
-                self.refresh_card(&mut state, item);
-            }
-        }
-        self.question_activity();
-    }
-
     /// Run `run` asked `asked`, as its task says, though the session didn't
     /// keep them (its file was lost, or Arko stopped as they were asked):
     /// they are open again, without a card.
@@ -2789,15 +2776,7 @@ impl Feed {
             let (settled, items) = state.questions.settle(run, ids, to);
             let open = state.questions.open_of(run);
             let pending = match (run, note(&settled, &open)) {
-                (Some(run), Some((ids, note))) => {
-                    let seq = state.questions.queue(run, ids.clone(), note.clone());
-                    Some(crate::questions::Pending {
-                        seq,
-                        run,
-                        ids,
-                        note,
-                    })
-                }
+                (Some(run), Some((ids, note))) => Some(state.questions.queue(run, ids, note)),
                 _ => None,
             };
             if !settled.is_empty() || pending.is_some() {
@@ -2814,16 +2793,28 @@ impl Feed {
         (settled, pending)
     }
 
-    /// The notes about run `run`'s questions the agent hasn't read, oldest
-    /// first.
+    /// Run `run`'s kept notes for its agent, oldest first.
     pub(crate) fn queued_notes(&self, run: Uuid) -> Vec<crate::questions::Pending> {
         self.lock().questions.queued(run)
     }
 
-    /// The agent has the notes `seqs`.
-    pub(crate) fn ack_notes(&self, seqs: &[u64]) {
+    /// Every kept note, oldest first.
+    pub(crate) fn kept_notes(&self) -> Vec<crate::questions::Pending> {
+        self.lock().questions.all_queued()
+    }
+
+    /// The kept note `id` travels as the workflow note `posted` (its id and
+    /// number), or, with `None`, is to be posted again.
+    pub(crate) fn note_posted(&self, id: Uuid, posted: Option<(Uuid, u64)>) {
         let mut state = self.lock();
-        if state.questions.ack(seqs) {
+        state.questions.posted(id, posted);
+        state.questions.save();
+    }
+
+    /// The runs have been given the kept notes `ids`.
+    pub(crate) fn ack_notes(&self, ids: &[Uuid]) {
+        let mut state = self.lock();
+        if state.questions.ack(ids) {
             state.questions.save();
         }
     }

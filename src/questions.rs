@@ -305,17 +305,30 @@ struct Entry {
     question: AgentQuestion,
 }
 
-/// A note about the questions `ids` for run `run` that the agent hasn't
-/// surely read: an answer, a dismissal. It goes with the next turn of its
-/// conversation, and leaves once the conversation holds it.
+/// A note about run `run`'s questions `ids` for its agent (answers, a
+/// dismissal, a message that answers them), kept until the run has been
+/// given it. It travels as one workflow note for that run alone, which the
+/// workflow numbers and counts as given, in its own saved state, once the
+/// run takes it at a turn boundary.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Pending {
-    pub(crate) seq: u64,
+    /// Its own id, which no other delivery has.
+    #[serde(default = "Uuid::new_v4")]
+    pub(crate) id: Uuid,
     pub(crate) run: Uuid,
     #[serde(default)]
     pub(crate) ids: Vec<String>,
     pub(crate) note: String,
+    /// The workflow note that carries it, once posted: its id and number.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) posted: Option<(Uuid, u64)>,
 }
+
+/// What the agent's wait for its questions reads once the user answered
+/// or dismissed them. What they said comes as the note for its run, so it
+/// reaches the agent once, however the wait ends.
+pub(crate) const WAIT_ANSWERED: &str =
+    "The user replied to your questions. What they said is in the note that follows.";
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct Saved {
@@ -373,7 +386,7 @@ impl Book {
             self.counted = saved.last.is_some();
             self.last = self.last.max(saved.last.unwrap_or_default());
             for pending in saved.pending {
-                if !self.pending.iter().any(|known| known.seq == pending.seq) {
+                if !self.pending.iter().any(|known| known.id == pending.id) {
                     self.pending.push(pending);
                 }
             }
@@ -645,24 +658,6 @@ impl Book {
         items
     }
 
-    /// Run `run`'s questions `ids` are open again (their answer can't be
-    /// told to the agent). Returns their cards.
-    pub(crate) fn reopen(&mut self, run: Uuid, ids: &[String]) -> Vec<u64> {
-        let mut items = Vec::new();
-        for entry in &mut self.entries {
-            if entry.run == run
-                && ids.contains(&entry.question.id)
-                && !entry.question.state.is_open()
-            {
-                entry.question.state = QuestionState::Open;
-                if !items.contains(&entry.question.item) {
-                    items.push(entry.question.item);
-                }
-            }
-        }
-        items
-    }
-
     /// The current conversation's questions `ids` are no longer waited on.
     /// Returns their cards.
     pub(crate) fn unwait(&mut self, ids: &[String]) -> Vec<u64> {
@@ -707,26 +702,21 @@ impl Book {
 
     // ----- the notes the agent hasn't read -----
 
-    /// Keeps `note`, about run `run`'s questions `ids`, until the agent has
-    /// it. Returns its number.
-    pub(crate) fn queue(&mut self, run: Uuid, ids: Vec<String>, note: String) -> u64 {
-        let seq = self
-            .pending
-            .iter()
-            .map(|pending| pending.seq)
-            .max()
-            .unwrap_or(0)
-            + 1;
-        self.pending.push(Pending {
-            seq,
+    /// Keeps `note`, about run `run`'s questions `ids`, until the run has
+    /// been given it.
+    pub(crate) fn queue(&mut self, run: Uuid, ids: Vec<String>, note: String) -> Pending {
+        let pending = Pending {
+            id: Uuid::new_v4(),
             run,
             ids,
             note,
-        });
-        seq
+            posted: None,
+        };
+        self.pending.push(pending.clone());
+        pending
     }
 
-    /// Run `run`'s notes the agent hasn't read, oldest first.
+    /// Run `run`'s kept notes, oldest first.
     pub(crate) fn queued(&self, run: Uuid) -> Vec<Pending> {
         self.pending
             .iter()
@@ -735,10 +725,24 @@ impl Book {
             .collect()
     }
 
-    /// The agent has the notes `seqs`. Returns whether any was kept.
-    pub(crate) fn ack(&mut self, seqs: &[u64]) -> bool {
+    /// Every kept note, oldest first.
+    pub(crate) fn all_queued(&self) -> Vec<Pending> {
+        self.pending.clone()
+    }
+
+    /// The kept note `id` travels as the workflow note `note`, numbered
+    /// `seq` (or, with `None`, no longer: it is posted again).
+    pub(crate) fn posted(&mut self, id: Uuid, posted: Option<(Uuid, u64)>) {
+        if let Some(pending) = self.pending.iter_mut().find(|pending| pending.id == id) {
+            pending.posted = posted;
+        }
+    }
+
+    /// The runs have been given the notes `ids`. Returns whether any was
+    /// kept.
+    pub(crate) fn ack(&mut self, ids: &[Uuid]) -> bool {
         let before = self.pending.len();
-        self.pending.retain(|pending| !seqs.contains(&pending.seq));
+        self.pending.retain(|pending| !ids.contains(&pending.id));
         self.pending.len() != before
     }
 }
@@ -830,7 +834,7 @@ mod tests {
                 .0
                 .is_empty()
         );
-        let seq = book.queue(run, vec!["q1".into()], "The user answered q1.".into());
+        let kept = book.queue(run, vec!["q1".into()], "The user answered q1.".into());
         book.save();
         assert_eq!(
             book.open_of(Some(run))
@@ -859,7 +863,7 @@ mod tests {
         assert_eq!(again.reserve(1), 3, "numbered after the questions it keeps");
         assert_eq!(again.queued(run)[0].note, "The user answered q1.");
         assert!(again.queued(Uuid::new_v4()).is_empty());
-        assert!(again.ack(&[seq]));
+        assert!(again.ack(&[kept.id]));
         assert!(again.queued(run).is_empty());
         assert_eq!(again.restored(&["q2".into()], 40)[0].item, 40);
         assert_eq!(again.of_item(40).len(), 1);

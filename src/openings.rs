@@ -28,7 +28,14 @@ pub(crate) enum Opening {
     /// one, `None` when that isn't known), and the agent is asked whether
     /// to keep it.
     EndsSoon(Option<u64>),
+    /// The user answered or dismissed the agent's questions, or wrote a
+    /// message that answers them: the note that says so follows.
+    Answers,
 }
+
+/// The message of a turn for the user's answers, whose notes follow.
+const ANSWERS: &str =
+    "The user replied to your questions. What they said is in the notes that follow.";
 
 impl Opening {
     /// The message, which the news follows.
@@ -47,6 +54,8 @@ impl Opening {
                 "{ENDS}{}. Its notice follows and asks whether to keep it.",
                 ends(left)
             ),
+            // (The user did write, in the notes.)
+            Self::Answers => return ANSWERS.to_string(),
         };
         format!("{lead} {STARTED}")
     }
@@ -62,6 +71,7 @@ impl Opening {
                 "⇠ a monitor ends {}, and the agent is asked whether to keep it",
                 ends(left)
             ),
+            Self::Answers => "⇠ your answers go to the agent".into(),
         }
     }
 
@@ -70,6 +80,9 @@ impl Opening {
     pub(crate) fn of(text: &str) -> Option<Self> {
         text.split("\n\n").find_map(|paragraph| {
             let paragraph = paragraph.trim();
+            if paragraph == ANSWERS {
+                return Some(Self::Answers);
+            }
             if !paragraph.ends_with(STARTED) && !paragraph.ends_with(EARLIER_STARTED) {
                 return None;
             }
@@ -125,6 +138,7 @@ mod tests {
             Opening::EndsSoon(Some(25)),
             Opening::EndsSoon(Some(0)),
             Opening::EndsSoon(None),
+            Opening::Answers,
         ] {
             assert_eq!(Opening::of(&opening.text()), Some(opening));
             let after = format!("# Session capabilities\n\nNo images.\n\n{}", opening.text());
