@@ -379,6 +379,21 @@ fn Change(
     }
 }
 
+/// A select on a touch screen lets go of the focus once a choice is made.
+/// iOS keeps it focused after its picker closes, and its next tap then only
+/// takes the focus away, so reopening it took two taps. (With a keyboard, the
+/// focus stays for the next choice.)
+fn let_go(event: &leptos::ev::Event) {
+    let touch = window()
+        .match_media("(any-pointer: coarse)")
+        .ok()
+        .flatten()
+        .is_some_and(|list| list.matches());
+    if touch {
+        let _ = event_target::<web_sys::HtmlElement>(event).blur();
+    }
+}
+
 /// Applies a theme by its slug (none for the system's pair), and keeps it
 /// in this browser.
 fn apply_theme(slug: Option<&str>) {
@@ -479,6 +494,7 @@ fn SettingsBody() -> impl IntoView {
                 <select class="select" aria-labelledby="theme-name" on:change=move |event| {
                     let value = event_target_value(&event);
                     apply_theme((!value.is_empty()).then_some(value.as_str()));
+                    let_go(&event);
                 }>
                     <option value="" selected=theme.is_empty()>"System"</option>
                     {[(false, "Light"), (true, "Dark")].map(|(dark, group)| view! {
@@ -685,7 +701,7 @@ fn SettingsBody() -> impl IntoView {
                 } />
             <Show when=has_workers>
                 <div class="setting"><span class="setting-text"><span class="setting-name">"Whose size"</span></span>
-                    <select class="select" node_ref=whose aria-label="Whose size">
+                    <select class="select" node_ref=whose aria-label="Whose size" on:change=|event| let_go(&event)>
                         <option value="">"Both"</option>
                         <option value="main">"Main agent"</option>
                         <option value="workers">"Workers"</option>
