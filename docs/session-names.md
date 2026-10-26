@@ -55,6 +55,6 @@ for the order a menu shows, `missing` for what each way lacks now, and `short_na
 is cut by what a user sees as one character, so an emoji or a flag is never split. `missing` runs
 `claude` to check Claude Code, so call it off a UI thread. A session's name comes from
 `sessions::list` and the status as before. A session an app runs with `spawn` keeps its thread for a
-name still being asked after the session closes. Call `session_names::stop_all` when the app quits. It
-ends every naming under way and the Claude Code each runs, and returns when they have ended, or after
-two seconds.
+name still being asked after the session closes. Call `session_names::stop_in` with the Arko folder when
+the app quits (`stop_all` does it for every folder). It ends every naming under way and the Claude Code
+each runs, and returns when they have ended, or after two seconds.

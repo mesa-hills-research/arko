@@ -135,8 +135,9 @@ fn generation_of(dir: &Path) -> Generation {
 
 /// The runs going on in this process, which quitting stops.
 struct Running {
-    /// Each by its number, with what aborts it once it is spawned.
-    tasks: Mutex<HashMap<u64, Option<AbortHandle>>>,
+    /// Each by its number, with the Arko folder of its session, and what
+    /// aborts it once it is spawned.
+    tasks: Mutex<HashMap<u64, (PathBuf, Option<AbortHandle>)>>,
     ended: Condvar,
     next: AtomicU64,
 }
@@ -163,13 +164,28 @@ impl Drop for Place {
 /// It returns when they have ended, or after two seconds. Quit calls it. A
 /// request under way is otherwise left to finish, while the app runs.
 pub fn stop_all() {
-    let handles: Vec<AbortHandle> = lock(&RUNNING.tasks).values().flatten().cloned().collect();
+    stop(None);
+}
+
+/// [`stop_all`] for the namings of the sessions in Arko's folder `root`,
+/// which an app that works on one folder calls when it quits.
+pub fn stop_in(root: &Path) {
+    stop(Some(root));
+}
+
+fn stop(root: Option<&Path>) {
+    let here = |of: &Path| root.is_none_or(|root| root == of);
+    let handles: Vec<AbortHandle> = lock(&RUNNING.tasks)
+        .values()
+        .filter(|(of, _)| here(of))
+        .filter_map(|(_, handle)| handle.clone())
+        .collect();
     for handle in handles {
         handle.abort();
     }
     let mut tasks = lock(&RUNNING.tasks);
     let deadline = std::time::Instant::now() + Duration::from_secs(2);
-    while !tasks.is_empty() {
+    while tasks.values().any(|(of, _)| here(of)) {
         let left = deadline.saturating_duration_since(std::time::Instant::now());
         if left.is_zero() {
             break;
@@ -222,7 +238,7 @@ impl Naming {
         // A session's thread keeps its runtime for this after it closes.
         let linger = crate::context::handle().map(|context| context.linger());
         let id = RUNNING.next.fetch_add(1, Ordering::Relaxed);
-        lock(&RUNNING.tasks).insert(id, None);
+        lock(&RUNNING.tasks).insert(id, (run.root.clone(), None));
         let spawned = tokio::spawn(async move {
             let _place = Place(id);
             let _linger = linger;
@@ -256,7 +272,7 @@ impl Naming {
                 Err(error) => log::warn!("could not keep the session's name: {error}"),
             }
         });
-        if let Some(slot) = lock(&RUNNING.tasks).get_mut(&id) {
+        if let Some((_, slot)) = lock(&RUNNING.tasks).get_mut(&id) {
             *slot = Some(spawned.abort_handle());
         }
         *task = Some(spawned);
@@ -304,7 +320,7 @@ impl crate::Harness {
 /// The asker for a session in Arko's folder `root`: tests put theirs in its
 /// place.
 fn asker(root: &std::path::Path, live: impl FnOnce() -> Live) -> Arc<dyn Ask> {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "testing"))]
     if let Some(asker) = super::fake::asker_for(root) {
         return asker;
     }
@@ -939,5 +955,49 @@ mod tests {
         until(|| !harness.naming.running()).await;
         assert_eq!(fake.ways_asked(), [Way::ClaudePlan]);
         assert!(!dir.join("generated-title").exists());
+    }
+
+    /// Stopping the namings of one Arko folder leaves those of another to
+    /// finish, and the ones stopped write nothing.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn stopping_the_namings_in_one_folder_leaves_those_in_another() {
+        let mut sessions = Vec::new();
+        for _ in 0..2 {
+            let temp = tempfile::tempdir().unwrap();
+            let server = crate::mock_model::ModelServer::start(Arc::new(|_, _| {
+                Box::pin(async { crate::mock_model::complete("1", "Done.") })
+            }))
+            .await;
+            let (harness, inputs, sender) =
+                crate::tests::harness(temp.path(), server.client(), true);
+            crate::session_names::save(&harness.root, &[Way::ClaudePlan]).unwrap();
+            let gate = Arc::new(tokio::sync::Notify::new());
+            let fake = Fake::new(&[(Way::ClaudePlan, Step::Gated(gate.clone(), "A name"))]);
+            let naming = Naming::default();
+            naming.start(Run {
+                session: harness.session.clone(),
+                gauges: harness.gauges.clone(),
+                root: harness.root.clone(),
+                text: FIRST.into(),
+                asker: fake.clone(),
+            });
+            until(|| fake.ways_asked().len() == 1).await;
+            sessions.push((temp, harness, inputs, sender, server, gate, naming));
+        }
+        let root = sessions[0].1.root.clone();
+        tokio::task::spawn_blocking(move || crate::session_names::stop_in(&root))
+            .await
+            .unwrap();
+        let [(_, first, ..), (_, second, _, _, _, gate, naming)] = &sessions[..] else {
+            unreachable!()
+        };
+        assert!(!sessions[0].6.running(), "the folder's naming ended");
+        assert!(naming.running(), "the other folder's goes on");
+        gate.notify_one();
+        until(|| second.session.generated_name().is_some()).await;
+        assert_eq!(first.session.generated_name(), None);
+        sessions[0].5.notify_one();
+        settle().await;
+        assert_eq!(first.session.generated_name(), None);
     }
 }

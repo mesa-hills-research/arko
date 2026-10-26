@@ -643,12 +643,14 @@ mod tests {
         }
     }
 
-    /// Quitting stops the naming that is going on, and the Claude Code it
-    /// runs ends with it, though nothing else would have stopped it.
+    /// Quitting stops the namings that are going on (those in the Arko folder
+    /// it names, here), and the Claude Code each runs ends with it, though
+    /// nothing else would have stopped it. (`stop_all` is this for every
+    /// folder, which tests running side by side can't share.)
     #[cfg(target_os = "linux")]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn stopping_all_namings_ends_the_claude_code_they_run() {
-        use crate::session_names::naming::{Naming, Run, stop_all};
+        use crate::session_names::naming::{Naming, Run, stop_in};
         let temp = tempfile::tempdir().unwrap();
         let fake = tempfile::tempdir().unwrap();
         // A Claude Code that is busy for half a minute after it is sent
@@ -680,7 +682,10 @@ mod tests {
         assert!(running(pid), "Claude Code is busy");
         assert!(naming.running());
         // Quitting stops it, and its Claude Code is gone when that returns.
-        tokio::task::spawn_blocking(stop_all).await.unwrap();
+        let root = harness.root.clone();
+        tokio::task::spawn_blocking(move || stop_in(&root))
+            .await
+            .unwrap();
         // (The kill is sent by then, and the process is gone a moment later.)
         tokio::time::timeout(Duration::from_secs(5), async {
             while running(pid) {
