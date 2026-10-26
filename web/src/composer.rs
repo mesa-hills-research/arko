@@ -1,5 +1,5 @@
-//! The message box, with the command menu, Stop, and the agent's question
-//! docked above it.
+//! The message box, with the command menu and Stop, and the agent's
+//! questions above it.
 
 use std::collections::HashMap;
 
@@ -9,8 +9,8 @@ use lucide_leptos::{ArrowUp, Maximize2, Minimize2, Square};
 use web_sys::HtmlTextAreaElement;
 
 use crate::app::{DRAFT, get_json, page, post, session_get, session_set};
+use crate::scroll;
 use crate::slash::{self, Menu};
-use crate::{markdown, scroll};
 
 /// How long the words an argument may be stay good (a worker may start
 /// meanwhile), in ms.
@@ -23,8 +23,9 @@ thread_local! {
 #[component]
 pub fn Composer() -> impl IntoView {
     let page = page();
+    let ask = page.ask;
     let input: NodeRef<leptos::html::Textarea> = NodeRef::new();
-    let empty = RwSignal::new(true);
+    let empty = ask.box_empty;
     // The text reached the box's height, which the expand button lifts.
     let tall = RwSignal::new(false);
     let expanded = RwSignal::new(false);
@@ -43,13 +44,15 @@ pub fn Composer() -> impl IntoView {
         .ok()
         .flatten()
         .is_some_and(|list| list.matches());
-    let asking = move || page.status.with(|status| status.question.clone());
-    let placeholder = move || match (asking(), page.worker.get()) {
-        (Some(_), _) => "Your answer".to_string(),
-        (None, Some(worker)) => format!("Message {worker}"),
-        (None, None) if page.status.with(|status| status.working) => "Add to the task".into(),
-        (None, None) if enter_sends => "Message (Shift+Enter for a new line)".into(),
-        (None, None) => "Message".into(),
+    // The questions attached, which the next message answers.
+    let replying = move || ask.attached.with(Vec::len);
+    let placeholder = move || match (replying(), page.worker.get()) {
+        (_, Some(worker)) => format!("Message {worker}"),
+        (1, None) => "Answer Arko’s question".into(),
+        (2.., None) => "Answer Arko’s questions".into(),
+        (_, None) if page.status.with(|status| status.working) => "Add to the task".into(),
+        (_, None) if enter_sends => "Message (Shift+Enter for a new line)".into(),
+        (_, None) => "Message".into(),
     };
     let working = move || {
         page.status.with(|status| status.working)
@@ -66,8 +69,9 @@ pub fn Composer() -> impl IntoView {
             .active_element()
             .is_some_and(|active| &active == element);
         let mut next = None;
+        // (A reply to questions is words, not a command.)
         if value.starts_with('/')
-            && asking().is_none()
+            && replying() == 0
             && focused
             && closed_for.get_untracked().as_deref() != Some(value.as_str())
             && let Some(commands) = page.commands.get_untracked()
@@ -118,21 +122,22 @@ pub fn Composer() -> impl IntoView {
             return;
         }
         sending.set(true);
-        // While the agent asks, what's typed is the answer. In a worker's
-        // view, it goes to that worker.
-        let (path, body) = match (asking(), page.worker.get_untracked()) {
-            (Some(asked), _) => (
-                "/api/answer",
-                serde_json::json!({ "question": asked.id, "text": text }),
-            ),
-            (None, Some(worker)) => (
-                "/api/message",
-                serde_json::json!({ "text": text, "to": worker }),
-            ),
-            (None, None) => ("/api/message", serde_json::json!({ "text": text })),
+        // In a worker's view, it goes to that worker. With questions
+        // attached, it answers them (and while the agent waits on a
+        // question, a message answers it).
+        let attached = ask.attached.get_untracked();
+        let body = match page.worker.get_untracked() {
+            Some(worker) => serde_json::json!({ "text": text, "to": worker }),
+            None if !attached.is_empty() => {
+                serde_json::json!({ "text": text, "answers": attached })
+            }
+            None => serde_json::json!({ "text": text }),
         };
         spawn_local(async move {
-            if post(path, body).await {
+            if post("/api/message", body).await {
+                if page.worker.get_untracked().is_none() {
+                    ask.attached.set(Vec::new());
+                }
                 area.set_value("");
                 expanded.set(false);
                 resize();
@@ -158,6 +163,7 @@ pub fn Composer() -> impl IntoView {
     };
 
     let keydown = move |event: web_sys::KeyboardEvent| {
+        ask.typed_at.set(js_sys::Date::now());
         // (Safari reports the Enter that ends a composition as keyCode 229.)
         if event.is_composing() || event.key_code() == 229 {
             return;
@@ -210,8 +216,10 @@ pub fn Composer() -> impl IntoView {
     view! {
         <footer class="bottom">
             <div class="column">
-                <Ask />
+                <crate::questions::AnswerPanel />
+                <crate::questions::QuestionsChip />
                 {move || page.error.get().map(|error| view! { <p class="error" role="alert">{error}</p> })}
+                <crate::questions::Replying />
                 <form
                     class="compose"
                     class:expanded=move || expanded.get()
@@ -296,8 +304,8 @@ pub fn Composer() -> impl IntoView {
                     <button
                         type="submit"
                         class="btn primary icon send"
-                        aria-label=move || if asking().is_some() { "Answer" } else { "Send" }
-                        title=move || if asking().is_some() { "Answer" } else { "Send" }
+                        aria-label=move || if replying() != 0 { "Answer" } else { "Send" }
+                        title=move || if replying() != 0 { "Answer" } else { "Send" }
                         disabled=move || empty.get() || sending.get()
                     >
                         <ArrowUp size=20 />
@@ -387,44 +395,6 @@ pub async fn gloo_wait(ms: i32) {
         let _ = window().set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, ms);
     });
     let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
-}
-
-/// The agent's question, docked above the message box while it waits for
-/// the answer.
-#[component]
-fn Ask() -> impl IntoView {
-    let page = page();
-    let folded = page.ask_folded;
-    let question = move || page.status.with(|status| status.question.clone());
-    // A new question shows unfolded.
-    Effect::new(move |previous: Option<Option<u64>>| {
-        let id = question().map(|asked| asked.id);
-        if previous.is_some_and(|previous| previous != id) {
-            folded.set(false);
-        }
-        id
-    });
-    view! {
-        <Show when=move || question().is_some()>
-            <section class="ask" class:folded=move || folded.get() aria-live="polite">
-                <div class="ask-head">
-                    <span class="ask-label">"The agent asks"</span>
-                    <button
-                        type="button"
-                        class="btn ghost small"
-                        aria-expanded=move || (!folded.get()).to_string()
-                        on:click=move |_| folded.update(|folded| *folded = !*folded)
-                    >
-                        {move || if folded.get() { "Show" } else { "Hide" }}
-                    </button>
-                </div>
-                <div
-                    class="ask-text md"
-                    inner_html=move || question().map(|asked| markdown::to_html(&asked.text)).unwrap_or_default()
-                ></div>
-            </section>
-        </Show>
-    }
 }
 
 /// Sizes the box to its text, up to its cap (CSS's `max-height`), and

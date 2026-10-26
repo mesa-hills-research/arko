@@ -9,6 +9,7 @@ mod chrome;
 mod composer;
 mod layout;
 mod markdown;
+mod questions;
 mod scroll;
 mod select;
 mod sheets;
@@ -60,6 +61,7 @@ fn App() -> impl IntoView {
     let key = app::take_key();
     spawn_local(app::start(page, key));
     listen(page);
+    questions::follow();
     view! {
         <Show
             when=move || page.locked.get().is_none()
@@ -141,6 +143,13 @@ fn listen(page: Page) {
                 .is_some_and(|element| {
                     matches!(element.tag_name().as_str(), "TEXTAREA" | "INPUT" | "SELECT")
                 });
+            // Alt+Q (Option+Q on a Mac, whose key gives another letter)
+            // opens the answer panel, or gives it the keyboard.
+            if event.alt_key() && !event.ctrl_key() && !event.meta_key() && event.code() == "KeyQ" {
+                event.prevent_default();
+                questions::open_panel(None);
+                return;
+            }
             if page.sheet.get_untracked().is_some() {
                 return;
             }

@@ -1,7 +1,7 @@
 //! The transcript: its rows, laid out for the view, and Latest.
 
 use leptos::prelude::*;
-use lucide_leptos::{ArrowDown, ChevronRight, LoaderCircle, MessageCircleQuestionMark};
+use lucide_leptos::{ArrowDown, ChevronRight, LoaderCircle};
 
 use crate::app::{Cell, Page, STORE, cell, page, post};
 use crate::layout::{self, Count, Row, View};
@@ -244,30 +244,7 @@ fn item_row(id: u64, cell: Cell, thinking: Memo<Option<u64>>) -> AnyView {
             let report = (item.agent != MAIN).then(|| view! { <span class="label">"Report"</span> });
             view! { {report}<Md id=id text=text code=cell.code /> }.into_any()
         }
-        Kind::Question => {
-            // While it waits for the answer, the question shows only docked
-            // above the message box, and here as a line that opens it.
-            let docked = move || {
-                page.version.track();
-                page.status.with(|status| status.question.is_some())
-                    && STORE.with(|store| store.borrow().last_question()) == Some(id)
-            };
-            view! {
-                <Show
-                    when=docked
-                    fallback=move || view! { <span class="label">"The agent asks"</span><Md id=id text=text code=cell.code /> }
-                >
-                    <button type="button" class="btn ghost small asked" on:click=move |_| {
-                        page.ask_folded.set(false);
-                        crate::composer::focus();
-                    }>
-                        <MessageCircleQuestionMark size=16 />
-                        "Arko asked a question"
-                    </button>
-                </Show>
-            }
-            .into_any()
-        }
+        Kind::Question => crate::questions::card_view(id, cell),
         Kind::Call => call_row(cell),
         Kind::Result => view! {
             <pre>{move || data.with(|item| item.detail.clone().unwrap_or_else(|| text.get()))}</pre>

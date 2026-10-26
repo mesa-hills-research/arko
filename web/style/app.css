@@ -311,12 +311,22 @@ kbd {
 
 .label { display: block; margin-bottom: 2px; color: var(--muted); font-size: 12px; font-weight: 600; }
 .row.message .label { color: var(--link); }
-.row.question { padding: 2px 0 2px 12px; border-left: 3px solid var(--warn-mark); }
-.row.question .label { color: var(--warn); }
-/* While docked above the message box, a question is one quiet line here. */
-.row.question:has(> .asked) { padding: 0; border-left: 0; }
-.asked { margin-left: -8px; color: var(--muted); }
+/* A question card: one quiet line where the agent asked, which opens the
+   answer panel while it has questions open, then the record of those
+   settled. */
+.asked { display: inline-flex; align-items: center; gap: 6px; padding: 2px 0; border: 0; background: none; color: var(--muted); font-size: 14px; cursor: pointer; }
 .asked svg { color: var(--warn-mark); }
+.asked:disabled { cursor: default; }
+.asked:disabled svg { color: var(--muted); }
+@media (hover: hover) {
+  .asked:not(:disabled):hover { color: var(--text); }
+}
+.record { margin: 4px 0 0; padding: 0; list-style: none; }
+.record:empty { display: none; }
+.record li { display: flex; gap: 6px; margin: 6px 0; }
+.record-number { flex: none; min-width: 16px; color: var(--muted); }
+.record-outcome { color: var(--muted); font-size: 14px; }
+.record-outcome.answer { color: var(--text); }
 .row.report {
   padding: 10px 14px;
   border: 1px solid var(--line);
@@ -644,18 +654,68 @@ details.more > summary { width: max-content; padding: 4px 0; color: var(--link);
   .slash-list li { min-height: 44px; }
 }
 
-/* The agent's question, docked above the message box. */
-.ask {
+/* The answer panel above the message box: a popover's look, at most 60 %
+   of the screen's height, its questions scrolling inside. */
+.answers {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-height: 60dvh;
   margin-bottom: 8px;
-  padding: 8px 12px 10px;
-  border-left: 3px solid var(--warn-mark);
-  border-radius: var(--r-sm) var(--r-xl) var(--r-xl) var(--r-sm);
-  background: var(--surface);
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--popover);
+  color: var(--popover-text);
+  box-shadow: var(--shadow);
 }
-.ask-head { display: flex; align-items: center; justify-content: space-between; }
-.ask-label { color: var(--warn); font-size: 13px; font-weight: 600; }
-.ask-text { max-height: 30vh; margin-top: 2px; overflow-y: auto; }
-.ask.folded .ask-text { display: none; }
+.answers-head { display: flex; flex: none; align-items: center; gap: 8px; }
+.answers-title { flex: 1; margin: 0; font-size: 14px; font-weight: 600; }
+.answers-list { display: flex; flex: 1 1 auto; flex-direction: column; gap: 16px; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+.answers-question { display: flex; flex-direction: column; gap: 6px; }
+.answers-question.batch { padding-top: 16px; border-top: 1px solid var(--line); }
+.answers-ask { display: flex; align-items: baseline; gap: 6px; font-size: 15px; }
+.answers-number { flex: none; min-width: 16px; color: var(--muted); }
+.answers-words { display: flex; flex: 1; flex-direction: column; min-width: 0; overflow-wrap: anywhere; }
+.answers-runs { color: var(--muted); }
+.answers-any { flex: none; color: var(--muted); font-size: 12px; }
+.answers-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.answers-chips .btn { min-height: 28px; }
+.chip { min-height: 28px; padding: 0 10px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface); font-size: 14px; }
+.chip[aria-pressed="true"] { border-color: var(--ring); background: var(--tint); }
+@media (hover: hover) {
+  .chip[aria-pressed="false"]:hover { background: var(--secondary-hover); }
+}
+.chip-default { margin-left: 4px; color: var(--muted); }
+.answers-other, .answers-else {
+  width: 100%;
+  padding: 4px 8px;
+  border: 1px solid var(--input-line);
+  border-radius: var(--r-md);
+  outline: 0;
+  background: var(--surface);
+  color: var(--text);
+  font: 16px/24px var(--sans);
+}
+.answers-other:focus, .answers-else:focus { border-color: var(--ring); }
+.answers-else { flex: none; max-height: calc(4lh + 10px); resize: none; }
+.answers-instructions { display: flex; flex-direction: column; gap: 4px; }
+.answers-label { color: var(--muted); font-size: 12px; }
+.answers-instructions-box { max-height: 10rem; padding: 8px; overflow-y: auto; border-radius: var(--r-md); background: var(--code); font-size: 14px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.answers-foot { display: flex; flex: none; justify-content: flex-end; gap: 8px; }
+@media (pointer: coarse) {
+  .chip, .answers-chips .btn { min-height: 40px; }
+}
+
+/* The chip above the message box for the questions not in the panel. */
+.qchip { display: flex; align-items: center; gap: 4px; margin-bottom: 4px; }
+.qchip-open { color: var(--muted); }
+.qchip-open.new { color: var(--text); }
+.qchip-open.new svg { color: var(--warn-mark); }
+
+/* The questions the next message answers. */
+.replying { display: inline-flex; align-items: center; gap: 4px; height: 24px; margin-bottom: 6px; padding-left: 8px; border-radius: var(--r-md); background: var(--secondary); font-size: 12px; }
+.replying .btn.icon { width: 24px; min-height: 24px; }
 
 /* ----- sheets ----- */
 
@@ -802,19 +862,19 @@ dialog.sheet::backdrop { background: rgba(0, 0, 0, 0.36); }
    boxy. Apple's overlay scrollbars stay as they are (the page marks Apple
    systems with .apple), and Firefox takes the standard properties. */
 
-html:not(.apple) :is(.log, .field textarea, pre, .sheet-body, .slash-list, .select-list, .ask-text)::-webkit-scrollbar { width: 10px; height: 10px; }
-html:not(.apple) :is(.log, .field textarea, pre, .sheet-body, .slash-list, .select-list, .ask-text)::-webkit-scrollbar-track { margin: 4px; background: transparent; }
-html:not(.apple) :is(.log, .field textarea, pre, .sheet-body, .slash-list, .select-list, .ask-text)::-webkit-scrollbar-thumb {
+html:not(.apple) :is(.log, .field textarea, pre, .sheet-body, .slash-list, .select-list, .answers-list, .answers-instructions-box)::-webkit-scrollbar { width: 10px; height: 10px; }
+html:not(.apple) :is(.log, .field textarea, pre, .sheet-body, .slash-list, .select-list, .answers-list, .answers-instructions-box)::-webkit-scrollbar-track { margin: 4px; background: transparent; }
+html:not(.apple) :is(.log, .field textarea, pre, .sheet-body, .slash-list, .select-list, .answers-list, .answers-instructions-box)::-webkit-scrollbar-thumb {
   min-height: 24px;
   border: 3px solid transparent;
   border-radius: 999px;
   background: var(--thumb) padding-box;
 }
-html:not(.apple) :is(.log, .field textarea, pre, .sheet-body, .slash-list, .select-list, .ask-text)::-webkit-scrollbar-thumb:hover { background: var(--thumb-hover) padding-box; }
+html:not(.apple) :is(.log, .field textarea, pre, .sheet-body, .slash-list, .select-list, .answers-list, .answers-instructions-box)::-webkit-scrollbar-thumb:hover { background: var(--thumb-hover) padding-box; }
 html:not(.apple) ::-webkit-scrollbar-corner { background: transparent; }
 
 @supports not selector(::-webkit-scrollbar) {
-  .log, .field textarea, pre, .sheet-body, .slash-list, .select-list, .ask-text {
+  .log, .field textarea, pre, .sheet-body, .slash-list, .select-list, .answers-list, .answers-instructions-box {
     scrollbar-width: thin;
     scrollbar-color: var(--thumb) transparent;
   }

@@ -155,15 +155,6 @@ impl Store {
         self.items.last().map_or(0, |item| item.id)
     }
 
-    /// The main agent's latest question, the one an open question is.
-    pub fn last_question(&self) -> Option<u64> {
-        self.items
-            .iter()
-            .rev()
-            .find(|item| item.kind == Kind::Question && item.agent == MAIN)
-            .map(|item| item.id)
-    }
-
     /// The workers' summaries in the order they came.
     pub fn worker_list(&self) -> Vec<&WorkerData> {
         self.worker_order
@@ -217,6 +208,7 @@ pub mod tests {
             job: None,
             pending: false,
             code: Vec::new(),
+            questions: None,
         }
     }
 
