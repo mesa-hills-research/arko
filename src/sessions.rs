@@ -103,7 +103,7 @@ pub(crate) fn title(
                 .clone()
                 .filter(|_| settings.branched_from.is_some())
         })
-        .or_else(|| session.generated_name())
+        .or_else(|| generated_name(session, conversations))
         .or_else(|| {
             conversations
                 .current
@@ -117,6 +117,18 @@ pub(crate) fn title(
             Mode::Agent => "New session".to_string(),
             Mode::Chat => "New chat".to_string(),
         })
+}
+
+/// The name a model gave `session`, if it is of the first message the
+/// session has: one kept for a first message that was edited since (the
+/// conversation's title is its first line) is not its name.
+fn generated_name(session: &Session, conversations: &Conversations) -> Option<String> {
+    let name = session.generated_name()?;
+    let current = match (session.generated_for(), conversations.list.first()) {
+        (Some(made_for), Some(first)) => made_for == first.title,
+        _ => true,
+    };
+    current.then_some(name)
 }
 
 /// Why a session wasn't branched.
@@ -947,6 +959,48 @@ mod tests {
             .unwrap();
         branch.set_generated_name("Another name").unwrap();
         assert_eq!(name(&branch.id), "Branch of Flaky scroll test");
+    }
+
+    /// A name a model gave is of the first message it was made for. Once the
+    /// conversation's first message has other words, whichever process
+    /// changed them, the name isn't the session's, and the first words are.
+    #[test]
+    fn a_models_name_is_shown_only_for_the_first_message_it_was_made_for() {
+        let temp = tempfile::tempdir().unwrap();
+        let session = Session::create(temp.path()).unwrap();
+        session
+            .save_settings(&Settings {
+                title: Some("Count the pears.".into()),
+                ..settings(temp.path())
+            })
+            .unwrap();
+        let conversation = |title: &str| Conversations {
+            list: vec![crate::conversations::Record {
+                runs: Vec::new(),
+                title: title.into(),
+                unread: Vec::new(),
+            }],
+            current: Some(0),
+        };
+        let name = || list(temp.path()).remove(0).title;
+        // Before the conversation is saved, the name is the session's.
+        session
+            .set_generated_name_for("Pear count", "Count the pears.")
+            .unwrap();
+        assert_eq!(name(), "Pear count");
+        conversation("Count the pears.").save(&session.dir).unwrap();
+        assert_eq!(name(), "Pear count");
+        assert_eq!(session.generated_for().as_deref(), Some("Count the pears."));
+        // The first message was edited, and the name was left in the folder.
+        conversation("Count the apples.")
+            .save(&session.dir)
+            .unwrap();
+        assert_eq!(name(), "Count the apples.");
+        // A name made for the new words is shown.
+        session
+            .set_generated_name_for("Apple count", "Count the apples.")
+            .unwrap();
+        assert_eq!(name(), "Apple count");
     }
 
     /// An Arko from before session locks holds only its terminal's: the

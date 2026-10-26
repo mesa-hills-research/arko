@@ -14,10 +14,12 @@ use unicode_width::UnicodeWidthStr;
 use crate::{claude_code, credentials};
 
 mod command;
-#[cfg(test)]
+#[cfg(any(test, feature = "testing"))]
 pub(crate) mod fake;
 mod live;
 pub(crate) mod naming;
+
+pub use naming::{stop_all, stop_in};
 
 /// The file in Arko's folder that holds the ways.
 const FILE: &str = "session-names.json";

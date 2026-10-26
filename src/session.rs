@@ -363,16 +363,42 @@ impl Session {
 
     /// The name a model gave the session, if one did.
     pub fn generated_name(&self) -> Option<String> {
-        std::fs::read_to_string(self.dir.join(NAME_FILE))
-            .ok()
-            .map(|name| name.trim().to_string())
-            .filter(|name| !name.is_empty())
+        self.generated().map(|(name, _)| name)
     }
 
-    /// Keeps `name` as the name a model gave the session. The name the user
-    /// gave comes before it, and stays.
+    /// The first line of the first message the model's name was made for,
+    /// when the name was kept with it.
+    pub fn generated_for(&self) -> Option<String> {
+        self.generated().and_then(|(_, first_line)| first_line)
+    }
+
+    /// The model's name, and the first line of the message it is of.
+    fn generated(&self) -> Option<(String, Option<String>)> {
+        let text = std::fs::read_to_string(self.dir.join(NAME_FILE)).ok()?;
+        let mut lines = text.lines().map(str::trim);
+        let name = lines.next().filter(|name| !name.is_empty())?.to_string();
+        let first_line = lines.next().filter(|line| !line.is_empty());
+        Some((name, first_line.map(str::to_string)))
+    }
+
+    /// Keeps `name` as the name a model gave the session, for no first
+    /// message in particular (tests). The name the user gave comes before
+    /// it, and stays.
+    #[cfg(test)]
     pub fn set_generated_name(&self, name: &str) -> Result<(), String> {
-        write_whole(&self.dir.join(NAME_FILE), name.trim().as_bytes())
+        self.keep_generated(name.trim().to_string())
+    }
+
+    /// Keeps `name` as the name a model gave the session for a first message
+    /// whose first line is `first_line`. The name is shown only while the
+    /// session's first message still begins that way, so one made for words
+    /// that were edited since is not, whichever process edited them.
+    pub fn set_generated_name_for(&self, name: &str, first_line: &str) -> Result<(), String> {
+        self.keep_generated(format!("{}\n{}", name.trim(), first_line.trim()))
+    }
+
+    fn keep_generated(&self, text: String) -> Result<(), String> {
+        write_whole(&self.dir.join(NAME_FILE), text.as_bytes())
             .map_err(|error| format!("could not keep the session's name ({error})"))
     }
 

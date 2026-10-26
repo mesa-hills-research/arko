@@ -370,8 +370,8 @@ async fn run(
                 app.ask_quit(ask.jobs);
                 draw_now = true;
             }
-            Some(missing) = names_checks.recv() => {
-                app.names_checked(missing);
+            Some((check, missing)) = names_checks.recv() => {
+                app.names_checked(&check, missing);
                 draw_now = true;
             }
             event = events.next(), if events_open => {
@@ -522,7 +522,7 @@ async fn run(
                     tokio::task::spawn_blocking(move || {
                         let missing = crate::session_names::missing_until(&cancel.0);
                         if !cancel.0.load(std::sync::atomic::Ordering::Relaxed) {
-                            let _ = found.send(missing);
+                            let _ = found.send((cancel, missing));
                         }
                     });
                 }

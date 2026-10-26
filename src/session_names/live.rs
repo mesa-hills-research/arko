@@ -29,11 +29,21 @@ pub(crate) struct Credentials {
     pub(crate) openai_key: Option<String>,
 }
 
+/// Checks that Claude Code is there and signed in, ending at once when its
+/// flag is set.
+type ClaudeCheck = Arc<
+    dyn Fn(&AtomicBool) -> Result<crate::claude_code::Ready, crate::claude_code::Problem>
+        + Send
+        + Sync,
+>;
+
 /// Asks the models for real.
 pub(crate) struct Live {
     /// Arko's folder, where Claude Code runs (it reads nothing there).
     root: PathBuf,
     credentials: Arc<dyn Fn() -> Credentials + Send + Sync>,
+    /// How Claude Code is found and checked (tests give their own).
+    claude: ClaudeCheck,
 }
 
 impl Live {
@@ -59,7 +69,15 @@ impl Live {
         Self {
             root: root.to_path_buf(),
             credentials,
+            claude: Arc::new(crate::claude_code::check_plan),
         }
+    }
+
+    /// Checks Claude Code with `check`, not by looking for it (tests).
+    #[cfg(test)]
+    pub(crate) fn checking_claude_with(mut self, check: ClaudeCheck) -> Self {
+        self.claude = check;
+        self
     }
 }
 
@@ -76,25 +94,36 @@ impl Drop for StopOnDrop {
 
 #[async_trait]
 impl Ask for Live {
-    async fn ask(&self, way: Way, message: &str) -> Result<String, Failure> {
+    async fn ask(
+        &self,
+        way: Way,
+        message: &str,
+        still: &(dyn Fn() -> bool + Send + Sync),
+    ) -> Result<String, Failure> {
         let missing = |what: &str| Failure::Unavailable(format!("no {what}"));
+        // A message goes to a provider only while its way is wanted.
+        let turned_off = || Failure::Unavailable("turned off".to_string());
         match way {
             Way::ClaudePlan => {
                 let stop = StopOnDrop::default();
                 let cancel = stop.0.clone();
+                let check = self.claude.clone();
                 // Only a login that is a Claude plan runs it, since the
                 // others may be billed per token.
-                let ready =
-                    tokio::task::spawn_blocking(move || crate::claude_code::check_plan(&cancel))
-                        .await
-                        .map_err(|error| Failure::Failed(error.to_string()))?
-                        .map_err(|problem| Failure::Unavailable(format!("{problem:?}")))?;
+                let ready = tokio::task::spawn_blocking(move || check(&cancel))
+                    .await
+                    .map_err(|error| Failure::Failed(error.to_string()))?
+                    .map_err(|problem| Failure::Unavailable(format!("{problem:?}")))?;
                 if !ready.on_plan() {
                     return Err(Failure::Unavailable(
                         "Claude Code isn't signed in with a Claude plan".to_string(),
                     ));
                 }
-                ask_claude_code(ready.path, &self.root, message).await
+                // The checks took a while. It may have been turned off.
+                if !still() {
+                    return Err(turned_off());
+                }
+                ask_claude_code(ready.path, &self.root, message, still).await
             }
             Way::ChatGptPlan => {
                 let logins = (self.credentials)().logins;
@@ -103,6 +132,9 @@ impl Ask for Live {
                 let client = LLMClient::new()
                     .with_chatgpt_accounts(accounts)
                     .with_stream_idle_timeout(STALL);
+                if !still() {
+                    return Err(turned_off());
+                }
                 ask_model(&client, "luna", message, false).await
             }
             Way::ClaudeKey => {
@@ -112,6 +144,9 @@ impl Ask for Live {
                 let client = LLMClient::new()
                     .with_anthropic_api_key(&key)
                     .with_stream_idle_timeout(STALL);
+                if !still() {
+                    return Err(turned_off());
+                }
                 ask_model(&client, "haiku", message, true).await
             }
             Way::OpenAiKey => {
@@ -121,6 +156,9 @@ impl Ask for Live {
                 let client = LLMClient::new()
                     .with_openai_api_key(&key)
                     .with_stream_idle_timeout(STALL);
+                if !still() {
+                    return Err(turned_off());
+                }
                 ask_model(&client, "luna", message, true).await
             }
         }
@@ -165,9 +203,14 @@ pub(crate) async fn ask_model(
 
 /// One low-effort turn in the Claude Code at `cli`, on Haiku 5.5 and the
 /// user's Claude plan.
-async fn ask_claude_code(cli: PathBuf, directory: &Path, message: &str) -> Result<String, Failure> {
+async fn ask_claude_code(
+    cli: PathBuf,
+    directory: &Path,
+    message: &str,
+    still: &(dyn Fn() -> bool + Send + Sync),
+) -> Result<String, Failure> {
     let options = claude_code_options(cli, directory, crate::claude_code::plan_only_env_here())?;
-    run_claude_code(options, message, STALL).await
+    run_claude_code(options, message, STALL, still).await
 }
 
 /// How Claude Code runs for a name. It has no tools, none of the user's
@@ -201,14 +244,20 @@ fn claude_code_options(
 /// Sends `message` as the one turn of a Claude Code run with `options`, and
 /// returns its text. The run fails if it sends nothing for `stall`, and
 /// nothing else ends one that goes on. The process ends with the run, or
-/// when this is dropped.
+/// when this is dropped. The message is sent only if `still` says the way is
+/// wanted once Claude Code has started, which takes a moment.
 async fn run_claude_code(
     options: cc::ClaudeOptions,
     message: &str,
     stall: Duration,
+    still: &(dyn Fn() -> bool + Send + Sync),
 ) -> Result<String, Failure> {
     let failed = |error: cc::ClaudeError| Failure::Failed(error.to_string());
     let mut session = cc::ClaudeSession::start(options).await.map_err(failed)?;
+    if !still() {
+        let _ = session.close().await;
+        return Err(Failure::Unavailable("turned off".to_string()));
+    }
     session.send(message).await.map_err(failed)?;
     let result = loop {
         match tokio::time::timeout(stall, session.next_message()).await {
@@ -242,6 +291,11 @@ mod tests {
     use std::sync::Mutex;
 
     use crate::session_names::naming::clean;
+
+    /// A way that is still wanted.
+    fn wanted() -> bool {
+        true
+    }
 
     /// A request to a model by API key or the ChatGPT login is a low-effort
     /// one with the naming prompt and the message, and its answer comes back.
@@ -293,7 +347,7 @@ mod tests {
     async fn the_live_ways_that_lack_what_they_need_are_unavailable() {
         let live = Live::with(&std::env::temp_dir(), nothing());
         for way in [Way::ClaudeKey, Way::OpenAiKey] {
-            let result = live.ask(way, "Hello").await;
+            let result = live.ask(way, "Hello", &wanted).await;
             assert!(
                 matches!(result, Err(Failure::Unavailable(_))),
                 "{way:?} {result:?}"
@@ -316,7 +370,7 @@ mod tests {
         });
         // Removed before the way is asked, it is unavailable.
         key.lock().unwrap().take();
-        let result = live.ask(Way::ClaudeKey, "Hello").await;
+        let result = live.ask(Way::ClaudeKey, "Hello", &wanted).await;
         assert!(matches!(result, Err(Failure::Unavailable(_))), "{result:?}");
     }
 
@@ -372,7 +426,8 @@ mod tests {
             r#"[[{"text": "\"Flaky scroll test.\""}], [{"fail": "overloaded"}]]"#,
         )
         .unwrap();
-        let answer = run_claude_code(options.clone(), "Fix the flaky scroll test", STALL).await;
+        let answer =
+            run_claude_code(options.clone(), "Fix the flaky scroll test", STALL, &wanted).await;
         assert_eq!(answer.as_deref(), Ok("\"Flaky scroll test.\""));
         let log: Vec<serde_json::Value> = std::fs::read_to_string(fake.join("log.jsonl"))
             .unwrap()
@@ -406,7 +461,7 @@ mod tests {
         assert_eq!(sent.len(), 1, "{log:?}");
         assert!(sent[0].to_string().contains("Fix the flaky scroll test"));
         // A turn that ends in an error is a failure.
-        let answer = run_claude_code(options, "Again", STALL).await;
+        let answer = run_claude_code(options, "Again", STALL, &wanted).await;
         assert!(matches!(answer, Err(Failure::Failed(_))), "{answer:?}");
     }
 
@@ -444,7 +499,13 @@ mod tests {
         )
         .unwrap();
         let started = std::time::Instant::now();
-        let stalled = run_claude_code(options.clone(), "Hello", Duration::from_millis(500)).await;
+        let stalled = run_claude_code(
+            options.clone(),
+            "Hello",
+            Duration::from_millis(500),
+            &wanted,
+        )
+        .await;
         assert!(matches!(stalled, Err(Failure::Failed(_))), "{stalled:?}");
         assert!(
             started.elapsed() < Duration::from_secs(3),
@@ -452,9 +513,189 @@ mod tests {
         );
         // Longer in all than the stall time, never silent for it.
         let started = std::time::Instant::now();
-        let slow = run_claude_code(options, "Hello", Duration::from_millis(500)).await;
+        let slow = run_claude_code(options, "Hello", Duration::from_millis(500), &wanted).await;
         assert_eq!(slow.as_deref(), Ok("Slow name"));
         assert!(started.elapsed() >= Duration::from_millis(600));
+    }
+
+    /// Options that run the fake Claude Code in `fake`, whose script is
+    /// `script` and whose log is `log.jsonl` there.
+    fn fake_options(fake: &Path, script: &str) -> cc::ClaudeOptions {
+        let python = std::env::var("ARKO_TEST_PYTHON")
+            .unwrap_or_else(|_| if cfg!(windows) { "python" } else { "python3" }.into());
+        let mut options = claude_code_options(python.into(), fake, Default::default()).unwrap();
+        options.cli_prefix_args = vec![
+            concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/fixtures/fake_claude_agent.py"
+            )
+            .into(),
+        ];
+        for (name, file) in [
+            ("FAKE_CLAUDE_SCRIPT", "script.json"),
+            ("FAKE_CLAUDE_LOG", "log.jsonl"),
+            ("FAKE_CLAUDE_STATE", "state"),
+        ] {
+            options
+                .env
+                .insert(name.into(), fake.join(file).display().to_string());
+        }
+        std::fs::write(fake.join("script.json"), script).unwrap();
+        options
+    }
+
+    /// What the fake Claude Code logged, by event.
+    fn logged(fake: &Path, event: &str) -> Vec<serde_json::Value> {
+        std::fs::read_to_string(fake.join("log.jsonl"))
+            .unwrap_or_default()
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+            .filter(|entry| entry["event"] == event)
+            .collect()
+    }
+
+    /// A way turned off while Claude Code is being checked starts no Claude
+    /// Code and sends no message, and one turned off while it starts sends
+    /// none. (A request already sent is left to finish.)
+    #[tokio::test]
+    async fn a_way_turned_off_during_the_checks_sends_nothing() {
+        use std::sync::atomic::AtomicBool;
+        let temp = tempfile::tempdir().unwrap();
+        // The checks end after the user turned the way off, and the program
+        // they found would leave a mark if it ran.
+        let program = temp.path().join("claude");
+        let mark = temp.path().join("started");
+        std::fs::write(
+            &program,
+            format!("#!/bin/sh\ntouch '{}'\nexec sleep 30\n", mark.display()),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let checked = Arc::new(AtomicBool::new(false));
+        let live = Live::with(temp.path(), nothing()).checking_claude_with({
+            let (program, checked) = (program.clone(), checked.clone());
+            Arc::new(move |cancel| {
+                while !checked.load(Ordering::Relaxed) && !cancel.load(Ordering::Relaxed) {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Ok(crate::claude_code::Ready {
+                    path: program.clone(),
+                    method: Some("claude.ai".into()),
+                    plan: None,
+                })
+            })
+        });
+        let wanted = Arc::new(AtomicBool::new(true));
+        let still = {
+            let wanted = wanted.clone();
+            move || wanted.load(Ordering::Relaxed)
+        };
+        let (result, ()) = tokio::join!(live.ask(Way::ClaudePlan, "A message", &still), async {
+            tokio::time::sleep(Duration::from_millis(150)).await;
+            wanted.store(false, Ordering::Relaxed);
+            checked.store(true, Ordering::Relaxed);
+        });
+        assert!(matches!(result, Err(Failure::Unavailable(_))), "{result:?}");
+        assert!(!mark.exists(), "Claude Code was not even started");
+
+        // Turned off while Claude Code starts: it starts, gets no message,
+        // and ends.
+        let fake = tempfile::tempdir().unwrap();
+        let options = fake_options(fake.path(), r#"[[{"text": "A name"}]]"#);
+        let result = run_claude_code(options, "A message", STALL, &|| false).await;
+        assert!(matches!(result, Err(Failure::Unavailable(_))), "{result:?}");
+        assert_eq!(logged(fake.path(), "argv").len(), 1, "it started");
+        assert!(
+            logged(fake.path(), "user").is_empty(),
+            "and was sent nothing"
+        );
+    }
+
+    /// Whether the process `pid` is running (a process that ended and isn't
+    /// collected yet isn't).
+    #[cfg(target_os = "linux")]
+    fn running(pid: u64) -> bool {
+        std::fs::read_to_string(format!("/proc/{pid}/stat"))
+            .ok()
+            .and_then(|stat| {
+                stat.rsplit_once(')')
+                    .map(|(_, rest)| rest.trim_start().to_string())
+            })
+            .is_some_and(|rest| !rest.starts_with('Z'))
+    }
+
+    /// Asks the fake Claude Code in `options`, as a way.
+    struct ClaudeAsk(cc::ClaudeOptions);
+
+    #[async_trait]
+    impl Ask for ClaudeAsk {
+        async fn ask(
+            &self,
+            _way: Way,
+            message: &str,
+            still: &(dyn Fn() -> bool + Send + Sync),
+        ) -> Result<String, Failure> {
+            run_claude_code(self.0.clone(), message, STALL, still).await
+        }
+    }
+
+    /// Quitting stops the namings that are going on (those in the Arko folder
+    /// it names, here), and the Claude Code each runs ends with it, though
+    /// nothing else would have stopped it. (`stop_all` is this for every
+    /// folder, which tests running side by side can't share.)
+    #[cfg(target_os = "linux")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn stopping_all_namings_ends_the_claude_code_they_run() {
+        use crate::session_names::naming::{Naming, Run, stop_in};
+        let temp = tempfile::tempdir().unwrap();
+        let fake = tempfile::tempdir().unwrap();
+        // A Claude Code that is busy for half a minute after it is sent
+        // the message.
+        let options = fake_options(fake.path(), r#"[[{"sleep": 30}, {"text": "Late name"}]]"#);
+        let server = crate::mock_model::ModelServer::start(Arc::new(|_, _| {
+            Box::pin(async { crate::mock_model::complete("1", "Done.") })
+        }))
+        .await;
+        let (harness, _inputs, _sender) = crate::tests::harness(temp.path(), server.client(), true);
+        crate::session_names::save(&harness.root, &[Way::ClaudePlan]).unwrap();
+        let naming = Naming::default();
+        naming.start(Run {
+            session: harness.session.clone(),
+            gauges: harness.gauges.clone(),
+            root: harness.root.clone(),
+            text: "Count the pears.".into(),
+            asker: Arc::new(ClaudeAsk(options)),
+        });
+        // It runs, and Claude Code has the message.
+        tokio::time::timeout(Duration::from_secs(20), async {
+            while logged(fake.path(), "user").is_empty() {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("Claude Code got the message");
+        let pid = logged(fake.path(), "argv")[0]["pid"].as_u64().unwrap();
+        assert!(running(pid), "Claude Code is busy");
+        assert!(naming.running());
+        // Quitting stops it, and its Claude Code is gone when that returns.
+        let root = harness.root.clone();
+        tokio::task::spawn_blocking(move || stop_in(&root))
+            .await
+            .unwrap();
+        // (The kill is sent by then, and the process is gone a moment later.)
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while running(pid) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("Claude Code ended with the naming");
+        assert!(!naming.running());
+        assert_eq!(harness.session.generated_name(), None);
     }
 
     /// Asks the real Claude Code on the user's Claude plan, which costs one
@@ -467,6 +708,7 @@ mod tests {
             .ask(
                 Way::ClaudePlan,
                 "Fix the flaky scroll test in the sidebar before the release",
+                &wanted,
             )
             .await
             .unwrap();

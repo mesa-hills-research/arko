@@ -25,8 +25,11 @@ or signed in with a Claude plan, no login, no key), fails, gives no usable name,
 two minutes hands over to the next. A way that is still working is never cut off, so what it already
 used isn't wasted. When none works, the first words stay the name. Naming runs in the background
 after the first message, so the turn never waits for it, and it goes on after the session closes. It
-stops when the session is deleted, when the first message is edited (the new one is named instead), or
-when Arko exits. Only the first 2,000 characters of the first message are sent.
+stops when the session is deleted (no further way is asked), when the first message is edited (the new
+one is named instead, also if the session was closed and opened again meanwhile), and when Arko quits,
+which also ends the Claude Code it runs. A name is shown only for the first message it was made for.
+A way turned off is not sent the message, also while Claude Code is still being checked. Only the first
+2,000 characters of the first message are sent.
 
 The Claude plan way asks Claude Code with the variables that could bill it or sign it in elsewhere
 (`ANTHROPIC_*`, Bedrock, Vertex and Foundry settings) empty, and runs only when Claude Code is signed
@@ -52,4 +55,6 @@ for the order a menu shows, `missing` for what each way lacks now, and `short_na
 is cut by what a user sees as one character, so an emoji or a flag is never split. `missing` runs
 `claude` to check Claude Code, so call it off a UI thread. A session's name comes from
 `sessions::list` and the status as before. A session an app runs with `spawn` keeps its thread for a
-name still being asked after the session closes.
+name still being asked after the session closes. Call `session_names::stop_in` with the Arko folder when
+the app quits (`stop_all` does it for every folder). It ends every naming under way and the Claude Code
+each runs, and returns when they have ended, or after two seconds.
