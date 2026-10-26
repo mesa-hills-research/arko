@@ -2415,7 +2415,7 @@ async fn workers_get_the_kept_notes_for_them() {
                 } else if body.contains("call_m3") {
                     start("m4", "Second worker.")
                 } else if body.contains("call_m2") {
-                    keep("m3", "Skip the slow tests.", "r1")
+                    keep("m3", "Skip the slow tests.", "lead, r1")
                 } else if body.contains("call_m1") {
                     start("m2", "First worker.")
                 } else {

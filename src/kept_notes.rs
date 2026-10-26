@@ -64,10 +64,14 @@ const QUOTED_CHARS: usize = 60;
 /// What a list says when the notes it replaces are all gone.
 const NONE_LEFT: &str = "No notes are kept now.";
 
+/// What a call with an audience that isn't one is told.
+const BAD_AUDIENCE: &str = "audience is lead, workers (every worker), worker IDs such as r1, r2, or a mix such as lead, r1";
+
 /// One process writes the file at a time.
 static WRITING: Mutex<()> = Mutex::new(());
 
-/// Who a note is for.
+/// Who a note is for. The main agent's list holds every note, so a note for
+/// workers is also its own.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Audience {
@@ -81,22 +85,34 @@ pub enum Audience {
 
 impl Audience {
     /// The audience a tool call names: `lead`, `workers` for all of them, or
-    /// worker IDs such as `r1, r2`. Nothing means the lead.
+    /// worker IDs such as `r1, r2`, also mixed (`lead, r1`). Nothing means
+    /// the lead. The lead's own list holds every note, so `lead` beside
+    /// workers adds nothing and is dropped.
     pub(crate) fn parse(text: &str) -> Result<Self, String> {
-        let words: Vec<String> = text
+        let mut every_worker = false;
+        let mut ids: Vec<String> = Vec::new();
+        for word in text
             .split(|c: char| c == ',' || c.is_whitespace())
             .filter(|word| !word.is_empty())
             .map(str::to_lowercase)
-            .collect();
-        match words.as_slice() {
-            [] => Ok(Self::Lead),
-            [word] if word == "lead" => Ok(Self::Lead),
-            [word] if word == "workers" => Ok(Self::AllWorkers),
-            ids if ids.iter().all(|id| is_worker_id(id)) => Ok(Self::Workers(ids.to_vec())),
-            _ => {
-                Err("audience is lead, workers (every worker) or worker IDs such as r1, r2".into())
+        {
+            if word == "workers" {
+                every_worker = true;
+            } else if is_worker_id(&word) {
+                if !ids.contains(&word) {
+                    ids.push(word);
+                }
+            } else if word != "lead" {
+                return Err(BAD_AUDIENCE.into());
             }
         }
+        Ok(if every_worker {
+            Self::AllWorkers
+        } else if ids.is_empty() {
+            Self::Lead
+        } else {
+            Self::Workers(ids)
+        })
     }
 
     /// Whether worker `handle` is in the audience.
@@ -580,7 +596,7 @@ impl Tool for KeepNote {
                 ),
                 parameter(
                     "audience",
-                    "lead (default), workers for every worker, or worker IDs such as r1, r2. A worker gets its notes in its first message, as they are kept while it runs, and after its own handover or compaction.",
+                    "lead (default), workers for every worker, or worker IDs such as r1, r2. A mix such as lead, r1 works too. Your own list holds every note, including those for workers, so a note for workers is also yours. A worker gets its notes in its first message, as they are kept while it runs, and after its own handover or compaction.",
                     ToolParameterType::String,
                     false,
                 ),
@@ -791,8 +807,98 @@ mod tests {
             Audience::parse("r1, r12 R3").unwrap(),
             Audience::Workers(vec!["r1".into(), "r12".into(), "r3".into()])
         );
-        for wrong in ["everyone", "lead, r1", "r", "r1x"] {
-            assert!(Audience::parse(wrong).is_err(), "{wrong}");
+        // The lead's own list holds every note, so `lead` beside workers
+        // adds nothing, and a worker named twice is one.
+        let r17 = || Audience::Workers(vec!["r17".into()]);
+        for (mixed, parsed) in [
+            ("lead, r17", r17()),
+            ("r17 lead", r17()),
+            ("LEAD,R17,r17", r17()),
+            ("lead, workers", Audience::AllWorkers),
+            ("workers, r2", Audience::AllWorkers),
+            ("lead lead", Audience::Lead),
+            (
+                "r2, lead, r1, r2",
+                Audience::Workers(vec!["r2".into(), "r1".into()]),
+            ),
+        ] {
+            assert_eq!(Audience::parse(mixed).unwrap(), parsed, "{mixed}");
         }
+        // A stray separator isn't a word.
+        assert_eq!(Audience::parse("lead,").unwrap(), Audience::Lead);
+        for wrong in [
+            "everyone",
+            "lead, bob",
+            "r1, bob",
+            "r",
+            "r1x",
+            "lead r",
+            "workers, r1x",
+        ] {
+            let why = Audience::parse(wrong).unwrap_err();
+            assert!(why.contains("a mix such as lead, r1"), "{wrong}\n{why}");
+        }
+    }
+
+    #[test]
+    fn keep_note_tells_how_audiences_work() {
+        let (_temp, notes) = notes();
+        let keep = KeepNote { notes, crew: None }.definition();
+        let audience = keep
+            .parameters
+            .iter()
+            .find(|parameter| parameter.name == "audience")
+            .unwrap();
+        for said in [
+            "lead (default)",
+            "workers for every worker",
+            "worker IDs such as r1, r2",
+            "A mix such as lead, r1",
+            "Your own list holds every note, including those for workers",
+        ] {
+            assert!(audience.description.contains(said), "{said}");
+        }
+    }
+
+    #[test]
+    fn a_note_for_workers_is_in_the_lead_list_too() {
+        let (_temp, notes) = notes();
+        notes
+            .add(
+                "Skip the slow tests.",
+                Audience::parse("lead, r17").unwrap(),
+            )
+            .unwrap();
+        let lead = notes.for_lead().unwrap();
+        assert!(lead.contains("- Kept note 1, for r17,"), "{lead}");
+        assert!(lead.contains("Skip the slow tests."), "{lead}");
+        assert!(notes.for_worker("r17").is_some() && notes.for_worker("r1").is_none());
+    }
+
+    #[test]
+    fn notes_saved_before_a_mixed_audience_still_load() {
+        let (temp, notes) = notes();
+        std::fs::write(
+            temp.path().join(FILE),
+            r#"{"next":3,"notes":[
+                {"id":1,"text":"A.","audience":"lead","created":"2026-10-01T10:00:00Z"},
+                {"id":2,"text":"B.","audience":{"workers":["r1","r2"]},"created":"2026-10-01T10:00:00Z"},
+                {"id":3,"text":"C.","audience":"all_workers","created":"2026-10-01T10:00:00Z"}]}"#,
+        )
+        .unwrap();
+        let audiences: Vec<Audience> = notes
+            .list()
+            .unwrap()
+            .into_iter()
+            .map(|note| note.audience)
+            .collect();
+        assert_eq!(
+            audiences,
+            [
+                Audience::Lead,
+                Audience::Workers(vec!["r1".into(), "r2".into()]),
+                Audience::AllWorkers
+            ]
+        );
     }
 }
