@@ -1,8 +1,8 @@
 //! The transcript's scrolling. New output is followed while the reader is at
-//! the bottom. "Latest" jumps there on a spring, and on systems without
-//! momentum of their own (Windows, Linux, Android) the mouse wheel scrolls on
-//! a spring too. Apple's systems keep their native scrolling, and with
-//! reduced motion everything moves at once.
+//! the bottom, and "Latest" jumps there at once. On systems without momentum
+//! of their own (Windows, Linux, Android) the mouse wheel scrolls on a
+//! spring. Apple's systems keep their native scrolling, and with reduced
+//! motion the wheel is native everywhere.
 
 use std::cell::RefCell;
 
@@ -11,15 +11,9 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
 use web_sys::{Element, ScrollBehavior, ScrollToOptions, WheelEvent};
 
-/// The springs' stiffness, critically damped so they never overshoot. A
-/// jump settles in about 0.35 s, and the wheel's spring follows the wheel
-/// within about 0.2 s.
-const JUMP_STIFFNESS: f64 = 700.0;
+/// The wheel's spring, critically damped so it never overshoots, follows
+/// the wheel within about 0.2 s.
 const WHEEL_STIFFNESS: f64 = 520.0;
-/// A jump from further than this many screens away first moves to this
-/// close at once, so it takes the same short time from anywhere.
-const JUMP_FAR: f64 = 2.0;
-const JUMP_NEAR: f64 = 1.5;
 /// Within this many pixels of the bottom, new output is followed.
 const NEAR_BOTTOM: f64 = 48.0;
 
@@ -30,8 +24,6 @@ struct State {
     position: f64,
     velocity: f64,
     target: f64,
-    /// The target is the bottom, wherever it moves while output streams.
-    to_bottom: bool,
     running: bool,
     stiffness: f64,
     last_frame: Option<f64>,
@@ -192,29 +184,9 @@ pub fn to_bottom_now() {
     });
 }
 
-/// "Latest": to the bottom on a spring, or at once with reduced motion.
+/// "Latest": to the bottom at once.
 pub fn jump_to_latest() {
-    if reduced_motion() {
-        to_bottom_now();
-        return;
-    }
-    STATE.with(|state| {
-        let mut state = state.borrow_mut();
-        let Some(log) = state.log.clone() else { return };
-        let screen = log.client_height() as f64;
-        if bottom(&log) - log.scroll_top() as f64 > JUMP_FAR * screen {
-            scroll_to(&log, bottom(&log) - JUMP_NEAR * screen);
-            state.running = false;
-        }
-        if !state.running {
-            state.position = log.scroll_top() as f64;
-            state.velocity = 0.0;
-        }
-        state.to_bottom = true;
-        state.target = bottom(&log);
-        state.stiffness = JUMP_STIFFNESS;
-        start(&mut state);
-    });
+    to_bottom_now();
 }
 
 fn on_wheel(event: WheelEvent) {
@@ -240,7 +212,6 @@ fn on_wheel(event: WheelEvent) {
             state.target = state.position;
             state.velocity = 0.0;
         }
-        state.to_bottom = false;
         state.target = (state.target + delta).clamp(0.0, bottom(&log));
         state.stiffness = WHEEL_STIFFNESS;
         start(&mut state);
@@ -276,9 +247,6 @@ fn tick(now: f64) {
             return false;
         }
         let max = bottom(&log);
-        if state.to_bottom {
-            state.target = max;
-        }
         let dt = state.last_frame.map_or(1.0 / 60.0, |last| {
             ((now - last) / 1000.0).clamp(0.001, 0.05)
         });
@@ -295,7 +263,6 @@ fn tick(now: f64) {
         state.written = log.scroll_top() as f64;
         if settled {
             state.running = false;
-            state.to_bottom = false;
         }
         !settled
     });
@@ -308,4 +275,60 @@ fn tick(now: f64) {
     } else {
         on_scroll();
     }
+}
+
+/// The item of the first row whose bottom shows, as the reader's place.
+pub fn first_visible() -> Option<u64> {
+    let log = STATE.with(|state| state.borrow().log.clone())?;
+    let top = log.get_bounding_client_rect().top();
+    let rows = log.query_selector("#rows").ok().flatten()?.children();
+    (0..rows.length()).filter_map(|at| rows.item(at)).find_map(|row| {
+        let id = row.get_attribute("data-id")?.parse().ok()?;
+        (row.get_bounding_client_rect().bottom() > top + 1.0).then_some(id)
+    })
+}
+
+/// Keeps the reader's place at the item `id` (or the nearest row before it)
+/// across the layout that's about to change: it stays where it shows now,
+/// else a third of the way down.
+pub fn keep_place(id: u64) {
+    let Some(log) = STATE.with(|state| state.borrow().log.clone()) else {
+        return;
+    };
+    let row_of = move |log: &Element, id: u64| -> Option<Element> {
+        let rows = log.query_selector("#rows").ok().flatten()?.children();
+        let mut best: Option<(u64, Element)> = None;
+        for at in 0..rows.length() {
+            let Some(row) = rows.item(at) else { continue };
+            let Some(row_id) = row.get_attribute("data-id").and_then(|id| id.parse::<u64>().ok()) else {
+                continue;
+            };
+            if row_id == id {
+                return Some(row);
+            }
+            if row_id < id && best.as_ref().is_none_or(|(best, _)| row_id > *best) {
+                best = Some((row_id, row));
+            }
+        }
+        best.map(|(_, row)| row)
+    };
+    let top = log.get_bounding_client_rect().top();
+    let offset = row_of(&log, id)
+        .map(|row| row.get_bounding_client_rect().top() - top)
+        .filter(|offset| *offset >= 0.0 && *offset < log.client_height() as f64)
+        .unwrap_or(log.client_height() as f64 / 3.0);
+    STATE.with(|state| {
+        let state = state.borrow();
+        if let Some(pinned) = state.pinned {
+            pinned.set(false);
+        }
+    });
+    let restore = Closure::once_into_js(move || {
+        if let Some(row) = row_of(&log, id) {
+            let now = row.get_bounding_client_rect().top() - log.get_bounding_client_rect().top();
+            scroll_to(&log, log.scroll_top() as f64 + now - offset);
+        }
+        on_scroll();
+    });
+    let _ = window().request_animation_frame(restore.unchecked_ref());
 }

@@ -186,8 +186,8 @@ motion to be understood.
 | A call running | A spinner on its row, at most 30 frames a second |
 | Streaming text | Appears as it comes, with no fade |
 | A new row arriving | Appears in place. The view follows only if the reader is at the bottom |
-| Latest | Jumps to within 1.5 screens of the bottom, then a critically damped spring, about 0.3 s |
-| Mouse wheel (Windows, Linux, Android) | A stiffer spring, about 0.2 s. Apple systems keep their own momentum |
+| Latest | Jumps to the bottom at once |
+| Mouse wheel (Windows, Linux, Android) | A critically damped spring, about 0.2 s. Apple systems keep their own momentum |
 | Moving to the background, done, failed | The row changes in place, with no motion |
 | Menus, popovers, the Latest button | A fade of 150 ms |
 | Sheets and panels | Appear without sliding |

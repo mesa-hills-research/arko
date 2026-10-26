@@ -58,6 +58,7 @@ const VARIABLES: &[(&str, &[&str])] = &[
             "scrollbar.thumb.background",
         ],
     ),
+    ("switch-off", &["switch.background", "secondary.background"]),
     ("popover", &["popover.background", "background"]),
     ("popover-text", &["popover.foreground", "foreground"]),
 ];

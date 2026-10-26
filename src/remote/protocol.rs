@@ -119,6 +119,100 @@ pub struct Activity {
     /// When the turn started (Unix milliseconds), while one runs.
     pub since: Option<i64>,
 }
+/// Where a worker is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum WorkerState {
+    /// Waiting for a place (the most workers run).
+    Queued,
+    Running,
+    /// It reported.
+    Finished,
+    /// It ended with an error.
+    Failed,
+    /// Its lead, the user or Arko's exit stopped it.
+    Stopped,
+}
+
+impl WorkerState {
+    /// Running or waiting to run.
+    pub fn is_active(self) -> bool {
+        matches!(self, Self::Queued | Self::Running)
+    }
+}
+
+/// What a background job runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum JobKind {
+    /// A shell command that moved to the background, or one
+    /// `terminal_start` started.
+    Command,
+    /// A tool call that moved to the background (an MCP tool's,
+    /// `index_create`).
+    Call,
+    /// A monitor that watches a command for its agent (`monitor_start`).
+    Monitor,
+}
+
+/// How a background job is doing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum JobState {
+    Running,
+    /// It ended well.
+    Finished,
+    /// It failed, or ran out of time.
+    Failed,
+    /// The agent or the user stopped it, or Arko's exit did.
+    Stopped,
+    /// Arko stopped before it ended (a crash, or `arko -c` after one).
+    Interrupted,
+    /// A monitor that lasted as long as it was armed for.
+    Expired,
+}
+
+impl JobState {
+    pub fn is_running(self) -> bool {
+        self == Self::Running
+    }
+}
+
+/// A background job, as a line such as `index_create · 3 min · running`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct JobSummary {
+    /// Its ID, as the terminal tools name it.
+    pub id: String,
+    /// Whose it is, `main` or a worker's ID.
+    pub agent: String,
+    /// The call item that made it, while the transcript has it.
+    pub call: Option<u64>,
+    pub kind: JobKind,
+    /// The command, or the tool of a moved call.
+    pub label: String,
+    pub state: JobState,
+    /// When it started (Unix milliseconds). A moved call's job starts as it
+    /// moves.
+    pub started_at: i64,
+    pub ended_at: Option<i64>,
+    /// How it ended, in a few words, once it did ("exit 1", "timed out").
+    pub outcome: Option<String>,
+    /// What a monitor watches ("lines that match error|warn", "a check
+    /// every 15 s").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub watching: Option<String>,
+    /// How many of its agent's notes a monitor's alerts went in.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub alerts: Option<u32>,
+    /// When a monitor ends, as last armed (Unix milliseconds).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<i64>,
+}
+
 // ----- what the page reads -----
 //
 // The server writes richer types than these (its items hold what only the
@@ -176,17 +270,168 @@ pub struct Removed {
     pub id: u64,
 }
 
+/// A worker's summary (`worker`, and in `reset`).
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[cfg_attr(test, serde(deny_unknown_fields))]
+#[allow(dead_code)]
+pub struct WorkerData {
+    pub id: String,
+    pub title: String,
+    pub state: WorkerState,
+    pub tool_calls: u32,
+    pub started_at: Option<i64>,
+    pub ended_at: Option<i64>,
+    pub last: Option<String>,
+    pub report: Option<String>,
+    #[serde(default)]
+    pub ran_ms: u64,
+    pub running_since: Option<i64>,
+    pub model: Option<String>,
+    pub effort: Option<String>,
+    pub profile: Option<String>,
+    pub parent: Option<String>,
+    #[serde(default)]
+    pub depth: u32,
+    #[serde(default, deserialize_with = "lenient")]
+    pub cost_billed: f64,
+    #[serde(default, deserialize_with = "lenient")]
+    pub cost_list: f64,
+    #[serde(default, deserialize_with = "lenient")]
+    pub family_cost_billed: f64,
+    #[serde(default, deserialize_with = "lenient")]
+    pub family_cost_list: f64,
+}
+
 /// The part of the status (`status`, and in `reset`) the page reads. The
-/// rest is left unread.
+/// rest is left unread, and a value that is `null` (a cost that isn't a
+/// number) reads as none.
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(default)]
 #[allow(dead_code)]
 pub struct StatusData {
+    #[serde(deserialize_with = "lenient")]
     pub working: bool,
     pub question: Option<Question>,
     pub since: Option<i64>,
+    #[serde(deserialize_with = "lenient")]
     pub cost: f64,
-    pub context_tokens: Option<usize>,
+    pub api_price: Option<f64>,
+    pub context_tokens: Option<u64>,
+    pub plan_usage: Option<String>,
+    /// Each worker, a line or two.
+    pub workers: Option<String>,
+    #[serde(deserialize_with = "lenient")]
+    pub settings: SettingsData,
+    #[serde(deserialize_with = "lenient")]
+    pub movable: Vec<u64>,
+    #[serde(deserialize_with = "lenient")]
+    pub models: ModelsData,
+    #[serde(deserialize_with = "lenient")]
+    pub agents: Vec<AgentData>,
+    #[serde(deserialize_with = "lenient")]
+    pub cache: CacheData,
+    #[serde(deserialize_with = "lenient")]
+    pub info: InfoData,
+}
+
+/// The session's settings a client may change, with commands.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(default)]
+#[allow(dead_code)]
+pub struct SettingsData {
+    #[serde(deserialize_with = "lenient")]
+    pub outside: bool,
+    #[serde(deserialize_with = "lenient")]
+    pub handover_at: u64,
+    #[serde(deserialize_with = "lenient")]
+    pub workers_handover_at: u64,
+    #[serde(deserialize_with = "lenient")]
+    pub text_replies: bool,
+    pub cc_compact: Option<bool>,
+    /// `small`, `all` or `off`.
+    pub extra_rules: Option<String>,
+    /// `one`, `both` or `off`.
+    pub project_instructions: Option<String>,
+    #[serde(deserialize_with = "lenient")]
+    pub worker_project_instructions: bool,
+    /// Seconds, 0 for never.
+    #[serde(deserialize_with = "lenient")]
+    pub background_after: u64,
+    /// As `/monitor-wakes` takes it (`auto`, `2h`).
+    pub monitor_wakes: Option<String>,
+    /// Seconds now, 0 for never, none for always.
+    pub monitor_wakes_within: Option<u64>,
+    /// `agent`, `profiles` or `session`.
+    pub worker_models: Option<String>,
+    pub worker_depth: Option<u32>,
+    pub worker_retry_cap: Option<u32>,
+    #[serde(deserialize_with = "lenient")]
+    pub message_copies: bool,
+    #[serde(deserialize_with = "lenient")]
+    pub builtin_skills: bool,
+    #[serde(deserialize_with = "lenient")]
+    pub builtin_skill_list: Vec<SkillData>,
+}
+
+/// A built-in skill and whether it is on.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[allow(dead_code)]
+pub struct SkillData {
+    pub name: String,
+    pub on: bool,
+}
+
+/// The agents' models.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(default)]
+#[allow(dead_code)]
+pub struct ModelsData {
+    pub main: String,
+    pub workers: String,
+    #[serde(deserialize_with = "lenient")]
+    pub started: bool,
+    #[serde(deserialize_with = "lenient")]
+    pub has_workers: bool,
+}
+
+/// A worker's context, for its own view.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(default)]
+#[allow(dead_code)]
+pub struct AgentData {
+    pub id: String,
+    pub context_tokens: Option<u64>,
+    pub context_window: Option<u64>,
+    pub handover_at: Option<u64>,
+    #[serde(deserialize_with = "lenient")]
+    pub compacts: bool,
+}
+
+/// The main agent's prompt cache, as its latest request left it.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(default)]
+#[allow(dead_code)]
+pub struct CacheData {
+    /// Milliseconds.
+    pub lifetime: Option<i64>,
+    pub refreshed_at: Option<i64>,
+    pub tokens: Option<u64>,
+    pub read: Option<u64>,
+    pub written: Option<u64>,
+    pub miss_cost: Option<f64>,
+    pub refresh_cost: Option<f64>,
+    pub on_plan: Option<String>,
+}
+
+/// What the header says of the session.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(default)]
+#[allow(dead_code)]
+pub struct InfoData {
+    pub model: String,
+    pub workspace: String,
+    pub session: String,
+    pub app: String,
 }
 
 /// The start of a stream, and of each start over (`reset`).
@@ -195,5 +440,41 @@ pub struct StatusData {
 pub struct ResetData {
     pub items: Vec<ItemData>,
     #[serde(default)]
+    pub workers: Vec<WorkerData>,
+    #[serde(default)]
+    pub jobs: Vec<JobSummary>,
+    #[serde(default)]
     pub status: StatusData,
+}
+
+/// A command the page runs (`GET /api/commands`).
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[allow(dead_code)]
+pub struct CommandData {
+    pub name: String,
+    #[serde(default)]
+    pub args: String,
+    #[serde(default)]
+    pub about: String,
+}
+
+/// A link to the page (`GET /api/links`).
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[allow(dead_code)]
+pub struct LinkData {
+    pub url: String,
+    pub interface: Option<String>,
+    /// `lan`, `tailscale`, `vpn`, `other` or `loopback`.
+    pub kind: String,
+    pub qr_svg: Option<String>,
+}
+
+/// A value, or its type's default where the JSON has `null`.
+#[allow(dead_code)]
+fn lenient<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de> + Default,
+{
+    Ok(Option::<T>::deserialize(deserializer)?.unwrap_or_default())
 }

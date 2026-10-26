@@ -66,7 +66,10 @@ const BACKLOG: usize = 2048;
 const WORKER_EVERY: Duration = Duration::from_millis(250);
 
 // The types the web page reads too, which it compiles from the same file.
-pub use super::protocol::{Activity, CallStatus, Delivery, Kind, Level, Question, Source};
+pub use super::protocol::{
+    Activity, CallStatus, Delivery, JobKind, JobState, JobSummary, Kind, Level, Question, Source,
+    WorkerState,
+};
 
 /// The message that keeps the prompt cache warm where the provider takes
 /// no refresh out of band.
@@ -263,29 +266,6 @@ impl Item {
         self.whole = None;
         self.parameters = None;
         self.output = None;
-    }
-}
-
-/// Where a worker is.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-#[non_exhaustive]
-pub enum WorkerState {
-    /// Waiting for a place (the most workers run).
-    Queued,
-    Running,
-    /// It reported.
-    Finished,
-    /// It ended with an error.
-    Failed,
-    /// Its lead, the user or Arko's exit stopped it.
-    Stopped,
-}
-
-impl WorkerState {
-    /// Running or waiting to run.
-    pub fn is_active(self) -> bool {
-        matches!(self, Self::Queued | Self::Running)
     }
 }
 
@@ -557,77 +537,6 @@ pub enum WorkerChange<'a> {
     Stopped {
         reason: &'a str,
     },
-}
-
-/// What a background job runs.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-#[non_exhaustive]
-pub enum JobKind {
-    /// A shell command that moved to the background, or one
-    /// `terminal_start` started.
-    Command,
-    /// A tool call that moved to the background (an MCP tool's,
-    /// `index_create`).
-    Call,
-    /// A monitor that watches a command for its agent (`monitor_start`).
-    Monitor,
-}
-
-/// How a background job is doing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-#[non_exhaustive]
-pub enum JobState {
-    Running,
-    /// It ended well.
-    Finished,
-    /// It failed, or ran out of time.
-    Failed,
-    /// The agent or the user stopped it, or Arko's exit did.
-    Stopped,
-    /// Arko stopped before it ended (a crash, or `arko -c` after one).
-    Interrupted,
-    /// A monitor that lasted as long as it was armed for.
-    Expired,
-}
-
-impl JobState {
-    pub fn is_running(self) -> bool {
-        self == Self::Running
-    }
-}
-
-/// A background job, as a line such as `index_create · 3 min · running`.
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[non_exhaustive]
-pub struct JobSummary {
-    /// Its ID, as the terminal tools name it.
-    pub id: String,
-    /// Whose it is, [`MAIN_AGENT`] or a worker's ID.
-    pub agent: String,
-    /// The call item that made it, while the transcript has it.
-    pub call: Option<u64>,
-    pub kind: JobKind,
-    /// The command, or the tool of a moved call.
-    pub label: String,
-    pub state: JobState,
-    /// When it started (Unix milliseconds). A moved call's job starts as it
-    /// moves.
-    pub started_at: i64,
-    pub ended_at: Option<i64>,
-    /// How it ended, in a few words, once it did ("exit 1", "timed out").
-    pub outcome: Option<String>,
-    /// What a monitor watches ("lines that match error|warn", "a check
-    /// every 15 s").
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub watching: Option<String>,
-    /// How many of its agent's notes a monitor's alerts went in.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub alerts: Option<u32>,
-    /// When a monitor ends, as last armed (Unix milliseconds).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub expires_at: Option<i64>,
 }
 
 /// A background job that started, for [`Feed::job_started`]. An app that

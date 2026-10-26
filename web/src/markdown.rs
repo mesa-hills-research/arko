@@ -1,5 +1,11 @@
 //! Replies in Markdown, as HTML. Raw HTML in the text shows as text, and
 //! links open only to web and mail addresses.
+//!
+//! A reply that streams is split into blocks. Once a block is finished (a
+//! closed code fence, or a paragraph, list, quote or table followed by a
+//! blank line and the start of something else), its HTML is kept, and only
+//! the open block at the end is read again as text comes. A table's last
+//! row shows once it's whole, so a table grows a row at a time.
 
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 
@@ -128,5 +134,196 @@ pub fn escape(html: &mut String, text: &str) {
             '"' => html.push_str("&quot;"),
             c => html.push(c),
         }
+    }
+}
+
+/// A streaming text's finished blocks and where its open block starts.
+#[derive(Default)]
+pub struct Blocks {
+    /// How many bytes of the text the finished blocks hold. A block never
+    /// ends inside a code fence, so the scan starts outside one.
+    consumed: usize,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Open {
+    Other,
+    List,
+    Quote,
+}
+
+impl Blocks {
+    /// Reads `text`, which grew from what was read before (or starts over
+    /// when it didn't). Returns the HTML of the blocks it finished now, and
+    /// of the open block. With `streaming`, a table's open last row is held.
+    pub fn update(&mut self, text: &str, streaming: bool) -> (Vec<String>, String) {
+        if text.len() < self.consumed || !text.is_char_boundary(self.consumed) {
+            *self = Blocks::default();
+        }
+        let mut finished = Vec::new();
+        let mut start = self.consumed;
+        let mut fence: Option<String> = None;
+        let mut open: Option<Open> = None;
+        let mut previous_blank = false;
+        let mut at = start;
+        // Only whole lines decide anything.
+        while let Some(end) = text[at..].find('\n').map(|end| at + end) {
+            let line = &text[at..end];
+            let trimmed = line.trim_start();
+            let top = trimmed.len() == line.len();
+            if let Some(marker) = &fence {
+                let closes = top
+                    && trimmed.starts_with(marker.as_str())
+                    && trimmed.trim_end().chars().all(|c| marker.starts_with(c));
+                if closes {
+                    // The fence closes, and its block is finished.
+                    fence = None;
+                    finished.push(to_html(&text[start..end + 1]));
+                    start = end + 1;
+                    open = None;
+                }
+                previous_blank = false;
+                at = end + 1;
+                continue;
+            }
+            if line.trim().is_empty() {
+                previous_blank = true;
+                at = end + 1;
+                continue;
+            }
+            let continues = match open {
+                Some(Open::List) => is_item(trimmed),
+                Some(Open::Quote) => trimmed.starts_with('>'),
+                _ => false,
+            };
+            if previous_blank && top && start < at && !continues {
+                finished.push(to_html(&text[start..at]));
+                start = at;
+                open = None;
+            }
+            if top && let Some(marker) = fence_marker(trimmed) {
+                // What came before the fence is a block of its own.
+                if start < at {
+                    finished.push(to_html(&text[start..at]));
+                }
+                start = at;
+                fence = Some(marker);
+            }
+            if open.is_none() {
+                open = Some(if is_item(trimmed) {
+                    Open::List
+                } else if trimmed.starts_with('>') {
+                    Open::Quote
+                } else {
+                    Open::Other
+                });
+            }
+            previous_blank = false;
+            at = end + 1;
+        }
+        self.consumed = start;
+        let tail = &text[start..];
+        // A fence still open shows plain, to the end.
+        let html = to_html(if streaming { without_open_row(tail) } else { tail });
+        (finished, html)
+    }
+}
+
+/// The marker of a code fence that `line` opens (three or more backticks or
+/// tildes).
+fn fence_marker(line: &str) -> Option<String> {
+    let c = line.chars().next().filter(|c| *c == '`' || *c == '~')?;
+    let count = line.chars().take_while(|x| *x == c).count();
+    (count >= 3).then(|| c.to_string().repeat(count))
+}
+
+fn is_item(line: &str) -> bool {
+    let mut chars = line.chars();
+    match chars.next() {
+        Some('-' | '*' | '+') => chars.next() == Some(' '),
+        Some(c) if c.is_ascii_digit() => {
+            let rest = line.trim_start_matches(|c: char| c.is_ascii_digit());
+            rest.starts_with(". ") || rest.starts_with(") ")
+        }
+        _ => false,
+    }
+}
+
+/// `text` without the open last row of a table it ends in: a line that
+/// starts with a pipe and has fewer cells than the header or no closing
+/// pipe yet.
+fn without_open_row(text: &str) -> &str {
+    let start = text.rfind('\n').map_or(0, |at| at + 1);
+    let last = text[start..].trim();
+    if !last.starts_with('|') || start == 0 {
+        return text;
+    }
+    let header = text[..start].lines().find(|line| line.trim_start().starts_with('|'));
+    let cells = |line: &str| line.trim().trim_matches('|').split('|').count();
+    let short = header.is_some_and(|header| cells(last) < cells(header));
+    if short || !last.ends_with('|') || last.len() < 2 {
+        &text[..start]
+    } else {
+        text
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Streams `text` a few bytes at a time, and returns every block's HTML
+    /// in order, the finished ones first.
+    fn stream(text: &str, step: usize) -> (Vec<String>, String) {
+        let mut blocks = Blocks::default();
+        let mut finished = Vec::new();
+        let mut tail = String::new();
+        let mut at = 0;
+        while at < text.len() {
+            at = (at + step).min(text.len());
+            while !text.is_char_boundary(at) {
+                at += 1;
+            }
+            let (done, open) = blocks.update(&text[..at], true);
+            finished.extend(done);
+            tail = open;
+        }
+        (finished, tail)
+    }
+
+    #[test]
+    fn markdown_reads_headings_emphasis_code_lists_tables_and_links() {
+        let html = to_html("# Title\n\nSome **bold**, *em* and `code`.\n\n- one\n- two\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n[x](https://e.com) [y](javascript:alert(1)) <b>raw</b>");
+        assert!(html.contains("<h3>Title</h3>"), "{html}");
+        assert!(html.contains("<strong>bold</strong>") && html.contains("<em>em</em>") && html.contains("<code>code</code>"));
+        assert!(html.contains("<ul><li>one</li>"));
+        assert!(html.contains("<table>") && html.contains("<td>1</td>"));
+        assert!(html.contains("href=\"https://e.com\""));
+        assert!(!html.contains("javascript"));
+        assert!(html.contains("&lt;b&gt;raw&lt;/b&gt;"));
+    }
+
+    #[test]
+    fn a_streamed_reply_reads_the_same_as_the_whole_one_and_keeps_its_finished_blocks() {
+        let text = "First paragraph\nstill first.\n\n```rust\nfn main() {}\n\nlet x = 1;\n```\nAfter the code.\n\n- a\n- b\n\n- c\n\nLast one.";
+        for step in [1, 3, 7, 50] {
+            let (finished, tail) = stream(text, step);
+            let joined = finished.concat() + &tail;
+            assert_eq!(joined, to_html(text), "step {step}");
+            assert!(finished.len() >= 3, "step {step}: {finished:?}");
+            assert!(finished[1].contains("<pre><code data-lang=\"rust\">"), "{finished:?}");
+        }
+    }
+
+    #[test]
+    fn a_streaming_tables_last_row_shows_once_its_whole() {
+        let mut blocks = Blocks::default();
+        let (_, html) = blocks.update("| a | b |\n|---|---|\n| 1 | 2 |\n| 3 |", true);
+        assert!(html.contains("<td>2</td>") && !html.contains("<td>3</td>"), "{html}");
+        let (_, html) = blocks.update("| a | b |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |", true);
+        assert!(html.contains("<td>4</td>"), "{html}");
+        // A text that's finished shows every row.
+        let (_, html) = Blocks::default().update("| a | b |\n|---|---|\n| 3 |", false);
+        assert!(html.contains("<td>3</td>"), "{html}");
     }
 }
