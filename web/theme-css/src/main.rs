@@ -245,10 +245,7 @@ fn syntax(theme: &Theme, indent: &str) -> String {
     for name in protocol::HIGHLIGHT_NAMES {
         let Some(style) = style(name) else { continue };
         let name = css_name(name);
-        if let Some(color) = style["color"]
-            .as_str()
-            .and_then(palette_color)
-        {
+        if let Some(color) = style["color"].as_str().and_then(palette_color) {
             css.push_str(&format!("{indent}--syn-{name}: {color};\n"));
         }
         if let Some(font_style) = style["font_style"]
