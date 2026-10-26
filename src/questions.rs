@@ -329,6 +329,20 @@ impl Book {
         (settled, items)
     }
 
+    /// Sets the current conversation's question `id` to `state`, whatever
+    /// it was. Returns its card.
+    pub(crate) fn set_state(&mut self, id: &str, state: QuestionState) -> Option<u64> {
+        let run = self.run;
+        let entry = self
+            .entries
+            .iter_mut()
+            .find(|entry| Some(entry.run) == run && entry.question.id == id)?;
+        entry.question.state = state;
+        let item = entry.question.item;
+        self.save();
+        Some(item)
+    }
+
     /// Gives the current conversation's questions of a restored card their
     /// new item, by their ids.
     pub(crate) fn restored(&mut self, ids: &[String], item: u64) -> Vec<AgentQuestion> {

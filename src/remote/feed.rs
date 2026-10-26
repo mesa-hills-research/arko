@@ -2557,6 +2557,30 @@ impl Feed {
         id
     }
 
+    /// The main agent asks `asked` (`waits`: it waits for the answer), in
+    /// the current conversation, as when it calls `ask_user`: their card
+    /// goes in the transcript, and its item is returned. For an app's
+    /// tests.
+    #[doc(hidden)]
+    pub fn ask_questions(&self, asked: &[crate::questions::AskedQuestion], waits: bool) -> u64 {
+        let run = self.lock().questions.run().unwrap_or_else(Uuid::nil);
+        self.ask(run, asked, waits)
+    }
+
+    /// Sets the current conversation's question `id` to `state`, as an
+    /// answer, a dismissal or the agent's closing does: its card and the
+    /// activity follow. For an app's tests.
+    #[doc(hidden)]
+    pub fn set_question_state(&self, id: &str, state: crate::questions::QuestionState) {
+        {
+            let mut state_now = self.lock();
+            if let Some(item) = state_now.questions.set_state(id, state) {
+                self.refresh_card(&mut state_now, item);
+            }
+        }
+        self.question_activity();
+    }
+
     /// The main agent's questions of the current conversation, in the
     /// order asked, whatever became of them.
     pub fn questions(&self) -> Vec<crate::questions::AgentQuestion> {
@@ -4690,6 +4714,33 @@ mod tests {
         // Another conversation's questions aren't shown.
         feed.questions_run(Some(Uuid::new_v4()));
         assert!(feed.questions().is_empty());
+    }
+
+    /// An app's tests ask questions and set their states, and the card and
+    /// the activity follow.
+    #[test]
+    fn apps_tests_ask_and_settle_questions() {
+        use crate::questions::QuestionState;
+        let feed = Feed::new("main");
+        let card = feed.ask_questions(&[asked("q1", "Tabs or spaces?")], true);
+        assert_eq!(feed.activity().question.unwrap().id, card);
+        assert!(feed.open_questions()[0].waits);
+        feed.set_question_state(
+            "q1",
+            QuestionState::Answered {
+                answer: "Spaces".into(),
+            },
+        );
+        assert!(feed.open_questions().is_empty());
+        assert_eq!(feed.activity().question, None);
+        let (snapshot, _) = feed.subscribe();
+        let item = snapshot.items.iter().find(|item| item.id == card).unwrap();
+        assert_eq!(
+            item.questions.as_ref().unwrap()[0].state,
+            QuestionState::Answered {
+                answer: "Spaces".into()
+            }
+        );
     }
 
     /// A resumed session's question cards, made from its conversation,
