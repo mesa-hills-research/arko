@@ -1657,30 +1657,44 @@ fn entry_lines(
             wrap::prefixed(lines, mark("✉", theme.dim()), blank())
         }
         Kind::Question => {
-            let mut lines = vec![Wrapped::line(vec![Span::styled(
-                "The agent asks".to_string(),
-                theme.accent().add_modifier(Modifier::BOLD),
-            )])];
-            match &item.questions {
-                // Each question, with what became of it.
-                Some(questions) => {
-                    for question in questions {
-                        let text = if crate::questions::is_agent_id(&question.id) {
-                            format!("{} {}", question.id, question.question)
-                        } else {
-                            question.question.clone()
-                        };
-                        lines.extend(markdown::render(&text, theme.text(), theme, inner));
-                        if let Some(state) = question_state(&question.state) {
-                            lines.extend(
-                                wrap::wrap(&[Span::styled(rendered(state), theme.dim())], inner, 0)
-                                    .into_iter()
-                                    .map(Wrapped::line),
-                            );
-                        }
-                    }
-                }
-                None => lines.extend(markdown::render(&item.text, theme.text(), theme, inner)),
+            // One quiet line while its questions are open (the answer panel
+            // has them), then the record of what became of each.
+            let Some(questions) = &item.questions else {
+                // Asked before questions had ids, or no longer kept.
+                let mut lines = vec![Wrapped::line(vec![Span::styled(
+                    "Arko asked".to_string(),
+                    theme.dim(),
+                )])];
+                lines.extend(markdown::render(&item.text, theme.text(), theme, inner));
+                return wrap::prefixed(lines, mark("?", theme.accent()), blank());
+            };
+            let mut lines: Vec<Wrapped> =
+                wrap::wrap(&[Span::styled(rendered(&item.text), theme.dim())], inner, 0)
+                    .into_iter()
+                    .map(Wrapped::line)
+                    .collect();
+            for question in questions {
+                let Some(outcome) = outcome(&question.state) else {
+                    continue;
+                };
+                lines.extend(markdown::render(
+                    &question.numbered(),
+                    theme.text(),
+                    theme,
+                    inner,
+                ));
+                lines.extend(
+                    wrap::wrap(
+                        &[Span::styled(rendered(&outcome), theme.dim())],
+                        inner.saturating_sub(2).max(4),
+                        0,
+                    )
+                    .into_iter()
+                    .map(|mut spans| {
+                        spans.insert(0, Span::raw("  "));
+                        Wrapped::line(spans)
+                    }),
+                );
             }
             wrap::prefixed(lines, mark("?", theme.accent()), blank())
         }
@@ -2194,17 +2208,17 @@ fn heading_lines(worker: &WorkerSummary, theme: &Theme, width: usize) -> Vec<Wra
     )
 }
 
-/// What became of a question, as its card says it under the question
-/// (`None` while it is open).
-fn question_state(state: &crate::questions::QuestionState) -> Option<String> {
+/// What became of a question, as its card's record says it under the
+/// question (`None` while it is open).
+fn outcome(state: &crate::questions::QuestionState) -> Option<String> {
     use crate::questions::QuestionState;
     Some(match state {
         QuestionState::Open => return None,
-        QuestionState::Answered { answer } => format!("answered · {answer}"),
-        QuestionState::AnsweredInMessage => "answered in your message".to_string(),
-        QuestionState::Closed { why: Some(why) } => format!("closed by the agent · {why}"),
-        QuestionState::Closed { why: None } => "closed by the agent".to_string(),
-        QuestionState::Dismissed => "dismissed".to_string(),
+        QuestionState::Answered { answer } => answer.clone(),
+        QuestionState::AnsweredInMessage => "Answered in your message".to_string(),
+        QuestionState::Closed { why: Some(why) } => format!("Arko closed it. {}", why.trim()),
+        QuestionState::Closed { why: None } => "Arko closed it".to_string(),
+        QuestionState::Dismissed => "Dismissed".to_string(),
     })
 }
 
@@ -2238,24 +2252,32 @@ mod tests {
         Filter::Main(View::Full)
     }
 
-    /// A question card shows each question with what became of it, and
-    /// changes as that does.
+    /// A question card is one quiet line while its questions are open (the
+    /// answer panel has them), and each question settled joins it with
+    /// what became of it, numbered as the panel numbered it.
     #[test]
-    fn a_question_card_shows_each_questions_state() {
+    fn a_question_card_is_a_line_until_its_questions_settle() {
         use crate::questions::QuestionState;
         let mut t = Transcript::new();
-        let mut card = item(1, Kind::Question, "q1 Tabs or spaces?\nq2 Push now?");
+        let mut card = item(1, Kind::Question, "Arko asked 2 questions");
         let mut questions = crate::tui::app::tests::asking().questions;
         questions[1].question = "Push now?".into();
         card.questions = Some(questions.clone());
         t.apply(Update::Item(card.clone()));
-        assert_eq!(
-            rows(&mut t, &full(), 40, 3),
-            ["? The agent asks", "  q1 Tabs or spaces?", "  q2 Push now?"]
-        );
+        assert_eq!(rows(&mut t, &full(), 40, 1), ["? Arko asked 2 questions"]);
         questions[0].state = QuestionState::Answered {
             answer: "Spaces".into(),
         };
+        card.questions = Some(questions.clone());
+        t.apply(Update::Change(card.clone()));
+        assert_eq!(
+            rows(&mut t, &full(), 40, 3),
+            [
+                "? Arko asked 2 questions",
+                "  1. Tabs or spaces?",
+                "    Spaces",
+            ]
+        );
         questions[1].state = QuestionState::Closed {
             why: Some("Found it".into()),
         };
@@ -2264,11 +2286,11 @@ mod tests {
         assert_eq!(
             rows(&mut t, &full(), 40, 5),
             [
-                "? The agent asks",
-                "  q1 Tabs or spaces?",
-                "  answered · Spaces",
-                "  q2 Push now?",
-                "  closed by the agent · Found it"
+                "? Arko asked 2 questions",
+                "  1. Tabs or spaces?",
+                "    Spaces",
+                "  2. Push now?",
+                "    Arko closed it. Found it"
             ]
         );
     }

@@ -2,10 +2,14 @@
 //! message box. It opens by itself when questions come while the user isn't
 //! typing, else a chip says so, and Alt+Q opens it. Each question shows its
 //! choices as chips that number keys pick, an Other field and "You decide",
-//! and one "Anything else" box comes last. Enter sends what's filled in.
-//! Esc answers in chat instead: the questions are attached to the message
-//! box ("Replying to 2 questions"), and Backspace in an empty box takes them
+//! and one "Anything else" box comes last. An approval shows what it
+//! approves, with Save and Don't save. Enter sends what's filled in. Esc
+//! answers in chat instead: the questions are attached to the message box
+//! ("Replying to 2 questions"), and Backspace in an empty box takes them
 //! off. Ctrl+N dismisses them ("Not now").
+//!
+//! While a question is open, only the panel shows it. Its card in the
+//! transcript is one quiet line until then (see `transcript`).
 
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
@@ -19,7 +23,7 @@ use ratatui::widgets::{Block, Borders, Clear};
 
 use super::app::{App, Effect};
 use super::markdown;
-use super::overlay::hints;
+use super::overlay::{Overlay, hints};
 use super::select::Docked;
 use super::wrap;
 use crate::questions::{AgentQuestion, Answer, Answers, QuestionAnswer};
@@ -56,9 +60,12 @@ impl Draft {
 pub struct Panel {
     /// The panel shows and has the keys.
     pub open: bool,
-    /// The row with the keys: a question (its place among the open ones),
-    /// or "Anything else" after them.
+    /// The question with the keys (its place among the open ones), or
+    /// "Anything else" after them.
     pub focus: usize,
+    /// The focused question's Other field has the keys, not its chips:
+    /// digits are text there.
+    pub typing: bool,
     /// What is filled in, by question.
     pub drafts: HashMap<String, Draft>,
     pub anything_else: String,
@@ -74,6 +81,12 @@ pub struct Panel {
     pub rung: HashSet<String>,
     /// New questions came while the window wasn't focused: the bell rings.
     pub ring: bool,
+    /// How many lines the panel is scrolled down from the focused
+    /// question's start (PgDn), for a long question.
+    pub scroll: usize,
+    /// The window Alt+Q opened the panel over, which comes back when the
+    /// panel closes.
+    pub behind: Option<Overlay>,
 }
 
 /// The chip above the message box, when the panel is closed.
@@ -103,6 +116,12 @@ impl Chip {
             Chip::Open(count) => format!("{count} open questions"),
         }
     }
+}
+
+/// Whether the Other field of `question` takes the keys when it gets the
+/// focus: it has no choices to pick.
+fn types_first(question: &AgentQuestion) -> bool {
+    question.choices.is_empty() && question.approval.is_none()
 }
 
 impl App {
@@ -154,7 +173,9 @@ impl App {
             self.panel.rung.extend(open.iter().cloned());
         }
         if open.is_empty() {
-            self.panel.open = false;
+            if self.panel.open {
+                self.close_panel();
+            }
             self.panel.anything_else.clear();
             return;
         }
@@ -174,7 +195,9 @@ impl App {
             self.open_panel_at(first);
         }
         let last = self.open_questions().len();
-        self.panel.focus = self.panel.focus.min(last);
+        if self.panel.focus > last {
+            self.focus_on(last);
+        }
     }
 
     /// Whether the bell rings for new questions (once).
@@ -183,11 +206,15 @@ impl App {
     }
 
     /// Alt+Q: the panel opens (or keeps the keys), on the first question
-    /// not filled in.
+    /// not filled in. Over a window, the window comes back when the panel
+    /// closes.
     pub fn open_panel(&mut self) {
         if self.open_questions().is_empty() {
             self.say("No open questions");
             return;
+        }
+        if let Some(overlay) = self.overlay.take() {
+            self.panel.behind = Some(overlay);
         }
         let first = self
             .open_questions()
@@ -202,9 +229,23 @@ impl App {
         self.open_panel_at(first);
     }
 
+    /// The panel opens on the first open question of the card `item` (its
+    /// line in the transcript was clicked). False when it has none open.
+    pub(super) fn open_card(&mut self, item: u64) -> bool {
+        let Some(at) = self
+            .open_questions()
+            .iter()
+            .position(|question| question.item == item)
+        else {
+            return false;
+        };
+        self.open_panel_at(at);
+        true
+    }
+
     fn open_panel_at(&mut self, focus: usize) {
         self.panel.open = true;
-        self.panel.focus = focus;
+        self.focus_on(focus);
         // Attached questions are answered here now.
         self.panel.attached.clear();
         let ids: Vec<String> = self
@@ -215,10 +256,29 @@ impl App {
         self.panel.seen.extend(ids);
     }
 
+    /// The question at `at` (or "Anything else" after them) gets the keys,
+    /// in its chips, or in its Other field when it has no choices.
+    pub(super) fn focus_on(&mut self, at: usize) {
+        self.panel.focus = at;
+        self.panel.scroll = 0;
+        self.panel.typing = self.open_questions().get(at).is_some_and(types_first);
+    }
+
+    /// The panel closes, and the window it opened over comes back.
+    pub(super) fn close_panel(&mut self) {
+        self.panel.open = false;
+        self.panel.scroll = 0;
+        if let Some(overlay) = self.panel.behind.take()
+            && self.overlay.is_none()
+        {
+            self.overlay = Some(overlay);
+        }
+    }
+
     /// Esc and "Answer in chat": the panel closes and the open questions
     /// are attached to the message box.
     fn answer_in_chat(&mut self) {
-        self.panel.open = false;
+        self.close_panel();
         self.panel.attached = self
             .open_questions()
             .iter()
@@ -239,15 +299,20 @@ impl App {
     /// "Not now": the open questions are dismissed, and the agent goes on
     /// with its defaults.
     pub(super) fn not_now(&mut self) {
-        if self.open_questions().is_empty() {
+        let ids: Vec<String> = self
+            .open_questions()
+            .iter()
+            .map(|question| question.id.clone())
+            .collect();
+        if ids.is_empty() {
             return;
         }
-        self.panel.open = false;
+        self.close_panel();
         self.panel.attached.clear();
         self.panel.drafts.clear();
         self.panel.anything_else.clear();
-        self.effects_push(Effect::Input(Input::DismissQuestions(Vec::new())));
-        self.say("Dismissed. The agent goes on with its defaults");
+        self.effects_push(Effect::Input(Input::DismissQuestions(ids)));
+        self.say("Dismissed. Arko goes on with its defaults");
     }
 
     /// Enter in the panel: sends what's filled in. The questions left
@@ -271,7 +336,7 @@ impl App {
             self.panel.drafts.remove(&given.id);
         }
         self.panel.anything_else.clear();
-        self.panel.open = false;
+        self.close_panel();
         self.effects_push(Effect::Input(Input::AnswerQuestions(Answers {
             answers,
             anything_else,
@@ -299,6 +364,7 @@ impl App {
     /// A paste while the panel has the keys: into its field, on one line.
     pub(super) fn panel_paste(&mut self, text: &str) {
         let text = text.replace(['\r', '\n'], " ");
+        self.panel.typing = true;
         self.field().push_str(&text);
         self.typed_in_panel();
     }
@@ -339,54 +405,97 @@ impl App {
         }
     }
 
+    /// ↓ and Tab: from a question's chips to its Other field, and from
+    /// there to the next question (or "Anything else", then the first).
+    fn focus_down(&mut self) {
+        let count = self.open_questions().len();
+        if self.panel.focus < count && !self.panel.typing {
+            self.panel.typing = true;
+        } else {
+            self.focus_on((self.panel.focus + 1) % (count + 1));
+        }
+    }
+
+    /// ↑ and Shift+Tab: the other way.
+    fn focus_up(&mut self) {
+        let count = self.open_questions().len();
+        if self.panel.focus < count && self.panel.typing {
+            self.panel.typing = false;
+        } else {
+            self.focus_on((self.panel.focus + count) % (count + 1));
+            self.panel.typing = self.panel.focus < count;
+        }
+    }
+
     /// A key while the panel has the keys. True when it took it.
     pub(super) fn panel_key(&mut self, key: KeyEvent) -> bool {
         if !self.panel.open || self.open_questions().is_empty() {
-            self.panel.open = false;
+            self.close_panel();
             return false;
         }
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let alt = key.modifiers.contains(KeyModifiers::ALT);
-        let rows = self.open_questions().len() + 1;
+        let questions = self.open_questions();
+        let chip_count = questions
+            .get(self.panel.focus)
+            .map(|question| chips(question).len());
         match key.code {
             KeyCode::Esc => self.answer_in_chat(),
             KeyCode::Char('q') if alt => {}
             KeyCode::Char('n') if ctrl => self.not_now(),
             KeyCode::Enter if !alt && !ctrl => self.send_answers(),
-            KeyCode::Down | KeyCode::Tab => self.panel.focus = (self.panel.focus + 1) % rows,
-            KeyCode::Up | KeyCode::BackTab => {
-                self.panel.focus = (self.panel.focus + rows - 1) % rows;
-            }
-            KeyCode::Backspace => {
+            KeyCode::Down | KeyCode::Tab => self.focus_down(),
+            KeyCode::Up | KeyCode::BackTab => self.focus_up(),
+            KeyCode::PageDown => self.panel.scroll += 5,
+            KeyCode::PageUp => self.panel.scroll = self.panel.scroll.saturating_sub(5),
+            KeyCode::Backspace if self.panel.typing || chip_count.is_none() => {
                 self.field().pop();
             }
+            // In the chips, a number picks one.
             KeyCode::Char(c @ '1'..='9')
-                if !ctrl && !alt && self.panel.focus < rows - 1 && self.field().is_empty() =>
+                if !ctrl
+                    && !alt
+                    && !self.panel.typing
+                    && chip_count.is_some_and(|count| (c as usize - '1' as usize) < count) =>
             {
                 self.pick(c as usize - '1' as usize);
             }
+            // Anything else typed goes in the Other field.
             KeyCode::Char(c) if !ctrl && !alt => {
+                self.panel.typing = true;
                 self.field().push(c);
                 self.typed_in_panel();
             }
             // Keys that work whatever the panel shows.
             KeyCode::Char('c' | 'l' | 'o') if ctrl => return false,
-            KeyCode::PageUp | KeyCode::PageDown => return false,
             _ => {}
         }
         true
     }
 }
 
-/// The chips a question shows: its choices, then "You decide" with its
-/// default, each with its number key.
+/// The chips a question shows, each with its number key: its choices, then
+/// "You decide" with its default. An approval has Save and Don't save.
 fn chips(question: &AgentQuestion) -> Vec<String> {
     let mut chips = question.choices.clone();
-    chips.push(match &question.default {
-        Some(default) => format!("You decide ({default})"),
-        None => "You decide".to_string(),
-    });
+    if question.approval.is_none() {
+        chips.push(match &question.default {
+            Some(default) => format!("You decide ({default})"),
+            None => "You decide".to_string(),
+        });
+    }
     chips
+}
+
+/// The panel's title: "Arko asks 2 questions".
+fn title(questions: &[AgentQuestion]) -> String {
+    let approvals = questions.iter().all(|question| question.approval.is_some());
+    match (questions.len(), approvals) {
+        (1, true) => " Arko asks to save a worker profile ".to_string(),
+        (count, true) => format!(" Arko asks to save {count} worker profiles "),
+        (1, false) => " Arko asks ".to_string(),
+        (count, false) => format!(" Arko asks {count} questions "),
+    }
 }
 
 /// The answer panel, above the status line. Returns the rows it takes.
@@ -404,47 +513,54 @@ pub fn draw_panel(frame: &mut Frame, app: &mut App, above: Rect, previous: Optio
     // The rows of each question, to keep the focused one in sight.
     let mut spans_of: Vec<(usize, usize)> = Vec::new();
     let mut cursor: Option<(usize, u16)> = None;
+    let marker = crate::glyphs::render("› ").into_owned();
     for (at, question) in questions.iter().enumerate() {
         let focused = app.panel.focus == at;
+        // The questions of another ask come after a blank line.
+        if at > 0 && questions[at - 1].item != question.item {
+            lines.push(Line::default());
+        }
         let first = lines.len();
-        let marker = if focused {
-            crate::glyphs::render("› ").into_owned()
-        } else {
-            "  ".to_string()
-        };
         let style = if focused {
             theme.accent().add_modifier(Modifier::BOLD)
         } else {
             theme.text()
         };
-        // Arko's own question shows without its id.
-        let id = if crate::questions::is_agent_id(&question.id) {
-            format!("{} ", question.id)
-        } else {
-            String::new()
+        let number = question
+            .number
+            .map(|number| format!("{number}. "))
+            .unwrap_or_default();
+        let indent = 2 + wrap::width(&number);
+        let width = inner_width.saturating_sub(indent).max(4);
+        // An approval says what it approves up front, and its instructions
+        // follow its choices.
+        let mut tail: Vec<wrap::Wrapped> = Vec::new();
+        let mut text = match &question.approval {
+            Some(approval) => {
+                let mut text = markdown::render(&approval.title(), style, &theme, width);
+                for part in [approval.runs_on(), approval.description.clone()] {
+                    text.extend(markdown::render(&part, theme.text(), &theme, width));
+                }
+                if !approval.instructions.is_empty() {
+                    tail.extend(markdown::render("Instructions", theme.dim(), &theme, width));
+                    for line in approval.instructions.lines() {
+                        tail.extend(
+                            wrap::wrap(&[Span::styled(line.to_string(), theme.text())], width, 0)
+                                .into_iter()
+                                .map(wrap::Wrapped::line),
+                        );
+                    }
+                }
+                text
+            }
+            None => markdown::render(&question.question, style, &theme, width),
         };
-        let indent = 2 + wrap::width(&id);
-        let mut text = markdown::render(
-            &question.question,
-            style,
-            &theme,
-            inner_width.saturating_sub(indent).max(4),
-        );
-        // A long question is cut, leaving room for its chips.
-        let most = room.saturating_sub(3).max(1);
-        if text.len() > most {
-            text.truncate(most.saturating_sub(1));
-            text.push(wrap::Wrapped::line(vec![Span::styled(
-                crate::glyphs::render("… (the whole question is in the transcript)").into_owned(),
-                theme.dim(),
-            )]));
+        if text.is_empty() {
+            text.push(wrap::Wrapped::line(Vec::new()));
         }
         for (row, wrapped) in text.into_iter().enumerate() {
             let mut spans = if row == 0 {
-                vec![
-                    Span::styled(marker.clone(), theme.accent()),
-                    Span::styled(id.clone(), theme.dim()),
-                ]
+                vec![Span::raw("  "), Span::styled(number.clone(), style)]
             } else {
                 vec![Span::raw(" ".repeat(indent))]
             };
@@ -457,7 +573,15 @@ pub fn draw_panel(frame: &mut Frame, app: &mut App, above: Rect, previous: Optio
             .get(&question.id)
             .cloned()
             .unwrap_or_default();
-        let mut row: Vec<Span<'static>> = vec![Span::raw("    ")];
+        let on_chips = focused && !app.panel.typing;
+        let mut row: Vec<Span<'static>> = vec![Span::styled(
+            if on_chips {
+                format!("  {marker}")
+            } else {
+                "    ".to_string()
+            },
+            theme.accent(),
+        )];
         for (number, chip) in chips(question).into_iter().enumerate() {
             let on = if number == question.choices.len() {
                 draft.you_decide
@@ -472,29 +596,44 @@ pub fn draw_panel(frame: &mut Frame, app: &mut App, above: Rect, previous: Optio
             lines.push(Line::from(wrapped));
         }
         if focused || !draft.other.is_empty() {
-            let label = "    Other  ";
-            let mut other = vec![Span::styled(label.to_string(), theme.dim())];
+            let typing = focused && app.panel.typing;
+            let label = if typing {
+                format!("  {marker}Other  ")
+            } else {
+                "    Other  ".to_string()
+            };
+            let mut other = vec![Span::styled(
+                label.clone(),
+                if typing { theme.accent() } else { theme.dim() },
+            )];
             if draft.other.is_empty() && focused {
-                other.push(Span::styled(
-                    "type an answer of your own".to_string(),
-                    theme.dim(),
-                ));
+                let hint = if question.approval.is_some() {
+                    "tell Arko what to change"
+                } else {
+                    "type an answer of your own"
+                };
+                other.push(Span::styled(hint.to_string(), theme.dim()));
             } else {
                 other.push(Span::styled(draft.other.clone(), theme.text()));
             }
-            if focused {
+            if typing {
                 cursor = Some((
                     lines.len(),
-                    (wrap::width(label) + wrap::width(&draft.other)) as u16,
+                    (wrap::width(&label) + wrap::width(&draft.other)) as u16,
                 ));
             }
             lines.push(Line::from(other));
+        }
+        for wrapped in tail {
+            let mut spans = vec![Span::raw(" ".repeat(indent))];
+            spans.extend(wrapped.spans);
+            lines.push(Line::from(spans));
         }
         spans_of.push((first, lines.len()));
     }
     let focused_else = app.panel.focus >= questions.len();
     let label = if focused_else {
-        crate::glyphs::render("› Anything else  ").into_owned()
+        format!("{marker}Anything else  ")
     } else {
         "  Anything else  ".to_string()
     };
@@ -516,28 +655,31 @@ pub fn draw_panel(frame: &mut Frame, app: &mut App, above: Rect, previous: Optio
         ),
         Span::styled(app.panel.anything_else.clone(), theme.text()),
     ]));
+    // The focused question in sight from its start, and further down the
+    // page (PgDn) for what doesn't fit.
     let (focus_first, focus_end) = spans_of[app.panel.focus.min(spans_of.len() - 1)];
-    let mut skip = 0;
-    if lines.len() > room {
-        skip = focus_end.saturating_sub(room).min(focus_first);
-    }
+    let last_skip = lines.len().saturating_sub(room);
+    let skip = focus_end.saturating_sub(room).min(focus_first);
+    app.panel.scroll = app.panel.scroll.min(last_skip - skip.min(last_skip));
+    let skip = (skip + app.panel.scroll).min(last_skip);
     let shown: Vec<Line<'static>> = lines.iter().skip(skip).take(room).cloned().collect();
+    let mut pages: Vec<(&str, &str)> = Vec::new();
+    if skip > 0 {
+        pages.push(("PgUp", "more"));
+    }
+    if skip + room < lines.len() {
+        pages.push(("PgDn", "more"));
+    }
     let height = (shown.len() as u16 + 2).min(above.height);
     let rect = Rect::new(above.x, above.bottom() - height, above.width, height);
     frame.render_widget(Clear, rect);
-    let count = questions.len();
-    let title = if count == 1 {
-        " Arko asks ".to_string()
-    } else {
-        format!(" Arko asks {count} questions ")
-    };
     let block = Block::default()
         .borders(Borders::ALL)
         .border_set(theme.borders())
         .border_style(theme.accent())
         .style(theme.base())
         .title(Line::from(Span::styled(
-            title,
+            title(&questions),
             theme.accent().add_modifier(Modifier::BOLD),
         )));
     let inner = block.inner(rect);
@@ -585,15 +727,13 @@ pub fn draw_panel(frame: &mut Frame, app: &mut App, above: Rect, previous: Optio
             y: inner.y + (row - skip) as u16,
         });
     }
+    pages.extend([
+        ("Enter", "send"),
+        ("Esc", "answer in chat"),
+        ("Ctrl+N", "not now"),
+    ]);
     let keys = Line::from({
-        let mut spans = hints(
-            &theme,
-            &[
-                ("Enter", "send"),
-                ("Esc", "answer in chat"),
-                ("Ctrl+N", "not now"),
-            ],
-        );
+        let mut spans = hints(&theme, &pages);
         spans.push(Span::raw(" "));
         spans
     });
