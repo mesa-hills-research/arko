@@ -1927,7 +1927,7 @@ mod tests {
             (
                 SettingsRow::BuiltinSkill(0),
                 "ponytail",
-                "Finish the whole task with the smallest change",
+                "Finish the whole task with the best change",
             ),
         ] {
             let at = app
