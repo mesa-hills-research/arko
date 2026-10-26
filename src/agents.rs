@@ -818,10 +818,10 @@ fn tool_instructions(settings: &AgentSettings, worker: bool) -> String {
     let monitors = match (settings.monitors, worker) {
         (false, _) => "",
         (true, false) => {
-            " To be told when a server's or a build's output shows an error, or when a check starts passing (`curl -sf localhost:3000/health`), use `monitor_start` instead of polling. Its alerts reach you as notes while you work, and start a turn while you wait for the user."
+            " Use `monitor_start` instead of polling, for anything you would otherwise check again and again: a server's or a build's output showing an error, a check that starts passing (`curl -sf localhost:3000/health`), free disk space or memory falling under a limit while big builds or workers run, a file appearing, a CI run ending. Start one as soon as the risk or the wait begins, without being asked. Its alerts reach you as notes while you work, and start a turn while you wait for the user."
         }
         (true, true) => {
-            " To be told when a server's or a build's output shows an error, or when a check starts passing (`curl -sf localhost:3000/health`), use `monitor_start` instead of polling. Its alerts reach you as notes while you work. Your monitors stop when your run ends."
+            " Use `monitor_start` instead of polling, for anything you would otherwise check again and again: a server's or a build's output showing an error, a check that starts passing (`curl -sf localhost:3000/health`), free disk space or memory falling under a limit while big builds run, a file appearing, a CI run ending. Start one as soon as the risk or the wait begins, without being asked. Its alerts reach you as notes while you work. Your monitors stop when your run ends."
         }
     };
     let mut text = format!(
@@ -1565,7 +1565,11 @@ mod tests {
                     assert_eq!(names.iter().any(|name| name == tool), offered, "{tool}");
                 }
                 let told = |text: &str| config.instructions.contains(text);
-                assert_eq!(told("use `monitor_start` instead of polling."), offered);
+                assert_eq!(told("Use `monitor_start` instead of polling"), offered);
+                assert_eq!(
+                    told("free disk space or memory falling under a limit"),
+                    offered
+                );
                 // Only the main agent waits for the user. A worker's
                 // monitors stop with its run.
                 assert_eq!(
