@@ -406,7 +406,9 @@ fn apply_theme(slug: Option<&str>) {
                 && let Ok(link) = document().create_element("link")
             {
                 let _ = link.set_attribute("rel", "stylesheet");
-                let _ = link.set_attribute("href", "/all-themes.css");
+                // (With the build's version, as boot.js gives it.)
+                let version = root.get_attribute("data-version").unwrap_or_default();
+                let _ = link.set_attribute("href", &format!("/all-themes.css{version}"));
                 let _ = link.set_attribute("id", "all-themes");
                 if let Some(head) = document().head() {
                     let _ = head.append_child(&link);

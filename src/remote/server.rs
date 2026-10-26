@@ -9,12 +9,12 @@
 use std::collections::{HashMap, VecDeque};
 use std::convert::Infallible;
 use std::net::{IpAddr, SocketAddr};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use axum::Router;
 use axum::body::Bytes;
-use axum::extract::{ConnectInfo, DefaultBodyLimit, State};
+use axum::extract::{ConnectInfo, DefaultBodyLimit, RawQuery, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
@@ -157,23 +157,79 @@ impl Drop for Server {
     }
 }
 
+/// The page's files that the HTML and `boot.js` ask for with the build's
+/// version, and their types.
+const BUILT: [(&str, &str); 6] = [
+    ("boot.js", "text/javascript; charset=utf-8"),
+    ("arko-web.js", "text/javascript; charset=utf-8"),
+    ("arko-web_bg.wasm", "application/wasm"),
+    ("app.css", "text/css; charset=utf-8"),
+    ("themes.css", "text/css; charset=utf-8"),
+    ("all-themes.css", "text/css; charset=utf-8"),
+];
+
+/// The build's version: a hash of the page's files, so another build's
+/// files have other addresses, and a browser never mixes the two.
+static VERSION: LazyLock<String> = LazyLock::new(|| {
+    version_of(&[
+        BOOT.as_bytes(),
+        SCRIPT.as_bytes(),
+        WASM,
+        STYLE.as_bytes(),
+        THEMES.as_bytes(),
+        ALL_THEMES.as_bytes(),
+    ])
+});
+
+/// The page's HTML, asking for its files with the build's version.
+static VERSIONED_INDEX: LazyLock<String> = LazyLock::new(|| {
+    BUILT.iter().fold(INDEX.to_string(), |index, (name, _)| {
+        index.replace(&format!("/{name}"), &format!("/{name}?v={}", *VERSION))
+    })
+});
+
+fn version_of(files: &[&[u8]]) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::hash::DefaultHasher::new();
+    files.hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
+}
+
 fn router(app: Arc<App>) -> Router {
-    const SCRIPT_KIND: &str = "text/javascript; charset=utf-8";
-    const STYLE_KIND: &str = "text/css; charset=utf-8";
-    let files: [(&str, &'static [u8], &'static str); 7] = [
-        ("/", INDEX.as_bytes(), "text/html; charset=utf-8"),
-        ("/boot.js", BOOT.as_bytes(), SCRIPT_KIND),
-        ("/arko-web.js", SCRIPT.as_bytes(), SCRIPT_KIND),
-        ("/arko-web_bg.wasm", WASM, "application/wasm"),
-        ("/app.css", STYLE.as_bytes(), STYLE_KIND),
-        ("/themes.css", THEMES.as_bytes(), STYLE_KIND),
-        ("/all-themes.css", ALL_THEMES.as_bytes(), STYLE_KIND),
-    ];
-    let mut router = Router::new();
-    for (path, bytes, kind) in files {
+    let mut router = Router::new().route(
+        "/",
+        get(|headers: HeaderMap| async move {
+            packed(
+                &headers,
+                VERSIONED_INDEX.as_bytes(),
+                "text/html; charset=utf-8",
+            )
+        }),
+    );
+    for (name, kind) in BUILT {
+        let bytes: &'static [u8] = match name {
+            "boot.js" => BOOT.as_bytes(),
+            "arko-web.js" => SCRIPT.as_bytes(),
+            "arko-web_bg.wasm" => WASM,
+            "app.css" => STYLE.as_bytes(),
+            "themes.css" => THEMES.as_bytes(),
+            _ => ALL_THEMES.as_bytes(),
+        };
         router = router.route(
-            path,
-            get(move |headers: HeaderMap| async move { packed(&headers, bytes, kind) }),
+            &format!("/{name}"),
+            get(
+                move |headers: HeaderMap, RawQuery(query): RawQuery| async move {
+                    let mut response = packed(&headers, bytes, kind);
+                    // Asked for with this build's version, a file never changes.
+                    if query.is_some_and(|query| query == format!("v={}", *VERSION)) {
+                        response.headers_mut().insert(
+                            header::CACHE_CONTROL,
+                            HeaderValue::from_static("public, max-age=31536000, immutable"),
+                        );
+                    }
+                    response
+                },
+            ),
         );
     }
     router
@@ -1407,6 +1463,41 @@ mod tests {
         assert!(INDEX.contains("<link href=/icon-small.svg rel=icon"));
         assert!(INDEX.contains("<link href=/apple-touch-icon.png rel=apple-touch-icon>"));
         assert!(page_has("/icon.svg"));
+    }
+
+    /// The page asks for its files with the build's version, a hash of
+    /// their bytes, so another build's files have other addresses, and a
+    /// browser never mixes two builds. With the version a file is kept for
+    /// good, and the HTML never is.
+    #[tokio::test]
+    async fn the_pages_files_have_the_builds_version_in_their_address() {
+        for (name, _) in BUILT.iter().filter(|(name, _)| *name != "all-themes.css") {
+            assert!(
+                VERSIONED_INDEX.contains(&format!("/{name}?v={}", *VERSION)),
+                "{name}"
+            );
+        }
+        assert!(BOOT.contains("import.meta.url).search"));
+        let version = |files: &[&str]| {
+            version_of(&files.iter().map(|file| file.as_bytes()).collect::<Vec<_>>())
+        };
+        assert_ne!(version(&["one build"]), version(&["another"]));
+        assert_ne!(version(&["ab", "c"]), version(&["a", "bc"]));
+
+        let feed = Feed::new("main");
+        let served = serve(&feed);
+        let page = served.get("/", None).await;
+        assert_eq!(page.headers()[header::CACHE_CONTROL], "no-store");
+        let script = served
+            .get(&format!("/arko-web.js?v={}", *VERSION), None)
+            .await;
+        assert_eq!(
+            script.headers()[header::CACHE_CONTROL],
+            "public, max-age=31536000, immutable"
+        );
+        // Another build's version gets this one's file, which no one keeps.
+        let other = served.get("/arko-web.js?v=0", None).await;
+        assert_eq!(other.headers()[header::CACHE_CONTROL], "no-store");
     }
 
     /// The page loads without the key, its policy lets it run WebAssembly

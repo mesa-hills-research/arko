@@ -32,6 +32,17 @@ use crate::app::Page;
 fn main() {
     std::panic::set_hook(Box::new(|info| {
         web_sys::console::error_1(&info.to_string().into());
+        // The page can't go on, so it says so rather than look alive (boot.js
+        // shows it, with Reload).
+        if let Ok(failed) = js_sys::Reflect::get(&js_sys::global(), &"arkoFailed".into())
+            && let Some(failed) = failed.dyn_ref::<js_sys::Function>()
+        {
+            let _ = failed.call2(
+                &wasm_bindgen::JsValue::NULL,
+                &"The page stopped.".into(),
+                &info.to_string().into(),
+            );
+        }
     }));
     // Apple's systems keep their own scrollbars (see app.css).
     if scroll::apple()

@@ -739,6 +739,10 @@ dialog.sheet::backdrop { background: rgba(0, 0, 0, 0.36); }
 .lock .btn { min-height: 40px; }
 .lock .conn-detail { margin-top: 16px; }
 
+/* The page couldn't start, or stopped. */
+.failed { max-width: 380px; margin: 0 auto; padding: 18vh var(--gutter) 0; text-align: center; }
+.failed p { margin: 0 0 16px; }
+
 /* ----- scrollbars -----
    Thin and rounded, inset from the corners, where the system's own are
    boxy. Apple's overlay scrollbars stay as they are (the page marks Apple
