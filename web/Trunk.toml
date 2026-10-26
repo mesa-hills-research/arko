@@ -16,4 +16,4 @@ minify = "on_release"
 [[hooks]]
 stage = "pre_build"
 command = "cargo"
-command_arguments = ["run", "--quiet", "--locked", "-p", "theme-css", "--", "../themes", "style/themes.css"]
+command_arguments = ["run", "--quiet", "--locked", "-p", "theme-css", "--", "../themes", "style", "src/theme_list.rs"]

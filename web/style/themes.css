@@ -1,4 +1,4 @@
-/* Written by web/theme-css from themes/macos-classic.json (macOS Classic Light, macOS Classic Dark). Don't edit. */
+/* Written by web/theme-css from themes/macos-classic.json. Don't edit. */
 :root {
   --bg: #F9F9F9;
   --bar: #F7F7F7;
@@ -24,10 +24,13 @@
   --thumb-hover: #C8C8C8;
   --popover: #F5F5F5;
   --popover-text: #000000;
+  --radius: 6px;
+  --radius-lg: 8px;
+  --shine-toward: var(--bg);
   color-scheme: light;
 }
 @media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
+  :root:not([data-theme]) {
     --bg: #131313;
     --bar: #171717;
     --bar-line: #303030;
@@ -52,33 +55,9 @@
     --thumb-hover: #9F9F9F;
     --popover: #101010;
     --popover-text: #CACCCA;
+    --radius: 6px;
+    --radius-lg: 8px;
+    --shine-toward: var(--text);
     color-scheme: dark;
   }
-}
-:root[data-theme="dark"] {
-  --bg: #131313;
-  --bar: #171717;
-  --bar-line: #303030;
-  --surface: #131313;
-  --code: #232323;
-  --secondary: #353535;
-  --secondary-hover: #35353599;
-  --text: #DEDEDE;
-  --muted: #9D9D9D;
-  --line: #303030;
-  --input-line: #303030;
-  --accent: #006EE5;
-  --on-accent: #F2F9FF;
-  --link: #419CFF;
-  --tint: #1B6BE433;
-  --ring: #077CFD;
-  --warn: #FFC600;
-  --warn-mark: #FFC600;
-  --error: #FF5257;
-  --success: #30D158;
-  --thumb: #9F9F9F;
-  --thumb-hover: #9F9F9F;
-  --popover: #101010;
-  --popover-text: #CACCCA;
-  color-scheme: dark;
 }
