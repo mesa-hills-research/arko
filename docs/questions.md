@@ -20,7 +20,7 @@ numbered 1, 2, 3, and a question asked alone has no number.
 | Key | In the answer panel |
 |---|---|
 | 1 to 9 | Pick a suggested answer, or "You decide" after them (the agent goes with its default) |
-| ↓, Tab | From a question's answers to its Other field, then on to the next question and "Anything else" |
+| ↓, Tab | From a question's answers to its Other field, then on to the next question, and from the last back to the first |
 | ↑, Shift+Tab | Back |
 | Typing | An answer of your own (Other). A question without suggested answers takes typing at once |
 | PgUp, PgDn | Scroll a long question, such as a profile's instructions |
@@ -49,7 +49,6 @@ it, as it does with a worker's report.
 The user answered q3 and q4.
 q3 Tabs or spaces? Spaces
 q4 Push now? You decide (you said you'd assume: not yet)
-Anything else: Keep the old API one more release.
 Still open: q5.
 ```
 
@@ -74,13 +73,13 @@ if any.
 
 | Request | Body |
 |---|---|
-| `POST /api/questions/answer` | `{"answers": [{"id": "q3", "choices": ["Spaces"]}, {"id": "q4", "you_decide": true}, {"id": "q5", "text": "main"}, {"id": "q6"}], "anything_else": "..."}` |
+| `POST /api/questions/answer` | `{"answers": [{"id": "q3", "choices": ["Spaces"]}, {"id": "q4", "you_decide": true}, {"id": "q5", "text": "main"}, {"id": "q6"}]}` |
 | `POST /api/questions/dismiss` | `{"ids": ["q5"]}` |
 | `POST /api/message` | `{"text": "...", "answers": ["q3", "q4"]}` answers them in a message |
 
 Both answer a 409 when none of the questions is open. An answer names every question its panel
-shows, an unanswered one by its id alone (`{"id": "q6"}`), and "anything else" goes only with
-questions open in the current conversation.
+shows, an unanswered one by its id alone (`{"id": "q6"}`), and one with nothing filled in gets a
+400.
 
 An app does the same with `Input::AnswerQuestions`, `Input::DismissQuestions` and
 `Message::answers`. The types are in `arko::questions`.

@@ -1769,7 +1769,7 @@ mod tests {
         );
         assert!(panel.contains("  2. Which branch?"), "{panel}");
         assert!(panel.contains(" 1 You decide "), "{panel}");
-        assert!(panel.contains("Anything else"), "{panel}");
+        assert!(!panel.contains("Anything else"), "{panel}");
         assert!(panel.contains("Esc  answer in chat"), "{panel}");
         // Esc: the questions go with the next message, as the chip says.
         app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));

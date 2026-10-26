@@ -23,7 +23,7 @@ use crate::inputs::{Answering, Inputs, Question};
 use crate::questions::{
     AgentQuestion, ApprovalAnswer, Pending, QuestionState, WAIT_ANSWERED, is_agent_id,
 };
-use crate::remote::{Delivery, Level, Source};
+use crate::remote::Level;
 
 /// A wait for the user's answer: the agent's `ask_user` with `wait`, or an
 /// approval Arko asked for it.
@@ -212,18 +212,10 @@ impl Harness {
 
     /// The user's answers from an answer panel, to the current
     /// conversation's questions. Those that are open now are answered, and
-    /// the others dropped. An approval's answer goes to it. What the user
-    /// wrote besides ("Anything else") goes with them only when one of the
-    /// questions the submission names (answered or not) is the current
-    /// conversation's, so it can't reach another conversation. Returns the
+    /// the others dropped. An approval's answer goes to it. Returns the
     /// note kept for the agent (`None` when nothing was open).
-    pub(crate) fn answer_questions(&mut self, answers: Answers, source: Source) -> Option<String> {
+    pub(crate) fn answer_questions(&mut self, answers: Answers) -> Option<String> {
         let run = self.feed.questions_conversation();
-        let named: Vec<String> = answers
-            .answers
-            .iter()
-            .map(|given| given.id.clone())
-            .collect();
         // One answer for each question, the first filled in.
         let mut given: Vec<QuestionAnswer> = Vec::new();
         for answer in answers.answers {
@@ -231,10 +223,6 @@ impl Harness {
                 given.push(answer);
             }
         }
-        let anything_else = answers
-            .anything_else
-            .map(|text| text.trim().to_string())
-            .filter(|text| !text.is_empty());
         let ids: Vec<String> = given.iter().map(|given| given.id.clone()).collect();
         let answer_of = |id: &str| {
             given
@@ -258,18 +246,13 @@ impl Harness {
                     })
                     .cloned()
                     .collect();
-                let about_open =
-                    !settled.is_empty() || open.iter().any(|question| named.contains(&question.id));
-                if agent.is_empty() && !(anything_else.is_some() && about_open) {
+                if agent.is_empty() {
                     return None;
                 }
                 let asked: Vec<AskedQuestion> = settled.iter().map(AgentQuestion::asked).collect();
                 let still = agent_ids(&ids_of(open));
                 let ids = agent.iter().map(|given| given.id.clone()).collect();
-                let answers = Answers {
-                    answers: agent,
-                    anything_else: anything_else.clone(),
-                };
+                let answers = Answers { answers: agent };
                 Some((ids, notes::answer_note(&asked, &answers, &still)))
             },
         );
@@ -279,11 +262,6 @@ impl Harness {
             return None;
         }
         self.user_present();
-        if let Some(text) = &anything_else
-            && pending.is_some()
-        {
-            self.feed.user(text, source, Delivery::Answer);
-        }
         self.output.echo(&self.output.dim("  ✎ answered"));
         self.answer_plain_waits(
             &ids_of(&settled),

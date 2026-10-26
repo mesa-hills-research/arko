@@ -568,7 +568,6 @@ async fn a_profile_for_every_session_is_put_to_the_user_as_a_question() {
                                 you_decide,
                             },
                         )],
-                        anything_else: None,
                     }))
                     .unwrap(),
             }

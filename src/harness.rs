@@ -1271,8 +1271,7 @@ impl Harness {
                     (text, self.input_source, answers)
                 }
                 Event::Input(Some(Input::AnswerQuestions(answers))) => {
-                    let source = self.input_source;
-                    if self.answer_questions(answers, source).is_some()
+                    if self.answer_questions(answers).is_some()
                         && let News::Exit = self.deliver_answers(input).await
                     {
                         break;
@@ -1296,7 +1295,7 @@ impl Harness {
                     (text, Source::Web, answers)
                 }
                 Event::Remote(Action::AnswerQuestions(answers)) => {
-                    if self.answer_questions(answers, Source::Web).is_some()
+                    if self.answer_questions(answers).is_some()
                         && let News::Exit = self.deliver_answers(input).await
                     {
                         break;
@@ -3601,13 +3600,9 @@ impl Harness {
                             (text, self.input_source, answers)
                         }
                         // Their note reaches the agent at its next step.
-                        Event::Input(Some(Input::AnswerQuestions(answers))) => {
-                            let source = self.input_source;
-                            self.answer_questions(answers, source);
-                            continue;
-                        }
-                        Event::Remote(Action::AnswerQuestions(answers)) => {
-                            self.answer_questions(answers, Source::Web);
+                        Event::Input(Some(Input::AnswerQuestions(answers)))
+                        | Event::Remote(Action::AnswerQuestions(answers)) => {
+                            self.answer_questions(answers);
                             continue;
                         }
                         Event::Input(Some(Input::DismissQuestions(ids)))
@@ -7277,10 +7272,7 @@ pub(crate) mod tests {
     }
 
     fn answers(given: Vec<crate::questions::QuestionAnswer>) -> crate::questions::Answers {
-        crate::questions::Answers {
-            answers: given,
-            anything_else: None,
-        }
+        crate::questions::Answers { answers: given }
     }
 
     fn one_question(id: &str, text: &str) -> Vec<arko_agents::questions::AskedQuestion> {
@@ -7394,7 +7386,7 @@ pub(crate) mod tests {
         );
         // The panel's answer to q1 goes to the idle agent in a turn.
         let note = harness
-            .answer_questions(answers(vec![chose("q1", "Spaces")]), Source::Terminal)
+            .answer_questions(answers(vec![chose("q1", "Spaces")]))
             .unwrap();
         assert_eq!(
             note,
@@ -7596,9 +7588,7 @@ pub(crate) mod tests {
             if reversed {
                 given.reverse();
             }
-            let note = harness
-                .answer_questions(answers(given), Source::Terminal)
-                .unwrap();
+            let note = harness.answer_questions(answers(given)).unwrap();
             assert_eq!(
                 answered.try_recv().unwrap(),
                 if approve {
@@ -7635,7 +7625,7 @@ pub(crate) mod tests {
             if from_panel {
                 assert!(
                     harness
-                        .answer_questions(answers(vec![text_answer(&id, "main.rs")]), Source::Web)
+                        .answer_questions(answers(vec![text_answer(&id, "main.rs")]))
                         .is_none()
                 );
             } else {
@@ -7665,13 +7655,10 @@ pub(crate) mod tests {
         );
         assert!(
             harness
-                .answer_questions(
-                    answers(vec![
-                        chose(&open[0].id, crate::questions::SAVE),
-                        text_answer(&open[1].id, "Use high effort"),
-                    ]),
-                    Source::Terminal,
-                )
+                .answer_questions(answers(vec![
+                    chose(&open[0].id, crate::questions::SAVE),
+                    text_answer(&open[1].id, "Use high effort"),
+                ]),)
                 .is_none(),
             "nothing for the agent beside the approvals"
         );
@@ -7722,20 +7709,20 @@ pub(crate) mod tests {
         // An answer to it comes too late.
         assert!(
             harness
-                .answer_questions(answers(vec![text_answer("q1", "main.rs")]), Source::Web)
+                .answer_questions(answers(vec![text_answer("q1", "main.rs")]))
                 .is_none()
         );
         // Answered first, the agent's closing changes nothing, and the
         // second answer is dropped.
         ask_later(&mut harness, run, "q2", "Tabs?");
-        let first = harness.answer_questions(
-            answers(vec![text_answer("q2", "Tabs"), text_answer("q2", "Spaces")]),
-            Source::Terminal,
-        );
+        let first = harness.answer_questions(answers(vec![
+            text_answer("q2", "Tabs"),
+            text_answer("q2", "Spaces"),
+        ]));
         assert_eq!(first.unwrap(), "The user answered q2.\nq2 Tabs? Tabs");
         assert!(
             harness
-                .answer_questions(answers(vec![text_answer("q2", "Tabs")]), Source::Web)
+                .answer_questions(answers(vec![text_answer("q2", "Tabs")]))
                 .is_none()
         );
         harness.feed.event(
@@ -7804,7 +7791,7 @@ pub(crate) mod tests {
         ask_later(&mut harness, second, "q1", "Which branch?");
         harness.feed.questions_run(Some(first));
         let note = harness
-            .answer_questions(answers(vec![text_answer("q1", "Tabs")]), Source::Web)
+            .answer_questions(answers(vec![text_answer("q1", "Tabs")]))
             .unwrap();
         assert_eq!(note, "The user answered q1.\nq1 Tabs? Tabs");
         assert!(harness.dismiss_questions(vec!["q1".into()]).is_none());
@@ -7855,7 +7842,7 @@ pub(crate) mod tests {
         let first_run = harness.conversations.current_run().unwrap();
         assert!(
             harness
-                .answer_questions(answers(vec![text_answer("q1", "Tabs")]), Source::Terminal)
+                .answer_questions(answers(vec![text_answer("q1", "Tabs")]))
                 .is_some()
         );
         assert!(harness.dismiss_questions(vec!["q2".into()]).is_some());
@@ -7902,7 +7889,7 @@ pub(crate) mod tests {
             ask_later(&mut harness, run, "q1", "Tabs?");
             assert!(
                 harness
-                    .answer_questions(answers(vec![text_answer("q1", "Tabs")]), Source::Terminal)
+                    .answer_questions(answers(vec![text_answer("q1", "Tabs")]))
                     .is_some()
             );
         }
@@ -7948,9 +7935,8 @@ pub(crate) mod tests {
 
     /// An answer stays kept until its run is given its note, by the
     /// workflow's own count, not by what the conversation's text holds: a
-    /// wait that the turn's stop dropped doesn't count, and a second
-    /// "Anything else" with the same words as one delivered before is a
-    /// delivery of its own. Each reaches the agent once.
+    /// wait that the turn's stop dropped doesn't count. Each answer reaches
+    /// the agent once.
     #[tokio::test]
     async fn an_answer_is_kept_until_its_run_is_given_it() {
         use crate::mock_model::{ModelServer, complete, tool_call};
@@ -7960,9 +7946,7 @@ pub(crate) mod tests {
             move |_, body: String| {
                 bodies.lock().unwrap().push(body.clone());
                 Box::pin(async move {
-                    if body.contains("The user answered q1.")
-                        || body.contains("Anything else: Keep it short.")
-                    {
+                    if body.contains("The user answered q") {
                         complete("m3", "Noted.")
                     } else if body.contains("Asked q1.") {
                         complete("m2", "Asked.")
@@ -8003,7 +7987,7 @@ pub(crate) mod tests {
         });
         assert!(
             harness
-                .answer_questions(answers(vec![text_answer("q1", "Spaces")]), Source::Terminal)
+                .answer_questions(answers(vec![text_answer("q1", "Spaces")]))
                 .is_some()
         );
         drop(answered);
@@ -8026,38 +8010,21 @@ pub(crate) mod tests {
         let last = bodies.lock().unwrap().last().unwrap().clone();
         assert_eq!(last.matches("The user answered q1.").count(), 1, "{last}");
         assert!(harness.feed.queued_notes(run).is_empty());
-        // The same words twice, about a question still open: two
-        // deliveries, the second kept although the conversation holds the
-        // first's words.
+        // The next answer is a delivery of its own, kept until its run is
+        // given it.
         ask_later(&mut harness, run, "q2", "Push now?");
-        let reminder = || crate::questions::Answers {
-            answers: vec![crate::questions::QuestionAnswer::new(
-                "q2",
-                crate::questions::Answer::default(),
-            )],
-            anything_else: Some("Keep it short.".into()),
-        };
         assert!(
             harness
-                .answer_questions(reminder(), Source::Terminal)
-                .is_some()
-        );
-        deliver(&mut harness, &mut inputs).await;
-        assert!(harness.feed.queued_notes(run).is_empty());
-        assert!(
-            harness
-                .answer_questions(reminder(), Source::Terminal)
+                .answer_questions(answers(vec![text_answer("q2", "Not yet")]))
                 .is_some()
         );
         harness.settle_answer_notes();
         assert_eq!(harness.feed.queued_notes(run).len(), 1, "not given yet");
         deliver(&mut harness, &mut inputs).await;
         let last = bodies.lock().unwrap().last().unwrap().clone();
-        assert_eq!(
-            last.matches("Anything else: Keep it short.").count(),
-            2,
-            "{last}"
-        );
+        for answer in ["The user answered q1.", "The user answered q2."] {
+            assert_eq!(last.matches(answer).count(), 1, "{answer}\n{last}");
+        }
         assert!(harness.feed.queued_notes(run).is_empty());
     }
 
@@ -8099,7 +8066,7 @@ pub(crate) mod tests {
         let run = harness.conversations.current_run().unwrap();
         assert!(
             harness
-                .answer_questions(answers(vec![text_answer("q1", "Spaces")]), Source::Terminal)
+                .answer_questions(answers(vec![text_answer("q1", "Spaces")]))
                 .is_some()
         );
         // The session's file as a stop right after the delivery leaves it.
@@ -8140,10 +8107,7 @@ pub(crate) mod tests {
             .record_asked(run, &one_question("q1", "Which file?"), true);
         assert!(
             harness
-                .answer_questions(
-                    answers(vec![text_answer("q1", "main.rs")]),
-                    Source::Terminal
-                )
+                .answer_questions(answers(vec![text_answer("q1", "main.rs")]),)
                 .is_some()
         );
         let (answer, mut answered) = tokio::sync::oneshot::channel();
@@ -8246,52 +8210,38 @@ pub(crate) mod tests {
         drop(typing.await.unwrap());
     }
 
-    /// What the user wrote besides their answers goes only with a
-    /// submission that names a question of the current conversation:
-    /// alone, or naming another conversation's questions (sent before a
-    /// /new or a /resume), it is dropped, even while the current
-    /// conversation has a question open.
+    /// A submission answers only the current conversation's questions:
+    /// one sent before a /new or a /resume, about another conversation's
+    /// questions, is dropped, even while the current conversation has a
+    /// question open.
     #[tokio::test]
-    async fn anything_else_stays_with_the_questions_it_names() {
+    async fn answers_go_only_to_the_current_conversations_questions() {
         let temp = tempfile::tempdir().unwrap();
         let (mut harness, _inputs, _sender) = harness(temp.path(), LLMClient::new(), true);
         let (first, second) = (uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
         ask_later(&mut harness, first, "q1", "Tabs?");
         harness.feed.questions_run(Some(second));
         ask_later(&mut harness, second, "q2", "Which branch?");
-        let besides = |given: Vec<crate::questions::QuestionAnswer>| crate::questions::Answers {
-            answers: given,
-            anything_else: Some("Keep it short.".into()),
-        };
-        let unanswered = |id: &str| {
-            crate::questions::QuestionAnswer::new(id, crate::questions::Answer::default())
-        };
-        // In the second conversation: the first's submissions are dropped.
-        for submission in [
-            besides(Vec::new()),
-            besides(vec![unanswered("q1")]),
-            besides(vec![text_answer("q1", "Tabs")]),
-        ] {
-            assert!(harness.answer_questions(submission, Source::Web).is_none());
-        }
+        assert!(
+            harness
+                .answer_questions(answers(vec![text_answer("q1", "Tabs")]))
+                .is_none()
+        );
         assert!(harness.feed.queued_notes(first).is_empty());
         assert!(harness.feed.queued_notes(second).is_empty());
         // After /new, nothing is the current conversation's.
         harness.feed.questions_run(None);
         assert!(
             harness
-                .answer_questions(besides(vec![unanswered("q2")]), Source::Web)
+                .answer_questions(answers(vec![text_answer("q2", "main")]))
                 .is_none()
         );
-        // Back in the first, a submission naming its question goes.
+        // Back in the first, its question is answered.
         harness.feed.questions_run(Some(first));
         let note = harness
-            .answer_questions(besides(vec![unanswered("q1")]), Source::Web)
+            .answer_questions(answers(vec![text_answer("q1", "Tabs")]))
             .unwrap();
-        assert_eq!(
-            note,
-            "The user wrote about your questions.\nAnything else: Keep it short.\nStill open: q1."
-        );
+        assert_eq!(note, "The user answered q1.\nq1 Tabs? Tabs");
         assert!(harness.feed.queued_notes(second).is_empty());
     }
 
@@ -8363,10 +8313,7 @@ pub(crate) mod tests {
         assert_eq!(open.len(), 1);
         assert!(
             harness
-                .answer_questions(
-                    answers(vec![chose(&open[0].id, crate::questions::SAVE)]),
-                    Source::Terminal
-                )
+                .answer_questions(answers(vec![chose(&open[0].id, crate::questions::SAVE)]),)
                 .is_none()
         );
         assert_eq!(

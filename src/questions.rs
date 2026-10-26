@@ -835,6 +835,9 @@ mod tests {
                 .is_empty()
         );
         let kept = book.queue(run, vec!["q1".into()], "The user answered q1.".into());
+        // A note with the same words is a delivery of its own.
+        let twin = book.queue(run, vec!["q1".into()], "The user answered q1.".into());
+        assert_ne!(kept.id, twin.id);
         book.save();
         assert_eq!(
             book.open_of(Some(run))
@@ -864,6 +867,8 @@ mod tests {
         assert_eq!(again.queued(run)[0].note, "The user answered q1.");
         assert!(again.queued(Uuid::new_v4()).is_empty());
         assert!(again.ack(&[kept.id]));
+        assert_eq!(again.queued(run), std::slice::from_ref(&twin));
+        assert!(again.ack(&[twin.id]));
         assert!(again.queued(run).is_empty());
         assert_eq!(again.restored(&["q2".into()], 40)[0].item, 40);
         assert_eq!(again.of_item(40).len(), 1);

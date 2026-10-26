@@ -774,7 +774,7 @@ fn not_open() -> Response {
 }
 
 /// `POST /api/questions/answer` with
-/// `{"answers": [{"id": "q3", "choices": ["Spaces"]}, {"id": "q4", "you_decide": true}, {"id": "q5", "text": "..."}, {"id": "q6"}], "anything_else": "..."}`:
+/// `{"answers": [{"id": "q3", "choices": ["Spaces"]}, {"id": "q4", "you_decide": true}, {"id": "q5", "text": "..."}, {"id": "q6"}]}`:
 /// the answer panel's answers to the main agent's open questions, naming
 /// every question it shows (`{"id": "q6"}` unanswered). Those unanswered
 /// stay open. 409 when none of the questions it names is open.
@@ -793,12 +793,10 @@ async fn answer_questions(
     else {
         return (
             StatusCode::BAD_REQUEST,
-            error_body("send {\"answers\": [{\"id\": \"q1\", \"choices\": [...], \"text\": ..., \"you_decide\": true}], \"anything_else\": ...}"),
+            error_body("send {\"answers\": [{\"id\": \"q1\", \"choices\": [...], \"text\": ..., \"you_decide\": true}]}"),
         )
             .into_response();
     };
-    // It names the questions it is about, answered or not, which binds
-    // "anything else" to their conversation.
     let open = app.feed.open_questions();
     if !answers
         .answers
@@ -1971,9 +1969,9 @@ mod tests {
     }
 
     /// The answer panel's endpoints: answers (per question a choice, text
-    /// or "you decide", and "anything else"), dismissals and a message
-    /// that answers questions become their actions. Questions that aren't
-    /// open get a 409, a body that says nothing a 400.
+    /// or "you decide"), dismissals and a message that answers questions
+    /// become their actions. Questions that aren't open get a 409, a body
+    /// that says nothing a 400. An older page's "anything_else" is ignored.
     #[tokio::test]
     async fn questions_are_answered_dismissed_and_replied_to() {
         use crate::questions::{Answer, Answers, QuestionAnswer};
@@ -2028,10 +2026,15 @@ mod tests {
                         }
                     ),
                 ],
-                anything_else: Some("Keep it short.".into()),
             })
         );
-        for bad in ["{}", r#"{"answers": [{"id": "q1"}]}"#, "nonsense"] {
+        for bad in [
+            "{}",
+            r#"{"answers": [{"id": "q1"}]}"#,
+            r#"{"anything_else": "Keep it short."}"#,
+            r#"{"answers": [{"id": "q1"}], "anything_else": "Keep it short."}"#,
+            "nonsense",
+        ] {
             let response = served
                 .post("/api/questions/answer", Some(&cookie), bad)
                 .await;
@@ -2045,29 +2048,6 @@ mod tests {
             )
             .await;
         assert_eq!(response.status(), StatusCode::CONFLICT);
-        // "Anything else" goes with the questions shown, answered or not,
-        // and without them, it isn't taken.
-        let response = served
-            .post(
-                "/api/questions/answer",
-                Some(&cookie),
-                r#"{"anything_else": "Keep it short."}"#,
-            )
-            .await;
-        assert_eq!(response.status(), StatusCode::CONFLICT);
-        let response = served
-            .post(
-                "/api/questions/answer",
-                Some(&cookie),
-                r#"{"answers": [{"id": "q1"}], "anything_else": "Keep it short."}"#,
-            )
-            .await;
-        assert_eq!(response.status(), StatusCode::ACCEPTED);
-        assert!(matches!(
-            served.actions.recv().await.unwrap(),
-            Action::AnswerQuestions(_)
-        ));
-
         let response = served
             .post(
                 "/api/questions/dismiss",
