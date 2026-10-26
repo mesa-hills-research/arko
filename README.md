@@ -14,6 +14,8 @@ models, and on your Claude plan through an installed Claude Code.
 - Search indexes of code and docs (`arko index`), kept current while Arko runs
 - A web page for following a session and taking part from a browser, such as a phone's
   (`--remote`)
+- Any model on OpenRouter, from a list you can filter, with [routing settings](docs/openrouter.md)
+  for zero data retention, a region and the providers that serve it
 - A model and effort for each worker, which the agent chooses or takes from
   [worker profiles](docs/worker-profiles.md) you write
 - Workers that start workers of their own, down to a depth you set

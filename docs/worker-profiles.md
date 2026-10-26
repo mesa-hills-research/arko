@@ -168,9 +168,10 @@ workers, and `/cost` counts each worker once.
 
 The user's message to a worker is copied to the worker that started it, as news that doesn't start
 a turn, when message copies are on. A worker reaches the one that started it with `message_agent`
-to `lead`, and `link_agents` lets a worker's own workers message each other. A worker can't message
-another worker's workers. `/stop-workers r1` stops r1 and the workers under it, and only the worker
-that started a worker can restart it with a message.
+to `lead`, and `link_agents` lets a worker's own workers message each other. So does starting them
+with the same `group` in `start_agent`. A worker can't message another worker's workers.
+`/stop-workers r1` stops r1 and the workers under it, and only the worker that started a worker can
+restart it with a message.
 
 A session that closed with a tree of workers running continues it, each worker with the setup it
 started with. A worker whose starter can't run again, because it failed, is stopped instead of
