@@ -1,5 +1,6 @@
-//! The page's own select: a button that opens its list of choices in place
-//! below it, with a filter for a long list. It opens on the first tap every
+//! The page's own select: a button that opens its list of choices over the
+//! page, below it or above it where there's more room, with a filter for a
+//! long list. It opens on the first tap every
 //! time, where the browser's own select on iOS stays focused once its
 //! picker closes, and the next tap only takes the focus away.
 
@@ -83,6 +84,7 @@ pub fn Select(
     let button: NodeRef<leptos::html::Button> = NodeRef::new();
     let field: NodeRef<leptos::html::Input> = NodeRef::new();
     let list: NodeRef<leptos::html::Ul> = NodeRef::new();
+    let pop: NodeRef<leptos::html::Div> = NodeRef::new();
     let visible = Memo::new(move |_| choices.with_value(|choices| shown(choices, &query.get())));
     let name = move || {
         let value = value.get();
@@ -117,8 +119,12 @@ pub fn Select(
                 visible.iter().position(|choice| choice.value == current)
             }));
             open.set(true);
-            // Once drawn, the keys go to the filter, or to the list.
+            // Once drawn, the list takes its place and the keys go to the
+            // filter, or to the list.
             let frame = wasm_bindgen::closure::Closure::once_into_js(move || {
+                if let (Some(button), Some(pop)) = (button.get_untracked(), pop.get_untracked()) {
+                    place(&button, &pop);
+                }
                 if let Some(field) = field.get_untracked() {
                     let _ = field.focus();
                 } else if let Some(list) = list.get_untracked() {
@@ -197,6 +203,7 @@ pub fn Select(
     let field_keys = keys.clone();
 
     view! {
+        <div class="select">
         <button
             type="button"
             class="select-button"
@@ -217,7 +224,7 @@ pub fn Select(
         </button>
         <Show when=move || open.get()>
             <div class="select-scrim" on:click=move |_| hide(false)></div>
-            <div class="select-pop">
+            <div class="select-pop" node_ref=pop>
                 {filter.then(|| {
                     let field_keys = field_keys.clone();
                     view! {
@@ -285,7 +292,43 @@ pub fn Select(
                 </ul>
             </div>
         </Show>
+        </div>
     }
+}
+
+/// Places the list below its button, or above it where there's more room,
+/// within what shows of the sheet it's in (or the window), and no taller
+/// than that room.
+fn place(button: &web_sys::HtmlElement, pop: &web_sys::HtmlElement) {
+    const GAP: f64 = 6.0;
+    const MARGIN: f64 = 8.0;
+    let anchor = button.get_bounding_client_rect();
+    let (top, bottom) = match button.closest(".sheet-body").ok().flatten() {
+        Some(region) => {
+            let region = region.get_bounding_client_rect();
+            (region.top(), region.bottom())
+        }
+        None => (
+            0.0,
+            window()
+                .inner_height()
+                .ok()
+                .and_then(|height| height.as_f64())
+                .unwrap_or(0.0),
+        ),
+    };
+    let below = bottom - anchor.bottom() - GAP - MARGIN;
+    let above = anchor.top() - top - GAP - MARGIN;
+    let wanted = f64::from(pop.scroll_height());
+    let style = web_sys::HtmlElement::style(pop);
+    let (side, other, room) = if below >= wanted || below >= above {
+        ("top", "bottom", below)
+    } else {
+        ("bottom", "top", above)
+    };
+    let _ = style.set_property(side, &format!("calc(100% + {GAP}px)"));
+    let _ = style.remove_property(other);
+    let _ = style.set_property("max-height", &format!("{}px", room.max(120.0).floor()));
 }
 
 #[cfg(test)]

@@ -117,9 +117,9 @@ kbd {
   .btn::after { content: ""; position: absolute; inset: min(0px, (100% - 40px) / 2); }
 }
 
-/* The page's select: a button, and its list of choices opening in place
-   below it, drawn as the command menu is. In a setting's row the list takes
-   the row's whole width. */
+/* The page's select: a button, and its list of choices over the page,
+   anchored to it, drawn as the command menu is. */
+.select { position: relative; display: inline-block; max-width: 100%; }
 .select-button {
   display: inline-flex;
   align-items: center;
@@ -138,18 +138,21 @@ kbd {
 .select-button[aria-expanded="true"] { border-color: var(--ring); }
 .select-button svg { color: var(--muted); }
 .select-value { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.setting:has(> .select-pop) { flex-wrap: wrap; }
 .select-scrim { position: fixed; inset: 0; z-index: 20; }
 .select-pop {
-  position: relative;
+  position: absolute;
+  right: 0;
   z-index: 21;
-  flex: 1 0 100%;
+  display: flex;
+  flex-direction: column;
+  width: min(360px, 100vw - 2 * var(--gutter));
   padding: 6px;
   border: 1px solid var(--line);
   border-radius: var(--r-xl);
   background: var(--popover);
   color: var(--popover-text);
   box-shadow: var(--shadow);
+  animation: fade 0.15s ease-out;
 }
 .select-filter {
   width: 100%;
@@ -163,7 +166,7 @@ kbd {
   font-size: 16px;
 }
 .select-filter:focus { border-color: var(--ring); }
-.select-list { max-height: min(40dvh, 320px); margin: 0; padding: 0; overflow-y: auto; overscroll-behavior: contain; outline: 0; list-style: none; }
+.select-list { flex: 1 1 auto; min-height: 0; max-height: 320px; margin: 0; padding: 0; overflow-y: auto; overscroll-behavior: contain; outline: 0; list-style: none; }
 .select-list [role="option"] { display: flex; align-items: center; gap: 8px; min-height: 40px; padding: 8px 10px; border-radius: var(--r-lg); cursor: pointer; }
 .select-list [role="option"].active { background: var(--secondary-hover); }
 .select-list [role="option"][aria-selected="true"] { background: var(--tint); }
