@@ -1,7 +1,7 @@
 [package]
 # The remote web page, written in Rust with Leptos and built for the browser
 # (wasm32-unknown-unknown) with Trunk. It isn't part of arko-tui's build:
-# the built files go in ../src/remote/next/, which arko-tui embeds. See
+# the built files go in ../src/remote/page/, which arko-tui embeds. See
 # README.md here for how to build it.
 name = "arko-web"
 version = "0.0.0"

@@ -17,8 +17,6 @@ use crate::theme_list::THEMES;
 use crate::transcript::{WorkerCard, show_worker};
 use crate::words;
 
-/// Where the built page's files are served.
-pub const ASSETS: &str = "/next/";
 const THEME: &str = "arko.theme";
 
 /// A dialog that shows while `sheet` is `which`.
@@ -364,7 +362,7 @@ fn apply_theme(slug: Option<&str>) {
                 && let Ok(link) = document().create_element("link")
             {
                 let _ = link.set_attribute("rel", "stylesheet");
-                let _ = link.set_attribute("href", &format!("{ASSETS}all-themes.css"));
+                let _ = link.set_attribute("href", "/all-themes.css");
                 let _ = link.set_attribute("id", "all-themes");
                 if let Some(head) = document().head() {
                     let _ = head.append_child(&link);

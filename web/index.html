@@ -12,9 +12,13 @@
 <link data-trunk rel="css" href="style/app.css">
 <link data-trunk rel="copy-file" href="boot.js">
 <link data-trunk rel="copy-file" href="style/all-themes.css">
-<link rel="modulepreload" href="/next/arko-web.js">
-<link rel="preload" href="/next/arko-web_bg.wasm" as="fetch" type="application/wasm" crossorigin>
-<script type="module" src="/next/boot.js"></script>
+<link data-trunk rel="copy-file" href="assets/icon.svg">
+<link data-trunk rel="copy-file" href="assets/icon-small.svg">
+<link data-trunk rel="copy-file" href="assets/apple-touch-icon.png">
+<link data-trunk rel="copy-dir" href="assets/fonts">
+<link rel="modulepreload" href="/arko-web.js">
+<link rel="preload" href="/arko-web_bg.wasm" as="fetch" type="application/wasm" crossorigin>
+<script type="module" src="/boot.js"></script>
 <link data-trunk rel="rust" data-bin="arko-web" data-type="main" data-wasm-opt="z" data-wasm-opt-params="--enable-bulk-memory --enable-nontrapping-float-to-int --enable-sign-ext --enable-mutable-globals --enable-reference-types --enable-multivalue">
 </head>
 <body></body>

@@ -27,38 +27,29 @@ use tokio::task::JoinHandle;
 use super::feed::{Activity, Feed, Update};
 use super::{Action, Info, Meter, Reading};
 
+// The page, written in Rust with Leptos in `web/` and built into `page/`.
 const INDEX: &str = include_str!("page/index.html");
-const SCRIPT: &str = include_str!("page/app.js");
+/// Starts the page, from a file of its own so the policy needs no exception
+/// for inline scripts.
+const BOOT: &str = include_str!("page/boot.js");
+const SCRIPT: &str = include_str!("page/arko-web.js");
+const WASM: &[u8] = include_bytes!("page/arko-web_bg.wasm");
 const STYLE: &str = include_str!("page/app.css");
+/// The default themes' colors.
+const THEMES: &str = include_str!("page/themes.css");
+/// Every theme's colors, loaded once a theme is chosen.
+const ALL_THEMES: &str = include_str!("page/all-themes.css");
 /// The mark, for the lock screen.
 const ICON: &str = include_str!("page/icon.svg");
 /// The mark drawn for 16 to 32 pixels, for the tab's icon.
 const ICON_SMALL: &str = include_str!("page/icon-small.svg");
 /// The mark on a tile, at 180 pixels, for a phone's home screen.
 const APPLE_ICON: &[u8] = include_bytes!("page/apple-touch-icon.png");
-const CORE: &str = include_str!("page/core.js");
 /// The page's monospace font, the same on every device (SIL Open Font
 /// License 1.1; see NOTICE).
 const MONO_FONT: &[u8] = include_bytes!("page/fonts/JetBrainsMono-Regular.ttf");
-
-/// The page built in Rust with Leptos (`web/`, built into `next/`),
-/// served under `/next/` beside the current one, or at `/` too when
-/// [`NEXT_VARIABLE`] is `next`.
-mod next {
-    pub const INDEX: &str = include_str!("next/index.html");
-    pub const BOOT: &str = include_str!("next/boot.js");
-    pub const SCRIPT: &str = include_str!("next/arko-web.js");
-    pub const WASM: &[u8] = include_bytes!("next/arko-web_bg.wasm");
-    pub const STYLE: &str = include_str!("next/app.css");
-    pub const THEMES: &str = include_str!("next/themes.css");
-    /// Every theme's colors, loaded once a theme is chosen.
-    pub const ALL_THEMES: &str = include_str!("next/all-themes.css");
-    /// The current page's policy, plus WebAssembly.
-    pub const POLICY: &str = "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; connect-src 'self'; img-src 'self'; font-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
-}
-
-/// Set to `next`, the page at `/` is the one built in Rust.
-pub const NEXT_VARIABLE: &str = "ARKO_REMOTE_PAGE";
+/// The page may run its own files and WebAssembly, and reach only Arko.
+const POLICY: &str = "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; connect-src 'self'; img-src 'self'; font-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 
 /// The largest request body: a long message, pasted.
 const MAX_BODY: usize = 512 * 1024;
@@ -167,62 +158,25 @@ impl Drop for Server {
 }
 
 fn router(app: Arc<App>) -> Router {
-    let next_at_root = std::env::var(NEXT_VARIABLE).is_ok_and(|value| value.trim() == "next");
-    Router::new()
-        .route(
-            "/",
-            get(move |headers: HeaderMap| async move {
-                if next_at_root {
-                    next_index(headers).await
-                } else {
-                    file(INDEX, "text/html; charset=utf-8")
-                }
-            }),
-        )
-        .route("/next", get(next_index))
-        .route("/next/", get(next_index))
-        .route(
-            "/next/boot.js",
-            get(|headers: HeaderMap| async move {
-                packed(&headers, next::BOOT.as_bytes(), "text/javascript; charset=utf-8")
-            }),
-        )
-        .route(
-            "/next/arko-web.js",
-            get(|headers: HeaderMap| async move {
-                packed(&headers, next::SCRIPT.as_bytes(), "text/javascript; charset=utf-8")
-            }),
-        )
-        .route(
-            "/next/arko-web_bg.wasm",
-            get(|headers: HeaderMap| async move { packed(&headers, next::WASM, "application/wasm") }),
-        )
-        .route(
-            "/next/app.css",
-            get(|headers: HeaderMap| async move {
-                packed(&headers, next::STYLE.as_bytes(), "text/css; charset=utf-8")
-            }),
-        )
-        .route(
-            "/next/themes.css",
-            get(|headers: HeaderMap| async move {
-                packed(&headers, next::THEMES.as_bytes(), "text/css; charset=utf-8")
-            }),
-        )
-        .route(
-            "/next/all-themes.css",
-            get(|headers: HeaderMap| async move {
-                packed(&headers, next::ALL_THEMES.as_bytes(), "text/css; charset=utf-8")
-            }),
-        )
-        .route(
-            "/app.js",
-            get(|| async { file(SCRIPT, "text/javascript; charset=utf-8") }),
-        )
-        .route(
-            "/core.js",
-            get(|| async { file(CORE, "text/javascript; charset=utf-8") }),
-        )
+    const SCRIPT_KIND: &str = "text/javascript; charset=utf-8";
+    const STYLE_KIND: &str = "text/css; charset=utf-8";
+    let files: [(&str, &'static [u8], &'static str); 7] = [
+        ("/", INDEX.as_bytes(), "text/html; charset=utf-8"),
+        ("/boot.js", BOOT.as_bytes(), SCRIPT_KIND),
+        ("/arko-web.js", SCRIPT.as_bytes(), SCRIPT_KIND),
+        ("/arko-web_bg.wasm", WASM, "application/wasm"),
+        ("/app.css", STYLE.as_bytes(), STYLE_KIND),
+        ("/themes.css", THEMES.as_bytes(), STYLE_KIND),
+        ("/all-themes.css", ALL_THEMES.as_bytes(), STYLE_KIND),
+    ];
+    let mut router = Router::new();
+    for (path, bytes, kind) in files {
+        router = router.route(
+            path,
+            get(move |headers: HeaderMap| async move { packed(&headers, bytes, kind) }),
+        );
+    }
+    router
         .route(
             "/fonts/JetBrainsMono-Regular.ttf",
             get(|| async {
@@ -236,10 +190,6 @@ fn router(app: Arc<App>) -> Router {
                 )
                     .into_response()
             }),
-        )
-        .route(
-            "/app.css",
-            get(|| async { file(STYLE, "text/css; charset=utf-8") }),
         )
         .route("/icon.svg", get(|| async { file(ICON, "image/svg+xml") }))
         .route(
@@ -269,17 +219,7 @@ fn file(text: &'static str, kind: &'static str) -> Response {
     ([(header::CONTENT_TYPE, kind)], text).into_response()
 }
 
-/// The Rust page's HTML, whose policy lets it run WebAssembly.
-async fn next_index(headers: HeaderMap) -> Response {
-    let mut response = packed(&headers, next::INDEX.as_bytes(), "text/html; charset=utf-8");
-    response.headers_mut().insert(
-        header::CONTENT_SECURITY_POLICY,
-        HeaderValue::from_static(next::POLICY),
-    );
-    response
-}
-
-/// One of the Rust page's files, gzipped for a browser that takes it. Each
+/// One of the page's files, gzipped for a browser that takes it. Each
 /// is compressed once, at its first request.
 fn packed(headers: &HeaderMap, bytes: &'static [u8], kind: &'static str) -> Response {
     static PACKED: Mutex<Vec<(usize, &'static [u8])>> = Mutex::new(Vec::new());
@@ -335,11 +275,9 @@ async fn harden(mut response: Response) -> Response {
     headers
         .entry(header::CACHE_CONTROL)
         .or_insert(HeaderValue::from_static("no-store"));
-    // (The Rust page's HTML sets its own.)
-    headers.entry(header::CONTENT_SECURITY_POLICY).or_insert(
-        HeaderValue::from_static(
-            "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; font-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
-        ),
+    headers.insert(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static(POLICY),
     );
     response
 }
@@ -1038,72 +976,60 @@ async fn stop_job(
 mod tests {
     use super::*;
 
+    /// Whether the built page holds `text`, as its code writes it.
+    fn page_has(text: &str) -> bool {
+        WASM.windows(text.len())
+            .any(|bytes| bytes == text.as_bytes())
+    }
+
     /// The words of the workers' settings on the page are the library's, the
-    /// ones the terminal and an app show: the page's script and markup hold
-    /// them as the library writes them.
+    /// ones the terminal and an app show: the page holds them as the library
+    /// writes them.
     #[test]
     fn the_pages_worker_settings_use_the_librarys_words() {
         use crate::workers::{self, ModelChoice};
-        // The script writes each choice as `name: "..."` and `about: "..."`.
         for choice in ModelChoice::ALL {
-            assert!(
-                CORE.contains(&format!("name: \"{}\"", choice.label())),
-                "{}",
-                choice.label()
-            );
-            assert!(
-                CORE.contains(&format!("about: \"{}\"", choice.about())),
-                "{}",
-                choice.about()
-            );
+            assert!(page_has(choice.label()), "{}", choice.label());
+            assert!(page_has(choice.about()), "{}", choice.about());
         }
-        assert!(CORE.contains(&format!("\"{}\"", workers::depth_about())));
+        assert!(page_has(workers::depth_about()));
         // The page writes the cap's sentence for a number from a template.
-        assert!(CORE.contains(&format!("\"{}\"", workers::retry_cap_about(None))));
+        assert!(page_has(&workers::retry_cap_about(None)));
         for on in [true, false] {
-            assert!(
-                CORE.contains(&format!("\"{}\"", workers::copies_about(on))),
-                "{on}"
-            );
+            assert!(page_has(workers::copies_about(on)), "{on}");
         }
-        // The markup names the settings and says what the first does.
         for name in [
             workers::MODELS_NAME,
             workers::DEPTH_NAME,
             workers::RETRY_CAP_NAME,
             workers::COPIES_NAME,
         ] {
-            assert!(INDEX.contains(&format!(">{name}<")), "{name}");
-            assert!(INDEX.contains(&format!("aria-label=\"{name}\"")), "{name}");
+            assert!(page_has(name), "{name}");
         }
-        assert!(INDEX.contains(&format!(
+        assert!(page_has(&format!(
             "{} {}",
             workers::MODELS_ABOUT,
             workers::MODELS_APPLIES
         )));
-        // No curly apostrophe next to the straight ones.
-        assert!(!INDEX.contains("Session\u{2019}s"));
     }
 
     /// The words of the built-in skills setting on the page are the
-    /// library's, and its markup has the switch.
+    /// library's.
     #[test]
     fn the_pages_built_in_skills_setting_uses_the_librarys_words() {
         use crate::builtin_skills::{AFTER_START, SETTING_ABOUT, SETTING_NAME};
-        assert!(CORE.contains(SETTING_ABOUT));
-        assert!(CORE.contains(AFTER_START));
-        assert!(INDEX.contains(&format!(">{SETTING_NAME}<")));
-        assert!(INDEX.contains(&format!("aria-label=\"{SETTING_NAME}\"")));
+        assert!(page_has(SETTING_ABOUT));
+        assert!(page_has(AFTER_START));
+        assert!(page_has(SETTING_NAME));
     }
 
     /// A worker's meta line holds its model, profile and cost, which a phone
     /// would cut at the end if the line couldn't wrap.
     #[test]
     fn a_workers_meta_line_wraps_on_a_narrow_screen() {
-        let rule = STYLE
-            .lines()
-            .find(|line| line.starts_with(".wcard .wmeta {"))
-            .expect("the meta line's rule");
+        let start = STYLE.find(".wcard .wmeta{").expect("the meta line's rule");
+        let rule = &STYLE[start..start + STYLE[start..].find('}').unwrap()];
+        assert!(rule.contains("overflow-wrap:anywhere"), "{rule}");
         assert!(
             !rule.contains("nowrap") && !rule.contains("ellipsis"),
             "{rule}"
@@ -1470,38 +1396,34 @@ mod tests {
                 assert!(body.starts_with(b"<svg"), "{path}");
             }
         }
-        assert!(INDEX.contains(r#"<link rel="icon" href="/icon-small.svg""#));
-        assert!(INDEX.contains(r#"<link rel="apple-touch-icon" href="/apple-touch-icon.png">"#));
-        assert!(INDEX.contains(r#"<img src="/icon.svg""#));
+        // (The page is minified.)
+        assert!(INDEX.contains("<link href=/icon-small.svg rel=icon"));
+        assert!(INDEX.contains("<link href=/apple-touch-icon.png rel=apple-touch-icon>"));
+        assert!(page_has("/icon.svg"));
     }
 
-    /// The page built in Rust loads under /next/ without the key, its HTML
-    /// lets WebAssembly run (and the current page's doesn't), and its files
-    /// come gzipped to a browser that takes it.
+    /// The page loads without the key, its policy lets it run WebAssembly
+    /// and nothing but its own files, and its files come gzipped to a
+    /// browser that takes it.
     #[tokio::test]
-    async fn the_rust_page_loads_under_next() {
+    async fn the_page_loads_its_webassembly_gzipped() {
         let feed = Feed::new("main");
         let served = serve(&feed);
-        let response = served.get("/next/", None).await;
+        let response = served.get("/", None).await;
         assert_eq!(response.status(), StatusCode::OK);
         let policy = response.headers()[header::CONTENT_SECURITY_POLICY]
             .to_str()
             .unwrap()
             .to_string();
         assert!(
-            policy.contains("script-src 'self' 'wasm-unsafe-eval';"),
+            policy.contains("default-src 'none'; script-src 'self' 'wasm-unsafe-eval';"),
             "{policy}"
         );
-        assert!(response.text().await.unwrap().contains("/next/boot.js"));
-        let current = served.get("/", None).await;
-        let policy = current.headers()[header::CONTENT_SECURITY_POLICY]
-            .to_str()
-            .unwrap();
-        assert!(!policy.contains("wasm"), "{policy}");
+        assert!(response.text().await.unwrap().contains("/boot.js"));
 
         let wasm = served
             .http
-            .get(format!("{}/next/arko-web_bg.wasm", served.base))
+            .get(format!("{}/arko-web_bg.wasm", served.base))
             .header(header::ACCEPT_ENCODING, "gzip, br")
             .send()
             .await
@@ -1515,17 +1437,17 @@ mod tests {
             &mut unpacked,
         )
         .unwrap();
-        assert_eq!(unpacked, next::WASM);
-        assert!(packed.len() < next::WASM.len() / 2);
+        assert_eq!(unpacked, WASM);
+        assert!(packed.len() < WASM.len() / 2);
         let plain = served
             .http
-            .get(format!("{}/next/arko-web.js", served.base))
+            .get(format!("{}/arko-web.js", served.base))
             .header(header::ACCEPT_ENCODING, "identity")
             .send()
             .await
             .unwrap();
         assert!(plain.headers().get(header::CONTENT_ENCODING).is_none());
-        assert_eq!(plain.bytes().await.unwrap(), next::SCRIPT.as_bytes());
+        assert_eq!(plain.bytes().await.unwrap(), SCRIPT.as_bytes());
     }
 
     /// The Rust page reads the stream with types of its own, compiled from
@@ -1817,7 +1739,7 @@ mod tests {
                 .unwrap()
                 .contains("script-src 'self'")
         );
-        assert!(page.text().await.unwrap().contains("/app.js"));
+        assert!(page.text().await.unwrap().contains("/boot.js"));
 
         for path in ["/api/session", "/api/events"] {
             let response = served.get(path, None).await;

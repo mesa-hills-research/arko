@@ -1,9 +1,10 @@
-# Build with `trunk build --release` from this folder. The output goes where
-# arko-tui embeds it, and the server serves it under /next/.
+# Build with build.sh from this folder. The output goes where arko-tui
+# embeds it, and the server serves it at the root. Trunk empties that folder
+# on each build, so the icons and the font are copied in from assets/.
 [build]
 target = "index.html"
-dist = "../src/remote/next"
-public_url = "/next/"
+dist = "../src/remote/page"
+public_url = "/"
 filehash = false
 # No integrity attributes: the page's own server serves every file.
 no_sri = true

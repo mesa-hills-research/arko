@@ -3,4 +3,4 @@
 /.cargo/config.toml
 __pycache__/
 # Trunk's lock while it builds the page in web/.
-/src/remote/next/.trunk-lock
+/src/remote/page/.trunk-lock

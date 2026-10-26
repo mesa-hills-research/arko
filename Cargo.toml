@@ -12,7 +12,7 @@ readme = "README.md"
 keywords = ["agent", "ai", "llm", "terminal", "cli"]
 categories = ["command-line-utilities", "development-tools"]
 # The evaluation harness runs from a checkout. The page in web/ is built
-# into src/remote/next/, which the crate embeds.
+# into src/remote/page/, which the crate embeds.
 exclude = ["evals/", ".agents/", "web/"]
 
 [lib]

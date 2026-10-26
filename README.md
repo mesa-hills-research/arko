@@ -87,7 +87,6 @@ arko-tui = { version = "0.12.0", default-features = false, features = ["remote"]
 
 ```bash
 cargo test
-node --test src/remote/page-tests/core.test.js
 ```
 
 The tests run against a mock model server, so they need no API keys.

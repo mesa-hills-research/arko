@@ -4,7 +4,7 @@
 
 ```bash
 cargo test
-node --test src/remote/page-tests/core.test.js
+cargo test --manifest-path web/Cargo.toml
 ```
 
 The tests run against a mock model server, so they need no API keys. The Claude Code tests run a
@@ -28,3 +28,9 @@ arko_index = { path = "../arko_framework/arko_index" }
 
 The checkout's crate versions must match the ones `Cargo.toml` asks for. Cargo records the
 override in `Cargo.lock`, so regenerate the lock without the override before committing.
+
+## The web page
+
+The remote web page is written in Rust with Leptos, in `web/`. Its built files are in
+`src/remote/page/`, so building Arko needs no web tools. After changing the page, rebuild it with
+`web/build.sh` and commit the output with the change. [web/README.md](web/README.md) says how.

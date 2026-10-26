@@ -1,5 +1,5 @@
 #!/bin/sh
-# Builds the page into ../src/remote/next/. The paths of this computer are
+# Builds the page into ../src/remote/page/. The paths of this computer are
 # left out of the output, so it's the same wherever it's built. With
 # erase_components, Leptos erases its views' types, which makes the page
 # about a tenth smaller.
