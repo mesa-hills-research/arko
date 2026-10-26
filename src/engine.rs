@@ -586,7 +586,8 @@ impl Engine {
                 let notes = providers::check_openrouter(
                     &mut settings,
                     options.handover_at.is_some(),
-                    providers::openrouter_url(),
+                    &root,
+                    None,
                 )
                 .await?;
                 for note in notes {
@@ -613,11 +614,15 @@ impl Engine {
             Some(client) => client,
             None => Arc::new(
                 client_asking(prompter.as_ref(), || {
-                    providers::client(options.codex_auth.as_deref(), &settings)
+                    providers::client(options.codex_auth.as_deref(), &root, &settings)
                 })
                 .await?,
             ),
         };
+        // The OpenRouter models it starts on count among the ones picked.
+        for model in [&settings.worker.model, &settings.main.model] {
+            crate::openrouter::remember(&root, model);
+        }
         let provider_setup = providers::Setup::new(settings.openai_auth);
         {
             // Settings the agents can't be built with leave no session behind.

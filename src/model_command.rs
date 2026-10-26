@@ -173,6 +173,15 @@ impl Harness {
             } => {
                 let resolved = providers::resolve_model(&model)?;
                 self.can_reach(&resolved)?;
+                // A model on OpenRouter goes by the settings in its file, which
+                // mustn't be guessed, and by what is known of its context window.
+                let resolved = match resolved.provider {
+                    Provider::OpenRouter => {
+                        crate::openrouter::Settings::read_to_use(&self.root)?;
+                        crate::openrouter::known(&self.root, &resolved.id).unwrap_or(resolved)
+                    }
+                    _ => resolved,
+                };
                 let current = match target {
                     Target::Main => &self.settings.main,
                     Target::Workers => &self.settings.worker,
@@ -189,10 +198,15 @@ impl Harness {
                     Some(effort) => effort,
                     None => providers::fit_effort(&resolved, current.effort),
                 };
-                match target {
+                let done = match target {
                     Target::Main => self.set_main_model(&resolved, effort),
                     Target::Workers => self.set_workers_model(Some((&resolved, effort))),
+                };
+                if done.is_ok() && resolved.provider == Provider::OpenRouter {
+                    crate::openrouter::remember(&self.root, &providers::model_name(&resolved));
+                    self.publish_models();
                 }
+                done
             }
             Request::FollowMain => self.set_workers_model(None),
         }
@@ -761,6 +775,8 @@ impl Harness {
                 .or_else(|| self.openai_auth())
                 .map(|auth| auth.describe().to_string()),
             has_workers: self.settings.max_workers > 0 && self.crew.is_some(),
+            recent: crate::openrouter::Settings::load(&self.root).recent_names(),
+            root: Some(self.root.clone()),
         };
     }
 }

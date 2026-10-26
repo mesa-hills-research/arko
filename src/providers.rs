@@ -22,7 +22,6 @@
 //! the session.
 
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 use arko_ai::model::ModelType;
 use arko_ai::{
@@ -800,11 +799,14 @@ pub fn explain_error(message: &str) -> std::borrow::Cow<'_, str> {
 /// used first. `needs` says what a model (a way's first) needs that isn't
 /// there, and `openai_auth` how OpenAI models are reached. `current` (the
 /// agents' models now) are listed in their group when the list leaves
-/// them out.
+/// them out. OpenRouter serves any model, so its group lists the ones
+/// picked (`recent`, up to [`crate::openrouter::RECENT`], newest first), and
+/// one to start with while there are none.
 pub fn model_menu(
     needs: impl Fn(&str) -> Option<String>,
     openai_auth: Option<OpenAiAuth>,
     current: &[&str],
+    recent: &[String],
 ) -> Vec<ModelGroup> {
     let openai = match openai_auth {
         Some(OpenAiAuth::ApiKey) => "OpenAI, with your API key",
@@ -874,6 +876,14 @@ pub fn model_menu(
                 .collect(),
         })
         .collect();
+    // OpenRouter's models are the ones picked.
+    if !recent.is_empty() {
+        menu[4].models = recent
+            .iter()
+            .take(crate::openrouter::RECENT)
+            .map(|name| (name.clone(), ""))
+            .collect();
+    }
     // The agents' own models, where the list leaves them out.
     for name in current {
         if menu
@@ -975,7 +985,11 @@ pub enum Failure {
 /// The model client for the session's models: each provider with the
 /// credentials it needs, OpenAI as the session's [`OpenAiAuth`] says (never
 /// both ways), and Claude Code checked: installed and signed in.
-pub fn client(codex_auth: Option<&Path>, settings: &Settings) -> Result<LLMClient, Failure> {
+pub fn client(
+    codex_auth: Option<&Path>,
+    root: &Path,
+    settings: &Settings,
+) -> Result<LLMClient, Failure> {
     // Debug builds can talk to a local test model server (the full-screen
     // view's end-to-end checks run the real binary on one).
     #[cfg(debug_assertions)]
@@ -989,6 +1003,7 @@ pub fn client(codex_auth: Option<&Path>, settings: &Settings) -> Result<LLMClien
     }
     client_with(
         settings,
+        root,
         credentials::var,
         credentials::codex_auths(codex_auth),
         claude_code::check_recent,
@@ -997,8 +1012,10 @@ pub fn client(codex_auth: Option<&Path>, settings: &Settings) -> Result<LLMClien
 
 /// [`client`], with the settings read through `var`, the Codex auth.json
 /// files the user named (else Codex's own), and how Claude Code is checked.
+/// OpenRouter's client carries the settings in Arko's folder `root`.
 fn client_with(
     settings: &Settings,
+    root: &Path,
     var: impl Fn(&str) -> Option<String>,
     auth_files: Vec<PathBuf>,
     check_claude_code: impl Fn() -> Result<claude_code::Ready, claude_code::Problem>,
@@ -1037,6 +1054,17 @@ fn client_with(
         (Err(_), true) => from_env(None).map_err(|error| Failure::Other(error.to_string()))?,
         (Err(error), false) => return Err(Failure::Other(error.to_string())),
     };
+    if client.has_provider(&Provider::OpenRouter)
+        && let Some(key) = var(credentials::OPENROUTER_KEY)
+    {
+        // A file that can't be read stops a session that uses OpenRouter,
+        // since its privacy settings may be in it.
+        let routing = match uses(Provider::OpenRouter) {
+            true => crate::openrouter::Settings::read_to_use(root).map_err(Failure::Other)?,
+            false => crate::openrouter::Settings::load(root),
+        };
+        client.set_openrouter_client(crate::openrouter::client_with(&key, &routing, None));
+    }
     if spare
         && auth == Some(OpenAiAuth::ChatGpt)
         && !client.has_provider(&Provider::OpenAI)
@@ -1098,19 +1126,19 @@ fn client_with(
     Ok(client)
 }
 
-/// How long Arko waits for OpenRouter's catalog.
-const CATALOG_TIMEOUT: Duration = Duration::from_secs(10);
-
-/// Checks a new session's OpenRouter models against OpenRouter's public
-/// model catalog (read without the API key; it costs nothing): the slug
-/// exists and takes tool calls, and, unless `--handover-at` was given
-/// (`explicit_handover`), the handover is sized from its context window.
-/// Returns what to tell the user. Without the catalog (offline), the
-/// session starts unchecked, handing over at [`UNKNOWN_LIMIT_HANDOVER`].
+/// Checks a new session's OpenRouter models against OpenRouter's list of
+/// models that take tool calls and that the OpenRouter settings in Arko's
+/// folder `root` allow (read without the API key, and fetched only when the
+/// list in memory is old): the slug is on it, and, unless `--handover-at` was
+/// given (`explicit_handover`), the handover is sized from its context
+/// window. `local` is a server standing in for OpenRouter (tests). Returns
+/// what to tell the user. Without the list (offline), the session starts
+/// unchecked, handing over at [`UNKNOWN_LIMIT_HANDOVER`].
 pub async fn check_openrouter(
     settings: &mut Settings,
     explicit_handover: bool,
-    base_url: &str,
+    root: &Path,
+    local: Option<&str>,
 ) -> Result<Vec<String>, String> {
     let uses = [&settings.main, &settings.worker]
         .iter()
@@ -1118,20 +1146,26 @@ pub async fn check_openrouter(
     if !uses {
         return Ok(Vec::new());
     }
-    let client = arko_ai::OpenRouterClient::new("").with_base_url(base_url);
-    let catalog = match tokio::time::timeout(CATALOG_TIMEOUT, client.fetch_models()).await {
-        Ok(Ok(catalog)) => Ok(catalog),
-        Ok(Err(error)) => Err(error.to_string()),
-        Err(_) => Err("it didn't answer in 10 s".to_string()),
-    };
-    apply_catalog(settings, catalog.as_deref(), explicit_handover)
+    // (A file that can't be read may hold the privacy settings, so the
+    // session doesn't start on a guess.)
+    let routing = crate::openrouter::Settings::read_to_use(root)?;
+    let catalog = crate::openrouter::checked(root, &routing, local).await;
+    apply_catalog(
+        settings,
+        catalog.as_deref(),
+        explicit_handover,
+        routing.filters_summary().as_deref(),
+    )
 }
 
 /// [`check_openrouter`] with the catalog read (or why it couldn't be).
+/// `filters` says what the OpenRouter settings rule out of the list (zero
+/// data retention, a region), when they do.
 fn apply_catalog(
     settings: &mut Settings,
     catalog: Result<&OpenRouterCatalog, &String>,
     explicit_handover: bool,
+    filters: Option<&str>,
 ) -> Result<Vec<String>, String> {
     let mut notes = Vec::new();
     for model in [&mut settings.main, &mut settings.worker] {
@@ -1171,9 +1205,14 @@ fn apply_catalog(
             continue;
         }
         let Some(listed) = catalog.get(&slug) else {
-            return Err(format!(
-                "{name} isn't in OpenRouter's model catalog. https://openrouter.ai/models lists the slugs (such as anthropic/claude-opus-5.5)"
-            ));
+            return Err(match filters {
+                Some(filters) => format!(
+                    "{name} isn't among the OpenRouter models that take tool calls and that your settings allow ({filters}). It may be a mistyped slug, or the settings rule it out. /openrouter changes them, and https://openrouter.ai/models lists the slugs."
+                ),
+                None => format!(
+                    "{name} isn't in OpenRouter's model catalog of models that take tool calls. https://openrouter.ai/models lists the slugs (such as anthropic/claude-opus-5.5)"
+                ),
+            });
         };
         if listed
             .openrouter_info()
@@ -1584,11 +1623,6 @@ impl Setup {
     }
 }
 
-/// The OpenRouter catalog's base URL, for [`check_openrouter`].
-pub fn openrouter_url() -> &'static str {
-    arko_ai::providers::openrouter::OPENROUTER_BASE_URL
-}
-
 /// What writing the conversation's `tokens` to the prompt cache, and reading
 /// them from it, cost on `model` now, per million tokens: at the prices in
 /// effect today, the long-context rates above their threshold, the fast
@@ -1656,6 +1690,11 @@ mod tests {
         assert!((long - long_read).abs() < 1e-9);
     }
     use crate::agents::ModelSettings;
+
+    /// An Arko folder that isn't there: no OpenRouter settings.
+    fn no_root() -> &'static Path {
+        Path::new("/no/such/arko")
+    }
 
     fn catalog(json: &str) -> OpenRouterCatalog {
         OpenRouterCatalog::from_json(json).unwrap()
@@ -1945,7 +1984,7 @@ mod tests {
             model("openrouter:anthropic/claude-opus-5.5"),
             model("openrouter:meta/small-model"),
         );
-        let notes = apply_catalog(&mut session, Ok(&catalog), false).unwrap();
+        let notes = apply_catalog(&mut session, Ok(&catalog), false, None).unwrap();
         assert!(notes.is_empty(), "{notes:?}");
         assert_eq!(
             session.main.handover_at,
@@ -1958,10 +1997,10 @@ mod tests {
         // --handover-at stands, up to 95% of what the model accepts.
         let mut session = settings(model("openrouter:meta/small-model"), model("opus"));
         session.main.handover_at = Some(100_000);
-        apply_catalog(&mut session, Ok(&catalog), true).unwrap();
+        apply_catalog(&mut session, Ok(&catalog), true, None).unwrap();
         assert_eq!(session.main.handover_at, Some(100_000));
         session.main.handover_at = Some(300_000);
-        let notes = apply_catalog(&mut session, Ok(&catalog), true).unwrap();
+        let notes = apply_catalog(&mut session, Ok(&catalog), true, None).unwrap();
         assert_eq!(session.main.handover_at, Some(121_600), "95% of 128k");
         assert_eq!(
             notes,
@@ -1973,19 +2012,19 @@ mod tests {
         // A slug the catalog doesn't list, or a model without tools, is
         // refused before the session starts.
         let mut session = settings(model("openrouter:acme/typo"), model("opus"));
-        let error = apply_catalog(&mut session, Ok(&catalog), false).unwrap_err();
+        let error = apply_catalog(&mut session, Ok(&catalog), false, None).unwrap_err();
         assert!(
             error.contains("isn't in OpenRouter's model catalog"),
             "{error}"
         );
         let mut session = settings(model("openrouter:acme/no-tools"), model("opus"));
-        let error = apply_catalog(&mut session, Ok(&catalog), false).unwrap_err();
+        let error = apply_catalog(&mut session, Ok(&catalog), false, None).unwrap_err();
         assert!(error.contains("doesn't take tool calls"), "{error}");
 
         // Offline: the session starts, at the fallback, and says so.
         let mut session = settings(model("openrouter:meta/small-model"), model("opus"));
         let offline = "connection refused".to_string();
-        let notes = apply_catalog(&mut session, Err(&offline), false).unwrap();
+        let notes = apply_catalog(&mut session, Err(&offline), false, None).unwrap();
         assert_eq!(session.main.handover_at, Some(UNKNOWN_LIMIT_HANDOVER));
         assert!(
             notes[0].contains("Could not read OpenRouter's model catalog"),
@@ -1996,7 +2035,7 @@ mod tests {
         // Sessions without OpenRouter models aren't touched.
         let mut session = settings(model("opus"), model("cc:fable"));
         assert!(
-            apply_catalog(&mut session, Ok(&catalog), false)
+            apply_catalog(&mut session, Ok(&catalog), false, None)
                 .unwrap()
                 .is_empty()
         );
@@ -2022,12 +2061,18 @@ mod tests {
             socket.write_all(reply.as_bytes()).await.unwrap();
             head
         });
+        let temp = tempfile::tempdir().unwrap();
         let mut session = settings(model("openrouter:meta/small-model"), model("opus"));
-        let notes = check_openrouter(&mut session, false, &url).await.unwrap();
+        let notes = check_openrouter(&mut session, false, temp.path(), Some(&url))
+            .await
+            .unwrap();
         assert!(notes.is_empty(), "{notes:?}");
         assert_eq!(session.main.handover_at, Some(102_400));
         let head = server.await.unwrap();
-        assert!(head.starts_with("GET /api/v1/models "), "{head}");
+        assert!(
+            head.starts_with("GET /api/v1/models?supported_parameters=tools "),
+            "{head}"
+        );
         assert!(
             !head.to_ascii_lowercase().contains("authorization"),
             "no key is sent: {head}"
@@ -2038,8 +2083,11 @@ mod tests {
         let url = format!("http://{}/api/v1", closed.local_addr().unwrap());
         drop(closed);
         let mut session = settings(model("openrouter:meta/small-model"), model("opus"));
-        let notes = check_openrouter(&mut session, false, &url).await.unwrap();
+        let notes = check_openrouter(&mut session, false, temp.path(), Some(&url))
+            .await
+            .unwrap();
         assert_eq!(notes.len(), 1, "{notes:?}");
+        assert!(notes[0].contains("(it couldn't be reached)"), "{notes:?}");
     }
 
     #[test]
@@ -2187,7 +2235,13 @@ mod tests {
                 plan: Some("max".into()),
             })
         };
-        match client_with(session, lookup, vec!["/no/such/auth.json".into()], ready) {
+        match client_with(
+            session,
+            no_root(),
+            lookup,
+            vec!["/no/such/auth.json".into()],
+            ready,
+        ) {
             Ok(_) => None,
             Err(Failure::Need(need)) => Some(need),
             Err(Failure::Other(error)) => panic!("{error}"),
@@ -2242,14 +2296,18 @@ mod tests {
                 .find(|(set, _)| *set == name)
                 .map(|(_, value)| value.to_string())
         };
-        let client = client_with(&sol, lookup, vec![], || Err(claude_code::Problem::Missing))
-            .ok()
-            .unwrap();
+        let client = client_with(&sol, no_root(), lookup, vec![], || {
+            Err(claude_code::Problem::Missing)
+        })
+        .ok()
+        .unwrap();
         assert!(!client.is_openai_chatgpt_oauth().await, "the API key");
         sol.openai_auth = Some(OpenAiAuth::ChatGpt);
-        let client = client_with(&sol, lookup, vec![], || Err(claude_code::Problem::Missing))
-            .ok()
-            .unwrap();
+        let client = client_with(&sol, no_root(), lookup, vec![], || {
+            Err(claude_code::Problem::Missing)
+        })
+        .ok()
+        .unwrap();
         assert!(client.is_openai_chatgpt_oauth().await, "the login");
         assert!(matches!(
             need(&sol, &[("OPENAI_API_KEY", "sk-proj-1")]),
@@ -2265,7 +2323,13 @@ mod tests {
         // Claude Code takes no key, but must be installed and signed in.
         let cc = settings(model("cc:opus"), model("cc:fable"));
         assert_eq!(need(&cc, &[]), None);
-        let missing = client_with(&cc, |_| None, vec![], || Err(claude_code::Problem::Missing));
+        let missing = client_with(
+            &cc,
+            no_root(),
+            |_| None,
+            vec![],
+            || Err(claude_code::Problem::Missing),
+        );
         assert!(matches!(
             missing,
             Err(Failure::Need(Need::ClaudeCode { problem: claude_code::Problem::Missing, ref model })) if model == "cc:claude-opus-5-5"
@@ -2291,9 +2355,15 @@ mod tests {
         let mut sol = settings(model("sol"), model("sol"));
         sol.openai_auth = Some(OpenAiAuth::ChatGpt);
         let labels = |paths: Vec<PathBuf>| {
-            let client = client_with(&sol, |_| None, paths, || Err(claude_code::Problem::Missing))
-                .ok()
-                .unwrap();
+            let client = client_with(
+                &sol,
+                no_root(),
+                |_| None,
+                paths,
+                || Err(claude_code::Problem::Missing),
+            )
+            .ok()
+            .unwrap();
             client
                 .chatgpt_accounts()
                 .unwrap()
@@ -2704,6 +2774,7 @@ mod tests {
             needs,
             Some(OpenAiAuth::ApiKey),
             &["gpt-5.6-terra", "gpt-6.1-sol"],
+            &[],
         );
         assert_eq!(menu[0].name, "OpenAI, with your API key");
         assert_eq!(menu[0].needs, None);
@@ -2730,12 +2801,93 @@ mod tests {
         }
     }
 
+    /// OpenRouter serves any model, so its group lists the ones picked, newest
+    /// first and eight at most, or one to start with while none were. The
+    /// agents' models join it when they aren't among them.
+    #[test]
+    fn the_openrouter_group_lists_the_models_picked_or_one_to_start_with() {
+        let group = |current: &[&str], recent: &[String]| {
+            model_menu(|_| None, None, current, recent)
+                .into_iter()
+                .find(|group| group.name.starts_with("OpenRouter"))
+                .unwrap()
+                .models
+                .into_iter()
+                .map(|(name, _)| name)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            group(&[], &[]),
+            ["openrouter:anthropic/claude-opus-5.5"],
+            "one to start with"
+        );
+        let picked: Vec<String> = (0..10).map(|n| format!("openrouter:acme/m{n}")).collect();
+        let listed = group(&[], &picked);
+        assert_eq!(listed.len(), 8);
+        assert_eq!(listed[..2], ["openrouter:acme/m0", "openrouter:acme/m1"]);
+        assert!(
+            !listed.contains(&"openrouter:anthropic/claude-opus-5.5".to_string()),
+            "{listed:?}"
+        );
+        // The current models that aren't picked come after.
+        let listed = group(
+            &["openrouter:acme/m1", "openrouter:other/now", "opus"],
+            &picked[..2],
+        );
+        assert_eq!(
+            listed,
+            [
+                "openrouter:acme/m0",
+                "openrouter:acme/m1",
+                "openrouter:other/now"
+            ]
+        );
+        // Whether it can be used is still told by its sample model.
+        let menu = model_menu(
+            |name| (name == "openrouter:anthropic/claude-opus-5.5").then(|| "a key".to_string()),
+            None,
+            &[],
+            &picked,
+        );
+        let openrouter = menu
+            .iter()
+            .find(|g| g.name.starts_with("OpenRouter"))
+            .unwrap();
+        assert_eq!(openrouter.needs.as_deref(), Some("a key"));
+    }
+
+    /// What the OpenRouter settings rule out is named when a model isn't on
+    /// the list.
+    #[test]
+    fn a_model_the_settings_rule_out_is_said_to_be_ruled_out() {
+        let catalog = catalog(CATALOG);
+        let mut session = settings(model("openrouter:acme/typo"), model("opus"));
+        let error = apply_catalog(
+            &mut session,
+            Ok(&catalog),
+            false,
+            Some("zero data retention, US only"),
+        )
+        .unwrap_err();
+        assert!(
+            error.contains("that your settings allow (zero data retention, US only)"),
+            "{error}"
+        );
+        assert!(error.contains("/openrouter changes them"), "{error}");
+        let error = apply_catalog(&mut session, Ok(&catalog), false, None).unwrap_err();
+        assert!(
+            error.contains("isn't in OpenRouter's model catalog of models that take tool calls"),
+            "{error}"
+        );
+        assert!(!error.contains("settings"), "{error}");
+    }
+
     /// Claude Code and the Anthropic API offer the same Claude models, Haiku
     /// 5.5 and Mythos 5.1 among them, and only Mythos comes with a note,
     /// since it needs access first.
     #[test]
     fn claude_code_and_the_api_offer_the_same_claude_models() {
-        let menu = model_menu(|_| None, None, &[]);
+        let menu = model_menu(|_| None, None, &[], &[]);
         let models = |way: &str| {
             menu.iter()
                 .find(|group| group.name.starts_with(way))

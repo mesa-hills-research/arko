@@ -3620,6 +3620,7 @@ pub(super) mod tests {
             openai_auth: Some("OpenAI API key".into()),
             has_workers: true,
             main_fast: false,
+            ..Default::default()
         }
     }
 

@@ -385,6 +385,7 @@ fn models_text(
         },
         basis.providers.openai_auth,
         &[basis.worker.model.as_str()],
+        &[],
     );
     let mut usable = String::from(
         "Models usable now (price per million input and output tokens, and the size where a worker hands over to a fresh conversation)",

@@ -1751,6 +1751,7 @@ impl Harness {
             "/outside" => self.outside_command(argument, source),
             "/model" => self.model_command(argument, source),
             "/keys" => self.keys_command(argument, source),
+            "/openrouter" => self.openrouter_command(argument, source),
             "/chatgpt" => self.chatgpt_command(argument, source),
             "/handover" => self.handover_command(argument, source),
             "/text-replies" => self.text_replies_command(argument, source),
@@ -4548,12 +4549,13 @@ pub(crate) fn place(link: &remote::Link) -> String {
 /// The commands that change a setting while the session runs, which take
 /// an argument: `/outside`, `/model`, `/handover`, `/handover-at`, `/keys`.
 /// And `/message`, which works while the agent works too.
-pub(crate) const LIVE_COMMANDS: [&str; 21] = [
+pub(crate) const LIVE_COMMANDS: [&str; 22] = [
     "/outside",
     "/model",
     "/handover",
     "/handover-at",
     "/keys",
+    "/openrouter",
     "/chatgpt",
     "/text-replies",
     "/cc-compact",
@@ -4696,6 +4698,12 @@ pub(crate) mod tests {
     mod api_keys {
         use super::*;
         include!("keys_tests.rs");
+    }
+
+    /// `/openrouter`'s end-to-end tests, in their own file.
+    mod openrouter {
+        use super::*;
+        include!("openrouter_tests.rs");
     }
 
     /// `/resume`'s end-to-end tests, in their own file.

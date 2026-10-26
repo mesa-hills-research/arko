@@ -497,11 +497,25 @@ impl Settings {
             .map_err(|error| format!("{} can't be read ({error})", path.display()))
     }
 
+    /// [`read`](Self::read), for what must not go by a guess, with what to do
+    /// when the file can't be read.
+    pub(crate) fn read_to_use(root: &Path) -> Result<Self, String> {
+        Self::read(root).map_err(|error| {
+            format!("{error}. Fix the file or remove it, since it holds the OpenRouter settings.")
+        })
+    }
+
     /// Saves them in Arko's folder `root`, and tells the sessions open in
     /// this process, which use them from their next request.
     pub fn save(&self, root: &Path) -> std::io::Result<()> {
+        self.save_from(root, 0)
+    }
+
+    /// [`save`](Self::save) for the session numbered `origin` (see
+    /// `Keys::id`), which isn't told of its own change.
+    pub(crate) fn save_from(&self, root: &Path, origin: u64) -> std::io::Result<()> {
         self.write(root)?;
-        announce(root);
+        announce(root, origin);
         Ok(())
     }
 
@@ -695,24 +709,35 @@ impl Settings {
     }
 
     /// The settings as lines, a choice to a line, for a front end without a
-    /// menu.
-    pub fn lines(&self) -> Vec<String> {
+    /// menu. `models` is the line's value for the models, when it has one.
+    pub fn lines(&self, models: Option<&str>) -> Vec<String> {
+        let rows = Control::ALL
+            .iter()
+            .map(|control| (control.label(), control.value(self)))
+            .chain(models.map(|models| ("Models", models.to_string())));
         let width = Control::ALL
             .iter()
             .map(|control| control.label().len())
             .max()
             .unwrap_or(0);
-        Control::ALL
-            .iter()
-            .map(|control| {
-                format!(
-                    "  {:<width$}  {}",
-                    control.label(),
-                    control.value(self),
-                    width = width
-                )
-            })
+        rows.map(|(label, value)| format!("  {label:<width$}  {value}"))
             .collect()
+    }
+
+    /// What the settings rule out of the list of models (zero data retention
+    /// and a region), in a few words, or `None` when nothing is.
+    pub fn filters_summary(&self) -> Option<String> {
+        let mut parts = Vec::new();
+        if self.zdr() {
+            parts.push("zero data retention");
+        }
+        match self.region {
+            Region::Any => {}
+            Region::Us => parts.push("US only"),
+            Region::Eu => parts.push("EU only"),
+            Region::UsOrEu => parts.push("US or EU only"),
+        }
+        (!parts.is_empty()).then(|| parts.join(", "))
     }
 
     /// What decides the list of models: the choices that rule models out.
@@ -764,25 +789,23 @@ fn zone_of(key: &Key, slug: &str) -> Option<Zone> {
         .copied()
 }
 
-/// The client for the settings in Arko's folder `root`.
-pub(crate) fn client(key: &str, root: &Path) -> OpenRouterClient {
-    client_with(key, &Settings::load(root), None)
-}
-
 /// Tells the sessions open in this process that the settings in `root`
 /// changed.
-fn announce(root: &Path) {
-    let _ = change_sender().send(root.to_path_buf());
+fn announce(root: &Path, origin: u64) {
+    let _ = change_sender().send((root.to_path_buf(), origin));
 }
 
-fn change_sender() -> &'static tokio::sync::broadcast::Sender<std::path::PathBuf> {
-    static SENDER: std::sync::OnceLock<tokio::sync::broadcast::Sender<std::path::PathBuf>> =
+type Saved = (std::path::PathBuf, u64);
+
+fn change_sender() -> &'static tokio::sync::broadcast::Sender<Saved> {
+    static SENDER: std::sync::OnceLock<tokio::sync::broadcast::Sender<Saved>> =
         std::sync::OnceLock::new();
     SENDER.get_or_init(|| tokio::sync::broadcast::channel(16).0)
 }
 
-/// The Arko folders whose settings are saved in this process from now on.
-pub(crate) fn changes() -> tokio::sync::broadcast::Receiver<std::path::PathBuf> {
+/// The Arko folders whose settings are saved in this process from now on,
+/// with the number of the session that saved them (0 for none).
+pub(crate) fn changes() -> tokio::sync::broadcast::Receiver<Saved> {
     change_sender().subscribe()
 }
 
@@ -823,6 +846,225 @@ fn update_recent(root: &Path, listed: &[Listed]) {
         && let Err(error) = settings.write(root)
     {
         log::warn!("openrouter: couldn't update the models picked ({error})");
+    }
+}
+
+// ----- the words /openrouter takes -----
+
+/// How `/openrouter` is used, one form to a line.
+pub const FORMS: [&str; 8] = [
+    "/openrouter zdr on|off",
+    "/openrouter data-collection allow|deny",
+    "/openrouter region any|us|eu|us-or-eu",
+    "/openrouter sort default|price|throughput|latency",
+    "/openrouter precision any|fp8|bf16",
+    "/openrouter only SLUGS|none",
+    "/openrouter ignore SLUGS|none",
+    "/openrouter refresh",
+];
+
+/// What `/openrouter WORDS` changes.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum Change {
+    Zdr(bool),
+    DataCollection(bool),
+    Region(Region),
+    Sort(Sort),
+    Precision(Precision),
+    Only(Vec<String>),
+    Ignore(Vec<String>),
+    /// Fetch the list of models again.
+    Refresh,
+}
+
+/// The change `/openrouter`'s `argument` asks for, or what is wrong with it.
+pub(crate) fn parse(argument: &str) -> Result<Change, String> {
+    let words: Vec<&str> = argument.split_whitespace().collect();
+    let usage = || format!("/openrouter takes these forms.\n{}", FORMS.join("\n"));
+    let word = |wanted: &[(&str, Change)], text: &str| {
+        wanted
+            .iter()
+            .find(|(word, _)| word.eq_ignore_ascii_case(text))
+            .map(|(_, change)| change.clone())
+    };
+    let choices = |name: &str, list: &[&str]| {
+        let (last, rest) = list.split_last().expect("choices");
+        let words = match rest {
+            [] => last.to_string(),
+            rest => format!("{} or {last}", rest.join(", ")),
+        };
+        format!("/openrouter {name} takes {words}.")
+    };
+    match words.as_slice() {
+        ["refresh"] => Ok(Change::Refresh),
+        ["zdr", value] => word(
+            &[("on", Change::Zdr(true)), ("off", Change::Zdr(false))],
+            value,
+        )
+        .ok_or_else(|| choices("zdr", &["on", "off"])),
+        ["data-collection", value] => word(
+            &[
+                ("deny", Change::DataCollection(true)),
+                ("allow", Change::DataCollection(false)),
+            ],
+            value,
+        )
+        .ok_or_else(|| choices("data-collection", &["allow", "deny"])),
+        ["region", value] => Region::ALL
+            .into_iter()
+            .find(|region| region.word().eq_ignore_ascii_case(value))
+            .map(Change::Region)
+            .ok_or_else(|| choices("region", &["any", "us", "eu", "us-or-eu"])),
+        ["sort", value] => Sort::ALL
+            .into_iter()
+            .find(|sort| sort.word().eq_ignore_ascii_case(value))
+            .map(Change::Sort)
+            .ok_or_else(|| choices("sort", &["default", "price", "throughput", "latency"])),
+        ["precision", value] => Precision::ALL
+            .into_iter()
+            .find(|precision| precision.word().eq_ignore_ascii_case(value))
+            .map(Change::Precision)
+            .ok_or_else(|| choices("precision", &["any", "fp8", "bf16"])),
+        ["only", rest @ ..] if !rest.is_empty() => Ok(Change::Only(slugs(&rest.join(" ")))),
+        ["ignore", rest @ ..] if !rest.is_empty() => Ok(Change::Ignore(slugs(&rest.join(" ")))),
+        _ => Err(usage()),
+    }
+}
+
+impl Change {
+    /// Makes the change in `settings`, and says what is so now. `None` for
+    /// a change that isn't to the settings.
+    pub(crate) fn apply(&self, settings: &mut Settings) -> Option<String> {
+        let list = |slugs: &[String]| crate::and_list(slugs);
+        Some(match self {
+            Change::Refresh => return None,
+            Change::Zdr(on) => {
+                settings.set_zdr(*on);
+                match on {
+                    true => "Zero data retention is on. Only providers that keep no data serve requests, and the list of models shows the models offered that way.".to_string(),
+                    false => "Zero data retention is off.".to_string(),
+                }
+            }
+            Change::DataCollection(deny) => {
+                settings.set_deny_data_collection(*deny);
+                match (deny, settings.zdr()) {
+                    (true, true) => "No data collection is on, and zero data retention covers it already.".to_string(),
+                    (true, false) => "No data collection is on. Only providers that don't collect your prompts serve requests.".to_string(),
+                    (false, true) => "No data collection is off, and zero data retention still covers it.".to_string(),
+                    (false, false) => "No data collection is off.".to_string(),
+                }
+            }
+            Change::Region(region) => {
+                settings.set_region(*region);
+                match region {
+                    Region::Any => "Region is any.".to_string(),
+                    region => format!(
+                        "Region is {}. It needs OpenRouter's Business or Enterprise plan, and fewer models are offered there.",
+                        region.label()
+                    ),
+                }
+            }
+            Change::Sort(sort) => {
+                settings.set_sort(*sort);
+                match sort {
+                    Sort::Default => "OpenRouter chooses how to order providers.".to_string(),
+                    sort => format!(
+                        "OpenRouter orders providers by {}.",
+                        sort.label().to_lowercase()
+                    ),
+                }
+            }
+            Change::Precision(precision) => {
+                settings.set_precision(*precision);
+                match precision {
+                    Precision::Any => "Any precision is allowed.".to_string(),
+                    precision => format!(
+                        "Providers must serve weights of {} precision.",
+                        precision.label().to_lowercase()
+                    ),
+                }
+            }
+            Change::Only(slugs) => {
+                settings.set_only(slugs.clone());
+                match slugs.as_slice() {
+                    [] => "Any provider may serve requests.".to_string(),
+                    slugs => format!("Only {} serve requests.", list(slugs)),
+                }
+            }
+            Change::Ignore(slugs) => {
+                settings.set_ignore(slugs.clone());
+                match slugs.as_slice() {
+                    [] => "No provider is left out.".to_string(),
+                    slugs => format!("{} never serve requests.", list(slugs)),
+                }
+            }
+        })
+    }
+}
+
+impl crate::Harness {
+    /// `/openrouter`, typed at the line prompt or sent from the page or an
+    /// app: says the settings and the forms that change them, or changes one
+    /// (the full-screen view has its own menu, opened by `/openrouter` alone).
+    /// The open sessions of this process use a change from their next request.
+    pub(crate) fn openrouter_command(&mut self, argument: &str, source: crate::remote::Source) {
+        let result = if argument.is_empty() {
+            self.show_openrouter()
+        } else {
+            self.change_openrouter(argument)
+        };
+        self.setting_reply(result, source, false);
+    }
+
+    fn show_openrouter(&self) -> Result<String, String> {
+        let settings = Settings::read(&self.root)?;
+        let mut lines = vec!["OpenRouter".to_string()];
+        lines.extend(settings.lines(Some(&catalog(&self.root).summary())));
+        lines.push(String::new());
+        lines.extend(FORMS.iter().map(|form| form.to_string()));
+        lines.push(String::new());
+        lines.push(
+            "Your OpenRouter account's own privacy settings at openrouter.ai apply too. Open sessions use a change from their next request.".to_string(),
+        );
+        Ok(lines.join("\n"))
+    }
+
+    fn change_openrouter(&mut self, argument: &str) -> Result<String, String> {
+        let change = parse(argument)?;
+        let root = self.root.clone();
+        let Some(said) = ({
+            let mut settings = Settings::read_to_use(&root)?;
+            let said = change.apply(&mut settings);
+            if said.is_some() {
+                settings
+                    .save_from(&root, self.keys.id())
+                    .map_err(|error| format!("Couldn't save the settings ({error})."))?;
+            }
+            said
+        }) else {
+            // Refresh: the models come in the background.
+            let feed = self.feed.clone();
+            std::thread::spawn(move || {
+                let catalog = refresh_blocking(&root, true);
+                let (level, text) = match catalog.problem {
+                    Some(problem) => (crate::remote::Level::Warn, format!("{problem}.")),
+                    None => (
+                        crate::remote::Level::Info,
+                        format!(
+                            "OpenRouter lists {} models that take tool calls.",
+                            catalog.models.len()
+                        ),
+                    ),
+                };
+                feed.notice(level, &text);
+            });
+            return Ok("Fetching OpenRouter's models.".to_string());
+        };
+        // (The list of models follows the filters.)
+        refresh_soon(&self.root);
+        Ok(format!(
+            "{said} Open sessions use it from their next request."
+        ))
     }
 }
 
@@ -1250,6 +1492,10 @@ async fn fetch(
 /// One list from `base`, without the entries that aren't models of their own
 /// (`:batch` runs the same model at a delay).
 async fn fetch_list(base: &str, zdr: bool) -> Result<Vec<Value>, String> {
+    // (Tests reach a local server only.)
+    if cfg!(test) && !base.starts_with("http://127.0.0.1") {
+        return Err("tests don't reach the network".to_string());
+    }
     let url = format!(
         "{}/models?supported_parameters=tools{}",
         base.trim_end_matches('/'),
@@ -1397,16 +1643,14 @@ pub(crate) async fn checked(
     local: Option<&str>,
 ) -> Result<Arc<OpenRouterCatalog>, String> {
     let key = settings.filters(local);
-    let catalog = refresh_at(&key, false, Some(root)).await;
-    let loaded = memory()
-        .get(&key)
-        .and_then(|entry| entry.loaded.as_ref())
-        .map(|loaded| loaded.catalog.clone());
-    match loaded {
-        Some(loaded) => Ok(loaded),
-        None => Err(catalog
-            .problem
-            .unwrap_or_else(|| "it gave no models".to_string())),
+    refresh_at(&key, false, Some(root)).await;
+    let memory = memory();
+    let entry = memory.get(&key);
+    match entry.and_then(|entry| entry.loaded.as_ref()) {
+        Some(loaded) => Ok(loaded.catalog.clone()),
+        None => Err(entry
+            .and_then(|entry| entry.failed.as_ref())
+            .map_or_else(|| "it gave no models".to_string(), |(_, why)| why.clone())),
     }
 }
 
@@ -1645,7 +1889,7 @@ mod tests {
         );
         assert_eq!(slugs("none"), Vec::<String>::new());
         assert_eq!(slugs("a, a,b"), ["a", "b"]);
-        let lines = settings.lines();
+        let lines = settings.lines(None);
         assert_eq!(lines.len(), 7);
         assert!(
             lines[2].contains("Region") && lines[2].ends_with("US or EU"),
@@ -1694,7 +1938,7 @@ mod tests {
         let mut settings = Settings::load(&root);
         settings.set_zdr(true);
         settings.save(&root).unwrap();
-        assert_eq!(heard.recv().await.unwrap(), root);
+        assert_eq!(heard.recv().await.unwrap(), (root, 0));
     }
 
     #[test]

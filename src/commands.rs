@@ -128,6 +128,13 @@ pub const COMMANDS: &[Command] = &[
         runs: Runs::Session,
     },
     Command {
+        name: "/openrouter",
+        args: "zdr on|off | data-collection allow|deny | region any|us|eu|us-or-eu | sort default|price|throughput|latency | precision any|fp8|bf16 | only SLUGS|none | ignore SLUGS|none | refresh",
+        about: "how OpenRouter routes requests, which providers may serve them (zero data retention, no data collection, a region, providers to use or leave out, their order and precision), and its list of models. It changes with the next request",
+        aliases: &[],
+        runs: Runs::Session,
+    },
+    Command {
         name: "/chatgpt",
         args: "[add PATH|remove N|first N]",
         about: "the ChatGPT logins, in the order they are used. The next one takes over when one reaches its usage limit",
@@ -332,6 +339,31 @@ const CHOICES: &[(&str, &[&str], &[&str])] = &[
     ("/remote", &[], &["qr", "off", "new-key"]),
     ("/handover-at", &[], &["main", "workers"]),
     ("/keys", &[], &["add", "remove"]),
+    (
+        "/openrouter",
+        &[],
+        &[
+            "zdr",
+            "data-collection",
+            "region",
+            "sort",
+            "precision",
+            "only",
+            "ignore",
+            "refresh",
+        ],
+    ),
+    ("/openrouter", &["zdr"], ON_OFF),
+    ("/openrouter", &["data-collection"], &["allow", "deny"]),
+    ("/openrouter", &["region"], &["any", "us", "eu", "us-or-eu"]),
+    (
+        "/openrouter",
+        &["sort"],
+        &["default", "price", "throughput", "latency"],
+    ),
+    ("/openrouter", &["precision"], &["any", "fp8", "bf16"]),
+    ("/openrouter", &["only"], &["none"]),
+    ("/openrouter", &["ignore"], &["none"]),
     ("/chatgpt", &[], &["add", "remove", "first"]),
 ];
 
@@ -493,6 +525,44 @@ mod tests {
         assert!(dynamic_choices(&reading, "/model", &["opus"]).contains(&"high".to_string()));
         assert_eq!(dynamic_choices(&reading, "/outside", &[]), ["on", "off"]);
         assert_eq!(
+            dynamic_choices(&reading, "/openrouter", &[]),
+            [
+                "zdr",
+                "data-collection",
+                "region",
+                "sort",
+                "precision",
+                "only",
+                "ignore",
+                "refresh"
+            ]
+        );
+        assert_eq!(
+            dynamic_choices(&reading, "/openrouter", &["zdr"]),
+            ["on", "off"]
+        );
+        assert_eq!(
+            dynamic_choices(&reading, "/openrouter", &["region"]),
+            ["any", "us", "eu", "us-or-eu"]
+        );
+        assert_eq!(
+            dynamic_choices(&reading, "/openrouter", &["sort"]),
+            ["default", "price", "throughput", "latency"]
+        );
+        assert_eq!(
+            dynamic_choices(&reading, "/openrouter", &["precision"]),
+            ["any", "fp8", "bf16"]
+        );
+        assert_eq!(
+            dynamic_choices(&reading, "/openrouter", &["data-collection"]),
+            ["allow", "deny"]
+        );
+        assert_eq!(
+            dynamic_choices(&reading, "/openrouter", &["only"]),
+            ["none"]
+        );
+        assert!(dynamic_choices(&reading, "/openrouter", &["refresh"]).is_empty());
+        assert_eq!(
             dynamic_choices(&reading, "/builtin-skills", &[]),
             [
                 "on",
@@ -564,7 +634,7 @@ mod tests {
             let command = find(name).unwrap();
             let hint: Vec<&str> = command
                 .args
-                .split(|c: char| !c.is_ascii_lowercase() && c != '-')
+                .split(|c: char| !c.is_ascii_lowercase() && !c.is_ascii_digit() && c != '-')
                 .collect();
             for word in before.iter().chain(words.iter()) {
                 assert!(hint.contains(word), "{name} {word}");

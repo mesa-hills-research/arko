@@ -15,7 +15,7 @@ pub fn menu(models: &Models, needs: impl Fn(&str) -> Option<String>) -> Vec<prov
         None => None,
     };
     let current = [models.main.as_str(), models.workers.as_str()];
-    providers::model_menu(needs, auth, &current)
+    providers::model_menu(needs, auth, &current, &models.recent)
 }
 
 /// The models the picker lets you choose, as `/model` takes them, with
@@ -101,6 +101,7 @@ fn models_for_new_session(root: &std::path::Path) -> NewSessionModels {
         |name| providers::missing_credential(name, None),
         auth,
         &current,
+        &crate::openrouter::Settings::load(root).recent_names(),
     );
     NewSessionModels {
         groups,
@@ -227,6 +228,41 @@ mod tests {
         let gif = image_refusal("gemini", "image/gif").expect("Gemini takes no GIF");
         assert!(gif.to_lowercase().contains("gif"), "{gif}");
         assert_eq!(image_refusal("no such model", "image/png"), None);
+    }
+
+    /// A new session's OpenRouter models are the ones picked in Arko's
+    /// folder, and an open session's are those it publishes.
+    #[test]
+    fn the_openrouter_models_picked_are_listed_for_new_and_open_sessions() {
+        let root = tempfile::tempdir().unwrap();
+        let openrouter = |groups: Vec<ModelGroup>| {
+            groups
+                .into_iter()
+                .find(|group| group.name.starts_with("OpenRouter"))
+                .unwrap()
+                .models
+                .into_iter()
+                .map(|(name, _)| name)
+                .collect::<Vec<_>>()
+        };
+        let before = for_new_session(root.path(), Some(root.path()));
+        assert_eq!(
+            openrouter(before.groups),
+            ["openrouter:anthropic/claude-opus-5.5"]
+        );
+        crate::openrouter::remember(root.path(), "openrouter:acme/one");
+        crate::openrouter::remember(root.path(), "openrouter:acme/two");
+        let after = for_new_session(root.path(), Some(root.path()));
+        assert_eq!(
+            openrouter(after.groups),
+            ["openrouter:acme/two", "openrouter:acme/one"]
+        );
+        let open = Models {
+            recent: vec!["openrouter:acme/three".into()],
+            ..Models::default()
+        };
+        assert_eq!(openrouter(menu(&open, |_| None)), ["openrouter:acme/three"]);
+        assert!(names(&open, |_| None).contains(&"openrouter:acme/three".to_string()));
     }
 
     /// A new session's models come grouped, before any session opens.

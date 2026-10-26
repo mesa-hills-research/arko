@@ -1678,6 +1678,7 @@ mod tests {
             parameters: Default::default(),
             peers: Vec::new(),
             all_peers: false,
+            group: None,
             state: SubagentState::Running,
             created: now,
             since: now,
