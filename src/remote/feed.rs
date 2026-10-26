@@ -65,106 +65,12 @@ const BACKLOG: usize = 2048;
 /// times a second); a change of its state goes out at once.
 const WORKER_EVERY: Duration = Duration::from_millis(250);
 
-/// What an item is.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-#[non_exhaustive]
-pub enum Kind {
-    /// The user's message, note, answer or command.
-    User,
-    /// An agent's text, as it streams.
-    Text,
-    /// An agent's thinking (its reasoning, or its summary), as it streams.
-    /// Clients show it folded. The user reads the agent's text, not this.
-    Thinking,
-    /// The main agent's message to the user while it works, or a message a
-    /// worker got (`from` says whose).
-    Message,
-    /// A tool call, whose `status` and `outcome` follow as an
-    /// [`Update::Change`].
-    Call,
-    /// A result that needs a block under its call, such as a command's
-    /// output or a long error.
-    Result,
-    /// What Arko says, such as a stop, an error, a retry or a handover.
-    Notice,
-    /// A command's output.
-    Output,
-    /// The main agent's question.
-    Question,
-    /// The main agent's reply, which ends its turn, or a worker's report,
-    /// which ends its run.
-    Reply,
-    /// The end of a turn, with its time and cost.
-    Turn,
-    /// Where a worker started, in the main transcript. Clients draw the
-    /// worker's [`WorkerSummary`] there.
-    WorkerLine,
-    /// Where the conversation changes (`/new`, `/resume`), so what follows
-    /// is another conversation's. A client that shows one conversation at a
-    /// time shows what follows the last of these, and one that keeps the
-    /// whole session draws it as a separator.
-    Conversation,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-#[non_exhaustive]
-pub enum Level {
-    Info,
-    Warn,
-    Error,
-}
-
-/// Where the user's text was typed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-#[non_exhaustive]
-pub enum Source {
-    Terminal,
-    Web,
-    /// An app in this process.
-    App,
-}
-
-/// What became of the user's text.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-#[non_exhaustive]
-pub enum Delivery {
-    /// It started a turn.
-    Turn,
-    /// It went to the working agent as a note, `pending` until the agent
-    /// reads it.
-    Note,
-    /// It answered the agent's question.
-    Answer,
-    /// It was a command.
-    Command,
-    /// It waits for a turn of its own.
-    Queued,
-    /// Arko sent it for the user, to keep the prompt cache warm
-    /// ([`REFRESH_MESSAGE`]). An app shows it and its reply as one muted
-    /// row.
-    Refresh,
-}
+// The types the web page reads too, which it compiles from the same file.
+pub use super::protocol::{Activity, CallStatus, Delivery, Kind, Level, Question, Source};
 
 /// The message that keeps the prompt cache warm where the provider takes
 /// no refresh out of band.
 pub const REFRESH_MESSAGE: &str = "(Arko sends this message only to keep the prompt cache warm. Reply with \"Acknowledged\" and nothing else.)";
-
-/// How a tool call is doing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-#[non_exhaustive]
-pub enum CallStatus {
-    /// No result yet.
-    Running,
-    Ok,
-    /// It failed, was refused, or ended with its turn or worker before its
-    /// result came.
-    Failed,
-}
 
 /// One entry of a transcript.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -358,22 +264,6 @@ impl Item {
         self.parameters = None;
         self.output = None;
     }
-}
-
-/// The question the main agent waits on.
-#[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct Question {
-    pub id: u64,
-    pub text: String,
-}
-
-/// Whether the main agent works, and what it asks.
-#[derive(Debug, Clone, Default, PartialEq, Serialize)]
-pub struct Activity {
-    pub working: bool,
-    pub question: Option<Question>,
-    /// When the turn started (Unix milliseconds), while one runs.
-    pub since: Option<i64>,
 }
 
 /// Where a worker is.

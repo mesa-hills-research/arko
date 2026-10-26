@@ -1363,6 +1363,58 @@ mod tests {
         assert!(INDEX.contains(r#"<img src="/icon.svg""#));
     }
 
+    /// The Rust page reads the stream with types of its own, compiled from
+    /// the same file as the server's. They read every field the server
+    /// writes of an item and its status, and (in tests) refuse a field they
+    /// don't know, so the two can't drift apart unnoticed.
+    #[tokio::test]
+    async fn the_rust_page_reads_what_the_stream_sends() {
+        use super::super::feed::{CallStatus, Delivery, Item, Kind, Level, Source};
+        use super::super::protocol::{ItemData, ResetData};
+        let mut item = Item::new(Kind::Call, "shell cargo test")
+            .detail("cargo test --lib")
+            .level(Level::Warn);
+        item.id = 7;
+        item.turn = Some(2);
+        item.source = Some(Source::Web);
+        item.delivery = Some(Delivery::Note);
+        item.status = Some(CallStatus::Failed);
+        item.outcome = Some("1 failed".into());
+        item.worker = Some("r1".into());
+        item.from = Some("main".into());
+        item.call = Some(6);
+        item.job = Some("job".into());
+        item.pending = true;
+        let read: ItemData = serde_json::from_value(serde_json::to_value(&item).unwrap()).unwrap();
+        assert_eq!(
+            (read.id, read.turn, read.kind, read.status, read.level),
+            (
+                7,
+                Some(2),
+                Kind::Call,
+                Some(CallStatus::Failed),
+                Some(Level::Warn)
+            )
+        );
+        assert_eq!(
+            (read.outcome.as_deref(), read.call, read.pending),
+            (Some("1 failed"), Some(6), true)
+        );
+
+        let feed = Feed::new("main");
+        feed.notice(Level::Info, "Resumed.");
+        feed.user("Hello", Source::Web, Delivery::Turn);
+        let served = serve(&feed);
+        let cookie = served.login().await;
+        let mut stream = served.get("/api/events", Some(&cookie)).await;
+        let mut buffer = String::new();
+        let events = read_until(&mut stream, &mut buffer, |name, _| name == "reset").await;
+        let reset: ResetData = serde_json::from_value(events.last().unwrap().1.clone()).unwrap();
+        assert_eq!(reset.items.len(), 2);
+        assert_eq!(reset.items[1].kind, Kind::User);
+        assert_eq!(reset.status.cost, 1.25);
+    }
+
     /// The page is open to all; the API answers 401 without the key, and
     /// the key buys an HttpOnly, SameSite=Strict cookie that opens it.
     #[tokio::test]
