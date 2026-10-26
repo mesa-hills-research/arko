@@ -979,6 +979,56 @@ mod tests {
         assert_eq!(again.current().len(), KEPT);
     }
 
+    /// How long a save of a large book takes, which runs under the feed's
+    /// lock: run with --ignored --nocapture for the times, with 500
+    /// questions in the current conversation, 500 in others, and 20 kept
+    /// notes, written to the disk the build uses.
+    #[test]
+    #[ignore]
+    fn a_large_books_save_takes() {
+        let dir = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+        let path = dir.path().join(FILE);
+        let (run, other) = (Uuid::new_v4(), Uuid::new_v4());
+        let mut book = Book::default();
+        book.keep_in(path);
+        book.set_run(Some(run));
+        let words = "Should the parser keep comments that sit between attributes, or drop them as it does now? It matters for the formatter, which round-trips the file.";
+        for (run, first) in [(other, 0), (run, 500)] {
+            let questions: Vec<AgentQuestion> = (first..first + 500)
+                .map(|n| {
+                    let mut question = on_card(&format!("q{}", n + 1), words, n as u64 / 3 + 1);
+                    question.choices = vec!["Keep them".into(), "Drop them".into()];
+                    question.default = Some("Keep them".into());
+                    question
+                })
+                .collect();
+            let ids: Vec<String> = questions.iter().map(|q| q.id.clone()).collect();
+            book.ask(run, questions, Some(Uuid::new_v4()), None);
+            book.settle(Some(run), &ids[..400], |_| QuestionState::Answered {
+                answer: "Keep them".into(),
+            });
+        }
+        for _ in 0..20 {
+            book.queue(run, vec!["q900".into()], words.repeat(3));
+        }
+        let saves = 200;
+        let mut times = Vec::new();
+        for _ in 0..saves {
+            let start = std::time::Instant::now();
+            book.save();
+            times.push(start.elapsed());
+        }
+        times.sort();
+        let bytes = std::fs::metadata(dir.path().join(FILE)).unwrap().len();
+        println!(
+            "{saves} saves of a {} KB file: median {:?}, 95th percentile {:?}, max {:?}",
+            bytes / 1024,
+            times[saves / 2],
+            times[saves * 95 / 100],
+            times[saves - 1]
+        );
+    }
+
     #[test]
     fn the_ids_of_a_result_are_read() {
         assert_eq!(
