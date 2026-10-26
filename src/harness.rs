@@ -7575,6 +7575,38 @@ pub(crate) mod tests {
         }
     }
 
+    /// A question without ids (a host's own `ask_user`, or a wait saved by
+    /// an older version) takes the user's words as its answer, from the
+    /// panel or a message.
+    #[tokio::test]
+    async fn a_question_without_ids_takes_the_users_words() {
+        let temp = tempfile::tempdir().unwrap();
+        let (mut harness, _inputs, _sender) = harness(temp.path(), LLMClient::new(), true);
+        let run = uuid::Uuid::new_v4();
+        for from_panel in [true, false] {
+            let (answer, mut answered) = tokio::sync::oneshot::channel();
+            harness.question_asked(Question {
+                run,
+                asked: one_question(crate::questions::PLAIN_ID, "Which file?"),
+                answer: Some(answer),
+                approval: None,
+            });
+            let id = harness.feed.open_questions()[0].id.clone();
+            assert!(!crate::questions::is_agent_id(&id));
+            if from_panel {
+                assert!(
+                    harness
+                        .answer_questions(answers(vec![text_answer(&id, "main.rs")]), Source::Web)
+                        .is_none()
+                );
+            } else {
+                assert_eq!(harness.reply_text("main.rs", &[]), None);
+            }
+            assert_eq!(answered.try_recv().unwrap(), "main.rs");
+            assert!(harness.waiting.is_empty());
+        }
+    }
+
     /// Approvals the agent asks for together show in one card, a choice
     /// each, and each takes its own answer: Save saves, and words of the
     /// user's ask for changes.
