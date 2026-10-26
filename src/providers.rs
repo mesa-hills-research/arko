@@ -1075,12 +1075,28 @@ fn client_with(
         true => Some(settings.openai_auth.unwrap_or(OpenAiAuth::ChatGpt)),
         false => available_openai_auth(&var, &auth_files),
     };
+    // OpenRouter's privacy settings may be in its file. Without them read, a
+    // session that uses OpenRouter doesn't start, and one that doesn't gets no
+    // OpenRouter client, which a later model or profile could use unrestricted.
+    let routing =
+        var(credentials::OPENROUTER_KEY).map(|_| crate::openrouter::Settings::read_to_use(root));
+    if uses(Provider::OpenRouter)
+        && let Some(Err(error)) = &routing
+    {
+        return Err(Failure::Other(error.clone()));
+    }
+    let routing_read = !matches!(routing, Some(Err(_)));
+    if let Some(Err(error)) = &routing {
+        eprintln!("arko: {error} OpenRouter stays off in this session.");
+    }
     let from_env = |auth: Option<OpenAiAuth>| {
         LLMClient::from_env_with(|name| {
             let wanted = if name.starts_with("OPENAI_OAUTH_") {
                 auth == Some(OpenAiAuth::ChatGpt) && auth_files.is_empty()
             } else if name == credentials::OPENAI_KEY {
                 auth == Some(OpenAiAuth::ApiKey)
+            } else if name == credentials::OPENROUTER_KEY {
+                routing_read
             } else {
                 true
             };
@@ -1096,14 +1112,9 @@ fn client_with(
     };
     if client.has_provider(&Provider::OpenRouter)
         && let Some(key) = var(credentials::OPENROUTER_KEY)
+        && let Some(Ok(routing)) = &routing
     {
-        // A file that can't be read stops a session that uses OpenRouter,
-        // since its privacy settings may be in it.
-        let routing = match uses(Provider::OpenRouter) {
-            true => crate::openrouter::Settings::read_to_use(root).map_err(Failure::Other)?,
-            false => crate::openrouter::Settings::load(root),
-        };
-        client.set_openrouter_client(crate::openrouter::client_with(&key, &routing, None));
+        client.set_openrouter_client(crate::openrouter::client_with(&key, routing, None));
     }
     if spare
         && auth == Some(OpenAiAuth::ChatGpt)
@@ -2080,6 +2091,59 @@ mod tests {
                 .is_empty()
         );
         assert_eq!(session.main.handover_at, Some(950_000));
+    }
+
+    /// A session reaches OpenRouter only with the settings the file holds
+    /// read. Without them, one that uses OpenRouter doesn't start, and one
+    /// that doesn't gets no OpenRouter client, which a worker's model or a
+    /// profile could use without the restrictions.
+    #[test]
+    fn an_unreadable_openrouter_file_keeps_openrouter_off() {
+        let root = tempfile::tempdir().unwrap();
+        let vars = |name: &str| match name {
+            "ANTHROPIC_API_KEY" => Some("sk-ant-test".to_string()),
+            "OPENROUTER_API_KEY" => Some("sk-or-test".to_string()),
+            _ => None,
+        };
+        let ready = || {
+            Ok(claude_code::Ready {
+                path: "/bin/claude".into(),
+                method: None,
+                plan: None,
+            })
+        };
+        let build = |session: &Settings| client_with(session, root.path(), vars, vec![], ready);
+        let opus = settings(model("opus"), model("opus"));
+        let on_openrouter = settings(model("openrouter:anthropic/claude-opus-5.5"), model("opus"));
+        // Readable (or missing): OpenRouter is there.
+        assert!(
+            build(&opus)
+                .ok()
+                .is_some_and(|client| client.has_provider(&Provider::OpenRouter))
+        );
+        std::fs::write(root.path().join(crate::openrouter::FILE), "{ oops").unwrap();
+        // A session on Opus has no OpenRouter, and one on OpenRouter says why.
+        let client = build(&opus).ok().expect("a session on Opus starts");
+        assert!(!client.has_provider(&Provider::OpenRouter));
+        assert!(client.has_provider(&Provider::Anthropic));
+        match build(&on_openrouter) {
+            Err(Failure::Other(error)) => {
+                assert!(error.contains("openrouter.json can't be read"), "{error}")
+            }
+            _ => panic!("a session on OpenRouter needs the file read"),
+        }
+        // Fixed: the client carries what the file says.
+        std::fs::write(
+            root.path().join(crate::openrouter::FILE),
+            r#"{"provider": {"zdr": true}}"#,
+        )
+        .unwrap();
+        assert!(
+            build(&opus)
+                .ok()
+                .is_some_and(|client| client.has_provider(&Provider::OpenRouter))
+        );
+        assert!(build(&on_openrouter).is_ok());
     }
 
     /// The catalog is read from OpenRouter's public endpoint: a local

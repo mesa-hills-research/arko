@@ -93,6 +93,9 @@ pub struct Keys {
     /// ([`use_codex_auth`](Self::use_codex_auth)).
     pub(crate) codex_auth: std::sync::OnceLock<std::path::PathBuf>,
     state: Mutex<State>,
+    /// The key and options of the OpenRouter client last installed (tests).
+    #[cfg(test)]
+    installed: Mutex<Option<(String, arko_ai::OpenRouterOptions)>>,
 }
 
 struct State {
@@ -198,6 +201,8 @@ impl Keys {
                 withdrawn: Vec::new(),
                 openrouter: None,
             }),
+            #[cfg(test)]
+            installed: Mutex::new(None),
         })
     }
 
@@ -209,7 +214,10 @@ impl Keys {
             return;
         }
         self.share_logins(root.clone());
-        self.share_openrouter(root.clone());
+        // Hears of OpenRouter settings saved from now on, and takes the ones
+        // saved since the client was made (the session starts in between).
+        crate::openrouter::register(&root, self);
+        self.reconcile_openrouter(&root);
         let mut changes = credentials::changes();
         let keys = Arc::downgrade(self);
         tokio::spawn(async move {
@@ -225,12 +233,18 @@ impl Keys {
                 if change.origin == keys.id || change.root != root {
                     continue;
                 }
-                // Removed: what this session reads next, if anything.
-                let value = change
-                    .value
-                    .clone()
-                    .or_else(|| credentials::key_value(change.key));
-                let now = keys.apply(change.key, value.as_deref());
+                // Removed: what this session reads next, if anything. (Reading
+                // files and settings keys, away from this task.)
+                let now = {
+                    let keys = keys.clone();
+                    let (key, added) = (change.key, change.value.clone());
+                    tokio::task::spawn_blocking(move || {
+                        let value = added.or_else(|| credentials::key_value(key));
+                        keys.apply(key, value.as_deref())
+                    })
+                    .await
+                    .unwrap_or_default()
+                };
                 let done = if change.value.is_some() {
                     "added"
                 } else {
@@ -469,6 +483,16 @@ impl Keys {
                 .to_string();
             }
         };
+        // For OpenRouter, the key and the settings installed are the latest
+        // of both: a change to the settings waits while this runs. (The
+        // lock of the settings comes before the state's.)
+        let _settings = (provider == Provider::OpenRouter)
+            .then(|| {
+                self.shared
+                    .get()
+                    .map(|root| crate::openrouter::lock_root(root))
+            })
+            .flatten();
         let mut state = self.state();
         if provider == Provider::OpenAI && state.openai == Some(OpenAiAuth::ChatGpt) {
             return match value {
@@ -504,7 +528,25 @@ impl Keys {
             )),
             _ => {
                 state.openrouter = Some(value.to_string());
-                self.install_openrouter(value, &self.openrouter_settings());
+                // A file that can't be read leaves the client as it is: the
+                // key and settings it has, else none. The settings may hold
+                // restrictions, so a client without them isn't installed.
+                match self.openrouter_settings() {
+                    Ok(settings) => self.install_openrouter(value, &settings),
+                    Err(error) => {
+                        return if self.client.has_provider(&provider)
+                            && !state.withdrawn.contains(&provider)
+                        {
+                            format!(
+                                "{error}, so this session keeps the key and the settings it has until a change to them."
+                            )
+                        } else {
+                            format!(
+                                "{error}, so OpenRouter's models can't be used until it is fixed."
+                            )
+                        };
+                    }
+                }
             }
         }
         state.withdrawn.retain(|withdrawn| *withdrawn != provider);
@@ -519,12 +561,13 @@ impl Keys {
         }
     }
 
-    /// The OpenRouter settings of Arko's folder, as they are now.
-    fn openrouter_settings(&self) -> crate::openrouter::Settings {
-        self.shared
-            .get()
-            .map(|root| crate::openrouter::Settings::load(root))
-            .unwrap_or_default()
+    /// The OpenRouter settings of Arko's folder, as the file has them now, or
+    /// why it can't be read.
+    fn openrouter_settings(&self) -> Result<crate::openrouter::Settings, String> {
+        match self.shared.get() {
+            Some(root) => crate::openrouter::Settings::read_to_use(root),
+            None => Ok(crate::openrouter::Settings::default()),
+        }
     }
 
     /// Has the model client reach OpenRouter with `key` and `settings`, for
@@ -536,66 +579,73 @@ impl Keys {
                 settings,
                 self.local.get().map(String::as_str),
             ));
-    }
-
-    /// Has this session use the OpenRouter settings another session, an app
-    /// or the terminal's menu saved (see [`crate::openrouter::changes`]), from
-    /// the agents' next request, and says so.
-    fn share_openrouter(self: &Arc<Self>, root: std::path::PathBuf) {
-        let mut changes = crate::openrouter::changes();
-        let keys = Arc::downgrade(self);
-        tokio::spawn(async move {
-            loop {
-                match changes.recv().await {
-                    Ok((changed, origin)) if changed == root => {
-                        let Some(keys) = keys.upgrade() else {
-                            break;
-                        };
-                        if origin != keys.id {
-                            keys.use_openrouter_settings(&root);
-                        }
-                    }
-                    // (A change may have been missed: the settings are read again.)
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                        let Some(keys) = keys.upgrade() else {
-                            break;
-                        };
-                        keys.use_openrouter_settings(&root);
-                    }
-                    Ok(_) => {}
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                }
-            }
-        });
-    }
-
-    /// Installs the OpenRouter client again with the settings in `root`,
-    /// when the session reaches OpenRouter. A file that can't be read leaves
-    /// the client as it is.
-    fn use_openrouter_settings(&self, root: &std::path::Path) {
-        if !self.reaches(&Provider::OpenRouter) {
-            return;
+        #[cfg(test)]
+        {
+            *crate::lock(&self.installed) = Some((key.to_string(), settings.options()));
         }
-        let settings = match crate::openrouter::Settings::read(root) {
-            Ok(settings) => settings,
-            Err(error) => {
-                self.notice(&format!(
-                    "{error}, so this session keeps the OpenRouter settings it has."
-                ));
-                return;
-            }
+    }
+
+    /// The key and options of the OpenRouter client last installed (tests).
+    #[cfg(test)]
+    pub(crate) fn installed(&self) -> Option<(String, arko_ai::OpenRouterOptions)> {
+        crate::lock(&self.installed).clone()
+    }
+
+    /// Remembers the OpenRouter key the client started with, which the
+    /// client is made again with when the settings change.
+    pub(crate) fn use_openrouter_key(&self, key: &str) {
+        self.state().openrouter = Some(key.to_string());
+    }
+
+    /// Installs the OpenRouter client again with `settings`, from the key in
+    /// use, and says so unless `quiet`. It runs under the settings' lock, as
+    /// a change is made, or as a key is replaced, so it never goes by a
+    /// key or settings that something newer has replaced.
+    pub(crate) fn use_openrouter_settings(
+        &self,
+        settings: &crate::openrouter::Settings,
+        announce: bool,
+    ) {
+        let kept = {
+            let state = self.state();
+            (!state.withdrawn.contains(&Provider::OpenRouter))
+                .then(|| state.openrouter.clone())
+                .flatten()
         };
-        let kept = self.state().openrouter.clone();
-        let key = kept.or_else(|| {
-            crate::context::within(self.context.clone(), || {
+        let reaches = self.reaches(&Provider::OpenRouter);
+        // (A key replaced while the settings couldn't be read waits for them.)
+        let key = match (kept, reaches) {
+            (Some(key), _) => Some(key),
+            (None, true) => crate::context::within(self.context.clone(), || {
                 credentials::key_value(&credentials::OPENROUTER)
-            })
-        });
+            }),
+            (None, false) => None,
+        };
         let Some(key) = key else {
             return;
         };
-        self.install_openrouter(&key, &settings);
-        self.notice("OpenRouter settings changed. This session uses them from its next request.");
+        self.install_openrouter(&key, settings);
+        if announce {
+            self.notice(
+                "OpenRouter settings changed. This session uses them from its next request.",
+            );
+        }
+    }
+
+    /// Takes the OpenRouter settings as the file has them now, once this
+    /// session hears of changes, for the ones saved while it started. A file
+    /// that can't be read leaves the client as it is.
+    fn reconcile_openrouter(&self, root: &std::path::Path) {
+        let _settings = crate::openrouter::lock_root(root);
+        if !self.reaches(&Provider::OpenRouter) {
+            return;
+        }
+        match crate::openrouter::Settings::read_to_use(root) {
+            Ok(settings) => self.use_openrouter_settings(&settings, false),
+            Err(error) => self.notice(&format!(
+                "{error} This session keeps the OpenRouter settings it has."
+            )),
+        }
     }
 
     /// This session's number, which its own changes are announced under.
@@ -896,13 +946,6 @@ mod tests {
         elsewhere.share(temp.path().join("other"));
         // As `add` does once the key is saved and used.
         a.announce(&credentials::OPENROUTER, Some("sk-or-test"));
-        tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            while !b.reaches(&Provider::OpenRouter) {
-                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .unwrap();
         let notices = |feed: &remote::Feed| {
             feed.subscribe()
                 .0
@@ -911,6 +954,13 @@ mod tests {
                 .map(|item| item.text)
                 .collect::<Vec<_>>()
         };
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while !(b.reaches(&Provider::OpenRouter) && !notices(&feed_b).is_empty()) {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
         assert!(
             notices(&feed_b)
                 .iter()

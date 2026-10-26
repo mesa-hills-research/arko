@@ -296,3 +296,261 @@ async fn a_model_switched_to_is_kept_and_sized_from_what_is_known() {
     );
     assert_eq!(harness.settings.main.model, "openrouter:acme/kept");
 }
+
+/// The model server for a main agent that starts one worker, both on
+/// OpenRouter: every request body and head is kept.
+async fn lead_and_worker() -> (ModelServer, Arc<Mutex<Vec<serde_json::Value>>>) {
+    let bodies = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
+    let seen = bodies.clone();
+    let server = ModelServer::start(Arc::new(move |_, text: String| {
+        let body: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
+        seen.lock().unwrap().push(body.clone());
+        Box::pin(async move {
+            let worker = text.contains("You are agent run r");
+            let answered = body["messages"]
+                .as_array()
+                .is_some_and(|messages| messages.iter().any(|message| message["role"] == "tool"));
+            if worker || answered {
+                openrouter_tool_call(
+                    "w",
+                    "complete_task",
+                    serde_json::json!({"summary": "Done."}),
+                    0.01,
+                )
+            } else {
+                openrouter_tool_call(
+                    "m",
+                    crew::START_AGENT,
+                    serde_json::json!({"agent": WORKER, "task": "Count the files."}),
+                    0.01,
+                )
+            }
+        })
+    }))
+    .await;
+    (server, bodies)
+}
+
+/// The requests of the main agent and of workers, apart.
+fn by_agent(
+    bodies: &Arc<Mutex<Vec<serde_json::Value>>>,
+) -> (Vec<serde_json::Value>, Vec<serde_json::Value>) {
+    bodies
+        .lock()
+        .unwrap()
+        .iter()
+        .cloned()
+        .partition(|body| !body.to_string().contains("You are agent run r"))
+}
+
+/// `/openrouter` changes the requests of the session that ran it at once,
+/// the main agent's and its workers', not only those of the others.
+#[tokio::test]
+async fn the_openrouter_command_changes_its_own_sessions_requests_and_its_workers() {
+    let (server, bodies) = lead_and_worker().await;
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, _sender) = harness(temp.path(), LLMClient::new(), true);
+    let model = opus_on_openrouter();
+    let managers = on_models(&mut harness, &model, &model, &providers::Setup::new(None));
+    let root = harness.root.clone();
+    harness.keys.use_local(server.url());
+    harness.keys.share(root.clone());
+    harness
+        .keys
+        .apply(&credentials::OPENROUTER, Some("sk-or-test"));
+
+    assert!(harness.live_command("/openrouter zdr on", Source::Terminal));
+    assert!(harness.live_command("/openrouter sort throughput", Source::Terminal));
+    assert!(harness.live_command("/openrouter ignore azure", Source::Terminal));
+    // (The session installed them itself, and doesn't announce its own.)
+    assert!(!said_all(&harness.feed).contains("OpenRouter settings changed"));
+    let end = harness
+        .turn(Prompt::User("Start a worker.".into()), &mut inputs)
+        .await;
+    assert!(matches!(end, TurnEnd::Answered));
+    until(|| !by_agent(&bodies).1.is_empty()).await;
+    let _ =
+        tokio::time::timeout(Duration::from_secs(20), harness.finish_workers(&mut inputs)).await;
+    let (main, workers) = by_agent(&bodies);
+    let wanted = serde_json::json!({"zdr": true, "sort": "throughput", "ignore": ["azure"]});
+    assert_eq!(main[0]["provider"], wanted);
+    assert_eq!(workers[0]["provider"], wanted);
+    let heads = server.heads().join("\n").to_ascii_lowercase();
+    assert!(
+        heads.contains("authorization: bearer sk-or-test"),
+        "{heads}"
+    );
+    harness.crew.as_ref().unwrap().shutdown().await;
+    managers.shutdown().await;
+}
+
+/// A key replaced while a change to the settings is made is used with the
+/// settings as the change leaves them, whichever came first: the request
+/// goes out with the new key and the new settings.
+#[tokio::test]
+async fn a_key_replaced_during_a_settings_change_goes_out_with_both() {
+    let (server, bodies) = lead_and_worker().await;
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, _sender) = harness(temp.path(), LLMClient::new(), true);
+    let model = opus_on_openrouter();
+    let managers = on_models(&mut harness, &model, &model, &providers::Setup::new(None));
+    let root = harness.root.clone();
+    harness.keys.use_local(server.url());
+    harness.keys.share(root.clone());
+    harness
+        .keys
+        .apply(&credentials::OPENROUTER, Some("sk-or-old"));
+
+    // The change has read the file (zero data retention off) and holds the
+    // lock, and the key is replaced meanwhile.
+    let (reached, go) = crate::openrouter::pause_next_change(&root);
+    let change = {
+        let root = root.clone();
+        std::thread::spawn(move || {
+            crate::openrouter::Settings::update(&root, |settings| settings.set_zdr(true))
+        })
+    };
+    reached.recv().unwrap();
+    let replace = {
+        let keys = harness.keys.clone();
+        std::thread::spawn(move || keys.apply(&credentials::OPENROUTER, Some("sk-or-new")))
+    };
+    std::thread::sleep(Duration::from_millis(150));
+    assert!(
+        !replace.is_finished(),
+        "the replacement waits for the change"
+    );
+    go.send(()).unwrap();
+    change.join().unwrap().unwrap();
+    replace.join().unwrap();
+
+    let end = harness
+        .turn(Prompt::User("Hello.".into()), &mut inputs)
+        .await;
+    let _ = end;
+    let (main, _) = by_agent(&bodies);
+    // (Without a sort of its own, a Claude request is sorted by price.)
+    assert_eq!(
+        main[0]["provider"],
+        serde_json::json!({"zdr": true, "sort": "price"})
+    );
+    let heads = server.heads().join("\n").to_ascii_lowercase();
+    assert!(heads.contains("authorization: bearer sk-or-new"), "{heads}");
+    assert!(!heads.contains("sk-or-old"), "{heads}");
+    harness.crew.as_ref().unwrap().shutdown().await;
+    managers.shutdown().await;
+}
+
+/// Settings saved after the session's client was made and before the session
+/// hears of changes are used by its first request.
+#[tokio::test]
+async fn settings_saved_while_a_session_starts_reach_its_first_request() {
+    let (server, bodies) = lead_and_worker().await;
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, _sender) = harness(temp.path(), LLMClient::new(), true);
+    let model = opus_on_openrouter();
+    let managers = on_models(&mut harness, &model, &model, &providers::Setup::new(None));
+    let root = harness.root.clone();
+    // The client as the session made it (no settings), not yet sharing.
+    harness.keys.use_local(server.url());
+    harness
+        .keys
+        .apply(&credentials::OPENROUTER, Some("sk-or-test"));
+    assert!(harness.keys.installed().unwrap().1.provider.is_none());
+    // Saved while the rest of the start goes on, with no one listening.
+    crate::openrouter::Settings::update(&root, |settings| {
+        settings.set_zdr(true);
+        settings.set_region(crate::openrouter::Region::Any);
+    })
+    .unwrap();
+    assert!(harness.keys.installed().unwrap().1.provider.is_none());
+    // The session starts hearing of changes, and takes the ones it missed.
+    harness.keys.share(root.clone());
+    assert_eq!(
+        harness.keys.installed().unwrap().1.provider.unwrap().zdr,
+        Some(true)
+    );
+    let end = harness
+        .turn(Prompt::User("Hello.".into()), &mut inputs)
+        .await;
+    let _ = end;
+    let (main, _) = by_agent(&bodies);
+    // (Without a sort of its own, a Claude request is sorted by price.)
+    assert_eq!(
+        main[0]["provider"],
+        serde_json::json!({"zdr": true, "sort": "price"})
+    );
+    harness.crew.as_ref().unwrap().shutdown().await;
+    managers.shutdown().await;
+}
+
+/// A key replaced while the settings file can't be read leaves the client
+/// as it is, with the old key and the restrictions it has, and says so. A
+/// session that has none doesn't get one without the restrictions. Once the
+/// file is fixed and changed, the new key is installed with the settings.
+#[tokio::test]
+async fn a_key_replaced_while_the_settings_cant_be_read_installs_no_unrestricted_client() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("arko");
+    crate::openrouter::Settings::update(&root, |settings| {
+        settings.set_zdr(true);
+        settings.set_region(crate::openrouter::Region::Eu);
+    })
+    .unwrap();
+    let session = |root: &std::path::Path| {
+        let keys = crate::keys::Keys::new(Arc::new(LLMClient::new()), None, None, None);
+        keys.share(root.to_path_buf());
+        keys
+    };
+    let keys = session(&root);
+    keys.apply(&credentials::OPENROUTER, Some("sk-or-old"));
+    let (key, options) = keys.installed().unwrap();
+    assert_eq!(key, "sk-or-old");
+    assert_eq!(options.provider.unwrap().zdr, Some(true));
+
+    std::fs::write(root.join(crate::openrouter::FILE), "{ oops").unwrap();
+    let said = keys.apply(&credentials::OPENROUTER, Some("sk-or-new"));
+    assert!(said.contains("openrouter.json can't be read"), "{said}");
+    assert!(
+        said.contains("keeps the key and the settings it has"),
+        "{said}"
+    );
+    let (key, options) = keys.installed().unwrap();
+    assert_eq!(key, "sk-or-old", "the client it has stays");
+    assert_eq!(options.provider.unwrap().zdr, Some(true));
+    assert!(keys.reaches(&arko_ai::Provider::OpenRouter));
+
+    // Fixed by hand, and the next change installs the key replaced.
+    std::fs::write(
+        root.join(crate::openrouter::FILE),
+        r#"{"region": "eu", "provider": {"zdr": true}}"#,
+    )
+    .unwrap();
+    crate::openrouter::Settings::update(&root, |settings| {
+        settings.set_sort(crate::openrouter::Sort::Price)
+    })
+    .unwrap();
+    let (key, options) = keys.installed().unwrap();
+    assert_eq!(key, "sk-or-new");
+    assert_eq!(options.provider.as_ref().unwrap().zdr, Some(true));
+    assert!(options.provider.unwrap().sort.is_some());
+
+    // A session with no OpenRouter client doesn't get one without the file.
+    std::fs::write(root.join(crate::openrouter::FILE), "{ oops").unwrap();
+    let fresh = session(&root);
+    let said = fresh.apply(&credentials::OPENROUTER, Some("sk-or-key"));
+    assert!(said.contains("can't be used until it is fixed"), "{said}");
+    assert!(fresh.installed().is_none());
+    assert!(!fresh.reaches(&arko_ai::Provider::OpenRouter));
+    std::fs::write(
+        root.join(crate::openrouter::FILE),
+        r#"{"provider": {"zdr": true}}"#,
+    )
+    .unwrap();
+    crate::openrouter::Settings::update(&root, |settings| settings.set_deny_data_collection(true))
+        .unwrap();
+    let (key, options) = fresh.installed().unwrap();
+    assert_eq!(key, "sk-or-key");
+    assert_eq!(options.provider.unwrap().zdr, Some(true));
+    assert!(fresh.reaches(&arko_ai::Provider::OpenRouter));
+}

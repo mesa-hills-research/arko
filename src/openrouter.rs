@@ -15,9 +15,9 @@
 //! it is due, and a request to a model never waits on either.
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{Arc, LazyLock, Mutex, Weak};
 use std::time::{Duration, Instant, SystemTime};
 
 use arko_ai::providers::openrouter::Quantization;
@@ -275,7 +275,7 @@ impl Control {
                 "Skips providers that store your prompts or may train on them. Zero data retention is stricter."
             }
             Control::Region => {
-                "Keeps requests in a region. It needs OpenRouter's Business or Enterprise plan, fewer models offer it, and it limits the list of models. US or EU uses the US for the models offered there, and the EU for the rest."
+                "Keeps requests in a region. It needs OpenRouter's Business or Enterprise plan, and the model list shows only the models offered there. US or EU uses the US for the models offered there, and the EU for the rest."
             }
             Control::Sort => "How OpenRouter orders the providers. Default lets it choose.",
             Control::Precision => "The least precise weights a provider may serve.",
@@ -490,13 +490,25 @@ impl Settings {
         let path = root.join(FILE);
         let text = match std::fs::read_to_string(&path) {
             Ok(text) => text,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(Self::default());
-            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
             Err(error) => return Err(format!("{} can't be read ({error})", path.display())),
         };
-        serde_json::from_str(&text)
-            .map_err(|error| format!("{} can't be read ({error})", path.display()))
+        let settings = match text.trim() {
+            "" => Self::default(),
+            _ => serde_json::from_str(&text)
+                .map_err(|error| format!("{} can't be read ({error})", path.display()))?,
+        };
+        crate::lock(&CACHE).insert(folder(root), settings.clone());
+        Ok(settings)
+    }
+
+    /// The settings as this process last read or saved them, which needs no
+    /// file access (drawing and completing use it), else as the file has
+    /// them. A change another Arko process made shows once something reads
+    /// the file ([`load`](Self::load)).
+    pub(crate) fn cached(root: &Path) -> Self {
+        let kept = crate::lock(&CACHE).get(&folder(root)).cloned();
+        kept.unwrap_or_else(|| Self::load(root))
     }
 
     /// [`read`](Self::read), for what must not go by a guess, with what to do
@@ -507,24 +519,61 @@ impl Settings {
         })
     }
 
-    /// Saves them in Arko's folder `root`, and tells the sessions open in
-    /// this process, which use them from their next request.
+    /// Changes the settings in Arko's folder `root`, as the file has them
+    /// now, and returns what is saved. `change` edits the settings read
+    /// under a lock that every change to the file takes, the models picked
+    /// and the other Arko processes' too, so two changes made at once both
+    /// stay, and what `change` doesn't touch stays as it is. The sessions
+    /// open in this process use the new settings from their next request,
+    /// and have them installed when this returns. A file that can't be read
+    /// is an error, and nothing is written.
+    pub fn update(root: &Path, change: impl FnOnce(&mut Settings)) -> Result<Settings, String> {
+        Self::edit(root, 0, change).map(|(settings, ())| settings)
+    }
+
+    /// [`update`](Self::update) for the session numbered `origin` (see
+    /// `Keys::id`), which isn't told of its own change in a notice, and
+    /// with what `change` returns.
+    pub(crate) fn edit<R>(
+        root: &Path,
+        origin: u64,
+        change: impl FnOnce(&mut Settings) -> R,
+    ) -> Result<(Settings, R), String> {
+        let _here = lock_root(root);
+        std::fs::create_dir_all(root)
+            .map_err(|error| format!("Couldn't save the settings ({error})."))?;
+        let _elsewhere = FileLock::acquire(root)?;
+        let mut settings = Self::read_to_use(root)?;
+        #[cfg(test)]
+        pause(root);
+        let before = settings.clone();
+        let result = change(&mut settings);
+        if settings != before {
+            let text = serde_json::to_string_pretty(&settings)
+                .map_err(|error| format!("Couldn't save the settings ({error})."))?;
+            crate::session::write_whole(&root.join(FILE), (text + "\n").as_bytes())
+                .map_err(|error| format!("Couldn't save the settings ({error})."))?;
+            crate::lock(&CACHE).insert(folder(root), settings.clone());
+        }
+        // The models picked change nothing a request carries.
+        if settings.region != before.region || settings.provider != before.provider {
+            notify(root, &settings, origin);
+        }
+        Ok((settings, result))
+    }
+
+    /// Saves the region and the `provider` these settings hold in Arko's
+    /// folder `root`, over the file as it is now, so the models picked
+    /// since they were read stay. Fields of the settings another change made
+    /// meanwhile are written back as these have them, so a front end that
+    /// changes one choice at a time uses [`update`](Self::update).
     pub fn save(&self, root: &Path) -> std::io::Result<()> {
-        self.save_from(root, 0)
-    }
-
-    /// [`save`](Self::save) for the session numbered `origin` (see
-    /// `Keys::id`), which isn't told of its own change.
-    pub(crate) fn save_from(&self, root: &Path, origin: u64) -> std::io::Result<()> {
-        self.write(root)?;
-        announce(root, origin);
-        Ok(())
-    }
-
-    fn write(&self, root: &Path) -> std::io::Result<()> {
-        std::fs::create_dir_all(root)?;
-        let text = serde_json::to_string_pretty(self)?;
-        crate::session::write_whole(&root.join(FILE), (text + "\n").as_bytes())
+        Self::update(root, |file| {
+            file.region = self.region;
+            file.provider = self.provider.clone();
+        })
+        .map(|_| ())
+        .map_err(std::io::Error::other)
     }
 
     /// Zero data retention: only providers that keep no data serve a
@@ -791,24 +840,139 @@ fn zone_of(key: &Key, slug: &str) -> Option<Zone> {
         .copied()
 }
 
-/// Tells the sessions open in this process that the settings in `root`
-/// changed.
-fn announce(root: &Path, origin: u64) {
-    let _ = change_sender().send((root.to_path_buf(), origin));
+// ----- one change at a time -----
+
+/// The settings last read or saved for each Arko folder.
+static CACHE: LazyLock<Mutex<HashMap<PathBuf, Settings>>> = LazyLock::new(Mutex::default);
+
+/// The folder as the locks, the settings kept and the sessions know it (a
+/// trailing slash or a `.` is no other folder).
+fn folder(root: &Path) -> PathBuf {
+    root.components().collect()
 }
 
-type Saved = (std::path::PathBuf, u64);
-
-fn change_sender() -> &'static tokio::sync::broadcast::Sender<Saved> {
-    static SENDER: std::sync::OnceLock<tokio::sync::broadcast::Sender<Saved>> =
-        std::sync::OnceLock::new();
-    SENDER.get_or_init(|| tokio::sync::broadcast::channel(16).0)
+/// The lock for changes to the file of Arko's folder `root` in this process.
+/// A session also takes it as a key is replaced, so that the key and the
+/// settings it installs are the latest of both.
+pub(crate) fn lock_root(root: &Path) -> std::sync::MutexGuard<'static, ()> {
+    static LOCKS: LazyLock<Mutex<HashMap<PathBuf, &'static Mutex<()>>>> =
+        LazyLock::new(Mutex::default);
+    let lock: &'static Mutex<()> = crate::lock(&LOCKS)
+        .entry(folder(root))
+        .or_insert_with(|| Box::leak(Box::new(Mutex::new(()))));
+    crate::lock(lock)
 }
 
-/// The Arko folders whose settings are saved in this process from now on,
-/// with the number of the session that saved them (0 for none).
-pub(crate) fn changes() -> tokio::sync::broadcast::Receiver<Saved> {
-    change_sender().subscribe()
+/// A lock file beside the settings, for other Arko processes: a change waits
+/// while one holds it. One older than ten seconds belongs to a process that
+/// died, and is taken over.
+struct FileLock(PathBuf);
+
+impl FileLock {
+    fn acquire(root: &Path) -> Result<Self, String> {
+        let path = root.join(format!("{FILE}.lock"));
+        let give_up = Instant::now() + Duration::from_secs(5);
+        loop {
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+            {
+                Ok(_) => return Ok(Self(path)),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    let old = std::fs::metadata(&path)
+                        .and_then(|meta| meta.modified())
+                        .ok()
+                        .and_then(|at| at.elapsed().ok())
+                        .is_some_and(|age| age > Duration::from_secs(10));
+                    if old {
+                        let _ = std::fs::remove_file(&path);
+                    } else if Instant::now() > give_up {
+                        return Err(format!(
+                            "{} is in use by another Arko. Try again.",
+                            root.join(FILE).display()
+                        ));
+                    } else {
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                }
+                Err(error) => {
+                    return Err(format!("Couldn't save the settings ({error})."));
+                }
+            }
+        }
+    }
+}
+
+impl Drop for FileLock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+/// The sessions open in this process, by Arko's folder.
+type Sessions = Vec<(PathBuf, Weak<crate::keys::Keys>)>;
+static SESSIONS: LazyLock<Mutex<Sessions>> = LazyLock::new(Mutex::default);
+
+/// Has the sessions of `keys`' kind hear of changes to the settings in
+/// `root` (see `Keys::share`).
+pub(crate) fn register(root: &Path, keys: &Arc<crate::keys::Keys>) {
+    let mut sessions = crate::lock(&SESSIONS);
+    sessions.retain(|(_, keys)| keys.strong_count() > 0);
+    sessions.push((folder(root), Arc::downgrade(keys)));
+}
+
+/// Installs `settings` in each session open on `root`, which says so unless
+/// it is the one numbered `origin`. It runs under the change's lock, so that
+/// the installs come in the order of the changes.
+fn notify(root: &Path, settings: &Settings, origin: u64) {
+    let sessions: Vec<Arc<crate::keys::Keys>> = crate::lock(&SESSIONS)
+        .iter()
+        .filter(|(at, _)| *at == folder(root))
+        .filter_map(|(_, keys)| keys.upgrade())
+        .collect();
+    for keys in sessions {
+        keys.use_openrouter_settings(settings, keys.id() != origin);
+    }
+}
+
+/// Stops the change in Arko's folder `root` that reads next, once it has
+/// read, until the test lets it go (tests).
+#[cfg(test)]
+type Pause = (
+    PathBuf,
+    std::sync::mpsc::Sender<()>,
+    std::sync::mpsc::Receiver<()>,
+);
+
+#[cfg(test)]
+static PAUSE: Mutex<Option<Pause>> = Mutex::new(None);
+
+/// Holds the next change in Arko's folder `root` after it has read the file.
+/// The first receiver says it did, and the sender lets it go (tests).
+#[cfg(test)]
+pub(crate) fn pause_next_change(
+    root: &Path,
+) -> (std::sync::mpsc::Receiver<()>, std::sync::mpsc::Sender<()>) {
+    let (reached, wait_for_it) = std::sync::mpsc::channel();
+    let (go, hold) = std::sync::mpsc::channel();
+    *crate::lock(&PAUSE) = Some((root.to_path_buf(), reached, hold));
+    (wait_for_it, go)
+}
+
+#[cfg(test)]
+fn pause(root: &Path) {
+    let pause = {
+        let mut held = crate::lock(&PAUSE);
+        match held.as_ref() {
+            Some((folder, ..)) if folder == root => held.take(),
+            _ => None,
+        }
+    };
+    if let Some((_, reached, go)) = pause {
+        let _ = reached.send(());
+        let _ = go.recv();
+    }
 }
 
 /// Keeps `model` (as `/model` takes it) among the models picked, when it is
@@ -822,13 +986,13 @@ fn remember_in(root: &Path, model: &str, local: Option<&str>) {
     let Some(slug) = crate::providers::strip_prefix(model, crate::providers::OPENROUTER) else {
         return;
     };
-    let Ok(mut settings) = Settings::read(root) else {
-        return;
-    };
-    let listed = listed_in_memory(&settings.filters(local), slug);
-    if settings.remember(slug, listed.as_ref())
-        && let Err(error) = settings.write(root)
-    {
+    // (As the file has the settings now, so that the models picked don't
+    // write old choices back.)
+    let kept = Settings::edit(root, 0, |settings| {
+        let listed = listed_in_memory(&settings.filters(local), slug);
+        settings.remember(slug, listed.as_ref());
+    });
+    if let Err(error) = kept {
         log::warn!("openrouter: couldn't keep the model picked ({error})");
     }
 }
@@ -841,12 +1005,9 @@ pub fn recent(root: &Path) -> Vec<Listed> {
 
 /// The models picked are brought up to date with a list just fetched.
 fn update_recent(root: &Path, listed: &[Listed]) {
-    let Ok(mut settings) = Settings::read(root) else {
-        return;
-    };
-    if settings.refresh_recent(listed)
-        && let Err(error) = settings.write(root)
-    {
+    if let Err(error) = Settings::edit(root, 0, |settings| {
+        settings.refresh_recent(listed);
+    }) {
         log::warn!("openrouter: couldn't update the models picked ({error})");
     }
 }
@@ -1034,17 +1195,8 @@ impl crate::Harness {
     fn change_openrouter(&mut self, argument: &str) -> Result<String, String> {
         let change = parse(argument)?;
         let root = self.root.clone();
-        let Some(said) = ({
-            let mut settings = Settings::read_to_use(&root)?;
-            let said = change.apply(&mut settings);
-            if said.is_some() {
-                settings
-                    .save_from(&root, self.keys.id())
-                    .map_err(|error| format!("Couldn't save the settings ({error})."))?;
-            }
-            said
-        }) else {
-            // Refresh: the models come in the background.
+        if change == Change::Refresh {
+            // The models come in the background.
             let feed = self.feed.clone();
             std::thread::spawn(move || {
                 let catalog = refresh_blocking(&root, true);
@@ -1061,7 +1213,11 @@ impl crate::Harness {
                 feed.notice(level, &text);
             });
             return Ok("Fetching OpenRouter's models.".to_string());
-        };
+        }
+        // Saved, and installed in every session open here, this one too, before
+        // it says so.
+        let (_, said) = Settings::edit(&root, self.keys.id(), |settings| change.apply(settings))?;
+        let said = said.unwrap_or_default();
         // (The list of models follows the filters.)
         refresh_soon(&self.root);
         Ok(format!(
@@ -1294,6 +1450,8 @@ struct Entry {
 static MEMORY: LazyLock<Mutex<HashMap<Key, Entry>>> = LazyLock::new(Mutex::default);
 /// How many fetches are going on or waiting.
 static FETCHING: AtomicUsize = AtomicUsize::new(0);
+/// How many are going on or waiting for each list.
+static IN_FLIGHT: LazyLock<Mutex<HashMap<Key, usize>>> = LazyLock::new(Mutex::default);
 /// Counts what changed in memory, for a view to draw again.
 static GENERATION: AtomicU64 = AtomicU64::new(0);
 
@@ -1307,9 +1465,22 @@ pub fn generation() -> u64 {
     GENERATION.load(Ordering::Relaxed)
 }
 
-/// Whether a fetch of the models is going on in this process.
+/// Whether a fetch of the models is going on in this process, for whichever
+/// settings ([`loading_for`] says for the settings of a folder).
 pub fn loading() -> bool {
     FETCHING.load(Ordering::Relaxed) > 0
+}
+
+/// Whether the models the settings in Arko's folder `root` allow are being
+/// fetched. It needs no file access, so a view can ask as it draws.
+pub fn loading_for(root: &Path) -> bool {
+    fetching(&Settings::cached(root).filters(None))
+}
+
+fn fetching(key: &Key) -> bool {
+    crate::lock(&IN_FLIGHT)
+        .get(key)
+        .is_some_and(|count| *count > 0)
 }
 
 fn snapshot(key: &Key) -> Catalog {
@@ -1415,6 +1586,7 @@ pub(crate) fn seed_entries_for_tests(settings: &Settings, entries: Vec<Value>) {
         catalog: Arc::new(catalog),
         zones: HashMap::new(),
     });
+    GENERATION.fetch_add(1, Ordering::Relaxed);
 }
 
 /// Makes the models for `settings` a failed fetch, as if it had just
@@ -1430,16 +1602,18 @@ const MOST_COMPLETIONS: usize = 40;
 
 /// The OpenRouter models (as `/model` takes them, `openrouter:slug`) whose
 /// name starts with `typed`, from the models in memory for the settings in
-/// Arko's folder `root`, at most forty. It never waits. It starts a fetch in
-/// the background when the models are due, so the first call may give none,
-/// and later calls give them.
+/// Arko's folder `root`, at most forty. It never waits and needs no file
+/// access, so the input box can ask as it draws. It starts a fetch in the
+/// background when the models are due, so the first call may give none, and
+/// later calls give them.
 pub fn completions(root: &Path, typed: &str) -> Vec<String> {
     let prefix = typed.to_lowercase();
     if !prefix.starts_with(crate::providers::OPENROUTER) {
         return Vec::new();
     }
-    refresh_soon(root);
-    snapshot(&Settings::load(root).filters(None))
+    let key = Settings::cached(root).filters(None);
+    refresh_key_soon(key.clone(), root);
+    snapshot(&key)
         .models
         .into_iter()
         .filter(|model| model.name.to_lowercase().starts_with(&prefix))
@@ -1452,8 +1626,13 @@ pub fn completions(root: &Path, typed: &str) -> Vec<String> {
 /// returns at once. A view draws what is in memory ([`catalog`]) and
 /// again when [`generation`] moves.
 pub fn refresh_soon(root: &Path) {
-    let key = Settings::load(root).filters(None);
-    if is_fresh(&key) || failed_lately(&key) || loading() {
+    refresh_key_soon(Settings::cached(root).filters(None), root);
+}
+
+/// [`refresh_soon`] for the models of `key`. A fetch of other models going
+/// on doesn't hold it back.
+fn refresh_key_soon(key: Key, root: &Path) {
+    if is_fresh(&key) || failed_lately(&key) || fetching(&key) {
         return;
     }
     // (A runtime of its own: the caller may have none.)
@@ -1467,22 +1646,34 @@ async fn refresh_at(key: &Key, force: bool, root: Option<&Path>) -> Catalog {
     if !force && (is_fresh(key) || failed_lately(key)) {
         return snapshot(key);
     }
-    static ONE_AT_A_TIME: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-    struct Counted;
+    /// A fetch for `key`, going on or waiting.
+    struct Counted(Key);
     impl Counted {
-        fn start() -> Self {
+        fn start(key: &Key) -> Self {
             FETCHING.fetch_add(1, Ordering::Relaxed);
-            Counted
+            *crate::lock(&IN_FLIGHT).entry(key.clone()).or_default() += 1;
+            Counted(key.clone())
         }
     }
     impl Drop for Counted {
         fn drop(&mut self) {
             FETCHING.fetch_sub(1, Ordering::Relaxed);
+            let mut in_flight = crate::lock(&IN_FLIGHT);
+            if let Some(count) = in_flight.get_mut(&self.0) {
+                *count -= 1;
+                if *count == 0 {
+                    in_flight.remove(&self.0);
+                }
+            }
             GENERATION.fetch_add(1, Ordering::Relaxed);
         }
     }
-    let _counted = Counted::start();
-    let _turn = ONE_AT_A_TIME.lock().await;
+    // One fetch at a time for each list, and another list's doesn't wait.
+    static TURNS: LazyLock<Mutex<HashMap<Key, Arc<tokio::sync::Mutex<()>>>>> =
+        LazyLock::new(Mutex::default);
+    let turn = crate::lock(&TURNS).entry(key.clone()).or_default().clone();
+    let _counted = Counted::start(key);
+    let _turn = turn.lock().await;
     // Another call may have fetched while this one waited.
     if !force && (is_fresh(key) || failed_lately(key)) {
         return snapshot(key);
@@ -1490,8 +1681,10 @@ async fn refresh_at(key: &Key, force: bool, root: Option<&Path>) -> Catalog {
     match fetch(key).await {
         Ok((listed, catalog, zones)) => {
             if let Some(root) = root {
-                // The models picked take what OpenRouter says now.
-                update_recent(root, &listed);
+                // The models picked take what OpenRouter says now (a change
+                // to the file, away from this task).
+                let (root, listed) = (root.to_path_buf(), listed.clone());
+                let _ = tokio::task::spawn_blocking(move || update_recent(&root, &listed)).await;
             }
             let mut memory = memory();
             let entry = memory.entry(key.clone()).or_default();
@@ -1757,6 +1950,15 @@ mod tests {
 
     impl Server {
         async fn start(routes: Vec<(&'static str, u16, Vec<u8>, bool)>) -> Self {
+            Self::start_slow(routes, None).await
+        }
+
+        /// A server that answers the path starting with `slow.0` after
+        /// `slow.1`.
+        async fn start_slow(
+            routes: Vec<(&'static str, u16, Vec<u8>, bool)>,
+            slow: Option<(&'static str, Duration)>,
+        ) -> Self {
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let url = format!("http://{}", listener.local_addr().unwrap());
             let heads = Arc::new(Mutex::new(Vec::new()));
@@ -1770,6 +1972,11 @@ mod tests {
                         let head = String::from_utf8_lossy(&request[..n]).to_string();
                         let path = head.split_whitespace().nth(1).unwrap_or("").to_string();
                         crate::lock(&seen).push(head);
+                        if let Some((prefix, delay)) = slow
+                            && path.starts_with(prefix)
+                        {
+                            tokio::time::sleep(delay).await;
+                        }
                         let (status, body, gzip) = routes
                             .iter()
                             .find(|(prefix, ..)| path.starts_with(prefix))
@@ -1986,31 +2193,168 @@ mod tests {
         assert_eq!(recent(root).len(), RECENT);
     }
 
-    /// A saved change is announced to the sessions open in this process,
-    /// and a model picked isn't (nothing is routed differently).
+    /// A session open on a folder, with a feed, as a front end opens one:
+    /// it has the key it started with.
+    fn session(root: &Path) -> (Arc<crate::keys::Keys>, crate::remote::Feed) {
+        let feed = crate::remote::Feed::new("main");
+        let keys = crate::keys::Keys::new(
+            Arc::new(arko_ai::LLMClient::new()),
+            None,
+            None,
+            Some(feed.clone()),
+        );
+        keys.use_openrouter_key("sk-or-first");
+        keys.share(root.to_path_buf());
+        // (Reached, as it is once the key is used.)
+        keys.apply(&crate::credentials::OPENROUTER, Some("sk-or-first"));
+        (keys, feed)
+    }
+
+    fn notices(feed: &crate::remote::Feed) -> usize {
+        feed.subscribe()
+            .0
+            .items
+            .iter()
+            .filter(|item| format!("{item:?}").contains("OpenRouter settings changed"))
+            .count()
+    }
+
+    fn zdr_installed(keys: &crate::keys::Keys) -> bool {
+        keys.installed()
+            .and_then(|(_, options)| options.provider)
+            .is_some_and(|provider| provider.zdr == Some(true))
+    }
+
+    /// A saved change is installed in the sessions open in this process
+    /// before the save returns, and they say so, except one that made the
+    /// change itself. A model picked changes nothing a request carries, so
+    /// it says nothing.
     #[tokio::test]
-    async fn a_saved_change_is_announced_and_a_model_picked_is_not() {
+    async fn a_saved_change_is_installed_in_the_open_sessions_at_once() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let (keys, feed) = session(root);
+        let (other, other_feed) = session(root);
+        assert!(!zdr_installed(&keys));
+        remember(root, "openrouter:acme/model");
+        assert!(!zdr_installed(&keys));
+        assert_eq!(notices(&feed), 0);
+
+        // Saved by an app, nobody's own session.
+        Settings::update(root, |settings| settings.set_zdr(true)).unwrap();
+        assert!(zdr_installed(&keys) && zdr_installed(&other));
+        assert_eq!((notices(&feed), notices(&other_feed)), (1, 1));
+        assert_eq!(keys.installed().unwrap().0, "sk-or-first");
+
+        // Saved by a session: it has it, and its own words say so.
+        Settings::edit(root, keys.id(), |settings| settings.set_zdr(false)).unwrap();
+        assert!(!zdr_installed(&keys) && !zdr_installed(&other));
+        assert_eq!((notices(&feed), notices(&other_feed)), (1, 2));
+        // The models picked later don't say anything.
+        remember(root, "openrouter:acme/another");
+        assert_eq!((notices(&feed), notices(&other_feed)), (1, 2));
+        // Another folder's sessions aren't told.
+        let elsewhere = tempfile::tempdir().unwrap();
+        Settings::update(elsewhere.path(), |settings| settings.set_zdr(true)).unwrap();
+        assert!(!zdr_installed(&keys));
+    }
+
+    /// A change to the models picked and a change to the settings, made at
+    /// once, both stay in the file, and the sessions have the settings. (The
+    /// models picked once wrote the file as they had read it, over a change
+    /// made meanwhile.)
+    #[tokio::test]
+    async fn a_model_picked_and_a_change_made_at_once_both_stay() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().to_path_buf();
-        let mut heard = changes();
-        // (Other tests save settings in other folders at the same time.)
-        let mine = |heard: &mut tokio::sync::broadcast::Receiver<Saved>| {
-            let mut mine = Vec::new();
-            while let Ok((saved, origin)) = heard.try_recv() {
-                if saved == root {
-                    mine.push(origin);
-                }
-            }
-            mine
+        let (keys, _feed) = session(&root);
+        let (wait_for_it, go) = pause_next_change(&root);
+        // The model picked has read the file, with zero data retention off.
+        let picked = {
+            let root = root.clone();
+            std::thread::spawn(move || remember(&root, "openrouter:acme/picked"))
         };
-        remember(&root, "openrouter:acme/model");
-        assert!(mine(&mut heard).is_empty());
-        let mut settings = Settings::load(&root);
+        wait_for_it.recv().unwrap();
+        let changed = {
+            let root = root.clone();
+            std::thread::spawn(move || Settings::update(&root, |settings| settings.set_zdr(true)))
+        };
+        std::thread::sleep(Duration::from_millis(150));
+        assert!(!changed.is_finished(), "the change waits its turn");
+        go.send(()).unwrap();
+        picked.join().unwrap();
+        changed.join().unwrap().unwrap();
+        let file: Value =
+            serde_json::from_str(&std::fs::read_to_string(root.join(FILE)).unwrap()).unwrap();
+        assert_eq!(file["provider"]["zdr"], true, "{file}");
+        assert_eq!(file["recent"], json!(["acme/picked"]), "{file}");
+        assert!(zdr_installed(&keys));
+        // And the other way: the change has read, and the model waits.
+        let (wait_for_it, go) = pause_next_change(&root);
+        let changed = {
+            let root = root.clone();
+            std::thread::spawn(move || Settings::update(&root, |s| s.set_region(Region::Eu)))
+        };
+        wait_for_it.recv().unwrap();
+        let picked = {
+            let root = root.clone();
+            std::thread::spawn(move || remember(&root, "openrouter:acme/later"))
+        };
+        std::thread::sleep(Duration::from_millis(150));
+        assert!(!picked.is_finished());
+        go.send(()).unwrap();
+        changed.join().unwrap().unwrap();
+        picked.join().unwrap();
+        let now = Settings::read(&root).unwrap();
+        assert_eq!(now.region(), Region::Eu);
+        assert!(now.zdr());
+        assert_eq!(now.recent_names()[0], "openrouter:acme/later");
+    }
+
+    /// Settings saved whole don't write the models picked back as they were
+    /// read, and an unreadable file is left alone.
+    #[test]
+    fn saving_whole_settings_keeps_the_models_picked_since() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let mut settings = Settings::load(root);
+        remember(root, "openrouter:acme/picked");
         settings.set_zdr(true);
-        settings.save(&root).unwrap();
-        assert_eq!(mine(&mut heard), [0]);
-        settings.save_from(&root, 7).unwrap();
-        assert_eq!(mine(&mut heard), [7]);
+        settings.save(root).unwrap();
+        let now = Settings::read(root).unwrap();
+        assert!(now.zdr());
+        assert_eq!(now.recent_names(), ["openrouter:acme/picked"]);
+        std::fs::write(root.join(FILE), "{ oops").unwrap();
+        assert!(settings.save(root).is_err());
+        assert_eq!(std::fs::read_to_string(root.join(FILE)).unwrap(), "{ oops");
+        let error = Settings::update(root, |s| s.set_zdr(false)).unwrap_err();
+        assert!(error.contains("openrouter.json can't be read"), "{error}");
+    }
+
+    /// Another Arko process holds the file's lock: a change waits for it, and
+    /// takes over a lock a process that died left.
+    #[test]
+    fn a_change_waits_for_another_process_and_takes_over_a_dead_ones_lock() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().to_path_buf();
+        let lock = root.join(format!("{FILE}.lock"));
+        std::fs::write(&lock, "").unwrap();
+        let waiting = {
+            let root = root.clone();
+            std::thread::spawn(move || Settings::update(&root, |s| s.set_zdr(true)))
+        };
+        std::thread::sleep(Duration::from_millis(150));
+        assert!(!waiting.is_finished(), "another process holds the lock");
+        std::fs::remove_file(&lock).unwrap();
+        waiting.join().unwrap().unwrap();
+        assert!(!lock.exists(), "the lock is let go");
+        assert!(Settings::read(&root).unwrap().zdr());
+        // A lock left by a process long gone is taken over.
+        let file = std::fs::File::create(&lock).unwrap();
+        file.set_modified(SystemTime::now() - Duration::from_secs(60))
+            .unwrap();
+        Settings::update(&root, |s| s.set_zdr(false)).unwrap();
+        assert!(!Settings::read(&root).unwrap().zdr());
     }
 
     #[test]
@@ -2527,5 +2871,67 @@ mod tests {
         // Another folder's settings are another list, empty until fetched.
         let other = tempfile::tempdir().unwrap();
         assert!(completions(other.path(), "openrouter:moon").is_empty());
+        // Once the settings are known, completing (as the input box does at
+        // every draw) needs no file: it goes by them as this process has them.
+        std::fs::remove_dir_all(root).unwrap();
+        assert_eq!(
+            completions(root, "openrouter:moon"),
+            ["openrouter:moonshotai/kimi-k3"]
+        );
+        let _ = loading_for(root);
+        assert!(!root.exists(), "no file was made either");
+    }
+
+    /// The models of another list being fetched don't hold back the models
+    /// the settings need now: a change of region while the first fetch is
+    /// slow still fetches the new list, with no one asking again.
+    #[tokio::test]
+    async fn a_fetch_of_other_models_does_not_hold_back_the_models_needed_now() {
+        let body = list(vec![entry("a/b", "A: B", 8_000, "0.000001", "0.000002")]);
+        let server = Server::start_slow(
+            vec![
+                ("/slow/models", 200, body.clone(), false),
+                ("/models", 200, body, false),
+            ],
+            Some(("/slow", Duration::from_millis(600))),
+        )
+        .await;
+        let temp = tempfile::tempdir().unwrap();
+        let before = Key {
+            local: Some(format!("{}/slow", server.url)),
+            region: Region::Any,
+            zdr: false,
+        };
+        let now = Key {
+            local: Some(server.url.clone()),
+            region: Region::Any,
+            zdr: true,
+        };
+        refresh_key_soon(before.clone(), temp.path());
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !fetching(&before) {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the first fetch starts");
+        assert!(!fetching(&now));
+        refresh_key_soon(now.clone(), temp.path());
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while snapshot(&now).models.is_empty() {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the new list is fetched without another call");
+        assert!(fetching(&before), "the slow one was still going");
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while snapshot(&before).models.is_empty() {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("and the first ends too");
+        assert!(!fetching(&before) && !fetching(&now));
     }
 }

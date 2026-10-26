@@ -14,6 +14,7 @@ use tokio::task::JoinHandle;
 pub struct ModelServer {
     url: String,
     task: JoinHandle<()>,
+    heads: Arc<std::sync::Mutex<Vec<String>>>,
 }
 
 pub type Respond = dyn Fn(usize, String) -> std::pin::Pin<Box<dyn std::future::Future<Output = String> + Send>>
@@ -26,10 +27,13 @@ impl ModelServer {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
         let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let heads = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let kept = heads.clone();
         let task = tokio::spawn(async move {
             while let Ok((mut socket, _)) = listener.accept().await {
                 let respond = respond.clone();
                 let count = count.clone();
+                let heads = heads.clone();
                 tokio::spawn(async move {
                     let mut bytes = Vec::new();
                     let body = loop {
@@ -42,12 +46,14 @@ impl ModelServer {
                         let Some(end) = bytes.windows(4).position(|w| w == b"\r\n\r\n") else {
                             continue;
                         };
-                        let head = String::from_utf8_lossy(&bytes[..end]).to_ascii_lowercase();
+                        let shown = String::from_utf8_lossy(&bytes[..end]).into_owned();
+                        let head = shown.to_ascii_lowercase();
                         let length: usize = head
                             .lines()
                             .find_map(|line| line.strip_prefix("content-length:"))
                             .map_or(0, |value| value.trim().parse().unwrap());
                         if bytes.len() >= end + 4 + length {
+                            crate::lock(&heads).push(shown);
                             break String::from_utf8_lossy(&bytes[end + 4..end + 4 + length])
                                 .into_owned();
                         }
@@ -67,7 +73,17 @@ impl ModelServer {
                 });
             }
         });
-        Self { url, task }
+        Self {
+            url,
+            task,
+            heads: kept,
+        }
+    }
+
+    /// The head of each request so far (its request line and headers), in
+    /// the order the bodies were answered.
+    pub fn heads(&self) -> Vec<String> {
+        crate::lock(&self.heads).clone()
     }
 
     /// Where it listens: `http://127.0.0.1:PORT`.
