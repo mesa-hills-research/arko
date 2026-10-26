@@ -661,6 +661,8 @@ mod tests {
         }))
         .await;
         let (harness, _inputs, _sender) = crate::tests::harness(temp.path(), server.client(), true);
+        // A session's settings are saved as it opens, and say it is there.
+        harness.session.save_settings(&harness.settings).unwrap();
         crate::session_names::save(&harness.root, &[Way::ClaudePlan]).unwrap();
         let naming = Naming::default();
         naming.start(Run {
