@@ -30,6 +30,15 @@ pub fn names(models: &Models, needs: impl Fn(&str) -> Option<String>) -> Vec<Str
         .collect()
 }
 
+/// The effort the model `name` (as `/model` takes it) last ran at in Arko's
+/// folder `root`, when the model still takes it, as `/model` takes it too
+/// (`high`). It is the effort of a session's main model or its workers',
+/// and of a model switched to with `/model MODEL EFFORT`. A session that
+/// starts without an effort doesn't use it. A picker can start on it.
+pub fn last_effort(root: &std::path::Path, name: &str) -> Option<String> {
+    providers::LastModels::effort_of(root, name).map(|effort| effort.to_string())
+}
+
 /// What the picker says beside the model `name` (as `/model` takes it),
 /// when there is something to know before choosing it, such as the access
 /// Claude Mythos 5.1 needs.

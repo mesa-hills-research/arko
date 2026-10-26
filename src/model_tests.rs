@@ -426,3 +426,47 @@ async fn the_page_names_the_model_set_after_it_started() {
     assert!(model(&status).starts_with("gpt-6.1-sol"), "{status}");
     harness.crew.as_ref().unwrap().shutdown().await;
 }
+
+/// The effort a model is switched to is kept, for the main agent's model and
+/// the workers', and apps and the picker read it back as that model's last.
+/// Another effort for the same model replaces it.
+#[tokio::test]
+async fn the_effort_a_model_was_switched_to_is_kept_for_the_next_pick() {
+    let server = ModelServer::start(Arc::new(move |_, _| {
+        Box::pin(async move { complete("m", "Done.") })
+    }))
+    .await;
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, _inputs, _sender) = harness(temp.path(), server.client(), true);
+    let root = harness.root.clone();
+    assert_eq!(crate::models::last_effort(&root, "sol"), None);
+    assert!(harness.live_command("/model sol high", Source::Terminal));
+    assert_eq!(
+        crate::models::last_effort(&root, "sol").as_deref(),
+        Some("high")
+    );
+    assert_eq!(
+        crate::models::last_effort(&root, "gpt-6.1-sol").as_deref(),
+        Some("high"),
+        "by any name"
+    );
+    assert!(harness.live_command("/model worker astra low", Source::Terminal));
+    assert_eq!(
+        crate::models::last_effort(&root, "astra").as_deref(),
+        Some("low")
+    );
+    assert_eq!(
+        crate::models::last_effort(&root, "sol").as_deref(),
+        Some("high")
+    );
+    assert!(harness.live_command("/model sol max", Source::Terminal));
+    assert_eq!(
+        crate::models::last_effort(&root, "sol").as_deref(),
+        Some("max")
+    );
+    assert_eq!(crate::models::last_effort(&root, "luna"), None);
+    // A model refused keeps nothing.
+    assert!(harness.live_command("/model gemini medium", Source::Terminal));
+    assert_eq!(crate::models::last_effort(&root, "gemini"), None);
+    harness.crew.as_ref().unwrap().shutdown().await;
+}

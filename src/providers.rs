@@ -917,6 +917,10 @@ pub struct LastModels {
     /// The workers' model, when it differed from the main one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worker: Option<String>,
+    /// The effort each model last ran at, by the model's name as a session
+    /// saves it (`claude-opus-5-5`, `openrouter:acme/model`).
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub efforts: std::collections::BTreeMap<String, String>,
 }
 
 /// The file in Arko's folder that holds [`LastModels`].
@@ -934,16 +938,52 @@ impl LastModels {
     /// one-off, and its model shouldn't change what the next interactive
     /// session starts on.
     pub fn remember(root: &Path, settings: &Settings) -> std::io::Result<()> {
-        let last = Self {
+        let mut efforts = Self::load(root)
+            .map(|last| last.efforts)
+            .unwrap_or_default();
+        efforts.insert(
+            settings.main.model.clone(),
+            settings.main.effort.to_string(),
+        );
+        if settings.worker.model != settings.main.model {
+            efforts.insert(
+                settings.worker.model.clone(),
+                settings.worker.effort.to_string(),
+            );
+        }
+        Self {
             main: settings.main.model.clone(),
             worker: (settings.worker.model != settings.main.model)
                 .then(|| settings.worker.model.clone()),
+            efforts,
+        }
+        .write(root)
+    }
+
+    /// Keeps the effort `model` was switched to, for the next time it is
+    /// chosen. Nothing is kept before a session has kept its models.
+    pub fn remember_effort(root: &Path, model: &Model, effort: Effort) -> std::io::Result<()> {
+        let Some(mut last) = Self::load(root) else {
+            return Ok(());
         };
+        last.efforts.insert(model_name(model), effort.to_string());
+        last.write(root)
+    }
+
+    fn write(&self, root: &Path) -> std::io::Result<()> {
         std::fs::create_dir_all(root)?;
         let path = root.join(LAST_MODELS_FILE);
         let temporary = root.join(format!("{LAST_MODELS_FILE}.tmp"));
-        std::fs::write(&temporary, serde_json::to_string_pretty(&last)?)?;
+        std::fs::write(&temporary, serde_json::to_string_pretty(self)?)?;
         std::fs::rename(temporary, path)
+    }
+
+    /// The effort `model` last ran at, when it still takes it.
+    pub fn effort_of(root: &Path, model: &str) -> Option<Effort> {
+        let model = resolve_model(model).ok()?;
+        let kept = Self::load(root)?.efforts.get(&model_name(&model))?.clone();
+        let effort = parse_effort(&kept).ok()?;
+        efforts(&model).contains(&effort).then_some(effort)
     }
 }
 
@@ -2407,6 +2447,7 @@ mod tests {
         Some(LastModels {
             main: main.into(),
             worker: worker.map(String::from),
+            efforts: Default::default(),
         })
     }
 
@@ -2515,15 +2556,22 @@ mod tests {
         assert_eq!(LastModels::load(root.path()), None);
         let mut session = settings(model("cc:opus"), model("cc:opus"));
         LastModels::remember(root.path(), &session).unwrap();
+        let models = |root: &Path| {
+            let last = LastModels::load(root);
+            last.map(|last| (last.main, last.worker))
+        };
         assert_eq!(
-            LastModels::load(root.path()),
-            last("cc:claude-opus-5-5", None)
+            models(root.path()),
+            Some(("cc:claude-opus-5-5".to_string(), None))
         );
         session.worker = model("flash");
         LastModels::remember(root.path(), &session).unwrap();
         assert_eq!(
-            LastModels::load(root.path()),
-            last("cc:claude-opus-5-5", Some("gemini-3.8-flash"))
+            models(root.path()),
+            Some((
+                "cc:claude-opus-5-5".to_string(),
+                Some("gemini-3.8-flash".to_string())
+            ))
         );
         std::fs::write(root.path().join(LAST_MODELS_FILE), "not json").unwrap();
         assert_eq!(
@@ -2531,6 +2579,69 @@ mod tests {
             None,
             "a damaged file is no default"
         );
+    }
+
+    /// The effort each model last ran at is kept with the last models,
+    /// for the main agent's model, the workers' when it differs, and a model
+    /// switched to later. Only an effort the model still takes comes back.
+    #[test]
+    fn the_effort_each_model_last_ran_at_is_kept() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path();
+        assert_eq!(LastModels::effort_of(root, "opus"), None);
+        let mut session = settings(model("opus"), model("flash"));
+        session.main.effort = Effort::High;
+        session.worker.effort = Effort::Low;
+        LastModels::remember(root, &session).unwrap();
+        // Any name the model goes by finds it.
+        assert_eq!(LastModels::effort_of(root, "opus"), Some(Effort::High));
+        assert_eq!(
+            LastModels::effort_of(root, "claude-opus-5-5"),
+            Some(Effort::High)
+        );
+        assert_eq!(LastModels::effort_of(root, "flash"), Some(Effort::Low));
+        assert_eq!(LastModels::effort_of(root, "sol"), None, "never run");
+        // A switch keeps the effort chosen, and the others stay.
+        let sol = resolve_model("sol").unwrap();
+        LastModels::remember_effort(root, &sol, Effort::Max).unwrap();
+        assert_eq!(LastModels::effort_of(root, "sol"), Some(Effort::Max));
+        assert_eq!(LastModels::effort_of(root, "opus"), Some(Effort::High));
+        // The next session's models keep what was kept for the others.
+        let mut next = settings(model("luna"), model("luna"));
+        next.main.effort = Effort::Medium;
+        LastModels::remember(root, &next).unwrap();
+        assert_eq!(LastModels::effort_of(root, "luna"), Some(Effort::Medium));
+        assert_eq!(LastModels::effort_of(root, "sol"), Some(Effort::Max));
+        // An effort a model doesn't take (or one made up) isn't offered.
+        let file = std::fs::read_to_string(root.join(LAST_MODELS_FILE)).unwrap();
+        let file = file
+            .replace("\"gpt-6.1-sol\": \"max\"", "\"gpt-6.1-sol\": \"extreme\"")
+            .replace(
+                "\"gemini-3.8-flash\": \"low\"",
+                "\"gemini-3.8-flash\": \"max\"",
+            );
+        std::fs::write(root.join(LAST_MODELS_FILE), file).unwrap();
+        assert_eq!(LastModels::effort_of(root, "sol"), None);
+        assert_eq!(
+            LastModels::effort_of(root, "flash"),
+            providers_takes_max("flash")
+        );
+        // Before any session kept its models, a switch keeps nothing.
+        let empty = tempfile::tempdir().unwrap();
+        LastModels::remember_effort(empty.path(), &sol, Effort::High).unwrap();
+        assert_eq!(LastModels::load(empty.path()), None);
+        // An older file without efforts still loads.
+        std::fs::write(root.join(LAST_MODELS_FILE), r#"{"main": "opus"}"#).unwrap();
+        assert_eq!(LastModels::effort_of(root, "opus"), None);
+        assert_eq!(LastModels::load(root).unwrap().main, "opus");
+    }
+
+    /// `max` as `model` takes it, or none.
+    fn providers_takes_max(model: &str) -> Option<Effort> {
+        let model = resolve_model(model).unwrap();
+        efforts(&model)
+            .contains(&Effort::Max)
+            .then_some(Effort::Max)
     }
 
     /// A ledger entry of `agent`'s: `api` dollars at API prices, of which

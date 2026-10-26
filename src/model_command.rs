@@ -202,6 +202,14 @@ impl Harness {
                     Target::Main => self.set_main_model(&resolved, effort),
                     Target::Workers => self.set_workers_model(Some((&resolved, effort))),
                 };
+                if done.is_ok() && !self.one_shot {
+                    // (The effort is the next pick's.)
+                    if let Err(error) =
+                        providers::LastModels::remember_effort(&self.root, &resolved, effort)
+                    {
+                        log::warn!("could not keep the effort for the next time: {error}");
+                    }
+                }
                 if done.is_ok() && resolved.provider == Provider::OpenRouter {
                     crate::openrouter::remember(&self.root, &providers::model_name(&resolved));
                     self.publish_models();
