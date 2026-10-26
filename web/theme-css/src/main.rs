@@ -116,16 +116,17 @@ fn main() {
     let fallback = |theme: &Theme| if theme.dark { dark } else { light };
 
     // A theme's syntax colors are its own: a chosen theme without one shows
-    // the code's color, as in the apps.
+    // the code's color, as in the apps. The dark default's rule overrides
+    // the light one's, so it unsets what it doesn't style.
     let defaults = format!(
         "/* Written by web/theme-css from themes/{DEFAULT_FILE}. Don't edit. */\n\
          :root {{\n{}}}\n\
          :root:not([data-theme]) {{\n{}}}\n\
          @media (prefers-color-scheme: dark) {{\n  :root:not([data-theme]) {{\n{}{}  }}\n}}\n{}",
         block(light, light, "  "),
-        syntax(light, "  "),
+        syntax(light, "  ", false),
         block(dark, dark, "    "),
-        syntax(dark, "    "),
+        syntax(dark, "    ", true),
         highlight_rules(),
     );
     write(&Path::new(style).join("themes.css"), &defaults);
@@ -136,7 +137,7 @@ fn main() {
             ":root[data-theme=\"{}\"] {{\n{}{}}}\n",
             theme.slug,
             block(theme, fallback(theme), "  "),
-            syntax(theme, "  ")
+            syntax(theme, "  ", false)
         ));
     }
     write(&Path::new(style).join("all-themes.css"), &all);
@@ -241,8 +242,11 @@ fn css_name(name: &str) -> String {
 
 /// The theme's style of each highlight name, as variables: its own, else
 /// its first word's (`string.escape` takes `string`'s), as the kit's themes
-/// do. A name the theme gives no style has none.
-fn syntax(theme: &Theme, indent: &str) -> String {
+/// do. A name the theme gives no style has none. With `unset`, each
+/// variable the theme leaves out is written as `initial`, so a rule it
+/// overrides (the light default's, under the dark one) gives the code's
+/// own color and not the other theme's.
+fn syntax(theme: &Theme, indent: &str, unset: bool) -> String {
     let styles = &theme.value["highlight"]["syntax"];
     let style = |name: &str| {
         let own = [name.to_string(), name.replace('.', "_")]
@@ -252,19 +256,20 @@ fn syntax(theme: &Theme, indent: &str) -> String {
     };
     let mut css = String::new();
     for name in protocol::HIGHLIGHT_NAMES {
-        let Some(style) = style(name) else { continue };
+        let style = style(name).unwrap_or_default();
         let name = css_name(name);
-        if let Some(color) = style["color"].as_str().and_then(palette_color) {
-            css.push_str(&format!("{indent}--syn-{name}: {color};\n"));
-        }
-        if let Some(font_style) = style["font_style"]
+        let color = style["color"].as_str().and_then(palette_color);
+        let font_style = style["font_style"]
             .as_str()
             .filter(|font_style| ["normal", "italic", "oblique"].contains(font_style))
-        {
-            css.push_str(&format!("{indent}--syn-{name}-style: {font_style};\n"));
-        }
-        if let Some(weight) = style["font_weight"].as_f64() {
-            css.push_str(&format!("{indent}--syn-{name}-weight: {weight};\n"));
+            .map(str::to_string);
+        let weight = style["font_weight"]
+            .as_f64()
+            .map(|weight| weight.to_string());
+        for (suffix, value) in [("", color), ("-style", font_style), ("-weight", weight)] {
+            if let Some(value) = value.or_else(|| unset.then(|| "initial".to_string())) {
+                css.push_str(&format!("{indent}--syn-{name}{suffix}: {value};\n"));
+            }
         }
     }
     css
