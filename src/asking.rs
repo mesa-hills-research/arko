@@ -232,6 +232,8 @@ impl Harness {
         if waiting.plain {
             self.feed
                 .settle_questions(None, &waiting.ids, |_| QuestionState::Closed { why: None });
+        } else {
+            self.feed.questions_unwaited(&waiting.ids);
         }
     }
 

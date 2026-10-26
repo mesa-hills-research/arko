@@ -329,6 +329,25 @@ impl Book {
         (settled, items)
     }
 
+    /// The current conversation's questions `ids` are no longer waited on.
+    /// Returns their cards.
+    pub(crate) fn unwait(&mut self, ids: &[String]) -> Vec<u64> {
+        let run = self.run;
+        let mut items = Vec::new();
+        for entry in &mut self.entries {
+            if Some(entry.run) == run && entry.question.waits && ids.contains(&entry.question.id) {
+                entry.question.waits = false;
+                if !items.contains(&entry.question.item) {
+                    items.push(entry.question.item);
+                }
+            }
+        }
+        if !items.is_empty() {
+            self.save();
+        }
+        items
+    }
+
     /// Sets the current conversation's question `id` to `state`, whatever
     /// it was. Returns its card.
     pub(crate) fn set_state(&mut self, id: &str, state: QuestionState) -> Option<u64> {

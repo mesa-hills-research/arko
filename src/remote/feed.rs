@@ -366,8 +366,8 @@ impl Item {
     }
 }
 
-/// The latest of the main agent's questions still open: its card's item
-/// `id`, and its text.
+/// The question card the main agent waits on: its item `id`, and its
+/// text.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Question {
     pub id: u64,
@@ -378,8 +378,9 @@ pub struct Question {
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct Activity {
     pub working: bool,
-    /// The latest question card with questions still open. The open
-    /// questions themselves are [`Reading::questions`](crate::remote::Reading::questions).
+    /// The question card the main agent waits on (it asked with `wait`).
+    /// All its open questions, those it doesn't wait on too, are
+    /// [`Reading::questions`](crate::remote::Reading::questions).
     pub question: Option<Question>,
     /// When the turn started (Unix milliseconds), while one runs.
     pub since: Option<i64>,
@@ -2597,6 +2598,18 @@ impl Feed {
         self.lock().questions.open_ids_of(run)
     }
 
+    /// The agent no longer waits on the questions `ids` (the turn that
+    /// waited stopped): they stay open.
+    pub(crate) fn questions_unwaited(&self, ids: &[String]) {
+        {
+            let mut state = self.lock();
+            for item in state.questions.unwait(ids) {
+                self.refresh_card(&mut state, item);
+            }
+        }
+        self.question_activity();
+    }
+
     /// The questions of the card `item`.
     pub(crate) fn card_questions(&self, item: u64) -> Vec<crate::questions::AgentQuestion> {
         self.lock().questions.of_item(item)
@@ -2635,14 +2648,15 @@ impl Feed {
         }
     }
 
-    /// The activity's question is the latest card with questions open.
+    /// The activity's question is the latest card with questions open that
+    /// the agent waits on.
     fn question_activity(&self) {
         let latest = {
             let state = self.lock();
             let open = state.questions.open();
             open.iter()
                 .rev()
-                .find(|question| question.item != 0)
+                .find(|question| question.item != 0 && question.waits)
                 .and_then(|question| {
                     let index = state.main.index(question.item)?;
                     let card = &state.main.items[index];
@@ -4634,9 +4648,9 @@ mod tests {
     }
 
     /// An ask's card holds its questions with their states, which change
-    /// as the user answers, dismisses, or the agent closes them. The
-    /// latest card with questions open is the activity's, also after the
-    /// turn, and the open questions are the conversation's.
+    /// as the user answers, dismisses, or the agent closes them. A card the
+    /// agent waits on is the activity's while it has questions open, and
+    /// the open questions are the conversation's.
     #[test]
     fn question_cards_follow_each_questions_state() {
         use crate::questions::QuestionState;
@@ -4649,7 +4663,7 @@ mod tests {
         let card = feed.ask(
             run,
             &[asked("q1", "Tabs or spaces?"), asked("q2", "Push now?")],
-            false,
+            true,
         );
         let since = feed.activity().since;
         assert_eq!(
@@ -4804,7 +4818,8 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(states, [QuestionState::Dismissed, QuestionState::Open]);
         assert_eq!(again.open_questions()[0].item, card.id);
-        assert_eq!(again.activity().question.unwrap().id, card.id);
+        // (The agent doesn't wait on them.)
+        assert_eq!(again.activity().question, None);
     }
 
     /// A worker gets a placeholder in the main transcript where it starts
