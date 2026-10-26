@@ -100,6 +100,20 @@ pub enum Effect {
     AddKey { key: &'static Key, value: Secret },
     /// The session removes `key`, which Arko saved.
     RemoveKey(&'static Key),
+    /// Check, off the view's thread, what each way of naming sessions by a
+    /// model lacks (the result comes to [`App::names_checked`]), until
+    /// asked to stop.
+    CheckNames(Cancel),
+}
+
+/// A check that its asker can end: set to stop it.
+#[derive(Debug, Clone, Default)]
+pub struct Cancel(pub std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+impl PartialEq for Cancel {
+    fn eq(&self, other: &Self) -> bool {
+        std::sync::Arc::ptr_eq(&self.0, &other.0)
+    }
 }
 
 /// The command menu's state.
@@ -312,11 +326,9 @@ pub struct App {
     /// The API keys as they are now, without their values, for the keys
     /// menu.
     pub key_states: fn() -> Vec<KeyState>,
-    /// The ways sessions are named by a model and what each lacks now, for
-    /// the session names menu: those saved in Arko's folder, and what each
-    /// way needs that is missing.
-    #[allow(clippy::type_complexity)]
-    pub names_state: fn(&std::path::Path) -> (Vec<Way>, Vec<(Way, Option<String>)>),
+    /// Ends the check of what the ways of naming lack, which the session
+    /// names menu asked for, when the menu closes before it is done.
+    names_check: Option<Cancel>,
     /// The Codex auth.json files of the ChatGPT logins, in order, for the
     /// settings.
     pub login_paths: std::sync::Arc<dyn Fn() -> Vec<std::path::PathBuf> + Send + Sync>,
@@ -408,12 +420,7 @@ impl App {
             folded: None,
             model_needs: model_picker::needs,
             key_states: crate::credentials::key_states,
-            names_state: |root| {
-                (
-                    crate::session_names::load(root),
-                    crate::session_names::missing_here(),
-                )
-            },
+            names_check: None,
             login_paths: std::sync::Arc::new(|| {
                 crate::logins::paths_in_use_of(&crate::credentials::codex_auths(None))
             }),
@@ -509,8 +516,32 @@ impl App {
             self.send("/session-names");
             return;
         };
-        let (saved, missing) = (self.names_state)(&root);
-        self.overlay = Some(Overlay::Names(NamesMenu::open(&saved, missing)));
+        // It opens on the ways saved at once. What each lacks takes a
+        // check of Claude Code, which runs in the background and comes to
+        // [`App::names_checked`].
+        self.overlay = Some(Overlay::Names(NamesMenu::open(
+            &crate::session_names::load(&root),
+        )));
+        self.end_names_check();
+        let cancel = Cancel::default();
+        self.names_check = Some(cancel.clone());
+        self.effects.push(Effect::CheckNames(cancel));
+    }
+
+    /// What the check of the ways of naming found: the menu shows it, if it
+    /// is still open.
+    pub fn names_checked(&mut self, missing: Vec<(Way, Option<String>)>) {
+        if let Some(Overlay::Names(menu)) = &mut self.overlay {
+            menu.checked(missing);
+        }
+    }
+
+    /// The menu is closed or open again: a check that is running is no
+    /// longer wanted.
+    fn end_names_check(&mut self) {
+        if let Some(cancel) = self.names_check.take() {
+            cancel.0.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
     }
 
     /// What the session did with a key the menu sent: the menu shows it,
@@ -1443,8 +1474,12 @@ impl App {
             },
             Overlay::Names(mut menu) => match menu.key(key, close) {
                 names_menu::Action::Stay => Some(Overlay::Names(menu)),
-                names_menu::Action::Close => None,
+                names_menu::Action::Close => {
+                    self.end_names_check();
+                    None
+                }
                 names_menu::Action::Save(ways) => {
+                    self.end_names_check();
                     let ids: Vec<&str> = ways.iter().map(|way| way.id()).collect();
                     let line = if ids.is_empty() {
                         "/session-names words".to_string()
@@ -3647,33 +3682,37 @@ pub(super) mod tests {
         assert_eq!(app.editor.text(), "/keys add openai");
     }
 
-    /// `/session-names` alone opens the menu, on the ways saved and what
-    /// each lacks. Enter saves as the line the session takes, and words
-    /// after the command go to the session as they are.
+    /// `/session-names` alone opens the menu at once, on the ways saved,
+    /// and what each lacks comes from a check that runs in the background.
+    /// Enter saves as the line the session takes, and words after the
+    /// command go to the session as they are.
     #[test]
     fn the_session_names_menu_opens_and_sends_the_line_that_saves() {
         use crate::session_names::Way;
+        let temp = tempfile::tempdir().unwrap();
+        crate::session_names::save(temp.path(), &[Way::ClaudePlan, Way::ChatGptPlan]).unwrap();
         let mut app = app();
-        app.names_state = |_| {
-            (
-                vec![Way::ClaudePlan, Way::ChatGptPlan],
-                names_menu::tests::missing(),
-            )
-        };
         // Without Arko's folder, the session answers.
         type_text(&mut app, "/session-names");
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         assert_eq!(sent(&mut app), ["/session-names"]);
         assert!(app.overlay.is_none());
-        app.info.root = Some(std::env::temp_dir());
+        app.info.root = Some(temp.path().to_path_buf());
         type_text(&mut app, "/session-names");
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
-        assert!(sent(&mut app).is_empty(), "the view opens the menu");
+        // The view opens the menu, and asks for the check, which the menu
+        // doesn't wait for.
+        let effects = app.take_effects();
+        assert!(
+            matches!(effects.as_slice(), [Effect::CheckNames(_)]),
+            "{effects:?}"
+        );
         let Some(Overlay::Names(menu)) = &app.overlay else {
             panic!("no menu")
         };
         assert!(menu.by_model);
         assert_eq!(menu.ways[0], (Way::ClaudePlan, true));
+        assert_eq!(menu.missing, None, "not checked yet");
         // Move the ChatGPT plan up, turn the Anthropic key on, and save.
         for _ in 0..3 {
             press(&mut app, KeyCode::Down, KeyModifiers::NONE);
@@ -3682,6 +3721,12 @@ pub(super) mod tests {
         press(&mut app, KeyCode::Down, KeyModifiers::NONE);
         press(&mut app, KeyCode::Down, KeyModifiers::NONE);
         press(&mut app, KeyCode::Char(' '), KeyModifiers::NONE);
+        // What the check finds joins the menu while it is open.
+        app.names_checked(names_menu::tests::missing());
+        let Some(Overlay::Names(menu)) = &app.overlay else {
+            panic!("no menu")
+        };
+        assert_eq!(menu.missing, Some(names_menu::tests::missing()));
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         assert_eq!(
             sent(&mut app),
@@ -3703,6 +3748,49 @@ pub(super) mod tests {
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         assert_eq!(sent(&mut app), ["/session-names claude-key"]);
         assert!(app.overlay.is_none());
+    }
+
+    /// A check of what the ways lack that is slow doesn't hold the menu:
+    /// it opens and closes without it, closing ends the check, and what it
+    /// finds after the menu closed is dropped, also by a menu opened again.
+    #[test]
+    fn a_slow_check_of_the_ways_does_not_hold_the_menu() {
+        use crate::session_names::Way;
+        use std::sync::atomic::Ordering;
+        let temp = tempfile::tempdir().unwrap();
+        let mut app = app();
+        app.info.root = Some(temp.path().to_path_buf());
+        app.open_names();
+        let effects = app.take_effects();
+        let [Effect::CheckNames(first)] = effects.as_slice() else {
+            panic!("no check")
+        };
+        let first = first.clone();
+        assert!(!first.0.load(Ordering::Relaxed));
+        press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert!(app.overlay.is_none(), "closed before the check was done");
+        assert!(first.0.load(Ordering::Relaxed), "closing ends the check");
+        // What it finds later reaches no one.
+        app.names_checked(names_menu::tests::missing());
+        assert!(app.overlay.is_none());
+        // Opened again, the old check is over and the new one's answer shows.
+        app.open_names();
+        let effects = app.take_effects();
+        let [Effect::CheckNames(second)] = effects.as_slice() else {
+            panic!("no check")
+        };
+        let second = second.clone();
+        assert_ne!(second, first);
+        app.open_names();
+        assert!(
+            second.0.load(Ordering::Relaxed),
+            "opening again ends it too"
+        );
+        app.names_checked(vec![(Way::ClaudeKey, Some("No Anthropic API key".into()))]);
+        let Some(Overlay::Names(menu)) = &app.overlay else {
+            panic!("no menu")
+        };
+        assert_eq!(menu.missing.as_ref().map(Vec::len), Some(1));
     }
 
     /// The session's models, as it publishes them: luna for both agents,

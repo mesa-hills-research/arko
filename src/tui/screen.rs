@@ -867,14 +867,21 @@ mod tests {
     fn the_session_names_menu_fits_an_80_column_screen() {
         use crate::session_names::Way;
         let mut app = app();
-        app.info.root = Some(std::env::temp_dir());
-        app.names_state = |_| {
-            (
-                vec![Way::ChatGptPlan, Way::ClaudePlan],
-                crate::tui::names_menu::tests::missing(),
-            )
-        };
+        let temp = tempfile::tempdir().unwrap();
+        crate::session_names::save(temp.path(), &[Way::ChatGptPlan, Way::ClaudePlan]).unwrap();
+        app.info.root = Some(temp.path().to_path_buf());
         app.open_names();
+        // Before the check is done, the ways show without what they lack.
+        let rows = screen(&mut app, 80, 24);
+        assert!(
+            rows.iter()
+                .any(|row| row.contains("[x] GPT-6 Luna on the ChatGPT plan"))
+        );
+        assert!(
+            rows.iter().all(|row| !row.contains("No ChatGPT login")),
+            "{rows:#?}"
+        );
+        app.names_checked(crate::tui::names_menu::tests::missing());
         let rows = screen(&mut app, 80, 24);
         println!("{}", rows.join("\n"));
         for want in [
@@ -2063,14 +2070,12 @@ mod tests {
             app.open_keys("", None);
             look(&mut app, "keys");
             app.overlay = None;
-            app.info.root = Some(std::env::temp_dir());
-            app.names_state = |_| {
-                (
-                    vec![crate::session_names::Way::ClaudePlan],
-                    crate::tui::names_menu::tests::missing(),
-                )
-            };
+            let names = tempfile::tempdir().unwrap();
+            crate::session_names::save(names.path(), &[crate::session_names::Way::ClaudePlan])
+                .unwrap();
+            app.info.root = Some(names.path().to_path_buf());
             app.open_names();
+            app.names_checked(crate::tui::names_menu::tests::missing());
             look(&mut app, "session names");
             app.overlay = None;
             app.ask_quit(vec![job("sleep 300", Duration::from_secs(150))]);

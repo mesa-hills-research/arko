@@ -22,8 +22,9 @@ pub struct NamesMenu {
     pub by_model: bool,
     /// The four ways in the order they are tried, with whether each is on.
     pub ways: Vec<(Way, bool)>,
-    /// What each way needs that is missing now.
-    pub missing: Vec<(Way, Option<String>)>,
+    /// What each way needs that is missing now, once it has been checked
+    /// (the check runs in the background, so the menu opens at once).
+    pub missing: Option<Vec<(Way, Option<String>)>>,
     /// The row chosen, 0 and 1 for the two ways to name, then the ways.
     pub selected: usize,
     /// What Enter couldn't do.
@@ -40,9 +41,10 @@ pub enum Action {
 }
 
 impl NamesMenu {
-    /// The menu for the `saved` ways (none for the first words). A choice of
-    /// a model starts with the two ways that use a plan on.
-    pub fn open(saved: &[Way], missing: Vec<(Way, Option<String>)>) -> Self {
+    /// The menu for the `saved` ways (none for the first words), without
+    /// what they lack, which [`NamesMenu::checked`] adds. A choice of a
+    /// model starts with the two ways that use a plan on.
+    pub fn open(saved: &[Way]) -> Self {
         let on = if saved.is_empty() {
             session_names::default_ways()
         } else {
@@ -51,7 +53,7 @@ impl NamesMenu {
         Self {
             by_model: !saved.is_empty(),
             ways: session_names::arranged(&on),
-            missing,
+            missing: None,
             selected: 0,
             said: None,
         }
@@ -74,8 +76,14 @@ impl NamesMenu {
     fn reason(&self, way: Way) -> Option<&str> {
         self.missing
             .iter()
+            .flatten()
             .find(|(missing, _)| *missing == way)
             .and_then(|(_, reason)| reason.as_deref())
+    }
+
+    /// What the check of the ways found, which says under each what it lacks.
+    pub fn checked(&mut self, missing: Vec<(Way, Option<String>)>) {
+        self.missing = Some(missing);
     }
 
     /// A key; `close` is Esc or Ctrl+C.
@@ -239,6 +247,13 @@ pub(super) mod tests {
         ]
     }
 
+    /// The menu for the ways `saved`, once its check is done.
+    pub fn menu_with(saved: &[Way]) -> NamesMenu {
+        let mut menu = NamesMenu::open(saved);
+        menu.checked(missing());
+        menu
+    }
+
     /// The menu as an 80-column screen shows it, row by row.
     pub fn screen(menu: &NamesMenu, theme: &Theme) -> Vec<String> {
         let (width, height) = (80, 24);
@@ -273,7 +288,7 @@ pub(super) mod tests {
     /// the four ways with the two plans on, and what each lacks.
     #[test]
     fn choosing_a_model_shows_the_ways_with_the_plans_on() {
-        let mut menu = NamesMenu::open(&[], missing());
+        let mut menu = menu_with(&[]);
         let text = screen(&menu, &Theme::terminal()).join("\n");
         println!("{text}");
         assert!(
@@ -312,7 +327,7 @@ pub(super) mod tests {
     #[test]
     fn the_saved_order_opens_and_enter_saves_the_ways_on() {
         let saved = [Way::OpenAiKey, Way::ClaudePlan];
-        let mut menu = NamesMenu::open(&saved, missing());
+        let mut menu = menu_with(&saved);
         assert!(menu.by_model);
         assert_eq!(
             menu.ways,
@@ -342,7 +357,7 @@ pub(super) mod tests {
     /// with it. It stops at the ends.
     #[test]
     fn shift_with_the_arrows_moves_a_way() {
-        let mut menu = NamesMenu::open(&default_ways_all(), missing());
+        let mut menu = menu_with(&default_ways_all());
         // On the first way: moving up does nothing.
         press(&mut menu, KeyCode::Down);
         press(&mut menu, KeyCode::Down);
@@ -366,7 +381,7 @@ pub(super) mod tests {
             ])
         );
         // On a row for how to name, it moves nothing.
-        let mut menu = NamesMenu::open(&[Way::ClaudePlan], missing());
+        let mut menu = menu_with(&[Way::ClaudePlan]);
         let before = menu.ways.clone();
         shifted(&mut menu, KeyCode::Down);
         assert_eq!(menu.ways, before);
@@ -380,7 +395,7 @@ pub(super) mod tests {
     /// saved.
     #[test]
     fn the_first_words_save_as_none_and_a_model_needs_a_way() {
-        let mut menu = NamesMenu::open(&[Way::ClaudePlan], missing());
+        let mut menu = menu_with(&[Way::ClaudePlan]);
         press(&mut menu, KeyCode::Char(' '));
         assert!(!menu.by_model, "the first row is First words");
         assert_eq!(press(&mut menu, KeyCode::Enter), Action::Save(Vec::new()));
