@@ -26,7 +26,7 @@ mod render;
 mod server;
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, ToSocketAddrs};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use base64::Engine;
@@ -54,7 +54,7 @@ pub use links::{HOST_VARIABLE, Interface, Link};
 pub use no_server::Server;
 pub(crate) use render::duration_words;
 #[cfg(feature = "remote")]
-pub use server::Server;
+pub use server::{SESSIONS_FILE, Server};
 
 /// What the page's header says of the session.
 #[derive(Debug, Clone, Default, Serialize)]
@@ -476,9 +476,24 @@ pub fn session_key(path: &Path) -> Result<String, String> {
 pub fn new_key(path: &Path) -> Result<String, String> {
     let key = random_token(KEY_BYTES);
     let _ = std::fs::remove_file(path);
+    // The page's sessions went with the old key.
+    let _ = std::fs::remove_file(path.with_file_name(SESSIONS_FILE));
     write_private(path, &key)
         .map_err(|error| format!("could not save the key in {} ({error})", path.display()))?;
     Ok(key)
+}
+
+/// Writes `text` to `path` in place of what it held, readable by the user
+/// only: to a file beside it first, then renamed over it.
+pub(crate) fn write_private_replacing(path: &Path, text: &str) -> std::io::Result<()> {
+    let mut temporary = path.as_os_str().to_owned();
+    temporary.push(format!(".{}.tmp", std::process::id()));
+    let temporary = std::path::PathBuf::from(temporary);
+    let _ = std::fs::remove_file(&temporary);
+    write_private(&temporary, text)?;
+    std::fs::rename(&temporary, path).inspect_err(|_| {
+        let _ = std::fs::remove_file(&temporary);
+    })
 }
 
 fn write_private(path: &Path, text: &str) -> std::io::Result<()> {
@@ -567,7 +582,9 @@ pub fn parse_bind(text: &str) -> Result<Bind, String> {
 /// Starts serving where `bind` says, on [`DEFAULT_PORT`] when it names no
 /// port, or on another free one when that one is taken. `earlier`, the
 /// port of the page served before, is tried first when `bind` names no
-/// port, so that the pages open on it reconnect.
+/// port, so that the pages open on it reconnect. The page's sessions are kept
+/// in `sessions_file` when there is one, so they outlast a restart.
+#[allow(clippy::too_many_arguments)]
 pub fn start(
     bind: Bind,
     earlier: Option<u16>,
@@ -576,12 +593,23 @@ pub fn start(
     feed: Feed,
     actions: mpsc::UnboundedSender<Action>,
     meter: Arc<dyn Meter>,
+    sessions_file: Option<PathBuf>,
 ) -> Result<Server, String> {
-    start_with((bind, false), earlier, key, info, feed, actions, meter)
+    start_with(
+        (bind, false),
+        earlier,
+        key,
+        info,
+        feed,
+        actions,
+        meter,
+        sessions_file,
+    )
 }
 
 /// Binds the preferred port, falling back to any free port only when it
 /// is in use. The returned server owns the listener throughout.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn start_preferred(
     bind: Bind,
     earlier: Option<u16>,
@@ -590,10 +618,21 @@ pub(crate) fn start_preferred(
     feed: Feed,
     actions: mpsc::UnboundedSender<Action>,
     meter: Arc<dyn Meter>,
+    sessions_file: Option<PathBuf>,
 ) -> Result<Server, String> {
-    start_with((bind, true), earlier, key, info, feed, actions, meter)
+    start_with(
+        (bind, true),
+        earlier,
+        key,
+        info,
+        feed,
+        actions,
+        meter,
+        sessions_file,
+    )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn start_with(
     (bind, fallback): (Bind, bool),
     earlier: Option<u16>,
@@ -602,6 +641,7 @@ fn start_with(
     feed: Feed,
     actions: mpsc::UnboundedSender<Action>,
     meter: Arc<dyn Meter>,
+    sessions_file: Option<PathBuf>,
 ) -> Result<Server, String> {
     let start = |port: u16| {
         Server::start(
@@ -611,6 +651,7 @@ fn start_with(
             feed.clone(),
             actions.clone(),
             meter.clone(),
+            sessions_file.clone(),
         )
     };
     let any_port = || {
@@ -837,9 +878,13 @@ mod tests {
             let mode = std::fs::metadata(&path).unwrap().permissions().mode();
             assert_eq!(mode & 0o777, 0o600);
         }
+        // A new key ends the page's sessions kept beside it.
+        let sessions = temp.path().join(SESSIONS_FILE);
+        std::fs::write(&sessions, "{}").unwrap();
         let fresh = new_key(&path).unwrap();
         assert_ne!(fresh, key);
         assert_eq!(session_key(&path).unwrap(), fresh);
+        assert!(!sessions.exists());
         std::fs::write(&path, "short").unwrap();
         assert_ne!(session_key(&path).unwrap(), "short");
     }

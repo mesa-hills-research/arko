@@ -1465,6 +1465,8 @@ impl Harness {
             let text = format!("The web page was turned off {}.", self.acted_in(source));
             self.feed.notice(Level::Warn, &text);
             self.stop_remote().await;
+            // Turned off, its sessions end, where a restart keeps them.
+            let _ = std::fs::remove_file(self.session.dir.join(remote::SESSIONS_FILE));
         }
     }
 
@@ -1557,6 +1559,7 @@ impl Harness {
                 harness.feed.clone(),
                 harness.remote_actions.clone(),
                 harness.gauges.clone(),
+                Some(harness.session.dir.join(remote::SESSIONS_FILE)),
             )
         };
         let server = match served {
