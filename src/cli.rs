@@ -587,21 +587,76 @@ pub(crate) fn start_log(dir: &Path) {
 }
 
 pub(crate) fn list_sessions(root: &Path) {
-    let sessions = session::list(root);
-    if sessions.is_empty() {
+    let lines = session_lines(root);
+    if lines.is_empty() {
         println!("No sessions yet ({}).", root.join("sessions").display());
         return;
     }
-    for (session, settings) in sessions {
-        println!(
-            "{}  {}  {}{}",
-            session.id,
-            settings.main.model,
-            settings.workspace.display(),
-            settings
-                .title
-                .map(|title| format!("  \"{title}\""))
-                .unwrap_or_default()
-        );
+    for line in lines {
+        println!("{line}");
+    }
+}
+
+/// The sessions in Arko's folder `root`, a line each: its ID, model and
+/// folder, and its name (the one the user gave it, a model's, or its first
+/// words, as everything else shows it).
+fn session_lines(root: &Path) -> Vec<String> {
+    session::list(root)
+        .into_iter()
+        .map(|(session, settings)| {
+            let conversations =
+                crate::conversations::Conversations::load(&session.dir).unwrap_or_default();
+            format!(
+                "{}  {}  {}  \"{}\"",
+                session.id,
+                settings.main.model,
+                settings.workspace.display(),
+                crate::sessions::title(&session, &conversations, &settings)
+            )
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agents::{Effort, ModelSettings, resolve_model};
+
+    /// The listing names each session as the sidebar of an app does, the
+    /// short name from its first words, a model's, or the user's.
+    #[test]
+    fn the_listing_shows_each_sessions_name() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("arko");
+        let luna = ModelSettings {
+            model: resolve_model("luna").unwrap().id,
+            effort: Effort::High,
+            fast: false,
+            cache_1h: false,
+            handover_at: None,
+        };
+        assert!(session_lines(&root).is_empty());
+        let session = session::Session::create(&root).unwrap();
+        let first = "Fix the flaky scroll test in the sidebar before the release";
+        session
+            .save_settings(&session::Settings {
+                title: Some(crate::ui::cut(first, 80)),
+                ..session::Settings::for_test(temp.path(), &luna)
+            })
+            .unwrap();
+        let line = || session_lines(&root).remove(0);
+        let expect = |name: &str| {
+            assert!(
+                line().ends_with(&format!("  \"{name}\"")),
+                "{name}: {}",
+                line()
+            );
+        };
+        assert!(line().starts_with(&format!("{}  gpt-6-luna  ", session.id)));
+        expect("Fix the flaky scroll test in…");
+        session.set_generated_name("Flaky scroll test").unwrap();
+        expect("Flaky scroll test");
+        session.rename("Pears").unwrap();
+        expect("Pears");
     }
 }
