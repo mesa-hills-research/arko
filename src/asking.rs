@@ -188,7 +188,10 @@ impl Harness {
 
     /// The user's answers from an answer panel, to the current
     /// conversation's questions. Those that are open now are answered, and
-    /// the others dropped. An approval's answer goes to it. Returns the
+    /// the others dropped. An approval's answer goes to it. What the user
+    /// wrote besides ("Anything else") goes with them only when one of the
+    /// questions the submission names (answered or not) is the current
+    /// conversation's, so it can't reach another conversation. Returns the
     /// note that tells the agent, unless the agent waited for them and has
     /// it already (or nothing was open).
     pub(crate) fn answer_questions(
@@ -197,6 +200,11 @@ impl Harness {
         source: Source,
     ) -> Option<AnswerNote> {
         let run = self.feed.questions_conversation();
+        let named: Vec<String> = answers
+            .answers
+            .iter()
+            .map(|given| given.id.clone())
+            .collect();
         // One answer for each question, the first filled in.
         let mut given: Vec<QuestionAnswer> = Vec::new();
         for answer in answers.answers {
@@ -231,7 +239,8 @@ impl Harness {
                     })
                     .cloned()
                     .collect();
-                let about_open = !settled.is_empty() || !open.is_empty();
+                let about_open =
+                    !settled.is_empty() || open.iter().any(|question| named.contains(&question.id));
                 if agent.is_empty() && !(anything_else.is_some() && about_open) {
                     return None;
                 }

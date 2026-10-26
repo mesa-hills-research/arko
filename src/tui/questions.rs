@@ -315,20 +315,26 @@ impl App {
         self.say("Dismissed. Arko goes on with its defaults");
     }
 
-    /// Enter in the panel: sends what's filled in. The questions left
-    /// unanswered stay open.
+    /// Enter in the panel: sends what's filled in, naming every question
+    /// it shows (which ties "Anything else" to their conversation). The
+    /// questions left unanswered stay open.
     fn send_answers(&mut self) {
         let answers: Vec<QuestionAnswer> = self
             .open_questions()
             .iter()
-            .filter_map(|question| {
-                let answer = self.panel.drafts.get(&question.id)?.answer(question);
-                (!answer.is_empty()).then(|| QuestionAnswer::new(question.id.clone(), answer))
+            .map(|question| {
+                let answer = self
+                    .panel
+                    .drafts
+                    .get(&question.id)
+                    .map(|draft| draft.answer(question))
+                    .unwrap_or_default();
+                QuestionAnswer::new(question.id.clone(), answer)
             })
             .collect();
         let anything_else =
             Some(self.panel.anything_else.trim().to_string()).filter(|text| !text.is_empty());
-        if answers.is_empty() && anything_else.is_none() {
+        if answers.iter().all(|given| given.answer.is_empty()) && anything_else.is_none() {
             self.say("Nothing to send yet. Pick a choice, or type an answer");
             return;
         }

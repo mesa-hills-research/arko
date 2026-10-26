@@ -7987,6 +7987,55 @@ pub(crate) mod tests {
         assert_eq!(answered.try_recv().unwrap(), crate::questions::SAVE);
     }
 
+    /// What the user wrote besides their answers goes only with a
+    /// submission that names a question of the current conversation:
+    /// alone, or naming another conversation's questions (sent before a
+    /// /new or a /resume), it is dropped, even while the current
+    /// conversation has a question open.
+    #[tokio::test]
+    async fn anything_else_stays_with_the_questions_it_names() {
+        let temp = tempfile::tempdir().unwrap();
+        let (mut harness, _inputs, _sender) = harness(temp.path(), LLMClient::new(), true);
+        let (first, second) = (uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+        ask_later(&mut harness, first, "q1", "Tabs?");
+        harness.feed.questions_run(Some(second));
+        ask_later(&mut harness, second, "q2", "Which branch?");
+        let besides = |given: Vec<crate::questions::QuestionAnswer>| crate::questions::Answers {
+            answers: given,
+            anything_else: Some("Keep it short.".into()),
+        };
+        let unanswered = |id: &str| {
+            crate::questions::QuestionAnswer::new(id, crate::questions::Answer::default())
+        };
+        // In the second conversation: the first's submissions are dropped.
+        for submission in [
+            besides(Vec::new()),
+            besides(vec![unanswered("q1")]),
+            besides(vec![text_answer("q1", "Tabs")]),
+        ] {
+            assert!(harness.answer_questions(submission, Source::Web).is_none());
+        }
+        assert!(harness.feed.queued_notes(first).is_empty());
+        assert!(harness.feed.queued_notes(second).is_empty());
+        // After /new, nothing is the current conversation's.
+        harness.feed.questions_run(None);
+        assert!(
+            harness
+                .answer_questions(besides(vec![unanswered("q2")]), Source::Web)
+                .is_none()
+        );
+        // Back in the first, a submission naming its question goes.
+        harness.feed.questions_run(Some(first));
+        let note = harness
+            .answer_questions(besides(vec![unanswered("q1")]), Source::Web)
+            .unwrap();
+        assert_eq!(
+            note.note,
+            "The user wrote about your questions.\nAnything else: Keep it short.\nStill open: q1."
+        );
+        assert!(harness.feed.queued_notes(second).is_empty());
+    }
+
     /// Question ids go on across the session's conversations: a new
     /// conversation's questions are numbered after the last one's.
     #[tokio::test]
