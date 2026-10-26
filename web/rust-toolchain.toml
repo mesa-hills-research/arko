@@ -1,0 +1,5 @@
+# The page's output is committed, and the compiler's version shows in it, so
+# everyone builds it with the same one.
+[toolchain]
+channel = "1.97.1"
+targets = ["wasm32-unknown-unknown"]

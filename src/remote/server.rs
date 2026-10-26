@@ -41,6 +41,23 @@ const CORE: &str = include_str!("page/core.js");
 /// License 1.1; see NOTICE).
 const MONO_FONT: &[u8] = include_bytes!("page/fonts/JetBrainsMono-Regular.ttf");
 
+/// The page built in Rust with Leptos (`web/`, built into `next/`),
+/// served under `/next/` beside the current one, or at `/` too when
+/// [`NEXT_VARIABLE`] is `next`.
+mod next {
+    pub const INDEX: &str = include_str!("next/index.html");
+    pub const BOOT: &str = include_str!("next/boot.js");
+    pub const SCRIPT: &str = include_str!("next/arko-web.js");
+    pub const WASM: &[u8] = include_bytes!("next/arko-web_bg.wasm");
+    pub const STYLE: &str = include_str!("next/app.css");
+    pub const THEMES: &str = include_str!("next/themes.css");
+    /// The current page's policy, plus WebAssembly.
+    pub const POLICY: &str = "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; connect-src 'self'; img-src 'self'; font-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
+}
+
+/// Set to `next`, the page at `/` is the one built in Rust.
+pub const NEXT_VARIABLE: &str = "ARKO_REMOTE_PAGE";
+
 /// The largest request body: a long message, pasted.
 const MAX_BODY: usize = 512 * 1024;
 /// Wrong keys an address may send before it must wait...
@@ -148,10 +165,47 @@ impl Drop for Server {
 }
 
 fn router(app: Arc<App>) -> Router {
+    let next_at_root = std::env::var(NEXT_VARIABLE).is_ok_and(|value| value.trim() == "next");
     Router::new()
         .route(
             "/",
-            get(|| async { file(INDEX, "text/html; charset=utf-8") }),
+            get(move |headers: HeaderMap| async move {
+                if next_at_root {
+                    next_index(headers).await
+                } else {
+                    file(INDEX, "text/html; charset=utf-8")
+                }
+            }),
+        )
+        .route("/next", get(next_index))
+        .route("/next/", get(next_index))
+        .route(
+            "/next/boot.js",
+            get(|headers: HeaderMap| async move {
+                packed(&headers, next::BOOT.as_bytes(), "text/javascript; charset=utf-8")
+            }),
+        )
+        .route(
+            "/next/arko-web.js",
+            get(|headers: HeaderMap| async move {
+                packed(&headers, next::SCRIPT.as_bytes(), "text/javascript; charset=utf-8")
+            }),
+        )
+        .route(
+            "/next/arko-web_bg.wasm",
+            get(|headers: HeaderMap| async move { packed(&headers, next::WASM, "application/wasm") }),
+        )
+        .route(
+            "/next/app.css",
+            get(|headers: HeaderMap| async move {
+                packed(&headers, next::STYLE.as_bytes(), "text/css; charset=utf-8")
+            }),
+        )
+        .route(
+            "/next/themes.css",
+            get(|headers: HeaderMap| async move {
+                packed(&headers, next::THEMES.as_bytes(), "text/css; charset=utf-8")
+            }),
         )
         .route(
             "/app.js",
@@ -207,6 +261,56 @@ fn file(text: &'static str, kind: &'static str) -> Response {
     ([(header::CONTENT_TYPE, kind)], text).into_response()
 }
 
+/// The Rust page's HTML, whose policy lets it run WebAssembly.
+async fn next_index(headers: HeaderMap) -> Response {
+    let mut response = packed(&headers, next::INDEX.as_bytes(), "text/html; charset=utf-8");
+    response.headers_mut().insert(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static(next::POLICY),
+    );
+    response
+}
+
+/// One of the Rust page's files, gzipped for a browser that takes it. Each
+/// is compressed once, at its first request.
+fn packed(headers: &HeaderMap, bytes: &'static [u8], kind: &'static str) -> Response {
+    static PACKED: Mutex<Vec<(usize, &'static [u8])>> = Mutex::new(Vec::new());
+    let gzip = headers
+        .get(header::ACCEPT_ENCODING)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| {
+            value
+                .split(',')
+                .any(|coding| coding.trim().starts_with("gzip"))
+        });
+    if !gzip {
+        return ([(header::CONTENT_TYPE, kind)], bytes).into_response();
+    }
+    let key = bytes.as_ptr() as usize;
+    let mut packed = lock(&PACKED);
+    let body = match packed.iter().find(|(at, _)| *at == key) {
+        Some((_, body)) => *body,
+        None => {
+            use std::io::Write;
+            let mut encoder =
+                flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::best());
+            let _ = encoder.write_all(bytes);
+            let body: &'static [u8] = encoder.finish().unwrap_or_default().leak();
+            packed.push((key, body));
+            body
+        }
+    };
+    (
+        [
+            (header::CONTENT_TYPE, kind),
+            (header::CONTENT_ENCODING, "gzip"),
+            (header::VARY, "accept-encoding"),
+        ],
+        body,
+    )
+        .into_response()
+}
+
 /// Headers every response gets: no caching, sniffing, framing or
 /// referrers, and a page that loads only its own files.
 async fn harden(mut response: Response) -> Response {
@@ -223,8 +327,8 @@ async fn harden(mut response: Response) -> Response {
     headers
         .entry(header::CACHE_CONTROL)
         .or_insert(HeaderValue::from_static("no-store"));
-    headers.insert(
-        header::CONTENT_SECURITY_POLICY,
+    // (The Rust page's HTML sets its own.)
+    headers.entry(header::CONTENT_SECURITY_POLICY).or_insert(
         HeaderValue::from_static(
             "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; font-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
         ),
@@ -1361,6 +1465,59 @@ mod tests {
         assert!(INDEX.contains(r#"<link rel="icon" href="/icon-small.svg""#));
         assert!(INDEX.contains(r#"<link rel="apple-touch-icon" href="/apple-touch-icon.png">"#));
         assert!(INDEX.contains(r#"<img src="/icon.svg""#));
+    }
+
+    /// The page built in Rust loads under /next/ without the key, its HTML
+    /// lets WebAssembly run (and the current page's doesn't), and its files
+    /// come gzipped to a browser that takes it.
+    #[tokio::test]
+    async fn the_rust_page_loads_under_next() {
+        let feed = Feed::new("main");
+        let served = serve(&feed);
+        let response = served.get("/next/", None).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let policy = response.headers()[header::CONTENT_SECURITY_POLICY]
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert!(
+            policy.contains("script-src 'self' 'wasm-unsafe-eval';"),
+            "{policy}"
+        );
+        assert!(response.text().await.unwrap().contains("/next/boot.js"));
+        let current = served.get("/", None).await;
+        let policy = current.headers()[header::CONTENT_SECURITY_POLICY]
+            .to_str()
+            .unwrap();
+        assert!(!policy.contains("wasm"), "{policy}");
+
+        let wasm = served
+            .http
+            .get(format!("{}/next/arko-web_bg.wasm", served.base))
+            .header(header::ACCEPT_ENCODING, "gzip, br")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(wasm.headers()[header::CONTENT_TYPE], "application/wasm");
+        assert_eq!(wasm.headers()[header::CONTENT_ENCODING], "gzip");
+        let packed = wasm.bytes().await.unwrap();
+        let mut unpacked = Vec::new();
+        std::io::Read::read_to_end(
+            &mut flate2::read::GzDecoder::new(&packed[..]),
+            &mut unpacked,
+        )
+        .unwrap();
+        assert_eq!(unpacked, next::WASM);
+        assert!(packed.len() < next::WASM.len() / 2);
+        let plain = served
+            .http
+            .get(format!("{}/next/arko-web.js", served.base))
+            .header(header::ACCEPT_ENCODING, "identity")
+            .send()
+            .await
+            .unwrap();
+        assert!(plain.headers().get(header::CONTENT_ENCODING).is_none());
+        assert_eq!(plain.bytes().await.unwrap(), next::SCRIPT.as_bytes());
     }
 
     /// The Rust page reads the stream with types of its own, compiled from

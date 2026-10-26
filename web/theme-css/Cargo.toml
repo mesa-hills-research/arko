@@ -1,0 +1,11 @@
+[package]
+# Writes the page's colors as CSS variables from a theme file of GPUI Kit's
+# (the ones Arko Studio uses), so the page and the apps share a palette.
+name = "theme-css"
+version = "0.0.0"
+edition = "2024"
+publish = false
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+serde_json = "1.0.115"

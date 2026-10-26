@@ -11,8 +11,9 @@ repository = "https://github.com/mesa-hills-research/arko"
 readme = "README.md"
 keywords = ["agent", "ai", "llm", "terminal", "cli"]
 categories = ["command-line-utilities", "development-tools"]
-# The evaluation harness runs from a checkout.
-exclude = ["evals/", ".agents/"]
+# The evaluation harness runs from a checkout. The page in web/ is built
+# into src/remote/next/, which the crate embeds.
+exclude = ["evals/", ".agents/", "web/"]
 
 [lib]
 name = "arko"
@@ -24,6 +25,10 @@ doctest = false
 name = "arko"
 path = "src/main.rs"
 required-features = ["tui"]
+
+[[example]]
+name = "remote_demo"
+required-features = ["remote"]
 
 [features]
 default = ["tui", "remote"]
