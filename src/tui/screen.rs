@@ -881,7 +881,8 @@ mod tests {
             rows.iter().all(|row| !row.contains("No ChatGPT login")),
             "{rows:#?}"
         );
-        app.names_checked(crate::tui::names_menu::tests::missing());
+        let check = app.names_check().unwrap();
+        app.names_checked(&check, crate::tui::names_menu::tests::missing());
         let rows = screen(&mut app, 80, 24);
         println!("{}", rows.join("\n"));
         for want in [
@@ -2075,7 +2076,8 @@ mod tests {
                 .unwrap();
             app.info.root = Some(names.path().to_path_buf());
             app.open_names();
-            app.names_checked(crate::tui::names_menu::tests::missing());
+            let check = app.names_check().unwrap();
+            app.names_checked(&check, crate::tui::names_menu::tests::missing());
             look(&mut app, "session names");
             app.overlay = None;
             app.ask_quit(vec![job("sleep 300", Duration::from_secs(150))]);

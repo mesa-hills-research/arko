@@ -528,12 +528,24 @@ impl App {
         self.effects.push(Effect::CheckNames(cancel));
     }
 
-    /// What the check of the ways of naming found: the menu shows it, if it
-    /// is still open.
-    pub fn names_checked(&mut self, missing: Vec<(Way, Option<String>)>) {
+    /// What `check`, a check of the ways of naming, found: the menu shows it,
+    /// if that check is the one it waits for.
+    pub fn names_checked(&mut self, check: &Cancel, missing: Vec<(Way, Option<String>)>) {
+        // Only the check the menu open now asked for: one made for a menu
+        // that closed, and reached the loop before the new one opened, isn't
+        // this one's.
+        if self.names_check.as_ref() != Some(check) {
+            return;
+        }
         if let Some(Overlay::Names(menu)) = &mut self.overlay {
             menu.checked(missing);
         }
+    }
+
+    /// The check the menu open now waits for (tests).
+    #[cfg(test)]
+    pub fn names_check(&self) -> Option<Cancel> {
+        self.names_check.clone()
     }
 
     /// The menu is closed or open again: a check that is running is no
@@ -3722,7 +3734,8 @@ pub(super) mod tests {
         press(&mut app, KeyCode::Down, KeyModifiers::NONE);
         press(&mut app, KeyCode::Char(' '), KeyModifiers::NONE);
         // What the check finds joins the menu while it is open.
-        app.names_checked(names_menu::tests::missing());
+        let check = app.names_check().unwrap();
+        app.names_checked(&check, names_menu::tests::missing());
         let Some(Overlay::Names(menu)) = &app.overlay else {
             panic!("no menu")
         };
@@ -3771,7 +3784,7 @@ pub(super) mod tests {
         assert!(app.overlay.is_none(), "closed before the check was done");
         assert!(first.0.load(Ordering::Relaxed), "closing ends the check");
         // What it finds later reaches no one.
-        app.names_checked(names_menu::tests::missing());
+        app.names_checked(&first, names_menu::tests::missing());
         assert!(app.overlay.is_none());
         // Opened again, the old check is over and the new one's answer shows.
         app.open_names();
@@ -3786,7 +3799,20 @@ pub(super) mod tests {
             second.0.load(Ordering::Relaxed),
             "opening again ends it too"
         );
-        app.names_checked(vec![(Way::ClaudeKey, Some("No Anthropic API key".into()))]);
+        // What the second check found, already on its way to the loop when
+        // the menu opened again, isn't for the menu that waits for the third.
+        app.names_checked(&second, vec![(Way::ClaudeKey, Some("Stale".into()))]);
+        let Some(Overlay::Names(menu)) = &app.overlay else {
+            panic!("no menu")
+        };
+        assert_eq!(menu.missing, None);
+        // The third one's is.
+        let third = app.names_check().unwrap();
+        assert_ne!(third, second);
+        app.names_checked(
+            &third,
+            vec![(Way::ClaudeKey, Some("No Anthropic API key".into()))],
+        );
         let Some(Overlay::Names(menu)) = &app.overlay else {
             panic!("no menu")
         };
