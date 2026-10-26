@@ -80,10 +80,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     // What docks above the status line's rule for a while.
     let above = Rect::new(area.x, area.y, area.width, rule_y - area.y);
     let previous = app.docked.take();
-    let docked = if !app.menu_items().is_empty() {
-        draw_menu(frame, app, above)
-    } else if app.panel.open && !app.open_questions().is_empty() {
+    // The panel, while it has the keys, before the command menu.
+    let docked = if app.panel.open && !app.open_questions().is_empty() {
         super::questions::draw_panel(frame, app, above, previous)
+    } else if !app.menu_items().is_empty() {
+        draw_menu(frame, app, above)
     } else {
         super::questions::draw_chip(frame, app, above)
     };
@@ -1754,16 +1755,19 @@ mod tests {
             .position(|row| row.contains("Arko asks 2 questions"))
             .unwrap_or_else(|| panic!("{rows:#?}"));
         let panel = rows[at..].join("\n");
-        assert!(panel.contains("› q1 Tabs or spaces?"), "{panel}");
+        // Numbered in their ask, without the agent's ids.
+        assert!(panel.contains("  1. Tabs or spaces?"), "{panel}");
+        assert!(!panel.contains("q1"), "{panel}");
+        // The chips have the keys.
         assert!(
-            panel.contains(" 1 Tabs   2 Spaces   3 You decide (Spaces)"),
+            panel.contains("›  1 Tabs   2 Spaces   3 You decide (Spaces)"),
             "{panel}"
         );
         assert!(
-            panel.contains("Other  type an answer of your own"),
+            panel.contains("    Other  type an answer of your own"),
             "{panel}"
         );
-        assert!(panel.contains("  q2 Which branch?"), "{panel}");
+        assert!(panel.contains("  2. Which branch?"), "{panel}");
         assert!(panel.contains(" 1 You decide "), "{panel}");
         assert!(panel.contains("Anything else"), "{panel}");
         assert!(panel.contains("Esc  answer in chat"), "{panel}");
@@ -1795,6 +1799,7 @@ mod tests {
     fn waiting(question: &str) -> Vec<crate::questions::AgentQuestion> {
         let mut questions = crate::tui::app::tests::asking().questions;
         questions.truncate(1);
+        questions[0].number = None;
         questions[0].question = question.into();
         questions[0].waits = true;
         questions
@@ -1916,9 +1921,14 @@ mod tests {
 
     /// The question to save a profile with long instructions is cut to fit
     /// the dock, and what is left still says how much is cut.
+    /// An approval's card shows what it approves up front (the profile's
+    /// name, scope, model and description) with Save and Don't save, and
+    /// its instructions below them, the rest of a long one further down the
+    /// page.
     #[test]
-    fn a_cut_approval_question_still_says_how_long_the_instructions_are() {
+    fn an_approval_card_shows_the_profile_up_front() {
         use crate::profiles::{Place, Profile};
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         let mut profile = Profile::new("judge", "Judges renders against a reference image");
         profile.model = Some("sol".into());
         profile.instructions = (1..=30)
@@ -1928,23 +1938,68 @@ mod tests {
         let mut app = app();
         let mut asked = waiting(&crate::profiles::approval_text(&profile, Place::User));
         asked[0].id = "x0a1b2c3d".into();
-        asked[0].choices = vec!["Yes".into(), "No".into()];
+        asked[0].choices = vec!["Save".into(), "Don't save".into()];
         asked[0].default = None;
+        asked[0].approval = Some(crate::profiles::approval(&profile, Place::User));
         app.set_reading(crate::remote::Reading {
             questions: asked,
             ..Default::default()
         });
         for (width, height) in [(80, 24), (100, 24), (120, 30)] {
             let rows = screen(&mut app, width, height).join("\n");
-            assert!(
-                rows.contains("whole question is in the transcript"),
-                "{rows}"
-            );
-            assert!(
-                rows.contains("Its instructions are 890 characters (30 lines)"),
-                "{width}x{height}\n{rows}"
-            );
+            for shown in [
+                "Arko asks to save a worker profile",
+                "Save the worker profile judge for every project?",
+                "Runs on sol.",
+                "Judges renders against a reference image",
+                " 1 Save   2 Don't save ",
+                "Other  tell Arko what to change",
+                "Check point 1 of the render.",
+                "PgDn  more",
+            ] {
+                assert!(rows.contains(shown), "{width}x{height}: {shown}\n{rows}");
+            }
+            assert!(!rows.contains("You decide"), "{rows}");
+            assert!(!rows.contains("Check point 30 "), "{rows}");
         }
+        for _ in 0..8 {
+            app.key(KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE));
+        }
+        let rows = screen(&mut app, 80, 24).join("\n");
+        assert!(rows.contains("Check point 30 of the render."), "{rows}");
+        assert!(rows.contains("PgUp  more"), "{rows}");
+    }
+
+    /// A question card is one quiet line while its questions are open, and
+    /// a click on it opens the answer panel on them.
+    #[test]
+    fn a_click_on_an_open_cards_line_opens_the_panel() {
+        use crate::remote::{Item, Kind, Update};
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEventKind};
+        let mut app = app();
+        let questions = crate::tui::app::tests::asking().questions;
+        let mut card = Item::new(Kind::Question, "Arko asked 2 questions");
+        card.id = 7;
+        card.questions = Some(questions.clone());
+        app.transcript.apply(Update::Item(card));
+        app.set_reading(crate::remote::Reading {
+            questions,
+            ..Default::default()
+        });
+        app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(!app.panel.open);
+        let rows = screen(&mut app, 60, 24);
+        let y = rows
+            .iter()
+            .position(|row| row.contains("Arko asked 2 questions"))
+            .unwrap_or_else(|| panic!("{rows:#?}"));
+        assert!(!rows.iter().any(|row| row.contains("Which branch?")));
+        let x = rows[y].find("Arko").unwrap() as u16;
+        let left = MouseButton::Left;
+        mouse(&mut app, MouseEventKind::Down(left), x, y as u16);
+        mouse(&mut app, MouseEventKind::Up(left), x, y as u16);
+        assert!(app.panel.open);
+        assert_eq!(app.panel.focus, 0);
     }
 
     /// With the symbols of the classic Windows console's fonts (`basic`) and
@@ -2531,7 +2586,7 @@ mod tests {
             panic!("{copies:?}");
         };
         assert!(
-            line.starts_with("› q1 Tabs or spaces for the new"),
+            line.trim_start().starts_with("Tabs or spaces for the new"),
             "{line}"
         );
         // A click elsewhere clears it.

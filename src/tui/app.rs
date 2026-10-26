@@ -914,23 +914,29 @@ impl App {
         let alt = key.modifiers.contains(KeyModifiers::ALT);
         let shift = key.modifiers.contains(KeyModifiers::SHIFT);
         self.panel.last_key = Some(Instant::now());
+        // The agent's questions, from anywhere: a window open comes back
+        // when the panel closes.
+        if let KeyCode::Char('q') = key.code
+            && alt
+            && !ctrl
+        {
+            self.list_focus = None;
+            return self.open_panel();
+        }
         if self.overlay.is_some() {
             self.overlay_key(key);
             return;
         }
+        // The panel has the keys before the command menu, whose place it
+        // takes on the screen.
         if self.panel.open && self.panel_key(key) {
             return;
         }
-        // The agent's questions, from anywhere.
-        match key.code {
-            KeyCode::Char('q') if alt && !ctrl => {
-                self.list_focus = None;
-                return self.open_panel();
-            }
-            KeyCode::Char('n') if ctrl && !self.open_questions().is_empty() => {
-                return self.not_now();
-            }
-            _ => {}
+        if let KeyCode::Char('n') = key.code
+            && ctrl
+            && !self.open_questions().is_empty()
+        {
+            return self.not_now();
         }
         if self.list_focus.is_some() && self.list_key(key) {
             return;
@@ -2465,6 +2471,15 @@ impl App {
             && self.watching.is_none()
         {
             self.watch(Some(worker));
+            return;
+        }
+        // The line of questions still open opens the answer panel on them.
+        if self
+            .transcript
+            .item(key)
+            .is_some_and(|item| item.kind == crate::remote::Kind::Question)
+        {
+            self.open_card(key);
         }
     }
 
@@ -2824,9 +2839,11 @@ pub(super) mod tests {
         assert_eq!(app.hint(), Some("No open questions"));
     }
 
-    /// Number keys pick a question's choices, or "You decide" after them,
-    /// typing writes an answer of one's own, ↓ goes on to the next question
-    /// and "Anything else", and Enter sends what's filled in.
+    /// Number keys pick a question's choices, or "You decide" after them.
+    /// ↓ goes from a question's choices to its Other field, where what is
+    /// typed is the answer, digits too, then on to the next question and
+    /// "Anything else". A question without choices takes typing at once.
+    /// Enter sends what's filled in.
     #[test]
     fn the_panel_picks_choices_and_sends_what_is_filled_in() {
         use crate::questions::{Answer, Answers, QuestionAnswer};
@@ -2836,9 +2853,17 @@ pub(super) mod tests {
         press(&mut app, KeyCode::Char('1'), KeyModifiers::NONE);
         assert_eq!(app.panel.drafts["q1"].chosen, [0]);
         press(&mut app, KeyCode::Down, KeyModifiers::NONE);
-        // q2 has no choices: 1 is "You decide", and typing leaves it.
+        assert!(app.panel.typing && app.panel.focus == 0);
+        press(&mut app, KeyCode::Down, KeyModifiers::NONE);
+        // q2 has no choices: its Other field has the keys.
+        assert!(app.panel.typing && app.panel.focus == 1);
+        type_text(&mut app, "2 hours");
+        assert_eq!(app.panel.drafts["q2"].other, "2 hours");
+        // Up in its chips, 1 is "You decide", and typing leaves it.
+        press(&mut app, KeyCode::Up, KeyModifiers::NONE);
         press(&mut app, KeyCode::Char('1'), KeyModifiers::NONE);
         assert!(app.panel.drafts["q2"].you_decide);
+        press(&mut app, KeyCode::Down, KeyModifiers::NONE);
         type_text(&mut app, "main");
         press(&mut app, KeyCode::Backspace, KeyModifiers::NONE);
         type_text(&mut app, "n 2");
@@ -2876,6 +2901,58 @@ pub(super) mod tests {
         assert!(app.panel.open);
     }
 
+    /// An answer that is a number, or starts with one, is typed whole: in
+    /// a question without choices at once, and in one with choices in its
+    /// Other field, or straight from its chips when no chip has the number.
+    #[test]
+    fn answers_starting_with_a_digit_are_typed_whole() {
+        let mut app = app();
+        app.set_reading(asking());
+        app.focus_on(1);
+        type_text(&mut app, "1 hour");
+        assert_eq!(app.panel.drafts["q2"].other, "1 hour");
+        assert!(!app.panel.drafts["q2"].you_decide);
+        app.focus_on(0);
+        assert!(!app.panel.typing);
+        // q1 has three chips: 4 is no chip's, so it is typed.
+        type_text(&mut app, "42");
+        assert_eq!(app.panel.drafts["q1"].other, "42");
+        assert!(app.panel.drafts["q1"].chosen.is_empty());
+        app.focus_on(0);
+        press(&mut app, KeyCode::Down, KeyModifiers::NONE);
+        type_text(&mut app, "1");
+        assert_eq!(app.panel.drafts["q1"].other, "421");
+    }
+
+    /// Alt+Q opens the panel over the command menu, and the panel has the
+    /// keys as it shows, the text typed staying in the box. Over a window,
+    /// the window goes, and comes back when the panel closes.
+    #[test]
+    fn the_panel_takes_the_keys_where_it_shows() {
+        let mut app = app();
+        type_text(&mut app, "/m");
+        app.set_reading(asking());
+        assert!(!app.panel.open && !app.menu_items().is_empty());
+        press(&mut app, KeyCode::Char('q'), KeyModifiers::ALT);
+        assert!(app.panel.open);
+        press(&mut app, KeyCode::Char('1'), KeyModifiers::NONE);
+        assert_eq!(app.panel.drafts["q1"].chosen, [0]);
+        assert_eq!(app.editor.shown(), "/m");
+        press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+
+        let mut app = super::tests::app();
+        app.overlay = Some(Overlay::Help { scroll: 0 });
+        app.set_reading(asking());
+        assert!(!app.panel.open, "a window is open");
+        press(&mut app, KeyCode::Char('q'), KeyModifiers::ALT);
+        assert!(app.panel.open && app.overlay.is_none());
+        press(&mut app, KeyCode::Char('1'), KeyModifiers::NONE);
+        assert_eq!(app.panel.drafts["q1"].chosen, [0]);
+        press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert!(!app.panel.open);
+        assert_eq!(app.overlay, Some(Overlay::Help { scroll: 0 }));
+    }
+
     /// Esc ("answer in chat") attaches the open questions to the message
     /// box, whose next message answers them. Backspace in the empty box
     /// takes them off, and Ctrl+N dismisses them ("Not now").
@@ -2910,7 +2987,10 @@ pub(super) mod tests {
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         assert_eq!(sent(&mut app), ["Hello."]);
         press(&mut app, KeyCode::Char('n'), KeyModifiers::CONTROL);
-        assert_eq!(inputs(&mut app), [Input::DismissQuestions(Vec::new())]);
+        assert_eq!(
+            inputs(&mut app),
+            [Input::DismissQuestions(vec!["q1".into(), "q2".into()])]
+        );
     }
 
     /// New questions ring the bell once while the window isn't focused.

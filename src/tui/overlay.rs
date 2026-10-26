@@ -301,7 +301,7 @@ fn quit(frame: &mut Frame, app: &App, area: Rect, choice: usize, dont_ask: bool)
 
 /// What Alt+Q does. Mac terminals send Option as Alt only when set to.
 #[cfg(target_os = "macos")]
-const ALT_Q: &str = "open the answer panel for the agent's questions (Option+Q, where Option works as Alt: in the Terminal app, turn on Use Option as Meta key)";
+const ALT_Q: &str = "open the answer panel for the agent's questions. Option+Q needs Option to work as Alt. In the Terminal app, turn on Use Option as Meta key.";
 #[cfg(not(target_os = "macos"))]
 const ALT_Q: &str = "open the answer panel for the agent's questions";
 
