@@ -23,6 +23,8 @@ Every word a user reads costs attention, so prefer the minimal prose that is sti
 
 Colons that join two statements ("X: Y") are a strong sign that a language model wrote the text. Rewrite the sentence instead. A period, a comma, "so", "because", parentheses or a reordered sentence almost always reads better.
 
+The test is whether a semicolon could stand where the colon is. "The worker gets the skills if configured: it can load them at will" could take a semicolon, so rewrite it. "Optional: the directory it works in" couldn't, so a short label like that before a parameter's description is fine.
+
 | Instead of | Write |
 |---|---|
 | The page isn’t encrypted: share it on networks you trust. | The page isn’t encrypted, so share it only on networks you trust. |
