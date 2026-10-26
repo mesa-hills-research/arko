@@ -1747,7 +1747,9 @@ mod tests {
     #[test]
     fn the_answer_panel_docks_above_the_status_line() {
         let mut app = app();
-        app.set_reading(crate::tui::app::tests::asking());
+        let mut reading = crate::tui::app::tests::asking();
+        reading.questions[0].multiple = true;
+        app.set_reading(reading);
         assert!(app.panel.open);
         let rows = screen(&mut app, 60, 24);
         let at = rows
@@ -1755,8 +1757,12 @@ mod tests {
             .position(|row| row.contains("Arko asks 2 questions"))
             .unwrap_or_else(|| panic!("{rows:#?}"));
         let panel = rows[at..].join("\n");
-        // Numbered in their ask, without the agent's ids.
-        assert!(panel.contains("  1. Tabs or spaces?"), "{panel}");
+        // Numbered in their ask, without the agent's ids. One that takes
+        // any number of its choices says so after its text.
+        assert!(
+            panel.contains("  1. Tabs or spaces?  Choose any"),
+            "{panel}"
+        );
         assert!(!panel.contains("q1"), "{panel}");
         // The chips have the keys.
         assert!(
@@ -1770,6 +1776,7 @@ mod tests {
         assert!(panel.contains("  2. Which branch?"), "{panel}");
         assert!(panel.contains(" 1 You decide "), "{panel}");
         assert!(!panel.contains("Anything else"), "{panel}");
+        assert!(!panel.contains("branch?  Choose any"), "{panel}");
         assert!(panel.contains("Esc  answer in chat"), "{panel}");
         // Esc: the questions go with the next message, as the chip says.
         app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));

@@ -64,11 +64,20 @@ fn ids_of(questions: &[AgentQuestion]) -> Vec<String> {
 }
 
 /// The questions as the user reads them, each numbered in its ask, with its
-/// choices and what the agent assumes without an answer.
-fn shown(questions: &[AgentQuestion]) -> String {
+/// choices and what the agent assumes without an answer. `dim` mutes a
+/// hint.
+fn shown(questions: &[AgentQuestion], dim: impl Fn(&str) -> String) -> String {
     let mut lines = Vec::new();
     for question in questions {
-        lines.push(question.numbered());
+        if question.multiple && !question.choices.is_empty() && question.approval.is_none() {
+            lines.push(format!(
+                "{}  {}",
+                question.numbered(),
+                dim(crate::questions::CHOOSE_ANY)
+            ));
+        } else {
+            lines.push(question.numbered());
+        }
         if !question.choices.is_empty() {
             lines.push(format!("   Choices: {}", question.choices.join(" | ")));
         }
@@ -110,7 +119,7 @@ impl Harness {
             .into_iter()
             .filter(|known| asked.iter().any(|asked| asked.id == known.id))
             .collect();
-        for line in shown(&questions).trim().lines() {
+        for line in shown(&questions, |text| out.dim(text)).trim().lines() {
             out.echo(&format!("    {line}"));
         }
         out.echo(&out.dim(if question.approval.is_some() {

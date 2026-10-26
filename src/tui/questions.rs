@@ -25,7 +25,7 @@ use super::markdown;
 use super::overlay::{Overlay, hints};
 use super::select::Docked;
 use super::wrap;
-use crate::questions::{AgentQuestion, Answer, Answers, QuestionAnswer};
+use crate::questions::{AgentQuestion, Answer, Answers, CHOOSE_ANY, QuestionAnswer};
 use crate::ui::Input;
 
 /// The panel opens by itself only after this long without a key.
@@ -570,6 +570,22 @@ pub fn draw_panel(frame: &mut Frame, app: &mut App, above: Rect, previous: Optio
         };
         if text.is_empty() {
             text.push(wrap::Wrapped::line(Vec::new()));
+        }
+        // A question that takes any number of its choices says so after
+        // its text, on its line when it fits.
+        if question.multiple && !question.choices.is_empty() && question.approval.is_none() {
+            let hint = Span::styled(CHOOSE_ANY.to_string(), theme.dim());
+            let last = text.last_mut().expect("a line at least");
+            let used: usize = last
+                .spans
+                .iter()
+                .map(|span| wrap::width(&span.content))
+                .sum();
+            if used + 2 + wrap::width(CHOOSE_ANY) <= width {
+                last.spans.extend([Span::raw("  "), hint]);
+            } else {
+                text.push(wrap::Wrapped::line(vec![hint]));
+            }
         }
         for (row, wrapped) in text.into_iter().enumerate() {
             let mut spans = if row == 0 {

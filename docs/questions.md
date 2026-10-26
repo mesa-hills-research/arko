@@ -15,7 +15,8 @@ saves together come in one card, with a choice for each.
 
 New questions open the answer panel above the message box when you aren't typing. While you type,
 a chip says "Arko asks 2 questions" instead, and Alt+Q opens the panel. The questions of one ask are
-numbered 1, 2, 3, and a question asked alone has no number.
+numbered 1, 2, 3, and a question asked alone has no number. A question that takes more than one of
+its suggested answers says "Choose any" after its text.
 
 | Key | In the answer panel |
 |---|---|
@@ -69,7 +70,8 @@ Workers ask the agent that started them, not you, with the same ids, suggested a
 The web page's status (`Reading::questions`) lists the open questions with their ids, numbers,
 suggested answers, `multiple`, default and state, and each ask's feed item (`Item::questions`) has
 all of its questions, updated as they change. `Activity::question` is the card the agent waits on,
-if any.
+if any. A question with `multiple` shows "Choose any" (`arko::questions::CHOOSE_ANY`), muted, right
+after its text.
 
 | Request | Body |
 |---|---|
