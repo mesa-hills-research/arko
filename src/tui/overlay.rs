@@ -208,9 +208,7 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect, screen: Rect) {
             choice,
         } => super::model_picker::draw_notice(frame, &app.theme, area, text, *choice, *workers),
         Overlay::Keys(menu) => super::keys_menu::draw(frame, &app.theme, area, menu),
-        Overlay::OpenRouter(menu) => {
-            super::openrouter_menu::draw(frame, &app.theme, area, menu)
-        }
+        Overlay::OpenRouter(menu) => super::openrouter_menu::draw(frame, &app.theme, area, menu),
         Overlay::Resume(picker) => super::resume_picker::draw(frame, &app.theme, area, picker),
         Overlay::Quit { choice, dont_ask } => quit(frame, app, area, *choice, *dont_ask),
     }
