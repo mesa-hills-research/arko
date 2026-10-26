@@ -36,9 +36,11 @@ is Option+Q, which needs Option to work as Alt. In the Terminal app, turn on Use
 
 A question shows in one place at a time. While it is open it is in the answer panel, and the
 transcript has one quiet line where it was asked ("Arko asked 2 questions"). Click that line to
-open the panel. Once a question is answered, closed or dismissed, the line shows it with what became
-of it. It can be answered, answered in your message, closed by the agent (it found the answer or
-the question no longer matters), or dismissed.
+open the panel. Once a question is answered, closed or dismissed, the line becomes the ask's record,
+a box like the panel with each settled question, numbered, and what became of it. It can be
+answered, answered in your message, closed by the agent (it found the answer or the question no
+longer matters), or dismissed. The text of the panel and of the record selects with the mouse and
+copies as the rest of the transcript does.
 
 ## What the agent reads
 

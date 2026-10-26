@@ -2603,6 +2603,80 @@ mod tests {
         assert!(app.take_effects().is_empty());
     }
 
+    /// Once its questions are settled, an ask is their record in the
+    /// transcript, boxed as the panel was, and nothing of it stays docked
+    /// at the bottom. The record's text selects and copies as the
+    /// transcript's does, without the box and the numbers.
+    #[test]
+    fn a_settled_ask_is_a_boxed_record_in_the_transcript() {
+        use crate::questions::QuestionState;
+        use crate::tui::app::Effect;
+        use crossterm::event::{MouseButton, MouseEventKind};
+        let mut app = app();
+        let reading = crate::tui::app::tests::asking();
+        let mut card = Item::new(Kind::Question, "Arko asked 2 questions");
+        card.id = 1;
+        card.questions = Some(reading.questions.clone());
+        app.update(Update::Item(card.clone()), Activity::default);
+        app.set_reading(reading);
+        let rows = screen(&mut app, 60, 24);
+        assert!(
+            rows.iter().any(|row| row.contains("Arko asks 2 questions")),
+            "{rows:#?}"
+        );
+        let mut questions = card.questions.clone().unwrap();
+        questions[0].state = QuestionState::Answered {
+            answer: "Spaces".into(),
+        };
+        questions[1].state = QuestionState::Dismissed;
+        card.questions = Some(questions);
+        app.update(Update::Change(card), Activity::default);
+        app.set_reading(crate::remote::Reading::default());
+        let rows = screen(&mut app, 60, 24);
+        let top = rows
+            .iter()
+            .position(|row| row.contains("┌ Arko asked 2 questions ─"))
+            .unwrap_or_else(|| panic!("{rows:#?}"));
+        for (row, text) in [
+            (1, "│   1. Tabs or spaces?"),
+            (2, "│      Spaces"),
+            (3, "│   2. Which branch?"),
+            (4, "│      Dismissed"),
+            (5, "└──"),
+        ] {
+            assert!(rows[top + row].contains(text), "{rows:#?}");
+            assert!(rows[top + row].ends_with(['│', '┘']), "{rows:#?}");
+        }
+        assert!(
+            !rows
+                .iter()
+                .any(|row| row.contains("Arko asks") || row.contains("open question")),
+            "{rows:#?}"
+        );
+        assert!(app.docked.is_none());
+        // A drag from the first question to the end of its outcome.
+        let column = |row: usize, text: &str| {
+            let line = &rows[top + row];
+            let at = line.find(text).unwrap();
+            line[..at].chars().count() as u16
+        };
+        let (x, y) = (column(1, "Tabs"), (top + 1) as u16);
+        let (end_x, end_y) = (column(2, "Spaces") + 5, (top + 2) as u16);
+        let left = MouseButton::Left;
+        mouse(&mut app, MouseEventKind::Down(left), x, y);
+        mouse(&mut app, MouseEventKind::Drag(left), x + 3, y);
+        screen(&mut app, 60, 24);
+        mouse(&mut app, MouseEventKind::Drag(left), end_x, end_y);
+        mouse(&mut app, MouseEventKind::Up(left), end_x, end_y);
+        assert_eq!(
+            app.take_effects(),
+            [Effect::Copy {
+                text: "Tabs or spaces?\nSpaces".into(),
+                what: "2 lines".into(),
+            }]
+        );
+    }
+
     /// A click on a command's "more lines" opens its whole output, and a
     /// click on the line that ends it closes it: the line clicked stays
     /// under the mouse. A drag, a double click and a triple click select
