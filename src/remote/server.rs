@@ -2419,13 +2419,15 @@ mod tests {
         read_until(&mut stream, &mut buffer, |name, _| name == "reset").await;
 
         lock(&meter.0).settings.extra_rules = crate::agents::ExtraRules::All;
-        let answered = Instant::now();
         feed.notice(Level::Info, "Extra rules for small models are set to all.");
-        let events = read_until(&mut stream, &mut buffer, |name, _| name == "status").await;
-        assert!(answered.elapsed() < Duration::from_millis(1500));
-        let names: Vec<&str> = events.iter().map(|(name, _)| name.as_str()).collect();
-        assert_eq!(names, ["item", "status"]);
-        assert_eq!(events[1].1["settings"]["extra_rules"], "all");
+        let answer = read_until(&mut stream, &mut buffer, |name, _| name == "item").await;
+        // The status goes out with the answer, not with the check a while
+        // later, however busy the machine is.
+        let answered = Instant::now();
+        let status = read_until(&mut stream, &mut buffer, |name, _| name == "status").await;
+        assert!(answered.elapsed() < Duration::from_millis(500));
+        assert_eq!((answer.len(), status.len()), (1, 1));
+        assert_eq!(status[0].1["settings"]["extra_rules"], "all");
     }
 
     /// The status carries the main agent's prompt cache once its lifetime
