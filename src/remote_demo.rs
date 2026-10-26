@@ -24,15 +24,19 @@ use crate::ui::Input;
 /// open the link it prints. Messages: "Run the demo" (calls, two
 /// workers, a failed command, a question, a report), "demo:stream" (a
 /// long reply that streams), "demo:slow" (a 30 s command), "demo:ask" (a
-/// question), "demo:long" (3,500 calls, to reach the history's limit;
-/// "demo:long 500", 500), anything else (a short turn). Lines added to the
-/// file `ARKO_DEMO_INPUT` are typed at the terminal.
+/// question), "demo:questions" (three numbered questions with choices),
+/// "demo:approval" (a worker profile to approve), "demo:long" (3,500
+/// calls, to reach the history's limit; "demo:long 500", 500), anything
+/// else (a short turn). Lines added to the file `ARKO_DEMO_INPUT` are typed
+/// at the terminal.
 /// What starts a script: a message with one of these.
-const MARKERS: [&str; 5] = [
+const MARKERS: [&str; 7] = [
     "Run the demo",
     "demo:stream",
     "demo:slow",
     "demo:ask",
+    "demo:questions",
+    "demo:approval",
     "demo:long",
 ];
 
@@ -185,6 +189,41 @@ async fn remote_page_demo() {
                     }
                 };
             }
+            if let Some(step) = after("demo:questions") {
+                return match step {
+                    0 => tool_call(
+                        "n0",
+                        ASK_USER_TOOL_NAME,
+                        serde_json::json!({"questions": [
+                            {"question": "Tabs or spaces for the new files?", "choices": ["Tabs", "Spaces"], "default": "Spaces"},
+                            {"question": "Which tests should I run before I push?", "choices": ["Unit", "Integration", "Screenshots"], "multiple": true},
+                            {"question": "Which branch should the change go to?", "default": "main"},
+                        ]}),
+                    ),
+                    _ => {
+                        done();
+                        complete("n1", "I'll go on while you decide.")
+                    }
+                };
+            }
+            if let Some(step) = after("demo:approval") {
+                return match step {
+                    0 => tool_call(
+                        "p0",
+                        crew::SAVE_WORKER_PROFILE,
+                        serde_json::json!({
+                            "name": "3d-judge",
+                            "description": "Judges 3D results against a reference image",
+                            "instructions": "You judge 3D models against a reference image.\n\n1. Render the model from the reference's camera.\n2. Compare silhouettes, proportions and materials.\n3. Score each from 0 to 10, with one line on why.\n4. Name the three changes that would help most.",
+                            "scope": "user",
+                        }),
+                    ),
+                    _ => {
+                        done();
+                        complete("p1", "Noted.")
+                    }
+                };
+            }
             if let Some(step) = after("demo:long") {
                 if step == 0 && let Some(feed) = feed.get() {
                     // "demo:long 500": that many.
@@ -261,6 +300,9 @@ async fn remote_page_demo() {
         published: Default::default(),
     });
     harness.open(false).unwrap();
+    // What new workers start on, as an app's session sets it, so profiles
+    // can be saved (demo:approval).
+    harness.start_new_workers();
     if let Some(count) = std::env::var("ARKO_DEMO_ITEMS")
         .ok()
         .and_then(|count| count.parse().ok())
