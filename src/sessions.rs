@@ -887,6 +887,68 @@ mod tests {
         assert_eq!(entry.title, "Branch of Fix the flaky scroll test in…");
     }
 
+    /// A model's name comes after the user's and a branch's, and before the
+    /// first words. It is read from the folder each time, so it stays when
+    /// the session is opened again, and a new conversation (`/new`) leaves
+    /// it, while the first words follow the current conversation.
+    #[test]
+    fn a_models_name_comes_after_a_rename_and_a_branch_and_before_the_first_words() {
+        let temp = tempfile::tempdir().unwrap();
+        let line = "Fix the flaky scroll test in the sidebar before the release";
+        let conversation = |title: &str| crate::conversations::Record {
+            runs: Vec::new(),
+            title: title.into(),
+            unread: Vec::new(),
+        };
+        let session = Session::create(temp.path()).unwrap();
+        session
+            .save_settings(&Settings {
+                title: Some(crate::ui::cut(line, 80)),
+                ..settings(temp.path())
+            })
+            .unwrap();
+        Conversations {
+            list: vec![conversation(line)],
+            current: Some(0),
+        }
+        .save(&session.dir)
+        .unwrap();
+        let name = |id: &str| {
+            list(temp.path())
+                .into_iter()
+                .find(|entry| entry.id == id)
+                .unwrap()
+                .title
+        };
+        assert_eq!(name(&session.id), "Fix the flaky scroll test in…");
+        session.set_generated_name("Flaky scroll test").unwrap();
+        assert_eq!(name(&session.id), "Flaky scroll test");
+        // A second conversation takes the first words' place, not the model's.
+        Conversations {
+            list: vec![conversation(line), conversation("Rename the settings page")],
+            current: Some(1),
+        }
+        .save(&session.dir)
+        .unwrap();
+        assert_eq!(name(&session.id), "Flaky scroll test");
+        session.clear_generated_name();
+        assert_eq!(name(&session.id), "Rename the settings page");
+        // The user's name comes first, and a branch's own.
+        session.set_generated_name("Flaky scroll test").unwrap();
+        session.rename("Pears").unwrap();
+        assert_eq!(name(&session.id), "Pears");
+        let branch = Session::create(temp.path()).unwrap();
+        branch
+            .save_settings(&Settings {
+                title: Some("Branch of Flaky scroll test".into()),
+                branched_from: Some(session.id.clone()),
+                ..settings(temp.path())
+            })
+            .unwrap();
+        branch.set_generated_name("Another name").unwrap();
+        assert_eq!(name(&branch.id), "Branch of Flaky scroll test");
+    }
+
     /// An Arko from before session locks holds only its terminal's: the
     /// session is listed as open, by someone who didn't say, and isn't
     /// deleted until it lets go.

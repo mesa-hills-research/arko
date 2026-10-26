@@ -536,6 +536,8 @@ pub(crate) struct Harness {
     pub(crate) asker: Arc<Asker>,
     /// Arko sends one message and exits (-p).
     pub(crate) one_shot: bool,
+    /// The model naming the session, which closes and stops with it.
+    pub(crate) naming: crate::session_names::naming::Naming,
     /// `/exit` was typed with workers or background jobs running: the next
     /// one quits.
     pub(crate) exit_warned: bool,
@@ -4417,9 +4419,10 @@ impl Harness {
         let first = self.conversations.current == Some(0);
         if let Some(record) = self.conversations.current_mut() {
             record.title = conversations::title_of(&words);
-            // A model's name was of the message that is gone: the new one
-            // is named in its place.
+            // A model's name was of the message that is gone: its run ends
+            // and the new message is named in its place.
             if first {
+                self.naming.cancel();
                 self.session.clear_generated_name();
                 self.name_by_model(&words);
             }
@@ -5779,6 +5782,7 @@ pub(crate) mod tests {
                 questions: interactive.then_some(questions_sender),
             }),
             one_shot: !interactive,
+            naming: Default::default(),
             exit_warned: false,
             jobs_shown: Vec::new(),
             jobs_listed: Vec::new(),

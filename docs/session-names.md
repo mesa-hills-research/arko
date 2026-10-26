@@ -1,6 +1,6 @@
 # Session names
 
-A new session is named by the first words of its first message, cut at a word within 30 characters
+A new session is named by the first words of its first message, cut at a word within 30 display columns
 ("Fix the flaky scroll test in…"). Arko can ask a model for a better name instead. The name you give
 a session with a rename always comes first, and a branch keeps "Branch of …".
 
@@ -21,11 +21,19 @@ Choosing a model turns on the two plan ways. The key ways start off, since they 
 way asks at low effort for a name of 2 to 5 words in the message's language.
 
 The first message goes to the first way that works. A way that can't run (Claude Code isn't installed
-or signed in, no login, no key), fails or takes more than 20 seconds hands over to the next. When none
-works, the first words stay the name. Naming runs in the background after the first message, so the
-turn never waits for it, and only the first 2,000 characters of the first message are sent.
+or signed in with a Claude plan, no login, no key), fails, gives no usable name, or sends nothing for
+two minutes hands over to the next. A way that is still working is never cut off, so what it already
+used isn't wasted. When none works, the first words stay the name. Naming runs in the background
+after the first message, so the turn never waits for it, and it goes on after the session closes. It
+stops when the session is deleted, when the first message is edited (the new one is named instead), or
+when Arko exits. Only the first 2,000 characters of the first message are sent.
 
-The menu says under each way what it lacks. The words work in any front end:
+The Claude plan way asks Claude Code with the variables that could bill it or sign it in elsewhere
+(`ANTHROPIC_*`, Bedrock, Vertex and Foundry settings) empty, and runs only when Claude Code is signed
+in with a Claude plan. A name the model gives has one to five words, at most 40 display columns.
+
+The menu opens at once and says under each way what it lacks as soon as that is checked. The words
+work in any front end:
 
 | Command | What it does |
 |---|---|
@@ -34,12 +42,14 @@ The menu says under each way what it lacks. The words work in any front end:
 | `/session-names WAY...` | Names them by a model, trying the ways in the order given. |
 
 The setting is the list of ways in `session-names.json` in Arko's folder, in the order they are
-tried. A missing or empty list means the first words. It applies to sessions started after the
-change.
+tried. A missing or empty list means the first words. Arko reads it again before it asks each way,
+so a way turned off is not asked, and a name from a way turned off meanwhile is not kept.
 
 ## In an app
 
 `arko::session_names` has `load` and `save` for the list, `Way` with its words and labels, `arranged`
-for the order a menu shows, `missing` for what each way lacks now, and `short_name` for the cut.
-`missing` runs `claude` to check Claude Code, so call it off a UI thread. A session's name comes
-from `sessions::list` and the status as before.
+for the order a menu shows, `missing` for what each way lacks now, and `short_name` for the cut. A name
+is cut by what a user sees as one character, so an emoji or a flag is never split. `missing` runs
+`claude` to check Claude Code, so call it off a UI thread. A session's name comes from
+`sessions::list` and the status as before. A session an app runs with `spawn` keeps its thread for a
+name still being asked after the session closes.
