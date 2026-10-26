@@ -34,6 +34,7 @@ struct State {
     follow_frame: Option<Closure<dyn FnMut(f64)>>,
     wheel: Option<Closure<dyn FnMut(WheelEvent)>>,
     resized: Option<Closure<dyn FnMut()>>,
+    opened: Option<Closure<dyn FnMut(web_sys::Event)>>,
     /// The scroll position at the last scroll event.
     last_top: i32,
 }
@@ -48,11 +49,22 @@ pub fn attach(log: Element, pinned: RwSignal<bool>) {
     let frame = Closure::<dyn FnMut(f64)>::new(tick);
     let follow_frame = Closure::<dyn FnMut(f64)>::new(|_| follow_now());
     let wheel = Closure::<dyn FnMut(WheelEvent)>::new(on_wheel);
-    // The message box grew, or the keyboard opened: the bottom stays in view.
-    let resized = Closure::<dyn FnMut()>::new(follow);
+    // The scroller or its rows changed size (another view, rows added or
+    // gone, the message box grew, the keyboard opened), so where the reader
+    // is against the end is decided again.
+    let resized = Closure::<dyn FnMut()>::new(settle);
     if let Ok(observer) = web_sys::ResizeObserver::new(resized.as_ref().unchecked_ref()) {
         observer.observe(&log);
+        if let Ok(Some(rows)) = log.query_selector("#rows") {
+            observer.observe(&rows);
+        }
     }
+    let opened = Closure::<dyn FnMut(web_sys::Event)>::new(on_open);
+    let _ = log.add_event_listener_with_callback_and_bool(
+        "click",
+        opened.as_ref().unchecked_ref(),
+        true,
+    );
     let options = web_sys::AddEventListenerOptions::new();
     options.set_passive(false);
     let _ = log.add_event_listener_with_callback_and_add_event_listener_options(
@@ -68,6 +80,7 @@ pub fn attach(log: Element, pinned: RwSignal<bool>) {
         state.follow_frame = Some(follow_frame);
         state.wheel = Some(wheel);
         state.resized = Some(resized);
+        state.opened = Some(opened);
     });
 }
 
@@ -120,6 +133,64 @@ pub fn on_scroll() {
             } else if !near && up && pinned.get_untracked() {
                 pinned.set(false);
             }
+        }
+    });
+}
+
+/// What a change of size does to the reader's place.
+#[derive(Debug, PartialEq)]
+enum Settle {
+    /// Back to the bottom, as the reader was there.
+    Follow,
+    /// The bottom came to the reader, so new output is followed again.
+    Pin,
+    Stay,
+}
+
+/// A reader at the bottom stays there, one the bottom came to is there
+/// again, and anyone else keeps their place (and Latest). The wheel's spring
+/// decides once it stops.
+fn settle_action(pinned: bool, running: bool, near: bool) -> Settle {
+    match (running, pinned, near) {
+        (true, _, _) => Settle::Stay,
+        (false, true, _) => Settle::Follow,
+        (false, false, true) => Settle::Pin,
+        (false, false, false) => Settle::Stay,
+    }
+}
+
+fn settle() {
+    STATE.with(|state| {
+        let mut state = state.borrow_mut();
+        let (Some(log), Some(pinned)) = (state.log.clone(), state.pinned) else {
+            return;
+        };
+        let near = bottom(&log) - log.scroll_top() as f64 <= NEAR_BOTTOM;
+        match settle_action(pinned.get_untracked(), state.running, near) {
+            Settle::Follow => scroll_to(&log, bottom(&log)),
+            Settle::Pin => pinned.set(true),
+            Settle::Stay => {}
+        }
+        state.last_top = log.scroll_top();
+    });
+}
+
+/// A row the reader opens grows downward instead of pushing itself up off
+/// the screen, as in Studio, so following stops until the reader is back at
+/// the bottom.
+fn on_open(event: web_sys::Event) {
+    let summary = event
+        .target()
+        .and_then(|target| target.dyn_into::<Element>().ok())
+        .and_then(|target| target.closest("summary").ok().flatten());
+    if summary.is_none() {
+        return;
+    }
+    STATE.with(|state| {
+        if let Some(pinned) = state.borrow().pinned
+            && pinned.get_untracked()
+        {
+            pinned.set(false);
         }
     });
 }
@@ -336,4 +407,22 @@ pub fn keep_place(id: u64) {
         on_scroll();
     });
     let _ = window().request_animation_frame(restore.unchecked_ref());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_change_of_size_keeps_the_reader_at_the_end_or_shows_latest() {
+        // Another view made the rows taller under a reader at the end.
+        assert_eq!(settle_action(true, false, false), Settle::Follow);
+        assert_eq!(settle_action(true, false, true), Settle::Follow);
+        // Rows closed or a view got shorter, and the end came to the reader.
+        assert_eq!(settle_action(false, false, true), Settle::Pin);
+        // A reader away from the end keeps their place, and Latest shows.
+        assert_eq!(settle_action(false, false, false), Settle::Stay);
+        // The wheel's spring is moving.
+        assert_eq!(settle_action(true, true, false), Settle::Stay);
+    }
 }
