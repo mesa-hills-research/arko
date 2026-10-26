@@ -54,7 +54,7 @@ pub use links::{HOST_VARIABLE, Interface, Link};
 pub use no_server::Server;
 pub(crate) use render::duration_words;
 #[cfg(feature = "remote")]
-pub use server::{SESSIONS_FILE, Server};
+pub use server::Server;
 
 /// What the page's header says of the session.
 #[derive(Debug, Clone, Default, Serialize)]
@@ -449,6 +449,11 @@ pub fn random_token(bytes: usize) -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(buffer)
 }
 
+/// The file beside the session's key that keeps the page's sessions, so they
+/// outlast a restart of the page or of Arko. `/remote off` and a new key end
+/// them.
+pub const SESSIONS_FILE: &str = "remote-sessions.json";
+
 /// The key's random bytes: 192 bits.
 const KEY_BYTES: usize = 24;
 
@@ -470,6 +475,23 @@ pub fn session_key(path: &Path) -> Result<String, String> {
         }
     }
     new_key(path)
+}
+
+/// Ends the page sessions kept in the session's folder `dir`. When the file
+/// can't be removed, it is emptied, and when that fails too, the error says
+/// what to delete.
+pub fn forget_sessions(dir: &Path) -> Result<(), String> {
+    let path = dir.join(SESSIONS_FILE);
+    match std::fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => write_private_replacing(&path, "{}").map_err(|_| {
+            format!(
+                "Couldn't end the web page's saved sessions ({error}). Delete {} to end them.",
+                path.display()
+            )
+        }),
+    }
 }
 
 /// A new key for the session, saved at `path` in place of the old one.

@@ -1466,7 +1466,9 @@ impl Harness {
             self.feed.notice(Level::Warn, &text);
             self.stop_remote().await;
             // Turned off, its sessions end, where a restart keeps them.
-            let _ = std::fs::remove_file(self.session.dir.join(remote::SESSIONS_FILE));
+            if let Err(error) = remote::forget_sessions(&self.session.dir) {
+                self.feed.notice(Level::Error, &error);
+            }
         }
     }
 

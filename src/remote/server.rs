@@ -58,11 +58,6 @@ const SESSION_LIFETIME: Duration = Duration::from_secs(12 * 60 * 60);
 /// often it is renewed.
 const SESSION_CAP: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 
-/// The file beside the session's key that keeps the page's sessions, so they
-/// outlast a restart of the page or of Arko. `/remote off` and a new key end
-/// them.
-pub const SESSIONS_FILE: &str = "remote-sessions.json";
-
 /// A session the page was let in with.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct PageSession {
@@ -89,7 +84,7 @@ impl PageSession {
     }
 }
 
-/// What [`SESSIONS_FILE`] holds.
+/// What [`super::SESSIONS_FILE`] holds.
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct SessionsFile {
     /// The key's SHA-256. The sessions go with this key only.
@@ -453,6 +448,13 @@ impl App {
             .then_some(token)
     }
 
+    /// Whether the session with the cookie hash `hash` is still good at `now`.
+    fn is_alive(&self, hash: &str, now: u64) -> bool {
+        lock(&self.sessions)
+            .iter()
+            .any(|session| same(&session.hash, hash) && session.alive(now))
+    }
+
     /// Renews the session of the cookie `headers` carry, if it has one, and
     /// returns the cookie to set again for it.
     fn renew_at(&self, headers: &HeaderMap, now: u64) -> Option<String> {
@@ -678,7 +680,10 @@ async fn events(
         return refusal.into_response();
     }
     let app_for_renewal = app.clone();
+    // A stream let in by a session cookie ends when the session does.
+    let session = app.session_at(&headers, now_secs()).map(digest);
     let mut stream = Stream {
+        session,
         closed: app.closed.clone(),
         updates: app.feed.subscribe().1,
         app,
@@ -699,6 +704,8 @@ async fn events(
 
 struct Stream {
     app: Arc<App>,
+    /// The hash of the session cookie it was let in with, if any.
+    session: Option<String>,
     updates: broadcast::Receiver<Update>,
     closed: watch::Receiver<bool>,
     pending: VecDeque<Event>,
@@ -807,7 +814,18 @@ impl Stream {
                     Err(broadcast::error::RecvError::Lagged(_)) => self.reset(),
                     Err(broadcast::error::RecvError::Closed) => self.ending = true,
                 },
-                _ = self.tick.tick() => self.send_status(),
+                _ = self.tick.tick() => {
+                    // Its session ended: the page asks for the key again.
+                    if self
+                        .session
+                        .as_deref()
+                        .is_some_and(|hash| !self.app.is_alive(hash, now_secs()))
+                    {
+                        self.ending = true;
+                        continue;
+                    }
+                    self.send_status();
+                }
             }
         }
     }
@@ -1236,7 +1254,7 @@ mod tests {
     #[test]
     fn sessions_outlast_a_restart_with_the_same_key_only() {
         let temp = tempfile::tempdir().unwrap();
-        let file = temp.path().join(SESSIONS_FILE);
+        let file = temp.path().join(crate::remote::SESSIONS_FILE);
         let token = bare_app(KEY, Some(file.clone())).new_session();
         let text = std::fs::read_to_string(&file).unwrap();
         assert!(!text.contains(&token) && !text.contains(KEY), "{text}");
@@ -2152,5 +2170,60 @@ mod tests {
         let response = again.get("/api/session", Some(&cookie)).await;
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
         again.login().await;
+    }
+
+    /// A stream let in with a session cookie ends when the session does, so
+    /// the page asks for the key again.
+    #[tokio::test]
+    async fn a_stream_ends_when_its_session_does() {
+        let temp = tempfile::tempdir().unwrap();
+        let file = temp.path().join(crate::remote::SESSIONS_FILE);
+        // A session kept beside the key, two seconds from the end of its 7
+        // days, which connecting the stream renews but can't extend.
+        let token = "a-session-cookie-of-this-test";
+        let now = now_secs();
+        let kept = SessionsFile {
+            key: digest(KEY),
+            sessions: vec![PageSession {
+                hash: digest(token),
+                opened: now + 2 - SESSION_CAP.as_secs(),
+                renewed: now,
+            }],
+        };
+        std::fs::write(&file, serde_json::to_string(&kept).unwrap()).unwrap();
+        let feed = Feed::new("main");
+        let (actions, _received) = mpsc::unbounded_channel();
+        let server = Server::start(
+            "127.0.0.1:0".parse().unwrap(),
+            KEY.into(),
+            Info::default(),
+            feed.clone(),
+            actions,
+            Arc::new(Still),
+            Some(file),
+        )
+        .unwrap();
+        let http = arko_ai::http_client();
+        let cookie = format!("arko_remote_{}={token}", server.addr().port());
+        let mut stream = http
+            .get(format!("http://{}/api/events", server.addr()))
+            .header(header::COOKIE, &cookie)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(stream.status(), StatusCode::OK);
+        let end = tokio::time::timeout(Duration::from_secs(8), async {
+            while let Ok(Some(_)) = stream.chunk().await {}
+        })
+        .await;
+        assert!(end.is_ok(), "the stream ended with its session");
+        let response = http
+            .get(format!("http://{}/api/session", server.addr()))
+            .header(header::COOKIE, &cookie)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        server.stop().await;
     }
 }
