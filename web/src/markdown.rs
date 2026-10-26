@@ -7,16 +7,25 @@
 //! the open block at the end is read again as text comes. A table's last
 //! row shows once it's whole, so a table grows a row at a time.
 
-use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
+use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd, TextMergeStream};
 
 /// `text` in Markdown, as safe HTML.
 pub fn to_html(text: &str) -> String {
     let mut html = String::with_capacity(text.len() + text.len() / 4);
     let options = Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TABLES;
-    for event in Parser::new_ext(text, options) {
+    // Inside a link or a code block, a web address stays text.
+    let mut plain = 0u32;
+    for event in TextMergeStream::new(Parser::new_ext(text, options)) {
         match event {
-            Event::Start(tag) => open(&mut html, tag),
-            Event::End(tag) => close(&mut html, tag),
+            Event::Start(tag) => {
+                plain += u32::from(matches!(tag, Tag::Link { .. } | Tag::CodeBlock(_)));
+                open(&mut html, tag)
+            }
+            Event::End(tag) => {
+                plain = plain.saturating_sub(u32::from(matches!(tag, TagEnd::Link | TagEnd::CodeBlock)));
+                close(&mut html, tag)
+            }
+            Event::Text(text) if plain == 0 => link_addresses(&mut html, &text),
             Event::Text(text) => escape(&mut html, &text),
             Event::Code(code) => {
                 html.push_str("<code>");
@@ -122,6 +131,33 @@ fn close(html: &mut String, tag: TagEnd) {
 fn safe_url(url: &str) -> bool {
     let lower = url.trim_start().to_ascii_lowercase();
     lower.starts_with("https://") || lower.starts_with("http://") || lower.starts_with("mailto:")
+}
+
+/// Appends `text` escaped, with each web address in it as a link. An
+/// address starts a word, and the punctuation that ends a sentence after it
+/// isn't its.
+fn link_addresses(html: &mut String, text: &str) {
+    let mut rest = text;
+    let mut previous = None;
+    while let Some((at, _)) = rest.char_indices().find(|&(at, _)| {
+        let starts = rest[at..].get(..8).is_some_and(|head| head.eq_ignore_ascii_case("https://"))
+            || rest[at..].get(..7).is_some_and(|head| head.eq_ignore_ascii_case("http://"));
+        let before = if at == 0 { previous } else { rest[..at].chars().next_back() };
+        starts && before.is_none_or(|c: char| c.is_whitespace() || c == '(' || c == '<')
+    }) {
+        escape(html, &rest[..at]);
+        let address = &rest[at..];
+        let end = address.find(|c: char| c.is_whitespace() || c == '<' || c == '>').unwrap_or(address.len());
+        let address = address[..end].trim_end_matches(['.', ',', ';', ':', '!', '?', ')', '\'', '"']);
+        html.push_str("<a target=\"_blank\" rel=\"noopener noreferrer\" href=\"");
+        escape(html, address);
+        html.push_str("\">");
+        escape(html, address);
+        html.push_str("</a>");
+        rest = &rest[at + address.len()..];
+        previous = address.chars().next_back();
+    }
+    escape(html, rest);
 }
 
 /// Appends `text` with `&`, `<`, `>` and `"` escaped.
@@ -301,6 +337,16 @@ mod tests {
         assert!(html.contains("href=\"https://e.com\""));
         assert!(!html.contains("javascript"));
         assert!(html.contains("&lt;b&gt;raw&lt;/b&gt;"));
+    }
+
+    #[test]
+    fn a_web_address_in_the_text_is_a_link() {
+        let html = to_html("See https://example.com/a_b. Or (http://a.b/c), not xhttps://no, `https://code` or [x](https://x.y).");
+        assert!(html.contains(r#"href="https://example.com/a_b">https://example.com/a_b</a>. Or"#), "{html}");
+        assert!(html.contains(r#"(<a target="_blank" rel="noopener noreferrer" href="http://a.b/c">http://a.b/c</a>),"#), "{html}");
+        assert!(!html.contains(r#"href="https://no"#), "{html}");
+        assert!(html.contains("<code>https://code</code>"), "{html}");
+        assert!(html.contains(r#"href="https://x.y">x</a>"#), "{html}");
     }
 
     #[test]
