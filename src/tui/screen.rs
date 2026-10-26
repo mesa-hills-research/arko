@@ -1999,7 +1999,7 @@ mod tests {
         mouse(&mut app, MouseEventKind::Down(left), x, y as u16);
         mouse(&mut app, MouseEventKind::Up(left), x, y as u16);
         assert!(app.panel.open);
-        assert_eq!(app.panel.focus, 0);
+        assert_eq!(app.focus_index(), 0);
     }
 
     /// With the symbols of the classic Windows console's fonts (`basic`) and
