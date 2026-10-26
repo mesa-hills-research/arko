@@ -652,6 +652,7 @@ impl App {
         Err(Refusal::Unauthorized)
     }
 
+    #[cfg(test)]
     fn has_session(&self, headers: &HeaderMap) -> bool {
         self.session_at(headers, now_secs()).is_some()
     }
@@ -682,14 +683,21 @@ impl App {
     /// Lets in a request with a session cookie, or the key as a bearer
     /// token.
     fn authorize(&self, headers: &HeaderMap, ip: IpAddr) -> Result<(), Refusal> {
+        self.let_in(headers, ip).map(|_| ())
+    }
+
+    /// Lets in a request as [`Self::authorize`] does, and says by what: the
+    /// hash of its session cookie, or `None` for the key as a bearer token.
+    /// A stream keeps it, to end with the session.
+    fn let_in(&self, headers: &HeaderMap, ip: IpAddr) -> Result<Option<String>, Refusal> {
         if cross_site(headers) {
             return Err(Refusal::CrossSite);
         }
-        if self.has_session(headers) {
-            return Ok(());
+        if let Some(token) = self.session_at(headers, now_secs()) {
+            return Ok(Some(digest(token)));
         }
         match bearer(headers) {
-            Some(key) => self.check_key(ip, key),
+            Some(key) => self.check_key(ip, key).map(|()| None),
             None => Err(Refusal::Unauthorized),
         }
     }
@@ -848,12 +856,13 @@ async fn events(
     ConnectInfo(peer): Peer,
     headers: HeaderMap,
 ) -> Response {
-    if let Err(refusal) = app.authorize(&headers, peer.ip()) {
-        return refusal.into_response();
-    }
+    // A stream let in by a session cookie ends when the session does, so it
+    // keeps what let it in, decided once.
+    let session = match app.let_in(&headers, peer.ip()) {
+        Ok(session) => session,
+        Err(refusal) => return refusal.into_response(),
+    };
     let app_for_renewal = app.clone();
-    // A stream let in by a session cookie ends when the session does.
-    let session = app.session_at(&headers, now_secs()).map(digest);
     let mut stream = Stream {
         session,
         closed: app.closed.clone(),
