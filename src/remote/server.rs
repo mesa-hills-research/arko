@@ -24,7 +24,7 @@ use subtle::ConstantTimeEq;
 use tokio::sync::{broadcast, mpsc, watch};
 use tokio::task::JoinHandle;
 
-use super::feed::{Activity, Feed, Update};
+use super::feed::{Activity, Feed, Kind, Update};
 use super::{Action, Info, Meter, Reading};
 
 // The page, written in Rust with Leptos in `web/` and built into `page/`.
@@ -632,11 +632,18 @@ impl Stream {
 
     fn take(&mut self, update: Update) {
         match update {
-            Update::Item(item) => self.pending.push_back(
-                Event::default()
-                    .event("item")
-                    .data(serde_json::to_string(&item).unwrap_or_default()),
-            ),
+            Update::Item(item) => {
+                self.pending.push_back(
+                    Event::default()
+                        .event("item")
+                        .data(serde_json::to_string(&item).unwrap_or_default()),
+                );
+                // A command's answer comes as its setting changes, so the
+                // page shows the new value with it.
+                if matches!(item.kind, Kind::Output | Kind::Notice) {
+                    self.send_status();
+                }
+            }
             Update::Append { id, text } => self.pending.push_back(
                 Event::default()
                     .event("append")
@@ -2005,6 +2012,30 @@ mod tests {
                 "compacts": false,
             }])
         );
+    }
+
+    /// A setting's new value comes with the command's answer, rather than
+    /// with the status the stream sends every 2 s, so the page's settings
+    /// show it at once.
+    #[tokio::test]
+    async fn a_settings_new_value_comes_with_the_commands_answer() {
+        use super::super::feed::Level;
+        let feed = Feed::new("main");
+        let meter = Arc::new(Moving(Mutex::new(Reading::default())));
+        let served = serve_with(&feed, "127.0.0.1:0", Info::default(), meter.clone());
+        let cookie = served.login().await;
+        let mut stream = served.get("/api/events", Some(&cookie)).await;
+        let mut buffer = String::new();
+        read_until(&mut stream, &mut buffer, |name, _| name == "reset").await;
+
+        lock(&meter.0).settings.extra_rules = crate::agents::ExtraRules::All;
+        let answered = Instant::now();
+        feed.notice(Level::Info, "Extra rules for small models are set to all.");
+        let events = read_until(&mut stream, &mut buffer, |name, _| name == "status").await;
+        assert!(answered.elapsed() < Duration::from_millis(1500));
+        let names: Vec<&str> = events.iter().map(|(name, _)| name.as_str()).collect();
+        assert_eq!(names, ["item", "status"]);
+        assert_eq!(events[1].1["settings"]["extra_rules"], "all");
     }
 
     /// The status carries the main agent's prompt cache once its lifetime

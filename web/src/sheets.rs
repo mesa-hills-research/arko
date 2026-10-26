@@ -92,6 +92,8 @@ pub fn WorkersSheet() -> impl IntoView {
 /// setting once it changed, and the lines are what Arko answered in the
 /// transcript (an error for a bad value), shown under the setting.
 struct Pending {
+    /// Tells it from a command it took the place of.
+    id: u64,
     command: String,
     note: &'static str,
     done: Option<Box<dyn Fn(&SettingsData) -> bool>>,
@@ -103,7 +105,12 @@ struct Pending {
 
 thread_local! {
     static PENDING: RefCell<Option<Pending>> = const { RefCell::new(None) };
+    static SENT: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
+
+/// How long the status may take to show a change Arko answered for. The
+/// server looks for changes in the status every 2 s.
+const ANSWER_WAIT_MS: i32 = 3000;
 
 /// What the settings show meanwhile: the setting's key and the value it's
 /// turning to.
@@ -122,6 +129,18 @@ impl Settings {
                 notes.insert(key, (text, error));
             }
         });
+    }
+
+    /// The command `id` is through, if it's still the one waiting.
+    fn settle_if(&self, id: u64, ok: bool) {
+        if PENDING.with(|pending| {
+            pending
+                .borrow()
+                .as_ref()
+                .is_some_and(|change| change.id == id)
+        }) {
+            self.settle(ok);
+        }
     }
 
     /// The command is through: it worked (`ok`), or Arko said why not.
@@ -169,9 +188,13 @@ impl Settings {
             }
             // An answer, and the status still the same a moment later: it didn't take.
             window().clear_timeout_with_handle(change.wait);
-            let later = Closure::once_into_js(move || settings.settle(false));
+            let id = change.id;
+            let later = Closure::once_into_js(move || settings.settle_if(id, false));
             change.wait = window()
-                .set_timeout_with_callback_and_timeout_and_arguments_0(later.unchecked_ref(), 1500)
+                .set_timeout_with_callback_and_timeout_and_arguments_0(
+                    later.unchecked_ref(),
+                    ANSWER_WAIT_MS,
+                )
                 .unwrap_or(0);
             None
         });
@@ -181,7 +204,8 @@ impl Settings {
     }
 
     /// Sends `text` from the settings. `done(settings)` says when the status
-    /// shows it took, and `shows` what the settings show meanwhile.
+    /// shows it took, and `shows` what the settings show meanwhile. It takes
+    /// the place of a command still waiting, so the last choice wins.
     fn command(
         &self,
         text: String,
@@ -189,17 +213,23 @@ impl Settings {
         done: Option<Box<dyn Fn(&SettingsData) -> bool>>,
         shows: Option<(&'static str, String)>,
     ) {
-        if PENDING.with(|pending| pending.borrow().is_some()) {
-            return;
+        if let Some(earlier) = PENDING.with(|pending| pending.borrow_mut().take()) {
+            window().clear_timeout_with_handle(earlier.timer);
+            window().clear_timeout_with_handle(earlier.wait);
         }
         self.note(note, String::new(), false);
         let settings = *self;
-        let timeout = Closure::once_into_js(move || settings.settle(false));
+        let id = SENT.with(|sent| {
+            sent.set(sent.get() + 1);
+            sent.get()
+        });
+        let timeout = Closure::once_into_js(move || settings.settle_if(id, false));
         let timer = window()
             .set_timeout_with_callback_and_timeout_and_arguments_0(timeout.unchecked_ref(), 10_000)
             .unwrap_or(0);
         PENDING.with(|pending| {
             *pending.borrow_mut() = Some(Pending {
+                id,
                 command: text.clone(),
                 note,
                 done,
@@ -212,10 +242,12 @@ impl Settings {
         self.shows.set(shows);
         spawn_local(async move {
             if !post("/api/message", serde_json::json!({ "text": text })).await {
-                let change = PENDING.with(|pending| pending.borrow_mut().take());
-                if let Some(change) = change {
-                    window().clear_timeout_with_handle(change.timer);
-                }
+                let mine = PENDING.with(|pending| {
+                    let mut pending = pending.borrow_mut();
+                    pending.take_if(|change| change.id == id)
+                });
+                let Some(change) = mine else { return };
+                window().clear_timeout_with_handle(change.timer);
                 settings.shows.set(None);
                 let why = page()
                     .error
@@ -224,10 +256,6 @@ impl Settings {
                 settings.note(note, why, true);
             }
         });
-    }
-
-    fn busy(&self) -> bool {
-        PENDING.with(|pending| pending.borrow().is_some())
     }
 }
 
@@ -289,10 +317,11 @@ fn Options(
                 let choose = choose.clone();
                 let mine = value.clone();
                 let checked = move || shown() == mine;
+                // (A tap on the option shown, which may be one still on its way, changes nothing.)
                 view! {
                     <button type="button" class="option" role="radio" aria-checked=move || checked().to_string()
                         disabled=move || disabled.get()
-                        on:click=move |_| choose(value.clone())>
+                        on:click=move |_| if shown() != value { choose(value.clone()) }>
                         <span class="name">{name}</span>
                         {(!about.is_empty()).then(|| view! { <span class="about">{about}</span> })}
                     </button>
@@ -477,7 +506,6 @@ fn SettingsBody() -> impl IntoView {
                 })
                 on=Signal::derive(move || s().outside)
                 toggle=move |on| {
-                    if settings.busy() { return }
                     if on {
                         outside_confirm.set(true);
                     } else {
@@ -519,7 +547,6 @@ fn SettingsBody() -> impl IntoView {
                 chosen=Signal::derive(move || s().extra_rules.unwrap_or_else(|| "off".into()))
                 disabled=Signal::derive(started)
                 choose=move |key: String| {
-                    if settings.busy() || s().extra_rules.as_deref().unwrap_or("off") == key { return }
                     let want = key.clone();
                     settings.command(format!("/extra-rules {key}"), "rules", Some(Box::new(move |s| s.extra_rules.as_deref() == Some(want.as_str()))), Some(("rules", key)));
                 } />
@@ -532,7 +559,6 @@ fn SettingsBody() -> impl IntoView {
             <Options label="Project instructions" key="project" options=option_list(&words::PROJECT)
                 chosen=Signal::derive(move || s().project_instructions.unwrap_or_else(|| "one".into()))
                 choose=move |key: String| {
-                    if settings.busy() || s().project_instructions.as_deref().unwrap_or("one") == key { return }
                     let want = key.clone();
                     settings.command(format!("/project-instructions {key}"), "project", Some(Box::new(move |s| s.project_instructions.as_deref() == Some(want.as_str()))), Some(("project", key)));
                 } />
@@ -590,7 +616,6 @@ fn SettingsBody() -> impl IntoView {
                 <Options label="Models for workers" key="worker-models" options=option_list(&words::WORKER_MODELS)
                     chosen=Signal::derive(move || s().worker_models.unwrap_or_else(|| "agent".into()))
                     choose=move |key: String| {
-                        if settings.busy() || s().worker_models.as_deref().unwrap_or("agent") == key { return }
                         let want = key.clone();
                         settings.command(format!("/worker-models {key}"), "workers", Some(Box::new(move |s| s.worker_models.as_deref() == Some(want.as_str()))), Some(("worker-models", key)));
                     } />
@@ -603,7 +628,6 @@ fn SettingsBody() -> impl IntoView {
                     chosen=Signal::derive(move || s().worker_depth.unwrap_or(2).to_string())
                     choose=move |key: String| {
                         let Ok(level) = key.parse::<u32>() else { return };
-                        if settings.busy() || s().worker_depth.unwrap_or(2) == level { return }
                         settings.command(format!("/worker-depth {level}"), "workers", Some(Box::new(move |s| s.worker_depth == Some(level))), Some(("worker-depth", key)));
                     } />
                 <Switch name="Worker retry cap" key="retry-cap"
