@@ -1694,14 +1694,20 @@
   /** How long the words an argument may be stay good: a worker may start meanwhile. */
   const CHOICES_FRESH_MS = 10000;
 
-  function choicesOf(name, before) {
-    const key = JSON.stringify([name, before]);
+  function choicesOf(name, before, typed) {
+    // An OpenRouter model is completed from its list, which the server answers for the start typed.
+    const openrouter = name === '/model' && /^openrouter:/i.test(typed || '');
+    const key = JSON.stringify(openrouter ? [name, before, typed] : [name, before]);
     const hit = choiceCache.get(key);
     if (hit && Date.now() - hit.at < CHOICES_FRESH_MS) return hit.words;
     // (Words that are known stay in the menu while they are asked for again.)
     choiceCache.set(key, { words: hit && hit.words, at: Date.now() });
-    fetchJson('/api/choices', { command: name, before }).then((answer) => {
-      choiceCache.set(key, { words: (answer && answer.choices) || [], at: Date.now() });
+    const body = openrouter ? { command: name, before, typed } : { command: name, before };
+    fetchJson('/api/choices', body).then((answer) => {
+      const words = (answer && answer.choices) || [];
+      // (The list may still be on its way, so no words stay good for 1.5 s only.)
+      const fresh = openrouter && !words.length ? 1500 : CHOICES_FRESH_MS;
+      choiceCache.set(key, { words, at: Date.now() - (CHOICES_FRESH_MS - fresh) });
       refreshMenu();
     });
     return hit && hit.words;

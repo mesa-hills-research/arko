@@ -807,12 +807,18 @@ struct ChoicesBody {
     /// The words typed after the command, before the one being typed.
     #[serde(default)]
     before: Vec<String>,
+    /// The start of the word being typed, which `/model` completes from
+    /// OpenRouter's list once it starts with `openrouter:`.
+    #[serde(default)]
+    typed: String,
 }
 
 /// `POST /api/choices` with `{"command": "/model", "before": ["worker"]}`:
 /// the words that may come next in that command's arguments, as the
 /// full-screen view completes them (fixed ones, or the session's workers,
-/// models and so on).
+/// models and so on). `"typed"` is the start of the word being typed, which
+/// `/model` completes from OpenRouter's models when it starts with
+/// `openrouter:`.
 async fn choices(
     State(app): State<Arc<App>>,
     ConnectInfo(peer): Peer,
@@ -829,7 +835,7 @@ async fn choices(
         )
             .into_response();
     };
-    if body.before.iter().map(String::len).sum::<usize>() > MAX_BEFORE {
+    if body.before.iter().map(String::len).sum::<usize>() + body.typed.len() > MAX_BEFORE {
         return (
             StatusCode::BAD_REQUEST,
             error_body("the words before the one typed are too long"),
@@ -841,10 +847,11 @@ async fn choices(
     let words = tokio::task::spawn_blocking(move || {
         let command = crate::commands::on_page().find(|command| command.name == body.command)?;
         let before: Vec<&str> = body.before.iter().map(String::as_str).collect();
-        Some(crate::commands::dynamic_choices(
+        Some(crate::commands::dynamic_choices_typed(
             &reading,
             command.name,
             &before,
+            &body.typed,
         ))
     })
     .await

@@ -690,6 +690,16 @@ test('after a command and a space, the menu shows its arguments and the words th
   assert.deepEqual(seen, [['/model', ['worker', 'opus']]]);
 });
 
+test('the word being typed goes to the lookup too, for the words that depend on it', () => {
+  const seen = [];
+  core.slashMenu(COMMANDS, '/model worker openrouter:moon', (name, before, typed) => (seen.push([name, before, typed]), ['openrouter:moonshotai/kimi-k3', 'other']));
+  core.slashMenu(COMMANDS, '/model ', (name, before, typed) => (seen.push([name, before, typed]), []));
+  assert.deepEqual(seen, [['/model', ['worker'], 'openrouter:moon'], ['/model', [], '']]);
+  const menu = core.slashMenu(COMMANDS, '/model openrouter:moon', () => ['opus', 'openrouter:moonshotai/kimi-k3', 'openrouter:z-ai/glm-5']);
+  assert.deepEqual(labels(menu), ['openrouter:moonshotai/kimi-k3']);
+  assert.equal(menu.selected, 0);
+});
+
 test('the menu’s keys move, pick and close, and Enter sends a word that is whole', () => {
   const menu = core.slashMenu(COMMANDS, '/me', choices);
   assert.deepEqual(labels(menu), ['/message-copies', '/message']);

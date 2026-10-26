@@ -26,6 +26,8 @@ use arko_ai::{
     ProviderPreferences, SortBy,
 };
 use serde::{Deserialize, Serialize};
+#[cfg(test)]
+use serde_json::json;
 use serde_json::{Map, Value};
 
 /// The file in Arko's folder that holds the [`Settings`].
@@ -267,10 +269,10 @@ impl Control {
     pub fn about(self) -> &'static str {
         match self {
             Control::Zdr => {
-                "Only providers that keep no data. Fewer models offer it, and it limits the list of models."
+                "Only providers that keep no data. The model list shows only the models that offer it."
             }
             Control::DataCollection => {
-                "Only providers that don't collect your prompts. Zero data retention covers it."
+                "Skips providers that store your prompts or may train on them. Zero data retention is stricter."
             }
             Control::Region => {
                 "Keeps requests in a region. It needs OpenRouter's Business or Enterprise plan, fewer models offer it, and it limits the list of models. US or EU uses the US for the models offered there, and the EU for the rest."
@@ -1388,12 +1390,70 @@ fn blocking(key: Key, force: bool, root: std::path::PathBuf) -> Catalog {
     }
 }
 
+/// Puts the models `slugs` in memory for `settings`, as if fetched (tests,
+/// which don't reach the network). Tests that read the models by
+/// [`catalog`] or [`completions`] use settings no other test does.
+#[cfg(test)]
+pub(crate) fn seed_for_tests(settings: &Settings, slugs: &[&str]) {
+    let entries: Vec<Value> = slugs.iter().map(|slug| json!({"id": slug})).collect();
+    seed_entries_for_tests(settings, entries);
+}
+
+/// [`seed_for_tests`] with the entries as OpenRouter lists them.
+#[cfg(test)]
+pub(crate) fn seed_entries_for_tests(settings: &Settings, entries: Vec<Value>) {
+    let catalog = OpenRouterCatalog::from_json(&json!({ "data": entries }).to_string()).unwrap();
+    let listed = catalog
+        .models()
+        .iter()
+        .map(|model| listed(model, None))
+        .collect();
+    memory().entry(settings.filters(None)).or_default().loaded = Some(Loaded {
+        at: Instant::now(),
+        fetched: SystemTime::now(),
+        listed: Arc::new(listed),
+        catalog: Arc::new(catalog),
+        zones: HashMap::new(),
+    });
+}
+
+/// Makes the models for `settings` a failed fetch, as if it had just
+/// happened (tests).
+#[cfg(test)]
+pub(crate) fn seed_failure_for_tests(settings: &Settings, why: &str) {
+    memory().entry(settings.filters(None)).or_default().failed =
+        Some((Instant::now(), why.to_string()));
+}
+
+/// The most completions of a prefix [`completions`] gives.
+const MOST_COMPLETIONS: usize = 40;
+
+/// The OpenRouter models (as `/model` takes them, `openrouter:slug`) whose
+/// name starts with `typed`, from the models in memory for the settings in
+/// Arko's folder `root`, at most forty. It never waits. It starts a fetch in
+/// the background when the models are due, so the first call may give none,
+/// and later calls give them.
+pub fn completions(root: &Path, typed: &str) -> Vec<String> {
+    let prefix = typed.to_lowercase();
+    if !prefix.starts_with(crate::providers::OPENROUTER) {
+        return Vec::new();
+    }
+    refresh_soon(root);
+    snapshot(&Settings::load(root).filters(None))
+        .models
+        .into_iter()
+        .filter(|model| model.name.to_lowercase().starts_with(&prefix))
+        .map(|model| model.name)
+        .take(MOST_COMPLETIONS)
+        .collect()
+}
+
 /// Starts fetching the models in the background when they are due, and
 /// returns at once. A view draws what is in memory ([`catalog`]) and
 /// again when [`generation`] moves.
 pub fn refresh_soon(root: &Path) {
     let key = Settings::load(root).filters(None);
-    if (is_fresh(&key) && !failed_lately(&key)) || failed_lately(&key) || loading() {
+    if is_fresh(&key) || failed_lately(&key) || loading() {
         return;
     }
     // (A runtime of its own: the caller may have none.)
@@ -1933,12 +1993,24 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().to_path_buf();
         let mut heard = changes();
+        // (Other tests save settings in other folders at the same time.)
+        let mine = |heard: &mut tokio::sync::broadcast::Receiver<Saved>| {
+            let mut mine = Vec::new();
+            while let Ok((saved, origin)) = heard.try_recv() {
+                if saved == root {
+                    mine.push(origin);
+                }
+            }
+            mine
+        };
         remember(&root, "openrouter:acme/model");
-        assert!(heard.try_recv().is_err());
+        assert!(mine(&mut heard).is_empty());
         let mut settings = Settings::load(&root);
         settings.set_zdr(true);
         settings.save(&root).unwrap();
-        assert_eq!(heard.recv().await.unwrap(), (root, 0));
+        assert_eq!(mine(&mut heard), [0]);
+        settings.save_from(&root, 7).unwrap();
+        assert_eq!(mine(&mut heard), [7]);
     }
 
     #[test]
@@ -2415,5 +2487,45 @@ mod tests {
         assert_eq!(settings.summary().as_deref(), Some("Zero data retention"));
         settings.set_zdr(false);
         assert_eq!(settings.summary().as_deref(), Some("No data collection"));
+    }
+
+    /// Settings no other test has, and a root that holds them, for a test
+    /// that reads the models in memory by the root.
+    fn own_root(zdr_and_region: Region) -> (tempfile::TempDir, Settings) {
+        let temp = tempfile::tempdir().unwrap();
+        let mut settings = Settings::default();
+        settings.set_zdr(true);
+        settings.set_region(zdr_and_region);
+        settings.save(temp.path()).unwrap();
+        (temp, settings)
+    }
+
+    /// A model typed as `openrouter:` and more completes from the models in
+    /// memory, whichever models were picked before. Nothing else does.
+    #[test]
+    fn an_openrouter_model_completes_from_the_models_in_memory() {
+        let (temp, settings) = own_root(Region::Eu);
+        let mut slugs: Vec<String> = (0..60).map(|n| format!("acme/model-{n:02}")).collect();
+        slugs.push("moonshotai/kimi-k3".into());
+        let slugs: Vec<&str> = slugs.iter().map(String::as_str).collect();
+        seed_for_tests(&settings, &slugs);
+        let root = temp.path();
+        assert_eq!(
+            completions(root, "openrouter:moon"),
+            ["openrouter:moonshotai/kimi-k3"]
+        );
+        assert_eq!(completions(root, "OpenRouter:MOON").len(), 1, "any case");
+        assert_eq!(completions(root, "openrouter:").len(), 40, "forty at most");
+        assert_eq!(
+            completions(root, "openrouter:acme/model-0")[0],
+            "openrouter:acme/model-00"
+        );
+        for typed in ["", "o", "openrouter", "opus", "moon"] {
+            assert!(completions(root, typed).is_empty(), "{typed:?}");
+        }
+        assert!(completions(root, "openrouter:nothing").is_empty());
+        // Another folder's settings are another list, empty until fetched.
+        let other = tempfile::tempdir().unwrap();
+        assert!(completions(other.path(), "openrouter:moon").is_empty());
     }
 }

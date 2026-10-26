@@ -20,6 +20,7 @@ mod keys_menu;
 mod markdown;
 mod model_picker;
 mod motion;
+mod openrouter_menu;
 mod overlay;
 mod prefs;
 mod resume_picker;
@@ -412,7 +413,9 @@ async fn run(
                 // (The prompt cache's timer counts down while the agent waits.)
                 let counting = cache_label != app.cache_label();
                 cache_label = app.cache_label();
-                if reading != app.reading || app.activity.working || workers || app.hint.is_some() || quitting || counting {
+                // (OpenRouter's models arrive in the background.)
+                let models = app.openrouter_moved();
+                if models || reading != app.reading || app.activity.working || workers || app.hint.is_some() || quitting || counting {
                     app.set_reading(reading);
                     dirty = true;
                     // Yes stops the jobs the popup shows: drawn before the

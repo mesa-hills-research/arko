@@ -13,6 +13,7 @@ use crossterm::event::{
 use super::input::Editor;
 use super::keys_menu::{self, KeysMenu};
 use super::model_picker::{self, ModelPicker, Outcome};
+use super::openrouter_menu::OpenRouterMenu;
 use super::overlay::{Overlay, Picker, SettingsRow};
 use super::prefs::Prefs;
 use super::resume_picker::{self, ResumePicker};
@@ -316,6 +317,9 @@ pub struct App {
     /// The models `/model` completes, found once for the session's models
     /// (finding them can ask Claude Code for its login).
     model_names: std::cell::OnceCell<Vec<String>>,
+    /// How far OpenRouter's models in memory had changed when the view last
+    /// looked.
+    openrouter_seen: u64,
 }
 
 /// The argument being typed on a command line, and what it may be.
@@ -405,6 +409,7 @@ impl App {
                 crate::logins::paths_in_use_of(&crate::credentials::codex_auths(None))
             }),
             model_names: Default::default(),
+            openrouter_seen: crate::openrouter::generation(),
         }
     }
 
@@ -462,9 +467,37 @@ impl App {
         }
         let needs = self.model_needs;
         let reachable = models.reachable.clone();
-        self.overlay = Some(Overlay::Model(ModelPicker::open(target, &models, |name| {
-            needs(&reachable, name)
-        })));
+        self.overlay = Some(Overlay::Model(ModelPicker::open_in(
+            target,
+            &models,
+            |name| needs(&reachable, name),
+            self.info.root.as_deref(),
+        )));
+    }
+
+    /// `/openrouter`'s menu.
+    pub fn open_openrouter(&mut self) {
+        match self.info.root.as_deref() {
+            Some(root) => self.overlay = Some(Overlay::OpenRouter(OpenRouterMenu::open(root))),
+            None => self.say("OpenRouter's settings need Arko's folder"),
+        }
+    }
+
+    /// Whether OpenRouter's models changed in memory since the last call
+    /// (fetched), which an open picker or menu takes up, so the view draws
+    /// again.
+    pub fn openrouter_moved(&mut self) -> bool {
+        let now = crate::openrouter::generation();
+        if now == self.openrouter_seen {
+            return false;
+        }
+        self.openrouter_seen = now;
+        match &mut self.overlay {
+            Some(Overlay::Model(picker)) => picker.refresh_openrouter(),
+            Some(Overlay::OpenRouter(menu)) => menu.refresh_catalog(),
+            _ => {}
+        }
+        true
     }
 
     /// `/resume`'s picker, from the session's conversations. While a turn
@@ -561,7 +594,7 @@ impl App {
         let (before, typed) = rest.rsplit_once(' ').unwrap_or(("", rest));
         let before: Vec<String> = before.split_whitespace().map(String::from).collect();
         let choices = self
-            .choices(command.name, &before)
+            .choices(command.name, &before, typed)
             .into_iter()
             .filter(|choice| choice.starts_with(typed) && choice != typed)
             .collect();
@@ -577,7 +610,9 @@ impl App {
 
     /// The words that may follow `before` in the arguments of the command
     /// `name`: its fixed ones, or the session's workers, models and so on.
-    fn choices(&self, name: &str, before: &[String]) -> Vec<String> {
+    /// `typed` is the start of the word being typed, which `/model` completes
+    /// from OpenRouter's list once it starts with `openrouter:`.
+    fn choices(&self, name: &str, before: &[String], typed: &str) -> Vec<String> {
         let before: Vec<&str> = before.iter().map(String::as_str).collect();
         match (name, before.as_slice()) {
             ("/watch", []) => self
@@ -613,7 +648,7 @@ impl App {
                 names.dedup();
                 names
             }
-            ("/model", words) => self.model_choices(words),
+            ("/model", words) => self.model_choices(words, typed),
             ("/builtin-skills", []) => ["on", "off"]
                 .into_iter()
                 .chain(crate::builtin_skills::names())
@@ -629,8 +664,9 @@ impl App {
 
     /// `/model`'s words: `worker`, the models the picker offers, `main`
     /// for the workers, then the efforts the model takes.
-    fn model_choices(&self, words: &[&str]) -> Vec<String> {
+    fn model_choices(&self, words: &[&str], typed: &str) -> Vec<String> {
         let models = &self.reading.models;
+        let model_next = commands::model_comes_next(models, words);
         let (workers, words) = match words {
             ["worker" | "workers", rest @ ..] => (true, rest),
             _ => (false, words),
@@ -641,7 +677,7 @@ impl App {
                 model_picker::names(models, |name| needs(&models.reachable, name))
             })
         };
-        match words {
+        let mut found = match words {
             // The main agent keeps its model once the conversation starts.
             [] if !workers && models.started => {
                 if models.has_workers {
@@ -667,7 +703,16 @@ impl App {
                 })
                 .unwrap_or_default(),
             _ => Vec::new(),
+        };
+        // Any model on OpenRouter, from its list (see `openrouter::completions`).
+        if model_next && let Some(root) = &self.info.root {
+            for name in crate::openrouter::completions(root, typed) {
+                if !found.contains(&name) {
+                    found.push(name);
+                }
+            }
         }
+        found
     }
 
     /// The choice ↑ ↓ show: the one moved to, else the first once a
@@ -712,7 +757,7 @@ impl App {
         let mut text = format!("{start}{choice}");
         let mut words = argument.before.clone();
         words.push(choice.clone());
-        if !self.choices(argument.name, &words).is_empty() {
+        if !self.choices(argument.name, &words, "").is_empty() {
             text.push(' ');
         }
         self.editor.set(&text);
@@ -950,6 +995,10 @@ impl App {
     /// A paste the terminal marked: into the box, or the keys menu's field.
     pub fn paste(&mut self, text: &str) {
         if let Some(Overlay::Keys(menu)) = &mut self.overlay {
+            menu.paste(text);
+            return;
+        }
+        if let Some(Overlay::OpenRouter(menu)) = &mut self.overlay {
             menu.paste(text);
             return;
         }
@@ -1247,6 +1296,11 @@ impl App {
                     self.open_keys(rest, None);
                     true
                 }
+                // Alone, OpenRouter's settings menu. With words, the session.
+                ("/openrouter", _) if rest.is_empty() => {
+                    self.open_openrouter();
+                    true
+                }
                 // Without a model, the picker; with one, the session.
                 ("/model", _) => match rest {
                     "" => {
@@ -1397,6 +1451,10 @@ impl App {
                     self.send(&format!("/resume {number}"));
                     None
                 }
+            },
+            Overlay::OpenRouter(mut menu) => match menu.key(key, close) {
+                true => None,
+                false => Some(Overlay::OpenRouter(menu)),
             },
             Overlay::Keys(mut menu) => match menu.key(key, close) {
                 keys_menu::Action::Stay => Some(Overlay::Keys(menu)),
@@ -3709,6 +3767,96 @@ pub(super) mod tests {
         type_text(&mut app, "/model ");
         press(&mut app, KeyCode::Down, KeyModifiers::NONE);
         assert_eq!(app.ghost().as_deref(), Some("worker"));
+    }
+
+    /// `/model` completes a model on OpenRouter from its list once
+    /// `openrouter:` is typed, for the main agent's model and the workers'.
+    #[test]
+    fn an_openrouter_model_completes_from_its_list() {
+        use crate::openrouter::{Region, Settings, seed_for_tests};
+        let temp = tempfile::tempdir().unwrap();
+        let mut settings = Settings::default();
+        settings.set_zdr(true);
+        settings.set_region(Region::Us);
+        settings.save(temp.path()).unwrap();
+        seed_for_tests(
+            &settings,
+            &[
+                "moonshotai/kimi-k3",
+                "moonshotai/kimi-k3-fast",
+                "z-ai/glm-5",
+            ],
+        );
+        let mut app = app();
+        hermetic(&mut app);
+        app.info.root = Some(temp.path().to_path_buf());
+        app.set_reading(Reading {
+            models: models(false),
+            ..Reading::default()
+        });
+        let keys = crate::glyphs::render("↑↓");
+        type_text(&mut app, "/model openrouter:z");
+        assert_eq!(app.ghost().as_deref(), Some("-ai/glm-5"));
+        press(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+        assert_eq!(app.editor.text(), "/model openrouter:z-ai/glm-5 ");
+        assert!(app.ghost().unwrap().starts_with("low|medium|high"));
+        app.editor.clear();
+        type_text(&mut app, "/model openrouter:moon");
+        assert_eq!(app.ghost(), Some(format!("shotai/kimi-k3  {keys} 1 of 2")));
+        app.editor.clear();
+        type_text(&mut app, "/model worker openrouter:z");
+        assert_eq!(app.ghost().as_deref(), Some("-ai/glm-5"));
+        app.editor.clear();
+        // A letter or two doesn't bring the list in.
+        type_text(&mut app, "/model o");
+        assert!(
+            !app.ghost().unwrap_or_default().contains("kimi"),
+            "{:?}",
+            app.ghost()
+        );
+    }
+
+    /// `/openrouter` alone opens the settings menu, and with words goes to
+    /// the session, which changes them. The words complete.
+    #[test]
+    fn openrouter_opens_a_menu_and_its_words_go_to_the_session() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut app = app();
+        app.info.root = Some(temp.path().to_path_buf());
+        type_text(&mut app, "/openrouter");
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert!(matches!(&app.overlay, Some(Overlay::OpenRouter(_))));
+        assert!(sent(&mut app).is_empty());
+        // A toggle in the menu saves, and Esc closes it.
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert!(crate::openrouter::Settings::load(temp.path()).zdr());
+        press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert!(app.overlay.is_none());
+        type_text(&mut app, "/openrouter region eu");
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert!(app.overlay.is_none());
+        assert_eq!(sent(&mut app), ["/openrouter region eu"]);
+        // The words complete, a word after a word.
+        type_text(&mut app, "/openrouter ");
+        assert!(
+            app.ghost()
+                .unwrap()
+                .starts_with("zdr on|off | data-collection")
+        );
+        type_text(&mut app, "r");
+        assert_eq!(app.ghost().unwrap().split("  ").next(), Some("egion"));
+        press(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+        assert_eq!(app.editor.text(), "/openrouter region ");
+        assert_eq!(app.ghost().as_deref(), Some("any|us|eu|us-or-eu"));
+        type_text(&mut app, "us-");
+        assert_eq!(app.ghost().as_deref(), Some("or-eu"));
+        app.editor.clear();
+        // Without Arko's folder there is no menu to open.
+        let mut bare = super::tests::app();
+        type_text(&mut bare, "/openrouter");
+        press(&mut bare, KeyCode::Enter, KeyModifiers::NONE);
+        assert!(bare.overlay.is_none());
+        assert!(bare.hint().unwrap().contains("Arko's folder"));
     }
 
     /// A picker that doesn't ask Claude Code (whose login differs from one

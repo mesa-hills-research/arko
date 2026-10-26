@@ -376,6 +376,21 @@ pub fn dynamic_choices(
     name: &str,
     before: &[&str],
 ) -> Vec<String> {
+    dynamic_choices_typed(reading, name, before, "")
+}
+
+/// [`dynamic_choices`] for the word being typed (`typed`, the start of the
+/// word after `before`). `/model` completes an OpenRouter model typed as
+/// `openrouter:` and more from OpenRouter's list, whichever models were
+/// picked before, up to forty. That list is read from memory and fetched in
+/// the background when it is due, so the first answer may lack it, and a
+/// later one has it.
+pub fn dynamic_choices_typed(
+    reading: &crate::remote::Reading,
+    name: &str,
+    before: &[&str],
+    typed: &str,
+) -> Vec<String> {
     let workers = || -> Vec<String> {
         reading
             .agents
@@ -405,7 +420,19 @@ pub fn dynamic_choices(
             names.dedup();
             names
         }
-        ("/model", words) => model_choices(&reading.models, words),
+        ("/model", words) => {
+            let mut choices = model_choices(&reading.models, words);
+            if model_comes_next(&reading.models, words)
+                && let Some(root) = &reading.models.root
+            {
+                for name in crate::openrouter::completions(root, typed) {
+                    if !choices.contains(&name) {
+                        choices.push(name);
+                    }
+                }
+            }
+            choices
+        }
         ("/builtin-skills", []) => ON_OFF
             .iter()
             .copied()
@@ -417,6 +444,16 @@ pub fn dynamic_choices(
             .iter()
             .map(|word| word.to_string())
             .collect(),
+    }
+}
+
+/// Whether the next word of `/model` (after `words`) may be a model.
+/// The main agent keeps its model once the conversation has started.
+pub(crate) fn model_comes_next(models: &crate::remote::Models, words: &[&str]) -> bool {
+    match words {
+        [] => !models.started,
+        ["worker" | "workers"] => true,
+        _ => false,
     }
 }
 
@@ -575,6 +612,72 @@ mod tests {
         assert_eq!(
             dynamic_choices(&reading, "/builtin-skills", &["repo-docs-style"]),
             ["on", "off"]
+        );
+    }
+
+    /// `/model` completes an OpenRouter model typed as `openrouter:` and
+    /// more from the models in memory, where a model may come next.
+    #[test]
+    fn a_model_on_openrouter_completes_from_its_list() {
+        use crate::openrouter::{Region, Settings, seed_for_tests};
+        use crate::remote::{Models, Reading};
+        let temp = tempfile::tempdir().unwrap();
+        let mut settings = Settings::default();
+        settings.set_zdr(true);
+        settings.set_region(Region::UsOrEu);
+        settings.save(temp.path()).unwrap();
+        seed_for_tests(&settings, &["moonshotai/kimi-k3", "z-ai/glm-5"]);
+        let reading = |started| Reading {
+            models: Models {
+                root: Some(temp.path().to_path_buf()),
+                started,
+                has_workers: true,
+                ..Models::default()
+            },
+            ..Reading::default()
+        };
+        let typed = |reading: &Reading, before: &[&str], typed: &str| {
+            dynamic_choices_typed(reading, "/model", before, typed)
+        };
+        let before_start = reading(false);
+        let found = typed(&before_start, &[], "openrouter:moon");
+        assert!(
+            found.contains(&"openrouter:moonshotai/kimi-k3".to_string()),
+            "{found:?}"
+        );
+        assert!(
+            found.contains(&"cc:opus".to_string()),
+            "the picker's words stay"
+        );
+        assert!(
+            !found.contains(&"openrouter:z-ai/glm-5".to_string()),
+            "{found:?}"
+        );
+        // The workers' model too, and not the words after a model.
+        assert!(
+            typed(&before_start, &["worker"], "openrouter:z")
+                .contains(&"openrouter:z-ai/glm-5".to_string())
+        );
+        assert!(
+            !typed(&before_start, &["opus"], "openrouter:z")
+                .contains(&"openrouter:z-ai/glm-5".to_string())
+        );
+        // Without a start of an OpenRouter model, nothing from the list.
+        assert!(!typed(&before_start, &[], "").contains(&"openrouter:z-ai/glm-5".to_string()));
+        assert!(!typed(&before_start, &[], "o").contains(&"openrouter:z-ai/glm-5".to_string()));
+        // The main agent keeps its model once the conversation starts.
+        let started = reading(true);
+        assert!(
+            !typed(&started, &[], "openrouter:z").contains(&"openrouter:z-ai/glm-5".to_string())
+        );
+        assert!(
+            typed(&started, &["worker"], "openrouter:z")
+                .contains(&"openrouter:z-ai/glm-5".to_string())
+        );
+        // `dynamic_choices` is the same without a typed start.
+        assert_eq!(
+            dynamic_choices(&before_start, "/model", &[]),
+            typed(&before_start, &[], "")
         );
     }
 

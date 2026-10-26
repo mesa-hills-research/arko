@@ -3,12 +3,15 @@
 //! the way they are reached, the ways that can be used first; a way that
 //! can't is one dim row saying what it needs, so the list shows what Arko
 //! can reach without a menu that changes shape from one machine to the
-//! next. The second lists the efforts that model takes. Enter applies:
-//! the picker sends the session the `/model` line a user would type, so
-//! the line prompt, the page and the picker change models one way.
+//! next. OpenRouter's group lists the models picked, with their context and
+//! prices, and a row that opens all of OpenRouter's models to filter and
+//! choose from. The second step lists the efforts that model takes, on the
+//! one it ran at last. Enter applies: the picker sends the session the
+//! `/model` line a user would type, so the line prompt, the page and the
+//! picker change models one way.
 
 pub use crate::models::{menu, names, needs};
-use crossterm::event::{KeyCode, KeyEvent};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Modifier;
@@ -20,6 +23,7 @@ use super::wrap::{self, width as text_width};
 use crate::agents::Effort;
 use crate::glyphs;
 use crate::model_command::Target;
+use crate::openrouter::{self, Catalog, Listed};
 use crate::providers;
 use crate::remote::Models;
 
@@ -32,6 +36,8 @@ pub enum Row {
     Unavailable { group: String, needs: String },
     /// A model: its name as `/model` takes it, and its alias.
     Model { name: String, alias: &'static str },
+    /// All of OpenRouter's models, in a step of their own.
+    AllOpenRouter,
     /// New workers follow the main agent's model (the workers' picker).
     FollowMain { model: String },
     /// Typing another model's name.
@@ -42,7 +48,7 @@ impl Row {
     fn selectable(&self) -> bool {
         matches!(
             self,
-            Row::Model { .. } | Row::FollowMain { .. } | Row::Other
+            Row::Model { .. } | Row::AllOpenRouter | Row::FollowMain { .. } | Row::Other
         )
     }
 }
@@ -55,6 +61,9 @@ pub enum Step {
     /// Typing a model's name: what is typed, and why the last one wasn't
     /// taken.
     Typing { text: String, error: Option<String> },
+    /// OpenRouter's models, filtered by what is typed (by name and slug),
+    /// with the one selected among those that match.
+    Browse { filter: String, selected: usize },
     /// The efforts `model` takes; `selected` past them is Back.
     Efforts {
         model: String,
@@ -80,6 +89,18 @@ pub struct ModelPicker {
     pub main: String,
     /// The providers the session reaches, for a typed model.
     pub reachable: Vec<String>,
+    /// Arko's folder, where the efforts models ran at and OpenRouter's
+    /// settings are kept (none in a picker without them).
+    pub root: Option<std::path::PathBuf>,
+    /// OpenRouter's models as they are in memory, and those picked before
+    /// with what was known of them.
+    pub catalog: Catalog,
+    pub recent: Vec<Listed>,
+    /// What the OpenRouter settings rule out or set, in a few words.
+    pub summary: Option<String>,
+    /// The filter and the model the browse step was on, while the efforts
+    /// of a model chosen there are open: Back goes there.
+    via_browse: Option<(String, usize)>,
 }
 
 /// What a key did.
@@ -97,7 +118,31 @@ pub enum Outcome {
 impl ModelPicker {
     /// The picker for `target`, from the session's `models`; `needs` says
     /// what a model needs that isn't there.
+    #[cfg(test)]
     pub fn open(target: Target, models: &Models, needs: impl Fn(&str) -> Option<String>) -> Self {
+        Self::open_in(target, models, needs, None)
+    }
+
+    /// [`open`](Self::open) with Arko's folder `root`, which holds the
+    /// OpenRouter settings and the efforts models ran at. It starts fetching
+    /// OpenRouter's models when they are due.
+    pub fn open_in(
+        target: Target,
+        models: &Models,
+        needs: impl Fn(&str) -> Option<String>,
+        root: Option<&std::path::Path>,
+    ) -> Self {
+        let (catalog, recent, summary) = match root {
+            Some(root) => {
+                openrouter::refresh_soon(root);
+                (
+                    openrouter::catalog(root),
+                    openrouter::recent(root),
+                    openrouter::Settings::load(root).summary(),
+                )
+            }
+            None => (Catalog::default(), Vec::new(), None),
+        };
         let (model, effort) = match target {
             Target::Main => (models.main.clone(), models.main_effort.clone()),
             Target::Workers => (models.workers.clone(), models.workers_effort.clone()),
@@ -115,6 +160,7 @@ impl ModelPicker {
                     needs,
                 }),
                 None => {
+                    let openrouter = group.name.starts_with("OpenRouter");
                     rows.push(Row::Group(group.name));
                     rows.extend(
                         group
@@ -122,6 +168,9 @@ impl ModelPicker {
                             .into_iter()
                             .map(|(name, alias)| Row::Model { name, alias }),
                     );
+                    if openrouter && root.is_some() {
+                        rows.push(Row::AllOpenRouter);
+                    }
                 }
             }
         }
@@ -147,7 +196,32 @@ impl ModelPicker {
             follows,
             main: models.main.clone(),
             reachable: models.reachable.clone(),
+            root: root.map(std::path::Path::to_path_buf),
+            catalog,
+            recent,
+            summary,
+            via_browse: None,
         }
+    }
+
+    /// Takes OpenRouter's models and the settings as they are now (they
+    /// were fetched, or changed).
+    pub fn refresh_openrouter(&mut self) {
+        if let Some(root) = &self.root {
+            self.catalog = openrouter::catalog(root);
+            self.recent = openrouter::recent(root);
+            self.summary = openrouter::Settings::load(root).summary();
+        }
+    }
+
+    /// What OpenRouter says of the model `name`, in few characters, from
+    /// its list in memory or else from when it was picked.
+    fn details(&self, name: &str) -> String {
+        self.catalog
+            .get(name)
+            .or_else(|| self.recent.iter().find(|model| model.name == name))
+            .map(Listed::short)
+            .unwrap_or_default()
     }
 
     /// The box's title: whose model it is.
@@ -159,6 +233,8 @@ impl ModelPicker {
             (Target::Workers, Step::Efforts { model, .. }) => {
                 format!("Workers' effort on {model}")
             }
+            (Target::Main, Step::Browse { .. }) => "Main agent's model on OpenRouter".to_string(),
+            (Target::Workers, Step::Browse { .. }) => "Workers' model on OpenRouter".to_string(),
             (Target::Main, _) => "Main agent's model".to_string(),
             (Target::Workers, _) => "Workers' model".to_string(),
         }
@@ -174,9 +250,14 @@ impl ModelPicker {
         if efforts.is_empty() {
             return self.apply(&name, None);
         }
-        // On the effort now, else the nearest the model takes.
+        // On the effort it ran at last, else the effort now or the nearest
+        // the model takes.
         let now = providers::parse_effort(&self.effort).unwrap_or(Effort::Xhigh);
-        let fit = providers::fit_effort(&model, now);
+        let last = self
+            .root
+            .as_deref()
+            .and_then(|root| providers::LastModels::effort_of(root, &name));
+        let fit = last.unwrap_or_else(|| providers::fit_effort(&model, now));
         let selected = efforts
             .iter()
             .position(|effort| *effort == fit)
@@ -228,6 +309,12 @@ impl ModelPicker {
                     KeyCode::PageDown | KeyCode::End => self.selected = to(selectable.len() - 1),
                     KeyCode::Enter => match self.rows[self.selected].clone() {
                         Row::Model { name, .. } => return self.efforts(name),
+                        Row::AllOpenRouter => {
+                            self.step = Step::Browse {
+                                filter: String::new(),
+                                selected: 0,
+                            }
+                        }
                         Row::FollowMain { .. } => {
                             return Outcome::Apply {
                                 line: "/model worker main".to_string(),
@@ -245,6 +332,51 @@ impl ModelPicker {
                         }
                         _ => {}
                     },
+                    _ => {}
+                }
+                Outcome::Stay
+            }
+            Step::Browse { filter, selected } => {
+                let ctrl = key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
+                let count = self.catalog.search(filter).len();
+                let last = count.saturating_sub(1);
+                match key.code {
+                    _ if close => self.step = Step::Models,
+                    KeyCode::Up => *selected = selected.saturating_sub(1),
+                    KeyCode::Down => *selected = (*selected + 1).min(last),
+                    KeyCode::PageUp => *selected = selected.saturating_sub(10),
+                    KeyCode::PageDown => *selected = (*selected + 10).min(last),
+                    KeyCode::Home => *selected = 0,
+                    KeyCode::End => *selected = last,
+                    KeyCode::Char(c) if !ctrl && !c.is_control() => {
+                        filter.push(c);
+                        *selected = 0;
+                    }
+                    KeyCode::Backspace => {
+                        filter.pop();
+                        *selected = 0;
+                    }
+                    KeyCode::Enter => {
+                        let found = self.catalog.search(filter);
+                        match found.get(*selected) {
+                            Some(model) => {
+                                let name = model.name.clone();
+                                self.via_browse = Some((filter.clone(), *selected));
+                                return self.efforts(name);
+                            }
+                            // Nothing listed, or the list can't be had: the
+                            // slug typed is taken as it is, by typing it.
+                            None => {
+                                let typed = filter.split_whitespace().collect::<String>();
+                                self.step = Step::Typing {
+                                    text: format!("{}{typed}", providers::OPENROUTER),
+                                    error: None,
+                                };
+                            }
+                        }
+                    }
                     _ => {}
                 }
                 Outcome::Stay
@@ -287,11 +419,19 @@ impl ModelPicker {
                 selected,
             } => {
                 let back = efforts.len();
+                // Back goes to the models, or to the list they were chosen
+                // from.
+                let before = |via: Option<(String, usize)>| match via {
+                    Some((filter, selected)) => Step::Browse { filter, selected },
+                    None => Step::Models,
+                };
                 match key.code {
-                    _ if close => self.step = Step::Models,
+                    _ if close => self.step = before(self.via_browse.take()),
                     KeyCode::Up => *selected = selected.saturating_sub(1),
                     KeyCode::Down => *selected = (*selected + 1).min(back),
-                    KeyCode::Enter if *selected == back => self.step = Step::Models,
+                    KeyCode::Enter if *selected == back => {
+                        self.step = before(self.via_browse.take())
+                    }
                     KeyCode::Enter => {
                         let (model, effort) = (model.clone(), efforts[*selected]);
                         return self.apply(&model, Some(effort));
@@ -330,6 +470,8 @@ pub fn draw(frame: &mut Frame, theme: &Theme, area: Rect, picker: &ModelPicker) 
         }
     };
     let mut lines: Vec<Line<'static>> = Vec::new();
+    // Lines that stay where they are while `lines` scroll.
+    let mut header: Vec<Line<'static>> = Vec::new();
     let mut selected_line = 0;
     let keys: &[(&str, &str)];
     match &picker.step {
@@ -351,6 +493,17 @@ pub fn draw(frame: &mut Frame, theme: &Theme, area: Rect, picker: &ModelPicker) 
                 .iter()
                 .map(|row| match row {
                     Row::Model { alias, .. } => text_width(alias),
+                    _ => 0,
+                })
+                .max()
+                .unwrap_or(0)
+                + 2;
+            // What OpenRouter says of its models, in a column of its own.
+            let details_width = picker
+                .rows
+                .iter()
+                .map(|row| match row {
+                    Row::Model { name, .. } => text_width(&picker.details(name)),
                     _ => 0,
                 })
                 .max()
@@ -378,10 +531,17 @@ pub fn draw(frame: &mut Frame, theme: &Theme, area: Rect, picker: &ModelPicker) 
                         if !lines.is_empty() {
                             lines.push(Line::default());
                         }
-                        lines.push(Line::from(Span::styled(
+                        let mut spans = vec![Span::styled(
                             name.clone(),
                             theme.dim().add_modifier(Modifier::BOLD),
-                        )));
+                        )];
+                        // What the OpenRouter settings do to its models.
+                        if name.starts_with("OpenRouter")
+                            && let Some(summary) = &picker.summary
+                        {
+                            spans.push(Span::styled(format!("  {summary}"), theme.dim()));
+                        }
+                        lines.push(Line::from(spans));
                     }
                     Row::Unavailable { group, needs } => {
                         if !lines.is_empty() {
@@ -399,6 +559,13 @@ pub fn draw(frame: &mut Frame, theme: &Theme, area: Rect, picker: &ModelPicker) 
                             Span::styled(format!("{name:<name_width$}"), style),
                             Span::styled(format!("{alias:<alias_width$}"), theme.dim()),
                         ];
+                        if details_width > 2 {
+                            let details = picker.details(name);
+                            spans.push(Span::styled(
+                                format!("{:<details_width$}", glyphs::render(&details)),
+                                theme.dim(),
+                            ));
+                        }
                         if current {
                             spans.push(Span::styled(
                                 format!("now, {} effort", picker.effort),
@@ -418,6 +585,21 @@ pub fn draw(frame: &mut Frame, theme: &Theme, area: Rect, picker: &ModelPicker) 
                                 lines.push(Line::from(spans));
                             }
                         }
+                    }
+                    Row::AllOpenRouter => {
+                        let count = picker.catalog.models.len();
+                        let text = match count {
+                            0 => "All OpenRouter models…".to_string(),
+                            count => format!("All OpenRouter models ({count})…"),
+                        };
+                        let mut spans = vec![
+                            marker(chosen),
+                            Span::styled(glyphs::render(&text).into_owned(), style),
+                        ];
+                        if count == 0 && openrouter::loading() {
+                            spans.push(Span::styled("  loading", theme.dim()));
+                        }
+                        lines.push(Line::from(spans));
                     }
                     Row::FollowMain { model } => {
                         let mut spans = vec![
@@ -449,6 +631,108 @@ pub fn draw(frame: &mut Frame, theme: &Theme, area: Rect, picker: &ModelPicker) 
                         }
                     }
                 }
+            }
+        }
+        Step::Browse { filter, selected } => {
+            keys = &[
+                ("type", "filter"),
+                ("↑ ↓", "choose"),
+                ("Enter", "next"),
+                ("Esc", "back"),
+            ];
+            header.push(Line::from(vec![
+                Span::styled(format!("{} ", glyphs::render("›")), theme.accent()),
+                Span::styled(filter.clone(), theme.text()),
+                Span::styled(" ", theme.chosen()),
+            ]));
+            let total = picker.catalog.models.len();
+            let found = picker.catalog.search(filter);
+            let mut counts = vec![Span::styled(
+                match total {
+                    0 => String::new(),
+                    total => format!("  {} of {total} models", found.len()),
+                },
+                theme.dim(),
+            )];
+            if total > 0
+                && let Some(problem) = &picker.catalog.problem
+            {
+                counts.push(Span::styled(format!("  {problem}"), theme.warning()));
+            }
+            header.push(Line::from(counts));
+            let say = |lines: &mut Vec<Line<'static>>, text: &str, style| {
+                for line in wrap::wrap(
+                    &[Span::styled(text.to_string(), style)],
+                    inner_width.saturating_sub(2),
+                    0,
+                ) {
+                    lines.push(Line::from(line));
+                }
+            };
+            if found.is_empty() {
+                let none = match (&picker.catalog.problem, total, openrouter::loading()) {
+                    (_, 0, true) => {
+                        say(&mut lines, "Loading OpenRouter's models…", theme.dim());
+                        None
+                    }
+                    (Some(problem), 0, false) => {
+                        say(&mut lines, &format!("{problem}."), theme.error());
+                        Some("Enter types a slug.")
+                    }
+                    (None, 0, false) => {
+                        say(
+                            &mut lines,
+                            "OpenRouter's models aren't loaded.",
+                            theme.dim(),
+                        );
+                        Some("Enter types a slug.")
+                    }
+                    _ => {
+                        say(&mut lines, "No model matches.", theme.dim());
+                        Some("Enter takes what is typed as a slug.")
+                    }
+                };
+                if let Some(none) = none {
+                    say(&mut lines, none, theme.dim());
+                }
+            }
+            let label_width = found
+                .iter()
+                .map(|model| text_width(&model.label))
+                .max()
+                .unwrap_or(0)
+                .min(28)
+                + 2;
+            let slug_width = found
+                .iter()
+                .map(|model| text_width(model.slug()))
+                .max()
+                .unwrap_or(0)
+                .min(44)
+                + 2;
+            for (n, model) in found.iter().enumerate() {
+                let chosen = n == *selected;
+                if chosen {
+                    selected_line = lines.len();
+                }
+                let style = if chosen {
+                    theme.accent().add_modifier(Modifier::BOLD)
+                } else {
+                    theme.text()
+                };
+                let mut spans = vec![
+                    marker(chosen),
+                    Span::styled(fit(&model.label, label_width), style),
+                    Span::styled(fit(model.slug(), slug_width), theme.dim()),
+                    Span::styled(glyphs::render(&model.short()).into_owned(), theme.dim()),
+                ];
+                if !picker.follows && model.name == picker.model {
+                    spans.push(Span::styled(
+                        format!("  now, {} effort", picker.effort),
+                        theme.accent(),
+                    ));
+                }
+                lines.push(Line::from(spans));
             }
         }
         Step::Typing { text, error } => {
@@ -487,6 +771,10 @@ pub fn draw(frame: &mut Frame, theme: &Theme, area: Rect, picker: &ModelPicker) 
         } => {
             keys = &[("↑ ↓", "choose"), ("Enter", "apply"), ("Esc", "back")];
             let same_model = *model == picker.model && !picker.follows;
+            let last = picker
+                .root
+                .as_deref()
+                .and_then(|root| providers::LastModels::effort_of(root, model));
             for (n, effort) in efforts.iter().enumerate() {
                 let chosen = n == *selected;
                 if chosen {
@@ -504,6 +792,8 @@ pub fn draw(frame: &mut Frame, theme: &Theme, area: Rect, picker: &ModelPicker) 
                 ];
                 if same_model && effort.to_string() == picker.effort {
                     spans.push(Span::styled("  now", theme.accent()));
+                } else if last == Some(*effort) {
+                    spans.push(Span::styled("  last used", theme.dim()));
                 }
                 lines.push(Line::from(spans));
             }
@@ -525,7 +815,12 @@ pub fn draw(frame: &mut Frame, theme: &Theme, area: Rect, picker: &ModelPicker) 
             ]));
         }
     }
-    let height = (lines.len() as u16 + 4).min(area.height);
+    // (The list of models doesn't change the box's height as it filters.)
+    let wanted = match picker.step {
+        Step::Browse { .. } => (lines.len() + header.len() + 4).max(14),
+        _ => lines.len() + 4,
+    };
+    let height = (wanted as u16).min(area.height);
     let rect = centred(area, width, height);
     let inner = frame_box(frame, rect, theme, &picker.title());
     let body = Rect::new(
@@ -534,12 +829,31 @@ pub fn draw(frame: &mut Frame, theme: &Theme, area: Rect, picker: &ModelPicker) 
         inner.width.saturating_sub(2),
         inner.height.saturating_sub(2),
     );
-    let visible = body.height as usize;
+    let head = (header.len() as u16).min(body.height);
+    put(
+        frame,
+        Rect::new(body.x, body.y, body.width, head),
+        &header,
+        0,
+    );
+    let list = Rect::new(body.x, body.y + head, body.width, body.height - head);
+    let visible = list.height as usize;
     let scroll = selected_line
         .saturating_sub(visible / 2)
         .min(lines.len().saturating_sub(visible));
-    put(frame, body, &lines, scroll);
+    put(frame, list, &lines, scroll);
     footer(frame, rect, theme, keys);
+}
+
+/// `text` as wide as `width` columns, cut short with an ellipsis or padded.
+fn fit(text: &str, width: usize) -> String {
+    let mut shown = glyphs::render(text).into_owned();
+    if text_width(&shown) + 1 > width {
+        while text_width(&shown) + 3 > width && shown.pop().is_some() {}
+        shown.push_str(&glyphs::render("…"));
+    }
+    let pad = width.saturating_sub(text_width(&shown));
+    shown + &" ".repeat(pad)
 }
 
 /// The note `/model` opens with once the conversation has started: the
@@ -687,5 +1001,354 @@ mod tests {
             "{rows:#?}"
         );
         assert_eq!(row("cc:claude-haiku-5-5") + 1, mythos, "{rows:#?}");
+    }
+
+    /// The picker's rows inside its box.
+    fn inside(picker: &ModelPicker) -> Vec<String> {
+        screen(picker)
+            .into_iter()
+            .map(|row| row.trim_end().trim_end_matches('│').trim_end().to_string())
+            .collect()
+    }
+
+    /// What a session with only OpenRouter's key can use.
+    fn only_openrouter(name: &str) -> Option<String> {
+        (!name.starts_with("openrouter:")).then(|| "a key".to_string())
+    }
+
+    fn key(picker: &mut ModelPicker, code: KeyCode) -> Outcome {
+        picker.key(KeyEvent::new(code, KeyModifiers::NONE), false)
+    }
+
+    fn type_in(picker: &mut ModelPicker, text: &str) {
+        for c in text.chars() {
+            key(picker, KeyCode::Char(c));
+        }
+    }
+
+    /// A root whose OpenRouter settings are `zdr` and `region` (so that
+    /// no other test shares its list), with `models` listed and `recent`
+    /// picked before.
+    fn openrouter_root(
+        region: openrouter::Region,
+        models: &[(&str, &str, u64, &str, &str)],
+        recent: &str,
+    ) -> tempfile::TempDir {
+        let temp = tempfile::tempdir().unwrap();
+        let mut settings = openrouter::Settings::default();
+        settings.set_region(region);
+        settings.save(temp.path()).unwrap();
+        // (The file as the settings write it, with the models picked.)
+        let file = std::fs::read_to_string(temp.path().join(openrouter::FILE)).unwrap();
+        let mut file: serde_json::Value = serde_json::from_str(&file).unwrap();
+        file["recent"] = serde_json::from_str(recent).unwrap();
+        std::fs::write(temp.path().join(openrouter::FILE), file.to_string()).unwrap();
+        let entries = models
+            .iter()
+            .map(|(slug, name, context, input, output)| {
+                serde_json::json!({
+                    "id": slug, "name": name, "context_length": context,
+                    "pricing": {"prompt": input, "completion": output},
+                    "supported_parameters": ["tools"],
+                })
+            })
+            .collect();
+        openrouter::seed_entries_for_tests(&openrouter::Settings::load(temp.path()), entries);
+        temp
+    }
+
+    fn openrouter_models(recent: &[&str]) -> Models {
+        Models {
+            main: "gpt-6-luna".into(),
+            main_effort: "high".into(),
+            workers: "gpt-6-luna".into(),
+            workers_effort: "high".into(),
+            reachable: vec!["openai".into(), "openrouter".into()],
+            openai_auth: Some("ChatGPT".into()),
+            recent: recent.iter().map(|name| name.to_string()).collect(),
+            ..Models::default()
+        }
+    }
+
+    const LISTED: &[(&str, &str, u64, &str, &str)] = &[
+        (
+            "moonshotai/kimi-k3",
+            "MoonshotAI: Kimi K3",
+            262_144,
+            "0.0000006",
+            "0.0000025",
+        ),
+        (
+            "z-ai/glm-5",
+            "Z.ai: GLM 5",
+            202_752,
+            "0.0000004",
+            "0.0000015",
+        ),
+        (
+            "acme/big-kimi-clone",
+            "Acme: Big Kimi Clone",
+            1_048_576,
+            "0.000002",
+            "0.00001",
+        ),
+    ];
+
+    /// OpenRouter's group shows what is known of each model beside it, the
+    /// settings beside its heading, and a row for all its models.
+    #[test]
+    fn openrouter_rows_show_the_details_the_settings_and_a_row_for_all_models() {
+        let root = openrouter_root(
+            openrouter::Region::Eu,
+            LISTED,
+            r#"["moonshotai/kimi-k3", {"slug": "acme/kept", "context": 131072, "input_price": 0.1, "output_price": 0.5}, "acme/unknown"]"#,
+        );
+        let mut settings = openrouter::Settings::load(root.path());
+        settings.set_sort(openrouter::Sort::Price);
+        settings.save(root.path()).unwrap();
+        let models = openrouter_models(&[
+            "openrouter:moonshotai/kimi-k3",
+            "openrouter:acme/kept",
+            "openrouter:acme/unknown",
+        ]);
+        let picker =
+            ModelPicker::open_in(Target::Main, &models, only_openrouter, Some(root.path()));
+        let rows = inside(&picker);
+        let row = |text: &str| {
+            rows.iter()
+                .find(|row| row.contains(text))
+                .unwrap_or_else(|| panic!("no {text:?} in {rows:#?}"))
+                .clone()
+        };
+        // From the list in memory, and from what was kept at the pick.
+        assert!(
+            row("openrouter:moonshotai/kimi-k3").ends_with("262k · $0.60/$2.50"),
+            "{rows:#?}"
+        );
+        assert!(
+            row("openrouter:acme/kept").ends_with("131k · $0.10/$0.50"),
+            "{rows:#?}"
+        );
+        assert!(
+            row("openrouter:acme/unknown")
+                .trim_end()
+                .ends_with("openrouter:acme/unknown"),
+            "{rows:#?}"
+        );
+        assert!(
+            row("OpenRouter, billed per token").ends_with("EU only, price first"),
+            "{rows:#?}"
+        );
+        // The row for all the models is last in the group, with how many.
+        let all = rows
+            .iter()
+            .position(|row| row.contains("All OpenRouter models (3)…"))
+            .unwrap();
+        let unknown = rows
+            .iter()
+            .position(|row| row.contains("openrouter:acme/unknown"))
+            .unwrap();
+        assert_eq!(all, unknown + 1, "{rows:#?}");
+        // The columns of the details line up.
+        let column = |row: String, text: &str| row.find(text).map(|at| row[..at].chars().count());
+        assert_eq!(
+            column(row("openrouter:moonshotai/kimi-k3"), "262k"),
+            column(row("openrouter:acme/kept"), "131k"),
+            "{rows:#?}"
+        );
+        // A picker without Arko's folder has no such row.
+        let bare = ModelPicker::open(Target::Main, &models, only_openrouter);
+        assert!(!bare.rows.contains(&Row::AllOpenRouter));
+    }
+
+    /// The row for all OpenRouter's models opens a list to filter by what
+    /// is typed. Enter chooses, and the efforts follow, with Back and Esc
+    /// returning to the list as it was.
+    #[test]
+    fn all_of_openrouters_models_are_browsed_by_a_filter() {
+        let root = openrouter_root(openrouter::Region::Us, LISTED, "[]");
+        let models = openrouter_models(&[]);
+        let mut picker =
+            ModelPicker::open_in(Target::Main, &models, only_openrouter, Some(root.path()));
+        while picker.rows[picker.selected] != Row::AllOpenRouter {
+            key(&mut picker, KeyCode::Down);
+        }
+        key(&mut picker, KeyCode::Enter);
+        assert!(matches!(&picker.step, Step::Browse { filter, selected: 0 } if filter.is_empty()));
+        assert_eq!(picker.title(), "Main agent's model on OpenRouter");
+        let rows = screen(&picker);
+        for text in ["Kimi K3", "GLM 5", "Big Kimi Clone", "› ", "3 of 3 models"] {
+            assert!(
+                rows.iter().any(|row| row.contains(text)),
+                "{text}: {rows:#?}"
+            );
+        }
+        let kimi = rows.iter().find(|row| row.contains("Kimi K3")).unwrap();
+        assert!(
+            kimi.contains("moonshotai/kimi-k3") && kimi.contains("262k · $0.60/$2.50"),
+            "{kimi}"
+        );
+
+        // Typing filters by name and slug, those that start with it first.
+        type_in(&mut picker, "kimi");
+        let rows = screen(&picker);
+        assert!(
+            rows.iter().any(|row| row.contains("2 of 3 models")),
+            "{rows:#?}"
+        );
+        assert!(!rows.iter().any(|row| row.contains("GLM 5")), "{rows:#?}");
+        let first = rows.iter().position(|row| row.contains("Kimi K3")).unwrap();
+        let second = rows
+            .iter()
+            .position(|row| row.contains("Big Kimi Clone"))
+            .unwrap();
+        assert!(first < second, "{rows:#?}");
+        key(&mut picker, KeyCode::Backspace);
+        type_in(&mut picker, "i z-ai");
+        assert!(
+            screen(&picker)
+                .iter()
+                .any(|row| row.contains("No model matches"))
+        );
+        type_in(&mut picker, "x");
+        key(&mut picker, KeyCode::Backspace);
+        key(&mut picker, KeyCode::Backspace);
+        key(&mut picker, KeyCode::Backspace);
+        key(&mut picker, KeyCode::Backspace);
+        key(&mut picker, KeyCode::Backspace);
+        key(&mut picker, KeyCode::Backspace);
+        key(&mut picker, KeyCode::Backspace);
+        assert!(
+            matches!(&picker.step, Step::Browse { filter, .. } if filter == "kim"),
+            "{:?}",
+            picker.step
+        );
+
+        // Enter chooses the second, and its efforts follow.
+        key(&mut picker, KeyCode::Down);
+        key(&mut picker, KeyCode::Enter);
+        match &picker.step {
+            Step::Efforts { model, .. } => assert_eq!(model, "openrouter:acme/big-kimi-clone"),
+            other => panic!("{other:?}"),
+        }
+        // Esc goes back to the list, as it was, and again to the models.
+        key(&mut picker, KeyCode::Down);
+        let back = picker.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), true);
+        assert_eq!(back, Outcome::Stay);
+        assert!(
+            matches!(&picker.step, Step::Browse { filter, selected: 1 } if filter == "kim"),
+            "{:?}",
+            picker.step
+        );
+        picker.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), true);
+        assert_eq!(picker.step, Step::Models);
+
+        // Choosing again and an effort applies the line a user would type.
+        while picker.rows[picker.selected] != Row::AllOpenRouter {
+            key(&mut picker, KeyCode::Down);
+        }
+        key(&mut picker, KeyCode::Enter);
+        type_in(&mut picker, "glm");
+        key(&mut picker, KeyCode::Enter);
+        key(&mut picker, KeyCode::Enter);
+        // (The effort the model starts on is the effort now, high.)
+        match key(&mut picker, KeyCode::Enter) {
+            Outcome::Apply { line, .. } => assert_eq!(line, "/model openrouter:z-ai/glm-5 high"),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// While the models load the list says so, and when they can't be had
+    /// it says why and takes a slug typed.
+    #[test]
+    fn the_list_says_when_it_loads_and_why_it_cant() {
+        let root = tempfile::tempdir().unwrap();
+        let mut settings = openrouter::Settings::default();
+        settings.set_region(openrouter::Region::UsOrEu);
+        settings.save(root.path()).unwrap();
+        openrouter::seed_failure_for_tests(&settings, "it couldn't be reached");
+        let models = openrouter_models(&[]);
+        let mut picker =
+            ModelPicker::open_in(Target::Main, &models, only_openrouter, Some(root.path()));
+        while picker.rows[picker.selected] != Row::AllOpenRouter {
+            key(&mut picker, KeyCode::Down);
+        }
+        let rows = inside(&picker);
+        assert!(
+            rows.iter()
+                .any(|row| row.trim_end().ends_with("All OpenRouter models…")),
+            "{rows:#?}"
+        );
+        key(&mut picker, KeyCode::Enter);
+        let rows = screen(&picker);
+        assert!(
+            rows.iter()
+                .any(|row| row.contains("Couldn't load the models (it couldn't be reached).")),
+            "{rows:#?}"
+        );
+        assert!(
+            rows.iter().any(|row| row.contains("Enter types a slug.")),
+            "{rows:#?}"
+        );
+        // Typing a filter and Enter takes it as a slug, to type further.
+        type_in(&mut picker, "acme/x");
+        key(&mut picker, KeyCode::Enter);
+        assert!(
+            matches!(&picker.step, Step::Typing { text, .. } if text == "openrouter:acme/x"),
+            "{:?}",
+            picker.step
+        );
+        key(&mut picker, KeyCode::Enter);
+        assert!(
+            matches!(&picker.step, Step::Efforts { model, .. } if model == "openrouter:acme/x")
+        );
+    }
+
+    /// The efforts step starts on the effort the model ran at last, and
+    /// says so, else on the effort now.
+    #[test]
+    fn the_efforts_start_on_the_one_the_model_last_ran_at() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(
+            root.path().join("last-model.json"),
+            r#"{"main": "gpt-6-luna", "efforts": {"gpt-6.1-sol": "medium", "gpt-6-luna": "high", "gpt-6-astra": "extreme"}}"#,
+        )
+        .unwrap();
+        let models = openrouter_models(&[]);
+        let efforts = |name: &str| {
+            let mut picker =
+                ModelPicker::open_in(Target::Main, &models, |_| None, Some(root.path()));
+            picker.efforts(name.to_string());
+            match &picker.step {
+                Step::Efforts {
+                    efforts, selected, ..
+                } => (efforts[*selected].to_string(), inside(&picker)),
+                other => panic!("{other:?}"),
+            }
+        };
+        let (selected, rows) = efforts("gpt-6.1-sol");
+        assert_eq!(selected, "medium");
+        assert!(
+            rows.iter()
+                .any(|row| row.contains("medium") && row.contains("last used")),
+            "{rows:#?}"
+        );
+        // The model now, at its effort now: that says "now" and not more.
+        let (selected, rows) = efforts("gpt-6-luna");
+        assert_eq!(selected, "high");
+        assert!(
+            rows.iter()
+                .any(|row| row.contains("high") && row.trim_end().ends_with("now")),
+            "{rows:#?}"
+        );
+        // An effort the model doesn't take, or none kept: the effort now.
+        assert_eq!(efforts("gpt-6-astra").0, "high");
+        assert_eq!(efforts("gemini").0, "high");
+        // A picker without Arko's folder starts on the effort now.
+        let mut bare = ModelPicker::open(Target::Main, &models, |_| None);
+        bare.efforts("gpt-6.1-sol".to_string());
+        assert!(
+            matches!(&bare.step, Step::Efforts { efforts, selected, .. } if efforts[*selected].to_string() == "high")
+        );
     }
 }

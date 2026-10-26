@@ -773,7 +773,7 @@
   /**
    * The menu for the box's `text`, or null when it isn't a command line.
    * `commands` is the list the server gives (`{ name, args, about }`), and
-   * `choicesOf(name, before)` the words an argument may be after the words
+   * `choicesOf(name, before, typed)` the words an argument may be after the words
    * `before` (an array), or undefined while they are not there yet.
    *
    * While the command's name is typed, the items are the commands that
@@ -806,7 +806,7 @@
     const partial = /\s$/.test(rest) ? '' : words.pop() || '';
     const typed = partial.toLowerCase();
     // Past the second word nothing is completed (/model worker MODEL EFFORT is the deepest), so free text asks for nothing.
-    const choices = (words.length <= 2 && choicesOf(command.name, words)) || [];
+    const choices = (words.length <= 2 && choicesOf(command.name, words, partial)) || [];
     const items = choices
       .filter((word) => word.toLowerCase().startsWith(typed) && word !== partial)
       .map((word) => ({ label: word, insert: word + ' ' }));
