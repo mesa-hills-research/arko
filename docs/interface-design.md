@@ -10,7 +10,7 @@ does.
 
 1. The transcript is the product. Chrome stays small and carries only what the user acts on.
 2. Show what is unusual, not what is normal. A failed call, a waiting question, outside access or a
-   cache about to lapse shows. "Connected", "Live" and success marks on every call don't.
+   cache about to lapse shows. "Connected" and "Live" don't.
 3. Nothing moves under the reader. Streaming never shifts what is being read, the view follows the
    bottom only while the reader is there, and a finished row never changes height.
 4. Disclose progressively. Details are one click or tap away, never a toolbar of settings.
@@ -159,6 +159,11 @@ when its meaning, scope or shortcut needs one.
 | Monitor, web, MCP, skill, another tool | `Activity`, `Globe`, `Plug`, `BookOpen`, `Wrench` |
 
 Icons are 16 px in rows and bars and 18 px in the header, drawn with Lucide's 2 px stroke.
+
+The web page's calls, thinking and call counts use text marks rather than icons. ▸ starts each
+one and turns down as it opens. After a call come ✓ in `--success` once it succeeded, ✗ in
+`--error` once it failed, or the running spinner. A command's output that warns has a rule in
+`--warn-mark` beside it.
 
 ## States
 

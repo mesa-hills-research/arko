@@ -1,7 +1,7 @@
 //! The transcript: its rows, laid out for the view, and Latest.
 
 use leptos::prelude::*;
-use lucide_leptos::{ArrowDown, ChevronRight, CircleX, LoaderCircle, MessageCircleQuestionMark};
+use lucide_leptos::{ArrowDown, ChevronRight, LoaderCircle, MessageCircleQuestionMark};
 
 use crate::app::{Cell, Page, STORE, cell, page, post};
 use crate::layout::{self, Count, Row, View};
@@ -124,7 +124,7 @@ pub fn Transcript() -> impl IntoView {
 fn row_view(row: Row, thinking: Memo<Option<u64>>) -> AnyView {
     match row {
         Row::Working => view! {
-            <div class="row working"><span class="shimmer">"Working…"</span></div>
+            <div class="row working"><span class="mark">"▸"</span><span class="what shimmer">"Working…"</span></div>
         }
         .into_any(),
         Row::Count { id, count, .. } => count_row(id, count),
@@ -145,12 +145,12 @@ fn count_row(id: u64, count: Count) -> AnyView {
     } = count;
     view! {
         <div class="row count" data-id=id>
-            <button type="button" class="btn ghost small" title="Show them (Full view)"
+            <button type="button" title="Show them (Full view)"
                 on:click=move |_| {
                     scroll::keep_place(id);
                     page.set_view(View::Full);
                 }>
-                {words::plural(calls, "tool call", "tool calls")}
+                "▸ "{words::plural(calls, "tool call", "tool calls")}
                 {(failed > 0).then(|| view! { " · " <span class="failed">{format!("{failed} failed")}</span> })}
                 {(running > 0).then_some(" · running")}
             </button>
@@ -223,6 +223,7 @@ fn item_row(id: u64, cell: Cell, thinking: Memo<Option<u64>>) -> AnyView {
             view! {
                 <details class="thinking" class:streaming=move || thinking.get() == Some(id)>
                     <summary>
+                        <span class="mark">"▸"</span>
                         <span class="what">"Thinking"</span>
                         <span class="first">{first}</span>
                     </summary>
@@ -269,10 +270,10 @@ fn item_row(id: u64, cell: Cell, thinking: Memo<Option<u64>>) -> AnyView {
         }
         Kind::Call => call_row(cell),
         Kind::Result => view! {
-            <pre class="block">{move || data.with(|item| item.detail.clone().unwrap_or_else(|| text.get()))}</pre>
+            <pre>{move || data.with(|item| item.detail.clone().unwrap_or_else(|| text.get()))}</pre>
         }
         .into_any(),
-        Kind::Output => view! { <pre class="block">{move || text.get()}</pre> }.into_any(),
+        Kind::Output => view! { <pre>{move || text.get()}</pre> }.into_any(),
         Kind::Turn => view! {
             <div class="turn-line"><span>{move || text.get()}</span></div>
             {move || data.with(|item| item.detail.clone()).map(|plan| view! { <div class="turn-plan">{plan}</div> })}
@@ -351,26 +352,34 @@ fn call_row(cell: Cell) -> AnyView {
         let movable = page.status.with(|status| status.movable.clone());
         page.workers.track();
         let (moves, stop) = STORE.with(|store| call_actions(&item, &store.borrow(), &movable));
-        let mark = match item.status {
-            Some(CallStatus::Running) => {
-                view! { <span class="mark spin"><LoaderCircle size=14 /></span> }.into_any()
+        // As on the earlier page: the status and the outcome after the call.
+        let outcome = match item.status {
+            Some(CallStatus::Running) => Some(
+                view! { <span class="outcome turning"><span class="running"><LoaderCircle size=12 /></span></span> }
+                    .into_any(),
+            ),
+            Some(status) => {
+                let failed = status == CallStatus::Failed;
+                let title = item.outcome.clone().unwrap_or_default();
+                let words = item.outcome.clone().map(|outcome| format!(" {outcome}"));
+                Some(
+                    view! {
+                        <span class="outcome" title=title>
+                            <span class=if failed { "failed" } else { "ok" }>{if failed { "✗" } else { "✓" }}</span>
+                            {words}
+                        </span>
+                    }
+                    .into_any(),
+                )
             }
-            Some(CallStatus::Failed) => {
-                view! { <span class="mark failed"><CircleX size=14 /></span> }.into_any()
-            }
-            _ => view! { <span class="mark"></span> }.into_any(),
+            None => None,
         };
-        let outcome = item
-            .outcome
-            .clone()
-            .filter(|_| item.status != Some(CallStatus::Running));
-        let failed = item.status == Some(CallStatus::Failed);
         view! {
             <span class="call-line">
-                {mark}
+                <span class="mark">"▸"</span>
                 {who.map(|who| view! { <span class="who">{who}</span> })}
                 <span class="what">{item.text.clone()}</span>
-                {outcome.map(|outcome| { let title = outcome.clone(); view! { <span class="outcome" class:failed=failed title=title>{outcome}</span> } })}
+                {outcome}
                 {moves.then(|| view! { <MoveButton id=id /> })}
                 {stop.map(|job| view! { <StopJobButton job=job /> })}
             </span>
@@ -380,7 +389,7 @@ fn call_row(cell: Cell) -> AnyView {
         view! {
             <details class="call">
                 <summary>{line}</summary>
-                <pre class="block">{move || data.with(|item| item.detail.clone().unwrap_or_else(|| item.text.clone()))}</pre>
+                <pre>{move || data.with(|item| item.detail.clone().unwrap_or_else(|| item.text.clone()))}</pre>
             </details>
         }
         .into_any()

@@ -273,32 +273,74 @@ kbd {
   background: var(--surface);
 }
 
+/* A call is one quiet line, and its outcome lands on the same line. */
 .row.call, .row.count { margin: 3px 0; color: var(--muted); font: 13px/1.45 var(--mono); }
-.call-line { display: flex; align-items: center; gap: 6px; min-width: 0; min-height: 22px; }
-.call-line .mark { display: inline-grid; place-items: center; flex: none; width: 14px; }
-.call-line .mark.failed { color: var(--error); }
-.call-line .mark.spin svg { animation: spin 1s linear infinite; }
+.call-line { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
+.call-line .mark { display: inline-block; flex: none; color: var(--muted); transition: transform 0.12s; }
 .call-line .who {
+  display: inline-block;
   flex: none;
+  align-self: center;
   padding: 0 5px;
   border-radius: var(--r-sm);
   background: var(--secondary);
   color: var(--text);
   font: 600 11px/16px var(--sans);
 }
-.call-line .what { min-width: 0; overflow: hidden; color: var(--text); opacity: 0.85; text-overflow: ellipsis; white-space: nowrap; }
+.call-line .what { min-width: 0; overflow: hidden; color: var(--text); opacity: 0.82; text-overflow: ellipsis; white-space: nowrap; }
 .call-line .outcome { flex: none; max-width: 48%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.call-line .outcome::before { content: "· "; }
-.call-line .outcome.failed { color: var(--error); }
+.call-line .outcome::before { content: "· "; color: var(--muted); }
+.call-line .ok { color: var(--success); }
+.call-line .failed { color: var(--error); }
+/* The spinner turns on a layer of its own, around the centre of its
+   square box, so it doesn't wobble, in a box that doesn't clip its corners. */
+.call-line .outcome.turning { overflow: visible; }
+.call-line .running {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  vertical-align: -1px;
+  animation: spin 1s linear infinite;
+  will-change: transform;
+}
 .call-line .call-action { margin-left: 4px; font-family: var(--sans); }
-details.call > summary, details.thinking > summary, details.more > summary { cursor: default; list-style: none; }
+details.call > summary, details.thinking > summary, details.more > summary { cursor: pointer; list-style: none; }
 details.call > summary::-webkit-details-marker,
 details.thinking > summary::-webkit-details-marker,
 details.more > summary::-webkit-details-marker { display: none; }
+details.call[open] > summary .mark,
+details.thinking[open] > summary .mark { transform: rotate(90deg); }
 
+details.call pre, .row.result pre {
+  margin: 4px 0 6px 14px;
+  padding: 4px 0 4px 10px;
+  border-left: 2px solid var(--line);
+  color: var(--muted);
+  font: 12.5px/1.45 var(--mono);
+  white-space: pre-wrap;
+}
+.row.result { margin: 0 0 6px; }
+/* A failed command's output is marked, not shouted. */
+.row.result.level-warn pre { border-left-color: var(--warn-mark); }
+.row.result.level-error pre { border-left-color: var(--error); color: var(--error); }
+
+.row.output pre {
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  font: 12.5px/1.45 var(--mono);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.row.output.level-warn pre { color: var(--warn); }
+.row.output.level-error pre { color: var(--error); }
+
+/* The other blocks of text: a reply's More, the workers in detail. */
 pre.block {
   max-height: 14em;
-  margin: 4px 0 8px 20px;
+  margin: 4px 0 8px;
   padding: 6px 10px;
   overflow: auto;
   border-radius: var(--r-md);
@@ -307,13 +349,11 @@ pre.block {
   font: 12.5px/1.45 var(--mono);
   white-space: pre-wrap;
 }
-.row.result { margin: 0 0 6px; }
-.row.result.level-error pre.block { color: var(--error); }
-.row.output pre.block { max-height: none; margin-left: 0; color: var(--text); }
-.row.output.level-warn pre.block { color: var(--warn); }
-.row.output.level-error pre.block { color: var(--error); }
 
-.row.count .btn { color: var(--muted); font-family: var(--mono); }
+.row.count button { padding: 2px 0; border: 0; background: none; color: var(--muted); font: inherit; text-align: left; }
+@media (hover: hover) {
+  .row.count button:hover { color: var(--text); }
+}
 .row.count .failed { color: var(--error); }
 
 .row.notice { color: var(--muted); font-size: 13.5px; white-space: pre-wrap; }
@@ -322,24 +362,27 @@ pre.block {
 
 .row.thinking { margin: 4px 0; color: var(--muted); font-size: 13.5px; }
 details.thinking > summary { display: flex; gap: 6px; min-width: 0; }
+details.thinking > summary .mark { flex: none; transition: transform 0.12s; }
 details.thinking > summary .what { flex: none; font-weight: 600; }
 details.thinking > summary .first { min-width: 0; overflow: hidden; font-style: italic; text-overflow: ellipsis; white-space: nowrap; }
 details.thinking[open] > summary .first { display: none; }
-details.thinking .thinking-text { margin: 4px 0 0 12px; font-style: italic; }
+details.thinking .thinking-text { margin: 4px 0 0 18px; font-style: italic; }
 
-/* The agent waits on its model, or thinks: the word shimmers. */
-.row.working { margin: 4px 0; color: var(--muted); font-size: 13.5px; font-weight: 600; }
+/* The agent waits on its model, or thinks: the word shimmers. "Working…"
+   stands where the thinking's label would, its mark kept for the place. */
+.row.working { display: flex; gap: 6px; margin: 4px 0; color: var(--muted); font-size: 13.5px; }
+.row.working .mark { visibility: hidden; }
+.row.working .what { font-weight: 600; }
 .shimmer,
 details.thinking.streaming > summary .what {
   --shine: color-mix(in oklab, currentColor 80%, var(--shine-toward));
   background: linear-gradient(90deg, currentColor 35%, var(--shine) 50%, currentColor 65%) 100% 0 / 300% 100%;
   -webkit-background-clip: text;
   background-clip: text;
-  color: transparent;
+  -webkit-text-fill-color: transparent;
   animation: shimmer 2s linear infinite;
 }
-.state .shimmer { color: var(--text); background-color: transparent; }
-.state .shimmer { -webkit-text-fill-color: transparent; }
+.state .shimmer { color: var(--text); }
 @keyframes shimmer { to { background-position: 0 0; } }
 @keyframes spin { to { transform: rotate(1turn); } }
 
