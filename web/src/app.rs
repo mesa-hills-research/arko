@@ -94,12 +94,16 @@ thread_local! {
 }
 
 pub fn page() -> Page {
-    PAGE.with(|page| page.get()).expect("the page starts before its views")
+    PAGE.with(|page| page.get())
+        .expect("the page starts before its views")
 }
 
 impl Page {
     pub fn new() -> Page {
-        let view = local_get(VIEW).as_deref().and_then(View::from_key).unwrap_or(View::Full);
+        let view = local_get(VIEW)
+            .as_deref()
+            .and_then(View::from_key)
+            .unwrap_or(View::Full);
         let page = Page {
             status: RwSignal::new(StatusData::default()),
             connection: RwSignal::new(Connection::Connecting),
@@ -150,7 +154,13 @@ pub fn on_item(listen: impl Fn(&ItemData) + 'static) {
 // ----- storage -----
 
 pub fn local_get(name: &str) -> Option<String> {
-    window().local_storage().ok().flatten()?.get_item(name).ok().flatten()
+    window()
+        .local_storage()
+        .ok()
+        .flatten()?
+        .get_item(name)
+        .ok()
+        .flatten()
 }
 
 pub fn local_set(name: &str, value: Option<&str>) {
@@ -164,7 +174,13 @@ pub fn local_set(name: &str, value: Option<&str>) {
 }
 
 pub fn session_get(name: &str) -> Option<String> {
-    window().session_storage().ok().flatten()?.get_item(name).ok().flatten()
+    window()
+        .session_storage()
+        .ok()
+        .flatten()?
+        .get_item(name)
+        .ok()
+        .flatten()
 }
 
 pub fn session_set(name: &str, value: Option<&str>) {
@@ -190,11 +206,17 @@ pub async fn request(method: &str, path: &str, body: Option<String>) -> Option<(
         init.set_headers(&headers);
         init.set_body(&body.into());
     }
-    let response = JsFuture::from(window().fetch_with_str_and_init(path, &init)).await.ok()?;
+    let response = JsFuture::from(window().fetch_with_str_and_init(path, &init))
+        .await
+        .ok()?;
     let response: web_sys::Response = response.dyn_into().ok()?;
     let status = response.status();
     let text = match response.text() {
-        Ok(promise) => JsFuture::from(promise).await.ok().and_then(|text| text.as_string()).unwrap_or_default(),
+        Ok(promise) => JsFuture::from(promise)
+            .await
+            .ok()
+            .and_then(|text| text.as_string())
+            .unwrap_or_default(),
         Err(_) => String::new(),
     };
     page().detail.set(format!("{method} {path} {status}"));
@@ -202,7 +224,10 @@ pub async fn request(method: &str, path: &str, body: Option<String>) -> Option<(
 }
 
 /// Gets JSON, or none.
-pub async fn get_json<T: for<'a> Deserialize<'a>>(path: &str, body: Option<serde_json::Value>) -> Option<T> {
+pub async fn get_json<T: for<'a> Deserialize<'a>>(
+    path: &str,
+    body: Option<serde_json::Value>,
+) -> Option<T> {
     let method = if body.is_some() { "POST" } else { "GET" };
     let (status, text) = request(method, path, body.map(|body| body.to_string())).await?;
     if !(200..300).contains(&status) {
@@ -222,7 +247,10 @@ enum Login {
 
 /// Trades the key (this tab's, unless given) for a session cookie.
 async fn login(key: Option<String>) -> Login {
-    let Some(key) = key.or_else(|| session_get(KEY)).filter(|key| !key.is_empty()) else {
+    let Some(key) = key
+        .or_else(|| session_get(KEY))
+        .filter(|key| !key.is_empty())
+    else {
         return Login::Wrong;
     };
     let body = serde_json::json!({ "key": key }).to_string();
@@ -247,7 +275,9 @@ pub async fn post(path: &str, body: serde_json::Value) -> bool {
     let page = page();
     for attempt in 0..2 {
         let Some((status, text)) = request("POST", path, Some(body.to_string())).await else {
-            page.error.set(Some("Not sent, because Arko is out of reach. Your text is kept.".into()));
+            page.error.set(Some(
+                "Not sent, because Arko is out of reach. Your text is kept.".into(),
+            ));
             return false;
         };
         if status == 401 && attempt == 0 {
@@ -268,7 +298,9 @@ pub async fn post(path: &str, body: serde_json::Value) -> bool {
             page.error.set(Some(match why {
                 Some(why) => format!("Not sent ({why})."),
                 // A proxy in front of Arko (Tailscale Serve, say) answers for it.
-                None if matches!(status, 502..=504) => "Not sent, because Arko is out of reach. Your text is kept.".into(),
+                None if matches!(status, 502..=504) => {
+                    "Not sent, because Arko is out of reach. Your text is kept.".into()
+                }
                 None => format!("Not sent ({status})."),
             }));
             return false;
@@ -351,7 +383,11 @@ fn offline(page: Page, why: Option<String>) {
     });
     // A dropped stream reconnects quietly at first, so a phone that slept
     // comes back within a second or two.
-    page.connection.set(if failures > 1 { Connection::Offline } else { Connection::Connecting });
+    page.connection.set(if failures > 1 {
+        Connection::Offline
+    } else {
+        Connection::Connecting
+    });
     page.problem.set(Some(why.unwrap_or_else(|| {
         if failures > 3 {
             "Arko isn’t reachable, and it may have quit. The page reconnects when it’s back.".into()
@@ -389,11 +425,15 @@ fn connect(page: Page) {
     let mut on = |name: &str, handle: fn(Page, &str) -> Result<(), String>| {
         let event = name.to_string();
         let handler = Closure::<dyn FnMut(MessageEvent)>::new(move |message: MessageEvent| {
-            let Some(data) = message.data().as_string() else { return };
+            let Some(data) = message.data().as_string() else {
+                return;
+            };
             if let Err(why) = handle(page, &data) {
                 // Never quietly stuck: say what couldn't be read.
                 web_sys::console::error_1(&format!("{event}: {why}").into());
-                page.problem.set(Some(format!("Couldn’t read Arko’s update ({event}: {why}).")));
+                page.problem.set(Some(format!(
+                    "Couldn’t read Arko’s update ({event}: {why})."
+                )));
             }
         });
         let _ = source.add_event_listener_with_callback(name, handler.as_ref().unchecked_ref());
@@ -474,8 +514,16 @@ fn on_reset(page: Page, data: &str) -> Result<(), String> {
             Err(_) => bad += 1,
         }
     }
-    let workers: Vec<WorkerData> = raw.workers.iter().filter_map(|value| serde_json::from_str(value.get()).ok()).collect();
-    let jobs: Vec<JobSummary> = raw.jobs.iter().filter_map(|value| serde_json::from_str(value.get()).ok()).collect();
+    let workers: Vec<WorkerData> = raw
+        .workers
+        .iter()
+        .filter_map(|value| serde_json::from_str(value.get()).ok())
+        .collect();
+    let jobs: Vec<JobSummary> = raw
+        .jobs
+        .iter()
+        .filter_map(|value| serde_json::from_str(value.get()).ok())
+        .collect();
     let status: StatusData = match raw.status {
         Some(value) => parse(value.get())?,
         None => StatusData::default(),
@@ -490,7 +538,9 @@ fn on_reset(page: Page, data: &str) -> Result<(), String> {
     page.status.set(status);
     page.connection.set(Connection::Live);
     EVER_LIVE.with(|live| live.set(true));
-    page.problem.set((bad > 0).then(|| format!("{bad} of Arko’s items couldn’t be read, so they’re left out.")));
+    page.problem.set(
+        (bad > 0).then(|| format!("{bad} of Arko’s items couldn’t be read, so they’re left out.")),
+    );
     page.streaming.set(None);
     page.version.update(|version| *version += 1);
     page.workers.update(|version| *version += 1);
@@ -510,7 +560,8 @@ fn on_item_event(page: Page, data: &str) -> Result<(), String> {
     // This device's clock against Arko's: the smallest gap a new item
     // shows (the rest is the network's delay).
     let sample = js_sys::Date::now() - item.at as f64;
-    page.skew.update(|skew| *skew = Some(skew.map_or(sample, |skew| skew.min(sample))));
+    page.skew
+        .update(|skew| *skew = Some(skew.map_or(sample, |skew| skew.min(sample))));
     let now = js_sys::Date::now();
     let known = cell(item.id);
     match known {

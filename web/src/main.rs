@@ -69,7 +69,10 @@ fn App() -> impl IntoView {
 fn listen(page: Page) {
     let window = window();
     let tick = Closure::<dyn FnMut()>::new(move || page.now.set(js_sys::Date::now()));
-    let _ = window.set_interval_with_callback_and_timeout_and_arguments_0(tick.as_ref().unchecked_ref(), 1000);
+    let _ = window.set_interval_with_callback_and_timeout_and_arguments_0(
+        tick.as_ref().unchecked_ref(),
+        1000,
+    );
     tick.forget();
 
     let on = |name: &str, handler: Box<dyn FnMut(web_sys::Event)>| {
@@ -78,17 +81,21 @@ fn listen(page: Page) {
         closure.forget();
     };
     // A phone back from sleep or another app reconnects at once.
-    let _ = document().add_event_listener_with_callback("visibilitychange", {
-        let closure = Closure::<dyn FnMut()>::new(move || {
-            let visible = document().visibility_state() == web_sys::VisibilityState::Visible;
-            if visible && !app::streaming_now() && page.locked.get_untracked().is_none() {
-                app::retry_now(page);
-            }
-        });
-        let function = closure.as_ref().unchecked_ref::<js_sys::Function>().clone();
-        closure.forget();
-        function
-    }.unchecked_ref());
+    let _ = document().add_event_listener_with_callback(
+        "visibilitychange",
+        {
+            let closure = Closure::<dyn FnMut()>::new(move || {
+                let visible = document().visibility_state() == web_sys::VisibilityState::Visible;
+                if visible && !app::streaming_now() && page.locked.get_untracked().is_none() {
+                    app::retry_now(page);
+                }
+            });
+            let function = closure.as_ref().unchecked_ref::<js_sys::Function>().clone();
+            closure.forget();
+            function
+        }
+        .unchecked_ref(),
+    );
     // A link that differs only after the # (a new key after Arko restarted)
     // doesn't load the page again: trade its key and connect again.
     on(
@@ -104,7 +111,9 @@ fn listen(page: Page) {
         "popstate",
         Box::new(move |event| {
             let state = event.unchecked_ref::<web_sys::PopStateEvent>().state();
-            let worker = js_sys::Reflect::get(&state, &"worker".into()).ok().and_then(|worker| worker.as_string());
+            let worker = js_sys::Reflect::get(&state, &"worker".into())
+                .ok()
+                .and_then(|worker| worker.as_string());
             if worker != page.worker.get_untracked() {
                 page.worker.set(worker);
             }
@@ -117,12 +126,16 @@ fn listen(page: Page) {
             let typing = event
                 .target()
                 .and_then(|target| target.dyn_into::<web_sys::Element>().ok())
-                .is_some_and(|element| matches!(element.tag_name().as_str(), "TEXTAREA" | "INPUT" | "SELECT"));
+                .is_some_and(|element| {
+                    matches!(element.tag_name().as_str(), "TEXTAREA" | "INPUT" | "SELECT")
+                });
             if page.sheet.get_untracked().is_some() {
                 return;
             }
             match event.key().as_str() {
-                "Escape" if page.worker.get_untracked().is_some() => transcript::show_worker(page, None),
+                "Escape" if page.worker.get_untracked().is_some() => {
+                    transcript::show_worker(page, None)
+                }
                 // End: back to the latest, as Latest does.
                 "End" if !typing && !page.pinned.get_untracked() => {
                     event.prevent_default();

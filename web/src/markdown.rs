@@ -7,7 +7,9 @@
 //! the open block at the end is read again as text comes. A table's last
 //! row shows once it's whole, so a table grows a row at a time.
 
-use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd, TextMergeStream};
+use pulldown_cmark::{
+    CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd, TextMergeStream,
+};
 
 /// `text` in Markdown, as safe HTML.
 pub fn to_html(text: &str) -> String {
@@ -22,7 +24,8 @@ pub fn to_html(text: &str) -> String {
                 open(&mut html, tag)
             }
             Event::End(tag) => {
-                plain = plain.saturating_sub(u32::from(matches!(tag, TagEnd::Link | TagEnd::CodeBlock)));
+                plain = plain
+                    .saturating_sub(u32::from(matches!(tag, TagEnd::Link | TagEnd::CodeBlock)));
                 close(&mut html, tag)
             }
             Event::Text(text) if plain == 0 => link_addresses(&mut html, &text),
@@ -140,15 +143,26 @@ fn link_addresses(html: &mut String, text: &str) {
     let mut rest = text;
     let mut previous = None;
     while let Some((at, _)) = rest.char_indices().find(|&(at, _)| {
-        let starts = rest[at..].get(..8).is_some_and(|head| head.eq_ignore_ascii_case("https://"))
-            || rest[at..].get(..7).is_some_and(|head| head.eq_ignore_ascii_case("http://"));
-        let before = if at == 0 { previous } else { rest[..at].chars().next_back() };
+        let starts = rest[at..]
+            .get(..8)
+            .is_some_and(|head| head.eq_ignore_ascii_case("https://"))
+            || rest[at..]
+                .get(..7)
+                .is_some_and(|head| head.eq_ignore_ascii_case("http://"));
+        let before = if at == 0 {
+            previous
+        } else {
+            rest[..at].chars().next_back()
+        };
         starts && before.is_none_or(|c: char| c.is_whitespace() || c == '(' || c == '<')
     }) {
         escape(html, &rest[..at]);
         let address = &rest[at..];
-        let end = address.find(|c: char| c.is_whitespace() || c == '<' || c == '>').unwrap_or(address.len());
-        let address = address[..end].trim_end_matches(['.', ',', ';', ':', '!', '?', ')', '\'', '"']);
+        let end = address
+            .find(|c: char| c.is_whitespace() || c == '<' || c == '>')
+            .unwrap_or(address.len());
+        let address =
+            address[..end].trim_end_matches(['.', ',', ';', ':', '!', '?', ')', '\'', '"']);
         html.push_str("<a target=\"_blank\" rel=\"noopener noreferrer\" href=\"");
         escape(html, address);
         html.push_str("\">");
@@ -260,7 +274,11 @@ impl Blocks {
         self.consumed = start;
         let tail = &text[start..];
         // A fence still open shows plain, to the end.
-        let html = to_html(if streaming { without_open_row(tail) } else { tail });
+        let html = to_html(if streaming {
+            without_open_row(tail)
+        } else {
+            tail
+        });
         (finished, html)
     }
 }
@@ -294,7 +312,9 @@ fn without_open_row(text: &str) -> &str {
     if !last.starts_with('|') || start == 0 {
         return text;
     }
-    let header = text[..start].lines().find(|line| line.trim_start().starts_with('|'));
+    let header = text[..start]
+        .lines()
+        .find(|line| line.trim_start().starts_with('|'));
     let cells = |line: &str| line.trim().trim_matches('|').split('|').count();
     let short = header.is_some_and(|header| cells(last) < cells(header));
     if short || !last.ends_with('|') || last.len() < 2 {
@@ -329,9 +349,15 @@ mod tests {
 
     #[test]
     fn markdown_reads_headings_emphasis_code_lists_tables_and_links() {
-        let html = to_html("# Title\n\nSome **bold**, *em* and `code`.\n\n- one\n- two\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n[x](https://e.com) [y](javascript:alert(1)) <b>raw</b>");
+        let html = to_html(
+            "# Title\n\nSome **bold**, *em* and `code`.\n\n- one\n- two\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n[x](https://e.com) [y](javascript:alert(1)) <b>raw</b>",
+        );
         assert!(html.contains("<h3>Title</h3>"), "{html}");
-        assert!(html.contains("<strong>bold</strong>") && html.contains("<em>em</em>") && html.contains("<code>code</code>"));
+        assert!(
+            html.contains("<strong>bold</strong>")
+                && html.contains("<em>em</em>")
+                && html.contains("<code>code</code>")
+        );
         assert!(html.contains("<ul><li>one</li>"));
         assert!(html.contains("<table>") && html.contains("<td>1</td>"));
         assert!(html.contains("href=\"https://e.com\""));
@@ -341,8 +367,13 @@ mod tests {
 
     #[test]
     fn a_web_address_in_the_text_is_a_link() {
-        let html = to_html("See https://example.com/a_b. Or (http://a.b/c), not xhttps://no, `https://code` or [x](https://x.y).");
-        assert!(html.contains(r#"href="https://example.com/a_b">https://example.com/a_b</a>. Or"#), "{html}");
+        let html = to_html(
+            "See https://example.com/a_b. Or (http://a.b/c), not xhttps://no, `https://code` or [x](https://x.y).",
+        );
+        assert!(
+            html.contains(r#"href="https://example.com/a_b">https://example.com/a_b</a>. Or"#),
+            "{html}"
+        );
         assert!(html.contains(r#"(<a target="_blank" rel="noopener noreferrer" href="http://a.b/c">http://a.b/c</a>),"#), "{html}");
         assert!(!html.contains(r#"href="https://no"#), "{html}");
         assert!(html.contains("<code>https://code</code>"), "{html}");
@@ -357,7 +388,10 @@ mod tests {
             let joined = finished.concat() + &tail;
             assert_eq!(joined, to_html(text), "step {step}");
             assert!(finished.len() >= 3, "step {step}: {finished:?}");
-            assert!(finished[1].contains("<pre><code data-lang=\"rust\">"), "{finished:?}");
+            assert!(
+                finished[1].contains("<pre><code data-lang=\"rust\">"),
+                "{finished:?}"
+            );
         }
     }
 
@@ -365,7 +399,10 @@ mod tests {
     fn a_streaming_tables_last_row_shows_once_its_whole() {
         let mut blocks = Blocks::default();
         let (_, html) = blocks.update("| a | b |\n|---|---|\n| 1 | 2 |\n| 3 |", true);
-        assert!(html.contains("<td>2</td>") && !html.contains("<td>3</td>"), "{html}");
+        assert!(
+            html.contains("<td>2</td>") && !html.contains("<td>3</td>"),
+            "{html}"
+        );
         let (_, html) = blocks.update("| a | b |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |", true);
         assert!(html.contains("<td>4</td>"), "{html}");
         // A text that's finished shows every row.

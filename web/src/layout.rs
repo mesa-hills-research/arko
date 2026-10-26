@@ -62,7 +62,11 @@ pub struct Count {
 pub enum Row {
     Item(u64),
     /// The count's first call's ID, and the count.
-    Count { turn: Option<u64>, id: u64, count: Count },
+    Count {
+        turn: Option<u64>,
+        id: u64,
+        count: Count,
+    },
     /// The agent waits on its model.
     Working,
 }
@@ -72,7 +76,10 @@ impl Row {
     pub fn key(&self) -> String {
         match self {
             Row::Item(id) => format!("i{id}"),
-            Row::Count { turn, .. } => format!("c{}", turn.map_or("none".to_string(), |turn| turn.to_string())),
+            Row::Count { turn, .. } => format!(
+                "c{}",
+                turn.map_or("none".to_string(), |turn| turn.to_string())
+            ),
             Row::Working => "working".into(),
         }
     }
@@ -266,7 +273,9 @@ fn busy(items: &[ItemData], agent: &str, since: i64) -> Busy {
             // Arko's lines, a command's output and the workers' places.
             Kind::Notice | Kind::Output | Kind::WorkerLine => continue,
             // What the user typed beside the agent's work.
-            Kind::User if matches!(item.delivery, Some(Delivery::Command | Delivery::Queued)) => continue,
+            Kind::User if matches!(item.delivery, Some(Delivery::Command | Delivery::Queued)) => {
+                continue;
+            }
             _ => {}
         }
         if after_call {
@@ -290,11 +299,21 @@ fn busy(items: &[ItemData], agent: &str, since: i64) -> Busy {
 /// "Working…" row stands at the end while it waits on its model with
 /// nothing else to show. `now` is this device's time, as the store's
 /// `grown` has it.
-pub fn motion(store: &Store, status: &StatusData, view: View, worker: Option<&str>, now: f64) -> (Option<u64>, bool) {
+pub fn motion(
+    store: &Store,
+    status: &StatusData,
+    view: View,
+    worker: Option<&str>,
+    now: f64,
+) -> (Option<u64>, bool) {
     let still = (None, false);
     let mut since = i64::MIN;
     if let Some(worker) = worker {
-        if store.workers.get(worker).is_none_or(|summary| summary.state != WorkerState::Running) {
+        if store
+            .workers
+            .get(worker)
+            .is_none_or(|summary| summary.state != WorkerState::Running)
+        {
             return still;
         }
     } else {
@@ -338,7 +357,9 @@ pub fn with_working(mut rows: Vec<Row>, working: bool, store: &Store) -> Vec<Row
 
 /// How many of `rows` came after the item `seen` ("Working…" isn't new).
 pub fn unseen(rows: &[Row], seen: u64) -> usize {
-    rows.iter().filter(|row| row.id().is_some_and(|id| id > seen)).count()
+    rows.iter()
+        .filter(|row| row.id().is_some_and(|id| id > seen))
+        .count()
 }
 
 #[cfg(test)]
@@ -364,13 +385,27 @@ mod tests {
             worker_call,
             item(6, Kind::Reply, MAIN, "done"),
         ];
-        assert_eq!(ids(&layout(&items, View::Full, None)), ["i1", "i2", "i3", "i5", "i6"]);
-        assert_eq!(ids(&layout(&items, View::Quiet, None)), ["i1", "i2", "i3", "i6"]);
+        assert_eq!(
+            ids(&layout(&items, View::Full, None)),
+            ["i1", "i2", "i3", "i5", "i6"]
+        );
+        assert_eq!(
+            ids(&layout(&items, View::Quiet, None)),
+            ["i1", "i2", "i3", "i6"]
+        );
         let messages = layout(&items, View::Messages, None);
         assert_eq!(ids(&messages), ["i1", "c1", "i6"]);
         assert_eq!(
             messages[1],
-            Row::Count { turn: Some(1), id: 3, count: Count { calls: 1, failed: 1, running: 0 } }
+            Row::Count {
+                turn: Some(1),
+                id: 3,
+                count: Count {
+                    calls: 1,
+                    failed: 1,
+                    running: 0
+                }
+            }
         );
         assert_eq!(ids(&layout(&items, View::Full, Some("r1"))), ["i4", "i5"]);
     }
@@ -385,7 +420,10 @@ mod tests {
             item(3, Kind::Text, MAIN, "meanwhile"),
             result,
         ];
-        assert_eq!(ids(&layout(&items, View::Full, None)), ["i1", "i2", "i4", "i3"]);
+        assert_eq!(
+            ids(&layout(&items, View::Full, None)),
+            ["i1", "i2", "i4", "i3"]
+        );
     }
 
     #[test]
@@ -400,36 +438,67 @@ mod tests {
             item(4, Kind::Conversation, MAIN, "New conversation"),
             item(5, Kind::User, MAIN, "next"),
         ];
-        assert_eq!(ids(&layout(&items, View::Full, None)), ["i1", "i3", "i2", "i4", "i5"]);
+        assert_eq!(
+            ids(&layout(&items, View::Full, None)),
+            ["i1", "i3", "i2", "i4", "i5"]
+        );
     }
 
     #[test]
     fn working_shows_while_the_agent_waits_on_its_model_and_its_thinking_moves_as_it_streams() {
         let mut store = Store::default();
-        let status = StatusData { working: true, since: Some(0), ..StatusData::default() };
+        let status = StatusData {
+            working: true,
+            since: Some(0),
+            ..StatusData::default()
+        };
         store.add(item(1, Kind::User, MAIN, "go"), 0.0);
         assert_eq!(motion(&store, &status, View::Full, None, 0.0), (None, true));
         store.add(item(2, Kind::Thinking, MAIN, "hmm"), 0.0);
-        assert_eq!(motion(&store, &status, View::Full, None, 0.0), (Some(2), false));
-        assert_eq!(motion(&store, &status, View::Messages, None, 0.0), (None, true));
+        assert_eq!(
+            motion(&store, &status, View::Full, None, 0.0),
+            (Some(2), false)
+        );
+        assert_eq!(
+            motion(&store, &status, View::Messages, None, 0.0),
+            (None, true)
+        );
         store.add(item(3, Kind::Text, MAIN, "So"), 100.0);
-        assert_eq!(motion(&store, &status, View::Full, None, 500.0), (None, false));
-        assert_eq!(motion(&store, &status, View::Full, None, 100.0 + QUIET_MS), (None, true));
+        assert_eq!(
+            motion(&store, &status, View::Full, None, 500.0),
+            (None, false)
+        );
+        assert_eq!(
+            motion(&store, &status, View::Full, None, 100.0 + QUIET_MS),
+            (None, true)
+        );
         let mut call = item(4, Kind::Call, MAIN, "ls");
         call.status = Some(CallStatus::Running);
         store.add(call.clone(), 0.0);
-        assert_eq!(motion(&store, &status, View::Full, None, 0.0), (None, false));
+        assert_eq!(
+            motion(&store, &status, View::Full, None, 0.0),
+            (None, false)
+        );
         call.status = Some(CallStatus::Ok);
         store.change(call, 0.0);
         assert_eq!(motion(&store, &status, View::Full, None, 0.0), (None, true));
         store.add(item(5, Kind::Reply, MAIN, "done"), 0.0);
-        assert_eq!(motion(&store, &status, View::Full, None, 0.0), (None, false));
+        assert_eq!(
+            motion(&store, &status, View::Full, None, 0.0),
+            (None, false)
+        );
         // While it asks, it waits on the user.
         let asking = StatusData {
-            question: Some(crate::protocol::Question { id: 1, text: "?".into() }),
+            question: Some(crate::protocol::Question {
+                id: 1,
+                text: "?".into(),
+            }),
             ..status
         };
-        assert_eq!(motion(&store, &asking, View::Full, None, 0.0), (None, false));
+        assert_eq!(
+            motion(&store, &asking, View::Full, None, 0.0),
+            (None, false)
+        );
     }
 
     #[test]
@@ -438,9 +507,18 @@ mod tests {
         store.worker(worker("r1"));
         store.add(item(1, Kind::User, "r1", "task"), 0.0);
         let status = StatusData::default();
-        assert_eq!(motion(&store, &status, View::Full, Some("r1"), 0.0), (None, true));
-        store.worker(crate::protocol::WorkerData { state: WorkerState::Finished, ..worker("r1") });
-        assert_eq!(motion(&store, &status, View::Full, Some("r1"), 0.0), (None, false));
+        assert_eq!(
+            motion(&store, &status, View::Full, Some("r1"), 0.0),
+            (None, true)
+        );
+        store.worker(crate::protocol::WorkerData {
+            state: WorkerState::Finished,
+            ..worker("r1")
+        });
+        assert_eq!(
+            motion(&store, &status, View::Full, Some("r1"), 0.0),
+            (None, false)
+        );
     }
 
     #[test]
@@ -457,6 +535,9 @@ mod tests {
 
     #[test]
     fn thinking_folds_to_its_first_line_without_bold_marks() {
-        assert_eq!(first_line("\n  **Planning** the fix\nmore"), "Planning the fix");
+        assert_eq!(
+            first_line("\n  **Planning** the fix\nmore"),
+            "Planning the fix"
+        );
     }
 }

@@ -29,7 +29,11 @@ pub struct Menu {
 /// The menu for `text`, or none when it isn't a command line.
 /// `choices(name, before, typed)` gives the words an argument may be after
 /// the words `before`, or none while they aren't known yet.
-pub fn menu(commands: &[CommandData], text: &str, choices: &mut dyn FnMut(&str, &[String], &str) -> Option<Vec<String>>) -> Option<Menu> {
+pub fn menu(
+    commands: &[CommandData],
+    text: &str,
+    choices: &mut dyn FnMut(&str, &[String], &str) -> Option<Vec<String>>,
+) -> Option<Menu> {
     if !text.starts_with('/') || text.contains('\n') {
         return None;
     }
@@ -42,36 +46,64 @@ pub fn menu(commands: &[CommandData], text: &str, choices: &mut dyn FnMut(&str, 
                 label: command.name.clone(),
                 args: command.args.clone(),
                 about: command.about.clone(),
-                insert: if command.args.is_empty() { command.name.clone() } else { format!("{} ", command.name) },
+                insert: if command.args.is_empty() {
+                    command.name.clone()
+                } else {
+                    format!("{} ", command.name)
+                },
             })
             .collect();
         if entries.is_empty() {
             return None;
         }
-        let exact = entries.iter().position(|entry| entry.label == text).unwrap_or(0);
-        return Some(Menu { entries, from: 0, selected: Some(exact), command: None });
+        let exact = entries
+            .iter()
+            .position(|entry| entry.label == text)
+            .unwrap_or(0);
+        return Some(Menu {
+            entries,
+            from: 0,
+            selected: Some(exact),
+            command: None,
+        });
     };
-    let command = commands.iter().find(|command| command.name == text[..space])?;
+    let command = commands
+        .iter()
+        .find(|command| command.name == text[..space])?;
     if command.args.is_empty() {
         return None;
     }
     let rest = &text[space..];
     let mut words: Vec<String> = rest.split_whitespace().map(str::to_string).collect();
-    let partial = if rest.ends_with(char::is_whitespace) { String::new() } else { words.pop().unwrap_or_default() };
+    let partial = if rest.ends_with(char::is_whitespace) {
+        String::new()
+    } else {
+        words.pop().unwrap_or_default()
+    };
     let typed = partial.to_lowercase();
     // Past the second word nothing is completed, so free text asks for nothing.
-    let known = if words.len() <= 2 { choices(&command.name, &words, &partial).unwrap_or_default() } else { Vec::new() };
+    let known = if words.len() <= 2 {
+        choices(&command.name, &words, &partial).unwrap_or_default()
+    } else {
+        Vec::new()
+    };
     let entries: Vec<Entry> = known
         .iter()
         .filter(|word| word.to_lowercase().starts_with(&typed) && **word != partial)
-        .map(|word| Entry { label: word.clone(), args: String::new(), about: String::new(), insert: format!("{word} ") })
+        .map(|word| Entry {
+            label: word.clone(),
+            args: String::new(),
+            about: String::new(),
+            insert: format!("{word} "),
+        })
         .collect();
     // Past the first argument the menu shows only words to pick.
     if !words.is_empty() && entries.is_empty() {
         return None;
     }
     // A word typed whole (r1, with r10 too) is sent as it is.
-    let selected = (!partial.is_empty() && !entries.is_empty() && !known.contains(&partial)).then_some(0);
+    let selected =
+        (!partial.is_empty() && !entries.is_empty() && !known.contains(&partial)).then_some(0);
     Some(Menu {
         from: text.len() - partial.len(),
         selected,
@@ -101,9 +133,13 @@ pub fn key(menu: &Menu, selected: Option<usize>, key: &str, typed: &str) -> Opti
     }
     match key {
         "ArrowDown" => Some(Key::Select(selected.map_or(0, |at| (at + 1) % count))),
-        "ArrowUp" => Some(Key::Select(selected.map_or(count - 1, |at| (at + count - 1) % count))),
+        "ArrowUp" => Some(Key::Select(
+            selected.map_or(count - 1, |at| (at + count - 1) % count),
+        )),
         "Tab" => Some(Key::Pick(selected.unwrap_or(0))),
-        "Enter" => selected.filter(|&at| menu.entries[at].label != typed).map(Key::Pick),
+        "Enter" => selected
+            .filter(|&at| menu.entries[at].label != typed)
+            .map(Key::Pick),
         _ => None,
     }
 }
@@ -133,11 +169,18 @@ mod tests {
     fn the_menu_filters_the_commands_by_what_is_typed_and_shows_each_ones_arguments() {
         let list = commands();
         let menu = menu(&list, "/m", &mut no_choices).unwrap();
-        let labels: Vec<&str> = menu.entries.iter().map(|entry| entry.label.as_str()).collect();
+        let labels: Vec<&str> = menu
+            .entries
+            .iter()
+            .map(|entry| entry.label.as_str())
+            .collect();
         assert_eq!(labels, ["/model", "/message"]);
         assert_eq!(menu.entries[0].insert, "/model ");
         assert_eq!(menu.selected, Some(0));
-        assert_eq!(super::menu(&list, "/new", &mut no_choices).unwrap().entries[0].insert, "/new");
+        assert_eq!(
+            super::menu(&list, "/new", &mut no_choices).unwrap().entries[0].insert,
+            "/new"
+        );
         assert!(super::menu(&list, "/x", &mut no_choices).is_none());
         assert!(super::menu(&list, "hello", &mut no_choices).is_none());
     }
@@ -147,7 +190,9 @@ mod tests {
         let list = commands();
         let asked = std::cell::RefCell::new(Vec::new());
         let mut choices = |name: &str, before: &[String], typed: &str| {
-            asked.borrow_mut().push((name.to_string(), before.to_vec(), typed.to_string()));
+            asked
+                .borrow_mut()
+                .push((name.to_string(), before.to_vec(), typed.to_string()));
             Some(vec!["r1".to_string(), "r10".to_string(), "r2".to_string()])
         };
         let menu = menu(&list, "/message r", &mut choices).unwrap();
@@ -158,7 +203,10 @@ mod tests {
         // A word typed whole is sent as it is.
         let menu = super::menu(&list, "/message r1", &mut choices).unwrap();
         assert_eq!(menu.selected, None);
-        assert_eq!(asked.borrow()[0], ("/message".to_string(), vec![], "r".to_string()));
+        assert_eq!(
+            asked.borrow()[0],
+            ("/message".to_string(), vec![], "r".to_string())
+        );
         // Past the words, free text asks for nothing.
         assert!(super::menu(&list, "/message r1 hello there", &mut choices).is_none());
     }

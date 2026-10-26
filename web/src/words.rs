@@ -19,7 +19,11 @@ pub fn duration(ms: f64) -> String {
 pub fn tokens(n: u64) -> String {
     if n >= 1_000_000 {
         let m = n as f64 / 1e6;
-        return if n >= 10_000_000 { format!("{m:.0}M") } else { format!("{m:.1}M") };
+        return if n >= 10_000_000 {
+            format!("{m:.0}M")
+        } else {
+            format!("{m:.1}M")
+        };
     }
     if n >= 1000 {
         return format!("{}k", (n as f64 / 1000.0).round());
@@ -111,16 +115,32 @@ pub fn builtin_skills_about(started: bool) -> String {
 
 /// Who gets the extra rules for small models, as `/extra-rules` takes it.
 pub const RULES: [(&str, &str, &str); 3] = [
-    ("small", "Small models", "Agents on small models (Haiku, luna) get a few extra rules in their instructions."),
-    ("all", "Every agent", "Every agent gets the extra rules for small models."),
+    (
+        "small",
+        "Small models",
+        "Agents on small models (Haiku, luna) get a few extra rules in their instructions.",
+    ),
+    (
+        "all",
+        "Every agent",
+        "Every agent gets the extra rules for small models.",
+    ),
     ("off", "Off", "No agent gets them."),
 ];
 
 /// Which of the project's instruction files the agents get, as
 /// `/project-instructions` takes it.
 pub const PROJECT: [(&str, &str, &str); 3] = [
-    ("one", "AGENTS.md, else CLAUDE.md", "CLAUDE.md only when there is no AGENTS.md."),
-    ("both", "Both", "AGENTS.md and CLAUDE.md, each under its own name."),
+    (
+        "one",
+        "AGENTS.md, else CLAUDE.md",
+        "CLAUDE.md only when there is no AGENTS.md.",
+    ),
+    (
+        "both",
+        "Both",
+        "AGENTS.md and CLAUDE.md, each under its own name.",
+    ),
     ("off", "Off", "The agents get neither file."),
 ];
 
@@ -172,9 +192,16 @@ pub fn notice_label(agent: &str, summary: Option<&WorkerData>) -> String {
 /// started, then the workers it started, depth first, in the order they
 /// started (the library's `remote::family_order`).
 pub fn family_order<'a>(summaries: &[&'a WorkerData]) -> Vec<&'a WorkerData> {
-    let ids: Vec<&str> = summaries.iter().map(|summary| summary.id.as_str()).collect();
+    let ids: Vec<&str> = summaries
+        .iter()
+        .map(|summary| summary.id.as_str())
+        .collect();
     let mut order: Vec<&WorkerData> = Vec::new();
-    fn place<'a>(summary: &'a WorkerData, summaries: &[&'a WorkerData], order: &mut Vec<&'a WorkerData>) {
+    fn place<'a>(
+        summary: &'a WorkerData,
+        summaries: &[&'a WorkerData],
+        order: &mut Vec<&'a WorkerData>,
+    ) {
         if order.iter().any(|placed| placed.id == summary.id) {
             return;
         }
@@ -186,7 +213,11 @@ pub fn family_order<'a>(summaries: &[&'a WorkerData]) -> Vec<&'a WorkerData> {
         }
     }
     for summary in summaries {
-        if summary.parent.as_deref().is_none_or(|parent| !ids.contains(&parent)) {
+        if summary
+            .parent
+            .as_deref()
+            .is_none_or(|parent| !ids.contains(&parent))
+        {
             place(summary, summaries, &mut order);
         }
     }
@@ -202,10 +233,16 @@ pub fn family_order<'a>(summaries: &[&'a WorkerData]) -> Vec<&'a WorkerData> {
 /// worker going first, in the order they started, then the others, the
 /// latest first, each family with its workers after it.
 pub fn sheet_order<'a>(summaries: &[&'a WorkerData]) -> Vec<&'a WorkerData> {
-    let ids: Vec<&str> = summaries.iter().map(|summary| summary.id.as_str()).collect();
+    let ids: Vec<&str> = summaries
+        .iter()
+        .map(|summary| summary.id.as_str())
+        .collect();
     let mut families: Vec<Vec<&WorkerData>> = Vec::new();
     for summary in family_order(summaries) {
-        let top = summary.parent.as_deref().is_none_or(|parent| !ids.contains(&parent));
+        let top = summary
+            .parent
+            .as_deref()
+            .is_none_or(|parent| !ids.contains(&parent));
         if top || families.is_empty() {
             families.push(Vec::new());
         }
@@ -213,7 +250,11 @@ pub fn sheet_order<'a>(summaries: &[&'a WorkerData]) -> Vec<&'a WorkerData> {
     }
     let going = |family: &Vec<&WorkerData>| family.iter().any(|summary| summary.state.is_active());
     let (active, done): (Vec<_>, Vec<_>) = families.into_iter().partition(going);
-    active.into_iter().flatten().chain(done.into_iter().rev().flatten()).collect()
+    active
+        .into_iter()
+        .flatten()
+        .chain(done.into_iter().rev().flatten())
+        .collect()
 }
 
 fn state_word(state: WorkerState) -> &'static str {
@@ -230,7 +271,11 @@ fn state_word(state: WorkerState) -> &'static str {
 /// 2m14s · running · under r1 · gpt-6.1-sol, high · profile judge ·
 /// $0.12") and what it did last. `viewing` is the worker whose own view
 /// shows, which says who started it already.
-pub fn worker_words(summary: &WorkerData, now: f64, viewing: Option<&str>) -> (String, String, String) {
+pub fn worker_words(
+    summary: &WorkerData,
+    now: f64,
+    viewing: Option<&str>,
+) -> (String, String, String) {
     let mut parts = vec![plural(summary.tool_calls, "call", "calls")];
     if let Some(ran) = run_time(summary, now) {
         parts.push(duration(ran));
@@ -250,18 +295,28 @@ pub fn worker_words(summary: &WorkerData, now: f64, viewing: Option<&str>) -> (S
     if let Some(profile) = &summary.profile {
         parts.push(format!("profile {profile}"));
     }
-    for words in [cost_words(summary.cost_billed, summary.cost_list), family_cost_words(summary)] {
+    for words in [
+        cost_words(summary.cost_billed, summary.cost_list),
+        family_cost_words(summary),
+    ] {
         if !words.is_empty() {
             parts.push(words);
         }
     }
     let mut last = summary.last.clone().unwrap_or_default();
     if summary.state == WorkerState::Finished
-        && let Some(line) = summary.report.as_deref().and_then(|report| report.lines().find(|line| !line.trim().is_empty()))
+        && let Some(line) = summary
+            .report
+            .as_deref()
+            .and_then(|report| report.lines().find(|line| !line.trim().is_empty()))
     {
         last = line.to_string();
     }
-    let title = if summary.title.is_empty() { summary.id.clone() } else { summary.title.clone() };
+    let title = if summary.title.is_empty() {
+        summary.id.clone()
+    } else {
+        summary.title.clone()
+    };
     (title, parts.join(" · "), last.trim().to_string())
 }
 
@@ -288,7 +343,11 @@ pub enum Connection {
 /// The header's state, as a key for its look and a label. While a worker's
 /// own view shows, `viewing` is its summary (or its ID alone before the
 /// summary comes), and the state is the worker's.
-pub fn state_of(status: Option<&StatusData>, connection: &Connection, viewing: Option<(&str, Option<&WorkerData>)>) -> (&'static str, String) {
+pub fn state_of(
+    status: Option<&StatusData>,
+    connection: &Connection,
+    viewing: Option<(&str, Option<&WorkerData>)>,
+) -> (&'static str, String) {
     match connection {
         Connection::Offline => return ("offline", "Offline".into()),
         Connection::Connecting => return ("connecting", "Connecting".into()),
@@ -298,7 +357,15 @@ pub fn state_of(status: Option<&StatusData>, connection: &Connection, viewing: O
         return ("connecting", "Connecting".into());
     };
     if status.question.is_some() {
-        return ("asking", if viewing.is_some() { "Main asks you" } else { "Asks you" }.into());
+        return (
+            "asking",
+            if viewing.is_some() {
+                "Main asks you"
+            } else {
+                "Asks you"
+            }
+            .into(),
+        );
     }
     if let Some((id, summary)) = viewing {
         return match summary {
@@ -309,7 +376,11 @@ pub fn state_of(status: Option<&StatusData>, connection: &Connection, viewing: O
                     WorkerState::Failed => "failed",
                     _ => "idle",
                 };
-                let word = if summary.state == WorkerState::Running { "working" } else { state_word(summary.state) };
+                let word = if summary.state == WorkerState::Running {
+                    "working"
+                } else {
+                    state_word(summary.state)
+                };
                 (key, format!("{id} {word}"))
             }
         };
@@ -322,7 +393,10 @@ pub fn state_of(status: Option<&StatusData>, connection: &Connection, viewing: O
 
 /// The figures of the agent whose transcript shows: context, its handover
 /// size, the cost, and the cost at API prices of what a plan covered.
-fn agent_figures(status: &StatusData, viewing: Option<&WorkerData>) -> (Option<u64>, Option<u64>, f64, f64) {
+fn agent_figures(
+    status: &StatusData,
+    viewing: Option<&WorkerData>,
+) -> (Option<u64>, Option<u64>, f64, f64) {
     match viewing {
         None => (
             status.context_tokens,
@@ -338,7 +412,11 @@ fn agent_figures(status: &StatusData, viewing: Option<&WorkerData>) -> (Option<u
                 agent.and_then(|agent| agent.context_tokens),
                 agent.and_then(|agent| agent.handover_at),
                 if billed >= 0.005 { billed } else { 0.0 },
-                if list > billed + 1e-9 && list >= 0.005 { list } else { 0.0 },
+                if list > billed + 1e-9 && list >= 0.005 {
+                    list
+                } else {
+                    0.0
+                },
             )
         }
     }
@@ -358,7 +436,9 @@ pub fn figures(status: &StatusData, viewing: Option<&WorkerData>) -> Vec<String>
     if let Some(usage) = &status.plan_usage {
         // "Claude plan 5 h 21%, 7 d 4%" as "5 h 21%, 7 d 4%".
         let lower = usage.to_lowercase();
-        let rest = lower.find("plan ").map_or(usage.as_str(), |at| usage[at + 5..].trim_start());
+        let rest = lower
+            .find("plan ")
+            .map_or(usage.as_str(), |at| usage[at + 5..].trim_start());
         parts.push(rest.to_string());
     }
     if cost > 0.0 {
@@ -377,7 +457,11 @@ pub fn context_title(status: &StatusData, viewing: Option<&WorkerData>) -> Strin
         return String::new();
     };
     match handover {
-        Some(handover) => format!("Context {} tokens, handover size {}", tokens(context), tokens(handover)),
+        Some(handover) => format!(
+            "Context {} tokens, handover size {}",
+            tokens(context),
+            tokens(handover)
+        ),
         None => format!("Context {} tokens", tokens(context)),
     }
 }
@@ -397,12 +481,20 @@ pub fn cache_timer(cache: &CacheData, running: bool, now: f64) -> Option<f64> {
 pub fn clock(ms: f64) -> String {
     let s = (ms.max(0.0) / 1000.0).floor() as u64;
     let (h, m) = (s / 3600, s / 60 % 60);
-    if h > 0 { format!("{h}:{m:02}:{:02}", s % 60) } else { format!("{m}:{:02}", s % 60) }
+    if h > 0 {
+        format!("{h}:{m:02}:{:02}", s % 60)
+    } else {
+        format!("{m}:{:02}", s % 60)
+    }
 }
 
 /// "cache 3:12", counted up to the next second, or "cache expired".
 pub fn cache_label(left: f64) -> String {
-    if left <= 0.0 { "cache expired".into() } else { format!("cache {}", clock((left / 1000.0).ceil() * 1000.0)) }
+    if left <= 0.0 {
+        "cache expired".into()
+    } else {
+        format!("cache {}", clock((left / 1000.0).ceil() * 1000.0))
+    }
 }
 
 /// The timer's last minute warns.
@@ -414,7 +506,11 @@ pub fn cache_warns(left: f64) -> bool {
 pub fn cache_tokens(count: u64) -> String {
     let trimmed = |value: f64, decimals: usize| {
         let text = format!("{value:.decimals$}");
-        if text.contains('.') { text.trim_end_matches('0').trim_end_matches('.').to_string() } else { text }
+        if text.contains('.') {
+            text.trim_end_matches('0').trim_end_matches('.').to_string()
+        } else {
+            text
+        }
     };
     if count < 1000 {
         return count.to_string();
@@ -430,7 +526,11 @@ pub fn cache_tokens(count: u64) -> String {
 }
 
 pub fn dollars(amount: f64) -> String {
-    if amount > 0.0 && amount < 0.005 { "< $0.01".into() } else { format!("${amount:.2}") }
+    if amount > 0.0 && amount < 0.005 {
+        "< $0.01".into()
+    } else {
+        format!("${amount:.2}")
+    }
 }
 
 /// What a miss writes again: "about 180k tokens, ≈ $0.90", "about 180k
@@ -461,7 +561,9 @@ pub struct Local {
 }
 
 const WEEKDAYS: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const MONTHS: [&str; 12] = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
 
 /// "14:00" today, "Mon 09:00" within a week, else "Oct 20" (with the year
 /// for another one).
@@ -475,7 +577,11 @@ pub fn when_words(then: Local, now: Local) -> String {
         return format!("{} {time}", WEEKDAYS[then.weekday as usize % 7]);
     }
     let day = format!("{} {}", MONTHS[then.month as usize % 12], then.day);
-    if then.year == now.year { day } else { format!("{day}, {}", then.year) }
+    if then.year == now.year {
+        day
+    } else {
+        format!("{day}, {}", then.year)
+    }
 }
 
 /// What the timer means, for its tooltip. `until` is when the cache lapses
@@ -521,7 +627,10 @@ mod tests {
         summary.cost_list = 0.12;
         let (title, meta, _) = worker_words(&summary, 130_000.0, None);
         assert_eq!(title, "Task of r2");
-        assert_eq!(meta, "18 calls · 2m14s · running · under r1 · gpt-6.1-sol, high · profile judge · $0.12");
+        assert_eq!(
+            meta,
+            "18 calls · 2m14s · running · under r1 · gpt-6.1-sol, high · profile judge · $0.12"
+        );
         // Not in the view of the worker that started it.
         assert!(!worker_words(&summary, 0.0, Some("r1")).1.contains("under"));
     }
@@ -563,11 +672,17 @@ mod tests {
 
     #[test]
     fn the_monitor_wakes_and_workers_settings_read_as_words() {
-        assert_eq!(wakes_words(Some("2h"), Some(7200)), "For 2 h after your last message");
+        assert_eq!(
+            wakes_words(Some("2h"), Some(7200)),
+            "For 2 h after your last message"
+        );
         assert_eq!(wakes_words(Some("auto"), Some(3240)), "Auto (54 min)");
         assert_eq!(wakes_words(Some("always"), None), "Always");
         assert_eq!(wakes_words(Some("off"), Some(0)), "Never");
-        assert!(retry_cap_about(Some(1)).starts_with("A worker fails after 1 failed model request in a row"));
+        assert!(
+            retry_cap_about(Some(1))
+                .starts_with("A worker fails after 1 failed model request in a row")
+        );
         assert!(retry_cap_about(None).starts_with("Workers keep retrying"));
         assert!(builtin_skills_about(true).contains("keeps its skills"));
         assert!(!builtin_skills_about(false).contains("keeps its skills"));
@@ -575,14 +690,21 @@ mod tests {
 
     #[test]
     fn the_cache_timer_counts_down_while_idle_and_warns_in_the_last_minute() {
-        let cache = CacheData { lifetime: Some(300_000), refreshed_at: Some(0), ..CacheData::default() };
+        let cache = CacheData {
+            lifetime: Some(300_000),
+            refreshed_at: Some(0),
+            ..CacheData::default()
+        };
         assert_eq!(cache_timer(&cache, true, 0.0), None);
         assert_eq!(cache_timer(&CacheData::default(), false, 0.0), None);
         let left = cache_timer(&cache, false, 108_000.0).unwrap();
         assert_eq!(cache_label(left), "cache 3:12");
         assert!(!cache_warns(left));
         assert!(cache_warns(cache_timer(&cache, false, 250_000.0).unwrap()));
-        assert_eq!(cache_label(cache_timer(&cache, false, 400_000.0).unwrap()), "cache expired");
+        assert_eq!(
+            cache_label(cache_timer(&cache, false, 400_000.0).unwrap()),
+            "cache expired"
+        );
         // A clock that went back still shows at most the lifetime.
         assert_eq!(cache_timer(&cache, false, -60_000.0), Some(300_000.0));
         assert_eq!(cache_label(0.5), "cache 0:01");
@@ -601,14 +723,32 @@ mod tests {
             cache_title(1000.0, &cache, "14:05"),
             "The prompt cache keeps this conversation until 14:05. Letting it expire re-caches about 180k tokens, ≈ $0.90."
         );
-        assert_eq!(cache_title(0.0, &cache, ""), "The next message re-caches about 180k tokens, ≈ $0.90.");
-        let plan = CacheData { miss_cost: None, on_plan: Some("your Claude plan".into()), ..cache };
-        assert_eq!(cache_title(0.0, &plan, ""), "The next message re-caches about 180k tokens of your Claude plan.");
+        assert_eq!(
+            cache_title(0.0, &cache, ""),
+            "The next message re-caches about 180k tokens, ≈ $0.90."
+        );
+        let plan = CacheData {
+            miss_cost: None,
+            on_plan: Some("your Claude plan".into()),
+            ..cache
+        };
+        assert_eq!(
+            cache_title(0.0, &plan, ""),
+            "The next message re-caches about 180k tokens of your Claude plan."
+        );
         assert_eq!(cache_tokens(820), "820");
         assert_eq!(cache_tokens(8_240), "8.2k");
         assert_eq!(cache_tokens(142_318), "142k");
         assert_eq!(cache_tokens(1_020_000), "1.02M");
-        let at = |day_number, weekday, hour| Local { year: 2026, month: 9, day: 20, weekday, hour, minute: 5, day_number };
+        let at = |day_number, weekday, hour| Local {
+            year: 2026,
+            month: 9,
+            day: 20,
+            weekday,
+            hour,
+            minute: 5,
+            day_number,
+        };
         assert_eq!(when_words(at(10, 1, 14), at(10, 1, 9)), "14:05");
         assert_eq!(when_words(at(11, 2, 9), at(10, 1, 9)), "Tue 09:05");
         assert_eq!(when_words(at(30, 2, 9), at(10, 1, 9)), "Oct 20");
@@ -629,7 +769,11 @@ mod tests {
 
     #[test]
     fn the_header_shows_the_workers_own_figures_while_its_view_shows() {
-        let mut status = StatusData { context_tokens: Some(142_000), cost: 1.2, ..StatusData::default() };
+        let mut status = StatusData {
+            context_tokens: Some(142_000),
+            cost: 1.2,
+            ..StatusData::default()
+        };
         status.settings.handover_at = 250_000;
         assert_eq!(figures(&status, None), ["142k/250k", "$1.20"]);
         status.agents = vec![crate::protocol::AgentData {
@@ -642,12 +786,18 @@ mod tests {
         summary.cost_billed = 0.0;
         summary.cost_list = 0.4;
         assert_eq!(figures(&status, Some(&summary)), ["30k/200k", "≈ $0.40"]);
-        assert_eq!(context_title(&status, None), "Context 142k tokens, handover size 250k");
+        assert_eq!(
+            context_title(&status, None),
+            "Context 142k tokens, handover size 250k"
+        );
         status.plan_usage = Some("Claude plan 5 h 21%, 7 d 4%".into());
         assert_eq!(figures(&status, None)[1], "5 h 21%, 7 d 4%");
         let live = Connection::Live;
         assert_eq!(state_of(Some(&status), &live, None).1, "Idle");
-        assert_eq!(state_of(Some(&status), &live, Some(("r1", Some(&summary)))).1, "r1 working");
+        assert_eq!(
+            state_of(Some(&status), &live, Some(("r1", Some(&summary)))).1,
+            "r1 working"
+        );
         assert_eq!(state_of(None, &Connection::Offline, None).1, "Offline");
     }
 }

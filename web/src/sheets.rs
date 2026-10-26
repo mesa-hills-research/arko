@@ -67,7 +67,10 @@ pub fn WorkersSheet() -> impl IntoView {
         STORE.with(|store| {
             let store = store.borrow();
             let list = store.worker_list();
-            words::sheet_order(&list).into_iter().map(|summary| summary.id.clone()).collect::<Vec<_>>()
+            words::sheet_order(&list)
+                .into_iter()
+                .map(|summary| summary.id.clone())
+                .collect::<Vec<_>>()
         })
     };
     view! {
@@ -125,7 +128,9 @@ impl Settings {
 
     /// The command is through: it worked (`ok`), or Arko said why not.
     fn settle(&self, ok: bool) {
-        let Some(change) = PENDING.with(|pending| pending.borrow_mut().take()) else { return };
+        let Some(change) = PENDING.with(|pending| pending.borrow_mut().take()) else {
+            return;
+        };
         window().clear_timeout_with_handle(change.timer);
         window().clear_timeout_with_handle(change.wait);
         self.shows.set(None);
@@ -133,7 +138,11 @@ impl Settings {
         if ok {
             self.note(change.note, said, false);
         } else if said.is_empty() {
-            self.note(change.note, "Arko didn’t change it. The transcript says why.".into(), true);
+            self.note(
+                change.note,
+                "Arko didn’t change it. The transcript says why.".into(),
+                true,
+            );
         } else {
             self.note(change.note, said, true);
         }
@@ -145,7 +154,10 @@ impl Settings {
         let settle = PENDING.with(|pending| {
             let mut pending = pending.borrow_mut();
             let change = pending.as_mut()?;
-            if item.kind == Kind::User && item.delivery == Some(Delivery::Command) && item.text == change.command {
+            if item.kind == Kind::User
+                && item.delivery == Some(Delivery::Command)
+                && item.text == change.command
+            {
                 change.answered = true;
                 return None;
             }
@@ -189,7 +201,15 @@ impl Settings {
             .set_timeout_with_callback_and_timeout_and_arguments_0(timeout.unchecked_ref(), 10_000)
             .unwrap_or(0);
         PENDING.with(|pending| {
-            *pending.borrow_mut() = Some(Pending { command: text.clone(), note, done, lines: Vec::new(), answered: false, timer, wait: 0 })
+            *pending.borrow_mut() = Some(Pending {
+                command: text.clone(),
+                note,
+                done,
+                lines: Vec::new(),
+                answered: false,
+                timer,
+                wait: 0,
+            })
         });
         self.shows.set(shows);
         spawn_local(async move {
@@ -199,7 +219,10 @@ impl Settings {
                     window().clear_timeout_with_handle(change.timer);
                 }
                 settings.shows.set(None);
-                let why = page().error.get_untracked().unwrap_or_else(|| "Not sent.".into());
+                let why = page()
+                    .error
+                    .get_untracked()
+                    .unwrap_or_else(|| "Not sent.".into());
                 settings.note(note, why, true);
             }
         });
@@ -225,7 +248,11 @@ fn Switch(
         Some((which, value)) if which == key => value == "true",
         _ => on.get(),
     };
-    let busy = move || settings.shows.with(|shows| shows.as_ref().is_some_and(|(which, _)| *which == key));
+    let busy = move || {
+        settings
+            .shows
+            .with(|shows| shows.as_ref().is_some_and(|(which, _)| *which == key))
+    };
     view! {
         <div class="setting">
             <div class="setting-text">
@@ -281,16 +308,27 @@ fn Options(
 fn Note(key: &'static str) -> impl IntoView {
     let settings = expect_context::<Settings>();
     move || {
-        settings.notes.with(|notes| notes.get(key).cloned()).map(|(text, error)| view! {
-            <p class="note" class:error=error>{text}</p>
-        })
+        settings
+            .notes
+            .with(|notes| notes.get(key).cloned())
+            .map(|(text, error)| {
+                view! {
+                    <p class="note" class:error=error>{text}</p>
+                }
+            })
     }
 }
 
 /// An inline form that sends `command TEXT` (Arko reads the value and says
 /// what's wrong with it).
 #[component]
-fn Change(label: &'static str, placeholder: &'static str, empty: &'static str, note: &'static str, send: impl Fn(String) + 'static) -> impl IntoView {
+fn Change(
+    label: &'static str,
+    placeholder: &'static str,
+    empty: &'static str,
+    note: &'static str,
+    send: impl Fn(String) + 'static,
+) -> impl IntoView {
     let settings = expect_context::<Settings>();
     let field: NodeRef<leptos::html::Input> = NodeRef::new();
     view! {
@@ -317,7 +355,9 @@ fn Change(label: &'static str, placeholder: &'static str, empty: &'static str, n
 /// Applies a theme by its slug (none for the system's pair), and keeps it
 /// in this browser.
 fn apply_theme(slug: Option<&str>) {
-    let Some(root) = document().document_element() else { return };
+    let Some(root) = document().document_element() else {
+        return;
+    };
     match slug {
         Some(slug) => {
             if document().get_element_by_id("all-themes").is_none()
@@ -342,14 +382,21 @@ fn apply_theme(slug: Option<&str>) {
 #[component]
 pub fn SettingsSheet() -> impl IntoView {
     let page = page();
-    let settings = Settings { shows: RwSignal::new(None), notes: RwSignal::new(HashMap::new()) };
+    let settings = Settings {
+        shows: RwSignal::new(None),
+        notes: RwSignal::new(HashMap::new()),
+    };
     provide_context(settings);
     on_item(move |item| settings.heard(item));
     // A command that took shows in the status.
     Effect::new(move |_| {
         page.status.with(|status| {
             let took = PENDING.with(|pending| {
-                pending.borrow().as_ref().and_then(|change| change.done.as_ref()).is_some_and(|done| done(&status.settings))
+                pending
+                    .borrow()
+                    .as_ref()
+                    .and_then(|change| change.done.as_ref())
+                    .is_some_and(|done| done(&status.settings))
             });
             if took {
                 settings.settle(true);
@@ -379,13 +426,21 @@ fn SettingsBody() -> impl IntoView {
     spawn_local(async move {
         links.set(get_json::<Vec<LinkData>>("/api/links", None).await);
     });
-    let cc = move || page.status.with(|status| [&status.models.main, &status.models.workers].iter().any(|model| model.starts_with("cc:")));
+    let cc = move || {
+        page.status.with(|status| {
+            [&status.models.main, &status.models.workers]
+                .iter()
+                .any(|model| model.starts_with("cc:"))
+        })
+    };
     let compacts = move || match settings.shows.get() {
         Some(("compact", value)) => value == "true",
         _ => s().cc_compact != Some(false),
     };
     let option_list = |list: &[(&str, &str, &str)]| {
-        list.iter().map(|(key, name, about)| (key.to_string(), name.to_string(), about.to_string())).collect::<Vec<_>>()
+        list.iter()
+            .map(|(key, name, about)| (key.to_string(), name.to_string(), about.to_string()))
+            .collect::<Vec<_>>()
     };
     view! {
         <section class="group">
@@ -714,7 +769,11 @@ fn LinkCard(link: LinkData) -> impl IntoView {
         "loopback" => "This computer only",
         _ => "",
     };
-    let qr = link.qr_svg.as_deref().and_then(safe_svg).unwrap_or_default();
+    let qr = link
+        .qr_svg
+        .as_deref()
+        .and_then(safe_svg)
+        .unwrap_or_default();
     let copied = RwSignal::new(false);
     let url = link.url.clone();
     view! {
@@ -747,12 +806,20 @@ fn safe_svg(source: &str) -> Option<String> {
     let mut rest = lower.as_str();
     while let Some(at) = rest.find('<') {
         rest = &rest[at + 1..];
-        let name: String = rest.trim_start_matches('/').chars().take_while(|c| c.is_ascii_alphanumeric()).collect();
+        let name: String = rest
+            .trim_start_matches('/')
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric())
+            .collect();
         if !["svg", "path", "rect", "g"].contains(&name.as_str()) && !rest.starts_with('?') {
             return None;
         }
     }
-    if lower.contains(" on") || lower.contains("href") || lower.contains("style") || lower.contains("javascript") {
+    if lower.contains(" on")
+        || lower.contains("href")
+        || lower.contains("style")
+        || lower.contains("javascript")
+    {
         return None;
     }
     Some(source.to_string())
@@ -762,7 +829,12 @@ fn safe_svg(source: &str) -> Option<String> {
 mod tests {
     #[test]
     fn a_qr_code_with_anything_but_shapes_is_refused() {
-        assert!(super::safe_svg(r#"<svg viewBox="0 0 2 2"><path d="M0 0h1v1H0z"/><rect width="2"/></svg>"#).is_some());
+        assert!(
+            super::safe_svg(
+                r#"<svg viewBox="0 0 2 2"><path d="M0 0h1v1H0z"/><rect width="2"/></svg>"#
+            )
+            .is_some()
+        );
         assert!(super::safe_svg(r#"<svg><script>alert(1)</script></svg>"#).is_none());
         assert!(super::safe_svg(r#"<svg><path onload="x"/></svg>"#).is_none());
         assert!(super::safe_svg(r#"<svg><a href="javascript:x"><path/></a></svg>"#).is_none());

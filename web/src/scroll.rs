@@ -282,10 +282,12 @@ pub fn first_visible() -> Option<u64> {
     let log = STATE.with(|state| state.borrow().log.clone())?;
     let top = log.get_bounding_client_rect().top();
     let rows = log.query_selector("#rows").ok().flatten()?.children();
-    (0..rows.length()).filter_map(|at| rows.item(at)).find_map(|row| {
-        let id = row.get_attribute("data-id")?.parse().ok()?;
-        (row.get_bounding_client_rect().bottom() > top + 1.0).then_some(id)
-    })
+    (0..rows.length())
+        .filter_map(|at| rows.item(at))
+        .find_map(|row| {
+            let id = row.get_attribute("data-id")?.parse().ok()?;
+            (row.get_bounding_client_rect().bottom() > top + 1.0).then_some(id)
+        })
 }
 
 /// Keeps the reader's place at the item `id` (or the nearest row before it)
@@ -300,7 +302,10 @@ pub fn keep_place(id: u64) {
         let mut best: Option<(u64, Element)> = None;
         for at in 0..rows.length() {
             let Some(row) = rows.item(at) else { continue };
-            let Some(row_id) = row.get_attribute("data-id").and_then(|id| id.parse::<u64>().ok()) else {
+            let Some(row_id) = row
+                .get_attribute("data-id")
+                .and_then(|id| id.parse::<u64>().ok())
+            else {
                 continue;
             };
             if row_id == id {

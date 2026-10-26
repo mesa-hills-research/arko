@@ -34,7 +34,15 @@ pub fn Transcript() -> impl IntoView {
             return (None, false);
         }
         page.status.with(|status| {
-            STORE.with(|store| layout::motion(&store.borrow(), status, view, worker.as_deref(), js_sys::Date::now()))
+            STORE.with(|store| {
+                layout::motion(
+                    &store.borrow(),
+                    status,
+                    view,
+                    worker.as_deref(),
+                    js_sys::Date::now(),
+                )
+            })
         })
     });
     let rows = Memo::new(move |_| {
@@ -68,8 +76,16 @@ pub fn Transcript() -> impl IntoView {
             None => "Nothing here yet.".to_string(),
             Some(id) => {
                 page.workers.track();
-                match STORE.with(|store| store.borrow().workers.get(&id).and_then(|w| w.report.clone())) {
-                    Some(report) => format!("Its work came before this page’s history began. It reported “{report}”"),
+                match STORE.with(|store| {
+                    store
+                        .borrow()
+                        .workers
+                        .get(&id)
+                        .and_then(|w| w.report.clone())
+                }) {
+                    Some(report) => format!(
+                        "Its work came before this page’s history began. It reported “{report}”"
+                    ),
                     None => "Nothing from it yet.".into(),
                 }
             }
@@ -122,7 +138,11 @@ fn row_view(row: Row, thinking: Memo<Option<u64>>) -> AnyView {
 /// A turn's tool calls as one line (Messages). A click shows them in Full.
 fn count_row(id: u64, count: Count) -> AnyView {
     let page = page();
-    let Count { calls, failed, running } = count;
+    let Count {
+        calls,
+        failed,
+        running,
+    } = count;
     view! {
         <div class="row count" data-id=id>
             <button type="button" class="btn ghost small" title="Show them (Full view)"
@@ -140,7 +160,10 @@ fn count_row(id: u64, count: Count) -> AnyView {
 }
 
 fn local_time(at: i64) -> String {
-    js_sys::Date::new(&(at as f64).into()).to_locale_time_string("default").as_string().unwrap_or_default()
+    js_sys::Date::new(&(at as f64).into())
+        .to_locale_time_string("default")
+        .as_string()
+        .unwrap_or_default()
 }
 
 fn item_row(id: u64, cell: Cell, thinking: Memo<Option<u64>>) -> AnyView {
@@ -329,11 +352,18 @@ fn call_row(cell: Cell) -> AnyView {
         page.workers.track();
         let (moves, stop) = STORE.with(|store| call_actions(&item, &store.borrow(), &movable));
         let mark = match item.status {
-            Some(CallStatus::Running) => view! { <span class="mark spin"><LoaderCircle size=14 /></span> }.into_any(),
-            Some(CallStatus::Failed) => view! { <span class="mark failed"><CircleX size=14 /></span> }.into_any(),
+            Some(CallStatus::Running) => {
+                view! { <span class="mark spin"><LoaderCircle size=14 /></span> }.into_any()
+            }
+            Some(CallStatus::Failed) => {
+                view! { <span class="mark failed"><CircleX size=14 /></span> }.into_any()
+            }
             _ => view! { <span class="mark"></span> }.into_any(),
         };
-        let outcome = item.outcome.clone().filter(|_| item.status != Some(CallStatus::Running));
+        let outcome = item
+            .outcome
+            .clone()
+            .filter(|_| item.status != Some(CallStatus::Running));
         let failed = item.status == Some(CallStatus::Failed);
         view! {
             <span class="call-line">
@@ -420,7 +450,13 @@ pub fn WorkerCard(id: String, listed: bool) -> impl IntoView {
     };
     let depth = {
         let summary = summary.clone();
-        move || if listed { summary().map_or(0, |s| s.depth.saturating_sub(1).min(3)) } else { 0 }
+        move || {
+            if listed {
+                summary().map_or(0, |s| s.depth.saturating_sub(1).min(3))
+            } else {
+                0
+            }
+        }
     };
     let words = {
         let id = id.clone();
@@ -473,9 +509,19 @@ pub fn show_worker(page: Page, id: Option<String>) {
         return;
     }
     if page.worker.get_untracked().is_none() {
-        MAIN_PLACE.with(|place| place.set(if page.pinned.get_untracked() { None } else { scroll::first_visible() }));
+        MAIN_PLACE.with(|place| {
+            place.set(if page.pinned.get_untracked() {
+                None
+            } else {
+                scroll::first_visible()
+            })
+        });
     }
-    let back_to = if id.is_none() { MAIN_PLACE.with(|place| place.take()) } else { None };
+    let back_to = if id.is_none() {
+        MAIN_PLACE.with(|place| place.take())
+    } else {
+        None
+    };
     if let Ok(history) = window().history() {
         match &id {
             Some(worker) => {
@@ -483,7 +529,11 @@ pub fn show_worker(page: Page, id: Option<String>) {
                 let _ = history.push_state(&state, "");
             }
             None => {
-                if history.state().ok().is_some_and(|state| !state.is_null() && !state.is_undefined()) {
+                if history
+                    .state()
+                    .ok()
+                    .is_some_and(|state| !state.is_null() && !state.is_undefined())
+                {
                     let _ = history.back();
                 }
             }

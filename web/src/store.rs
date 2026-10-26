@@ -28,7 +28,13 @@ pub struct Store {
 
 impl Store {
     /// Starts over (a `reset`).
-    pub fn reset(&mut self, items: Vec<ItemData>, workers: Vec<WorkerData>, jobs: Vec<JobSummary>, now: f64) {
+    pub fn reset(
+        &mut self,
+        items: Vec<ItemData>,
+        workers: Vec<WorkerData>,
+        jobs: Vec<JobSummary>,
+        now: f64,
+    ) {
         *self = Store::default();
         for item in items {
             self.add(item, now);
@@ -42,7 +48,12 @@ impl Store {
     }
 
     fn reindex(&mut self) {
-        self.index = self.items.iter().enumerate().map(|(at, item)| (item.id, at)).collect();
+        self.index = self
+            .items
+            .iter()
+            .enumerate()
+            .map(|(at, item)| (item.id, at))
+            .collect();
     }
 
     pub fn get(&self, id: u64) -> Option<&ItemData> {
@@ -63,7 +74,11 @@ impl Store {
         self.counts[lane] += 1;
         let mut trimmed = Vec::new();
         while self.counts[lane] > BUDGET {
-            let Some(at) = self.items.iter().position(|old| usize::from(old.agent != MAIN) == lane) else {
+            let Some(at) = self
+                .items
+                .iter()
+                .position(|old| usize::from(old.agent != MAIN) == lane)
+            else {
                 break;
             };
             let old = self.items.remove(at);
@@ -142,12 +157,19 @@ impl Store {
 
     /// The main agent's latest question, the one an open question is.
     pub fn last_question(&self) -> Option<u64> {
-        self.items.iter().rev().find(|item| item.kind == Kind::Question && item.agent == MAIN).map(|item| item.id)
+        self.items
+            .iter()
+            .rev()
+            .find(|item| item.kind == Kind::Question && item.agent == MAIN)
+            .map(|item| item.id)
     }
 
     /// The workers' summaries in the order they came.
     pub fn worker_list(&self) -> Vec<&WorkerData> {
-        self.worker_order.iter().filter_map(|id| self.workers.get(id)).collect()
+        self.worker_order
+            .iter()
+            .filter_map(|id| self.workers.get(id))
+            .collect()
     }
 }
 
@@ -158,7 +180,8 @@ pub fn call_actions(item: &ItemData, store: &Store, movable: &[u64]) -> (bool, O
     if item.kind != Kind::Call {
         return (false, None);
     }
-    let moves = item.status == Some(crate::protocol::CallStatus::Running) && movable.contains(&item.id);
+    let moves =
+        item.status == Some(crate::protocol::CallStatus::Running) && movable.contains(&item.id);
     let stop = item
         .job
         .as_ref()
@@ -284,7 +307,10 @@ pub mod tests {
             expires_at: None,
         };
         store.job(job.clone());
-        assert_eq!(call_actions(&call, &store, &[5]), (false, Some("j1".into())));
+        assert_eq!(
+            call_actions(&call, &store, &[5]),
+            (false, Some("j1".into()))
+        );
         store.job(JobSummary {
             state: JobState::Finished,
             ..job

@@ -13,7 +13,11 @@ use crate::words::{self, Connection, Local};
 /// A moment (Unix ms) in this device's local time.
 pub fn local(at: f64) -> Local {
     let date = js_sys::Date::new(&at.into());
-    let midnight = js_sys::Date::new_with_year_month_day(date.get_full_year(), date.get_month() as i32, date.get_date() as i32);
+    let midnight = js_sys::Date::new_with_year_month_day(
+        date.get_full_year(),
+        date.get_month() as i32,
+        date.get_date() as i32,
+    );
     Local {
         year: date.get_full_year() as i32,
         month: date.get_month(),
@@ -39,7 +43,13 @@ pub fn Header() -> impl IntoView {
         let viewing = viewing();
         let connection = page.connection.get();
         page.status.with(|status| {
-            words::state_of(Some(status), &connection, viewing.as_ref().map(|(id, summary)| (id.as_str(), summary.as_ref())))
+            words::state_of(
+                Some(status),
+                &connection,
+                viewing
+                    .as_ref()
+                    .map(|(id, summary)| (id.as_str(), summary.as_ref())),
+            )
         })
     };
     // How long the turn has gone on, or the worker's run time in its view.
@@ -52,21 +62,29 @@ pub fn Header() -> impl IntoView {
             if page.status.with(|status| status.question.is_some()) {
                 return String::new();
             }
-            return summary.and_then(|summary| words::run_time(&summary, now)).map(words::duration).unwrap_or_default();
+            return summary
+                .and_then(|summary| words::run_time(&summary, now))
+                .map(words::duration)
+                .unwrap_or_default();
         }
         if !page.status.with(|status| status.working) {
             return String::new();
         }
         page.version.track();
-        STORE.with(|store| store.borrow().turn_since()).map(|since| words::duration(now - since as f64)).unwrap_or_default()
+        STORE
+            .with(|store| store.borrow().turn_since())
+            .map(|since| words::duration(now - since as f64))
+            .unwrap_or_default()
     };
     let figures = move || {
         let summary = viewing().and_then(|(_, summary)| summary);
-        page.status.with(|status| words::figures(status, summary.as_ref()).join(" · "))
+        page.status
+            .with(|status| words::figures(status, summary.as_ref()).join(" · "))
     };
     let figures_title = move || {
         let summary = viewing().and_then(|(_, summary)| summary);
-        page.status.with(|status| words::context_title(status, summary.as_ref()))
+        page.status
+            .with(|status| words::context_title(status, summary.as_ref()))
     };
     // The prompt cache's timer, while the agent waits for the user.
     let cache = move || {
@@ -78,8 +96,15 @@ pub fn Header() -> impl IntoView {
             let running = status.working && status.question.is_none();
             let left = words::cache_timer(&status.cache, running, now)?;
             let lapses = (status.cache.refreshed_at? + status.cache.lifetime?) as f64;
-            let until = words::when_words(local((lapses / 1000.0).floor() * 1000.0 + (page.now.get() - now)), local(page.now.get()));
-            Some((words::cache_label(left), words::cache_warns(left), words::cache_title(left, &status.cache, &until)))
+            let until = words::when_words(
+                local((lapses / 1000.0).floor() * 1000.0 + (page.now.get() - now)),
+                local(page.now.get()),
+            );
+            Some((
+                words::cache_label(left),
+                words::cache_warns(left),
+                words::cache_title(left, &status.cache, &until),
+            ))
         })
     };
     let outside = move || page.status.with(|status| status.settings.outside);
@@ -87,14 +112,20 @@ pub fn Header() -> impl IntoView {
         page.workers.track();
         STORE.with(|store| {
             let store = store.borrow();
-            let running = store.workers.values().filter(|worker| worker.state.is_active()).count();
+            let running = store
+                .workers
+                .values()
+                .filter(|worker| worker.state.is_active())
+                .count();
             (store.workers.len(), running)
         })
     };
     let menu = RwSignal::new(false);
     // The tab's title says when the session needs the user.
     Effect::new(move |_| {
-        let (key, _) = page.status.with(|status| words::state_of(Some(status), &page.connection.get(), None));
+        let (key, _) = page
+            .status
+            .with(|status| words::state_of(Some(status), &page.connection.get(), None));
         document().set_title(match key {
             "asking" => "Arko · asks you",
             "working" => "Arko · working",
@@ -214,7 +245,11 @@ pub fn Banner() -> impl IntoView {
 #[component]
 pub fn ConnectionLine() -> impl IntoView {
     let page = page();
-    let shown = move || page.problem.get().filter(|_| page.connection.get() != Connection::Connecting || page.problem.get().is_some());
+    let shown = move || {
+        page.problem.get().filter(|_| {
+            page.connection.get() != Connection::Connecting || page.problem.get().is_some()
+        })
+    };
     view! {
         {move || shown().map(|problem| view! {
             <div class="conn" role="status">
@@ -237,7 +272,9 @@ pub fn Lock() -> impl IntoView {
     let key: NodeRef<leptos::html::Input> = NodeRef::new();
     let open = move |event: leptos::ev::SubmitEvent| {
         event.prevent_default();
-        let Some(input) = key.get_untracked() else { return };
+        let Some(input) = key.get_untracked() else {
+            return;
+        };
         let value = input.value().trim().to_string();
         input.set_value("");
         if value.is_empty() {

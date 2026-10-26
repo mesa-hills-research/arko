@@ -51,13 +51,20 @@ pub fn Composer() -> impl IntoView {
         (None, None) if enter_sends => "Message (Shift+Enter for a new line)".into(),
         (None, None) => "Message".into(),
     };
-    let working = move || page.status.with(|status| status.working) && page.connection.get() == crate::words::Connection::Live;
+    let working = move || {
+        page.status.with(|status| status.working)
+            && page.connection.get() == crate::words::Connection::Live
+    };
 
     let refresh_menu = move || {
-        let Some(area) = input.get_untracked() else { return };
+        let Some(area) = input.get_untracked() else {
+            return;
+        };
         let value = area.value();
         let element: &web_sys::Element = area.as_ref();
-        let focused = document().active_element().is_some_and(|active| &active == element);
+        let focused = document()
+            .active_element()
+            .is_some_and(|active| &active == element);
         let mut next = None;
         if value.starts_with('/')
             && asking().is_none()
@@ -65,7 +72,9 @@ pub fn Composer() -> impl IntoView {
             && closed_for.get_untracked().as_deref() != Some(value.as_str())
             && let Some(commands) = page.commands.get_untracked()
         {
-            next = slash::menu(&commands, &value, &mut |name, before, typed| choices_of(name, before, typed, choices_came));
+            next = slash::menu(&commands, &value, &mut |name, before, typed| {
+                choices_of(name, before, typed, choices_came)
+            });
         }
         if !value.starts_with('/') {
             CHOICES.with(|choices| choices.borrow_mut().clear());
@@ -80,7 +89,9 @@ pub fn Composer() -> impl IntoView {
     });
 
     let resize = move || {
-        let Some(area) = input.get_untracked() else { return };
+        let Some(area) = input.get_untracked() else {
+            return;
+        };
         fit(&area, tall, expanded.get_untracked());
         empty.set(area.value().trim().is_empty());
         session_set(DRAFT, Some(&area.value()));
@@ -99,7 +110,9 @@ pub fn Composer() -> impl IntoView {
     });
 
     let send = move || {
-        let Some(area) = input.get_untracked() else { return };
+        let Some(area) = input.get_untracked() else {
+            return;
+        };
         let text = area.value();
         if text.trim().is_empty() || sending.get_untracked() {
             return;
@@ -108,8 +121,14 @@ pub fn Composer() -> impl IntoView {
         // While the agent asks, what's typed is the answer. In a worker's
         // view, it goes to that worker.
         let (path, body) = match (asking(), page.worker.get_untracked()) {
-            (Some(asked), _) => ("/api/answer", serde_json::json!({ "question": asked.id, "text": text })),
-            (None, Some(worker)) => ("/api/message", serde_json::json!({ "text": text, "to": worker })),
+            (Some(asked), _) => (
+                "/api/answer",
+                serde_json::json!({ "question": asked.id, "text": text }),
+            ),
+            (None, Some(worker)) => (
+                "/api/message",
+                serde_json::json!({ "text": text, "to": worker }),
+            ),
             (None, None) => ("/api/message", serde_json::json!({ "text": text })),
         };
         spawn_local(async move {
@@ -126,7 +145,9 @@ pub fn Composer() -> impl IntoView {
     };
 
     let pick = move |at: usize| {
-        let (Some(area), Some(open)) = (input.get_untracked(), menu.get_untracked()) else { return };
+        let (Some(area), Some(open)) = (input.get_untracked(), menu.get_untracked()) else {
+            return;
+        };
         let value = format!("{}{}", &area.value()[..open.from], open.entries[at].insert);
         area.set_value(&value);
         let end = value.len() as u32;
@@ -141,10 +162,15 @@ pub fn Composer() -> impl IntoView {
         if event.is_composing() || event.key_code() == 229 {
             return;
         }
-        let plain = !event.ctrl_key() && !event.meta_key() && !event.shift_key() && !event.alt_key();
+        let plain =
+            !event.ctrl_key() && !event.meta_key() && !event.shift_key() && !event.alt_key();
         if plain && let Some(open) = menu.get_untracked() {
-            let typed = input.get_untracked().map(|area| area.value()[open.from..].to_string()).unwrap_or_default();
-            if let Some(action) = slash::key(&open, selected.get_untracked(), &event.key(), &typed) {
+            let typed = input
+                .get_untracked()
+                .map(|area| area.value()[open.from..].to_string())
+                .unwrap_or_default();
+            if let Some(action) = slash::key(&open, selected.get_untracked(), &event.key(), &typed)
+            {
                 event.prevent_default();
                 // (Esc closes the menu before it leaves a worker's view.)
                 event.stop_propagation();
@@ -162,7 +188,10 @@ pub fn Composer() -> impl IntoView {
         if event.key() != "Enter" {
             return;
         }
-        if event.ctrl_key() || event.meta_key() || (enter_sends && !event.shift_key() && !event.alt_key()) {
+        if event.ctrl_key()
+            || event.meta_key()
+            || (enter_sends && !event.shift_key() && !event.alt_key())
+        {
             event.prevent_default();
             send();
         }
@@ -281,7 +310,12 @@ pub fn Composer() -> impl IntoView {
 
 /// The words an argument may be after `before`, asked of Arko and kept a
 /// while, or none while they're on their way.
-fn choices_of(name: &str, before: &[String], typed: &str, came: RwSignal<u32>) -> Option<Vec<String>> {
+fn choices_of(
+    name: &str,
+    before: &[String],
+    typed: &str,
+    came: RwSignal<u32>,
+) -> Option<Vec<String>> {
     // An OpenRouter model is completed from its list, for the start typed.
     let openrouter = name == "/model" && typed.to_lowercase().starts_with("openrouter:");
     let key = if openrouter {
@@ -298,7 +332,11 @@ fn choices_of(name: &str, before: &[String], typed: &str, came: RwSignal<u32>) -
     }
     let known = hit.and_then(|(words, _)| words);
     // (Words that are known stay while they're asked for again.)
-    CHOICES.with(|choices| choices.borrow_mut().insert(key.clone(), (known.clone(), now)));
+    CHOICES.with(|choices| {
+        choices
+            .borrow_mut()
+            .insert(key.clone(), (known.clone(), now))
+    });
     let body = if openrouter {
         serde_json::json!({ "command": name, "before": before, "typed": typed })
     } else {
@@ -310,10 +348,22 @@ fn choices_of(name: &str, before: &[String], typed: &str, came: RwSignal<u32>) -
             #[serde(default)]
             choices: Vec<String>,
         }
-        let words = get_json::<Answer>("/api/choices", Some(body)).await.map(|answer| answer.choices).unwrap_or_default();
+        let words = get_json::<Answer>("/api/choices", Some(body))
+            .await
+            .map(|answer| answer.choices)
+            .unwrap_or_default();
         // (The list may still be on its way, so no words stay good for 1.5 s only.)
-        let fresh = if openrouter && words.is_empty() { 1500.0 } else { CHOICES_FRESH };
-        CHOICES.with(|choices| choices.borrow_mut().insert(key, (Some(words), js_sys::Date::now() - (CHOICES_FRESH - fresh))));
+        let fresh = if openrouter && words.is_empty() {
+            1500.0
+        } else {
+            CHOICES_FRESH
+        };
+        CHOICES.with(|choices| {
+            choices.borrow_mut().insert(
+                key,
+                (Some(words), js_sys::Date::now() - (CHOICES_FRESH - fresh)),
+            )
+        });
         came.update(|count| *count += 1);
     });
     known
@@ -322,7 +372,11 @@ fn choices_of(name: &str, before: &[String], typed: &str, came: RwSignal<u32>) -
 /// Puts the focus in the message box.
 pub fn focus() {
     use wasm_bindgen::JsCast;
-    if let Some(area) = document().query_selector(".compose textarea").ok().flatten() {
+    if let Some(area) = document()
+        .query_selector(".compose textarea")
+        .ok()
+        .flatten()
+    {
         let _ = area.unchecked_into::<web_sys::HtmlElement>().focus();
     }
 }
