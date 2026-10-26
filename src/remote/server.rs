@@ -49,6 +49,9 @@ const FREE_FAILURES: u32 = 3;
 const MAX_WAIT: Duration = Duration::from_secs(300);
 /// Session cookies kept; the oldest ones end first.
 const MAX_SESSIONS: usize = 64;
+/// How long a session cookie lets the page in: a working day, so a phone
+/// whose browser drops the link's key goes on without a new scan.
+const SESSION_LIFETIME: Duration = Duration::from_secs(12 * 60 * 60);
 /// How often a stream looks for changes in the status (cost, workers).
 const STATUS_EVERY: Duration = Duration::from_secs(2);
 
@@ -238,8 +241,8 @@ struct App {
     key: String,
     /// The session cookie's name.
     cookie: String,
-    /// The session cookies given out.
-    sessions: Mutex<VecDeque<String>>,
+    /// The session cookies given out, with when.
+    sessions: Mutex<VecDeque<(String, Instant)>>,
     /// Wrong keys, by address.
     failures: Mutex<HashMap<IpAddr, Failures>>,
     feed: Feed,
@@ -347,12 +350,18 @@ impl App {
     }
 
     fn has_session(&self, headers: &HeaderMap) -> bool {
+        self.has_session_at(headers, Instant::now())
+    }
+
+    /// Whether `headers` carry a session cookie that is still good at `now`.
+    /// Ended ones are forgotten.
+    fn has_session_at(&self, headers: &HeaderMap, now: Instant) -> bool {
         let Some(token) = cookie(headers, &self.cookie) else {
             return false;
         };
-        lock(&self.sessions)
-            .iter()
-            .any(|session| same(session, token))
+        let mut sessions = lock(&self.sessions);
+        sessions.retain(|(_, given)| now.saturating_duration_since(*given) < SESSION_LIFETIME);
+        sessions.iter().any(|(session, _)| same(session, token))
     }
 
     /// Lets in a request with a session cookie, or the key as a bearer
@@ -376,7 +385,7 @@ impl App {
         if sessions.len() >= MAX_SESSIONS {
             sessions.pop_front();
         }
-        sessions.push_back(token.clone());
+        sessions.push_back((token.clone(), Instant::now()));
         token
     }
 
@@ -501,9 +510,10 @@ async fn session_open(
         return refusal.into_response();
     }
     let cookie = format!(
-        "{}={}; HttpOnly; SameSite=Strict; Path=/",
+        "{}={}; HttpOnly; SameSite=Strict; Path=/; Max-Age={}",
         app.cookie,
-        app.new_session()
+        app.new_session(),
+        SESSION_LIFETIME.as_secs()
     );
     (StatusCode::NO_CONTENT, [(header::SET_COOKIE, cookie)]).into_response()
 }
@@ -998,6 +1008,38 @@ mod tests {
         );
     }
 
+    /// A session cookie lets the page in for 12 hours, then is forgotten.
+    #[test]
+    fn a_session_cookie_ends_after_twelve_hours() {
+        let (actions, _received) = mpsc::unbounded_channel();
+        let (_stop, closed) = watch::channel(false);
+        let app = App {
+            addr: "127.0.0.1:1".parse().unwrap(),
+            key: KEY.into(),
+            cookie: "arko_remote_1".into(),
+            sessions: Mutex::new(VecDeque::new()),
+            failures: Mutex::new(HashMap::new()),
+            feed: Feed::new("main"),
+            actions,
+            meter: Arc::new(Still),
+            info: Info::default(),
+            closed,
+        };
+        let given = Instant::now();
+        let token = app.new_session();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::COOKIE,
+            format!("arko_remote_1={token}").parse().unwrap(),
+        );
+        assert!(app.has_session_at(&headers, given + SESSION_LIFETIME - Duration::from_secs(60)));
+        assert!(!app.has_session_at(&headers, given + SESSION_LIFETIME + Duration::from_secs(1)));
+        assert!(
+            lock(&app.sessions).is_empty(),
+            "an ended session is forgotten"
+        );
+    }
+
     #[test]
     fn cookies_and_bearer_tokens_are_read() {
         let mut headers = HeaderMap::new();
@@ -1414,6 +1456,9 @@ mod tests {
             set.contains("HttpOnly") && set.contains("SameSite=Strict"),
             "{set}"
         );
+        // It lasts 12 hours, so a browser that drops the link's key, or the
+        // page, keeps it.
+        assert!(set.contains("Max-Age=43200"), "{set}");
         assert!(!set.contains(KEY), "the cookie isn't the key");
         let cookie = set.split(';').next().unwrap();
         let response = served.get("/api/session", Some(cookie)).await;
