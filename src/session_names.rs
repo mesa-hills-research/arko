@@ -7,7 +7,8 @@
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
 
 use crate::{claude_code, credentials};
 
@@ -236,46 +237,43 @@ fn key_reason(key: &credentials::Key) -> Option<String> {
         .then(|| format!("No {} API key", key.provider))
 }
 
-/// How many columns a name made from the first words takes at most,
+/// How many display columns a name made from the first words takes at most,
 /// including its "…".
 pub const SHORT_NAME: usize = 30;
 
 /// The first words of `text` as a session's name. It is one line, and when
-/// it is longer than [`SHORT_NAME`] columns it is cut at a word boundary
-/// with "…" after it ("Fix the flaky scroll test in…"). A word longer than
-/// the room, or text with no spaces, is cut where it no longer fits. The
-/// cut counts columns, so Chinese or emoji text is shorter in characters
-/// and never splits a character that joins others (an emoji's skin tone, a
-/// family).
+/// it is wider than [`SHORT_NAME`] display columns it is cut at a word
+/// boundary with "…" after it ("Fix the flaky scroll test in…"). A word
+/// longer than the room, or text with no spaces, is cut where it no longer
+/// fits. The cut counts the columns each user-perceived character takes, so
+/// Chinese text and emoji hold fewer characters, and it never splits one
+/// (an emoji with a skin tone, a flag, a family, a letter with its accents).
 pub fn short_name(text: &str) -> String {
     cut_words(text, SHORT_NAME, true)
+}
+
+/// The display columns of `text`, counted a user-perceived character at a
+/// time, the way [`cut_words`] cuts.
+fn columns(text: &str) -> usize {
+    text.graphemes(true).map(UnicodeWidthStr::width).sum()
 }
 
 /// `text` on one line of at most `limit` columns, cut at a word boundary
 /// (with a "…" in the last column when `ellipsis` is set).
 fn cut_words(text: &str, limit: usize, ellipsis: bool) -> String {
     let line = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    if line.width() <= limit {
+    if columns(&line) <= limit {
         return line;
     }
     let room = limit.saturating_sub(usize::from(ellipsis));
     let mut end = 0;
     let mut used = 0;
-    for (at, c) in line.char_indices() {
-        used += c.width().unwrap_or(0);
+    for (at, character) in line.grapheme_indices(true) {
+        used += character.width();
         if used > room {
             break;
         }
-        end = at + c.len_utf8();
-    }
-    // Not between a character and what joins to it.
-    while let (Some(before), Some(after)) =
-        (line[..end].chars().next_back(), line[end..].chars().next())
-    {
-        if after.width().unwrap_or(0) != 0 && before != ZERO_WIDTH_JOINER {
-            break;
-        }
-        end -= before.len_utf8();
+        end = at + character.len();
     }
     let start = if line[end..].starts_with(' ') {
         end
@@ -290,8 +288,6 @@ fn cut_words(text: &str, limit: usize, ellipsis: bool) -> String {
         kept.to_string()
     }
 }
-
-const ZERO_WIDTH_JOINER: char = '\u{200D}';
 
 #[cfg(test)]
 mod tests {
@@ -337,7 +333,7 @@ mod tests {
             &"x".repeat(100),
         ] {
             let name = short_name(text);
-            assert!(name.width() <= 30, "{name} is {} columns", name.width());
+            assert!(columns(&name) <= 30, "{name} is {} columns", columns(&name));
             assert!(name.ends_with('…'), "{name}");
         }
         // A cut that falls right after a word ends there, without a space.
@@ -367,26 +363,80 @@ mod tests {
     fn wide_characters_count_two_columns() {
         let name = short_name(&"字".repeat(40));
         assert_eq!(name, format!("{}…", "字".repeat(14)));
-        assert!(name.width() <= 30);
+        assert!(columns(&name) <= 30);
         // Fifteen fit exactly, so a text of fifteen is not cut.
         assert_eq!(short_name(&"字".repeat(15)), "字".repeat(15));
         let emoji = short_name(&"🙂".repeat(20));
         assert_eq!(emoji, format!("{}…", "🙂".repeat(14)));
     }
 
+    /// What a user sees as one character, though it is several in the text.
+    const CLUSTERS: [(&str, &str); 6] = [
+        ("a skin tone", "👍\u{1F3FD}"),
+        ("a flag", "🇺🇸"),
+        ("a variation selector", "❤\u{FE0F}"),
+        ("a family", "👨\u{200D}👩\u{200D}👧"),
+        ("an accent", "e\u{301}\u{323}"),
+        ("a Hangul syllable", "\u{1112}\u{1161}\u{11AB}"),
+    ];
+
+    /// A name is the first characters of the text as a user sees them, never
+    /// part of one, whichever column the cut falls on.
     #[test]
-    fn a_character_made_of_several_is_not_split() {
-        let family = "👨\u{200D}👩\u{200D}👧";
-        // The cut would fall inside the family.
-        let name = short_name(&format!("{}{family} rest of the words", "a".repeat(26)));
-        assert_eq!(name, format!("{}…", "a".repeat(26)));
+    fn a_character_made_of_several_is_never_split() {
+        for (what, cluster) in CLUSTERS {
+            for padding in 0..=31 {
+                let line = format!("{}{}xyz", "a".repeat(padding), cluster.repeat(4));
+                let name = short_name(&line);
+                let kept = name.strip_suffix('…').unwrap_or(&name);
+                let whole: Vec<&str> = line.graphemes(true).collect();
+                let shown: Vec<&str> = kept.graphemes(true).collect();
+                assert_eq!(
+                    shown,
+                    whole[..shown.len()],
+                    "{what} after {padding}: {name}"
+                );
+                assert!(columns(&name) <= 30, "{what} after {padding}: {name}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_skin_tone_a_flag_and_a_variation_selector_stay_whole() {
+        let thumb = "👍\u{1F3FD}";
+        // The whole emoji fits in its two columns, so it stays.
+        assert_eq!(
+            short_name(&format!("{}{thumb}xx", "a".repeat(27))),
+            format!("{}{thumb}…", "a".repeat(27))
+        );
+        // The flag needs two, and only one is left.
+        assert_eq!(
+            short_name(&format!("{}🇺🇸xx", "a".repeat(28))),
+            format!("{}…", "a".repeat(28))
+        );
+        assert_eq!(
+            short_name(&format!("{}❤\u{FE0F}xx", "a".repeat(28))),
+            format!("{}…", "a".repeat(28))
+        );
         // An accent stays with its letter.
         let accented = format!("{}{}", "a".repeat(28), "e\u{301}".repeat(3));
         assert_eq!(
             short_name(&accented),
             format!("{}e\u{301}…", "a".repeat(28))
         );
-        // The family itself is kept when it fits.
+    }
+
+    /// A family is one character of two columns, however many it is made
+    /// of, so as many fit as in any other text of wide characters.
+    #[test]
+    fn repeated_families_take_two_columns_each() {
+        let family = "👨\u{200D}👩\u{200D}👧";
+        assert_eq!(columns(family), 2);
+        assert_eq!(short_name(&family.repeat(15)), family.repeat(15));
+        assert_eq!(
+            short_name(&family.repeat(20)),
+            format!("{}…", family.repeat(14))
+        );
         let kept = short_name(&format!("{family} {}", "word ".repeat(10)));
         assert!(kept.starts_with(family), "{kept}");
     }
