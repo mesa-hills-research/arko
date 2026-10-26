@@ -49,11 +49,12 @@ as CSS variables that `web/theme-css` writes. Each variable takes the first toke
 | `--thumb`, `--thumb-hover` | `scrollbar.thumb.background`, `…hover.background` | Scrollbars |
 | `--popover`, `--popover-text` | `popover.background`, `popover.foreground` | Menus, popovers, sheets |
 | `--radius`, `--radius-lg` | `radius` (6), `radius.lg` (8) | See [Shape](#shape) |
+| `--syn-…` | `highlight.syntax.…`, else its first word's (`string.escape` takes `string`) | Code's highlighting |
 
-A theme that sets none of a variable's tokens takes the default theme's of the same mode. A
-gradient gives its first color. The defaults are macOS Classic Light and Dark, which follow the
-system's setting. The web page keeps a chosen theme in the browser's localStorage and loads the
-other themes' variables only once one is chosen.
+A theme that sets none of a variable's tokens takes the default theme's of the same mode, except a
+syntax style, which shows in the code's own color. A gradient gives its first color. The defaults
+are macOS Classic Light and Dark, which follow the system's setting. The web page keeps a chosen
+theme in the browser's localStorage and loads the other themes' variables only once one is chosen.
 
 Every color on the page is one of these tokens. Something brought over from another interface or
 an earlier page keeps its shape but not its colors. It takes the token that means the same thing

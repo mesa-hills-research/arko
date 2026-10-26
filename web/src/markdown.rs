@@ -6,27 +6,102 @@
 //! blank line and the start of something else), its HTML is kept, and only
 //! the open block at the end is read again as text comes. A table's last
 //! row shows once it's whole, so a table grows a row at a time.
+//!
+//! A finished code block is painted with the spans Arko highlighted it with
+//! (found by its code's hash), once they've come.
+
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::rc::Rc;
 
 use pulldown_cmark::{
     CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd, TextMergeStream,
 };
 
+use crate::protocol::{CodeSpans, HIGHLIGHT_NAMES, code_hash};
+
+/// The code blocks' spans kept, until there are this many.
+const KEPT: usize = 8192;
+
+thread_local! {
+    /// The spans of the code blocks Arko highlighted, by their code's hash.
+    static CODE: RefCell<HashMap<String, Rc<Vec<[u32; 3]>>>> = RefCell::new(HashMap::new());
+}
+
+/// Keeps the spans Arko sent for code blocks, for the Markdown that shows
+/// them.
+pub fn remember(code: &[CodeSpans]) {
+    CODE.with(|kept| {
+        let mut kept = kept.borrow_mut();
+        if kept.len() + code.len() > KEPT {
+            kept.clear();
+        }
+        for block in code {
+            kept.insert(block.hash.clone(), Rc::new(block.spans.clone()));
+        }
+    });
+}
+
+/// Appends `code` escaped, in the spans Arko highlighted it with, if any.
+fn code_html(html: &mut String, code: &str) {
+    let Some(spans) = CODE.with(|kept| kept.borrow().get(&code_hash(code)).cloned()) else {
+        escape(html, code);
+        return;
+    };
+    let mut at = 0;
+    for &[start, end, name] in spans.iter() {
+        let (start, end) = (start as usize, end as usize);
+        let Some(name) = HIGHLIGHT_NAMES.get(name as usize) else {
+            continue;
+        };
+        if start < at
+            || end > code.len()
+            || !code.is_char_boundary(start)
+            || !code.is_char_boundary(end)
+        {
+            continue;
+        }
+        escape(html, &code[at..start]);
+        html.push_str("<span class=\"hl-");
+        html.push_str(&name.replace('.', "-"));
+        html.push_str("\">");
+        escape(html, &code[start..end]);
+        html.push_str("</span>");
+        at = end;
+    }
+    escape(html, &code[at..]);
+}
+
 /// `text` in Markdown, as safe HTML.
 pub fn to_html(text: &str) -> String {
     let mut html = String::with_capacity(text.len() + text.len() / 4);
     let options = Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TABLES;
-    // Inside a link or a code block, a web address stays text.
+    // Inside a link, a web address stays text.
     let mut plain = 0u32;
+    // A code block's code, gathered to paint it whole.
+    let mut code: Option<String> = None;
     for event in TextMergeStream::new(Parser::new_ext(text, options)) {
         match event {
             Event::Start(tag) => {
-                plain += u32::from(matches!(tag, Tag::Link { .. } | Tag::CodeBlock(_)));
+                plain += u32::from(matches!(tag, Tag::Link { .. }));
+                if matches!(tag, Tag::CodeBlock(_)) {
+                    code = Some(String::new());
+                }
                 open(&mut html, tag)
             }
             Event::End(tag) => {
-                plain = plain
-                    .saturating_sub(u32::from(matches!(tag, TagEnd::Link | TagEnd::CodeBlock)));
+                plain = plain.saturating_sub(u32::from(matches!(tag, TagEnd::Link)));
+                if matches!(tag, TagEnd::CodeBlock)
+                    && let Some(code) = code.take()
+                {
+                    code_html(&mut html, &code);
+                }
                 close(&mut html, tag)
+            }
+            Event::Text(text) if code.is_some() => {
+                if let Some(code) = &mut code {
+                    code.push_str(&text);
+                }
             }
             Event::Text(text) if plain == 0 => link_addresses(&mut html, &text),
             Event::Text(text) => escape(&mut html, &text),
@@ -193,6 +268,8 @@ pub struct Blocks {
     /// How many bytes of the text the finished blocks hold. A block never
     /// ends inside a code fence, so the scan starts outside one.
     consumed: usize,
+    /// The last update started over, so its finished blocks are all of them.
+    pub started_over: bool,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -204,11 +281,16 @@ enum Open {
 
 impl Blocks {
     /// Reads `text`, which grew from what was read before (or starts over
-    /// when it didn't). Returns the HTML of the blocks it finished now, and
-    /// of the open block. With `streaming`, a table's open last row is held.
-    pub fn update(&mut self, text: &str, streaming: bool) -> (Vec<String>, String) {
+    /// when it didn't). Returns the blocks it finished now, each its source
+    /// and its HTML, and the HTML of the open block. With `streaming`, a
+    /// table's open last row is held.
+    pub fn update(&mut self, text: &str, streaming: bool) -> (Vec<(String, String)>, String) {
+        self.started_over = false;
         if text.len() < self.consumed || !text.is_char_boundary(self.consumed) {
-            *self = Blocks::default();
+            *self = Blocks {
+                started_over: true,
+                ..Blocks::default()
+            };
         }
         let mut finished = Vec::new();
         let mut start = self.consumed;
@@ -228,7 +310,7 @@ impl Blocks {
                 if closes {
                     // The fence closes, and its block is finished.
                     fence = None;
-                    finished.push(to_html(&text[start..end + 1]));
+                    finished.push(finished_block(&text[start..end + 1]));
                     start = end + 1;
                     open = None;
                 }
@@ -247,14 +329,14 @@ impl Blocks {
                 _ => false,
             };
             if previous_blank && top && start < at && !continues {
-                finished.push(to_html(&text[start..at]));
+                finished.push(finished_block(&text[start..at]));
                 start = at;
                 open = None;
             }
             if top && let Some(marker) = fence_marker(trimmed) {
                 // What came before the fence is a block of its own.
                 if start < at {
-                    finished.push(to_html(&text[start..at]));
+                    finished.push(finished_block(&text[start..at]));
                 }
                 start = at;
                 fence = Some(marker);
@@ -281,6 +363,12 @@ impl Blocks {
         });
         (finished, html)
     }
+}
+
+/// A finished block: its source, kept to paint it again once its code's
+/// spans come, and its HTML.
+fn finished_block(source: &str) -> (String, String) {
+    (source.to_string(), to_html(source))
 }
 
 /// The marker of a code fence that `line` opens (three or more backticks or
@@ -341,7 +429,7 @@ mod tests {
                 at += 1;
             }
             let (done, open) = blocks.update(&text[..at], true);
-            finished.extend(done);
+            finished.extend(done.into_iter().map(|(_, html)| html));
             tail = open;
         }
         (finished, tail)
@@ -363,6 +451,35 @@ mod tests {
         assert!(html.contains("href=\"https://e.com\""));
         assert!(!html.contains("javascript"));
         assert!(html.contains("&lt;b&gt;raw&lt;/b&gt;"));
+    }
+
+    #[test]
+    fn a_code_blocks_spans_paint_it_once_they_come() {
+        let text = "```rust\nfn main() {}\n```\n";
+        assert!(to_html(text).contains("<code data-lang=\"rust\">fn main() {}\n</code>"));
+        let name = |name: &str| {
+            HIGHLIGHT_NAMES
+                .iter()
+                .position(|known| *known == name)
+                .unwrap() as u32
+        };
+        remember(&[CodeSpans {
+            hash: code_hash("fn main() {}\n"),
+            // (A span past the code is left out.)
+            spans: vec![
+                [0, 2, name("keyword")],
+                [3, 7, name("function")],
+                [9, 99, name("string")],
+            ],
+        }]);
+        let html = to_html(text);
+        assert!(
+            html.contains(
+                r#"<span class="hl-keyword">fn</span> <span class="hl-function">main</span>() {}"#
+            ),
+            "{html}"
+        );
+        assert!(!html.contains("hl-string"), "{html}");
     }
 
     #[test]

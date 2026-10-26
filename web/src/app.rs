@@ -14,7 +14,7 @@ use web_sys::{EventSource, MessageEvent, RequestCredentials, RequestInit};
 
 use crate::layout::View;
 use crate::protocol::{
-    Append, CommandData, ItemData, JobSummary, Kind, Removed, StatusData, WorkerData,
+    Append, CodeData, CommandData, ItemData, JobSummary, Kind, Removed, StatusData, WorkerData,
 };
 use crate::store::Store;
 use crate::words::Connection;
@@ -42,6 +42,8 @@ pub enum Sheet {
 pub struct Cell {
     pub data: RwSignal<ItemData>,
     pub text: RwSignal<String>,
+    /// Moves when the spans of its code blocks come.
+    pub code: RwSignal<u32>,
 }
 
 /// The page's state, shared by its views.
@@ -447,6 +449,7 @@ fn connect(page: Page) {
     on("worker", on_worker);
     on("job", on_job);
     on("status", on_status);
+    on("code", on_code);
     let error = Closure::<dyn FnMut(MessageEvent)>::new(move |_| {
         close_stream();
         // The stream may have ended with the session: ask before retrying.
@@ -487,6 +490,7 @@ fn new_cell(item: &ItemData) -> Cell {
     Cell {
         text: RwSignal::new(item.text.clone()),
         data: RwSignal::new(item.clone()),
+        code: RwSignal::new(0),
     }
 }
 
@@ -509,8 +513,11 @@ fn on_reset(page: Page, data: &str) -> Result<(), String> {
     let mut bad = 0;
     let mut items: Vec<ItemData> = Vec::with_capacity(raw.items.len());
     for value in raw.items {
-        match serde_json::from_str(value.get()) {
-            Ok(item) => items.push(item),
+        match serde_json::from_str::<ItemData>(value.get()) {
+            Ok(mut item) => {
+                crate::markdown::remember(&std::mem::take(&mut item.code));
+                items.push(item);
+            }
             Err(_) => bad += 1,
         }
     }
@@ -556,7 +563,9 @@ fn on_reset(page: Page, data: &str) -> Result<(), String> {
 }
 
 fn on_item_event(page: Page, data: &str) -> Result<(), String> {
-    let item: ItemData = parse(data)?;
+    let mut item: ItemData = parse(data)?;
+    let code = std::mem::take(&mut item.code);
+    crate::markdown::remember(&code);
     // This device's clock against Arko's: the smallest gap a new item
     // shows (the rest is the network's delay).
     let sample = js_sys::Date::now() - item.at as f64;
@@ -568,6 +577,9 @@ fn on_item_event(page: Page, data: &str) -> Result<(), String> {
         Some(cell) => {
             cell.text.set(item.text.clone());
             cell.data.set(item.clone());
+            if !code.is_empty() {
+                cell.code.update(|code| *code += 1);
+            }
             STORE.with(|store| store.borrow_mut().change(item.clone(), now));
         }
         None => {
@@ -613,7 +625,9 @@ fn on_append(page: Page, data: &str) -> Result<(), String> {
 }
 
 fn on_change(page: Page, data: &str) -> Result<(), String> {
-    let item: ItemData = parse(data)?;
+    let mut item: ItemData = parse(data)?;
+    let code = std::mem::take(&mut item.code);
+    crate::markdown::remember(&code);
     let now = js_sys::Date::now();
     if !STORE.with(|store| store.borrow_mut().change(item.clone(), now)) {
         return Ok(());
@@ -623,12 +637,25 @@ fn on_change(page: Page, data: &str) -> Result<(), String> {
             cell.text.set(item.text.clone());
         }
         cell.data.set(item);
+        if !code.is_empty() {
+            cell.code.update(|code| *code += 1);
+        }
     }
     // A call's status moves a Messages count.
     if page.view.get_untracked() == View::Messages {
         page.version.update(|version| *version += 1);
     }
     crate::scroll::follow();
+    Ok(())
+}
+
+/// The code blocks a text finished as it streams, highlighted.
+fn on_code(_page: Page, data: &str) -> Result<(), String> {
+    let code: CodeData = parse(data)?;
+    crate::markdown::remember(&code.code);
+    if let Some(cell) = cell(code.id) {
+        cell.code.update(|code| *code += 1);
+    }
     Ok(())
 }
 

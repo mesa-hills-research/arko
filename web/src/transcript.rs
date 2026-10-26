@@ -5,7 +5,7 @@ use lucide_leptos::{ArrowDown, ChevronRight, LoaderCircle, MessageCircleQuestion
 
 use crate::app::{Cell, Page, STORE, cell, page, post};
 use crate::layout::{self, Count, Row, View};
-use crate::markdown::Blocks;
+use crate::markdown::{self, Blocks};
 use crate::protocol::{CallStatus, ItemData, Kind, Level, Source, WorkerState};
 use crate::store::{MAIN, call_actions};
 use crate::{scroll, words};
@@ -217,7 +217,7 @@ fn item_row(id: u64, cell: Cell, thinking: Memo<Option<u64>>) -> AnyView {
             }
             .into_any()
         }
-        Kind::Text => view! { <Md id=id text=text /> }.into_any(),
+        Kind::Text => view! { <Md id=id text=text code=cell.code /> }.into_any(),
         Kind::Thinking => {
             let first = move || text.with(|text| layout::first_line(text));
             view! {
@@ -227,7 +227,7 @@ fn item_row(id: u64, cell: Cell, thinking: Memo<Option<u64>>) -> AnyView {
                         <span class="what">"Thinking"</span>
                         <span class="first">{first}</span>
                     </summary>
-                    <Md id=id text=text class="thinking-text" />
+                    <Md id=id text=text code=cell.code class="thinking-text" />
                 </details>
             }
             .into_any()
@@ -238,11 +238,11 @@ fn item_row(id: u64, cell: Cell, thinking: Memo<Option<u64>>) -> AnyView {
                 Some(from) => format!("Message from {from}"),
                 None => "Message".into(),
             };
-            view! { <span class="label">{label}</span><Md id=id text=text /> }.into_any()
+            view! { <span class="label">{label}</span><Md id=id text=text code=cell.code /> }.into_any()
         }
         Kind::Reply => {
             let report = (item.agent != MAIN).then(|| view! { <span class="label">"Report"</span> });
-            view! { {report}<Md id=id text=text /> }.into_any()
+            view! { {report}<Md id=id text=text code=cell.code /> }.into_any()
         }
         Kind::Question => {
             // While it waits for the answer, the question shows only docked
@@ -255,7 +255,7 @@ fn item_row(id: u64, cell: Cell, thinking: Memo<Option<u64>>) -> AnyView {
             view! {
                 <Show
                     when=docked
-                    fallback=move || view! { <span class="label">"The agent asks"</span><Md id=id text=text /> }
+                    fallback=move || view! { <span class="label">"The agent asks"</span><Md id=id text=text code=cell.code /> }
                 >
                     <button type="button" class="btn ghost small asked" on:click=move |_| {
                         page.ask_folded.set(false);
@@ -567,14 +567,32 @@ fn serde_wasm_state(worker: &str) -> wasm_bindgen::JsValue {
 }
 
 /// Markdown that may still stream: its finished blocks stay as they are,
-/// and only the open block at its end is read again as text comes.
+/// and only the open block at its end is read again as text comes. When the
+/// spans of its code blocks come (`code` moves), the blocks with code are
+/// painted again.
 #[component]
-fn Md(id: u64, text: RwSignal<String>, #[prop(optional)] class: &'static str) -> impl IntoView {
+fn Md(
+    id: u64,
+    text: RwSignal<String>,
+    code: RwSignal<u32>,
+    #[prop(optional)] class: &'static str,
+) -> impl IntoView {
     let page = page();
     let streaming = Memo::new(move |_| page.streaming.get() == Some(id));
     let mut blocks = Blocks::default();
     let (done, open) = text.with_untracked(|text| blocks.update(text, streaming.get_untracked()));
-    let frozen = RwSignal::new(done.into_iter().enumerate().collect::<Vec<_>>());
+    // Each finished block: its place, how often it was painted, its HTML.
+    let frozen = RwSignal::new(
+        done.iter()
+            .enumerate()
+            .map(|(at, (_, html))| (at, 0u32, html.clone()))
+            .collect::<Vec<_>>(),
+    );
+    let sources = StoredValue::new(
+        done.into_iter()
+            .map(|(source, _)| source)
+            .collect::<Vec<_>>(),
+    );
     let tail = RwSignal::new(open);
     let blocks = StoredValue::new(blocks);
     Effect::new(move |first: Option<()>| {
@@ -584,19 +602,48 @@ fn Md(id: u64, text: RwSignal<String>, #[prop(optional)] class: &'static str) ->
             return;
         }
         let (done, open) = text.with_untracked(|text| blocks.write_value().update(text, streaming));
+        if blocks.with_value(|blocks| blocks.started_over) {
+            frozen.set(Vec::new());
+            sources.set_value(Vec::new());
+        }
         if !done.is_empty() {
             frozen.update(|frozen| {
-                for html in done {
-                    frozen.push((frozen.len(), html));
+                for (source, html) in done {
+                    frozen.push((frozen.len(), 0, html));
+                    sources.update_value(|sources| sources.push(source));
                 }
             });
         }
         tail.set(open);
     });
+    Effect::new(move |first: Option<()>| {
+        code.track();
+        if first.is_none() {
+            return;
+        }
+        let fenced = |source: &str| source.contains("```") || source.contains("~~~");
+        sources.with_value(|sources| {
+            frozen.update(|frozen| {
+                for (at, painted, html) in frozen.iter_mut() {
+                    if let Some(source) = sources.get(*at).filter(|source| fenced(source)) {
+                        *painted += 1;
+                        *html = markdown::to_html(source);
+                    }
+                }
+            })
+        });
+        let open = text.with_untracked(|text| {
+            blocks
+                .write_value()
+                .update(text, streaming.get_untracked())
+                .1
+        });
+        tail.set(open);
+    });
     view! {
         <div class=format!("md {class}")>
-            <For each=move || frozen.get() key=|(at, _)| *at let:block>
-                <div class="mdb" inner_html=block.1></div>
+            <For each=move || frozen.get() key=|(at, painted, _)| (*at, *painted) let:block>
+                <div class="mdb" inner_html=block.2></div>
             </For>
             <div class="mdb" inner_html=move || tail.get()></div>
         </div>

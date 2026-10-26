@@ -31,6 +31,35 @@
   --shine-toward: var(--bg);
   color-scheme: light;
 }
+:root:not([data-theme]) {
+  --syn-attribute: #896D23;
+  --syn-boolean: #C5060B;
+  --syn-comment: #006ddd;
+  --syn-comment-doc: #006ddd;
+  --syn-constant: #C5060B;
+  --syn-constructor: #0433ff;
+  --syn-embedded: #333333;
+  --syn-function: #0000A2;
+  --syn-keyword: #0433ff;
+  --syn-link_text: #0000A2;
+  --syn-link_text-style: normal;
+  --syn-link_uri: #686F90;
+  --syn-link_uri-style: italic;
+  --syn-number: #0433ff;
+  --syn-property: #333333;
+  --syn-string: #036A07;
+  --syn-string-escape: #036A07;
+  --syn-string-regex: #036A07;
+  --syn-string-special: #d21f07;
+  --syn-string-special-symbol: #d21f07;
+  --syn-tag: #0433ff;
+  --syn-tag-doctype: #0433ff;
+  --syn-text-literal: #6F42C1;
+  --syn-title: #0433FF;
+  --syn-type: #6f42c1;
+  --syn-variable: #333333;
+  --syn-variable-special: #C5060B;
+}
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme]) {
     --bg: #131313;
@@ -63,5 +92,74 @@
     --radius-lg: 8px;
     --shine-toward: var(--text);
     color-scheme: dark;
+    --syn-attribute: #7FAEF9;
+    --syn-boolean: #CC9E00;
+    --syn-comment: #9D9D9D;
+    --syn-comment-doc: #9D9D9D;
+    --syn-constant: #CC9E00;
+    --syn-constructor: #CBA6F7;
+    --syn-embedded: #CACCCA;
+    --syn-function: #B3C5F3;
+    --syn-keyword: #87B1F6;
+    --syn-link_text: #419CFF;
+    --syn-link_text-style: normal;
+    --syn-link_uri: #7faef9;
+    --syn-link_uri-style: italic;
+    --syn-number: #CC9E00;
+    --syn-property: #BCC4E0;
+    --syn-string: #A3E09F;
+    --syn-string-escape: #68DC7C;
+    --syn-string-regex: #68DC7C;
+    --syn-string-special: #A3E09F;
+    --syn-string-special-symbol: #A3E09F;
+    --syn-tag: #419CFF;
+    --syn-tag-doctype: #419CFF;
+    --syn-text-code-span: #A3E09F;
+    --syn-text-literal: #A3E09F;
+    --syn-title: #CC9E00;
+    --syn-title-weight: 600;
+    --syn-type: #CBA6F7;
+    --syn-variable-special: #419CFF;
   }
 }
+.hl-attribute { color: var(--syn-attribute); font-style: var(--syn-attribute-style); font-weight: var(--syn-attribute-weight); }
+.hl-boolean { color: var(--syn-boolean); font-style: var(--syn-boolean-style); font-weight: var(--syn-boolean-weight); }
+.hl-comment { color: var(--syn-comment); font-style: var(--syn-comment-style); font-weight: var(--syn-comment-weight); }
+.hl-comment-doc { color: var(--syn-comment-doc); font-style: var(--syn-comment-doc-style); font-weight: var(--syn-comment-doc-weight); }
+.hl-constant { color: var(--syn-constant); font-style: var(--syn-constant-style); font-weight: var(--syn-constant-weight); }
+.hl-constructor { color: var(--syn-constructor); font-style: var(--syn-constructor-style); font-weight: var(--syn-constructor-weight); }
+.hl-embedded { color: var(--syn-embedded); font-style: var(--syn-embedded-style); font-weight: var(--syn-embedded-weight); }
+.hl-emphasis { color: var(--syn-emphasis); font-style: var(--syn-emphasis-style); font-weight: var(--syn-emphasis-weight); }
+.hl-emphasis-strong { color: var(--syn-emphasis-strong); font-style: var(--syn-emphasis-strong-style); font-weight: var(--syn-emphasis-strong-weight); }
+.hl-enum { color: var(--syn-enum); font-style: var(--syn-enum-style); font-weight: var(--syn-enum-weight); }
+.hl-function { color: var(--syn-function); font-style: var(--syn-function-style); font-weight: var(--syn-function-weight); }
+.hl-hint { color: var(--syn-hint); font-style: var(--syn-hint-style); font-weight: var(--syn-hint-weight); }
+.hl-keyword { color: var(--syn-keyword); font-style: var(--syn-keyword-style); font-weight: var(--syn-keyword-weight); }
+.hl-label { color: var(--syn-label); font-style: var(--syn-label-style); font-weight: var(--syn-label-weight); }
+.hl-link_text { color: var(--syn-link_text); font-style: var(--syn-link_text-style); font-weight: var(--syn-link_text-weight); }
+.hl-link_uri { color: var(--syn-link_uri); font-style: var(--syn-link_uri-style); font-weight: var(--syn-link_uri-weight); }
+.hl-number { color: var(--syn-number); font-style: var(--syn-number-style); font-weight: var(--syn-number-weight); }
+.hl-operator { color: var(--syn-operator); font-style: var(--syn-operator-style); font-weight: var(--syn-operator-weight); }
+.hl-predictive { color: var(--syn-predictive); font-style: var(--syn-predictive-style); font-weight: var(--syn-predictive-weight); }
+.hl-preproc { color: var(--syn-preproc); font-style: var(--syn-preproc-style); font-weight: var(--syn-preproc-weight); }
+.hl-primary { color: var(--syn-primary); font-style: var(--syn-primary-style); font-weight: var(--syn-primary-weight); }
+.hl-property { color: var(--syn-property); font-style: var(--syn-property-style); font-weight: var(--syn-property-weight); }
+.hl-punctuation { color: var(--syn-punctuation); font-style: var(--syn-punctuation-style); font-weight: var(--syn-punctuation-weight); }
+.hl-punctuation-bracket { color: var(--syn-punctuation-bracket); font-style: var(--syn-punctuation-bracket-style); font-weight: var(--syn-punctuation-bracket-weight); }
+.hl-punctuation-delimiter { color: var(--syn-punctuation-delimiter); font-style: var(--syn-punctuation-delimiter-style); font-weight: var(--syn-punctuation-delimiter-weight); }
+.hl-punctuation-list_marker { color: var(--syn-punctuation-list_marker); font-style: var(--syn-punctuation-list_marker-style); font-weight: var(--syn-punctuation-list_marker-weight); }
+.hl-punctuation-special { color: var(--syn-punctuation-special); font-style: var(--syn-punctuation-special-style); font-weight: var(--syn-punctuation-special-weight); }
+.hl-string { color: var(--syn-string); font-style: var(--syn-string-style); font-weight: var(--syn-string-weight); }
+.hl-string-escape { color: var(--syn-string-escape); font-style: var(--syn-string-escape-style); font-weight: var(--syn-string-escape-weight); }
+.hl-string-regex { color: var(--syn-string-regex); font-style: var(--syn-string-regex-style); font-weight: var(--syn-string-regex-weight); }
+.hl-string-special { color: var(--syn-string-special); font-style: var(--syn-string-special-style); font-weight: var(--syn-string-special-weight); }
+.hl-string-special-symbol { color: var(--syn-string-special-symbol); font-style: var(--syn-string-special-symbol-style); font-weight: var(--syn-string-special-symbol-weight); }
+.hl-tag { color: var(--syn-tag); font-style: var(--syn-tag-style); font-weight: var(--syn-tag-weight); }
+.hl-tag-doctype { color: var(--syn-tag-doctype); font-style: var(--syn-tag-doctype-style); font-weight: var(--syn-tag-doctype-weight); }
+.hl-text-code-span { color: var(--syn-text-code-span); font-style: var(--syn-text-code-span-style); font-weight: var(--syn-text-code-span-weight); }
+.hl-text-literal { color: var(--syn-text-literal); font-style: var(--syn-text-literal-style); font-weight: var(--syn-text-literal-weight); }
+.hl-title { color: var(--syn-title); font-style: var(--syn-title-style); font-weight: var(--syn-title-weight); }
+.hl-type { color: var(--syn-type); font-style: var(--syn-type-style); font-weight: var(--syn-type-weight); }
+.hl-variable { color: var(--syn-variable); font-style: var(--syn-variable-style); font-weight: var(--syn-variable-weight); }
+.hl-variable-special { color: var(--syn-variable-special); font-style: var(--syn-variable-special-style); font-weight: var(--syn-variable-special-weight); }
+.hl-variant { color: var(--syn-variant); font-style: var(--syn-variant-style); font-weight: var(--syn-variant-weight); }

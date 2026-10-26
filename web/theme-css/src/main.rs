@@ -5,7 +5,8 @@
 //! `theme-css THEMES_FOLDER STYLE_FOLDER LIST.rs`
 //!
 //! - `STYLE_FOLDER/themes.css` has the default pair (macOS Classic Light
-//!   and Dark, as in Studio), which follows the system's setting.
+//!   and Dark, as in Studio), which follows the system's setting, and the
+//!   rule of each highlight name a code block's spans name.
 //! - `STYLE_FOLDER/all-themes.css` has every theme, each under
 //!   `:root[data-theme="its-slug"]`. The page loads it once a theme is
 //!   chosen.
@@ -20,6 +21,11 @@
 use std::path::Path;
 
 use serde_json::Value;
+
+// The highlight names, as Arko's server names a code block's spans.
+#[allow(dead_code)]
+#[path = "../../../src/remote/protocol.rs"]
+mod protocol;
 
 /// The page's variables, each with the tokens it takes, in order. A token
 /// under `highlight.` is read from the theme's highlight colors.
@@ -108,21 +114,28 @@ fn main() {
     let (light, dark) = (find(DEFAULT_LIGHT), find(DEFAULT_DARK));
     let fallback = |theme: &Theme| if theme.dark { dark } else { light };
 
+    // A theme's syntax colors are its own: a chosen theme without one shows
+    // the code's color, as in the apps.
     let defaults = format!(
         "/* Written by web/theme-css from themes/{DEFAULT_FILE}. Don't edit. */\n\
          :root {{\n{}}}\n\
-         @media (prefers-color-scheme: dark) {{\n  :root:not([data-theme]) {{\n{}  }}\n}}\n",
+         :root:not([data-theme]) {{\n{}}}\n\
+         @media (prefers-color-scheme: dark) {{\n  :root:not([data-theme]) {{\n{}{}  }}\n}}\n{}",
         block(light, light, "  "),
+        syntax(light, "  "),
         block(dark, dark, "    "),
+        syntax(dark, "    "),
+        highlight_rules(),
     );
     write(&Path::new(style).join("themes.css"), &defaults);
 
     let mut all = String::from("/* Written by web/theme-css from themes/. Don't edit. */\n");
     for theme in &themes {
         all.push_str(&format!(
-            ":root[data-theme=\"{}\"] {{\n{}}}\n",
+            ":root[data-theme=\"{}\"] {{\n{}{}}}\n",
             theme.slug,
-            block(theme, fallback(theme), "  ")
+            block(theme, fallback(theme), "  "),
+            syntax(theme, "  ")
         ));
     }
     write(&Path::new(style).join("all-themes.css"), &all);
@@ -212,6 +225,59 @@ fn block(theme: &Theme, fallback: &Theme, indent: &str) -> String {
     css
 }
 
+/// A highlight name as CSS names it (`string-escape`).
+fn css_name(name: &str) -> String {
+    name.replace('.', "-")
+}
+
+/// The theme's style of each highlight name, as variables: its own, else
+/// its first word's (`string.escape` takes `string`'s), as the kit's themes
+/// do. A name the theme gives no style has none.
+fn syntax(theme: &Theme, indent: &str) -> String {
+    let styles = &theme.value["highlight"]["syntax"];
+    let style = |name: &str| {
+        let own = [name.to_string(), name.replace('.', "_")]
+            .into_iter()
+            .find_map(|key| styles.get(&key).filter(|style| style.is_object()).cloned());
+        own.or_else(|| styles.get(name.split('.').next()?).cloned())
+    };
+    let mut css = String::new();
+    for name in protocol::HIGHLIGHT_NAMES {
+        let Some(style) = style(name) else { continue };
+        let name = css_name(name);
+        if let Some(color) = style["color"]
+            .as_str()
+            .and_then(palette_color)
+        {
+            css.push_str(&format!("{indent}--syn-{name}: {color};\n"));
+        }
+        if let Some(font_style) = style["font_style"]
+            .as_str()
+            .filter(|font_style| ["normal", "italic", "oblique"].contains(font_style))
+        {
+            css.push_str(&format!("{indent}--syn-{name}-style: {font_style};\n"));
+        }
+        if let Some(weight) = style["font_weight"].as_f64() {
+            css.push_str(&format!("{indent}--syn-{name}-weight: {weight};\n"));
+        }
+    }
+    css
+}
+
+/// The rule of each highlight name: the theme's style for it, else the
+/// code's own.
+fn highlight_rules() -> String {
+    protocol::HIGHLIGHT_NAMES
+        .iter()
+        .map(|name| {
+            let name = css_name(name);
+            format!(
+                ".hl-{name} {{ color: var(--syn-{name}); font-style: var(--syn-{name}-style); font-weight: var(--syn-{name}-weight); }}\n"
+            )
+        })
+        .collect()
+}
+
 /// A token's color, as CSS. A gradient gives its first color, and a
 /// palette name (`red-600`) the kit's color.
 fn color(theme: &Value, token: &str) -> Option<String> {
@@ -234,6 +300,12 @@ fn color(theme: &Value, token: &str) -> Option<String> {
         .iter()
         .find(|(name, _)| *name == value)
         .map(|(_, color)| color.to_string())
+}
+
+/// A color as a theme file writes it (`#0433ff`, a gradient, a palette
+/// name), as CSS.
+fn palette_color(value: &str) -> Option<String> {
+    color(&serde_json::json!({ "colors": { "it": value } }), "it")
 }
 
 fn write(path: &Path, text: &str) {

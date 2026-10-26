@@ -1427,6 +1427,7 @@ dependencies = [
 name = "theme-css"
 version = "0.0.0"
 dependencies = [
+ "serde",
  "serde_json",
 ]
 
