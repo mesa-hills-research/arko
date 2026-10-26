@@ -445,7 +445,7 @@ fn SettingsBody() -> impl IntoView {
     let started = move || page.status.with(|status| status.models.started);
     let has_workers = move || page.status.with(|status| status.models.has_workers);
     let info = move || page.status.with(|status| status.info.clone());
-    let theme = RwSignal::new(local_get(THEME).unwrap_or_default());
+    let theme = local_get(THEME).unwrap_or_default();
     let outside_confirm = RwSignal::new(false);
     let handover_confirm = RwSignal::new(false);
     let whose: NodeRef<leptos::html::Select> = NodeRef::new();
@@ -472,23 +472,24 @@ fn SettingsBody() -> impl IntoView {
     view! {
         <section class="group">
             <h3>"Appearance"</h3>
-            <label class="setting">
-                <span class="setting-text"><span class="setting-name">"Theme"</span></span>
-                <select class="select" on:change=move |event| {
+            // (Not a label around the select, and nothing written to it after a
+            // pick: either can make iOS take two taps to open it again.)
+            <div class="setting">
+                <span class="setting-text"><span class="setting-name" id="theme-name">"Theme"</span></span>
+                <select class="select" aria-labelledby="theme-name" on:change=move |event| {
                     let value = event_target_value(&event);
-                    theme.set(value.clone());
                     apply_theme((!value.is_empty()).then_some(value.as_str()));
                 }>
-                    <option value="" selected=move || theme.get().is_empty()>"System"</option>
+                    <option value="" selected=theme.is_empty()>"System"</option>
                     {[(false, "Light"), (true, "Dark")].map(|(dark, group)| view! {
                         <optgroup label=group>
                             {THEMES.iter().filter(|(_, _, mode)| *mode == dark).map(|(name, slug, _)| view! {
-                                <option value=*slug selected=move || theme.get() == *slug>{*name}</option>
+                                <option value=*slug selected=theme == *slug>{*name}</option>
                             }).collect_view()}
                         </optgroup>
                     })}
                 </select>
-            </label>
+            </div>
             <Options label="View" key="view"
                 options=View::ALL.iter().map(|view| (view.key().to_string(), view.name().to_string(), view.about().to_string())).collect()
                 chosen=Signal::derive(move || page.view.get().key().to_string())
@@ -683,13 +684,13 @@ fn SettingsBody() -> impl IntoView {
                         Some(Box::new(move |s| (s.handover_at, s.workers_handover_at) != before)), None);
                 } />
             <Show when=has_workers>
-                <label class="setting"><span class="setting-text"><span class="setting-name">"Whose size"</span></span>
+                <div class="setting"><span class="setting-text"><span class="setting-name">"Whose size"</span></span>
                     <select class="select" node_ref=whose aria-label="Whose size">
                         <option value="">"Both"</option>
                         <option value="main">"Main agent"</option>
                         <option value="workers">"Workers"</option>
                     </select>
-                </label>
+                </div>
             </Show>
             <div class="setting">
                 <div class="setting-text"><span class="setting-name">"Hand over now"</span></div>
