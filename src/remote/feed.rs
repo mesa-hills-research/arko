@@ -970,6 +970,8 @@ struct State {
     /// The text of each agent's latest `ServiceWarning`, which the error that
     /// follows it doesn't repeat.
     warned: HashMap<String, String>,
+    /// The notice that the turn is stopping, until it has stopped.
+    stopping: Option<u64>,
 }
 
 impl State {
@@ -2182,6 +2184,36 @@ impl Feed {
         }
     }
 
+    /// The user stopped the main agent's turn: a warning that says so,
+    /// which [`turn_stopped`](Self::turn_stopped) changes in its place.
+    pub fn turn_stopping(&self, text: &str) {
+        let text = text.trim();
+        if text.is_empty() {
+            return;
+        }
+        let mut state = self.lock();
+        let id = self.push(&mut state, Item::new(Kind::Notice, text).level(Level::Warn));
+        state.stopping = Some(id);
+    }
+
+    /// The turn stopped: the warning that it was stopping says `text` now,
+    /// in its place, or a new one does once it's gone.
+    pub fn turn_stopped(&self, text: &str) {
+        let text = text.trim();
+        let mut state = self.lock();
+        if let Some(id) = state.stopping.take()
+            && let Some(item) = state.main.find(id)
+        {
+            let before = item.size();
+            item.text = text.to_string();
+            let item = item.clone();
+            state.main.bytes = (state.main.bytes + item.size()).saturating_sub(before);
+            self.send(Update::Change(item));
+            return;
+        }
+        self.push(&mut state, Item::new(Kind::Notice, text).level(Level::Warn));
+    }
+
     /// A command's output.
     pub fn output(&self, text: &str) {
         self.output_at(text, None);
@@ -2234,6 +2266,7 @@ impl Feed {
         {
             let mut state = self.lock();
             state.warned.remove(MAIN_AGENT);
+            state.stopping = None;
             if state.turn_opened {
                 state.turn_opened = false;
             } else {
@@ -4262,6 +4295,43 @@ mod tests {
                 ("Bye.", Some(2)),
                 ("Again.", Some(3)),
                 ("Hello.", Some(4)),
+            ]
+        );
+    }
+
+    /// The warning that the turn is stopping says it stopped in its place,
+    /// so a stopped turn shows one line. Without one (a new turn began), the
+    /// stop is a line of its own.
+    #[test]
+    fn a_stopped_turn_says_so_where_it_said_it_was_stopping() {
+        let feed = Feed::new("main");
+        feed.turn_started();
+        feed.turn_stopping("  Stopping the turn…");
+        let (_, mut updates) = feed.subscribe();
+        feed.notice(Level::Info, "Something between.");
+        feed.turn_stopped("Stopped the turn.");
+        let notices = |feed: &Feed| -> Vec<String> {
+            let items = feed.subscribe().0.items;
+            items
+                .into_iter()
+                .filter(|item| item.kind == Kind::Notice)
+                .map(|item| item.text)
+                .collect()
+        };
+        assert_eq!(notices(&feed), ["Stopped the turn.", "Something between."]);
+        assert!(matches!(updates.try_recv(), Ok(Update::Item(_))));
+        assert!(matches!(
+            updates.try_recv(),
+            Ok(Update::Change(item)) if item.text == "Stopped the turn." && item.level == Some(Level::Warn)
+        ));
+        feed.turn_started();
+        feed.turn_stopped("Stopped the turn.");
+        assert_eq!(
+            notices(&feed),
+            [
+                "Stopped the turn.",
+                "Something between.",
+                "Stopped the turn."
             ]
         );
     }

@@ -92,7 +92,7 @@ async fn resume_goes_back_to_the_conversation_new_left() {
             say("Use the metric system.");
             until(|| has(&feed, "user", "Use the metric system.", "note")).await;
             sender.send(Input::Interrupt).unwrap();
-            until(|| has(&feed, "notice", "Stopped.", "")).await;
+            until(|| has(&feed, "notice", "Stopped the turn.", "")).await;
             say("/resume");
             until(|| {
                 texts(&feed, "output")

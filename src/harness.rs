@@ -3688,7 +3688,8 @@ impl Harness {
                 TurnEnd::Answered
             }
             Err(WorkflowError::AgentStopped { .. } | WorkflowError::Cancelled) if stopping => {
-                self.say(Level::Warn, "Stopped.");
+                self.output.echo(&self.output.warn(STOPPED));
+                self.feed.turn_stopped(STOPPED);
                 self.keep_unread(unread_notes(&notes, &workflow), false);
                 self.track_conversations();
                 self.conversation = conversation_of(&workflow, self.conversations.current_run());
@@ -4399,17 +4400,17 @@ impl Harness {
 
     pub(crate) fn stop(&self, workflow: &Workflow) -> bool {
         let running = self.crew.as_ref().map_or(0, |crew| crew.running().len());
-        self.say(
-            Level::Warn,
-            &if running == 0 {
-                "  Stopping the turn…".to_string()
-            } else {
-                format!(
-                    "  Stopping the turn… (the workers go on, and /stop-workers stops {})",
-                    if running == 1 { "it" } else { "them" }
-                )
-            },
-        );
+        let text = if running == 0 {
+            "  Stopping the turn…".to_string()
+        } else {
+            format!(
+                "  Stopping the turn… (the workers go on, and /stop-workers stops {})",
+                if running == 1 { "it" } else { "them" }
+            )
+        };
+        self.output.echo(&self.output.warn(&text));
+        // (The clients show "Stopped the turn." in its place once it has.)
+        self.feed.turn_stopping(&text);
         workflow
             .stop_agent(
                 MAIN,
@@ -4612,6 +4613,9 @@ pub(crate) const LIVE_COMMANDS: [&str; 23] = [
 /// What Ctrl+B (or the page's Move to background) says when nothing can
 /// move.
 pub(crate) const NOTHING_TO_MOVE: &str = "Nothing is running that can move to the background.";
+
+/// What a turn the user stopped says once it has.
+const STOPPED: &str = "Stopped the turn.";
 
 /// How the main agent's message names its background jobs that stopped with
 /// the last Arko, the jobs' lines following.
