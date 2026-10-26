@@ -16,7 +16,10 @@ use crate::ui::Input;
 
 /// Not a test: serves the web page for a scripted session, to try the
 /// page by hand. `ARKO_DEMO_HOST` (127.0.0.1), `ARKO_DEMO_PORT` (8799) and
-/// `ARKO_DEMO_SECONDS` (900);
+/// `ARKO_DEMO_SECONDS` (900). `ARKO_DEMO_ITEMS` starts the transcript with
+/// that many items of earlier turns, and with `ARKO_DEMO_STAMPS=1` each
+/// word "demo:stream" sends ends with the time it was sent (`⟦t=…⟧`, Unix
+/// milliseconds), for timing how fast a page shows it.
 /// run with `cargo test remote_page_demo -- --ignored --nocapture` and
 /// open the link it prints. Messages: "Run the demo" (calls, two
 /// workers, a failed command, a question, a report), "demo:stream" (a
@@ -68,6 +71,7 @@ async fn remote_page_demo() {
         });
         stream
     }
+    let stamps = std::env::var("ARKO_DEMO_STAMPS").is_ok_and(|value| value == "1");
     let feed_cell: Arc<std::sync::OnceLock<remote::Feed>> = Arc::new(std::sync::OnceLock::new());
     let feed_for_model = feed_cell.clone();
     // The script running: started by its marker in a new message, it goes
@@ -138,12 +142,16 @@ async fn remote_page_demo() {
                             if !feed.activity().working {
                                 break 'paragraphs;
                             }
+                            let mut word = word.to_string();
+                            if stamps {
+                                word.push_str(&format!("⟦t={}⟧ ", chrono::Utc::now().timestamp_millis()));
+                            }
                             feed.event(&WorkflowEvent {
                                 timestamp: chrono::Utc::now(),
                                 workflow_run_id: Uuid::nil(),
                                 agent_name: MAIN.into(),
                                 agent_run_id: Uuid::nil(),
-                                event: AgentEvent::AssistantResponseChunk(word.into()),
+                                event: AgentEvent::AssistantResponseChunk(word),
                             }, None);
                             tokio::time::sleep(Duration::from_millis(40)).await;
                         }
@@ -253,6 +261,12 @@ async fn remote_page_demo() {
         published: Default::default(),
     });
     harness.open(false).unwrap();
+    if let Some(count) = std::env::var("ARKO_DEMO_ITEMS")
+        .ok()
+        .and_then(|count| count.parse().ok())
+    {
+        harness.feed.restore(earlier_turns(count));
+    }
     let _ = feed_cell.set(harness.feed.clone());
     let port = std::env::var("ARKO_DEMO_PORT")
         .ok()
@@ -301,4 +315,61 @@ async fn remote_page_demo() {
         .notice(Level::Info, "Arko closed. The session is saved.");
     harness.stop_remote().await;
     managers.shutdown().await;
+}
+
+/// `count` items of earlier turns, each a message, some calls, a result and
+/// a reply, for a long transcript.
+fn earlier_turns(count: usize) -> Vec<remote::Item> {
+    use remote::{CallStatus, Delivery, Item, Kind, Source};
+    const REPLY: &str = "Here's what I found. The **parser** reads each line once, so \
+        the cost is linear in the file's size, and `read_until` stops at the first blank \
+        line.\n\n```rust\nfn parse(text: &str) -> Vec<Line> {\n    \
+        text.lines().map(Line::from).collect()\n}\n```\n\n- The tests cover empty input \
+        and a missing final newline.\n- A [link](https://example.com) and some \
+        *emphasis*.\n\nThe change is small, and the benchmarks didn't move.";
+    let mut items = Vec::with_capacity(count);
+    let mut turn = 0;
+    while items.len() < count {
+        turn += 1;
+        let mut push = |mut item: Item| {
+            item.id = items.len() as u64 + 1;
+            item.turn = Some(turn);
+            items.push(item);
+            items.len() as u64
+        };
+        let mut user = Item::new(
+            Kind::User,
+            format!("Turn {turn}. Look at the parser and tell me why the last test fails."),
+        );
+        user.source = Some(Source::Web);
+        user.delivery = Some(Delivery::Turn);
+        push(user);
+        push(Item::new(
+            Kind::Text,
+            "Reading the parser and its tests first.",
+        ));
+        for (text, outcome) in [
+            ("read_file src/parse.rs", "212 lines"),
+            ("$ cargo test -p parse", "1 failed"),
+            ("edit_file src/parse.rs", "+4 -1"),
+        ] {
+            let mut call = Item::new(Kind::Call, text);
+            call.status = Some(CallStatus::Ok);
+            call.outcome = Some(outcome.into());
+            let id = push(call);
+            if text.starts_with('$') {
+                let mut result = Item::new(
+                    Kind::Result,
+                    "running 14 tests\ntest empty ... ok\ntest trailing_newline ... FAILED\n\n\
+                     test result: FAILED. 13 passed; 1 failed",
+                );
+                result.call = Some(id);
+                push(result);
+            }
+        }
+        push(Item::new(Kind::Reply, REPLY));
+        push(Item::new(Kind::Turn, "38s · $0.04 · 48k context"));
+    }
+    items.truncate(count);
+    items
 }

@@ -33,9 +33,11 @@ theme file the apps use.
 
 ## Try it
 
+Arko's scripted demo runs without a model. From the repository's root:
+
 ```sh
-cargo run --example remote_demo        # from the repository's root
+ARKO_REMOTE_PAGE=next ARKO_DEMO_ITEMS=2000 cargo test --lib remote_page_demo -- --ignored --nocapture
 ```
 
-The demo serves a made-up session of 2,000 items, streams a reply every few seconds, and prints the
-links to both pages.
+Open the link it prints, then send "Run the demo" or "demo:stream". `src/remote_demo.rs` lists the
+other scripts and settings.
