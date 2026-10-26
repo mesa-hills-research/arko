@@ -861,6 +861,48 @@ mod tests {
         );
     }
 
+    /// The session names menu over an 80-column screen, and over the stand-in
+    /// symbols of terminals that lack the full ones.
+    #[test]
+    fn the_session_names_menu_fits_an_80_column_screen() {
+        use crate::session_names::Way;
+        let mut app = app();
+        app.info.root = Some(std::env::temp_dir());
+        app.names_state = |_| {
+            (
+                vec![Way::ChatGptPlan, Way::ClaudePlan],
+                crate::tui::names_menu::tests::missing(),
+            )
+        };
+        app.open_names();
+        let rows = screen(&mut app, 80, 24);
+        println!("{}", rows.join("\n"));
+        for want in [
+            "│ ▸ ( ) First words",
+            "│   (•) Named by a model",
+            "│   [x] GPT-6 Luna on the ChatGPT plan",
+            "│       No ChatGPT login",
+            "│   [x] Haiku 5.5 on the Claude plan",
+            "│   [ ] GPT-6 Luna with the OpenAI API key",
+            "│   Then the first words.",
+        ] {
+            assert!(
+                rows.iter().any(|row| row.contains(want)),
+                "{want}: {rows:#?}"
+            );
+        }
+        assert!(rows.iter().all(|row| row.chars().count() <= 80));
+        // Down to a way, where the footer offers moving it.
+        for _ in 0..2 {
+            app.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        }
+        let rows = screen(&mut app, 80, 24);
+        assert!(
+            rows.iter().any(|row| row.contains("Shift+↑ ↓  move")),
+            "{rows:#?}"
+        );
+    }
+
     /// The settings list the ChatGPT logins, in order, on the row of
     /// `/chatgpt`.
     #[test]
@@ -2020,6 +2062,16 @@ mod tests {
             app.overlay = None;
             app.open_keys("", None);
             look(&mut app, "keys");
+            app.overlay = None;
+            app.info.root = Some(std::env::temp_dir());
+            app.names_state = |_| {
+                (
+                    vec![crate::session_names::Way::ClaudePlan],
+                    crate::tui::names_menu::tests::missing(),
+                )
+            };
+            app.open_names();
+            look(&mut app, "session names");
             app.overlay = None;
             app.ask_quit(vec![job("sleep 300", Duration::from_secs(150))]);
             look(&mut app, "quit");

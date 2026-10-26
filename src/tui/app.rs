@@ -13,6 +13,7 @@ use crossterm::event::{
 use super::input::Editor;
 use super::keys_menu::{self, KeysMenu};
 use super::model_picker::{self, ModelPicker, Outcome};
+use super::names_menu::{self, NamesMenu};
 use super::overlay::{Overlay, Picker, SettingsRow};
 use super::prefs::Prefs;
 use super::resume_picker::{self, ResumePicker};
@@ -26,6 +27,7 @@ use crate::keys::Secret;
 use crate::model_command::Target;
 use crate::project;
 use crate::remote::{Activity, Reading, Snapshot, Update};
+use crate::session_names::Way;
 use crate::ui::Input;
 
 /// How long a second Ctrl+C (or a hint in the status line) counts.
@@ -310,6 +312,11 @@ pub struct App {
     /// The API keys as they are now, without their values, for the keys
     /// menu.
     pub key_states: fn() -> Vec<KeyState>,
+    /// The ways sessions are named by a model and what each lacks now, for
+    /// the session names menu: those saved in Arko's folder, and what each
+    /// way needs that is missing.
+    #[allow(clippy::type_complexity)]
+    pub names_state: fn(&std::path::Path) -> (Vec<Way>, Vec<(Way, Option<String>)>),
     /// The Codex auth.json files of the ChatGPT logins, in order, for the
     /// settings.
     pub login_paths: std::sync::Arc<dyn Fn() -> Vec<std::path::PathBuf> + Send + Sync>,
@@ -401,6 +408,12 @@ impl App {
             folded: None,
             model_needs: model_picker::needs,
             key_states: crate::credentials::key_states,
+            names_state: |root| {
+                (
+                    crate::session_names::load(root),
+                    crate::session_names::missing_here(),
+                )
+            },
             login_paths: std::sync::Arc::new(|| {
                 crate::logins::paths_in_use_of(&crate::credentials::codex_auths(None))
             }),
@@ -487,6 +500,17 @@ impl App {
             words,
             back_to,
         )));
+    }
+
+    /// The session names menu. Without Arko's folder (no session), the
+    /// session answers `/session-names`.
+    pub fn open_names(&mut self) {
+        let Some(root) = self.info.root.clone() else {
+            self.send("/session-names");
+            return;
+        };
+        let (saved, missing) = (self.names_state)(&root);
+        self.overlay = Some(Overlay::Names(NamesMenu::open(&saved, missing)));
     }
 
     /// What the session did with a key the menu sent: the menu shows it,
@@ -1247,6 +1271,11 @@ impl App {
                     self.open_keys(rest, None);
                     true
                 }
+                // Without words, the menu. With them, the session.
+                ("/session-names", _) if rest.is_empty() => {
+                    self.open_names();
+                    true
+                }
                 // Without a model, the picker; with one, the session.
                 ("/model", _) => match rest {
                     "" => {
@@ -1410,6 +1439,20 @@ impl App {
                 keys_menu::Action::Remove(key) => {
                     self.effects.push(Effect::RemoveKey(key));
                     Some(Overlay::Keys(menu))
+                }
+            },
+            Overlay::Names(mut menu) => match menu.key(key, close) {
+                names_menu::Action::Stay => Some(Overlay::Names(menu)),
+                names_menu::Action::Close => None,
+                names_menu::Action::Save(ways) => {
+                    let ids: Vec<&str> = ways.iter().map(|way| way.id()).collect();
+                    let line = if ids.is_empty() {
+                        "/session-names words".to_string()
+                    } else {
+                        format!("/session-names {}", ids.join(" "))
+                    };
+                    self.send(&line);
+                    None
                 }
             },
             Overlay::ModelNotice {
@@ -2492,7 +2535,7 @@ pub(super) mod tests {
         let mut app = app();
         type_text(&mut app, "/se");
         let names: Vec<&str> = app.menu_items().iter().map(|c| c.name).collect();
-        assert_eq!(names, ["/settings", "/session"]);
+        assert_eq!(names, ["/settings", "/session", "/session-names"]);
         press(&mut app, KeyCode::Down, KeyModifiers::NONE);
         press(&mut app, KeyCode::Tab, KeyModifiers::NONE);
         assert_eq!(app.editor.text(), "/session");
@@ -3602,6 +3645,64 @@ pub(super) mod tests {
         // The box's history has the command, not the key.
         app.editor.history_back();
         assert_eq!(app.editor.text(), "/keys add openai");
+    }
+
+    /// `/session-names` alone opens the menu, on the ways saved and what
+    /// each lacks. Enter saves as the line the session takes, and words
+    /// after the command go to the session as they are.
+    #[test]
+    fn the_session_names_menu_opens_and_sends_the_line_that_saves() {
+        use crate::session_names::Way;
+        let mut app = app();
+        app.names_state = |_| {
+            (
+                vec![Way::ClaudePlan, Way::ChatGptPlan],
+                names_menu::tests::missing(),
+            )
+        };
+        // Without Arko's folder, the session answers.
+        type_text(&mut app, "/session-names");
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(sent(&mut app), ["/session-names"]);
+        assert!(app.overlay.is_none());
+        app.info.root = Some(std::env::temp_dir());
+        type_text(&mut app, "/session-names");
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert!(sent(&mut app).is_empty(), "the view opens the menu");
+        let Some(Overlay::Names(menu)) = &app.overlay else {
+            panic!("no menu")
+        };
+        assert!(menu.by_model);
+        assert_eq!(menu.ways[0], (Way::ClaudePlan, true));
+        // Move the ChatGPT plan up, turn the Anthropic key on, and save.
+        for _ in 0..3 {
+            press(&mut app, KeyCode::Down, KeyModifiers::NONE);
+        }
+        press(&mut app, KeyCode::Up, KeyModifiers::SHIFT);
+        press(&mut app, KeyCode::Down, KeyModifiers::NONE);
+        press(&mut app, KeyCode::Down, KeyModifiers::NONE);
+        press(&mut app, KeyCode::Char(' '), KeyModifiers::NONE);
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(
+            sent(&mut app),
+            ["/session-names chatgpt-plan claude-plan claude-key"]
+        );
+        assert!(app.overlay.is_none());
+        // The first words are saved as `words`, and Esc saves nothing.
+        type_text(&mut app, "/session-names");
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        press(&mut app, KeyCode::Char(' '), KeyModifiers::NONE);
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(sent(&mut app), ["/session-names words"]);
+        type_text(&mut app, "/session-names");
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert!(app.overlay.is_none() && sent(&mut app).is_empty());
+        // With words, the session takes the line.
+        type_text(&mut app, "/session-names claude-key");
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(sent(&mut app), ["/session-names claude-key"]);
+        assert!(app.overlay.is_none());
     }
 
     /// The session's models, as it publishes them: luna for both agents,

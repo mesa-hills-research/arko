@@ -20,6 +20,7 @@ mod keys_menu;
 mod markdown;
 mod model_picker;
 mod motion;
+mod names_menu;
 mod overlay;
 mod prefs;
 mod resume_picker;
