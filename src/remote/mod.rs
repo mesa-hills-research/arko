@@ -21,6 +21,8 @@ mod history;
 mod links;
 #[cfg(not(feature = "remote"))]
 mod no_server;
+// Without the server, its code highlighting's names and hashes go unused.
+#[cfg_attr(not(feature = "remote"), allow(dead_code))]
 pub(crate) mod protocol;
 #[cfg(feature = "remote")]
 mod qr;
