@@ -1349,6 +1349,8 @@ fn extra_usage_text(extra: &arko_ai::ExtraUsage) -> Option<String> {
 /// A Claude account's extra usage, as the full-screen view's status line
 /// says it: "extra usage: $271.40 of $500.00", "extra usage: $271.40 used",
 /// "extra usage in use" or "extra usage on". `None` when it isn't on.
+// Only the full-screen view says it, so a build without it leaves it unused.
+#[cfg_attr(not(feature = "tui"), allow(dead_code))]
 pub fn extra_usage_figure(extra: &arko_ai::ExtraUsage) -> Option<String> {
     extra_usage_words(extra, "extra usage: ")
 }
@@ -1401,6 +1403,8 @@ fn credits_text(credits: &arko_ai::PlanCredits) -> Option<String> {
 /// them: "credits: 12.50" (the balance to two decimals, or as the backend
 /// wrote it when it isn't a number), "has credits" when the backend gives no
 /// balance, or "unlimited credits". `None` when it has none.
+// Only the full-screen view says it, so a build without it leaves it unused.
+#[cfg_attr(not(feature = "tui"), allow(dead_code))]
 pub fn credits_figure(credits: &arko_ai::PlanCredits) -> Option<String> {
     if credits.unlimited {
         return Some("unlimited credits".to_string());
