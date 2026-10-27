@@ -1448,6 +1448,23 @@ impl App {
             }
             return;
         }
+        // An answer too long to send stays in the box, with how short to
+        // make it: the questions attached, or those the agent waits for.
+        let replied: Vec<String> = if self.panel.attached.is_empty() {
+            self.open_questions()
+                .iter()
+                .filter(|question| question.waits)
+                .map(|question| question.id.clone())
+                .collect()
+        } else {
+            self.panel.attached.clone()
+        };
+        if let Some(refusal) =
+            crate::questions::reply_refusal(self.open_questions(), &replied, trimmed)
+        {
+            self.say(refusal);
+            return;
+        }
         let text = self.editor.take();
         self.menu = Menu::default();
         self.transcript.follow();
@@ -3031,6 +3048,51 @@ pub(super) mod tests {
             inputs(&mut app),
             [Input::DismissQuestions(vec!["q1".into(), "q2".into()])]
         );
+    }
+
+    /// A message that answers questions, or answers in the panel, too long
+    /// to send aren't sent: the text stays in the box (and the drafts in
+    /// the open panel), and the status line says how short to make it.
+    /// Once short enough, they go.
+    #[test]
+    fn answers_too_long_to_send_stay_where_they_were_typed() {
+        let mut app = app();
+        let mut reading = asking();
+        reading.questions[1].waits = true;
+        app.set_reading(reading);
+        let long = "x".repeat(crate::questions::MAX_ANSWER_NOTE_BYTES);
+        // In the panel.
+        press(&mut app, KeyCode::Down, KeyModifiers::NONE);
+        app.paste(&long);
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert!(inputs(&mut app).is_empty());
+        assert!(app.panel.open);
+        assert_eq!(app.panel.drafts["q1"].other, long);
+        assert_eq!(
+            app.hint(),
+            Some("Your answer is too long to send. Shorten it to 15 KB.")
+        );
+        app.panel.drafts.clear();
+        // Attached to a message.
+        press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        app.paste(&long);
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        let refusal = "Your message is too long to send as an answer. Shorten it to 15 KB.";
+        assert!(app.take_effects().is_empty());
+        assert_eq!(app.editor.text(), long);
+        assert_eq!(app.panel.attached, ["q1", "q2"]);
+        assert_eq!(app.hint(), Some(refusal));
+        // Not attached, while the agent waits for q2: the answer too.
+        app.panel.attached.clear();
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert!(app.take_effects().is_empty());
+        assert_eq!(app.editor.text(), long);
+        // Shortened, it goes.
+        app.editor.take();
+        type_text(&mut app, "main");
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(sent(&mut app), ["main"]);
+        assert!(app.editor.text().is_empty());
     }
 
     /// New questions ring the bell once while the window isn't focused.
