@@ -26,7 +26,7 @@ mod render;
 mod server;
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, ToSocketAddrs};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use base64::Engine;
@@ -449,6 +449,11 @@ pub fn random_token(bytes: usize) -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(buffer)
 }
 
+/// The file beside the session's key that keeps the page's sessions, so they
+/// outlast a restart of the page or of Arko. `/remote off` and a new key end
+/// them.
+pub const SESSIONS_FILE: &str = "remote-sessions.json";
+
 /// The key's random bytes: 192 bits.
 const KEY_BYTES: usize = 24;
 
@@ -472,13 +477,62 @@ pub fn session_key(path: &Path) -> Result<String, String> {
     new_key(path)
 }
 
+/// Ends the page sessions kept in the session's folder `dir`, also in a page
+/// this process serves. When the file can't be deleted, it is emptied, and
+/// when that fails too, the session gets a new key, which ends them because
+/// they go with the key they were opened with. Returns what to tell the user
+/// when the key changed, or the error when the sessions couldn't be ended.
+pub fn forget_sessions(dir: &Path) -> Result<Option<String>, String> {
+    let path = dir.join(SESSIONS_FILE);
+    #[cfg(feature = "remote")]
+    server::end_sessions_kept_in(&path);
+    let error = match std::fs::remove_file(&path) {
+        Ok(()) => return Ok(None),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => error,
+    };
+    if write_private_replacing(&path, "{}").is_ok() {
+        return Ok(None);
+    }
+    match new_key(&dir.join(KEY_FILE)) {
+        Ok(_) => Ok(Some(format!(
+            "Couldn't delete the web page's saved sessions ({error}), so the session has a new key, which ends them and the old links."
+        ))),
+        Err(key_error) => Err(format!(
+            "Couldn't end the web page's saved sessions ({error}), and {key_error}. Delete {} to end them.",
+            path.display()
+        )),
+    }
+}
+
 /// A new key for the session, saved at `path` in place of the old one.
 pub fn new_key(path: &Path) -> Result<String, String> {
     let key = random_token(KEY_BYTES);
     let _ = std::fs::remove_file(path);
+    // The page's sessions went with the old key.
+    let sessions = path.with_file_name(SESSIONS_FILE);
+    #[cfg(feature = "remote")]
+    server::end_sessions_kept_in(&sessions);
+    let _ = std::fs::remove_file(&sessions);
     write_private(path, &key)
         .map_err(|error| format!("could not save the key in {} ({error})", path.display()))?;
     Ok(key)
+}
+
+/// Writes `text` to `path` in place of what it held, readable by the user
+/// only, to a file of its own beside it first, then renamed over it.
+pub(crate) fn write_private_replacing(path: &Path, text: &str) -> std::io::Result<()> {
+    let mut temporary = path.as_os_str().to_owned();
+    temporary.push(format!(".{}.tmp", random_token(9)));
+    let temporary = std::path::PathBuf::from(temporary);
+    write_private(&temporary, text).inspect_err(|error| {
+        if error.kind() != std::io::ErrorKind::AlreadyExists {
+            let _ = std::fs::remove_file(&temporary);
+        }
+    })?;
+    std::fs::rename(&temporary, path).inspect_err(|_| {
+        let _ = std::fs::remove_file(&temporary);
+    })
 }
 
 fn write_private(path: &Path, text: &str) -> std::io::Result<()> {
@@ -567,7 +621,9 @@ pub fn parse_bind(text: &str) -> Result<Bind, String> {
 /// Starts serving where `bind` says, on [`DEFAULT_PORT`] when it names no
 /// port, or on another free one when that one is taken. `earlier`, the
 /// port of the page served before, is tried first when `bind` names no
-/// port, so that the pages open on it reconnect.
+/// port, so that the pages open on it reconnect. The page's sessions are kept
+/// in `sessions_file` when there is one, so they outlast a restart.
+#[allow(clippy::too_many_arguments)]
 pub fn start(
     bind: Bind,
     earlier: Option<u16>,
@@ -576,12 +632,23 @@ pub fn start(
     feed: Feed,
     actions: mpsc::UnboundedSender<Action>,
     meter: Arc<dyn Meter>,
+    sessions_file: Option<PathBuf>,
 ) -> Result<Server, String> {
-    start_with((bind, false), earlier, key, info, feed, actions, meter)
+    start_with(
+        (bind, false),
+        earlier,
+        key,
+        info,
+        feed,
+        actions,
+        meter,
+        sessions_file,
+    )
 }
 
 /// Binds the preferred port, falling back to any free port only when it
 /// is in use. The returned server owns the listener throughout.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn start_preferred(
     bind: Bind,
     earlier: Option<u16>,
@@ -590,10 +657,21 @@ pub(crate) fn start_preferred(
     feed: Feed,
     actions: mpsc::UnboundedSender<Action>,
     meter: Arc<dyn Meter>,
+    sessions_file: Option<PathBuf>,
 ) -> Result<Server, String> {
-    start_with((bind, true), earlier, key, info, feed, actions, meter)
+    start_with(
+        (bind, true),
+        earlier,
+        key,
+        info,
+        feed,
+        actions,
+        meter,
+        sessions_file,
+    )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn start_with(
     (bind, fallback): (Bind, bool),
     earlier: Option<u16>,
@@ -602,6 +680,7 @@ fn start_with(
     feed: Feed,
     actions: mpsc::UnboundedSender<Action>,
     meter: Arc<dyn Meter>,
+    sessions_file: Option<PathBuf>,
 ) -> Result<Server, String> {
     let start = |port: u16| {
         Server::start(
@@ -611,6 +690,7 @@ fn start_with(
             feed.clone(),
             actions.clone(),
             meter.clone(),
+            sessions_file.clone(),
         )
     };
     let any_port = || {
@@ -837,10 +917,58 @@ mod tests {
             let mode = std::fs::metadata(&path).unwrap().permissions().mode();
             assert_eq!(mode & 0o777, 0o600);
         }
+        // A new key ends the page's sessions kept beside it.
+        let sessions = temp.path().join(SESSIONS_FILE);
+        std::fs::write(&sessions, "{}").unwrap();
         let fresh = new_key(&path).unwrap();
         assert_ne!(fresh, key);
         assert_eq!(session_key(&path).unwrap(), fresh);
+        assert!(!sessions.exists());
         std::fs::write(&path, "short").unwrap();
         assert_ne!(session_key(&path).unwrap(), "short");
+    }
+
+    /// `/remote off` deletes the saved sessions. When it can't, the session
+    /// gets a new key, which ends them, and when that fails too, it says so.
+    #[test]
+    fn the_saved_sessions_end_or_the_key_changes() {
+        let temp = tempfile::tempdir().unwrap();
+        let key_path = temp.path().join(KEY_FILE);
+        let key = session_key(&key_path).unwrap();
+        let sessions = temp.path().join(SESSIONS_FILE);
+        std::fs::write(&sessions, "{}").unwrap();
+        assert_eq!(forget_sessions(temp.path()), Ok(None));
+        assert!(!sessions.exists());
+        assert_eq!(forget_sessions(temp.path()), Ok(None), "none were saved");
+        assert_eq!(session_key(&key_path).unwrap(), key);
+
+        // A folder in the file's place can't be deleted or replaced.
+        std::fs::create_dir(&sessions).unwrap();
+        std::fs::write(sessions.join("inside"), "").unwrap();
+        let said = forget_sessions(temp.path()).unwrap().unwrap();
+        assert!(
+            said.starts_with("Couldn't delete the web page's saved sessions (")
+                && said.ends_with(
+                    "), so the session has a new key, which ends them and the old links."
+                ),
+            "{said}"
+        );
+        assert_ne!(session_key(&key_path).unwrap(), key);
+        let names: Vec<_> = std::fs::read_dir(temp.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(names.len(), 2, "no file is left behind: {names:?}");
+
+        // Nor can a folder in the key's place.
+        std::fs::remove_file(&key_path).unwrap();
+        std::fs::create_dir(&key_path).unwrap();
+        std::fs::write(key_path.join("inside"), "").unwrap();
+        let error = forget_sessions(temp.path()).unwrap_err();
+        assert!(
+            error.starts_with("Couldn't end the web page's saved sessions (")
+                && error.ends_with(&format!("Delete {} to end them.", sessions.display())),
+            "{error}"
+        );
     }
 }

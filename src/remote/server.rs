@@ -9,8 +9,9 @@
 use std::collections::{HashMap, VecDeque};
 use std::convert::Infallible;
 use std::net::{IpAddr, SocketAddr};
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use axum::Router;
 use axum::body::Bytes;
@@ -47,8 +48,309 @@ const MAX_BODY: usize = 512 * 1024;
 const FREE_FAILURES: u32 = 3;
 /// ...a second, then twice as long after each other one, up to this.
 const MAX_WAIT: Duration = Duration::from_secs(300);
-/// Session cookies kept; the oldest ones end first.
+/// Session cookies kept. The ones opened first end first.
 const MAX_SESSIONS: usize = 64;
+/// How long a session cookie lets the page in after the page last opened or
+/// reconnected, which renews it: a phone whose browser drops the link's key
+/// goes on without a new scan.
+const SESSION_LIFETIME: Duration = Duration::from_secs(12 * 60 * 60);
+/// How long a session lasts at most after the key was traded for it, however
+/// often it is renewed.
+const SESSION_CAP: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+/// How far past now a session's times may be, in seconds. Further, the clock
+/// was set back since they were written, and the session ends rather than
+/// lasting longer.
+///
+/// The times are the wall clock's, so that sessions outlast a restart. That
+/// can't tell a clock set back by less than this, or set back and forward
+/// again while no page ran, from time that passed.
+const CLOCK_SKEW: u64 = 5 * 60;
+/// How old a session's renewal in the file may grow before a renewal writes
+/// it again, in seconds. Until then, the renewal is kept in memory only, and
+/// a restart may end the session this much earlier.
+const SAVE_RENEWAL_AFTER: u64 = 5 * 60;
+/// The largest sessions file read. A larger one keeps no sessions.
+const MAX_SESSIONS_FILE: u64 = 256 * 1024;
+
+/// A session the page was let in with.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct PageSession {
+    /// The cookie's SHA-256, never the cookie itself.
+    hash: String,
+    /// When the key was traded for it, in seconds since 1970.
+    opened: u64,
+    /// When it was last renewed.
+    renewed: u64,
+    /// When it was last renewed in the file.
+    #[serde(skip)]
+    saved: u64,
+}
+
+impl PageSession {
+    fn new(hash: String, now: u64) -> Self {
+        Self {
+            hash,
+            opened: now,
+            renewed: now,
+            saved: now,
+        }
+    }
+
+    fn alive(&self, now: u64) -> bool {
+        self.opened <= self.renewed
+            && self.renewed <= now.saturating_add(CLOCK_SKEW)
+            && now.saturating_sub(self.renewed) < SESSION_LIFETIME.as_secs()
+            && now.saturating_sub(self.opened) < SESSION_CAP.as_secs()
+    }
+
+    /// Whether its hash looks like a SHA-256 in hex.
+    fn valid(&self) -> bool {
+        self.hash.len() == 64
+            && self
+                .hash
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    }
+
+    /// The cookie's age limit from `now`: the lifetime, or less near the cap.
+    fn max_age(&self, now: u64) -> u64 {
+        let left = SESSION_CAP
+            .as_secs()
+            .saturating_sub(now.saturating_sub(self.opened));
+        SESSION_LIFETIME.as_secs().min(left)
+    }
+}
+
+/// What [`super::SESSIONS_FILE`] holds.
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct SessionsFile {
+    /// The key's SHA-256. The sessions go with this key only.
+    key: String,
+    sessions: Vec<PageSession>,
+}
+
+/// `text`'s SHA-256, in hex.
+fn digest(text: &str) -> String {
+    use sha2::Digest;
+    sha2::Sha256::digest(text.as_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+/// Now, in seconds since 1970. A clock before 1970 reads as 0, at which every
+/// session kept is in the future, so it ends.
+fn now_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |since| since.as_secs())
+}
+
+/// The sessions kept in `path` for the key with the hash `key` that are still
+/// alive at `now`, oldest first. Of more than [`MAX_SESSIONS`], those opened
+/// last are kept.
+fn kept_sessions(path: &Path, key: &str, now: u64) -> VecDeque<PageSession> {
+    use std::io::Read;
+    let mut text = String::new();
+    let read = std::fs::File::open(path)
+        .and_then(|file| file.take(MAX_SESSIONS_FILE + 1).read_to_string(&mut text));
+    if read.is_err() || text.len() as u64 > MAX_SESSIONS_FILE {
+        return VecDeque::new();
+    }
+    let mut sessions: Vec<PageSession> = match serde_json::from_str::<SessionsFile>(&text) {
+        Ok(file) if same(&file.key, key) => file
+            .sessions
+            .into_iter()
+            .filter(|session| session.valid() && session.alive(now))
+            .collect(),
+        _ => return VecDeque::new(),
+    };
+    sessions.sort_by_key(|session| session.opened);
+    let extra = sessions.len().saturating_sub(MAX_SESSIONS);
+    sessions
+        .drain(extra..)
+        .map(|session| PageSession {
+            saved: session.renewed,
+            ..session
+        })
+        .collect()
+}
+
+/// The page's sessions, and the file they are kept in.
+///
+/// The servers of this process that keep their sessions in one file share
+/// one store, as the old and the new server do while the page moves to
+/// another port, so neither writes over what the other changed. Other
+/// processes needn't share it, because one Arko at a time holds a session's
+/// folder (its session lock).
+struct Store {
+    /// The key's SHA-256. The sessions go with this key only.
+    key: String,
+    kept: Mutex<Kept>,
+    /// How many times the file was written.
+    #[cfg(test)]
+    writes: std::sync::atomic::AtomicUsize,
+}
+
+struct Kept {
+    /// Oldest first.
+    sessions: VecDeque<PageSession>,
+    /// Where they are kept, if anywhere. A store whose sessions were ended
+    /// keeps them nowhere, so it never writes them back.
+    file: Option<PathBuf>,
+}
+
+/// The stores in use, by their file.
+static STORES: Mutex<Vec<(PathBuf, std::sync::Weak<Store>)>> = Mutex::new(Vec::new());
+
+impl Store {
+    fn new(key: String, sessions: VecDeque<PageSession>, file: Option<PathBuf>) -> Self {
+        Self {
+            key,
+            kept: Mutex::new(Kept { sessions, file }),
+            #[cfg(test)]
+            writes: Default::default(),
+        }
+    }
+
+    /// The store of the sessions kept in `file` for `key`. It is the one a
+    /// server of this process uses already, else one with the file's sessions
+    /// alive at `now`. A store for another key ends its sessions, as a new
+    /// key does.
+    fn open(file: Option<PathBuf>, key: &str, now: u64) -> Arc<Store> {
+        let key = digest(key);
+        let Some(path) = file else {
+            return Arc::new(Store::new(key, VecDeque::new(), None));
+        };
+        let mut stores = lock(&STORES);
+        stores.retain(|(_, store)| store.strong_count() > 0);
+        if let Some(index) = stores.iter().position(|(file, _)| *file == path) {
+            let (_, store) = stores.swap_remove(index);
+            if let Some(store) = store.upgrade() {
+                if same(&store.key, &key) {
+                    stores.push((path, Arc::downgrade(&store)));
+                    return store;
+                }
+                store.end();
+            }
+        }
+        let sessions = kept_sessions(&path, &key, now);
+        let store = Arc::new(Store::new(key, sessions, Some(path.clone())));
+        stores.push((path, Arc::downgrade(&store)));
+        store
+    }
+
+    /// Ends the sessions and stops keeping them.
+    fn end(&self) {
+        let mut kept = lock(&self.kept);
+        kept.sessions.clear();
+        kept.file = None;
+    }
+
+    /// Forgets the sessions ended at `now`, in the file too.
+    fn prune(&self, kept: &mut Kept, now: u64) {
+        let before = kept.sessions.len();
+        kept.sessions.retain(|session| session.alive(now));
+        if kept.sessions.len() != before {
+            self.save(kept);
+        }
+    }
+
+    /// Whether the session with the cookie hash `hash` is alive at `now`.
+    /// Ended sessions are forgotten.
+    fn has(&self, hash: &str, now: u64) -> bool {
+        let mut kept = lock(&self.kept);
+        self.prune(&mut kept, now);
+        kept.sessions
+            .iter()
+            .any(|session| same(&session.hash, hash))
+    }
+
+    /// Whether the session with the cookie hash `hash` is alive at `now`,
+    /// forgetting none.
+    fn is_alive(&self, hash: &str, now: u64) -> bool {
+        lock(&self.kept)
+            .sessions
+            .iter()
+            .any(|session| same(&session.hash, hash) && session.alive(now))
+    }
+
+    /// Renews the session with the cookie hash `hash` at `now`, if it is
+    /// alive, and returns the cookie's age limit. The file has the renewal
+    /// once the one it holds is [`SAVE_RENEWAL_AFTER`] old.
+    fn renew(&self, hash: &str, now: u64) -> Option<u64> {
+        let mut kept = lock(&self.kept);
+        self.prune(&mut kept, now);
+        let session = kept
+            .sessions
+            .iter_mut()
+            .find(|session| same(&session.hash, hash))?;
+        session.renewed = session.renewed.max(now);
+        let max_age = session.max_age(now);
+        if session.renewed.saturating_sub(session.saved) >= SAVE_RENEWAL_AFTER {
+            self.save(&mut kept);
+        }
+        Some(max_age)
+    }
+
+    /// Adds a session with the cookie hash `hash`, opened at `now`. Ended
+    /// sessions are forgotten first, then the ones opened first while there
+    /// are too many.
+    fn add(&self, hash: String, now: u64) {
+        let mut kept = lock(&self.kept);
+        kept.sessions.retain(|session| session.alive(now));
+        while kept.sessions.len() >= MAX_SESSIONS {
+            let first = (0..kept.sessions.len()).min_by_key(|&index| kept.sessions[index].opened);
+            kept.sessions.remove(first.unwrap_or_default());
+        }
+        kept.sessions.push_back(PageSession::new(hash, now));
+        self.save(&mut kept);
+    }
+
+    /// Writes the sessions to their file, readable by the user only.
+    fn save(&self, kept: &mut Kept) {
+        let Some(path) = &kept.file else {
+            return;
+        };
+        #[cfg(test)]
+        self.writes
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let file = SessionsFile {
+            key: self.key.clone(),
+            sessions: kept.sessions.iter().cloned().collect(),
+        };
+        let written = serde_json::to_string(&file)
+            .map_err(std::io::Error::other)
+            .and_then(|text| super::write_private_replacing(path, &text));
+        match written {
+            Ok(()) => {
+                for session in &mut kept.sessions {
+                    session.saved = session.renewed;
+                }
+            }
+            Err(error) => log::warn!(
+                "could not keep the web page's sessions in {} ({error})",
+                path.display()
+            ),
+        }
+    }
+}
+
+/// Ends the sessions of the stores that keep them in `path`, so that none
+/// writes them back.
+pub(super) fn end_sessions_kept_in(path: &Path) {
+    let mut stores = lock(&STORES);
+    stores.retain(|(file, store)| {
+        if file != path {
+            return store.strong_count() > 0;
+        }
+        if let Some(store) = store.upgrade() {
+            store.end();
+        }
+        false
+    });
+}
+
 /// How often a stream looks for changes in the status (cost, workers).
 const STATUS_EVERY: Duration = Duration::from_secs(2);
 
@@ -69,18 +371,20 @@ impl Server {
         feed: Feed,
         actions: mpsc::UnboundedSender<Action>,
         meter: Arc<dyn Meter>,
+        sessions_file: Option<PathBuf>,
     ) -> std::io::Result<Self> {
         let listener = std::net::TcpListener::bind(addr)?;
         listener.set_nonblocking(true)?;
         let listener = tokio::net::TcpListener::from_std(listener)?;
         let addr = listener.local_addr()?;
         let (stop, closed) = watch::channel(false);
+        let sessions = Store::open(sessions_file, &key, now_secs());
         let app = Arc::new(App {
             addr,
             key,
             // Cookies don't tell ports apart: each server has its own.
             cookie: format!("arko_remote_{}", addr.port()),
-            sessions: Mutex::new(VecDeque::new()),
+            sessions,
             failures: Mutex::new(HashMap::new()),
             feed,
             actions,
@@ -113,7 +417,9 @@ impl Server {
     }
 
     /// Stops serving, and waits (a few seconds at most) until the port is
-    /// free. The streams end, and the session cookies end with the server.
+    /// free. The streams end. The sessions kept in a file outlast it, for the
+    /// next server with the same key, until `/remote off` or a new key ends
+    /// them. Those kept nowhere end with it.
     pub async fn stop(mut self) {
         let _ = self.stop.send(true);
         if let Some(mut task) = self.task.take()
@@ -128,8 +434,8 @@ impl Server {
 }
 
 impl Drop for Server {
-    /// The streams end, the connections close, and the session cookies
-    /// end with the server.
+    /// The streams end and the connections close, as when it
+    /// [stops](Self::stop).
     fn drop(&mut self) {
         let _ = self.stop.send(true);
         if let Some(mut task) = self.task.take()
@@ -238,8 +544,8 @@ struct App {
     key: String,
     /// The session cookie's name.
     cookie: String,
-    /// The session cookies given out.
-    sessions: Mutex<VecDeque<String>>,
+    /// The sessions let in.
+    sessions: Arc<Store>,
     /// Wrong keys, by address.
     failures: Mutex<HashMap<IpAddr, Failures>>,
     feed: Feed,
@@ -346,37 +652,60 @@ impl App {
         Err(Refusal::Unauthorized)
     }
 
+    #[cfg(test)]
     fn has_session(&self, headers: &HeaderMap) -> bool {
-        let Some(token) = cookie(headers, &self.cookie) else {
-            return false;
-        };
-        lock(&self.sessions)
-            .iter()
-            .any(|session| same(session, token))
+        self.session_at(headers, now_secs()).is_some()
+    }
+
+    /// The session cookie `headers` carry, when it is still good at `now`.
+    /// Ended sessions are forgotten.
+    fn session_at<'a>(&self, headers: &'a HeaderMap, now: u64) -> Option<&'a str> {
+        let token = cookie(headers, &self.cookie)?;
+        self.sessions.has(&digest(token), now).then_some(token)
+    }
+
+    /// Renews the session of the cookie `headers` carry, if it has one, and
+    /// returns the cookie to set again for it.
+    fn renew_at(&self, headers: &HeaderMap, now: u64) -> Option<String> {
+        let token = cookie(headers, &self.cookie)?;
+        let max_age = self.sessions.renew(&digest(token), now)?;
+        Some(self.set_cookie(token, max_age))
+    }
+
+    /// The `Set-Cookie` value for `token`, good for `max_age` seconds.
+    fn set_cookie(&self, token: &str, max_age: u64) -> String {
+        format!(
+            "{}={token}; HttpOnly; SameSite=Strict; Path=/; Max-Age={max_age}",
+            self.cookie
+        )
     }
 
     /// Lets in a request with a session cookie, or the key as a bearer
     /// token.
     fn authorize(&self, headers: &HeaderMap, ip: IpAddr) -> Result<(), Refusal> {
+        self.let_in(headers, ip).map(|_| ())
+    }
+
+    /// Lets in a request as [`Self::authorize`] does, and says by what: the
+    /// hash of its session cookie, or `None` for the key as a bearer token.
+    /// A stream keeps it, to end with the session.
+    fn let_in(&self, headers: &HeaderMap, ip: IpAddr) -> Result<Option<String>, Refusal> {
         if cross_site(headers) {
             return Err(Refusal::CrossSite);
         }
-        if self.has_session(headers) {
-            return Ok(());
+        if let Some(token) = self.session_at(headers, now_secs()) {
+            return Ok(Some(digest(token)));
         }
         match bearer(headers) {
-            Some(key) => self.check_key(ip, key),
+            Some(key) => self.check_key(ip, key).map(|()| None),
             None => Err(Refusal::Unauthorized),
         }
     }
 
-    fn new_session(&self) -> String {
+    /// A new session, opened at `now`, and its cookie.
+    fn new_session(&self, now: u64) -> String {
         let token = super::random_token(32);
-        let mut sessions = lock(&self.sessions);
-        if sessions.len() >= MAX_SESSIONS {
-            sessions.pop_front();
-        }
-        sessions.push_back(token.clone());
+        self.sessions.add(digest(&token), now);
         token
     }
 
@@ -467,16 +796,28 @@ fn cross_site(headers: &HeaderMap) -> bool {
 
 type Peer = ConnectInfo<SocketAddr>;
 
-/// `GET /api/session`: 204 with a session (or the key), else 401.
+/// `GET /api/session`: 204 with a session (or the key), else 401. A session
+/// cookie is renewed.
 async fn session_check(
     State(app): State<Arc<App>>,
     ConnectInfo(peer): Peer,
     headers: HeaderMap,
 ) -> Response {
     match app.authorize(&headers, peer.ip()) {
-        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Ok(()) => renewed(&app, &headers, StatusCode::NO_CONTENT.into_response()),
         Err(refusal) => refusal.into_response(),
     }
+}
+
+/// `response`, setting the session cookie again for another lifetime when
+/// `headers` carry one.
+fn renewed(app: &App, headers: &HeaderMap, mut response: Response) -> Response {
+    if let Some(cookie) = app.renew_at(headers, now_secs())
+        && let Ok(value) = HeaderValue::from_str(&cookie)
+    {
+        response.headers_mut().append(header::SET_COOKIE, value);
+    }
+    response
 }
 
 #[derive(Deserialize)]
@@ -500,11 +841,7 @@ async fn session_open(
     if let Err(refusal) = app.check_key(peer.ip(), body.key.trim()) {
         return refusal.into_response();
     }
-    let cookie = format!(
-        "{}={}; HttpOnly; SameSite=Strict; Path=/",
-        app.cookie,
-        app.new_session()
-    );
+    let cookie = app.set_cookie(&app.new_session(now_secs()), SESSION_LIFETIME.as_secs());
     (StatusCode::NO_CONTENT, [(header::SET_COOKIE, cookie)]).into_response()
 }
 
@@ -519,10 +856,15 @@ async fn events(
     ConnectInfo(peer): Peer,
     headers: HeaderMap,
 ) -> Response {
-    if let Err(refusal) = app.authorize(&headers, peer.ip()) {
-        return refusal.into_response();
-    }
+    // A stream let in by a session cookie ends when the session does, so it
+    // keeps what let it in, decided once.
+    let session = match app.let_in(&headers, peer.ip()) {
+        Ok(session) => session,
+        Err(refusal) => return refusal.into_response(),
+    };
+    let app_for_renewal = app.clone();
     let mut stream = Stream {
+        session,
         closed: app.closed.clone(),
         updates: app.feed.subscribe().1,
         app,
@@ -533,13 +875,18 @@ async fn events(
     };
     stream.reset();
     let events = futures_util::stream::unfold(stream, Stream::next);
-    Sse::new(events)
+    let response = Sse::new(events)
         .keep_alive(KeepAlive::new().interval(Duration::from_secs(15)))
-        .into_response()
+        .into_response();
+    // A stream that connects again, as a phone's page does when it wakes,
+    // renews the session.
+    renewed(&app_for_renewal, &headers, response)
 }
 
 struct Stream {
     app: Arc<App>,
+    /// The hash of the session cookie it was let in with, if any.
+    session: Option<String>,
     updates: broadcast::Receiver<Update>,
     closed: watch::Receiver<bool>,
     pending: VecDeque<Event>,
@@ -620,8 +967,20 @@ impl Stream {
         }
     }
 
+    /// Whether it was let in with a session cookie whose session ended.
+    fn session_ended(&self) -> bool {
+        self.session
+            .as_deref()
+            .is_some_and(|hash| !self.app.sessions.is_alive(hash, now_secs()))
+    }
+
     async fn next(mut self) -> Option<(Result<Event, Infallible>, Self)> {
         loop {
+            // Its session ended (expired, evicted or revoked), so it sends
+            // nothing more, and the page asks for the key again.
+            if self.session_ended() {
+                return None;
+            }
             if let Some(event) = self.pending.pop_front() {
                 return Some((Ok(event), self));
             }
@@ -648,6 +1007,8 @@ impl Stream {
                     Err(broadcast::error::RecvError::Lagged(_)) => self.reset(),
                     Err(broadcast::error::RecvError::Closed) => self.ending = true,
                 },
+                // (The tick also wakes a quiet stream to see whether its
+                // session ended.)
                 _ = self.tick.tick() => self.send_status(),
             }
         }
@@ -998,6 +1359,98 @@ mod tests {
         );
     }
 
+    /// An app on its own (no server), with its sessions kept in `file`.
+    fn bare_app(key: &str, file: Option<PathBuf>) -> App {
+        let (actions, _received) = mpsc::unbounded_channel();
+        let (_stop, closed) = watch::channel(false);
+        App {
+            addr: "127.0.0.1:1".parse().unwrap(),
+            key: key.into(),
+            cookie: "arko_remote_1".into(),
+            sessions: Store::open(file, key, now_secs()),
+            failures: Mutex::new(HashMap::new()),
+            feed: Feed::new("main"),
+            actions,
+            meter: Arc::new(Still),
+            info: Info::default(),
+            closed,
+        }
+    }
+
+    fn with_cookie(token: &str) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::COOKIE,
+            format!("arko_remote_1={token}").parse().unwrap(),
+        );
+        headers
+    }
+
+    /// A session cookie lets the page in for 12 hours after the page last
+    /// opened or reconnected, each renewal gives it 12 more, and 7 days after
+    /// the key was traded for it, it ends however often it was renewed.
+    #[test]
+    fn a_session_lasts_12_hours_from_its_renewal_and_7_days_at_most() {
+        let app = bare_app(KEY, None);
+        let opened = now_secs();
+        let token = app.new_session(opened);
+        let headers = with_cookie(&token);
+        let hour = 3600;
+        assert!(app.session_at(&headers, opened + 11 * hour).is_some());
+        // Renewed at 11 hours, it lasts until 23.
+        let set = app.renew_at(&headers, opened + 11 * hour).unwrap();
+        assert!(set.contains(&format!("arko_remote_1={token}")), "{set}");
+        assert!(
+            set.contains("Max-Age=43200") && set.contains("HttpOnly"),
+            "{set}"
+        );
+        assert!(app.session_at(&headers, opened + 22 * hour).is_some());
+        // Renewed every 11 hours, it still ends 7 days after it was opened,
+        // and the cookie's age is cut to what is left.
+        let mut at = opened + 11 * hour;
+        while at + 11 * hour < opened + 7 * 24 * hour {
+            at += 11 * hour;
+            assert!(app.renew_at(&headers, at).is_some(), "at {}", at - opened);
+        }
+        let left = opened + 7 * 24 * hour - at;
+        let set = app.renew_at(&headers, at).unwrap();
+        assert!(set.contains(&format!("Max-Age={left}")), "{set}");
+        assert!(app.session_at(&headers, opened + 7 * 24 * hour).is_none());
+        assert!(
+            lock(&app.sessions.kept).sessions.is_empty(),
+            "an ended session is forgotten"
+        );
+        // Not renewed, it ends after 12 hours.
+        let token = app.new_session(opened);
+        let headers = with_cookie(&token);
+        assert!(app.session_at(&headers, opened + 12 * hour).is_none());
+    }
+
+    /// The sessions are kept beside the key by their hashes, so a page
+    /// started again with the same key lets them in, and one with a new key
+    /// doesn't.
+    #[test]
+    fn sessions_outlast_a_restart_with_the_same_key_only() {
+        let temp = tempfile::tempdir().unwrap();
+        let file = temp.path().join(crate::remote::SESSIONS_FILE);
+        let token = bare_app(KEY, Some(file.clone())).new_session(now_secs());
+        let text = std::fs::read_to_string(&file).unwrap();
+        assert!(!text.contains(&token) && !text.contains(KEY), "{text}");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&file).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+        let again = bare_app(KEY, Some(file.clone()));
+        assert!(again.has_session(&with_cookie(&token)));
+        assert!(!again.has_session(&with_cookie("someone-elses")));
+        let other_key = bare_app("another-key-of-the-session-0123", Some(file.clone()));
+        assert!(!other_key.has_session(&with_cookie(&token)));
+        // A page on the same file with another key ends them in the first.
+        assert!(!again.has_session(&with_cookie(&token)));
+    }
+
     #[test]
     fn cookies_and_bearer_tokens_are_read() {
         let mut headers = HeaderMap::new();
@@ -1092,6 +1545,7 @@ mod tests {
             feed.clone(),
             actions,
             meter,
+            None,
         )
         .unwrap();
         Served {
@@ -1414,10 +1868,19 @@ mod tests {
             set.contains("HttpOnly") && set.contains("SameSite=Strict"),
             "{set}"
         );
+        // It lasts 12 hours, so a browser that drops the link's key, or the
+        // page, keeps it.
+        assert!(set.contains("Max-Age=43200"), "{set}");
         assert!(!set.contains(KEY), "the cookie isn't the key");
         let cookie = set.split(';').next().unwrap();
         let response = served.get("/api/session", Some(cookie)).await;
         assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        // The page's check renews the cookie for another 12 hours.
+        let renewed = response.headers()[header::SET_COOKIE].to_str().unwrap();
+        assert!(
+            renewed.starts_with(cookie) && renewed.contains("Max-Age=43200"),
+            "{renewed}"
+        );
 
         // The key as a bearer token, for clients that aren't browsers.
         let response = served
@@ -1855,8 +2318,9 @@ mod tests {
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
-    /// A stopped server ends its streams, and its cookies don't open the
-    /// next one, even on the same port with the same key.
+    /// A stopped server ends its streams, and when it keeps its sessions in
+    /// no file, its cookies don't open the next one, even on the same port
+    /// with the same key.
     #[tokio::test]
     async fn stopping_ends_the_streams_and_the_sessions() {
         let feed = Feed::new("main");
@@ -1887,5 +2351,370 @@ mod tests {
         let response = again.get("/api/session", Some(&cookie)).await;
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
         again.login().await;
+    }
+
+    /// A server on `feed` that keeps its sessions in `file`.
+    fn serve_keeping(feed: &Feed, file: PathBuf) -> Served {
+        let (actions, received) = mpsc::unbounded_channel();
+        let server = Server::start(
+            "127.0.0.1:0".parse().unwrap(),
+            KEY.into(),
+            Info::default(),
+            feed.clone(),
+            actions,
+            Arc::new(Still),
+            Some(file),
+        )
+        .unwrap();
+        Served {
+            base: format!("http://{}", server.addr()),
+            server,
+            actions: received,
+            http: arko_ai::http_client(),
+        }
+    }
+
+    /// Changes the session with the cookie hash `hash` in `store`.
+    fn change(store: &Store, hash: &str, edit: impl FnOnce(&mut PageSession)) {
+        let mut kept = lock(&store.kept);
+        edit(
+            kept.sessions
+                .iter_mut()
+                .find(|session| session.hash == hash)
+                .unwrap(),
+        );
+    }
+
+    /// A session record with the cookie hash of `token`.
+    fn record(token: &str, opened: u64, renewed: u64) -> PageSession {
+        PageSession {
+            renewed,
+            ..PageSession::new(digest(token), opened)
+        }
+    }
+
+    fn write_kept(file: &Path, sessions: Vec<PageSession>) {
+        let kept = SessionsFile {
+            key: digest(KEY),
+            sessions,
+        };
+        std::fs::write(file, serde_json::to_string(&kept).unwrap()).unwrap();
+    }
+
+    fn writes(app: &App) -> usize {
+        app.sessions
+            .writes
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// A stream let in with a session cookie sends nothing once its session
+    /// ends, whether it was idle too long, reached its 7 days or was evicted,
+    /// and the page asks for the key again.
+    #[tokio::test]
+    async fn a_stream_sends_nothing_once_its_session_ends() {
+        let temp = tempfile::tempdir().unwrap();
+        let file = temp.path().join(crate::remote::SESSIONS_FILE);
+        let feed = Feed::new("main");
+        let served = serve_keeping(&feed, file.clone());
+        // The server's own store, as another server on the file shares it.
+        let store = Store::open(Some(file), KEY, now_secs());
+        for ending in ["idle", "capped", "evicted"] {
+            let cookie = served.login().await;
+            let hash = digest(cookie.split_once('=').unwrap().1);
+            let mut stream = served.get("/api/events", Some(&cookie)).await;
+            let mut buffer = String::new();
+            read_until(&mut stream, &mut buffer, |name, _| name == "reset").await;
+            let now = now_secs();
+            match ending {
+                // A quiet stream sees it on its status tick.
+                "idle" => change(&store, &hash, |session| {
+                    session.opened = now - SESSION_LIFETIME.as_secs();
+                    session.renewed = session.opened;
+                }),
+                "capped" => change(&store, &hash, |session| {
+                    session.opened = now - SESSION_CAP.as_secs();
+                }),
+                _ => {
+                    for _ in 0..MAX_SESSIONS {
+                        store.add(digest(&super::super::random_token(32)), now);
+                    }
+                }
+            }
+            let notice = format!("After the {ending} session.");
+            if ending != "idle" {
+                feed.notice(super::super::Level::Info, &notice);
+            }
+            let end = tokio::time::timeout(Duration::from_secs(8), async {
+                while let Ok(Some(chunk)) = stream.chunk().await {
+                    buffer.push_str(&String::from_utf8_lossy(&chunk));
+                }
+            })
+            .await;
+            assert!(end.is_ok(), "the {ending} session's stream ended");
+            assert!(!buffer.contains(&notice), "{ending}: {buffer}");
+            let response = served.get("/api/session", Some(&cookie)).await;
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{ending}");
+        }
+        served.server.stop().await;
+    }
+
+    /// The stream sets the session cookie again, with the login's
+    /// attributes, for 12 hours or what is left of the 7 days. Requests let
+    /// in without a session, or not at all, get no cookie.
+    #[tokio::test]
+    async fn the_stream_renews_the_session_cookie_and_others_get_none() {
+        let temp = tempfile::tempdir().unwrap();
+        let file = temp.path().join(crate::remote::SESSIONS_FILE);
+        let feed = Feed::new("main");
+        let served = serve_keeping(&feed, file.clone());
+        let cookie = served.login().await;
+        let set_cookie = |response: &reqwest::Response| {
+            response
+                .headers()
+                .get(header::SET_COOKIE)
+                .map(|value| value.to_str().unwrap().to_string())
+        };
+        let stream = served.get("/api/events", Some(&cookie)).await;
+        assert_eq!(stream.status(), StatusCode::OK);
+        let set = set_cookie(&stream).unwrap();
+        let mut parts = set.split("; ");
+        assert_eq!(parts.next(), Some(cookie.as_str()));
+        let mut attributes: Vec<&str> = parts.collect();
+        attributes.sort_unstable();
+        assert_eq!(
+            attributes,
+            ["HttpOnly", "Max-Age=43200", "Path=/", "SameSite=Strict"]
+        );
+        drop(stream);
+
+        // 1000 seconds before its 7 days end, it lasts only those.
+        let store = Store::open(Some(file), KEY, now_secs());
+        let hash = digest(cookie.split_once('=').unwrap().1);
+        change(&store, &hash, |session| {
+            session.opened = now_secs() + 1000 - SESSION_CAP.as_secs();
+        });
+        let stream = served.get("/api/events", Some(&cookie)).await;
+        let set = set_cookie(&stream).unwrap();
+        let max_age: u64 = set
+            .split("; ")
+            .find_map(|part| part.strip_prefix("Max-Age="))
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert!((990..=1000).contains(&max_age), "{set}");
+        drop(stream);
+
+        let port = served.server.addr().port();
+        let guess = format!("arko_remote_{port}=guess");
+        for path in ["/api/session", "/api/events"] {
+            for sent in [None, Some(guess.as_str())] {
+                let response = served.get(path, sent).await;
+                assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{path}");
+                assert_eq!(set_cookie(&response), None, "{path} {sent:?}");
+            }
+            let response = served
+                .http
+                .get(format!("{}{path}", served.base))
+                .bearer_auth(KEY)
+                .send()
+                .await
+                .unwrap();
+            assert!(response.status().is_success(), "{path}");
+            assert_eq!(set_cookie(&response), None, "{path} with the key");
+        }
+        served.server.stop().await;
+    }
+
+    /// Two servers on one sessions file, as while the page moves to another
+    /// port, share their sessions. One's logins, renewals and evictions are
+    /// the other's, and the file keeps what both did.
+    #[test]
+    fn servers_on_one_file_share_their_sessions() {
+        let temp = tempfile::tempdir().unwrap();
+        let file = temp.path().join(crate::remote::SESSIONS_FILE);
+        let one = bare_app(KEY, Some(file.clone()));
+        let other = bare_app(KEY, Some(file.clone()));
+        let now = now_secs();
+        let hour = 3600;
+        let token = one.new_session(now);
+        let headers = with_cookie(&token);
+        assert!(other.session_at(&headers, now).is_some());
+        // Renewed by the other at 11 hours, it lasts until 23 on both.
+        assert!(other.renew_at(&headers, now + 11 * hour).is_some());
+        assert!(one.session_at(&headers, now + 22 * hour).is_some());
+        // Evicted by the other, it ends on both.
+        let later = now + 11 * hour;
+        for second in 1..=MAX_SESSIONS as u64 {
+            other.new_session(later + second);
+        }
+        assert!(one.session_at(&headers, later + 100).is_none());
+        drop((one, other));
+        // Started again, it stays evicted.
+        let kept = kept_sessions(&file, &digest(KEY), later + 100);
+        assert_eq!(kept.len(), MAX_SESSIONS);
+        assert!(!kept.iter().any(|session| session.hash == digest(&token)));
+    }
+
+    /// A clock set back further than a few minutes ends the sessions in use
+    /// and those kept, rather than letting them last longer.
+    #[test]
+    fn sessions_from_the_future_end() {
+        let app = bare_app(KEY, None);
+        let now = now_secs();
+        let token = app.new_session(now);
+        let headers = with_cookie(&token);
+        // A minute back is within the clocks' skew, and the renewal doesn't
+        // go back with it.
+        assert!(app.renew_at(&headers, now - 60).is_some());
+        assert!(app.session_at(&headers, now).is_some());
+        // An hour back, it ends, and stays ended.
+        assert!(app.renew_at(&headers, now - 3600).is_none());
+        assert!(app.session_at(&headers, now).is_none());
+
+        // In the file, times in the future, or a renewal before the session
+        // opened, aren't loaded, nor is a record that isn't a hash.
+        let temp = tempfile::tempdir().unwrap();
+        let file = temp.path().join(crate::remote::SESSIONS_FILE);
+        write_kept(
+            &file,
+            vec![
+                record("good", now - 100, now - 10),
+                record("skewed", now - 100, now + 60),
+                record("future", now, now + 3600),
+                record("opened-in-the-future", now + 3600, now + 3600),
+                record("renewed-before-it-opened", now - 10, now - 100),
+                PageSession::new("not-a-hash".into(), now),
+            ],
+        );
+        let kept: Vec<String> = kept_sessions(&file, &digest(KEY), now)
+            .into_iter()
+            .map(|session| session.hash)
+            .collect();
+        assert_eq!(kept, [digest("good"), digest("skewed")]);
+    }
+
+    /// A file holding more than 64 sessions keeps the 64 opened last, and a
+    /// file too large keeps none.
+    #[test]
+    fn a_file_keeps_64_sessions_at_most() {
+        let temp = tempfile::tempdir().unwrap();
+        let file = temp.path().join(crate::remote::SESSIONS_FILE);
+        let now = now_secs();
+        let tokens: Vec<String> = (0..70).map(|index| format!("token-{index}")).collect();
+        // Newest first, as a file written by hand may be.
+        write_kept(
+            &file,
+            tokens
+                .iter()
+                .enumerate()
+                .rev()
+                .map(|(index, token)| record(token, now - 100 + index as u64, now))
+                .collect(),
+        );
+        let kept: Vec<String> = kept_sessions(&file, &digest(KEY), now)
+            .into_iter()
+            .map(|session| session.hash)
+            .collect();
+        let newest: Vec<String> = tokens[6..].iter().map(|token| digest(token)).collect();
+        assert_eq!(kept, newest);
+
+        let many = (0..3000)
+            .map(|index| record(&format!("token-{index}"), now, now))
+            .collect();
+        write_kept(&file, many);
+        assert!(std::fs::metadata(&file).unwrap().len() > MAX_SESSIONS_FILE);
+        assert!(kept_sessions(&file, &digest(KEY), now).is_empty());
+    }
+
+    /// A new session in a full list takes the place of ended ones first, and
+    /// of the one opened first only when all are alive. A restart keeps the
+    /// same.
+    #[test]
+    fn a_new_session_ends_ended_ones_before_live_ones() {
+        let temp = tempfile::tempdir().unwrap();
+        let file = temp.path().join(crate::remote::SESSIONS_FILE);
+        let app = bare_app(KEY, Some(file.clone()));
+        let hour = 3600;
+        let now = now_secs();
+        let start = now - 13 * hour;
+        let first = app.new_session(start);
+        for second in 1..MAX_SESSIONS as u64 {
+            app.new_session(start + second);
+        }
+        // The first is renewed, the others end 12 hours after they opened.
+        assert!(
+            app.renew_at(&with_cookie(&first), start + 11 * hour)
+                .is_some()
+        );
+        let newest = app.new_session(now);
+        for token in [&first, &newest] {
+            assert!(app.session_at(&with_cookie(token), now).is_some());
+        }
+        assert_eq!(lock(&app.sessions.kept).sessions.len(), 2);
+        drop(app);
+        let app = bare_app(KEY, Some(file.clone()));
+        assert!(app.session_at(&with_cookie(&first), now).is_some());
+
+        // All alive, the 65th ends the one opened first.
+        for second in 1..MAX_SESSIONS as u64 - 1 {
+            app.new_session(now + second);
+        }
+        assert_eq!(lock(&app.sessions.kept).sessions.len(), MAX_SESSIONS);
+        app.new_session(now + 100);
+        assert_eq!(lock(&app.sessions.kept).sessions.len(), MAX_SESSIONS);
+        assert!(app.session_at(&with_cookie(&first), now + 100).is_none());
+        assert!(app.session_at(&with_cookie(&newest), now + 100).is_some());
+        drop(app);
+        let kept = kept_sessions(&file, &digest(KEY), now + 100);
+        assert_eq!(kept.len(), MAX_SESSIONS);
+        assert!(!kept.iter().any(|session| session.hash == digest(&first)));
+    }
+
+    /// Checks and renewals write the file only once its renewal is five
+    /// minutes old, and the session lasts from its last renewal meanwhile.
+    #[test]
+    fn renewals_write_the_file_every_five_minutes_at_most() {
+        let temp = tempfile::tempdir().unwrap();
+        let file = temp.path().join(crate::remote::SESSIONS_FILE);
+        let app = bare_app(KEY, Some(file.clone()));
+        let now = now_secs();
+        let token = app.new_session(now);
+        let headers = with_cookie(&token);
+        assert_eq!(writes(&app), 1);
+        for second in 0..10 {
+            assert!(app.session_at(&headers, now + second).is_some());
+            assert!(app.renew_at(&headers, now + second).is_some());
+            assert!(app.renew_at(&headers, now + second).is_some());
+        }
+        assert_eq!(writes(&app), 1);
+        // It lasts from its renewal at 9 seconds, kept in memory.
+        let lifetime = SESSION_LIFETIME.as_secs();
+        assert!(app.session_at(&headers, now + 9 + lifetime - 1).is_some());
+        assert_eq!(writes(&app), 1);
+        assert!(app.renew_at(&headers, now + SAVE_RENEWAL_AFTER).is_some());
+        assert_eq!(writes(&app), 2);
+        assert!(
+            app.renew_at(&headers, now + SAVE_RENEWAL_AFTER + 60)
+                .is_some()
+        );
+        assert_eq!(writes(&app), 2);
+        let kept = kept_sessions(&file, &digest(KEY), now + SAVE_RENEWAL_AFTER);
+        assert_eq!(kept[0].renewed, now + SAVE_RENEWAL_AFTER);
+    }
+
+    /// `/remote off` ends the sessions of a page this process still serves,
+    /// which keeps them nowhere from then on.
+    #[test]
+    fn turning_the_page_off_ends_the_sessions_in_use() {
+        let temp = tempfile::tempdir().unwrap();
+        let file = temp.path().join(crate::remote::SESSIONS_FILE);
+        let app = bare_app(KEY, Some(file.clone()));
+        let now = now_secs();
+        let token = app.new_session(now);
+        assert_eq!(crate::remote::forget_sessions(temp.path()), Ok(None));
+        assert!(!file.exists());
+        assert!(app.session_at(&with_cookie(&token), now).is_none());
+        app.new_session(now);
+        assert!(!file.exists());
     }
 }
