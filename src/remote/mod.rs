@@ -183,6 +183,10 @@ pub struct Reading {
     /// Each plan's usage windows, as last reported.
     #[serde(skip)]
     pub plans: Vec<PlanStatus>,
+    /// The plan that pays for the main agent's calls, as
+    /// [`PlanStatus::plan`] names it, when one does.
+    #[serde(skip)]
+    pub main_plan: Option<&'static str>,
     /// Each worker's context and handover size, which the page shows in a
     /// worker's own view.
     #[serde(skip_serializing_if = "Vec::is_empty")]

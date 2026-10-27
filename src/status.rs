@@ -308,6 +308,11 @@ impl remote::Meter for Gauges {
         let plans = stats.plan_status.values().cloned().collect();
         let (cost, api_price, costs) = costs(workflow.as_deref());
         let cache = cache_status(&stats, &lock(&self.models));
+        let main_plan = {
+            let models = lock(&self.models);
+            let model = providers::resolve_model(&models.main).ok();
+            main_plan(model.as_ref(), &models).map(|plan| providers::plan_name(Some(plan)))
+        };
         let last_request = stats.last_request.clone();
         let monitor_wakes = *lock(&self.monitor_wakes);
         remote::Reading {
@@ -387,6 +392,7 @@ impl remote::Meter for Gauges {
             title: lock(&self.title).clone(),
             context_window: stats.context_window,
             plans,
+            main_plan,
             agents,
             cache,
             last_request,
@@ -406,16 +412,29 @@ fn drain(updates: &mut broadcast::Receiver<remote::Update>) -> bool {
     }
 }
 
+/// The plan that pays for the main agent's calls to `model`, when one does:
+/// the Claude plan through Claude Code, or the ChatGPT plan through a
+/// ChatGPT login.
+fn main_plan(
+    model: Option<&arko_ai::Model>,
+    models: &remote::Models,
+) -> Option<arko_ai::SubscriptionPlan> {
+    let chatgpt = models.openai_auth.as_deref() == Some(providers::OpenAiAuth::ChatGpt.describe());
+    match model.map(|model| &model.provider) {
+        Some(arko_ai::Provider::ClaudeCode) => Some(arko_ai::SubscriptionPlan::ClaudeCode),
+        Some(arko_ai::Provider::OpenAI) if chatgpt => Some(arko_ai::SubscriptionPlan::ChatGpt),
+        _ => None,
+    }
+}
+
 /// The main agent's prompt cache, from what its latest request said, priced
 /// for its model.
 fn cache_status(stats: &crate::ui::Stats, models: &remote::Models) -> remote::CacheStatus {
     let model = providers::resolve_model(&models.main).ok();
-    let chatgpt = models.openai_auth.as_deref() == Some(providers::OpenAiAuth::ChatGpt.describe());
-    let on_plan = match model.as_ref().map(|model| &model.provider) {
-        Some(arko_ai::Provider::ClaudeCode) => Some("your Claude plan"),
-        Some(arko_ai::Provider::OpenAI) if chatgpt => Some("your ChatGPT plan"),
-        _ => None,
-    };
+    let on_plan = main_plan(model.as_ref(), models).map(|plan| match plan {
+        arko_ai::SubscriptionPlan::ClaudeCode => "your Claude plan",
+        arko_ai::SubscriptionPlan::ChatGpt => "your ChatGPT plan",
+    });
     let tokens = stats.context_tokens;
     let (miss_cost, refresh_cost) = match (&model, tokens) {
         (Some(model), Some(tokens)) if on_plan.is_none() => {
@@ -460,6 +479,42 @@ mod tests {
         ));
         drop(feed);
         assert!(!drain(&mut updates), "the feed is gone");
+    }
+
+    #[test]
+    fn the_main_plan_follows_the_main_models_provider_and_auth() {
+        for (name, auth, expected) in [
+            ("cc:opus", None, Some(arko_ai::SubscriptionPlan::ClaudeCode)),
+            ("opus", None, None),
+            (
+                "sol",
+                Some(providers::OpenAiAuth::ChatGpt.describe()),
+                Some(arko_ai::SubscriptionPlan::ChatGpt),
+            ),
+            ("sol", None, None),
+            (
+                "opus",
+                Some(providers::OpenAiAuth::ChatGpt.describe()),
+                None,
+            ),
+        ] {
+            let models = remote::Models {
+                main: name.into(),
+                openai_auth: auth.map(str::to_string),
+                ..remote::Models::default()
+            };
+            let model = providers::resolve_model(name).unwrap();
+            assert_eq!(
+                main_plan(Some(&model), &models),
+                expected,
+                "{name} {auth:?}"
+            );
+        }
+        assert_eq!(main_plan(None, &remote::Models::default()), None);
+        let mut reading = remote::Reading::default();
+        let before = serde_json::to_value(&reading).unwrap();
+        reading.main_plan = Some("Claude plan");
+        assert_eq!(serde_json::to_value(&reading).unwrap(), before);
     }
 
     /// The cache's costs follow the model's prices and its lifetime: a miss

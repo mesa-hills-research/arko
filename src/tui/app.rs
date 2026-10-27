@@ -154,11 +154,12 @@ fn ended_lately(worker: &crate::remote::WorkerSummary, now: i64) -> bool {
 pub enum ListRow {
     /// The agent at this index of [`App::list`].
     Agent(usize),
-    /// "… N above": the workers above those shown.
+    /// "… N more" on top: the workers above those shown.
     Above(usize),
-    /// "… N more": the workers below those shown.
+    /// "… N more" at the bottom: the workers below those shown.
     More(usize),
-    /// "… N above, M more": both, in a list with room for one count.
+    /// "… N more above, M more below": both, in a list with room for one
+    /// count.
     Both(usize, usize),
 }
 
@@ -1701,6 +1702,7 @@ impl App {
             SettingsRow::Previews,
             SettingsRow::Mouse,
             SettingsRow::ConfirmQuit,
+            SettingsRow::ApiPrices,
         ];
         if commands::find("/outside on").is_some() {
             rows.push(SettingsRow::Outside);
@@ -1889,6 +1891,10 @@ impl App {
                 }
                 SettingsRow::ConfirmQuit => {
                     self.prefs.confirm_quit = Some(!self.confirms_quit());
+                    self.prefs.save(self.info.prefs.as_deref());
+                }
+                SettingsRow::ApiPrices => {
+                    self.prefs.api_prices = !self.prefs.api_prices;
                     self.prefs.save(self.info.prefs.as_deref());
                 }
                 SettingsRow::Outside => {
@@ -3229,7 +3235,7 @@ pub(super) mod tests {
         ];
         assert_eq!(rows(8, None, 7), top);
         assert_eq!(rows(8, Some(5), 7), top);
-        // At the bottom, nothing is below: "… 2 above".
+        // At the bottom, nothing is below: "… 2 more" on top.
         let bottom = [
             Agent(0),
             Above(2),
@@ -3495,6 +3501,26 @@ pub(super) mod tests {
         press(&mut app, KeyCode::Tab, KeyModifiers::NONE);
         assert_eq!(app.editor.text(), "/view quiet");
         assert_eq!(app.list_focus, None);
+    }
+
+    #[test]
+    fn the_api_prices_setting_is_saved_without_a_session_command() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("tui.json");
+        let mut app = app();
+        app.info.prefs = Some(path.clone());
+        let row = app
+            .settings_rows()
+            .iter()
+            .position(|row| *row == SettingsRow::ApiPrices)
+            .unwrap();
+        app.overlay = Some(Overlay::Settings { row, picker: None });
+        assert!(!app.prefs.api_prices);
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert!(Prefs::load(Some(&path)).api_prices);
+        press(&mut app, KeyCode::Left, KeyModifiers::NONE);
+        assert!(!Prefs::load(Some(&path)).api_prices);
+        assert!(app.take_effects().is_empty());
     }
 
     #[test]
