@@ -353,10 +353,17 @@ impl App {
             self.say("Nothing to send yet. Pick a choice, or type an answer");
             return;
         }
-        // The drafts stay until their questions settle: answers too long
-        // to send settle nothing, and can be shortened.
+        let answers = Answers { answers };
+        // Answers too long to send stay in the panel, with how short to
+        // make them.
+        if let Some(refusal) = crate::questions::answers_refusal(self.open_questions(), &answers) {
+            self.say(refusal);
+            return;
+        }
+        // The drafts stay until their questions settle (another front end
+        // may have answered first).
         self.close_panel();
-        self.effects_push(Effect::Input(Input::AnswerQuestions(Answers { answers })));
+        self.effects_push(Effect::Input(Input::AnswerQuestions(answers)));
         self.transcript.follow();
     }
 

@@ -898,10 +898,8 @@ async fn message(
         && let Some(text) = typed(&body.text)
         && crate::commands::find(&text).is_none()
     {
-        if let Some(refusal) =
-            crate::questions::reply_refusal(&app.feed.open_questions(), &body.answers, &text)
-        {
-            return too_long(&refusal);
+        if let Some(refused) = refused_reply(&app, &body.answers, &text) {
+            return refused;
         }
         return app.act(Action::Reply {
             text,
@@ -920,9 +918,33 @@ async fn message(
                 text.trim()
             )))
         }
-        Some((text, _)) => app.act(Action::Message(text)),
+        Some((text, _)) => {
+            // While the agent waits, a message is the answer.
+            if crate::commands::find(&text).is_none()
+                && let Some(refused) = refused_reply(&app, &[], &text)
+            {
+                return refused;
+            }
+            app.act(Action::Message(text))
+        }
         None => (StatusCode::BAD_REQUEST, error_body("send {\"text\": ...}")).into_response(),
     }
+}
+
+/// The 413 for a message that answers questions (those `attached`, or
+/// without any, those the agent waits for) but is too long to send as their
+/// answer, as the session would refuse it after the page cleared its box.
+fn refused_reply(app: &App, attached: &[String], text: &str) -> Option<Response> {
+    let open = app.feed.open_questions();
+    let ids: Vec<String> = if attached.is_empty() {
+        open.iter()
+            .filter(|question| question.waits)
+            .map(|question| question.id.clone())
+            .collect()
+    } else {
+        attached.to_vec()
+    };
+    crate::questions::reply_refusal(&open, &ids, text.trim()).map(|refusal| too_long(&refusal))
 }
 
 #[derive(Deserialize)]
@@ -2670,6 +2692,57 @@ mod tests {
         // Without the session's cookie, nothing moves or stops.
         let response = served.post("/api/background", None, "{}").await;
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    /// A plain message while the agent waits is the waited questions'
+    /// answer, so one too long to send as it is refused with a 413 before it
+    /// is taken, and the same message shorter goes. Without a wait, a long
+    /// message isn't held to it.
+    #[tokio::test]
+    async fn a_plain_message_too_long_for_a_waited_answer_is_refused() {
+        let feed = Feed::new("main");
+        let mut served = serve(&feed);
+        let cookie = served.login().await;
+        let long = "x".repeat(crate::questions::MAX_ANSWER_NOTE_BYTES);
+        let message = |text: &str| serde_json::json!({ "text": text }).to_string();
+        let run = uuid::Uuid::new_v4();
+        feed.questions_run(Some(run));
+        let asked = |id: &str| crate::questions::AskedQuestion {
+            id: id.into(),
+            question: arko_agents::questions::Question {
+                question: format!("{id}?"),
+                ..Default::default()
+            },
+        };
+        feed.ask(run, &[asked("q1")], false, None, None);
+        let response = served
+            .post("/api/message", Some(&cookie), &message(&long))
+            .await;
+        assert_eq!(response.status(), StatusCode::ACCEPTED, "no wait");
+        assert_eq!(
+            served.actions.recv().await.unwrap(),
+            Action::Message(long.clone())
+        );
+        feed.ask(run, &[asked("q2")], true, None, None);
+        let response = served
+            .post("/api/message", Some(&cookie), &message(&long))
+            .await;
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        let error: serde_json::Value =
+            serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
+        assert_eq!(
+            error["error"],
+            "Your message is too long to send as an answer. Shorten it to 15 KB."
+        );
+        assert_eq!(feed.open_questions().len(), 2);
+        let response = served
+            .post("/api/message", Some(&cookie), &message("main"))
+            .await;
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        assert_eq!(
+            served.actions.recv().await.unwrap(),
+            Action::Message("main".into())
+        );
     }
 
     /// The answer panel's endpoints: answers (per question a choice, text
