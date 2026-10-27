@@ -3501,8 +3501,8 @@ impl Harness {
             }
             .message(&report);
         }
-        if let Some(opening) = opening {
-            self.say(Level::Info, &format!("  {}", opening.notice()));
+        if let Some(notice) = opening.and_then(Opening::notice) {
+            self.say(Level::Info, &format!("  {notice}"));
         }
         if resumes {
             self.say(
@@ -7378,7 +7378,7 @@ pub(crate) mod tests {
                         serde_json::json!({"questions": [
                             {"question": "Tabs or spaces?", "choices": ["Tabs", "Spaces"], "default": "Spaces"},
                             {"question": "Push now?", "default": "not yet"}
-                        ]}),
+                        ], "wait": false}),
                     )
                 }
             })
@@ -7434,6 +7434,14 @@ pub(crate) mod tests {
         .unwrap();
         assert!(matches!(news, News::Done));
         assert_eq!(summary(&harness), "Used spaces.");
+        // The answers' turn has no line saying they go to the agent.
+        assert!(
+            !shown(&harness.feed)
+                .iter()
+                .any(|(kind, _, _)| kind == "notice"),
+            "{:?}",
+            shown(&harness.feed)
+        );
         // It reached the agent, so it isn't kept for the next turn.
         let run = harness.conversations.current_run().unwrap();
         assert!(harness.feed.queued_notes(run).is_empty());
