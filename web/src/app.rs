@@ -298,6 +298,8 @@ pub async fn post(path: &str, body: serde_json::Value) -> bool {
             }
             let why = serde_json::from_str::<Why>(&text).ok().map(|why| why.error);
             page.error.set(Some(match why {
+                // Answers too long for the agent: Arko says what to shorten.
+                Some(why) if status == 413 => why,
                 Some(why) => format!("Not sent ({why})."),
                 // A proxy in front of Arko (Tailscale Serve, say) answers for it.
                 None if matches!(status, 502..=504) => {
