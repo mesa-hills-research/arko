@@ -24,17 +24,19 @@ use crate::ui::Input;
 /// open the link it prints. Messages: "Run the demo" (calls, two
 /// workers, a failed command, a question, a report), "demo:stream" (a
 /// long reply that streams), "demo:slow" (a 30 s command), "demo:ask" (a
-/// question), "demo:questions" (three numbered questions with choices),
+/// question), "demo:wait" (a question the agent waits for, which the next
+/// message answers), "demo:questions" (three numbered questions with choices),
 /// "demo:approval" (a worker profile to approve), "demo:long" (3,500
 /// calls, to reach the history's limit; "demo:long 500", 500), anything
 /// else (a short turn). Lines added to the file `ARKO_DEMO_INPUT` are typed
 /// at the terminal.
 /// What starts a script: a message with one of these.
-const MARKERS: [&str; 7] = [
+const MARKERS: [&str; 8] = [
     "Run the demo",
     "demo:stream",
     "demo:slow",
     "demo:ask",
+    "demo:wait",
     "demo:questions",
     "demo:approval",
     "demo:long",
@@ -186,6 +188,19 @@ async fn remote_page_demo() {
                     _ => {
                         done();
                         complete("q1", "Noted.")
+                    }
+                };
+            }
+            if let Some(step) = after("demo:wait") {
+                return match step {
+                    0 => tool_call(
+                        "v0",
+                        ASK_USER_TOOL_NAME,
+                        serde_json::json!({"questions": "Which branch should the change go to?", "wait": true}),
+                    ),
+                    _ => {
+                        done();
+                        complete("v1", "Noted.")
                     }
                 };
             }
