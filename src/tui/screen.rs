@@ -255,9 +255,8 @@ fn draw_list(frame: &mut Frame, app: &mut App, area: Rect, rows: Vec<ListRow>) {
         let y = area.y + line as u16;
         let counted = match *row {
             ListRow::Agent(_) => None,
-            ListRow::Above(count) => Some(format!("{count} above")),
-            ListRow::More(count) => Some(format!("{count} more")),
-            ListRow::Both(above, below) => Some(format!("{above} above, {below} more")),
+            ListRow::Above(count) | ListRow::More(count) => Some(format!("{count} more")),
+            ListRow::Both(above, below) => Some(format!("{above} more above, {below} more below")),
         };
         if let Some(counted) = counted {
             let text = format!("   {} {counted}", glyphs::render("…"));
@@ -964,28 +963,34 @@ mod tests {
         // One more worker than fits: the last is below.
         let shown = list(&mut app);
         assert_eq!(shown[6], "   … 1 more", "{shown:#?}");
-        assert!(!shown.iter().any(|row| row.contains("above")));
-        // At the bottom, it is shown, and the first is above.
+        assert_eq!(
+            shown.iter().map(name).collect::<Vec<_>>(),
+            ["main", "r1", "r2", "r3", "r4", "r5", "1"]
+        );
+        // At the bottom, it is shown, and the first is counted on top the
+        // same way.
         app.list_focus = Some(6);
         let shown = list(&mut app);
-        assert_eq!(shown[1], "   … 1 above", "{shown:#?}");
+        assert_eq!(shown[1], "   … 1 more", "{shown:#?}");
         assert_eq!(
             shown.iter().map(name).collect::<Vec<_>>(),
             ["main", "1", "r2", "r3", "r4", "r5", "r6"]
         );
-        assert!(!shown.iter().any(|row| row.contains("more")));
+        // A list with room for one count says which way each one is.
+        app.list_focus = Some(5);
+        let rows = screen(&mut app, 80, 12);
+        assert_eq!(
+            rows[rows.len() - 1],
+            "   … 4 more above, 1 more below",
+            "{rows:#?}"
+        );
         // A worker leaves the list: the others fit, and nothing is counted.
         app.update(
             Update::Worker(ended_earlier("r1", Finished)),
             Activity::default,
         );
         let rows = screen(&mut app, 80, 40);
-        assert!(
-            !rows
-                .iter()
-                .any(|row| row.ends_with(" more") || row.ends_with(" above")),
-            "{rows:#?}"
-        );
+        assert!(!rows.iter().any(|row| row.ends_with(" more")), "{rows:#?}");
     }
 
     /// The agent list under the input: the main agent, five of the workers

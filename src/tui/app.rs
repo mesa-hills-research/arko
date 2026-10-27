@@ -154,11 +154,12 @@ fn ended_lately(worker: &crate::remote::WorkerSummary, now: i64) -> bool {
 pub enum ListRow {
     /// The agent at this index of [`App::list`].
     Agent(usize),
-    /// "… N above": the workers above those shown.
+    /// "… N more" on top: the workers above those shown.
     Above(usize),
-    /// "… N more": the workers below those shown.
+    /// "… N more" at the bottom: the workers below those shown.
     More(usize),
-    /// "… N above, M more": both, in a list with room for one count.
+    /// "… N more above, M more below": both, in a list with room for one
+    /// count.
     Both(usize, usize),
 }
 
@@ -3229,7 +3230,7 @@ pub(super) mod tests {
         ];
         assert_eq!(rows(8, None, 7), top);
         assert_eq!(rows(8, Some(5), 7), top);
-        // At the bottom, nothing is below: "… 2 above".
+        // At the bottom, nothing is below: "… 2 more" on top.
         let bottom = [
             Agent(0),
             Above(2),
