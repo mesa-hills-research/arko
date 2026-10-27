@@ -160,7 +160,7 @@ pub(super) mod tests {
             let (rows, buffer) = drawn(&mut app, width, 8);
             let status = status_row(&rows);
             assert!(
-                status.starts_with(" last turn 2m14s · 142k/250k · cache 3:12 · $3.20"),
+                status.starts_with(" last turn 2m14s · 142k/250k · cache 3:12 · main: $3.20"),
                 "{width}: {status}"
             );
             let theme = app.theme.clone();
@@ -189,7 +189,7 @@ pub(super) mod tests {
         let (rows, buffer) = drawn(&mut app, 80, 8);
         let status = status_row(&rows);
         assert!(
-            status.starts_with(" last turn 2m14s · 142k/250k · cache expired · $3.20"),
+            status.starts_with(" last turn 2m14s · 142k/250k · cache expired · main: $3.20"),
             "{status}"
         );
         let theme = app.theme.clone();
@@ -232,7 +232,7 @@ pub(super) mod tests {
         let (rows, _) = drawn(&mut app, 120, 8);
         let status = status_row(&rows);
         assert!(
-            status.starts_with(" ● asks you · 142k/250k · cache 3:12 · $3.20"),
+            status.starts_with(" ● asks you · 142k/250k · cache 3:12 · main: $3.20"),
             "{status}"
         );
     }
@@ -269,7 +269,7 @@ pub(super) mod tests {
             let (rows, _) = drawn(&mut app, width, 8);
             let status = status_row(&rows);
             assert!(
-                status.starts_with(" last turn 2m14s | 142k/250k | cache 3:12 | $3.20"),
+                status.starts_with(" last turn 2m14s | 142k/250k | cache 3:12 | main: $3.20"),
                 "{width}: {status}"
             );
             assert!(status.is_ascii(), "{status}");
@@ -287,13 +287,28 @@ pub(super) mod tests {
     #[test]
     fn the_timer_stays_in_sight_on_a_busy_line_at_80_columns() {
         let (mut app, _clock) = idle(5, 108_000);
-        app.reading.plan_usage = Some("Claude plan 5 h 21%, 7 d 4%".into());
+        app.reading.plans = vec![crate::remote::PlanStatus {
+            plan: "Claude plan".into(),
+            windows: [("5 h", 21.0), ("7 d", 4.0)]
+                .into_iter()
+                .map(|(label, used_percent)| crate::remote::PlanWindow {
+                    label: label.into(),
+                    used_percent,
+                    resets_at: None,
+                })
+                .collect(),
+            credits: None,
+            extra_usage: None,
+            set_aside: 0,
+            text: String::new(),
+        }];
         app.reading.api_price = Some(20.0);
         let (rows, _) = drawn(&mut app, 80, 8);
         let status = status_row(&rows);
         assert!(
-            status
-                .starts_with(" last turn 2m14s · 142k/250k · cache 3:12 · 5 h 21%, 7 d 4% · $3.20"),
+            status.starts_with(
+                " last turn 2m14s · 142k/250k · cache 3:12 · 5h: 21% · 7d: 4% · main: $3.20"
+            ),
             "{status}"
         );
         assert!(status.chars().count() <= 80, "{status}");

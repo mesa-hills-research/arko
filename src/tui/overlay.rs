@@ -62,6 +62,7 @@ pub enum SettingsRow {
     Previews,
     Mouse,
     ConfirmQuit,
+    ApiPrices,
     Outside,
     Background,
     /// How long after the user's last message monitors' warnings wake the
@@ -543,6 +544,13 @@ fn settings(frame: &mut Frame, app: &App, area: Rect, selected: usize) {
                     "Quitting doesn't ask about background jobs, which stop when Arko exits."
                 }
                 .to_string(),
+            ),
+            SettingsRow::ApiPrices => (
+                "Status line",
+                "API prices",
+                choices(theme, &["on", "off"], usize::from(!app.prefs.api_prices)),
+                "Estimate plan-covered calls at API list prices. Billed costs always show."
+                    .to_string(),
             ),
             SettingsRow::Outside => (
                 "Session",

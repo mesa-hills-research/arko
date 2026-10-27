@@ -1,0 +1,1 @@
+ ● working 2m10s · 142k/180k · Claude 5h: 0% · 7d: 98% · ChatGPT 5h: 12% · 7d: 40% · credits: 12.50 · workers: $8.40                                                                       Ctrl+C  stop

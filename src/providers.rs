@@ -1338,11 +1338,23 @@ fn extra_usage_on(extra: &arko_ai::ExtraUsage) -> bool {
     extra.enabled == Some(true) || extra.in_use
 }
 
-/// A Claude account's extra usage, as the status line says it: "extra usage
-/// $271.40 of $500.00" with its amounts, "extra usage $271.40 used" without a
-/// limit, and "extra usage in use" or "extra usage on" when the amounts aren't
-/// known. `None` when it isn't on.
+/// A Claude account's extra usage, as a plan's usage line says it: "extra
+/// usage $271.40 of $500.00" with its amounts, "extra usage $271.40 used"
+/// without a limit, and "extra usage in use" or "extra usage on" when the
+/// amounts aren't known. `None` when it isn't on.
 fn extra_usage_text(extra: &arko_ai::ExtraUsage) -> Option<String> {
+    extra_usage_words(extra, "extra usage ")
+}
+
+/// A Claude account's extra usage, as the full-screen view's status line
+/// says it: "extra usage: $271.40 of $500.00", "extra usage: $271.40 used",
+/// "extra usage in use" or "extra usage on". `None` when it isn't on.
+pub fn extra_usage_figure(extra: &arko_ai::ExtraUsage) -> Option<String> {
+    extra_usage_words(extra, "extra usage: ")
+}
+
+/// A Claude account's extra usage in words, with `label` before its amounts.
+fn extra_usage_words(extra: &arko_ai::ExtraUsage, label: &str) -> Option<String> {
     if !extra_usage_on(extra) {
         return None;
     }
@@ -1361,9 +1373,9 @@ fn extra_usage_text(extra: &arko_ai::ExtraUsage) -> Option<String> {
     };
     Some(match (extra.used_credits, extra.monthly_limit) {
         (Some(used), Some(limit)) => {
-            format!("extra usage {} of {}{after}", amount(used), amount(limit))
+            format!("{label}{} of {}{after}", amount(used), amount(limit))
         }
-        (Some(used), None) => format!("extra usage {}{after} used", amount(used)),
+        (Some(used), None) => format!("{label}{}{after} used", amount(used)),
         _ if extra.in_use => "extra usage in use".to_string(),
         _ => "extra usage on".to_string(),
     })
@@ -1381,6 +1393,26 @@ fn credits_text(credits: &arko_ai::PlanCredits) -> Option<String> {
     }
     Some(match credits.balance.as_deref().map(str::trim) {
         Some(balance) if !balance.is_empty() => format!("credits left {balance}"),
+        _ => "has credits".to_string(),
+    })
+}
+
+/// A ChatGPT account's credits, as the full-screen view's status line says
+/// them: "credits: 12.50" (the balance to two decimals, or as the backend
+/// wrote it when it isn't a number), "has credits" when the backend gives no
+/// balance, or "unlimited credits". `None` when it has none.
+pub fn credits_figure(credits: &arko_ai::PlanCredits) -> Option<String> {
+    if credits.unlimited {
+        return Some("unlimited credits".to_string());
+    }
+    if !credits.has_credits {
+        return None;
+    }
+    Some(match credits.balance.as_deref().map(str::trim) {
+        Some(balance) if !balance.is_empty() => match balance.parse::<f64>() {
+            Ok(number) if number.is_finite() => format!("credits: {number:.2}"),
+            _ => format!("credits: {balance}"),
+        },
         _ => "has credits".to_string(),
     })
 }
@@ -2304,6 +2336,70 @@ mod tests {
         assert_eq!(
             line(Some(amounts(3_500.0, Some(10_000.0), "JPY", 0))),
             format!("{windows}, extra usage 3500 of 10000 JPY")
+        );
+        // The status line labels the amounts.
+        assert_eq!(
+            extra_usage_figure(&amounts(27_140.0, Some(50_000.0), "USD", 2)).as_deref(),
+            Some("extra usage: $271.40 of $500.00")
+        );
+        assert_eq!(
+            extra_usage_figure(&amounts(27_140.0, None, "USD", 2)).as_deref(),
+            Some("extra usage: $271.40 used")
+        );
+        assert_eq!(
+            extra_usage_figure(&extra(Some(true), false)).as_deref(),
+            Some("extra usage on")
+        );
+        assert_eq!(extra_usage_figure(&extra(Some(false), false)), None);
+    }
+
+    /// The status line's credits have two decimals at most, keep a balance
+    /// that isn't a number as the backend wrote it, and stay words when
+    /// they are unlimited or have no balance.
+    #[test]
+    fn the_status_line_rounds_the_credits_to_two_decimals() {
+        let credits = |balance: Option<&str>| arko_ai::PlanCredits {
+            has_credits: true,
+            unlimited: false,
+            balance: balance.map(str::to_string),
+        };
+        let figure = |credits| credits_figure(&credits);
+        assert_eq!(
+            figure(credits(Some("12.503417"))).as_deref(),
+            Some("credits: 12.50")
+        );
+        assert_eq!(
+            figure(credits(Some(" 0.996 "))).as_deref(),
+            Some("credits: 1.00")
+        );
+        assert_eq!(
+            figure(credits(Some("12"))).as_deref(),
+            Some("credits: 12.00")
+        );
+        assert_eq!(
+            figure(credits(Some("about 12"))).as_deref(),
+            Some("credits: about 12")
+        );
+        assert_eq!(
+            figure(credits(Some("NaN"))).as_deref(),
+            Some("credits: NaN")
+        );
+        assert_eq!(figure(credits(Some(""))).as_deref(), Some("has credits"));
+        assert_eq!(figure(credits(None)).as_deref(), Some("has credits"));
+        let unlimited = arko_ai::PlanCredits {
+            unlimited: true,
+            ..credits(Some("5"))
+        };
+        assert_eq!(figure(unlimited).as_deref(), Some("unlimited credits"));
+        let none = arko_ai::PlanCredits {
+            has_credits: false,
+            ..credits(Some("0"))
+        };
+        assert_eq!(figure(none), None);
+        // The line of `/cost` and the page keeps the balance as it came.
+        assert_eq!(
+            credits_text(&credits(Some("12.503417"))).as_deref(),
+            Some("credits left 12.503417")
         );
     }
 

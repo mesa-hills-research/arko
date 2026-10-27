@@ -448,10 +448,8 @@ impl<'a> Watched<'a> {
     }
 }
 
-/// The status line: is it working (or how long the last turn ran), how
-/// close is a handover, what does it cost; what is unusual (outside access, a worker watched, a view other
-/// than the full one); and the key that matters now. While a worker is
-/// watched, the figures are the worker's own.
+/// The status line shows the turn's time, context and costs, any unusual
+/// state, and the key that matters now. A watched worker has its own figures.
 fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
     let theme = &app.theme;
     let dot = glyphs::render("●").into_owned();
@@ -544,37 +542,56 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
             },
         ));
     }
-    // On a plan, its usage, not dollars; what was billed, if anything;
-    // and what the session would cost at API list prices, where a plan
-    // paid for some of it.
-    if let Some(plan) = &reading.plan_usage {
-        // ("Claude plan 5 h 21%, 7 d 4%": the windows, as the page says
-        // them.)
-        let windows = plan
-            .split_once(" plan ")
-            .map_or(plan.as_str(), |(_, windows)| windows);
-        left.push(sep());
-        left.push(Span::styled(windows.to_string(), theme.dim()));
-    }
+    // On a plan, its usage, then what was billed, if anything, and what
+    // the session would cost at API list prices, where a plan paid for
+    // some of it. The plans' figures come in after the rest is known, as
+    // many as fit.
+    let mut after: Vec<Span<'static>> = Vec::new();
     let (cost, api_price) = match &watched {
         Some(watched) => watched.cost(),
         None => (reading.cost, reading.api_price),
     };
-    if cost >= 0.005 {
-        left.push(sep());
-        left.push(Span::styled(format!("${cost:.2}"), theme.dim()));
+    let billed = if let Some(id) = &app.watching {
+        vec![(id.as_str(), cost)]
+    } else {
+        vec![
+            ("main", (cost - reading.costs.workers.billed).max(0.0)),
+            ("workers", reading.costs.workers.billed),
+        ]
+    };
+    for (who, cost) in billed.into_iter().filter(|(_, cost)| *cost >= 0.005) {
+        after.push(sep());
+        after.push(Span::styled(format!("{who}: ${cost:.2}"), theme.dim()));
     }
-    if let Some(api) = api_price.filter(|api| *api >= 0.005) {
-        left.push(sep());
-        left.push(Span::styled(
-            format!("{} ${api:.2}", glyphs::render("≈")),
+    if app.prefs.api_prices
+        && let Some(api) = api_price.filter(|api| *api >= 0.005)
+    {
+        after.push(sep());
+        after.push(Span::styled(
+            format!("{} ${api:.2} at API prices", glyphs::render("≈")),
             theme.dim(),
         ));
     }
     if app.view != View::Full && app.watching.is_none() {
-        left.push(sep());
-        left.push(Span::styled(app.view.name().to_string(), theme.dim()));
+        after.push(sep());
+        after.push(Span::styled(app.view.name().to_string(), theme.dim()));
     }
+    let width = |spans: &[Span]| spans.iter().map(Span::width).sum::<usize>();
+    // Drop a worker's parent before the main plan's first window.
+    if width(&left) + width(&after) + width(&plan_figures(app, PLAN_CUTS - 1)) > area.width as usize
+        && let Some(at) = left
+            .iter()
+            .position(|span| span.content.starts_with(" (under "))
+    {
+        left.remove(at);
+    }
+    let room = (area.width as usize).saturating_sub(width(&left) + width(&after));
+    let plans = (0..PLAN_CUTS)
+        .map(|cut| plan_figures(app, cut))
+        .find(|spans| width(spans) <= room)
+        .unwrap_or_else(|| plan_figures(app, PLAN_CUTS));
+    left.extend(plans);
+    left.extend(after);
 
     // The key that matters now, or a word for a moment.
     let right: Vec<Span<'static>> = if let Some(hint) = app.hint() {
@@ -602,8 +619,8 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
         }
         spans
     };
-    // The worker's starter goes first when the row is too wide, before the
-    // figures at its end are cut.
+    // Then the worker's starter goes, before the figures at the row's end
+    // are cut.
     if left.iter().map(|span| span.width()).sum::<usize>() > area.width as usize
         && let Some(at) = left
             .iter()
@@ -629,6 +646,75 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
             .buffer_mut()
             .set_line(area.right() - rw, area.y, &right, rw);
     }
+}
+
+/// The steps the plans' figures take, one after the other, when the status
+/// line is too wide: the plans the main agent isn't on go, then the credits,
+/// then the main agent's plan's first window (5 hours).
+const PLAN_CUTS: usize = 3;
+
+/// A plan window from this share of its use on is in the warning colour.
+const PLAN_WARNS_AT: f64 = 80.0;
+
+/// The plans' usage in the status line, each with a separator before it:
+/// every plan the session used, named when there are more than one, the
+/// main agent's first (`Claude 5h: 3% · 7d: 23% · ChatGPT 5h: 12% · 7d:
+/// 40% · credits: 12.50`), with `cut` of the [`PLAN_CUTS`] steps taken.
+/// Where the main agent is on no plan, the first plan stands in for its
+/// plan.
+fn plan_figures(app: &App, cut: usize) -> Vec<Span<'static>> {
+    let theme = &app.theme;
+    let plans = &app.reading.plans;
+    let sep = || Span::styled(glyphs::render(" · ").into_owned(), theme.dim());
+    let main = plans
+        .iter()
+        .position(|plan| Some(plan.plan.as_str()) == app.reading.main_plan)
+        .unwrap_or(0);
+    let order = std::iter::once(main).chain((0..plans.len()).filter(|n| *n != main));
+    let mut spans = Vec::new();
+    for (n, plan) in order.filter_map(|n| Some((n, plans.get(n)?))) {
+        let mut name = (plans.len() > 1).then(|| {
+            let name = plan.plan.strip_suffix(" plan").unwrap_or(&plan.plan);
+            Span::styled(format!("{name} "), theme.dim())
+        });
+        let first = usize::from(n == main && cut >= 3 && plan.windows.len() > 1);
+        let windows = if n != main && cut >= 1 {
+            &[][..]
+        } else {
+            &plan.windows[first..]
+        };
+        for window in windows {
+            spans.push(sep());
+            spans.extend(name.take());
+            // ("5 h" as `5h`, as the plan names its windows.)
+            let label = window.label.replace(' ', "");
+            spans.push(Span::styled(
+                format!("{label}: {:.0}%", window.used_percent),
+                if window.used_percent >= PLAN_WARNS_AT {
+                    theme.warning()
+                } else {
+                    theme.dim()
+                },
+            ));
+        }
+        if cut >= 2 {
+            continue;
+        }
+        let credits = plan
+            .credits
+            .as_ref()
+            .and_then(crate::providers::credits_figure);
+        let extra = plan
+            .extra_usage
+            .as_ref()
+            .and_then(crate::providers::extra_usage_figure);
+        let set_aside = (plan.set_aside > 0).then(|| format!("{} set aside", plan.set_aside));
+        for figure in credits.into_iter().chain(extra).chain(set_aside) {
+            spans.push(sep());
+            spans.push(Span::styled(figure, theme.dim()));
+        }
+    }
+    spans
 }
 
 /// `seconds` as a clock: `14s`, `2m14s`, `1h02m`.
@@ -1364,6 +1450,271 @@ mod tests {
         assert_eq!(screen(&mut app, 60, 8)[6], " › Message r1  / for commands");
     }
 
+    fn plan(name: &str, short: f64, long: f64) -> crate::remote::PlanStatus {
+        crate::remote::PlanStatus {
+            plan: name.into(),
+            windows: [("5 h", short), ("7 d", long)]
+                .into_iter()
+                .map(|(label, used_percent)| crate::remote::PlanWindow {
+                    label: label.into(),
+                    used_percent,
+                    resets_at: None,
+                })
+                .collect(),
+            credits: None,
+            set_aside: 0,
+            extra_usage: None,
+            text: "not the status line".into(),
+        }
+    }
+
+    fn credits() -> arko_ai::PlanCredits {
+        arko_ai::PlanCredits {
+            has_credits: true,
+            unlimited: false,
+            balance: Some("12.503417".into()),
+        }
+    }
+
+    fn status_buffer(app: &App, width: u16) -> ratatui::buffer::Buffer {
+        let mut terminal = Terminal::new(TestBackend::new(width, 1)).unwrap();
+        terminal
+            .draw(|frame| draw_status(frame, app, frame.area()))
+            .unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    fn bar(app: &App, width: u16) -> String {
+        status_buffer(app, width)
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>()
+            .trim_end()
+            .to_string()
+    }
+
+    #[test]
+    fn a_single_plan_has_unnamed_windows_and_rounded_credits() {
+        let mut app = app();
+        let mut chatgpt = plan("ChatGPT plan", 3.0, 23.0);
+        chatgpt.credits = Some(credits());
+        app.reading.plans = vec![chatgpt];
+        app.reading.plan_usage = Some("an unrelated joined line".into());
+        for width in [80, 200] {
+            assert_eq!(bar(&app, width), " 5h: 3% · 7d: 23% · credits: 12.50");
+        }
+        app.reading.plans[0].credits.as_mut().unwrap().unlimited = true;
+        assert!(bar(&app, 80).ends_with("unlimited credits"));
+        app.reading.plans[0].windows[0].label = "45 min".into();
+        assert!(bar(&app, 80).starts_with(" 45min: 3%"));
+    }
+
+    #[test]
+    fn multiple_plans_are_named_main_first_and_warn_at_eighty_percent() {
+        let mut app = app();
+        app.reading.plans = vec![
+            plan("ChatGPT plan", 12.0, 40.0),
+            plan("Claude plan", 0.0, 98.0),
+        ];
+        app.reading.main_plan = Some("Claude plan");
+        for width in [80, 200] {
+            let text = bar(&app, width);
+            assert_eq!(text, " Claude 5h: 0% · 7d: 98% · ChatGPT 5h: 12% · 7d: 40%");
+            let buffer = status_buffer(&app, width);
+            let at = text.chars().position(|c| c == '7').unwrap() as u16;
+            assert_eq!(buffer[(at, 0)].fg, app.theme.warning().fg.unwrap());
+            assert_eq!(buffer[(8, 0)].fg, app.theme.dim().fg.unwrap());
+        }
+        app.reading.plans[1].windows[0].used_percent = 80.0;
+        let buffer = status_buffer(&app, 80);
+        assert_eq!(buffer[(8, 0)].fg, app.theme.warning().fg.unwrap());
+        app.reading.plans[1].windows[0].used_percent = 79.0;
+        let buffer = status_buffer(&app, 80);
+        assert_eq!(buffer[(8, 0)].fg, app.theme.dim().fg.unwrap());
+    }
+
+    #[test]
+    fn billed_costs_name_who_spent_them_and_hide_below_half_a_cent() {
+        let mut app = app();
+        app.reading.cost = 9.60;
+        app.reading.costs.workers.billed = 8.40;
+        app.reading.api_price = Some(41.20);
+        for width in [80, 200] {
+            assert_eq!(bar(&app, width), " main: $1.20 · workers: $8.40");
+        }
+        app.reading.cost = 8.404;
+        assert_eq!(bar(&app, 80), " workers: $8.40");
+        app.reading.costs.workers.billed = 0.004;
+        app.reading.cost = 1.204;
+        assert_eq!(bar(&app, 80), " main: $1.20");
+        app.reading.costs.workers.billed = 0.005;
+        app.reading.cost = 0.010;
+        assert_eq!(bar(&app, 80), " main: $0.01 · workers: $0.01");
+        let mut worker = crate::tui::app::tests::worker("r1", WorkerState::Finished);
+        worker.cost_billed = 0.12;
+        worker.cost_list = 2.40;
+        app.update(Update::Worker(worker), Activity::default);
+        app.watch(Some("r1".into()));
+        for width in [80, 200] {
+            let text = bar(&app, width);
+            assert!(text.contains("r1: $0.12"), "{text}");
+            assert!(!text.contains("main:") && !text.contains("≈"), "{text}");
+        }
+    }
+
+    #[test]
+    fn api_prices_in_settings_explains_the_estimate() {
+        use crate::tui::overlay::{Overlay, SettingsRow};
+        let mut app = app();
+        let row = app
+            .settings_rows()
+            .iter()
+            .position(|row| *row == SettingsRow::ApiPrices)
+            .unwrap();
+        app.overlay = Some(Overlay::Settings { row, picker: None });
+        for width in [80, 200] {
+            let text = screen(&mut app, width, 30).join("\n");
+            assert!(text.contains("API prices"), "{text}");
+            assert!(text.contains("Estimate plan-covered calls at API"), "{text}");
+            assert!(text.contains("Billed costs always show."), "{text}");
+        }
+    }
+
+    #[test]
+    fn api_price_estimates_are_opt_in_for_plans_and_workers() {
+        let mut app = app();
+        app.reading.plans = vec![plan("Claude plan", 0.0, 98.0)];
+        app.reading.cost = 8.40;
+        app.reading.costs.workers.billed = 8.40;
+        app.reading.api_price = Some(41.20);
+        for width in [80, 200] {
+            let text = bar(&app, width);
+            assert!(
+                text.contains("workers: $8.40") && !text.contains("≈"),
+                "{text}"
+            );
+        }
+        app.prefs.api_prices = true;
+        for width in [80, 200] {
+            assert!(bar(&app, width).contains("≈ $41.20 at API prices"));
+        }
+        let mut worker = crate::tui::app::tests::worker("r1", WorkerState::Finished);
+        worker.cost_list = 2.40;
+        app.update(Update::Worker(worker), Activity::default);
+        app.watch(Some("r1".into()));
+        app.reading.plans.clear();
+        for width in [80, 200] {
+            assert!(bar(&app, width).contains("≈ $2.40 at API prices"));
+        }
+        app.prefs.api_prices = false;
+        assert!(!bar(&app, 80).contains("API prices"));
+    }
+
+    #[test]
+    fn narrow_bars_drop_other_windows_then_credits_then_the_main_short_window() {
+        let mut app = app();
+        let mut chatgpt = plan("ChatGPT plan", 12.0, 40.0);
+        chatgpt.credits = Some(credits());
+        app.reading.plans = vec![chatgpt, plan("Claude plan", 0.0, 98.0)];
+        app.reading.main_plan = Some("Claude plan");
+        app.reading.cost = 8.40;
+        app.reading.costs.workers.billed = 8.40;
+        let wide = bar(&app, 200);
+        assert!(wide.contains("ChatGPT 5h: 12%") && wide.contains("credits: 12.50"));
+        let other = bar(&app, 80);
+        assert_eq!(
+            other,
+            " Claude 5h: 0% · 7d: 98% · credits: 12.50 · workers: $8.40"
+        );
+        app.reading.context_tokens = Some(142_000);
+        app.last_turn = Some(std::time::Duration::from_secs(130));
+        let credits = bar(&app, 80);
+        assert!(credits.contains("Claude 5h: 0% · 7d: 98%"), "{credits}");
+        assert!(!credits.contains("credits:"), "{credits}");
+        let short = bar(&app, 64);
+        assert!(!short.contains("5h:"), "{short}");
+        assert!(short.contains("Claude 7d: 98% · workers: $8.40"), "{short}");
+        assert_eq!(
+            bar(&app, 200),
+            format!(" last turn 2m10s · 142k/250k ·{wide}")
+        );
+    }
+
+    #[test]
+    fn status_bar_goldens() {
+        use ratatui::backend::{Backend, CrosstermBackend};
+        use std::path::PathBuf;
+        let golden_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/status-bar");
+        for case in [
+            "plan-only",
+            "plan-api-workers",
+            "two-plans-api",
+            "api-only",
+            "narrow",
+        ] {
+            let mut app = app();
+            app.set_activity(Activity {
+                working: true,
+                since: None,
+                question: None,
+            });
+            app.working_since =
+                Some(std::time::Instant::now() - std::time::Duration::from_secs(130));
+            app.reading.context_tokens = Some(142_000);
+            app.info.handover_at = 180_000;
+            if case != "api-only" {
+                app.reading.plans = vec![plan("Claude plan", 0.0, 98.0)];
+                app.reading.main_plan = Some("Claude plan");
+                app.reading.api_price = Some(41.20);
+            }
+            if matches!(case, "two-plans-api" | "narrow") {
+                let mut chatgpt = plan("ChatGPT plan", 12.0, 40.0);
+                chatgpt.credits = Some(credits());
+                app.reading.plans.push(chatgpt);
+            }
+            if case != "plan-only" {
+                app.reading.cost = 8.40;
+                app.reading.costs.workers.billed = 8.40;
+            }
+            if case == "api-only" {
+                app.reading.cost += 1.20;
+            }
+            for width in [80, 200] {
+                let width = if case == "narrow" && width == 80 {
+                    64
+                } else {
+                    width
+                };
+                let name = format!("{case}-{width}");
+                let text = bar(&app, width) + "\n";
+                let path = golden_dir.join(format!("{name}.txt"));
+                if std::env::var_os("UPDATE_GOLDENS").is_some() {
+                    std::fs::create_dir_all(&golden_dir).unwrap();
+                    std::fs::write(&path, &text).unwrap();
+                }
+                assert_eq!(std::fs::read_to_string(&path).unwrap(), text, "{name}");
+                if let Some(dir) = std::env::var_os("ARKO_STATUS_CAPTURES") {
+                    let dir = PathBuf::from(dir);
+                    std::fs::create_dir_all(&dir).unwrap();
+                    let file = std::fs::File::create(dir.join(format!("{name}.ansi"))).unwrap();
+                    let mut backend = CrosstermBackend::new(file);
+                    let buffer = status_buffer(&app, width);
+                    backend
+                        .draw(
+                            buffer
+                                .content
+                                .iter()
+                                .enumerate()
+                                .map(|(x, cell)| (x as u16, 0, cell)),
+                        )
+                        .unwrap();
+                    backend.flush().unwrap();
+                }
+            }
+        }
+    }
+
     #[test]
     fn the_status_line_says_what_runs_and_what_it_costs() {
         let mut app = app();
@@ -1377,7 +1728,7 @@ mod tests {
         app.view = View::Quiet;
         let rows = screen(&mut app, 80, 6);
         assert!(
-            rows[2].starts_with(" ● working 0s · 142k/250k · $3.20 · quiet"),
+            rows[2].starts_with(" ● working 0s · 142k/250k · main: $3.20 · quiet"),
             "{}",
             rows[2]
         );
@@ -1391,7 +1742,7 @@ mod tests {
         });
         let rows = screen(&mut app, 80, 6);
         assert!(
-            rows[2].starts_with(" last turn 0s · 142k/250k · $3.20 · quiet"),
+            rows[2].starts_with(" last turn 0s · 142k/250k · main: $3.20 · quiet"),
             "{}",
             rows[2]
         );
@@ -1469,14 +1820,14 @@ mod tests {
         app.update(Update::Worker(r1), Activity::default);
         app.reading.agents = vec![context_of("r1", 88_000, 190_000)];
 
-        let main = " ● working 0s · 142k/250k · $3.20";
+        let main = " ● working 0s · 142k/250k · main: $3.20";
         let rows = screen(&mut app, 100, 12);
         assert!(status_row(&rows).starts_with(main), "{rows:#?}");
         app.watch(Some("r1".into()));
         let rows = screen(&mut app, 100, 12);
         let status = status_row(&rows);
         assert!(
-            status.starts_with(" viewing r1 · ● working 2m14s · 88k/190k · $0.12"),
+            status.starts_with(" viewing r1 · ● working 2m14s · 88k/190k · r1: $0.12"),
             "{status}"
         );
         assert!(status.ends_with("Esc  back"), "{status}");
@@ -1525,7 +1876,7 @@ mod tests {
     fn the_status_line_drops_the_starter_before_it_cuts_a_figure() {
         use crate::tui::app::tests::worker;
         let mut app = app();
-        app.reading.plan_usage = Some("Claude plan 5 h 54%, 7 d 58%".into());
+        app.reading.plans = vec![plan("Claude plan", 54.0, 58.0)];
         app.update(
             Update::Worker(worker("r2", WorkerState::Running)),
             Activity::default,
@@ -1541,13 +1892,13 @@ mod tests {
         let wide = status(&mut app, 80);
         assert!(
             wide.starts_with(" viewing r4 (under r2) · ● working ")
-                && wide.contains("5 h 54%, 7 d 58%"),
+                && wide.contains("5h: 54% · 7d: 58%"),
             "{wide}"
         );
         // At 64 columns the usage would be cut: the starter goes instead.
         let narrow = status(&mut app, 64);
         assert!(
-            narrow.starts_with(" viewing r4 · ● working ") && narrow.contains("5 h 54%, 7 d 58%"),
+            narrow.starts_with(" viewing r4 · ● working ") && narrow.contains("5h: 54% · 7d: 58%"),
             "{narrow}"
         );
     }
@@ -1576,12 +1927,12 @@ mod tests {
             app.watch(Some(id.into()));
             let rows = screen(&mut app, 100, 14);
             let status = status_row(&rows);
-            let line = format!(" viewing {id} · {word} 2m14s · 181k/190k · $0.40");
+            let line = format!(" viewing {id} · {word} 2m14s · 181k/190k · {id}: $0.40");
             assert!(status.starts_with(&line), "{status}");
             assert!(!status.contains("last turn"), "{status}");
         }
-        // A worker on a plan: the API price of its calls, besides what it
-        // billed.
+        // A worker on a plan shows the estimate only when it is on.
+        app.prefs.api_prices = true;
         let mut plan = worker("r4", WorkerState::Finished);
         plan.ran_ms = 3_725_000;
         plan.cost_list = 0.31;
@@ -1589,7 +1940,7 @@ mod tests {
         app.watch(Some("r4".into()));
         let rows = screen(&mut app, 100, 14);
         assert!(
-            status_row(&rows).starts_with(" viewing r4 · finished 1h02m · ≈ $0.31"),
+            status_row(&rows).starts_with(" viewing r4 · finished 1h02m · ≈ $0.31 at API prices"),
             "{rows:#?}"
         );
     }
@@ -1732,8 +2083,8 @@ mod tests {
         );
     }
 
-    /// At 80 columns the watched worker's line fits with its hint, and in
-    /// plain ASCII it has nothing else.
+    /// At 80 columns the watched worker's figures fit, and in plain ASCII
+    /// the line has nothing else.
     #[test]
     fn the_status_line_of_a_watched_worker_fits_80_columns_in_ascii() {
         use crate::glyphs::Symbols;
@@ -1752,7 +2103,7 @@ mod tests {
         let rows = screen(&mut app, 80, 14);
         let status = status_row(&rows);
         assert!(
-            status.starts_with(" viewing r1 | * working 2m14s | 88k/190k | $0.12 | ~ $0.31"),
+            status.starts_with(" viewing r1 | * working 2m14s | 88k/190k | r1: $0.12"),
             "{status}"
         );
         assert!(status.is_ascii(), "{status}");

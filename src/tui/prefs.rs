@@ -27,6 +27,9 @@ pub struct Prefs {
     /// turned off).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub confirm_quit: Option<bool>,
+    /// Whether the status line estimates plan-covered calls at API prices.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub api_prices: bool,
 }
 
 impl Prefs {
@@ -56,6 +59,17 @@ mod tests {
     use super::*;
 
     #[test]
+    fn api_price_estimates_default_to_off_for_existing_preferences() {
+        assert!(!Prefs::default().api_prices);
+        assert!(
+            !serde_json::from_str::<Prefs>(r#"{"view":"quiet"}"#)
+                .unwrap()
+                .api_prices
+        );
+        assert_eq!(serde_json::to_string(&Prefs::default()).unwrap(), "{}");
+    }
+
+    #[test]
     fn choices_are_kept_and_a_bad_file_is_none() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("tui.json");
@@ -67,6 +81,7 @@ mod tests {
             theme_previews: Some(false),
             flash_notice: true,
             confirm_quit: Some(false),
+            api_prices: true,
         };
         prefs.save(Some(&path));
         assert_eq!(Prefs::load(Some(&path)), prefs);

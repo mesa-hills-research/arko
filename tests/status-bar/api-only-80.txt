@@ -1,0 +1,1 @@
+ ● working 2m10s · 142k/180k · main: $1.20 · workers: $8.40        Ctrl+C  stop

@@ -38,6 +38,16 @@ second one produced it.
 The status line, `/cost`, `worker_options` and the web page show the plan usage of the login that
 served last, with its credits when the backend reports them, and how many other logins are set aside.
 
+The full-screen status line names the plans when more than one was used. Credits have at most two
+decimals, and billed costs are split into `main` and `workers`. In `/settings`, turn on **API prices**
+to estimate plan-covered calls at API list prices.
+
+```text
+Claude 5h: 0% · 7d: 98% · ChatGPT 5h: 12% · 7d: 40% · credits: 12.50 · workers: $8.40
+```
+
+`/cost`, `worker_options` and the web page keep the longer form.
+
 ```text
 ChatGPT plan 5 h 12%, 7 d 82%, credits left 12.50, 1 set aside
 ChatGPT plan 5 h 12%, 7 d 82%, unlimited credits
