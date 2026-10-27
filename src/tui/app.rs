@@ -2856,38 +2856,31 @@ pub(super) mod tests {
         assert_eq!(app.hint(), Some("No open questions"));
     }
 
-    /// Number keys pick a question's choices, or "You decide" after them.
-    /// ↓ goes from a question's choices to its Other field, where what is
-    /// typed is the answer, digits too, then on to the next question, and
-    /// after the last back to the first. A question without choices takes
-    /// typing at once.
-    /// Enter sends what's filled in.
+    /// A single choice advances to the next question. The summary lets
+    /// an answer change before Send. Drafts stay until the questions settle.
     #[test]
     fn the_panel_picks_choices_and_sends_what_is_filled_in() {
         use crate::questions::{Answer, Answers, QuestionAnswer};
         let mut app = app();
         app.set_reading(asking());
-        press(&mut app, KeyCode::Char('2'), KeyModifiers::NONE);
         press(&mut app, KeyCode::Char('1'), KeyModifiers::NONE);
         assert_eq!(app.panel.drafts["q1"].chosen, [0]);
-        press(&mut app, KeyCode::Down, KeyModifiers::NONE);
-        assert!(app.panel.typing && app.focus_index() == 0);
-        press(&mut app, KeyCode::Down, KeyModifiers::NONE);
-        // q2 has no choices: its Other field has the keys.
-        assert!(app.panel.typing && app.focus_index() == 1);
+        assert_eq!(app.focus_index(), 1);
         type_text(&mut app, "2 hours");
         assert_eq!(app.panel.drafts["q2"].other, "2 hours");
-        // Up in its chips, 1 is "You decide", and typing leaves it.
         press(&mut app, KeyCode::Up, KeyModifiers::NONE);
         press(&mut app, KeyCode::Char('1'), KeyModifiers::NONE);
         assert!(app.panel.drafts["q2"].you_decide);
+        assert_eq!(app.panel.review, Some(2));
+        press(&mut app, KeyCode::Up, KeyModifiers::NONE);
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(app.focus_index(), 1);
         press(&mut app, KeyCode::Down, KeyModifiers::NONE);
-        type_text(&mut app, "main");
-        press(&mut app, KeyCode::Backspace, KeyModifiers::NONE);
-        type_text(&mut app, "n 2");
+        press(&mut app, KeyCode::Char('u'), KeyModifiers::CONTROL);
+        type_text(&mut app, "main 2");
         assert!(!app.panel.drafts["q2"].you_decide);
-        press(&mut app, KeyCode::Tab, KeyModifiers::NONE);
-        assert!(!app.panel.typing && app.focus_index() == 0);
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(app.panel.review, Some(2));
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         assert_eq!(
             inputs(&mut app),
@@ -2921,6 +2914,8 @@ pub(super) mod tests {
         // Enter with nothing filled in sends nothing.
         app.set_reading(asking());
         app.open_panel();
+        press(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+        press(&mut app, KeyCode::Tab, KeyModifiers::NONE);
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         assert!(inputs(&mut app).is_empty());
         assert!(app.panel.open);
@@ -2938,13 +2933,11 @@ pub(super) mod tests {
         assert_eq!(app.panel.drafts["q2"].other, "1 hour");
         assert!(!app.panel.drafts["q2"].you_decide);
         app.focus_on(0);
-        assert!(!app.panel.typing);
-        // q1 has three chips: 4 is no chip's, so it is typed.
+        // q1 has three numbered choices, so 4 starts a written answer.
         type_text(&mut app, "42");
         assert_eq!(app.panel.drafts["q1"].other, "42");
         assert!(app.panel.drafts["q1"].chosen.is_empty());
         app.focus_on(0);
-        press(&mut app, KeyCode::Down, KeyModifiers::NONE);
         type_text(&mut app, "1");
         assert_eq!(app.panel.drafts["q1"].other, "421");
     }
@@ -3061,9 +3054,10 @@ pub(super) mod tests {
         reading.questions[1].waits = true;
         app.set_reading(reading);
         let long = "x".repeat(crate::questions::MAX_ANSWER_NOTE_BYTES);
-        // In the panel.
-        press(&mut app, KeyCode::Down, KeyModifiers::NONE);
+        // In the panel, Send on the summary checks the whole answer.
         app.paste(&long);
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         assert!(inputs(&mut app).is_empty());
         assert!(app.panel.open);
