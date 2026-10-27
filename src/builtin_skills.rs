@@ -330,11 +330,9 @@ mod tests {
     #[test]
     fn a_description_on_folded_lines_is_read_as_one() {
         let ponytail = find("ponytail").unwrap().description();
-        assert!(
-            ponytail.starts_with(
-                "Finish the whole task with the smallest change that fully works, split"
-            )
-        );
+        assert!(ponytail.starts_with(
+            "Finish the whole task with the best change, kept as small as that allows, split"
+        ));
         assert!(ponytail.ends_with("complains about over-engineering."));
         assert!(!ponytail.contains('\n'));
         let one_line = find("repo-docs-style").unwrap().description();

@@ -1,18 +1,18 @@
 ---
 name: ponytail
 description: >
-  Finish the whole task with the smallest change that fully works, split the work sensibly
-  between workers, and check it in proportion to the risk. Use it for any coding task (writing,
-  fixing, refactoring, reviewing, choosing dependencies), for running workers, and when the user
-  asks for the simplest solution or complains about over-engineering.
+  Finish the whole task with the best change, kept as small as that allows, split the work
+  sensibly between workers, and check it in proportion to the risk. Use it for any coding task
+  (writing, fixing, refactoring, reviewing, choosing dependencies), for running workers, and when
+  the user asks for the simplest solution or complains about over-engineering.
 license: MIT
 ---
 
 # Ponytail
 
-Solve the whole problem with as little new code as you can. The best code is the code you didn't
-have to write. End your reply with a line or two on what you skipped or didn't check, and any risk
-the user should know about.
+Solve the whole problem with the best change, and as little code as that allows. The best code is
+the code you didn't have to write, but small never excuses a shortcut. End your reply with a line
+or two on what you skipped or didn't check, and any risk the user should know about.
 
 ## Finish the task
 
@@ -54,9 +54,15 @@ Read the task and the code it touches. List every place your change must reach, 
 tests, fixtures, config and exports. Check what it could break for users, like data it would
 destroy or expose and callers that would stop working. That's the scope. Extra features aren't.
 
-## The smallest complete change
+## The best change, kept small
 
-Take the first option that fully works.
+The best change is correct, clear, fast enough and easy to maintain. Size comes after those. It
+decides between options that are equally good, and it never justifies a shortcut. Small means what
+the codebase has to carry afterwards, not the size of your diff. Removing or merging what your
+change makes redundant (a duplicate helper, a second demo, an old code path) is part of the change,
+even when it makes the diff larger.
+
+Take the first option that fully and properly does the job.
 
 1. Does it need to exist? Skip features, options and flexibility nobody asked for, and name them in
    one line. A vague request ("build me X") gets the smallest version that does the core job.
@@ -73,17 +79,40 @@ Take the first option that fully works.
 - Add no abstraction, wrapper, type conversion, option, config, boilerplate or code "for later"
   that nobody asked for. Keep values in the form the platform already gives you. Deleting beats
   adding. Keep the structure the codebase already has, its layers, interfaces and conventions.
-- The shortest working diff wins, once you know everything it must touch. A one-liner that needs
-  decoding isn't short.
+- Between correct, clean options, the one that leaves the least to maintain wins, once you know
+  everything it must touch. A one-liner that needs decoding isn't short.
 - Comment only the reason the code can't show, in one line.
 - For a bug, find every caller of the function you touch before you edit, then fix the root cause
   once, in the shared code.
 - Code you move or merge keeps its error handling and validation.
-- Between options of the same size, take the one that's right in the edge cases.
+- An option that's wrong in an edge case isn't smaller, it's unfinished.
 - New logic that isn't trivial (a branch, a loop, a parser, money or security code, a whole new
   script or app) comes with one small test or an assert-based self-check. Trivial changes need
   none.
-- A shortcut with a known limit gets a comment of the form `shortcut: <the limit>, <when to upgrade>`.
+- A limit you accept on purpose (not a corner cut) gets a comment of the form
+  `shortcut: <the limit>, <when to upgrade>`.
 
 Never cut validation at trust boundaries, error handling that prevents data loss, security,
 accessibility, the calibration real hardware needs, or anything the user asked for.
+
+## Naming
+
+Names in code, files, directories, scripts, branches and commit subjects say exactly what a thing is
+or does, in the words the project and its domain already use.
+
+- Look the term up first. Search the code and its docs for the word the project already uses for
+  the concept, and use it. A new concept gets a new term, used the same way everywhere.
+- Use the domain's established vocabulary. A script that deploys dashboards is
+  `deploy_dashboards.sh`, not `push_dashboards.sh`.
+- Functions that act are verbs (`load_settings`), things are nouns (`SessionStore`), booleans are
+  predicates (`is_alive`, `has_session`), and a quantity whose unit isn't obvious names it
+  (`timeout_secs`).
+- Choose the precise word over a vague one, such as `handle`, `process`, `do`, `manage`, `data`,
+  `info`, `util` or `helper`, whenever a precise one exists.
+- No slang, jokes or cute names (`nuke`, `yolo`, `magic`), no history (`new_`, `old_`, `v2`,
+  `final`), and no abbreviations beyond the universal ones (`id`, `url`, `http`).
+- Length follows scope. A three-line closure can say `n`, and anything public says in full what it
+  is.
+- A branch names its change (`openrouter-routing`), and a script its action and object.
+- Rename when the meaning changes, everywhere the name is used. A name that no longer tells the
+  truth is a bug.
