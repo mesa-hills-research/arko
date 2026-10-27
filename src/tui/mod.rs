@@ -258,9 +258,19 @@ fn open() -> std::io::Result<(Terminal<CursorBackend<Stdout>>, bool)> {
         );
     }
     ENHANCED.store(enhanced, std::sync::atomic::Ordering::SeqCst);
-    let mut terminal = Terminal::new(CursorBackend::new(stdout))?;
-    terminal.clear()?;
+    clear_new_screen(&mut stdout)?;
+    let terminal = Terminal::new(CursorBackend::new(stdout))?;
     Ok((terminal, enhanced || cfg!(windows)))
+}
+
+fn clear_new_screen(writer: &mut impl Write) -> std::io::Result<()> {
+    // There is no cursor to preserve on a new alternate screen. Ratatui's
+    // clear asks for it, which some terminals cannot report during startup.
+    execute!(
+        writer,
+        crossterm::terminal::Clear(crossterm::terminal::ClearType::All),
+        cursor::MoveTo(0, 0)
+    )
 }
 
 /// The keyboard protocol was pushed: it is popped as the view closes.
@@ -651,6 +661,13 @@ mod tests {
             kind: KeyEventKind::Press,
             state: KeyEventState::NONE,
         })
+    }
+
+    #[test]
+    fn a_new_alternate_screen_clears_without_asking_for_the_cursor() {
+        let mut bytes = Vec::new();
+        clear_new_screen(&mut bytes).unwrap();
+        assert_eq!(bytes, b"\x1b[2J\x1b[1;1H");
     }
 
     /// A paste that comes as keys doesn't send at its line breaks, and a
