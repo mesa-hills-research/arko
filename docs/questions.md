@@ -1,9 +1,10 @@
 # The agent's questions
 
-The main agent asks you with `ask_user` when it needs a decision only you can make. Its questions
-don't stop its work. It asks, goes on with what doesn't depend on the answers, and reads them when
-they come. A question may come with suggested answers and the default the agent goes with if you
-don't answer. When the agent can't go on at all without an answer, it asks with `wait`, and waits.
+The main agent asks you with `ask_user` when it needs a decision only you can make, and waits for
+the answer. A question may come with suggested answers and a default you can choose with "You
+decide". The agent passes `wait: false` only for work no answer could change, such as reading and
+investigating. While a question is open, it must not use its default to write or delete files,
+spend money, start workers, or follow a preference, design or scope.
 
 Arko asks you too, before the agent saves a worker profile for the project or for every project.
 That approval shows the profile's name, where it is kept, its model and effort, what it is for and

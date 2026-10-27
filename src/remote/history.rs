@@ -659,7 +659,9 @@ fn user_item(text: &str) -> Option<Item> {
         Some((_, mine)) => mine,
         None => {
             if let Some(opening) = Opening::of(text) {
-                return Some(Item::new(Kind::Notice, opening.notice()).level(super::Level::Info));
+                return opening
+                    .notice()
+                    .map(|notice| Item::new(Kind::Notice, notice).level(super::Level::Info));
             }
             // Only Arko's own sections, or its notes about the agent's
             // questions: no words of the user's.
@@ -1058,8 +1060,7 @@ mod tests {
             .filter(|item| matches!(item.kind, Kind::User | Kind::Notice))
             .map(|item| (item.kind, item.text, item.turn))
             .collect();
-        let notice =
-            |opening: Opening, turn| (Kind::Notice, opening.notice().to_string(), Some(turn));
+        let notice = |opening: Opening, turn| (Kind::Notice, opening.notice().unwrap(), Some(turn));
         assert_eq!(
             shown,
             [
@@ -1070,6 +1071,34 @@ mod tests {
                 notice(Opening::News, 5),
                 (Kind::User, "hello\n\nthere".to_string(), Some(6)),
                 (Kind::User, "Again.".to_string(), Some(7)),
+            ]
+        );
+    }
+
+    /// The turn Arko started for the user's answers shows no line of its
+    /// own, as the live transcript shows none, also in a session saved when
+    /// it showed one.
+    #[test]
+    fn a_turn_for_the_users_answers_shows_no_notice() {
+        let messages = vec![
+            Message::new_user("Indent the file."),
+            Message::new_assistant("Asked, and going on."),
+            Message::new_user(&Opening::Answers.text()),
+            Message::new_user(
+                "# Workflow context update\n\n- Note 1 from the operator (the person running this workflow), at 10:00:\n  The user answered q1.\n  q1 Tabs or spaces? Spaces",
+            ),
+            Message::new_assistant("Used spaces."),
+        ];
+        let shown: Vec<(Kind, String, Option<u64>)> = items(&messages, true, &Images::default())
+            .into_iter()
+            .map(|item| (item.kind, item.text, item.turn))
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                (Kind::User, "Indent the file.".to_string(), Some(1)),
+                (Kind::Reply, "Asked, and going on.".to_string(), Some(1)),
+                (Kind::Reply, "Used spaces.".to_string(), Some(2)),
             ]
         );
     }
@@ -1200,6 +1229,11 @@ mod tests {
     #[test]
     fn question_cards_take_their_ids_from_the_result() {
         for (arguments, output, ids) in [
+            (
+                serde_json::json!({"questions": [{"question": "Tabs or spaces?"}, "Push now?"], "wait": false}),
+                "Asked q3 and q4. Their answers reach you as a note. Until then, do only work that no answer could change.",
+                Some(vec!["q3", "q4"]),
+            ),
             (
                 serde_json::json!({"questions": [{"question": "Tabs or spaces?"}, "Push now?"]}),
                 "Asked q3 and q4. Their answers reach you as a note, so go on with your work.",

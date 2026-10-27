@@ -132,7 +132,7 @@ async fn remote_page_demo() {
                     1 => turn("d1", "Two workers next, one to fix the flaky test and one to check the docs.", Some((crew::START_AGENT, serde_json::json!({"agent": WORKER, "task": "Fix the flaky test in src/parser.rs\n\nIt fails one run in ten. Find why, fix it, and run it ten times."})))),
                     2 => turn("d2", "", Some((crew::START_AGENT, serde_json::json!({"agent": WORKER, "task": "Review the README for stale flags"})))),
                     3 => turn("d3", "Meanwhile, a build.", Some(shell("sleep 2; echo 'error[E0425]: cannot find value `x` in this scope'; exit 3"))),
-                    4 => turn("d4", "", Some((ASK_USER_TOOL_NAME, serde_json::json!({"questions": "Should I also update the **CHANGELOG**? It has no entry for 0.4 yet."})))),
+                    4 => turn("d4", "", Some((ASK_USER_TOOL_NAME, serde_json::json!({"questions": "Should I also update the **CHANGELOG**? It has no entry for 0.4 yet.", "wait": false})))),
                     5 => turn("d5", "Waiting for the workers.", Some((crew::WAIT_FOR_AGENTS, serde_json::json!({"all": true, "timeout_seconds": 60})))),
                     _ => {
                         done();
@@ -184,7 +184,7 @@ async fn remote_page_demo() {
             }
             if let Some(step) = after("demo:ask") {
                 return match step {
-                    0 => tool_call("q0", ASK_USER_TOOL_NAME, serde_json::json!({"questions": "Tabs or spaces?"})),
+                    0 => tool_call("q0", ASK_USER_TOOL_NAME, serde_json::json!({"questions": "Tabs or spaces?", "wait": false})),
                     _ => {
                         done();
                         complete("q1", "Noted.")
@@ -213,11 +213,11 @@ async fn remote_page_demo() {
                             {"question": "Tabs or spaces for the new files?", "choices": ["Tabs", "Spaces"], "default": "Spaces"},
                             {"question": "Which tests should I run before I push?", "choices": ["Unit", "Integration", "Screenshots"], "multiple": true},
                             {"question": "Which branch should the change go to?", "default": "main"},
-                        ]}),
+                        ], "wait": false}),
                     ),
                     _ => {
                         done();
-                        complete("n1", "I'll go on while you decide.")
+                        complete("n1", "I'll read the tests while you decide.")
                     }
                 };
             }

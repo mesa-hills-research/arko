@@ -61,9 +61,10 @@ impl Opening {
     }
 
     /// The transcript's line as the turn starts, which a reopened session's
-    /// transcript shows too.
-    pub(crate) fn notice(self) -> String {
-        match self {
+    /// transcript shows too. The user's answers have none, since answering
+    /// already says where they go.
+    pub(crate) fn notice(self) -> Option<String> {
+        Some(match self {
             Self::News | Self::ResentNews => "⇠ the workers' news goes to the agent".into(),
             Self::Job => "⇠ a background job finished, and its update goes to the agent".into(),
             Self::Alert => "⇠ a monitor alerted, and its alert goes to the agent".into(),
@@ -71,8 +72,8 @@ impl Opening {
                 "⇠ a monitor ends {}, and the agent is asked whether to keep it",
                 ends(left)
             ),
-            Self::Answers => "⇠ your answers go to the agent".into(),
-        }
+            Self::Answers => return None,
+        })
     }
 
     /// The opening of `text`, a message Arko composed. It's a paragraph of
@@ -167,8 +168,10 @@ mod tests {
             "A monitor of yours ends in 25 min. Its notice follows and asks whether to keep it. (Arko started this turn for it. The user hasn't written.)"
         );
         assert_eq!(
-            Opening::EndsSoon(Some(25)).notice(),
-            "⇠ a monitor ends in 25 min, and the agent is asked whether to keep it"
+            Opening::EndsSoon(Some(25)).notice().as_deref(),
+            Some("⇠ a monitor ends in 25 min, and the agent is asked whether to keep it")
         );
+        // The user's answers go to the agent without a line saying so.
+        assert_eq!(Opening::Answers.notice(), None);
     }
 }

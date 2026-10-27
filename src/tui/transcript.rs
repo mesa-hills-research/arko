@@ -1608,17 +1608,22 @@ fn entry_lines(
             let mut lines = plain(&item.text, style, inner);
             if let Some(tag) = user_tag(item) {
                 // (Not the user's text: a copy leaves it out.)
-                let tag = Span::styled(format!("  {tag}"), theme.dim());
-                let tag_width = text_width(&tag.content);
-                match lines.last_mut() {
-                    Some(last) if spans_width(&last.spans) + tag_width <= inner => {
-                        last.spans.push(tag);
-                        last.tail += tag_width;
+                let tag = cut_end(&tag, inner);
+                let tag_width = text_width(&tag);
+                let style = theme.dim().add_modifier(Modifier::ITALIC);
+                match lines.first_mut() {
+                    Some(first) if spans_width(&first.spans) + 2 + tag_width <= inner => {
+                        let tail = inner - spans_width(&first.spans);
+                        let gap = " ".repeat(tail - tag_width);
+                        first.spans.push(Span::styled(format!("{gap}{tag}"), style));
+                        first.tail += tail;
                     }
                     _ => {
-                        let mut line = Wrapped::line(vec![tag]);
-                        line.skip = tag_width;
-                        lines.push(line);
+                        let gap = " ".repeat(inner.saturating_sub(tag_width));
+                        let mut line =
+                            Wrapped::line(vec![Span::styled(format!("{gap}{tag}"), style)]);
+                        line.bare = true;
+                        lines.insert(1, line);
                     }
                 }
             }
@@ -2422,7 +2427,10 @@ mod tests {
         }
         assert_eq!(
             rows(&mut t, &Filter::Worker("r1".into()), 50, 2),
-            ["▎ Use tabs.  from the web page", ""]
+            [
+                format!("▎ Use tabs.{}from the web page", " ".repeat(22)),
+                String::new(),
+            ]
         );
         assert_eq!(
             rows(&mut t, &Filter::Worker("r2".into()), 50, 2),
@@ -2822,6 +2830,125 @@ mod tests {
         );
     }
 
+    #[test]
+    fn user_tags_fit_at_the_right_of_the_first_line() {
+        let theme = Theme::terminal();
+        for (delivery, pending, source, tag) in [
+            (Delivery::Note, true, None, "pending"),
+            (Delivery::Queued, false, None, "queued"),
+            (Delivery::Answer, false, None, "answer"),
+            (
+                Delivery::Turn,
+                false,
+                Some(Source::Web),
+                "from the web page",
+            ),
+            (
+                Delivery::Note,
+                true,
+                Some(Source::Web),
+                "pending · from the web page",
+            ),
+        ] {
+            let mut user = item(1, Kind::User, "Hi.\nSecond line.");
+            user.delivery = Some(delivery);
+            user.pending = pending;
+            user.source = source;
+            let lines = entry_lines(&user, &theme, 40, false, None, false, None);
+            assert_eq!(lines.len(), 2);
+            assert_eq!(spans_width(&lines[0].spans), 40);
+            let last = lines[0].spans.last().unwrap();
+            assert_eq!(last.content.trim_start(), tag);
+            assert!(last.content.starts_with("  "));
+            assert_eq!(last.style, theme.dim().add_modifier(Modifier::ITALIC));
+            assert_eq!(
+                copied(
+                    lines.iter().enumerate().map(|(n, line)| ((0, n), line)),
+                    ((0, 0, 0), (0, lines.len() - 1, 39)),
+                )
+                .as_deref(),
+                Some(user.text.as_str())
+            );
+        }
+    }
+
+    #[test]
+    fn a_full_first_line_puts_the_tag_on_the_next_line() {
+        let theme = Theme::terminal();
+        for (text, tag_line) in [
+            ("123456789", 0),  // Exactly two spaces before the tag.
+            ("1234567890", 1), // One space isn't enough.
+            ("123456789012345678", 1),
+        ] {
+            let mut user = item(1, Kind::User, text);
+            user.delivery = Some(Delivery::Note);
+            user.pending = true;
+            let lines = entry_lines(&user, &theme, 20, false, None, false, None);
+            assert_eq!(lines.len(), tag_line + 1, "{text}");
+            assert_eq!(spans_width(&lines[tag_line].spans), 20);
+            let shown: String = lines[tag_line]
+                .spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect();
+            assert!(shown.ends_with("pending"));
+            assert_eq!(
+                copied(
+                    lines.iter().enumerate().map(|(n, line)| ((0, n), line)),
+                    ((0, 0, 0), (0, lines.len() - 1, 19)),
+                )
+                .as_deref(),
+                Some(text)
+            );
+        }
+    }
+
+    #[test]
+    fn a_wrapped_user_message_keeps_its_tag_near_the_first_line() {
+        let theme = Theme::terminal();
+        let mut user = item(1, Kind::User, "One two three four five six");
+        user.delivery = Some(Delivery::Note);
+        user.pending = true;
+        let lines = entry_lines(&user, &theme, 20, false, None, false, None);
+        let shown: Vec<String> = lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect()
+            })
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                "▎ One two three four".to_string(),
+                format!("▎ {}pending", " ".repeat(11)),
+                "▎ five six".to_string(),
+            ]
+        );
+        assert!(lines[1].bare);
+        assert_eq!(
+            copied(
+                lines.iter().enumerate().map(|(n, line)| ((0, n), line)),
+                ((0, 0, 0), (0, 2, 19)),
+            )
+            .as_deref(),
+            Some(user.text.as_str())
+        );
+        // A narrow screen clips the decoration, not the copied message.
+        let narrow = entry_lines(&user, &theme, 5, false, None, false, None);
+        assert!(narrow.iter().all(|line| spans_width(&line.spans) <= 5));
+        assert_eq!(
+            copied(
+                narrow.iter().enumerate().map(|(n, line)| ((0, n), line)),
+                ((0, 0, 0), (0, narrow.len() - 1, 4)),
+            )
+            .as_deref(),
+            Some(user.text.as_str())
+        );
+    }
+
     /// "Working…" stands where the agent's output comes next: above a
     /// note the agent hasn't read, which waits at the end.
     #[test]
@@ -2839,7 +2966,10 @@ mod tests {
         let shown = rows(&mut t, &full(), 40, 5);
         assert_eq!(shown[..2], ["▸ $ make · ✓", ""]);
         assert!(is_working(&shown[2]), "{shown:?}");
-        assert_eq!(shown[3..], ["", "▎ Use tabs.  pending"]);
+        assert_eq!(
+            shown[3..],
+            ["", &format!("▎ Use tabs.{}pending", " ".repeat(22))]
+        );
     }
 
     /// In a worker's own view, "Working…" says the worker waits on its
@@ -2984,7 +3114,7 @@ mod tests {
             [
                 "  It turned out to be a kit fix, so that went to the kit.",
                 "",
-                "▎ Keep the old name.  pending",
+                &format!("▎ Keep the old name.{}pending", " ".repeat(33)),
             ]
         );
         assert_eq!(colours, Some((theme.dim, theme.dim)));

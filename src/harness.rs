@@ -3501,8 +3501,8 @@ impl Harness {
             }
             .message(&report);
         }
-        if let Some(opening) = opening {
-            self.say(Level::Info, &format!("  {}", opening.notice()));
+        if let Some(notice) = opening.and_then(Opening::notice) {
+            self.say(Level::Info, &format!("  {notice}"));
         }
         if resumes {
             self.say(
@@ -7378,7 +7378,7 @@ pub(crate) mod tests {
                         serde_json::json!({"questions": [
                             {"question": "Tabs or spaces?", "choices": ["Tabs", "Spaces"], "default": "Spaces"},
                             {"question": "Push now?", "default": "not yet"}
-                        ]}),
+                        ], "wait": false}),
                     )
                 }
             })
@@ -7434,6 +7434,14 @@ pub(crate) mod tests {
         .unwrap();
         assert!(matches!(news, News::Done));
         assert_eq!(summary(&harness), "Used spaces.");
+        // The answers' turn has no line saying they go to the agent.
+        assert!(
+            !shown(&harness.feed)
+                .iter()
+                .any(|(kind, _, _)| kind == "notice"),
+            "{:?}",
+            shown(&harness.feed)
+        );
         // It reached the agent, so it isn't kept for the next turn.
         let run = harness.conversations.current_run().unwrap();
         assert!(harness.feed.queued_notes(run).is_empty());
@@ -7504,7 +7512,7 @@ pub(crate) mod tests {
                     tool_call(
                         "m1",
                         ASK_USER_TOOL_NAME,
-                        serde_json::json!({"questions": ["Tabs or spaces?"]}),
+                        serde_json::json!({"questions": ["Tabs or spaces?"], "wait": false}),
                     )
                 }
             })
@@ -7540,10 +7548,10 @@ pub(crate) mod tests {
         drop(answering.await.unwrap());
     }
 
-    /// A question the agent waits for (`wait: true`) takes the panel's
-    /// answer at once, as the note.
+    /// A question waits by default and takes the panel's answer at once,
+    /// as the note.
     #[tokio::test]
-    async fn a_question_waited_for_takes_the_panels_answer() {
+    async fn a_question_waits_by_default_and_takes_the_panels_answer() {
         use crate::mock_model::{ModelServer, complete, tool_call};
         let server = ModelServer::start(Arc::new(move |_, body: String| {
             Box::pin(async move {
@@ -7554,8 +7562,7 @@ pub(crate) mod tests {
                         "m1",
                         ASK_USER_TOOL_NAME,
                         serde_json::json!({
-                            "questions": [{"question": "Push now?", "default": "not yet"}],
-                            "wait": true
+                            "questions": [{"question": "Push now?", "default": "not yet"}]
                         }),
                     )
                 }
@@ -7856,7 +7863,7 @@ pub(crate) mod tests {
                         tool_call(
                             "m1",
                             ASK_USER_TOOL_NAME,
-                            serde_json::json!({"questions": ["Tabs?", "Push now?"]}),
+                            serde_json::json!({"questions": ["Tabs?", "Push now?"], "wait": false}),
                         )
                     }
                 })
@@ -7988,7 +7995,7 @@ pub(crate) mod tests {
                         tool_call(
                             "m1",
                             ASK_USER_TOOL_NAME,
-                            serde_json::json!({"questions": ["Tabs or spaces?"]}),
+                            serde_json::json!({"questions": ["Tabs or spaces?"], "wait": false}),
                         )
                     }
                 })
@@ -8079,7 +8086,7 @@ pub(crate) mod tests {
                     tool_call(
                         "m1",
                         ASK_USER_TOOL_NAME,
-                        serde_json::json!({"questions": ["Tabs or spaces?"]}),
+                        serde_json::json!({"questions": ["Tabs or spaces?"], "wait": false}),
                     )
                 }
             })
@@ -8149,7 +8156,7 @@ pub(crate) mod tests {
                         tool_call(
                             "m1",
                             ASK_USER_TOOL_NAME,
-                            serde_json::json!({"questions": ["Tabs or spaces?"]}),
+                            serde_json::json!({"questions": ["Tabs or spaces?"], "wait": false}),
                         )
                     }
                 })
@@ -8467,7 +8474,7 @@ pub(crate) mod tests {
                     tool_call(
                         "m1",
                         ASK_USER_TOOL_NAME,
-                        serde_json::json!({"questions": ["Tabs?", "Push now?"]}),
+                        serde_json::json!({"questions": ["Tabs?", "Push now?"], "wait": false}),
                     )
                 }
             })
@@ -8546,13 +8553,13 @@ pub(crate) mod tests {
                     tool_call(
                         "m3",
                         ASK_USER_TOOL_NAME,
-                        serde_json::json!({"questions": ["Which branch?"]}),
+                        serde_json::json!({"questions": ["Which branch?"], "wait": false}),
                     )
                 } else {
                     tool_call(
                         "m1",
                         ASK_USER_TOOL_NAME,
-                        serde_json::json!({"questions": ["Tabs?", "Push now?"]}),
+                        serde_json::json!({"questions": ["Tabs?", "Push now?"], "wait": false}),
                     )
                 }
             })
