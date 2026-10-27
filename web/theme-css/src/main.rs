@@ -204,10 +204,14 @@ fn slug(name: &str) -> String {
 fn block(theme: &Theme, fallback: &Theme, indent: &str) -> String {
     let mut css = String::new();
     for (name, tokens) in VARIABLES {
-        let color = [theme, fallback]
-            .iter()
-            .find_map(|theme| tokens.iter().find_map(|token| color(&theme.value, token)))
-            .unwrap_or_else(|| fail(&format!("{} sets none of {tokens:?}", theme.name)));
+        let color = if *name == "surface" {
+            editor_background(theme)
+        } else {
+            [theme, fallback]
+                .iter()
+                .find_map(|theme| tokens.iter().find_map(|token| color(&theme.value, token)))
+                .unwrap_or_else(|| fail(&format!("{} sets none of {tokens:?}", theme.name)))
+        };
         css.push_str(&format!("{indent}--{name}: {color};\n"));
     }
     // A chosen segment's outline is the field border where a theme sets one
@@ -233,6 +237,65 @@ fn block(theme: &Theme, fallback: &Theme, indent: &str) -> String {
     css.push_str(&format!("{indent}--shine-toward: {shine};\n"));
     css.push_str(&format!("{indent}color-scheme: {scheme};\n"));
     css
+}
+
+/// The editor's surface, as GPUI Kit's `editor_background` gives it: the
+/// theme's `highlight.editor.background`, else that of the kit's built-in
+/// highlight colors when the theme has none at all, else the input
+/// background (the page's in a light theme, the field border at 30 % over
+/// it in a dark one).
+fn editor_background(theme: &Theme) -> String {
+    if let Some(color) = color(&theme.value, "highlight.editor.background") {
+        return color;
+    }
+    if theme.value["highlight"].is_null() {
+        // The editor background of the kit's default-theme.json.
+        return if theme.dark { "#0a0a0a" } else { "#ffffff" }.into();
+    }
+    let background = color(&theme.value, "background")
+        .unwrap_or_else(|| fail(&format!("{} has no background", theme.name)));
+    if !theme.dark {
+        return background;
+    }
+    let input = color(&theme.value, "input.border").or_else(|| color(&theme.value, "border"));
+    match (input.as_deref().and_then(rgba), rgba(&background)) {
+        (Some(input), Some(under)) => over(input, 0.3, under),
+        _ => background,
+    }
+}
+
+/// A `#rgb`, `#rrggbb` or `#rrggbbaa` color's channels, alpha last (0–1).
+fn rgba(hex: &str) -> Option<[f64; 4]> {
+    let hex = hex.strip_prefix('#')?;
+    let digits: Vec<u8> = match hex.len() {
+        3 | 4 => hex
+            .chars()
+            .flat_map(|c| [c, c])
+            .collect::<String>()
+            .into_bytes(),
+        6 | 8 => hex.as_bytes().to_vec(),
+        _ => return None,
+    };
+    let channel = |at: usize| -> Option<f64> {
+        let pair = std::str::from_utf8(digits.get(at..at + 2)?).ok()?;
+        Some(u8::from_str_radix(pair, 16).ok()? as f64 / 255.0)
+    };
+    Some([
+        channel(0)?,
+        channel(2)?,
+        channel(4)?,
+        if digits.len() == 8 { channel(6)? } else { 1.0 },
+    ])
+}
+
+/// `color` at `opacity` (times its own alpha) painted over `under`, as `#rrggbb`.
+fn over(color: [f64; 4], opacity: f64, under: [f64; 4]) -> String {
+    let alpha = color[3] * opacity;
+    let channel = |at: usize| {
+        let value = color[at] * alpha + under[at] * (1.0 - alpha);
+        (value * 255.0).round().clamp(0.0, 255.0) as u8
+    };
+    format!("#{:02X}{:02X}{:02X}", channel(0), channel(1), channel(2))
 }
 
 /// A highlight name as CSS names it (`string-escape`).
@@ -329,4 +392,39 @@ fn write(path: &Path, text: &str) {
 fn fail(message: &str) -> ! {
     eprintln!("theme-css: {message}");
     std::process::exit(1);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn theme(dark: bool, value: Value) -> Theme {
+        Theme {
+            name: "Test".into(),
+            slug: "test".into(),
+            dark,
+            value,
+        }
+    }
+
+    #[test]
+    fn the_editor_surface_falls_back_as_the_kits_does() {
+        let colors = serde_json::json!({ "background": "#101010", "input.border": "#707070" });
+        let own = serde_json::json!({ "colors": colors, "highlight": { "editor.background": "#202020" } });
+        assert_eq!(editor_background(&theme(true, own)), "#202020");
+        // The input background: the page's in a light theme, the field
+        // border at 30 % over it in a dark one.
+        let unset = serde_json::json!({ "colors": colors, "highlight": {} });
+        assert_eq!(editor_background(&theme(false, unset.clone())), "#101010");
+        assert_eq!(editor_background(&theme(true, unset)), "#2D2D2D");
+        // No highlight colors at all: the kit's built-in ones.
+        let none = serde_json::json!({ "colors": colors });
+        assert_eq!(editor_background(&theme(true, none.clone())), "#0a0a0a");
+        assert_eq!(editor_background(&theme(false, none)), "#ffffff");
+        // A translucent border counts its own alpha too.
+        assert_eq!(
+            over([1.0, 1.0, 1.0, 0.5], 0.3, [0.0, 0.0, 0.0, 1.0]),
+            "#262626"
+        );
+    }
 }

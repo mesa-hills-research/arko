@@ -536,11 +536,15 @@ details.more > summary { width: max-content; padding: 4px 0; color: var(--link);
 .md hr { margin: 1em 0; border: 0; border-top: 1px solid var(--line); }
 .md a { color: var(--link); text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
 .md code { padding: 1px 4px; border-radius: var(--r-sm); background: var(--code); font: 0.88em var(--mono); }
+/* A code block is on the editor's surface, as GPUI Kit draws one, where every
+   theme's syntax colors read. Its hairline keeps it apart from a page of the
+   same color (macOS Classic Dark). */
 .md pre {
   padding: 10px 12px;
   overflow-x: auto;
+  border: 1px solid var(--line);
   border-radius: var(--r-md);
-  background: var(--code);
+  background: var(--surface);
   font: 12.5px/1.5 var(--mono);
 }
 .md pre code { padding: 0; background: none; font: inherit; white-space: pre; }

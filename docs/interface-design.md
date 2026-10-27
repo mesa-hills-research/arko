@@ -30,8 +30,8 @@ as CSS variables that `web/theme-css` writes. Each variable takes the first toke
 | `--bg` | `background` | The window or page |
 | `--bar` | `title_bar.background`, `background` | Header and status bars |
 | `--bar-line` | `title_bar.border`, `border` | The bars' hairline |
-| `--surface` | `highlight.editor.background`, `background` | Fields, cards, docked blocks |
-| `--code` | `list.even.background`, `muted.background` | Code, command output |
+| `--surface` | `highlight.editor.background`, else the input background as GPUI Kit's `editor_background` gives it (`background` in light themes, `input.border` at 30 % over it in dark ones) | Fields, cards, docked blocks, code blocks |
+| `--code` | `list.even.background`, `muted.background` | Inline code, command output, table heads |
 | `--secondary`, `--secondary-hover` | `secondary.background`, `secondary.hover.background` | Standard buttons |
 | `--text` | `foreground` | Body text |
 | `--muted` | `muted.foreground` | Metadata, tool lines, placeholders |
