@@ -353,9 +353,8 @@ impl App {
             self.say("Nothing to send yet. Pick a choice, or type an answer");
             return;
         }
-        for given in &answers {
-            self.panel.drafts.remove(&given.id);
-        }
+        // The drafts stay until their questions settle: answers too long
+        // to send settle nothing, and can be shortened.
         self.close_panel();
         self.effects_push(Effect::Input(Input::AnswerQuestions(Answers { answers })));
         self.transcript.follow();

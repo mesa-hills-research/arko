@@ -700,6 +700,11 @@ async fn message(
         && let Some(text) = typed(&body.text)
         && crate::commands::find(&text).is_none()
     {
+        if let Some(refusal) =
+            crate::questions::reply_refusal(&app.feed.open_questions(), &body.answers, &text)
+        {
+            return too_long(&refusal);
+        }
         return app.act(Action::Reply {
             text,
             answers: body.answers,
@@ -749,19 +754,29 @@ async fn answer(
         )
             .into_response();
     };
-    if !app
+    let open: Vec<_> = app
         .feed
         .card_questions(question)
-        .iter()
-        .any(|asked| asked.state.is_open())
-    {
+        .into_iter()
+        .filter(|asked| asked.state.is_open())
+        .collect();
+    if open.is_empty() {
         return (
             StatusCode::CONFLICT,
             error_body("that question is no longer asked"),
         )
             .into_response();
     }
+    let ids: Vec<String> = open.iter().map(|asked| asked.id.clone()).collect();
+    if let Some(refusal) = crate::questions::reply_refusal(&open, &ids, &text) {
+        return too_long(&refusal);
+    }
     app.act(Action::Answer { question, text })
+}
+
+/// The 413 for answers too long to send, with what to shorten them to.
+fn too_long(refusal: &str) -> Response {
+    (StatusCode::PAYLOAD_TOO_LARGE, error_body(refusal)).into_response()
 }
 
 /// The 409 for questions that aren't open.
@@ -777,7 +792,8 @@ fn not_open() -> Response {
 /// `{"answers": [{"id": "q3", "choices": ["Spaces"]}, {"id": "q4", "you_decide": true}, {"id": "q5", "text": "..."}, {"id": "q6"}]}`:
 /// the answer panel's answers to the main agent's open questions, naming
 /// every question it shows (`{"id": "q6"}` unanswered). Those unanswered
-/// stay open. 409 when none of the questions it names is open.
+/// stay open. 409 when none of the questions it names is open, and 413,
+/// with what to shorten them to, when the answers are too long to send.
 async fn answer_questions(
     State(app): State<Arc<App>>,
     ConnectInfo(peer): Peer,
@@ -804,6 +820,9 @@ async fn answer_questions(
         .any(|given| open.iter().any(|question| question.id == given.id))
     {
         return not_open();
+    }
+    if let Some(refusal) = crate::questions::answers_refusal(&open, &answers) {
+        return too_long(&refusal);
     }
     app.act(Action::AnswerQuestions(answers))
 }
@@ -2048,6 +2067,34 @@ mod tests {
             )
             .await;
         assert_eq!(response.status(), StatusCode::CONFLICT);
+        // Answers too long for the note that carries them are refused before
+        // anything is taken: an answer, and a message that answers.
+        let long = "x".repeat(crate::questions::MAX_ANSWER_NOTE_BYTES);
+        for (path, body) in [
+            (
+                "/api/questions/answer",
+                serde_json::json!({"answers": [{"id": "q1", "text": long}]}),
+            ),
+            (
+                "/api/message",
+                serde_json::json!({"text": long, "answers": ["q1"]}),
+            ),
+        ] {
+            let response = served.post(path, Some(&cookie), &body.to_string()).await;
+            assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE, "{path}");
+            let error: serde_json::Value =
+                serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
+            let error = error["error"].as_str().unwrap().to_string();
+            assert!(
+                [
+                    "Your answer is too long to send. Shorten it to 15 KB.",
+                    "Your message is too long to send as an answer. Shorten it to 15 KB.",
+                ]
+                .contains(&error.as_str()),
+                "{error}"
+            );
+        }
+        assert_eq!(feed.open_questions().len(), 2);
         let response = served
             .post(
                 "/api/questions/dismiss",

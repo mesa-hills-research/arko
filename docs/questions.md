@@ -47,7 +47,9 @@ copies as the rest of the transcript does.
 Each question has an id that is unique in the session (`q1`, `q2`, ...), which the agent uses and
 you don't see. Each time you send answers, the agent gets one note. An idle agent starts a turn with
 it, as it does with a worker's report. An agent that waits for the answers hears that you replied,
-and the note follows.
+and the note follows. The note names each question by a short excerpt and gives your answers
+whole. Answers too long for one note (about 16 KB) aren't sent. Arko says how short to make them,
+and the questions stay open with what you typed in the panel.
 
 ```
 The user answered q3 and q4.
@@ -86,7 +88,10 @@ after its text.
 
 Both answer a 409 when none of the questions is open. An answer names every question its panel
 shows, an unanswered one by its id alone (`{"id": "q6"}`), and one with nothing filled in gets a
-400.
+400. Answers, or a message that answers questions, must fit in one note for the agent (16 KB,
+`arko::questions::MAX_ANSWER_NOTE_BYTES`, with each question named by a short excerpt). Longer ones
+get a 413 that says how short to make them ("Your answer is too long to send. Shorten it to 15
+KB."), and nothing is settled, so the questions stay open and a page keeps what was typed.
 
 An app does the same with `Input::AnswerQuestions`, `Input::DismissQuestions` and
 `Message::answers`. The types are in `arko::questions`.

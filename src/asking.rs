@@ -15,7 +15,7 @@
 //! when it goes on. Arko posts any kept note not posted yet, or lost with a
 //! crash, as the session opens.
 
-use arko_agents::questions::{self as notes, Answers, AskedQuestion, QuestionAnswer};
+use arko_agents::questions::{self as notes, Answers, QuestionAnswer};
 use uuid::Uuid;
 
 use crate::harness::{Conversation, Harness, News, Prompt, TurnEnd};
@@ -226,10 +226,18 @@ impl Harness {
 
     /// The user's answers from an answer panel, to the current
     /// conversation's questions. Those that are open now are answered, and
-    /// the others dropped. An approval's answer goes to it. Returns the
-    /// note kept for the agent (`None` when nothing was open).
+    /// the others dropped. An approval's answer goes to it. Answers too long
+    /// to send settle nothing, and the user is told. Returns the note kept
+    /// for the agent (`None` when nothing was open).
     pub(crate) fn answer_questions(&mut self, answers: Answers) -> Option<String> {
         let run = self.feed.questions_conversation();
+        if let Some(run) = run
+            && let Some(refusal) =
+                crate::questions::answers_refusal(&self.feed.open_questions_of(run), &answers)
+        {
+            self.say(Level::Warn, &refusal);
+            return None;
+        }
         // One answer for each question, the first filled in.
         let mut given: Vec<QuestionAnswer> = Vec::new();
         for answer in answers.answers {
@@ -252,23 +260,7 @@ impl Harness {
                     .map(|answer| answer.words(None))
                     .unwrap_or_default(),
             },
-            |settled, open| {
-                let agent: Vec<QuestionAnswer> = given
-                    .iter()
-                    .filter(|given| {
-                        is_agent_id(&given.id) && settled.iter().any(|q| q.id == given.id)
-                    })
-                    .cloned()
-                    .collect();
-                if agent.is_empty() {
-                    return None;
-                }
-                let asked: Vec<AskedQuestion> = settled.iter().map(AgentQuestion::asked).collect();
-                let still = agent_ids(&ids_of(open));
-                let ids = agent.iter().map(|given| given.id.clone()).collect();
-                let answers = Answers { answers: agent };
-                Some((ids, notes::answer_note(&asked, &answers, &still)))
-            },
+            |settled, open| crate::questions::answers_note(settled, open, &given),
         );
         if settled.is_empty() && pending.is_none() {
             self.feed
@@ -331,16 +323,7 @@ impl Harness {
     /// `None` when it answered a wait.
     pub(crate) fn reply_text(&mut self, text: &str, attached: &[String]) -> Option<Reply> {
         let run = self.feed.questions_conversation();
-        // Only a message without questions attached answers the waits.
-        let ids: Vec<String> = if attached.is_empty() {
-            self.waiting
-                .iter()
-                .filter(|waiting| Some(waiting.run) == run)
-                .flat_map(|waiting| waiting.ids.clone())
-                .collect()
-        } else {
-            attached.to_vec()
-        };
+        let ids = self.replied_ids(attached);
         let (settled, pending) = if ids.is_empty() {
             (Vec::new(), None)
         } else {
@@ -348,15 +331,7 @@ impl Harness {
                 run,
                 &ids,
                 |_| QuestionState::AnsweredInMessage,
-                |settled, open| {
-                    let agent = agent_ids(&ids_of(settled));
-                    let still = agent_ids(&ids_of(open));
-                    (!agent.is_empty()).then(|| {
-                        let labelled =
-                            notes::still_open(&notes::message_answers(&agent, text), &still);
-                        (agent, labelled)
-                    })
-                },
+                |settled, open| crate::questions::message_note(settled, open, text),
             )
         };
         let answered = ids_of(&settled);
@@ -383,6 +358,30 @@ impl Harness {
             text: pending.note,
             kept: true,
         })
+    }
+
+    /// The questions a message of the user's answers: those `attached` to
+    /// it, or, without any, those the agent waits for in the current
+    /// conversation.
+    fn replied_ids(&self, attached: &[String]) -> Vec<String> {
+        if !attached.is_empty() {
+            return attached.to_vec();
+        }
+        let run = self.feed.questions_conversation();
+        self.waiting
+            .iter()
+            .filter(|waiting| Some(waiting.run) == run)
+            .flat_map(|waiting| waiting.ids.clone())
+            .collect()
+    }
+
+    /// Why the user's message `text` can't be sent as the answer to the
+    /// questions it answers ([`reply_text`](Self::reply_text)), or `None`.
+    /// Checked before anything is settled, so they stay open.
+    pub(crate) fn reply_refused(&self, text: &str, attached: &[String]) -> Option<String> {
+        let ids = self.replied_ids(attached);
+        let run = self.feed.questions_conversation()?;
+        crate::questions::reply_refusal(&self.feed.open_questions_of(run), &ids, text)
     }
 
     /// The open questions of the card `item`, which an answer to it from
