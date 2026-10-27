@@ -10,12 +10,12 @@ use std::collections::{HashMap, VecDeque};
 use std::convert::Infallible;
 use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use axum::Router;
 use axum::body::Bytes;
-use axum::extract::{ConnectInfo, DefaultBodyLimit, State};
+use axum::extract::{ConnectInfo, DefaultBodyLimit, RawQuery, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
@@ -25,22 +25,33 @@ use subtle::ConstantTimeEq;
 use tokio::sync::{broadcast, mpsc, watch};
 use tokio::task::JoinHandle;
 
-use super::feed::{Activity, Feed, Update};
+use super::feed::{Activity, Feed, Item, Kind, Update};
+use super::highlight;
 use super::{Action, Info, Meter, Reading};
 
+// The page, written in Rust with Leptos in `web/` and built into `page/`.
 const INDEX: &str = include_str!("page/index.html");
-const SCRIPT: &str = include_str!("page/app.js");
+/// Starts the page, from a file of its own so the policy needs no exception
+/// for inline scripts.
+const BOOT: &str = include_str!("page/boot.js");
+const SCRIPT: &str = include_str!("page/arko-web.js");
+const WASM: &[u8] = include_bytes!("page/arko-web_bg.wasm");
 const STYLE: &str = include_str!("page/app.css");
+/// The default themes' colors.
+const THEMES: &str = include_str!("page/themes.css");
+/// Every theme's colors, loaded once a theme is chosen.
+const ALL_THEMES: &str = include_str!("page/all-themes.css");
 /// The mark, for the lock screen.
 const ICON: &str = include_str!("page/icon.svg");
 /// The mark drawn for 16 to 32 pixels, for the tab's icon.
 const ICON_SMALL: &str = include_str!("page/icon-small.svg");
 /// The mark on a tile, at 180 pixels, for a phone's home screen.
 const APPLE_ICON: &[u8] = include_bytes!("page/apple-touch-icon.png");
-const CORE: &str = include_str!("page/core.js");
 /// The page's monospace font, the same on every device (SIL Open Font
 /// License 1.1; see NOTICE).
 const MONO_FONT: &[u8] = include_bytes!("page/fonts/JetBrainsMono-Regular.ttf");
+/// The page may run its own files and WebAssembly, and reach only Arko.
+const POLICY: &str = "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; connect-src 'self'; img-src 'self'; font-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 
 /// The largest request body: a long message, pasted.
 const MAX_BODY: usize = 512 * 1024;
@@ -453,20 +464,82 @@ impl Drop for Server {
     }
 }
 
+/// The page's files that the HTML and `boot.js` ask for with the build's
+/// version, and their types.
+const BUILT: [(&str, &str); 6] = [
+    ("boot.js", "text/javascript; charset=utf-8"),
+    ("arko-web.js", "text/javascript; charset=utf-8"),
+    ("arko-web_bg.wasm", "application/wasm"),
+    ("app.css", "text/css; charset=utf-8"),
+    ("themes.css", "text/css; charset=utf-8"),
+    ("all-themes.css", "text/css; charset=utf-8"),
+];
+
+/// The build's version: a hash of the page's files, so another build's
+/// files have other addresses, and a browser never mixes the two.
+static VERSION: LazyLock<String> = LazyLock::new(|| {
+    version_of(&[
+        BOOT.as_bytes(),
+        SCRIPT.as_bytes(),
+        WASM,
+        STYLE.as_bytes(),
+        THEMES.as_bytes(),
+        ALL_THEMES.as_bytes(),
+    ])
+});
+
+/// The page's HTML, asking for its files with the build's version.
+static VERSIONED_INDEX: LazyLock<String> = LazyLock::new(|| {
+    BUILT.iter().fold(INDEX.to_string(), |index, (name, _)| {
+        index.replace(&format!("/{name}"), &format!("/{name}?v={}", *VERSION))
+    })
+});
+
+fn version_of(files: &[&[u8]]) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::hash::DefaultHasher::new();
+    files.hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
+}
+
 fn router(app: Arc<App>) -> Router {
-    Router::new()
-        .route(
-            "/",
-            get(|| async { file(INDEX, "text/html; charset=utf-8") }),
-        )
-        .route(
-            "/app.js",
-            get(|| async { file(SCRIPT, "text/javascript; charset=utf-8") }),
-        )
-        .route(
-            "/core.js",
-            get(|| async { file(CORE, "text/javascript; charset=utf-8") }),
-        )
+    let mut router = Router::new().route(
+        "/",
+        get(|headers: HeaderMap| async move {
+            packed(
+                &headers,
+                VERSIONED_INDEX.as_bytes(),
+                "text/html; charset=utf-8",
+            )
+        }),
+    );
+    for (name, kind) in BUILT {
+        let bytes: &'static [u8] = match name {
+            "boot.js" => BOOT.as_bytes(),
+            "arko-web.js" => SCRIPT.as_bytes(),
+            "arko-web_bg.wasm" => WASM,
+            "app.css" => STYLE.as_bytes(),
+            "themes.css" => THEMES.as_bytes(),
+            _ => ALL_THEMES.as_bytes(),
+        };
+        router = router.route(
+            &format!("/{name}"),
+            get(
+                move |headers: HeaderMap, RawQuery(query): RawQuery| async move {
+                    let mut response = packed(&headers, bytes, kind);
+                    // Asked for with this build's version, a file never changes.
+                    if query.is_some_and(|query| query == format!("v={}", *VERSION)) {
+                        response.headers_mut().insert(
+                            header::CACHE_CONTROL,
+                            HeaderValue::from_static("public, max-age=31536000, immutable"),
+                        );
+                    }
+                    response
+                },
+            ),
+        );
+    }
+    router
         .route(
             "/fonts/JetBrainsMono-Regular.ttf",
             get(|| async {
@@ -481,10 +554,6 @@ fn router(app: Arc<App>) -> Router {
                     .into_response()
             }),
         )
-        .route(
-            "/app.css",
-            get(|| async { file(STYLE, "text/css; charset=utf-8") }),
-        )
         .route("/icon.svg", get(|| async { file(ICON, "image/svg+xml") }))
         .route(
             "/icon-small.svg",
@@ -498,6 +567,14 @@ fn router(app: Arc<App>) -> Router {
         .route("/api/events", get(events))
         .route("/api/message", axum::routing::post(message))
         .route("/api/answer", axum::routing::post(answer))
+        .route(
+            "/api/questions/answer",
+            axum::routing::post(answer_questions),
+        )
+        .route(
+            "/api/questions/dismiss",
+            axum::routing::post(dismiss_questions),
+        )
         .route("/api/stop", axum::routing::post(stop))
         .route("/api/background", axum::routing::post(background))
         .route("/api/jobs/stop", axum::routing::post(stop_job))
@@ -511,6 +588,46 @@ fn router(app: Arc<App>) -> Router {
 
 fn file(text: &'static str, kind: &'static str) -> Response {
     ([(header::CONTENT_TYPE, kind)], text).into_response()
+}
+
+/// One of the page's files, gzipped for a browser that takes it. Each
+/// is compressed once, at its first request.
+fn packed(headers: &HeaderMap, bytes: &'static [u8], kind: &'static str) -> Response {
+    static PACKED: Mutex<Vec<(usize, &'static [u8])>> = Mutex::new(Vec::new());
+    let gzip = headers
+        .get(header::ACCEPT_ENCODING)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| {
+            value
+                .split(',')
+                .any(|coding| coding.trim().starts_with("gzip"))
+        });
+    if !gzip {
+        return ([(header::CONTENT_TYPE, kind)], bytes).into_response();
+    }
+    let key = bytes.as_ptr() as usize;
+    let mut packed = lock(&PACKED);
+    let body = match packed.iter().find(|(at, _)| *at == key) {
+        Some((_, body)) => *body,
+        None => {
+            use std::io::Write;
+            let mut encoder =
+                flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::best());
+            let _ = encoder.write_all(bytes);
+            let body: &'static [u8] = encoder.finish().unwrap_or_default().leak();
+            packed.push((key, body));
+            body
+        }
+    };
+    (
+        [
+            (header::CONTENT_TYPE, kind),
+            (header::CONTENT_ENCODING, "gzip"),
+            (header::VARY, "accept-encoding"),
+        ],
+        body,
+    )
+        .into_response()
 }
 
 /// Headers every response gets: no caching, sniffing, framing or
@@ -531,9 +648,7 @@ async fn harden(mut response: Response) -> Response {
         .or_insert(HeaderValue::from_static("no-store"));
     headers.insert(
         header::CONTENT_SECURITY_POLICY,
-        HeaderValue::from_static(
-            "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; font-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
-        ),
+        HeaderValue::from_static(POLICY),
     );
     response
 }
@@ -849,8 +964,10 @@ async fn session_open(
 /// workers, the background jobs and the status), then sends `item` (a new
 /// item), `append` (more text for an item), `change` (an item, changed: a
 /// call's outcome), `worker` (a worker's summary), `job` (a background
-/// job's summary) and `status` events. A stream that falls
-/// behind starts over with a `reset`.
+/// job's summary), `code` (the code blocks a streaming text finished,
+/// highlighted) and `status` events. An item's Markdown comes with its
+/// finished code blocks highlighted. A stream that falls behind starts over
+/// with a `reset`.
 async fn events(
     State(app): State<Arc<App>>,
     ConnectInfo(peer): Peer,
@@ -872,6 +989,7 @@ async fn events(
         status: String::new(),
         tick: tokio::time::interval(STATUS_EVERY),
         ending: false,
+        streaming: HashMap::new(),
     };
     stream.reset();
     let events = futures_util::stream::unfold(stream, Stream::next);
@@ -895,6 +1013,28 @@ struct Stream {
     tick: tokio::time::Interval,
     /// The server stopped: the stream ends once `pending` is sent.
     ending: bool,
+    /// The texts that may still stream, by item, with how many of their code
+    /// blocks were sent highlighted.
+    streaming: HashMap<u64, (String, usize)>,
+}
+
+/// An item as the page gets it: with its Markdown's finished code blocks
+/// highlighted.
+#[derive(Serialize)]
+struct PageItem<'a> {
+    #[serde(flatten)]
+    item: &'a Item,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    code: Vec<super::protocol::CodeSpans>,
+}
+
+impl<'a> PageItem<'a> {
+    fn of(item: &'a Item) -> Self {
+        PageItem {
+            item,
+            code: highlight::item_code(item),
+        }
+    }
 }
 
 impl Stream {
@@ -905,10 +1045,15 @@ impl Stream {
         self.pending.clear();
         self.status = self.app.status(&snapshot.activity);
         let status: serde_json::Value = serde_json::from_str(&self.status).unwrap_or_default();
+        self.streaming.clear();
+        let items: Vec<PageItem> = snapshot.items.iter().map(PageItem::of).collect();
+        for item in &items {
+            self.follow(item);
+        }
         self.pending.push_back(
             Event::default().event("reset").data(
                 serde_json::json!({
-                    "items": snapshot.items,
+                    "items": items,
                     "workers": snapshot.workers,
                     "jobs": snapshot.jobs,
                     "status": status,
@@ -929,21 +1074,38 @@ impl Stream {
 
     fn take(&mut self, update: Update) {
         match update {
-            Update::Item(item) => self.pending.push_back(
-                Event::default()
-                    .event("item")
-                    .data(serde_json::to_string(&item).unwrap_or_default()),
-            ),
-            Update::Append { id, text } => self.pending.push_back(
-                Event::default()
-                    .event("append")
-                    .data(serde_json::json!({ "id": id, "text": text }).to_string()),
-            ),
-            Update::Change(item) => self.pending.push_back(
-                Event::default()
-                    .event("change")
-                    .data(serde_json::to_string(&item).unwrap_or_default()),
-            ),
+            Update::Item(item) => {
+                let page_item = PageItem::of(&item);
+                self.follow(&page_item);
+                self.pending.push_back(
+                    Event::default()
+                        .event("item")
+                        .data(serde_json::to_string(&page_item).unwrap_or_default()),
+                );
+                // A command's answer comes as its setting changes, so the
+                // page shows the new value with it.
+                if matches!(item.kind, Kind::Output | Kind::Notice) {
+                    self.send_status();
+                }
+            }
+            Update::Append { id, text } => {
+                self.pending.push_back(
+                    Event::default()
+                        .event("append")
+                        .data(serde_json::json!({ "id": id, "text": &text }).to_string()),
+                );
+                self.appended(id, &text);
+            }
+            Update::Change(item) => {
+                self.streaming.remove(&item.id);
+                let page_item = PageItem::of(&item);
+                self.follow(&page_item);
+                self.pending.push_back(
+                    Event::default()
+                        .event("change")
+                        .data(serde_json::to_string(&page_item).unwrap_or_default()),
+                );
+            }
             Update::Worker(summary) => self.pending.push_back(
                 Event::default()
                     .event("worker")
@@ -952,11 +1114,14 @@ impl Stream {
             // (The page reads a worker's end in its summary.)
             Update::WorkerEnded { .. } => {}
             Update::Activity => self.send_status(),
-            Update::Remove { id } => self.pending.push_back(
-                Event::default()
-                    .event("remove")
-                    .data(serde_json::json!({ "id": id }).to_string()),
-            ),
+            Update::Remove { id } => {
+                self.streaming.remove(&id);
+                self.pending.push_back(
+                    Event::default()
+                        .event("remove")
+                        .data(serde_json::json!({ "id": id }).to_string()),
+                );
+            }
             Update::Job(summary) => self.pending.push_back(
                 Event::default()
                     .event("job")
@@ -972,6 +1137,47 @@ impl Stream {
         self.session
             .as_deref()
             .is_some_and(|hash| !self.app.sessions.is_alive(hash, now_secs()))
+    }
+
+    /// Keeps the text of an item that may still stream (an agent's text or
+    /// thinking), to highlight the code blocks it finishes. A stream follows
+    /// a few at a time, the newest.
+    fn follow(&mut self, page_item: &PageItem) {
+        const FOLLOWED: usize = 8;
+        let item = page_item.item;
+        if !matches!(item.kind, Kind::Text | Kind::Thinking) {
+            return;
+        }
+        self.streaming
+            .insert(item.id, (item.text.clone(), page_item.code.len()));
+        while self.streaming.len() > FOLLOWED {
+            let Some(oldest) = self.streaming.keys().min().copied() else {
+                break;
+            };
+            self.streaming.remove(&oldest);
+        }
+    }
+
+    /// More text for the item `id`: once a code block in it closes, its
+    /// highlighting goes out (`code`).
+    fn appended(&mut self, id: u64, text: &str) {
+        let Some((whole, sent)) = self.streaming.get_mut(&id) else {
+            return;
+        };
+        whole.push_str(text);
+        if !highlight::fence_line_ended(whole, text.len()) {
+            return;
+        }
+        let code = highlight::code_blocks(whole, true);
+        if code.len() > *sent {
+            let fresh = &code[*sent..];
+            *sent = code.len();
+            self.pending.push_back(
+                Event::default()
+                    .event("code")
+                    .data(serde_json::json!({ "id": id, "code": fresh }).to_string()),
+            );
+        }
     }
 
     async fn next(mut self) -> Option<(Result<Event, Infallible>, Self)> {
@@ -1022,6 +1228,10 @@ struct MessageBody {
     /// to that worker, as the full-screen view sends it.
     #[serde(default)]
     to: Option<String>,
+    /// The main agent's open questions the message answers (the
+    /// "Replying to" chip).
+    #[serde(default)]
+    answers: Vec<String>,
 }
 
 /// The text as typed: line ends as `\n`, and not blank.
@@ -1040,10 +1250,24 @@ async fn message(
     if let Err(refusal) = app.authorize(&headers, peer.ip()) {
         return refusal.into_response();
     }
-    match serde_json::from_slice::<MessageBody>(&body)
-        .ok()
-        .and_then(|body| Some((typed(&body.text)?, body.to)))
+    let Ok(body) = serde_json::from_slice::<MessageBody>(&body) else {
+        return (StatusCode::BAD_REQUEST, error_body("send {\"text\": ...}")).into_response();
+    };
+    // A reply to the main agent's questions.
+    if !body.answers.is_empty()
+        && body.to.is_none()
+        && let Some(text) = typed(&body.text)
+        && crate::commands::find(&text).is_none()
     {
+        if let Some(refused) = refused_reply(&app, &body.answers, &text) {
+            return refused;
+        }
+        return app.act(Action::Reply {
+            text,
+            answers: body.answers,
+        });
+    }
+    match typed(&body.text).map(|text| (text, body.to)) {
         // Text like "/usr/bin is missing" is a message, not a command.
         Some((text, Some(worker)))
             if crate::commands::find(&text).is_none()
@@ -1055,9 +1279,33 @@ async fn message(
                 text.trim()
             )))
         }
-        Some((text, _)) => app.act(Action::Message(text)),
+        Some((text, _)) => {
+            // While the agent waits, a message is the answer.
+            if crate::commands::find(&text).is_none()
+                && let Some(refused) = refused_reply(&app, &[], &text)
+            {
+                return refused;
+            }
+            app.act(Action::Message(text))
+        }
         None => (StatusCode::BAD_REQUEST, error_body("send {\"text\": ...}")).into_response(),
     }
+}
+
+/// The 413 for a message that answers questions (those `attached`, or
+/// without any, those the agent waits for) but is too long to send as their
+/// answer, as the session would refuse it after the page cleared its box.
+fn refused_reply(app: &App, attached: &[String], text: &str) -> Option<Response> {
+    let open = app.feed.open_questions();
+    let ids: Vec<String> = if attached.is_empty() {
+        open.iter()
+            .filter(|question| question.waits)
+            .map(|question| question.id.clone())
+            .collect()
+    } else {
+        attached.to_vec()
+    };
+    crate::questions::reply_refusal(&open, &ids, text.trim()).map(|refusal| too_long(&refusal))
 }
 
 #[derive(Deserialize)]
@@ -1087,19 +1335,108 @@ async fn answer(
         )
             .into_response();
     };
-    if app
+    let open: Vec<_> = app
         .feed
-        .activity()
-        .question
-        .is_none_or(|asked| asked.id != question)
-    {
+        .card_questions(question)
+        .into_iter()
+        .filter(|asked| asked.state.is_open())
+        .collect();
+    if open.is_empty() {
         return (
             StatusCode::CONFLICT,
             error_body("that question is no longer asked"),
         )
             .into_response();
     }
+    let ids: Vec<String> = open.iter().map(|asked| asked.id.clone()).collect();
+    if let Some(refusal) = crate::questions::reply_refusal(&open, &ids, &text) {
+        return too_long(&refusal);
+    }
     app.act(Action::Answer { question, text })
+}
+
+/// The 413 for answers too long to send, with what to shorten them to.
+fn too_long(refusal: &str) -> Response {
+    (StatusCode::PAYLOAD_TOO_LARGE, error_body(refusal)).into_response()
+}
+
+/// The 409 for questions that aren't open.
+fn not_open() -> Response {
+    (
+        StatusCode::CONFLICT,
+        error_body("those questions are no longer open"),
+    )
+        .into_response()
+}
+
+/// `POST /api/questions/answer` with
+/// `{"answers": [{"id": "q3", "choices": ["Spaces"]}, {"id": "q4", "you_decide": true}, {"id": "q5", "text": "..."}, {"id": "q6"}]}`:
+/// the answer panel's answers to the main agent's open questions, naming
+/// every question it shows (`{"id": "q6"}` unanswered). Those unanswered
+/// stay open. 409 when none of the questions it names is open, and 413,
+/// with what to shorten them to, when the answers are too long to send.
+async fn answer_questions(
+    State(app): State<Arc<App>>,
+    ConnectInfo(peer): Peer,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    if let Err(refusal) = app.authorize(&headers, peer.ip()) {
+        return refusal.into_response();
+    }
+    let Some(answers) = serde_json::from_slice::<crate::questions::Answers>(&body)
+        .ok()
+        .filter(|answers| !answers.is_empty())
+    else {
+        return (
+            StatusCode::BAD_REQUEST,
+            error_body("send {\"answers\": [{\"id\": \"q1\", \"choices\": [...], \"text\": ..., \"you_decide\": true}]}"),
+        )
+            .into_response();
+    };
+    let open = app.feed.open_questions();
+    if !answers
+        .answers
+        .iter()
+        .any(|given| open.iter().any(|question| question.id == given.id))
+    {
+        return not_open();
+    }
+    if let Some(refusal) = crate::questions::answers_refusal(&open, &answers) {
+        return too_long(&refusal);
+    }
+    app.act(Action::AnswerQuestions(answers))
+}
+
+#[derive(Deserialize)]
+struct DismissBody {
+    /// The questions to dismiss.
+    ids: Vec<String>,
+}
+
+/// `POST /api/questions/dismiss` with `{"ids": ["q5"]}`: "Not now". 409
+/// when none of them is open.
+async fn dismiss_questions(
+    State(app): State<Arc<App>>,
+    ConnectInfo(peer): Peer,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    if let Err(refusal) = app.authorize(&headers, peer.ip()) {
+        return refusal.into_response();
+    }
+    let Some(ids) = serde_json::from_slice::<DismissBody>(&body)
+        .ok()
+        .map(|body| body.ids)
+        .filter(|ids| !ids.is_empty())
+    else {
+        return (StatusCode::BAD_REQUEST, error_body("send {\"ids\": [...]}")).into_response();
+    };
+    let open = app.feed.open_questions();
+    if !ids.iter().any(|id| open.iter().any(|q| &q.id == id)) {
+        return not_open();
+    }
+    app.act(Action::DismissQuestions(ids))
 }
 
 /// A link to the page for `GET /api/links`.
@@ -1287,72 +1624,60 @@ async fn stop_job(
 mod tests {
     use super::*;
 
+    /// Whether the built page holds `text`, as its code writes it.
+    fn page_has(text: &str) -> bool {
+        WASM.windows(text.len())
+            .any(|bytes| bytes == text.as_bytes())
+    }
+
     /// The words of the workers' settings on the page are the library's, the
-    /// ones the terminal and an app show: the page's script and markup hold
-    /// them as the library writes them.
+    /// ones the terminal and an app show: the page holds them as the library
+    /// writes them.
     #[test]
     fn the_pages_worker_settings_use_the_librarys_words() {
         use crate::workers::{self, ModelChoice};
-        // The script writes each choice as `name: "..."` and `about: "..."`.
         for choice in ModelChoice::ALL {
-            assert!(
-                CORE.contains(&format!("name: \"{}\"", choice.label())),
-                "{}",
-                choice.label()
-            );
-            assert!(
-                CORE.contains(&format!("about: \"{}\"", choice.about())),
-                "{}",
-                choice.about()
-            );
+            assert!(page_has(choice.label()), "{}", choice.label());
+            assert!(page_has(choice.about()), "{}", choice.about());
         }
-        assert!(CORE.contains(&format!("\"{}\"", workers::depth_about())));
+        assert!(page_has(workers::depth_about()));
         // The page writes the cap's sentence for a number from a template.
-        assert!(CORE.contains(&format!("\"{}\"", workers::retry_cap_about(None))));
+        assert!(page_has(&workers::retry_cap_about(None)));
         for on in [true, false] {
-            assert!(
-                CORE.contains(&format!("\"{}\"", workers::copies_about(on))),
-                "{on}"
-            );
+            assert!(page_has(workers::copies_about(on)), "{on}");
         }
-        // The markup names the settings and says what the first does.
         for name in [
             workers::MODELS_NAME,
             workers::DEPTH_NAME,
             workers::RETRY_CAP_NAME,
             workers::COPIES_NAME,
         ] {
-            assert!(INDEX.contains(&format!(">{name}<")), "{name}");
-            assert!(INDEX.contains(&format!("aria-label=\"{name}\"")), "{name}");
+            assert!(page_has(name), "{name}");
         }
-        assert!(INDEX.contains(&format!(
+        assert!(page_has(&format!(
             "{} {}",
             workers::MODELS_ABOUT,
             workers::MODELS_APPLIES
         )));
-        // No curly apostrophe next to the straight ones.
-        assert!(!INDEX.contains("Session\u{2019}s"));
     }
 
     /// The words of the built-in skills setting on the page are the
-    /// library's, and its markup has the switch.
+    /// library's.
     #[test]
     fn the_pages_built_in_skills_setting_uses_the_librarys_words() {
         use crate::builtin_skills::{AFTER_START, SETTING_ABOUT, SETTING_NAME};
-        assert!(CORE.contains(SETTING_ABOUT));
-        assert!(CORE.contains(AFTER_START));
-        assert!(INDEX.contains(&format!(">{SETTING_NAME}<")));
-        assert!(INDEX.contains(&format!("aria-label=\"{SETTING_NAME}\"")));
+        assert!(page_has(SETTING_ABOUT));
+        assert!(page_has(AFTER_START));
+        assert!(page_has(SETTING_NAME));
     }
 
     /// A worker's meta line holds its model, profile and cost, which a phone
     /// would cut at the end if the line couldn't wrap.
     #[test]
     fn a_workers_meta_line_wraps_on_a_narrow_screen() {
-        let rule = STYLE
-            .lines()
-            .find(|line| line.starts_with(".wcard .wmeta {"))
-            .expect("the meta line's rule");
+        let start = STYLE.find(".wcard .wmeta{").expect("the meta line's rule");
+        let rule = &STYLE[start..start + STYLE[start..].find('}').unwrap()];
+        assert!(rule.contains("overflow-wrap:anywhere"), "{rule}");
         assert!(
             !rule.contains("nowrap") && !rule.contains("ellipsis"),
             "{rule}"
@@ -1812,9 +2137,433 @@ mod tests {
                 assert!(body.starts_with(b"<svg"), "{path}");
             }
         }
-        assert!(INDEX.contains(r#"<link rel="icon" href="/icon-small.svg""#));
-        assert!(INDEX.contains(r#"<link rel="apple-touch-icon" href="/apple-touch-icon.png">"#));
-        assert!(INDEX.contains(r#"<img src="/icon.svg""#));
+        // (The page is minified.)
+        assert!(INDEX.contains("<link href=/icon-small.svg rel=icon"));
+        assert!(INDEX.contains("<link href=/apple-touch-icon.png rel=apple-touch-icon>"));
+        assert!(page_has("/icon.svg"));
+    }
+
+    /// The page asks for its files with the build's version, a hash of
+    /// their bytes, so another build's files have other addresses, and a
+    /// browser never mixes two builds. With the version a file is kept for
+    /// good, and the HTML never is.
+    #[tokio::test]
+    async fn the_pages_files_have_the_builds_version_in_their_address() {
+        for (name, _) in BUILT.iter().filter(|(name, _)| *name != "all-themes.css") {
+            assert!(
+                VERSIONED_INDEX.contains(&format!("/{name}?v={}", *VERSION)),
+                "{name}"
+            );
+        }
+        assert!(BOOT.contains("import.meta.url).search"));
+        let version = |files: &[&str]| {
+            version_of(&files.iter().map(|file| file.as_bytes()).collect::<Vec<_>>())
+        };
+        assert_ne!(version(&["one build"]), version(&["another"]));
+        assert_ne!(version(&["ab", "c"]), version(&["a", "bc"]));
+
+        let feed = Feed::new("main");
+        let served = serve(&feed);
+        let page = served.get("/", None).await;
+        assert_eq!(page.headers()[header::CACHE_CONTROL], "no-store");
+        let script = served
+            .get(&format!("/arko-web.js?v={}", *VERSION), None)
+            .await;
+        assert_eq!(
+            script.headers()[header::CACHE_CONTROL],
+            "public, max-age=31536000, immutable"
+        );
+        // Another build's version gets this one's file, which no one keeps.
+        let other = served.get("/arko-web.js?v=0", None).await;
+        assert_eq!(other.headers()[header::CACHE_CONTROL], "no-store");
+    }
+
+    /// The page loads without the key, its policy lets it run WebAssembly
+    /// and nothing but its own files, and its files come gzipped to a
+    /// browser that takes it.
+    #[tokio::test]
+    async fn the_page_loads_its_webassembly_gzipped() {
+        let feed = Feed::new("main");
+        let served = serve(&feed);
+        let response = served.get("/", None).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let policy = response.headers()[header::CONTENT_SECURITY_POLICY]
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert!(
+            policy.contains("default-src 'none'; script-src 'self' 'wasm-unsafe-eval';"),
+            "{policy}"
+        );
+        assert!(response.text().await.unwrap().contains("/boot.js"));
+
+        let wasm = served
+            .http
+            .get(format!("{}/arko-web_bg.wasm", served.base))
+            .header(header::ACCEPT_ENCODING, "gzip, br")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(wasm.headers()[header::CONTENT_TYPE], "application/wasm");
+        assert_eq!(wasm.headers()[header::CONTENT_ENCODING], "gzip");
+        let packed = wasm.bytes().await.unwrap();
+        let mut unpacked = Vec::new();
+        std::io::Read::read_to_end(
+            &mut flate2::read::GzDecoder::new(&packed[..]),
+            &mut unpacked,
+        )
+        .unwrap();
+        assert_eq!(unpacked, WASM);
+        assert!(packed.len() < WASM.len() / 2);
+        let plain = served
+            .http
+            .get(format!("{}/arko-web.js", served.base))
+            .header(header::ACCEPT_ENCODING, "identity")
+            .send()
+            .await
+            .unwrap();
+        assert!(plain.headers().get(header::CONTENT_ENCODING).is_none());
+        assert_eq!(plain.bytes().await.unwrap(), SCRIPT.as_bytes());
+    }
+
+    /// The Rust page reads the stream with types of its own, compiled from
+    /// the same file as the server's. They read every field the server
+    /// writes of an item and its status, and (in tests) refuse a field they
+    /// don't know, so the two can't drift apart unnoticed.
+    #[tokio::test]
+    async fn the_rust_page_reads_what_the_stream_sends() {
+        use super::super::feed::{CallStatus, Delivery, Item, Kind, Level, Source};
+        use super::super::protocol::{ItemData, ResetData};
+        let mut item = Item::new(Kind::Call, "shell cargo test")
+            .detail("cargo test --lib")
+            .level(Level::Warn);
+        item.id = 7;
+        item.turn = Some(2);
+        item.source = Some(Source::Web);
+        item.delivery = Some(Delivery::Note);
+        item.status = Some(CallStatus::Failed);
+        item.outcome = Some("1 failed".into());
+        item.worker = Some("r1".into());
+        item.from = Some("main".into());
+        item.call = Some(6);
+        item.job = Some("job".into());
+        item.pending = true;
+        let read: ItemData = serde_json::from_value(serde_json::to_value(&item).unwrap()).unwrap();
+        assert_eq!(
+            (read.id, read.turn, read.kind, read.status, read.level),
+            (
+                7,
+                Some(2),
+                Kind::Call,
+                Some(CallStatus::Failed),
+                Some(Level::Warn)
+            )
+        );
+        assert_eq!(
+            (read.outcome.as_deref(), read.call, read.pending),
+            (Some("1 failed"), Some(6), true)
+        );
+
+        // A question card's questions, in every state and with every field.
+        let questions: Vec<crate::questions::AgentQuestion> = serde_json::from_value(serde_json::json!([
+            {"id": "q3", "question": "Tabs or spaces?", "choices": ["Tabs", "Spaces"], "multiple": true,
+             "default": "Spaces", "state": "open", "waits": true, "item": 8, "number": 1},
+            {"id": "q4", "question": "Push?", "state": "answered", "answer": "You decide", "item": 8, "number": 2},
+            {"id": "q5", "question": "Branch?", "state": "closed", "why": "In the README", "item": 8, "number": 3},
+            {"id": "q6", "question": "Rename?", "state": "answered_in_message", "item": 8, "number": 4},
+            {"id": "q7", "question": "Release?", "state": "dismissed", "item": 8, "number": 5},
+            {"id": "x1a2b3c4d", "question": "Save it?", "choices": ["Save", "Don't save"], "state": "open",
+             "waits": true, "item": 8, "number": 6,
+             "approval": {"name": "3d-judge", "model": "sol", "effort": "high", "scope": "every project",
+                          "description": "Judges 3D results", "instructions": "You judge 3D models."}},
+        ]))
+        .unwrap();
+        let mut card = Item::new(Kind::Question, crate::questions::card_line(&questions));
+        card.id = 8;
+        card.questions = Some(questions);
+        let read: ItemData = serde_json::from_value(serde_json::to_value(&card).unwrap()).unwrap();
+        let questions = read.questions.unwrap();
+        assert_eq!(read.text, "Arko asked 6 questions");
+        assert_eq!(
+            (
+                questions[0].choices.len(),
+                questions[0].multiple,
+                questions[0].default.as_deref(),
+                questions[0].waits
+            ),
+            (2, true, Some("Spaces"), true)
+        );
+        let states: Vec<_> = questions
+            .iter()
+            .map(|question| {
+                (
+                    question.state.as_str(),
+                    question.answer.as_deref(),
+                    question.why.as_deref(),
+                    question.number,
+                )
+            })
+            .collect();
+        assert_eq!(
+            states[..5],
+            [
+                ("open", None, None, Some(1)),
+                ("answered", Some("You decide"), None, Some(2)),
+                ("closed", None, Some("In the README"), Some(3)),
+                ("answered_in_message", None, None, Some(4)),
+                ("dismissed", None, None, Some(5)),
+            ]
+        );
+        let approval = questions[5].approval.as_ref().unwrap();
+        assert_eq!(
+            (
+                approval.name.as_str(),
+                approval.effort.as_deref(),
+                approval.instructions.as_str()
+            ),
+            ("3d-judge", Some("high"), "You judge 3D models.")
+        );
+
+        let feed = Feed::new("main");
+        feed.notice(Level::Info, "Resumed.");
+        feed.user("Hello", Source::Web, Delivery::Turn);
+        let served = serve(&feed);
+        let cookie = served.login().await;
+        let mut stream = served.get("/api/events", Some(&cookie)).await;
+        let mut buffer = String::new();
+        let events = read_until(&mut stream, &mut buffer, |name, _| name == "reset").await;
+        let reset: ResetData = serde_json::from_value(events.last().unwrap().1.clone()).unwrap();
+        assert_eq!(reset.items.len(), 2);
+        assert_eq!(reset.items[1].kind, Kind::User);
+        assert_eq!(reset.status.cost, 1.25);
+    }
+
+    /// The Rust page reads the workers, the jobs and every part of the status
+    /// it shows, with the values the server wrote. A worker's summary with a
+    /// field it doesn't know fails (in tests).
+    #[tokio::test]
+    async fn the_rust_page_reads_the_workers_jobs_and_status_the_stream_sends() {
+        use super::super::feed::{JobStart, WorkerChange, WorkerInfo};
+        use super::super::protocol::{JobKind, ResetData, WorkerState};
+        use super::super::{AgentStatus, BuiltinSkillSetting, CacheStatus, LiveSettings, Models};
+        let feed = Feed::new("main");
+        feed.worker("r1", "Fix the flaky test", WorkerChange::Started);
+        feed.worker("r2", "Check the docs", WorkerChange::Started);
+        feed.worker_under("r2", "r1");
+        let mut info = WorkerInfo::new();
+        info.model = Some("gpt-6-luna".into());
+        info.effort = Some("high".into());
+        info.profile = Some("quick".into());
+        info.depth = 2;
+        info.costs = Some((0.5, 0.75));
+        feed.worker_info("r2", info);
+        feed.worker(
+            "r2",
+            "Check the docs",
+            WorkerChange::Finished { report: "Done." },
+        );
+        feed.job_started(JobStart::new(
+            uuid::Uuid::new_v4(),
+            "r1",
+            JobKind::Command,
+            "cargo test",
+        ));
+        let reading = Reading {
+            cost: 2.5,
+            api_price: Some(4.0),
+            context_tokens: Some(1200),
+            plan_usage: Some("5h 12%".into()),
+            workers: Some("r1  running".into()),
+            settings: LiveSettings {
+                outside: true,
+                handover_at: 200_000,
+                workers_handover_at: 150_000,
+                text_replies: true,
+                extra_rules: crate::agents::ExtraRules::All,
+                project_instructions: crate::project::Files::Both,
+                worker_project_instructions: true,
+                background_after: 600,
+                monitor_wakes: crate::monitors::Wakes::Always,
+                monitor_wakes_within: Some(7200),
+                worker_models: crate::agents::ModelChoice::Profiles,
+                worker_depth: 3,
+                worker_retry_cap: Some(4),
+                message_copies: true,
+                builtin_skills: true,
+                builtin_skill_list: vec![BuiltinSkillSetting {
+                    name: "ponytail".into(),
+                    on: true,
+                }],
+                ..LiveSettings::default()
+            },
+            movable: vec![7],
+            questions: serde_json::from_value(serde_json::json!([
+                {"id": "q3", "question": "Tabs or spaces?", "state": "open", "item": 9}
+            ]))
+            .unwrap(),
+            models: Models {
+                main: "gpt-6-sol".into(),
+                workers: "gpt-6-luna".into(),
+                started: true,
+                has_workers: true,
+                ..Models::default()
+            },
+            agents: vec![AgentStatus {
+                id: "r1".into(),
+                context_tokens: Some(900),
+                context_window: Some(200_000),
+                handover_at: Some(150_000),
+                compacts: true,
+            }],
+            cache: CacheStatus {
+                lifetime: Some(Duration::from_secs(300)),
+                refreshed_at: Some(1000),
+                tokens: Some(1200),
+                miss_cost: Some(0.01),
+                ..CacheStatus::default()
+            },
+            ..Reading::default()
+        };
+        let info = Info {
+            model: "gpt-6-sol".into(),
+            workspace: "/work".into(),
+            session: "s1".into(),
+            app: "Arko Studio".into(),
+        };
+        let served = serve_with(
+            &feed,
+            "127.0.0.1:0",
+            info,
+            Arc::new(Moving(Mutex::new(reading))),
+        );
+        let cookie = served.login().await;
+        let mut stream = served.get("/api/events", Some(&cookie)).await;
+        let mut buffer = String::new();
+        let events = read_until(&mut stream, &mut buffer, |name, _| name == "reset").await;
+        let reset: ResetData = serde_json::from_value(events.last().unwrap().1.clone()).unwrap();
+
+        let r2 = reset
+            .workers
+            .iter()
+            .find(|worker| worker.id == "r2")
+            .unwrap();
+        assert_eq!(
+            (r2.state, r2.report.as_deref(), r2.parent.as_deref()),
+            (WorkerState::Finished, Some("Done."), Some("r1"))
+        );
+        assert_eq!(
+            (
+                r2.model.as_deref(),
+                r2.effort.as_deref(),
+                r2.profile.as_deref(),
+                r2.depth
+            ),
+            (Some("gpt-6-luna"), Some("high"), Some("quick"), 2)
+        );
+        assert_eq!((r2.cost_billed, r2.cost_list), (0.5, 0.75));
+        let r1 = reset
+            .workers
+            .iter()
+            .find(|worker| worker.id == "r1")
+            .unwrap();
+        assert_eq!(
+            (r1.state, r1.family_cost_billed),
+            (WorkerState::Running, 0.5)
+        );
+        assert_eq!(reset.jobs.len(), 1);
+        assert_eq!(
+            (
+                reset.jobs[0].agent.as_str(),
+                reset.jobs[0].kind,
+                reset.jobs[0].label.as_str()
+            ),
+            ("r1", JobKind::Command, "cargo test")
+        );
+
+        let status = reset.status;
+        assert_eq!(
+            (status.cost, status.api_price, status.context_tokens),
+            (2.5, Some(4.0), Some(1200))
+        );
+        assert_eq!(
+            (
+                status.plan_usage.as_deref(),
+                status.workers.as_deref(),
+                status.movable
+            ),
+            (Some("5h 12%"), Some("r1  running"), vec![7])
+        );
+        let settings = status.settings;
+        assert!(settings.outside && settings.text_replies && settings.worker_project_instructions);
+        assert!(
+            settings.message_copies && settings.builtin_skills && settings.builtin_skill_list[0].on
+        );
+        assert_eq!(
+            (
+                settings.handover_at,
+                settings.workers_handover_at,
+                settings.background_after
+            ),
+            (200_000, 150_000, 600)
+        );
+        assert_eq!(
+            (
+                settings.cc_compact,
+                settings.extra_rules.as_deref(),
+                settings.project_instructions.as_deref()
+            ),
+            (Some(false), Some("all"), Some("both"))
+        );
+        assert_eq!(
+            (
+                settings.monitor_wakes.as_deref(),
+                settings.monitor_wakes_within
+            ),
+            (Some("always"), Some(7200))
+        );
+        assert_eq!(
+            (
+                settings.worker_models.as_deref(),
+                settings.worker_depth,
+                settings.worker_retry_cap
+            ),
+            (Some("profiles"), Some(3), Some(4))
+        );
+        assert_eq!(
+            (
+                status.models.main.as_str(),
+                status.models.workers.as_str(),
+                status.models.started,
+                status.models.has_workers
+            ),
+            ("gpt-6-sol", "gpt-6-luna", true, true)
+        );
+        assert_eq!(
+            (
+                status.agents[0].id.as_str(),
+                status.agents[0].context_window,
+                status.agents[0].compacts
+            ),
+            ("r1", Some(200_000), true)
+        );
+        assert_eq!(
+            (
+                status.cache.lifetime,
+                status.cache.refreshed_at,
+                status.cache.tokens,
+                status.cache.miss_cost
+            ),
+            (Some(300_000), Some(1000), Some(1200), Some(0.01))
+        );
+        assert_eq!(status.questions[0].question, "Tabs or spaces?");
+        assert_eq!(
+            (
+                status.info.workspace.as_str(),
+                status.info.session.as_str(),
+                status.info.app.as_str()
+            ),
+            ("/work", "s1", "Arko Studio")
+        );
     }
 
     /// The page is open to all; the API answers 401 without the key, and
@@ -1831,7 +2580,7 @@ mod tests {
                 .unwrap()
                 .contains("script-src 'self'")
         );
-        assert!(page.text().await.unwrap().contains("/app.js"));
+        assert!(page.text().await.unwrap().contains("/boot.js"));
 
         for path in ["/api/session", "/api/events"] {
             let response = served.get(path, None).await;
@@ -2108,6 +2857,81 @@ mod tests {
         );
     }
 
+    /// An item's Markdown comes with its finished code blocks highlighted,
+    /// and a code block that a streaming text finishes comes highlighted as
+    /// soon as its fence closes.
+    #[tokio::test]
+    async fn code_blocks_come_highlighted_once_finished() {
+        use super::super::protocol::{CodeData, HIGHLIGHT_NAMES, ResetData, code_hash};
+        use arko_agents::AgentEvent;
+        use arko_workflows::WorkflowEvent;
+        let feed = Feed::new("main");
+        feed.reply("Done.\n\n```rust\nfn main() {}\n```");
+        let served = serve(&feed);
+        let cookie = served.login().await;
+        let mut stream = served.get("/api/events", Some(&cookie)).await;
+        let mut buffer = String::new();
+        let events = read_until(&mut stream, &mut buffer, |name, _| name == "reset").await;
+        let reset: ResetData = serde_json::from_value(events.last().unwrap().1.clone()).unwrap();
+        let code = &reset.items[0].code;
+        assert_eq!(code[0].hash, code_hash("fn main() {}\n"));
+        assert!(
+            code[0].spans.contains(&[
+                0,
+                2,
+                HIGHLIGHT_NAMES
+                    .iter()
+                    .position(|name| *name == "keyword")
+                    .unwrap() as u32
+            ]),
+            "{code:?}"
+        );
+
+        feed.turn_started();
+        let chunk = |text: &str| WorkflowEvent {
+            timestamp: chrono::Utc::now(),
+            workflow_run_id: uuid::Uuid::nil(),
+            agent_name: "main".into(),
+            agent_run_id: uuid::Uuid::nil(),
+            event: AgentEvent::AssistantResponseChunk(text.into()),
+        };
+        feed.event(&chunk("Next:\n\n```python\nx = 1\n"), None);
+        feed.event(&chunk("```\nAnd more"), None);
+        let events = read_until(&mut stream, &mut buffer, |name, _| name == "code").await;
+        let names: Vec<&str> = events.iter().map(|(name, _)| name.as_str()).collect();
+        assert_eq!(names, ["status", "item", "append", "code"]);
+        assert!(events[1].1.get("code").is_none(), "an open block waits");
+        let code: CodeData = serde_json::from_value(events[3].1.clone()).unwrap();
+        assert_eq!(code.id, events[1].1["id"].as_u64().unwrap());
+        assert_eq!(code.code[0].hash, code_hash("x = 1\n"));
+    }
+
+    /// A setting's new value comes with the command's answer, rather than
+    /// with the status the stream sends every 2 s, so the page's settings
+    /// show it at once.
+    #[tokio::test]
+    async fn a_settings_new_value_comes_with_the_commands_answer() {
+        use super::super::feed::Level;
+        let feed = Feed::new("main");
+        let meter = Arc::new(Moving(Mutex::new(Reading::default())));
+        let served = serve_with(&feed, "127.0.0.1:0", Info::default(), meter.clone());
+        let cookie = served.login().await;
+        let mut stream = served.get("/api/events", Some(&cookie)).await;
+        let mut buffer = String::new();
+        read_until(&mut stream, &mut buffer, |name, _| name == "reset").await;
+
+        lock(&meter.0).settings.extra_rules = crate::agents::ExtraRules::All;
+        feed.notice(Level::Info, "Extra rules for small models are set to all.");
+        let answer = read_until(&mut stream, &mut buffer, |name, _| name == "item").await;
+        // The status goes out with the answer, not with the check a while
+        // later, however busy the machine is.
+        let answered = Instant::now();
+        let status = read_until(&mut stream, &mut buffer, |name, _| name == "status").await;
+        assert!(answered.elapsed() < Duration::from_millis(500));
+        assert_eq!((answer.len(), status.len()), (1, 1));
+        assert_eq!(status[0].1["settings"]["extra_rules"], "all");
+    }
+
     /// The status carries the main agent's prompt cache once its lifetime
     /// and last use are known (the lifetime in milliseconds), which the
     /// page counts down in its header. Until then it carries none.
@@ -2262,7 +3086,22 @@ mod tests {
             )
             .await;
         assert_eq!(response.status(), StatusCode::CONFLICT);
-        let id = feed.question("Tabs or spaces?");
+        let run = uuid::Uuid::new_v4();
+        feed.questions_run(Some(run));
+        let id = feed.ask(
+            run,
+            &[crate::questions::AskedQuestion {
+                id: "q1".into(),
+                question: arko_agents::questions::Question {
+                    question: "Tabs or spaces?".into(),
+                    choices: vec!["Tabs".into(), "Spaces".into()],
+                    ..Default::default()
+                },
+            }],
+            false,
+            None,
+            None,
+        );
         let response = served
             .post(
                 "/api/answer",
@@ -2315,6 +3154,214 @@ mod tests {
         }
         // Without the session's cookie, nothing moves or stops.
         let response = served.post("/api/background", None, "{}").await;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    /// A plain message while the agent waits is the waited questions'
+    /// answer, so one too long to send as it is refused with a 413 before it
+    /// is taken, and the same message shorter goes. Without a wait, a long
+    /// message isn't held to it.
+    #[tokio::test]
+    async fn a_plain_message_too_long_for_a_waited_answer_is_refused() {
+        let feed = Feed::new("main");
+        let mut served = serve(&feed);
+        let cookie = served.login().await;
+        let long = "x".repeat(crate::questions::MAX_ANSWER_NOTE_BYTES);
+        let message = |text: &str| serde_json::json!({ "text": text }).to_string();
+        let run = uuid::Uuid::new_v4();
+        feed.questions_run(Some(run));
+        let asked = |id: &str| crate::questions::AskedQuestion {
+            id: id.into(),
+            question: arko_agents::questions::Question {
+                question: format!("{id}?"),
+                ..Default::default()
+            },
+        };
+        feed.ask(run, &[asked("q1")], false, None, None);
+        let response = served
+            .post("/api/message", Some(&cookie), &message(&long))
+            .await;
+        assert_eq!(response.status(), StatusCode::ACCEPTED, "no wait");
+        assert_eq!(
+            served.actions.recv().await.unwrap(),
+            Action::Message(long.clone())
+        );
+        feed.ask(run, &[asked("q2")], true, None, None);
+        let response = served
+            .post("/api/message", Some(&cookie), &message(&long))
+            .await;
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        let error: serde_json::Value =
+            serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
+        assert_eq!(
+            error["error"],
+            "Your message is too long to send as an answer. Shorten it to 15 KB."
+        );
+        assert_eq!(feed.open_questions().len(), 2);
+        let response = served
+            .post("/api/message", Some(&cookie), &message("main"))
+            .await;
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        assert_eq!(
+            served.actions.recv().await.unwrap(),
+            Action::Message("main".into())
+        );
+    }
+
+    /// The answer panel's endpoints: answers (per question a choice, text
+    /// or "you decide"), dismissals and a message that answers questions
+    /// become their actions. Questions that aren't open get a 409, a body
+    /// that says nothing a 400. An older page's "anything_else" is ignored.
+    #[tokio::test]
+    async fn questions_are_answered_dismissed_and_replied_to() {
+        use crate::questions::{Answer, Answers, QuestionAnswer};
+        let feed = Feed::new("main");
+        let mut served = serve(&feed);
+        let cookie = served.login().await;
+        let answer = r#"{"answers": [{"id": "q1", "choices": ["Spaces"]}, {"id": "q2", "you_decide": true}], "anything_else": "Keep it short."}"#;
+        // Nothing is open yet.
+        let response = served
+            .post("/api/questions/answer", Some(&cookie), answer)
+            .await;
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let response = served
+            .post(
+                "/api/questions/dismiss",
+                Some(&cookie),
+                r#"{"ids": ["q1"]}"#,
+            )
+            .await;
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+
+        let run = uuid::Uuid::new_v4();
+        feed.questions_run(Some(run));
+        let asked = |id: &str| crate::questions::AskedQuestion {
+            id: id.into(),
+            question: arko_agents::questions::Question {
+                question: format!("{id}?"),
+                ..Default::default()
+            },
+        };
+        feed.ask(run, &[asked("q1"), asked("q2")], false, None, None);
+        let response = served
+            .post("/api/questions/answer", Some(&cookie), answer)
+            .await;
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        assert_eq!(
+            served.actions.recv().await.unwrap(),
+            Action::AnswerQuestions(Answers {
+                answers: vec![
+                    QuestionAnswer::new(
+                        "q1",
+                        Answer {
+                            choices: vec!["Spaces".into()],
+                            ..Answer::default()
+                        }
+                    ),
+                    QuestionAnswer::new(
+                        "q2",
+                        Answer {
+                            you_decide: true,
+                            ..Answer::default()
+                        }
+                    ),
+                ],
+            })
+        );
+        for bad in [
+            "{}",
+            r#"{"answers": [{"id": "q1"}]}"#,
+            r#"{"anything_else": "Keep it short."}"#,
+            r#"{"answers": [{"id": "q1"}], "anything_else": "Keep it short."}"#,
+            "nonsense",
+        ] {
+            let response = served
+                .post("/api/questions/answer", Some(&cookie), bad)
+                .await;
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{bad}");
+        }
+        let response = served
+            .post(
+                "/api/questions/answer",
+                Some(&cookie),
+                r#"{"answers": [{"id": "q9", "text": "Yes"}]}"#,
+            )
+            .await;
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        // Answers too long for the note that carries them are refused before
+        // anything is taken: an answer, and a message that answers.
+        let long = "x".repeat(crate::questions::MAX_ANSWER_NOTE_BYTES);
+        for (path, body) in [
+            (
+                "/api/questions/answer",
+                serde_json::json!({"answers": [{"id": "q1", "text": long}]}),
+            ),
+            (
+                "/api/message",
+                serde_json::json!({"text": long, "answers": ["q1"]}),
+            ),
+        ] {
+            let response = served.post(path, Some(&cookie), &body.to_string()).await;
+            assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE, "{path}");
+            let error: serde_json::Value =
+                serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
+            let error = error["error"].as_str().unwrap().to_string();
+            assert!(
+                [
+                    "Your answer is too long to send. Shorten it to 15 KB.",
+                    "Your message is too long to send as an answer. Shorten it to 15 KB.",
+                ]
+                .contains(&error.as_str()),
+                "{error}"
+            );
+        }
+        assert_eq!(feed.open_questions().len(), 2);
+        let response = served
+            .post(
+                "/api/questions/dismiss",
+                Some(&cookie),
+                r#"{"ids": ["q2"]}"#,
+            )
+            .await;
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        assert_eq!(
+            served.actions.recv().await.unwrap(),
+            Action::DismissQuestions(vec!["q2".to_string()])
+        );
+        // Every question is named: a page can't dismiss questions it
+        // doesn't show (another conversation's).
+        for body in ["", "{}", r#"{"ids": []}"#] {
+            let response = served
+                .post("/api/questions/dismiss", Some(&cookie), body)
+                .await;
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{body}");
+        }
+        let response = served
+            .post(
+                "/api/questions/dismiss",
+                Some(&cookie),
+                r#"{"ids": ["q7"]}"#,
+            )
+            .await;
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+
+        let response = served
+            .post(
+                "/api/message",
+                Some(&cookie),
+                r#"{"text": "Spaces, and push.", "answers": ["q1", "q2"]}"#,
+            )
+            .await;
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        assert_eq!(
+            served.actions.recv().await.unwrap(),
+            Action::Reply {
+                text: "Spaces, and push.".into(),
+                answers: vec!["q1".into(), "q2".into()]
+            }
+        );
+        // Without the session's cookie, nothing is answered.
+        let response = served.post("/api/questions/answer", None, answer).await;
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 

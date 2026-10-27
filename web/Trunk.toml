@@ -1,0 +1,20 @@
+# Build with build.sh from this folder. The output goes where arko-tui
+# embeds it, and the server serves it at the root. Trunk empties that folder
+# on each build, so the icons and the font are copied in from assets/.
+[build]
+target = "index.html"
+dist = "../src/remote/page"
+public_url = "/"
+filehash = false
+# No integrity attributes: the page's own server serves every file.
+no_sri = true
+# The page starts from boot.js: an inline script would need an exception in
+# the Content-Security-Policy.
+inject_scripts = false
+minify = "on_release"
+
+# The colors, from the theme file, before each build.
+[[hooks]]
+stage = "pre_build"
+command = "cargo"
+command_arguments = ["run", "--quiet", "--locked", "-p", "theme-css", "--", "../themes", "style", "src/theme_list.rs"]

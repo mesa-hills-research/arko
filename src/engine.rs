@@ -897,7 +897,10 @@ impl Engine {
         let (questions_sender, questions) = mpsc::unbounded_channel();
         let asker = Arc::new(Asker {
             questions: interactive.then_some(questions_sender),
+            feed: Some(feed.clone()),
         });
+        // The main agent's questions, kept with the session.
+        feed.keep_questions(session.dir.join(crate::questions::FILE));
         // The workers, and those of a resumed session.
         let (crew, woken) = if settings.max_workers > 0 {
             let (crew, woken) = Crew::new(crew::Setup {
@@ -992,6 +995,8 @@ impl Engine {
             background: managers.background.clone(),
             interrupted_told: false,
             user_active_at: std::time::SystemTime::now(),
+            waiting: Vec::new(),
+            labelled: None,
         };
         // A chat has no project.
         if !chat {
@@ -2648,7 +2653,7 @@ mod tests {
                     tool_call(
                         "m1",
                         ASK_USER_TOOL_NAME,
-                        serde_json::json!({"questions": "Tabs or spaces?"}),
+                        serde_json::json!({"questions": "Tabs or spaces?", "wait": true}),
                     )
                 }
             })
@@ -2679,6 +2684,7 @@ mod tests {
             .send(Input::Message(crate::ui::Message {
                 text: "Indent the file.".into(),
                 images: Vec::new(),
+                answers: Vec::new(),
             }))
             .unwrap();
         let question = tokio::time::timeout(wait, async {
@@ -2781,6 +2787,7 @@ mod tests {
                 .send(Input::Message(crate::ui::Message {
                     text: text.into(),
                     images: Vec::new(),
+                    answers: Vec::new(),
                 }))
                 .unwrap();
             let replies = || {
@@ -2976,6 +2983,7 @@ mod tests {
         crate::ui::Message {
             text: text.into(),
             images: Vec::new(),
+            answers: Vec::new(),
         }
     }
 
@@ -3577,6 +3585,7 @@ mod tests {
             .send(Input::Message(crate::ui::Message {
                 text: "Look at this.".into(),
                 images: vec![attachment],
+                answers: Vec::new(),
             }))
             .unwrap();
         let first = answered(&seam, &bodies, 1).await;
@@ -3856,6 +3865,7 @@ mod tests {
                 .send(Input::Message(crate::ui::Message {
                     text: text.into(),
                     images: Vec::new(),
+                    answers: Vec::new(),
                 }))
                 .unwrap();
             let feed = seam.feed.clone();
@@ -3893,6 +3903,7 @@ mod tests {
             .send(Input::Message(crate::ui::Message {
                 text: "Slowly.".into(),
                 images: Vec::new(),
+                answers: Vec::new(),
             }))
             .unwrap();
         tokio::time::timeout(wait, async {
@@ -4475,6 +4486,115 @@ mod tests {
         assert_eq!(current.title, "Branched again.");
     }
 
+    /// The user answers one of two questions the agent waited for: the
+    /// other stays open, and the fresh conversation of the handover that
+    /// follows restates it, without the one answered.
+    #[tokio::test]
+    async fn a_handover_after_a_partial_answer_restates_the_question_left() {
+        use arko_agents::builtins::ASK_USER_TOOL_NAME;
+        let temp = tempfile::tempdir().unwrap();
+        let bodies: Arc<Mutex<Vec<String>>> = Arc::default();
+        let server = ModelServer::start(Arc::new({
+            let bodies = bodies.clone();
+            move |_, body: String| {
+                bodies.lock().unwrap().push(body.clone());
+                Box::pin(async move {
+                    if body.contains("# Your open questions") {
+                        complete("d", "Done after the handover.")
+                    } else if body.contains("Call `handover_report`") {
+                        tool_call(
+                            "r",
+                            arko_agents::handover::HANDOVER_REPORT_TOOL_NAME,
+                            serde_json::json!({"report": "Asked two questions."}),
+                        )
+                    } else if body.contains("Still open: q2.") {
+                        with_input(
+                            tool_call(
+                                "m",
+                                crate::message::MESSAGE_USER,
+                                serde_json::json!({"message": "Going on."}),
+                            ),
+                            40_000,
+                        )
+                    } else {
+                        tool_call(
+                            "a",
+                            ASK_USER_TOOL_NAME,
+                            serde_json::json!({
+                                "questions": ["Tabs or spaces?", "Push now?"],
+                                "wait": true
+                            }),
+                        )
+                    }
+                })
+            }
+        }))
+        .await;
+        let project = temp.path().join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        let running = spawn(
+            Options {
+                root: Some(temp.path().join("arko")),
+                workspace: Some(project),
+                model: Some("luna".into()),
+                openai_auth: Some(OpenAiAuth::ApiKey),
+                cache_1h: Some(false),
+                handover_at: Some(30_000),
+                client: Some(GivenClient(Arc::new(server.client()))),
+                ..Options::default()
+            },
+            Arc::new(NoPrompter),
+        );
+        let seam = tokio::time::timeout(Duration::from_secs(30), running.opened)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        seam.input
+            .send(Input::Message(app_message("Format the code.")))
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(30), async {
+            while seam.feed.open_questions().len() < 2 {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap();
+        seam.input
+            .send(Input::AnswerQuestions(crate::questions::Answers {
+                answers: vec![crate::questions::QuestionAnswer::new(
+                    "q1",
+                    crate::questions::Answer {
+                        text: Some("Spaces".into()),
+                        ..Default::default()
+                    },
+                )],
+            }))
+            .unwrap();
+        let fresh = tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                let found = bodies
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .find(|body| body.contains("# Your open questions"))
+                    .cloned();
+                if let Some(found) = found {
+                    return found;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(fresh.contains("q2 Push now?"), "{fresh}");
+        assert!(!fresh.contains("q1 Tabs or spaces?"), "{fresh}");
+        let open = seam.feed.open_questions();
+        assert_eq!(open.len(), 1);
+        assert_eq!(open[0].id, "q2");
+        quit(seam, running.ended).await;
+    }
+
     /// At the handover size a chat writes a summary in text, and the fresh
     /// conversation answers the message it was asked before. The messages
     /// from before the handover can't be edited any more.
@@ -4536,6 +4656,7 @@ mod tests {
                 .send(Input::Message(crate::ui::Message {
                     text: text.into(),
                     images: Vec::new(),
+                    answers: Vec::new(),
                 }))
                 .unwrap();
             tokio::time::timeout(wait, async {
@@ -4559,6 +4680,7 @@ mod tests {
             .send(Input::Message(crate::ui::Message {
                 text: "Hello again. And more.".into(),
                 images: Vec::new(),
+                answers: Vec::new(),
             }))
             .unwrap();
         tokio::time::timeout(wait, async {

@@ -18,3 +18,9 @@ Color themes (themes/*.json)
   Copyright 2024 - 2026 Longbridge
   Apache License 2.0, in themes/LICENSE-APACHE
   Each file names the author of its color scheme and links to the source.
+
+Highlight queries (src/remote/highlight/*.scm)
+  From GPUI Kit (https://github.com/mesa-hills-research/gpui_kit), which has
+  them from the tree-sitter grammar projects and GPUI Component
+  Apache License 2.0 and MIT License, each file's as
+  src/remote/highlight/NOTICE lists, with the MIT License's text

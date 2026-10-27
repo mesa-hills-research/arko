@@ -537,7 +537,7 @@ fn the_approval_question_shows_the_whole_profile() {
     let question = approval_text(&profile, Place::User);
     assert_eq!(
         question,
-        "The main agent wants to save the worker profile 3d-judge in your Arko folder, for every project.\n\nJudges 3D results against a reference image\nRuns on sol at high effort.\nIts instructions are 66 characters (3 lines).\n\nInstructions\nYou judge 3D models.\n\nCompare the render with the reference image.\n\nReply yes to save it, or tell the agent what to change."
+        "The main agent wants to save the worker profile 3d-judge in your Arko folder, for every project.\n\nJudges 3D results against a reference image\nRuns on sol at high effort.\nIts instructions are 66 characters (3 lines).\n\nInstructions\nYou judge 3D models.\n\nCompare the render with the reference image."
     );
     let project = approval_text(&profile, Place::Project);
     assert!(
@@ -559,38 +559,22 @@ fn the_approval_question_shows_the_whole_profile() {
 }
 
 #[test]
-fn only_a_plain_yes_approves() {
-    for yes in [
-        "yes",
-        "Yes",
-        "YES.",
-        "y",
-        "ok",
-        "OK!",
-        " okay ",
-        "allow",
-        "yes\n",
-        "Yes, please!",
-        "yes thanks",
-        "ok, please. thanks",
-    ] {
-        assert!(is_approval(yes), "{yes:?}");
-    }
-    for no in [
-        "",
-        "no",
-        "yes, but use high effort",
-        "yes please change the name",
-        "yes, please use high",
-        "please",
-        "thanks",
-        "no thanks",
-        "use high effort, not max",
-        "maybe",
-        "yep",
-    ] {
-        assert!(!is_approval(no), "{no:?}");
-    }
+fn an_approval_card_has_the_profiles_parts() {
+    let profile = full();
+    let card = approval(&profile, Place::Project);
+    assert_eq!(card.name, "3d-judge");
+    assert_eq!(card.model, "sol");
+    assert_eq!(card.effort.as_deref(), Some("high"));
+    assert_eq!(card.scope, "this project");
+    assert_eq!(
+        card.description,
+        "Judges 3D results against a reference image"
+    );
+    assert!(card.instructions.starts_with("You judge 3D models."));
+    let plain = approval(&Profile::new("quick", "Reads"), Place::User);
+    assert_eq!(plain.model, "the session's worker model");
+    assert_eq!(plain.effort, None);
+    assert_eq!(plain.scope, "every project");
 }
 
 #[test]

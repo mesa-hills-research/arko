@@ -58,7 +58,7 @@ struct Press {
     following: bool,
 }
 
-/// The left button pressed on the docked question's text: where the press
+/// The left button pressed on the answer panel's text: where the press
 /// began in it, where the mouse is, and whether it highlighted text (a
 /// drag, or a double or triple click), which is copied when the button is
 /// let go.
@@ -253,9 +253,9 @@ pub fn list_rows(
 }
 
 /// Since when the main agent works (Unix milliseconds), unless it waits
-/// for the user's answer (not on its model).
-fn agent_works_since(activity: &Activity) -> Option<i64> {
-    (activity.working && activity.question.is_none()).then(|| activity.since.unwrap_or(i64::MIN))
+/// for the user's answer (`waits`: not on its model).
+fn agent_works_since(activity: &Activity, waits: bool) -> Option<i64> {
+    (activity.working && !waits).then(|| activity.since.unwrap_or(i64::MIN))
 }
 
 /// The view's state.
@@ -281,8 +281,9 @@ pub struct App {
     pub last_turn: Option<Duration>,
     /// A stop was asked for the turn running.
     pub stopping: bool,
-    /// The question put off with Esc (by its ID).
-    pub put_off: Option<u64>,
+    /// The answer panel for the main agent's questions, and the questions
+    /// attached to the message box.
+    pub panel: super::questions::Panel,
     pub menu: Menu,
     pub overlay: Option<Overlay>,
     /// A word in the status line for a moment: "Copied", ...
@@ -297,17 +298,14 @@ pub struct App {
     effects: Vec<Effect>,
     /// The input box's width when last drawn, for ↑ and ↓.
     pub input_width: usize,
-    /// The question answered from here (by its ID).
-    answered: Option<u64>,
     /// The agent list has the focus, on this agent of [`App::list`] (0 is
     /// the main agent).
     pub list_focus: Option<usize>,
     /// The left button, while it is down over the transcript.
     press: Option<Press>,
-    /// The question docked above the status line, as last drawn, for the
-    /// mouse.
+    /// The answer panel's text, as last drawn, for the mouse.
     pub docked: Option<Docked>,
-    /// The left button, while it is down over the docked question's text.
+    /// The left button, while it is down over the answer panel's text.
     docked_press: Option<DockPress>,
     /// The last click: when, where, and how many in a row.
     last_click: Option<(Instant, u16, u16, u8)>,
@@ -389,7 +387,7 @@ impl App {
         let mouse = prefs.mouse.unwrap_or(true);
         let mut transcript = Transcript::new();
         let activity = snapshot.activity.clone();
-        transcript.working = agent_works_since(&activity);
+        transcript.working = agent_works_since(&activity, false);
         transcript.reset(snapshot);
         Self {
             transcript,
@@ -407,7 +405,7 @@ impl App {
             activity,
             reading: Reading::default(),
             stopping: false,
-            put_off: None,
+            panel: Default::default(),
             menu: Menu::default(),
             overlay: None,
             hint: None,
@@ -417,7 +415,6 @@ impl App {
             mouse,
             effects: Vec::new(),
             input_width: 80,
-            answered: None,
             list_focus: None,
             list_drawn: Default::default(),
             list_scroll: (0, 0),
@@ -461,7 +458,12 @@ impl App {
         if reading.models != self.reading.models {
             self.model_names.take();
         }
+        let questions = reading.questions != self.reading.questions;
         self.reading = reading;
+        if questions {
+            self.questions_changed();
+            self.transcript.working = agent_works_since(&self.activity, self.agent_waits());
+        }
     }
 
     /// `/model`'s picker for `target`. Once the conversation has started,
@@ -654,10 +656,8 @@ impl App {
         }
     }
 
-    /// The question waiting for an answer, unless it was put off.
-    pub fn question_shown(&self) -> Option<&crate::remote::Question> {
-        let question = self.activity.question.as_ref()?;
-        (self.put_off != Some(question.id)).then_some(question)
+    pub(super) fn effects_push(&mut self, effect: Effect) {
+        self.effects.push(effect);
     }
 
     /// The commands the menu offers for what is typed: the box holds a
@@ -877,11 +877,8 @@ impl App {
     }
 
     /// The activity changed: returns whether the bell should sound (the
-    /// agent asks, or finished, while the window isn't focused).
+    /// agent finished while the window isn't focused).
     pub fn set_activity(&mut self, activity: Activity) -> bool {
-        let asked = activity.question.is_some()
-            && activity.question.as_ref().map(|q| q.id)
-                != self.activity.question.as_ref().map(|q| q.id);
         let finished = self.activity.working && !activity.working;
         if activity.working && !self.activity.working {
             self.working_since = Some(Instant::now());
@@ -893,21 +890,10 @@ impl App {
             self.working_since = None;
             self.stopping = false;
         }
-        if asked {
-            self.put_off = None;
-        }
-        // Answered elsewhere (the web page) while an answer was typed here:
-        // the text stays, as a message now.
-        if let Some(question) = &self.activity.question
-            && activity.question.is_none()
-            && self.answered != Some(question.id)
-            && !self.editor.is_empty()
-        {
-            self.say("The question was answered elsewhere. Your text is a message now");
-        }
-        self.transcript.working = agent_works_since(&activity);
+        self.transcript.working = agent_works_since(&activity, self.agent_waits());
         self.activity = activity;
-        !self.focused && (asked || finished)
+        // (New questions ring when they come, see `questions_changed`.)
+        !self.focused && finished
     }
 
     // ----- keys -----
@@ -927,9 +913,30 @@ impl App {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let alt = key.modifiers.contains(KeyModifiers::ALT);
         let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+        self.panel.last_key = Some(Instant::now());
+        // The agent's questions, from anywhere: a window open comes back
+        // when the panel closes.
+        if let KeyCode::Char('q') = key.code
+            && alt
+            && !ctrl
+        {
+            self.list_focus = None;
+            return self.open_panel();
+        }
         if self.overlay.is_some() {
             self.overlay_key(key);
             return;
+        }
+        // The panel has the keys before the command menu, whose place it
+        // takes on the screen.
+        if self.panel.open && self.panel_key(key) {
+            return;
+        }
+        if let KeyCode::Char('n') = key.code
+            && ctrl
+            && !self.open_questions().is_empty()
+        {
+            return self.not_now();
         }
         if self.list_focus.is_some() && self.list_key(key) {
             return;
@@ -1036,6 +1043,9 @@ impl App {
                 }
             }
             KeyCode::Backspace if ctrl || alt => self.editor.kill_word(),
+            // In an empty box it takes off the questions attached, as it
+            // would an attachment.
+            KeyCode::Backspace if self.editor.is_empty() && self.detach() => {}
             KeyCode::Backspace => self.editor.backspace(),
             KeyCode::Delete => {
                 self.editor.delete();
@@ -1077,15 +1087,11 @@ impl App {
         self.typing();
     }
 
-    /// Text was typed or pasted: the question put off comes back to be
-    /// answered, and the menu opens again.
+    /// Text was typed or pasted: the menu opens again.
     fn typing(&mut self) {
         self.menu.selected = 0;
         self.menu.dismissed = None;
         self.menu.choice = None;
-        if !self.editor.starts_with('/') {
-            self.put_off = None;
-        }
     }
 
     /// A paste the terminal marked: into the box, or the keys menu's field.
@@ -1100,6 +1106,9 @@ impl App {
         }
         if self.overlay.is_some() {
             return;
+        }
+        if self.panel.open {
+            return self.panel_paste(text);
         }
         self.editor.paste(text);
         self.typing();
@@ -1132,10 +1141,6 @@ impl App {
         } else if self.watching.is_some() {
             self.watching = None;
             self.transcript.follow();
-        } else if let Some(question) = &self.activity.question
-            && self.put_off != Some(question.id)
-        {
-            self.put_off = Some(question.id);
         } else if !self.transcript.following() {
             self.transcript.follow();
         }
@@ -1443,15 +1448,48 @@ impl App {
             }
             return;
         }
+        // An answer too long to send stays in the box, with how short to
+        // make it: the questions attached, or those the agent waits for.
+        let replied: Vec<String> = if self.panel.attached.is_empty() {
+            self.open_questions()
+                .iter()
+                .filter(|question| question.waits)
+                .map(|question| question.id.clone())
+                .collect()
+        } else {
+            self.panel.attached.clone()
+        };
+        if let Some(refusal) =
+            crate::questions::reply_refusal(self.open_questions(), &replied, trimmed)
+        {
+            self.say(refusal);
+            return;
+        }
         let text = self.editor.take();
         self.menu = Menu::default();
-        self.put_off = None;
-        self.answered = self.activity.question.as_ref().map(|q| q.id);
         self.transcript.follow();
+        // The questions open now were seen.
+        let open: Vec<String> = self
+            .open_questions()
+            .iter()
+            .map(|question| question.id.clone())
+            .collect();
+        self.panel.seen.extend(open);
+        // With questions attached, it answers them, in any view.
+        let answers = std::mem::take(&mut self.panel.attached);
+        if !answers.is_empty() {
+            self.effects
+                .push(Effect::Input(Input::Message(crate::ui::Message {
+                    text: text.trim_end().to_string(),
+                    answers,
+                    ..Default::default()
+                })));
+            return;
+        }
         // In a worker's own view it goes to that worker, unless the main
-        // agent asks: then it is the answer, as anywhere.
+        // agent waits for an answer: then it is the answer, as anywhere.
         match &self.watching {
-            Some(id) if self.answered.is_none() => {
+            Some(id) if !self.agent_waits() => {
                 let line = format!("/message {id} {}", text.trim());
                 self.send(&line);
             }
@@ -2161,7 +2199,7 @@ impl App {
     // ----- the mouse -----
 
     /// The mouse: the wheel scrolls; a drag over the transcript, or over
-    /// the text of the question docked above the status line, highlights
+    /// the text of the answer panel, highlights
     /// text, copied when the button is let go (a double click a word, a
     /// triple click a line); a click (no drag) opens what it is on.
     pub fn mouse(&mut self, event: MouseEvent) {
@@ -2215,7 +2253,7 @@ impl App {
                     _ => 1,
                 };
                 self.last_click = Some((now, x, y, count));
-                // On the docked question's text, it selects that text.
+                // On the answer panel's text, it selects that text.
                 if let Some(docked) = &mut self.docked {
                     if docked.contains(x, y) {
                         let Some(spot) = docked.spot_at(x, y) else {
@@ -2450,6 +2488,15 @@ impl App {
             && self.watching.is_none()
         {
             self.watch(Some(worker));
+            return;
+        }
+        // The line of questions still open opens the answer panel on them.
+        if self
+            .transcript
+            .item(key)
+            .is_some_and(|item| item.kind == crate::remote::Kind::Question)
+        {
+            self.open_card(key);
         }
     }
 
@@ -2463,10 +2510,12 @@ impl App {
 
     /// The terminal's title: the state and the folder.
     pub fn title(&self) -> String {
-        let state = if self.activity.question.is_some() {
+        let state = if self.agent_waits() {
             "asks you"
         } else if self.activity.working {
             "working"
+        } else if !self.open_questions().is_empty() {
+            "asks you"
         } else {
             "idle"
         };
@@ -2477,7 +2526,7 @@ impl App {
 #[cfg(test)]
 pub(super) mod tests {
     use super::*;
-    use crate::remote::{Item, Kind, Question};
+    use crate::remote::{Item, Kind};
     use crate::tui::input::History;
 
     pub fn app() -> App {
@@ -2716,47 +2765,354 @@ pub(super) mod tests {
         type_text(&mut app, "/workers");
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         assert_eq!(sent(&mut app), ["/workers"]);
-        // The main agent's question takes the answer, in any view.
-        app.set_activity(Activity {
-            working: true,
-            since: None,
-            question: Some(Question {
-                id: 4,
-                text: "Tabs or spaces?".into(),
-            }),
-        });
+        // The main agent's question it waits for takes the answer, in any
+        // view. (Keys came just now: the panel stays closed.)
+        let mut waiting = asking();
+        waiting.questions.truncate(1);
+        waiting.questions[0].waits = true;
+        app.set_reading(waiting);
+        assert!(!app.panel.open);
         type_text(&mut app, "tabs");
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         assert_eq!(sent(&mut app), ["tabs"]);
         // Back on the main agent, a message is the main agent's.
         app.watch(None);
-        app.set_activity(Activity::default());
+        app.set_reading(Reading::default());
         type_text(&mut app, "Thanks.");
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         assert_eq!(sent(&mut app), ["Thanks."]);
     }
 
+    /// Open questions as the status has them: q1 with choices and a
+    /// default, q2 without.
+    pub fn asking() -> Reading {
+        use crate::questions::{AgentQuestion, QuestionState};
+        Reading {
+            questions: vec![
+                AgentQuestion {
+                    id: "q1".into(),
+                    question: "Tabs or spaces?".into(),
+                    choices: vec!["Tabs".into(), "Spaces".into()],
+                    multiple: false,
+                    default: Some("Spaces".into()),
+                    state: QuestionState::Open,
+                    waits: false,
+                    item: 7,
+                    number: Some(1),
+                    approval: None,
+                },
+                AgentQuestion {
+                    id: "q2".into(),
+                    question: "Which branch?".into(),
+                    choices: Vec::new(),
+                    multiple: false,
+                    default: None,
+                    state: QuestionState::Open,
+                    waits: false,
+                    item: 7,
+                    number: Some(2),
+                    approval: None,
+                },
+            ],
+            ..Reading::default()
+        }
+    }
+
+    fn inputs(app: &mut App) -> Vec<Input> {
+        app.take_effects()
+            .into_iter()
+            .filter_map(|effect| match effect {
+                Effect::Input(input) => Some(input),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// New questions open the answer panel when the box is empty and no key
+    /// came lately. While the user types, a chip says so instead, and Alt+Q
+    /// (Option+Q on a Mac) opens the panel.
     #[test]
-    fn a_question_docks_esc_puts_it_off_and_typing_brings_it_back() {
+    fn questions_open_the_panel_unless_the_user_is_typing() {
         let mut app = app();
-        let question = Question {
-            id: 4,
-            text: "Tabs or spaces?".into(),
-        };
-        app.focused = false;
-        assert!(app.set_activity(Activity {
-            working: true,
-            since: None,
-            question: Some(question.clone()),
-        }));
-        assert_eq!(app.question_shown(), Some(&question));
-        press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
-        assert_eq!(app.question_shown(), None);
-        assert_eq!(app.title(), "Arko · asks you · work");
-        type_text(&mut app, "spaces");
-        assert_eq!(app.question_shown(), Some(&question));
+        app.set_reading(asking());
+        assert!(app.panel.open);
+        assert_eq!(app.chip(), None);
+
+        let mut app = super::tests::app();
+        type_text(&mut app, "Hel");
+        app.set_reading(asking());
+        assert!(!app.panel.open);
+        assert_eq!(app.chip(), Some(super::super::questions::Chip::Asks(2)));
+        assert_eq!(app.chip().unwrap().text(), "Arko asks 2 questions");
+        press(&mut app, KeyCode::Char('q'), KeyModifiers::ALT);
+        assert!(app.panel.open);
+        assert_eq!(app.chip(), None);
+        // What was typed stays in the box.
+        assert_eq!(app.editor.shown(), "Hel");
+        // Without questions, Alt+Q says so.
+        app.set_reading(Reading::default());
+        assert!(!app.panel.open);
+        press(&mut app, KeyCode::Char('q'), KeyModifiers::ALT);
+        assert_eq!(app.hint(), Some("No open questions"));
+    }
+
+    /// Number keys pick a question's choices, or "You decide" after them.
+    /// ↓ goes from a question's choices to its Other field, where what is
+    /// typed is the answer, digits too, then on to the next question, and
+    /// after the last back to the first. A question without choices takes
+    /// typing at once.
+    /// Enter sends what's filled in.
+    #[test]
+    fn the_panel_picks_choices_and_sends_what_is_filled_in() {
+        use crate::questions::{Answer, Answers, QuestionAnswer};
+        let mut app = app();
+        app.set_reading(asking());
+        press(&mut app, KeyCode::Char('2'), KeyModifiers::NONE);
+        press(&mut app, KeyCode::Char('1'), KeyModifiers::NONE);
+        assert_eq!(app.panel.drafts["q1"].chosen, [0]);
+        press(&mut app, KeyCode::Down, KeyModifiers::NONE);
+        assert!(app.panel.typing && app.focus_index() == 0);
+        press(&mut app, KeyCode::Down, KeyModifiers::NONE);
+        // q2 has no choices: its Other field has the keys.
+        assert!(app.panel.typing && app.focus_index() == 1);
+        type_text(&mut app, "2 hours");
+        assert_eq!(app.panel.drafts["q2"].other, "2 hours");
+        // Up in its chips, 1 is "You decide", and typing leaves it.
+        press(&mut app, KeyCode::Up, KeyModifiers::NONE);
+        press(&mut app, KeyCode::Char('1'), KeyModifiers::NONE);
+        assert!(app.panel.drafts["q2"].you_decide);
+        press(&mut app, KeyCode::Down, KeyModifiers::NONE);
+        type_text(&mut app, "main");
+        press(&mut app, KeyCode::Backspace, KeyModifiers::NONE);
+        type_text(&mut app, "n 2");
+        assert!(!app.panel.drafts["q2"].you_decide);
+        press(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+        assert!(!app.panel.typing && app.focus_index() == 0);
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
-        assert_eq!(sent(&mut app), ["spaces"]);
+        assert_eq!(
+            inputs(&mut app),
+            [Input::AnswerQuestions(Answers {
+                answers: vec![
+                    QuestionAnswer::new(
+                        "q1",
+                        Answer {
+                            choices: vec!["Tabs".into()],
+                            ..Answer::default()
+                        }
+                    ),
+                    QuestionAnswer::new(
+                        "q2",
+                        Answer {
+                            text: Some("main 2".into()),
+                            ..Answer::default()
+                        }
+                    ),
+                ],
+            })]
+        );
+        assert!(!app.panel.open);
+        // The drafts stay until their questions settle (answers too long to
+        // send settle nothing, and can be shortened).
+        assert_eq!(app.panel.drafts["q2"].other, "main 2");
+        let mut reading = asking();
+        reading.questions.clear();
+        app.set_reading(reading);
+        assert!(app.panel.drafts.is_empty());
+        // Enter with nothing filled in sends nothing.
+        app.set_reading(asking());
+        app.open_panel();
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert!(inputs(&mut app).is_empty());
+        assert!(app.panel.open);
+    }
+
+    /// An answer that is a number, or starts with one, is typed whole: in
+    /// a question without choices at once, and in one with choices in its
+    /// Other field, or straight from its chips when no chip has the number.
+    #[test]
+    fn answers_starting_with_a_digit_are_typed_whole() {
+        let mut app = app();
+        app.set_reading(asking());
+        app.focus_on(1);
+        type_text(&mut app, "1 hour");
+        assert_eq!(app.panel.drafts["q2"].other, "1 hour");
+        assert!(!app.panel.drafts["q2"].you_decide);
+        app.focus_on(0);
+        assert!(!app.panel.typing);
+        // q1 has three chips: 4 is no chip's, so it is typed.
+        type_text(&mut app, "42");
+        assert_eq!(app.panel.drafts["q1"].other, "42");
+        assert!(app.panel.drafts["q1"].chosen.is_empty());
+        app.focus_on(0);
+        press(&mut app, KeyCode::Down, KeyModifiers::NONE);
+        type_text(&mut app, "1");
+        assert_eq!(app.panel.drafts["q1"].other, "421");
+    }
+
+    /// The panel's keys stay with the question being answered while others
+    /// are answered elsewhere (the web page), and when that question itself
+    /// is answered elsewhere, the panel closes rather than give the keys to
+    /// another one.
+    #[test]
+    fn the_panel_keeps_its_question_as_others_are_answered_elsewhere() {
+        let mut app = app();
+        let mut reading = asking();
+        let mut third = reading.questions[1].clone();
+        third.id = "q3".into();
+        third.question = "Push now?".into();
+        third.number = Some(3);
+        reading.questions.push(third);
+        app.set_reading(reading.clone());
+        app.focus_on(1);
+        type_text(&mut app, "ab");
+        // The page answers q1.
+        reading.questions.remove(0);
+        app.set_reading(reading.clone());
+        type_text(&mut app, "c");
+        assert_eq!(app.panel.drafts["q2"].other, "abc");
+        assert!(!app.panel.drafts.contains_key("q3"));
+        // Then q2, the one being answered here.
+        reading.questions.remove(0);
+        app.set_reading(reading);
+        assert!(!app.panel.open);
+        assert_eq!(app.hint(), Some("That question is no longer open"));
+        type_text(&mut app, "d");
+        assert!(!app.panel.drafts.contains_key("q3"));
+        assert_eq!(app.editor.shown(), "d");
+    }
+
+    /// Alt+Q opens the panel over the command menu, and the panel has the
+    /// keys as it shows, the text typed staying in the box. Over a window,
+    /// the window goes, and comes back when the panel closes.
+    #[test]
+    fn the_panel_takes_the_keys_where_it_shows() {
+        let mut app = app();
+        type_text(&mut app, "/m");
+        app.set_reading(asking());
+        assert!(!app.panel.open && !app.menu_items().is_empty());
+        press(&mut app, KeyCode::Char('q'), KeyModifiers::ALT);
+        assert!(app.panel.open);
+        press(&mut app, KeyCode::Char('1'), KeyModifiers::NONE);
+        assert_eq!(app.panel.drafts["q1"].chosen, [0]);
+        assert_eq!(app.editor.shown(), "/m");
+        press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+
+        let mut app = super::tests::app();
+        app.overlay = Some(Overlay::Help { scroll: 0 });
+        app.set_reading(asking());
+        assert!(!app.panel.open, "a window is open");
+        press(&mut app, KeyCode::Char('q'), KeyModifiers::ALT);
+        assert!(app.panel.open && app.overlay.is_none());
+        press(&mut app, KeyCode::Char('1'), KeyModifiers::NONE);
+        assert_eq!(app.panel.drafts["q1"].chosen, [0]);
+        press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert!(!app.panel.open);
+        assert_eq!(app.overlay, Some(Overlay::Help { scroll: 0 }));
+    }
+
+    /// Esc ("answer in chat") attaches the open questions to the message
+    /// box, whose next message answers them. Backspace in the empty box
+    /// takes them off, and Ctrl+N dismisses them ("Not now").
+    #[test]
+    fn esc_attaches_the_questions_and_backspace_takes_them_off() {
+        use super::super::questions::Chip;
+        let mut app = app();
+        app.set_reading(asking());
+        press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert!(!app.panel.open);
+        assert_eq!(app.chip(), Some(Chip::Replying(2)));
+        assert_eq!(app.chip().unwrap().text(), "Replying to 2 questions ×");
+        press(&mut app, KeyCode::Backspace, KeyModifiers::NONE);
+        assert_eq!(app.chip(), Some(Chip::Open(2)));
+        assert_eq!(app.chip().unwrap().text(), "2 open questions");
+        // Attached again, the message answers them.
+        press(&mut app, KeyCode::Char('q'), KeyModifiers::ALT);
+        press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        type_text(&mut app, "Spaces, on main.");
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(
+            inputs(&mut app),
+            [Input::Message(crate::ui::Message {
+                text: "Spaces, on main.".into(),
+                answers: vec!["q1".into(), "q2".into()],
+                ..Default::default()
+            })]
+        );
+        assert_eq!(app.chip(), Some(Chip::Open(2)));
+        // A message without them is a plain one.
+        type_text(&mut app, "Hello.");
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(sent(&mut app), ["Hello."]);
+        press(&mut app, KeyCode::Char('n'), KeyModifiers::CONTROL);
+        assert_eq!(
+            inputs(&mut app),
+            [Input::DismissQuestions(vec!["q1".into(), "q2".into()])]
+        );
+    }
+
+    /// A message that answers questions, or answers in the panel, too long
+    /// to send aren't sent: the text stays in the box (and the drafts in
+    /// the open panel), and the status line says how short to make it.
+    /// Once short enough, they go.
+    #[test]
+    fn answers_too_long_to_send_stay_where_they_were_typed() {
+        let mut app = app();
+        let mut reading = asking();
+        reading.questions[1].waits = true;
+        app.set_reading(reading);
+        let long = "x".repeat(crate::questions::MAX_ANSWER_NOTE_BYTES);
+        // In the panel.
+        press(&mut app, KeyCode::Down, KeyModifiers::NONE);
+        app.paste(&long);
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert!(inputs(&mut app).is_empty());
+        assert!(app.panel.open);
+        assert_eq!(app.panel.drafts["q1"].other, long);
+        assert_eq!(
+            app.hint(),
+            Some("Your answer is too long to send. Shorten it to 15 KB.")
+        );
+        app.panel.drafts.clear();
+        // Attached to a message.
+        press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        app.paste(&long);
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        let refusal = "Your message is too long to send as an answer. Shorten it to 15 KB.";
+        assert!(app.take_effects().is_empty());
+        assert_eq!(app.editor.text(), long);
+        assert_eq!(app.panel.attached, ["q1", "q2"]);
+        assert_eq!(app.hint(), Some(refusal));
+        // Not attached, while the agent waits for q2: the answer too.
+        app.panel.attached.clear();
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert!(app.take_effects().is_empty());
+        assert_eq!(app.editor.text(), long);
+        // Shortened, it goes.
+        app.editor.take();
+        type_text(&mut app, "main");
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(sent(&mut app), ["main"]);
+        assert!(app.editor.text().is_empty());
+    }
+
+    /// New questions ring the bell once while the window isn't focused.
+    #[test]
+    fn new_questions_ring_the_bell_when_unfocused() {
+        let mut app = app();
+        app.set_reading(asking());
+        assert!(!app.take_ring(), "focused");
+        let mut app = super::tests::app();
+        app.focused = false;
+        app.set_reading(asking());
+        assert!(app.take_ring());
+        assert!(!app.take_ring());
+        // The same questions again, or fewer, ring no more.
+        let mut fewer = asking();
+        fewer.questions.truncate(1);
+        app.set_reading(fewer);
+        assert!(!app.take_ring());
+        app.set_reading(asking());
+        assert!(app.take_ring(), "q2 is new again");
     }
 
     #[test]

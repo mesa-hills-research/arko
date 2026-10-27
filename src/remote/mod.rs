@@ -15,10 +15,13 @@
 //! page trades it for a session cookie. The page is served without TLS.
 
 mod feed;
+#[cfg(feature = "remote")]
+mod highlight;
 mod history;
 mod links;
 #[cfg(not(feature = "remote"))]
 mod no_server;
+pub(crate) mod protocol;
 #[cfg(feature = "remote")]
 mod qr;
 mod render;
@@ -84,8 +87,19 @@ pub enum Action {
     /// works, a new turn when it is idle, the answer to its question, or a
     /// command.
     Message(String),
-    /// The answer to the question `question` (the ID the feed gave it).
+    /// `text` answers the open questions of the question card `question`
+    /// (its item), as a message that answers them.
     Answer { question: u64, text: String },
+    /// A message that answers the main agent's open questions `answers`
+    /// (the "Replying to" chip), as [`Message::answers`](crate::Message::answers)
+    /// says.
+    Reply { text: String, answers: Vec<String> },
+    /// Answers from the page's answer panel, as
+    /// [`Input::AnswerQuestions`](crate::Input::AnswerQuestions) says.
+    AnswerQuestions(crate::questions::Answers),
+    /// Dismisses questions ("Not now"), as
+    /// [`Input::DismissQuestions`](crate::Input::DismissQuestions) says.
+    DismissQuestions(Vec<String>),
     /// Stops the turn, as Ctrl-C does.
     Stop,
     /// Moves the running call `item` (a call item [`Reading::movable`]
@@ -145,6 +159,9 @@ pub struct Reading {
     pub jobs: Vec<arko_agents::terminal::BackgroundJob>,
     /// The agents' models, as `/model` changes them.
     pub models: Models,
+    /// The main agent's questions of the current conversation that wait
+    /// for the user, in the order asked. See [`crate::questions`].
+    pub questions: Vec<crate::questions::AgentQuestion>,
     /// The session's conversations with the main agent, newest first, for
     /// the full-screen view's `/resume` picker. (The page lists them with
     /// `/resume`.)

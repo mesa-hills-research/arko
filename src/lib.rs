@@ -28,6 +28,7 @@
 //! Arko with `default-features = false` and adds `remote` for the web page.
 
 mod agents;
+mod asking;
 pub mod builtin_skills;
 mod cache_memory;
 pub mod cache_timer;
@@ -71,6 +72,7 @@ pub mod profiles;
 mod project;
 mod prompter;
 mod providers;
+pub mod questions;
 pub mod remote;
 #[cfg(test)]
 mod remote_demo;

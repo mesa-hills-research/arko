@@ -91,9 +91,10 @@ a plan. `save_worker_profile` saves a setup under a name. A profile for the sess
 approval, and neither does one for a project folder that git ignores (`git check-ignore` says),
 which is the folder Arko makes by default. Before Arko saves one in a folder git tracks, in a
 project outside a git repository, or for every project, it puts you a question that
-shows the whole profile, and only a plain yes saves it (a "please" or "thanks" after the yes is
-fine). Anything else you write goes back to the agent as your feedback, and the transcript says
-nothing was saved. The agent can't replace a profile you made.
+shows the whole profile, with Save and Don't save. Only Save saves it. Words you type instead go
+back to the agent, and the transcript says nothing was saved. The agent makes the changes they ask
+for, or replies when they are about something else, and asks again. The agent can't replace a
+profile you made.
 
 The question guards what Arko writes for the agent. The agent's own file tools and shell can write
 a file in the project's `.agents/profiles` folder as they can write any file in the project, and

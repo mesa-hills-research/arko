@@ -4,8 +4,8 @@
 
 use arko_agents::agent_config::PathSafetyPolicy;
 use arko_agents::builtins::{
-    ASK_USER_TOOL_NAME, EDIT_FILE_TOOL_NAME, LIST_FILES_TOOL_NAME, READ_FILE_TOOL_NAME,
-    WRITE_FILE_TOOL_NAME,
+    ASK_USER_TOOL_NAME, CLOSE_QUESTIONS_TOOL_NAME, EDIT_FILE_TOOL_NAME, LIST_FILES_TOOL_NAME,
+    READ_FILE_TOOL_NAME, WRITE_FILE_TOOL_NAME,
 };
 use arko_agents::terminal::{MonitorTool, TerminalTool};
 use arko_agents::{
@@ -654,6 +654,7 @@ pub fn main_config(settings: &AgentSettings) -> Result<AgentConfig, String> {
     }
     let mut tools = shared_tool_names(settings);
     tools.push(ASK_USER_TOOL_NAME.into());
+    tools.push(CLOSE_QUESTIONS_TOOL_NAME.into());
     tools.push(crate::message::MESSAGE_USER.into());
     tools.extend(crate::kept_notes::TOOL_NAMES.map(String::from));
     if settings.max_workers > 0 {
@@ -671,6 +672,8 @@ pub fn main_config(settings: &AgentSettings) -> Result<AgentConfig, String> {
     }
     let mut tool_config = tool_config(tools);
     tool_config.text_reply_ends_task = settings.text_replies;
+    // Its questions don't stop its work: the answers come as notes.
+    tool_config.async_questions = true;
     let mut builder = AgentConfig::builder(
         MAIN.into(),
         "Arko".into(),
@@ -801,7 +804,7 @@ fn main_instructions(settings: &AgentSettings) -> String {
          {turns}\n\n\
          When a step doesn't need the user, keep going. End the turn to ask only when you can't continue without them, or before something destructive or hard to undo that they didn't ask for: deleting data they may want, force-pushing, publishing, or changing things outside the working directory.\n\n\
          The user can type while you work. What they type reaches you as a note from the operator: take it into account in the work you're doing. When a note asks you something or needs an answer before you finish (a question, \"progress?\"), answer it with `message_user` and carry on with your work.{waiting} Use `message_user` too for anything they must know before you finish. The user may not see your thinking. In Claude Code (cc: models) and on the ChatGPT login they see none of it, and through the providers' APIs at most a summary. So every answer, question or progress note meant for them goes in what you write (your text, `message_user` or your reply). Text written only in your thinking may never reach them, and a long wait is where that is most likely. {ending}\n\n\
-         When you need the user to decide something before you can go on (a choice between approaches with real trade-offs, missing information only they have), ask with `ask_user`. If they can't be asked (Arko runs without a terminal), it says so, and you decide.\n"
+         When you need the user to decide something (a choice between approaches with real trade-offs, missing information only they have), ask with `ask_user`, with choices and the default you'd go with when they help. It returns at once and the answers reach you as a note, so meanwhile go on with what doesn't depend on them. Pass `wait: true` only when you can't go on at all without the answer. Close questions that no longer matter with `close_questions`. A message of the user's may answer your questions (it starts with \"(This message answers q3.)\") or end with those still open (\"(Still open: q5.)\"). If they can't be asked (Arko runs without a terminal), it says so, and you decide.\n"
     )
 }
 

@@ -218,7 +218,7 @@ pub(crate) async fn job_alert(
 
 /// The notes of the turn (`notes`, with their sequence numbers) that the
 /// main agent's runs never read.
-pub(crate) fn unread_notes(notes: &[(u64, String)], workflow: &Workflow) -> Vec<String> {
+pub(crate) fn unread_notes<T: Clone>(notes: &[(u64, T)], workflow: &Workflow) -> Vec<T> {
     let runs: Vec<_> = workflow
         .context()
         .agent_results
@@ -235,7 +235,7 @@ pub(crate) fn unread_notes(notes: &[(u64, String)], workflow: &Workflow) -> Vec<
     notes
         .iter()
         .filter(|(seq, _)| *seq > given)
-        .map(|(_, text)| text.clone())
+        .map(|(_, note)| note.clone())
         .collect()
 }
 
@@ -318,18 +318,73 @@ pub(crate) async fn wake(woken: &mut Option<mpsc::UnboundedReceiver<()>>) {
     std::future::pending::<()>().await;
 }
 
-/// A question the main agent asks with `ask_user`, and where its answer
-/// goes.
+/// Questions the main agent asks with `ask_user` (or an approval Arko asks
+/// for it, of a worker profile it saves), and, when it waits for the
+/// answer, where the answer goes.
 pub(crate) struct Question {
-    pub(crate) text: String,
-    pub(crate) answer: oneshot::Sender<String>,
+    /// The run that asks: the main agent's conversation.
+    pub(crate) run: uuid::Uuid,
+    /// The questions with their ids. A question Arko asks has an id that
+    /// isn't the agent's (`q1`).
+    pub(crate) asked: Vec<arko_agents::questions::AskedQuestion>,
+    /// Where the answer goes, when the agent waits for it.
+    pub(crate) answer: Option<Answering>,
+    /// What Arko asks the user to approve.
+    pub(crate) approval: Option<crate::questions::Approval>,
+    /// The model's id of the call that asked (the save an approval is for),
+    /// as the conversation records it.
+    pub(crate) call: Option<String>,
 }
 
-/// Answers the main agent's `ask_user` questions: the user types the
-/// answer at the prompt. Without a terminal, the agent is told that no one
-/// can answer. It always answers: an error would fail the turn.
+/// Where the answer to questions the agent waits for goes.
+pub(crate) enum Answering {
+    /// The agent's wait (`ask_user` with `wait`, or a question without
+    /// ids): the answer as text.
+    Text(oneshot::Sender<String>),
+    /// An approval: what the user decided.
+    Approval(oneshot::Sender<crate::questions::ApprovalAnswer>),
+}
+
+impl Answering {
+    /// The wait is gone (its turn stopped).
+    pub(crate) fn is_closed(&self) -> bool {
+        match self {
+            Self::Text(answer) => answer.is_closed(),
+            Self::Approval(answer) => answer.is_closed(),
+        }
+    }
+}
+
+impl Question {
+    /// The questions' text, one per line.
+    #[cfg(test)]
+    pub(crate) fn text(&self) -> String {
+        self.asked
+            .iter()
+            .map(|question| question.question.question.clone())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// Whether Arko asks it, not the agent: an approval, or a question of
+    /// a host's own `ask_user` without ids.
+    pub(crate) fn plain(&self) -> bool {
+        self.approval.is_some()
+            || !self
+                .asked
+                .iter()
+                .all(|question| crate::questions::is_agent_id(&question.id))
+    }
+}
+
+/// Puts the main agent's `ask_user` questions to the user. The answers to
+/// those it waits for go back as the answer, and the others reach it later
+/// as notes. Without a terminal, the agent is told that no one can answer.
+/// It always answers: an error would fail the turn.
 pub(crate) struct Asker {
     pub(crate) questions: Option<mpsc::UnboundedSender<Question>>,
+    /// The feed, which says which questions are still open.
+    pub(crate) feed: Option<crate::remote::Feed>,
 }
 
 impl Asker {
@@ -338,7 +393,73 @@ impl Asker {
     pub(crate) fn can_ask(&self) -> bool {
         self.questions.is_some()
     }
+
+    /// Asks the user to approve `approval` for run `run` (the save `call`
+    /// asks it for), as `question` words it, and waits for what they
+    /// decide.
+    pub(crate) async fn approve(
+        &self,
+        run: uuid::Uuid,
+        call: Option<String>,
+        question: String,
+        approval: crate::questions::Approval,
+    ) -> crate::questions::ApprovalAnswer {
+        let Some(questions) = &self.questions else {
+            return crate::questions::ApprovalAnswer::Unanswered;
+        };
+        let asked = vec![arko_agents::questions::AskedQuestion {
+            id: crate::questions::PLAIN_ID.to_string(),
+            question: arko_agents::questions::Question {
+                question,
+                choices: vec![
+                    crate::questions::SAVE.into(),
+                    crate::questions::DONT_SAVE.into(),
+                ],
+                ..Default::default()
+            },
+        }];
+        let (answer, answered) = oneshot::channel();
+        let question = Question {
+            run,
+            asked,
+            answer: Some(Answering::Approval(answer)),
+            approval: Some(approval),
+            call,
+        };
+        if questions.send(question).is_err() {
+            return crate::questions::ApprovalAnswer::Unanswered;
+        }
+        answered
+            .await
+            .unwrap_or(crate::questions::ApprovalAnswer::Unanswered)
+    }
+
+    /// Puts `asked` to the user and waits for the answer.
+    async fn put(
+        &self,
+        run: uuid::Uuid,
+        asked: Vec<arko_agents::questions::AskedQuestion>,
+    ) -> Result<String, String> {
+        let Some(questions) = &self.questions else {
+            return Ok(CANT_ASK.to_string());
+        };
+        let (answer, answered) = oneshot::channel();
+        let question = Question {
+            run,
+            asked,
+            answer: Some(Answering::Text(answer)),
+            approval: None,
+            call: None,
+        };
+        if questions.send(question).is_err() {
+            return Ok(CANT_ASK.to_string());
+        }
+        Ok(answered.await.unwrap_or_else(|_| NO_ANSWER.to_string()))
+    }
 }
+
+/// The answer when the question went unanswered (the turn stopped).
+pub(crate) const NO_ANSWER: &str = "(The user didn't answer.)";
 
 /// The answer when no one can answer.
 pub(crate) const CANT_ASK: &str = "No one can answer questions in this session (Arko runs without a terminal, from a script or with -p). Decide yourself, go on, and say in your reply what you assumed.";
@@ -346,19 +467,79 @@ pub(crate) const CANT_ASK: &str = "No one can answer questions in this session (
 #[async_trait::async_trait]
 impl UserInputHandler for Asker {
     async fn respond(&self, request: UserInputRequest) -> Result<String, String> {
+        self.put(request.agent_run_id, asked_of(&request)).await
+    }
+
+    /// The questions go to the user, and their answers reach the agent
+    /// later, as notes.
+    async fn asked(&self, request: UserInputRequest) -> Result<Option<String>, String> {
         let Some(questions) = &self.questions else {
-            return Ok(CANT_ASK.to_string());
+            return Ok(Some(CANT_ASK.to_string()));
         };
-        let (answer, answered) = oneshot::channel();
         let question = Question {
-            text: request.questions,
-            answer,
+            run: request.agent_run_id,
+            asked: asked_of(&request),
+            answer: None,
+            approval: None,
+            call: None,
         };
         if questions.send(question).is_err() {
-            return Ok(CANT_ASK.to_string());
+            return Ok(Some(CANT_ASK.to_string()));
         }
-        Ok(answered
-            .await
-            .unwrap_or_else(|_| "(The user didn't answer.)".to_string()))
+        Ok(None)
     }
+
+    /// The run's open questions as the session keeps them (answers it gave
+    /// later, as notes, settled the others).
+    fn open_questions(
+        &self,
+        agent_run_id: uuid::Uuid,
+    ) -> Option<Vec<arko_agents::questions::AskedQuestion>> {
+        let feed = self.feed.as_ref()?;
+        Some(
+            feed.open_questions_of(agent_run_id)
+                .iter()
+                .filter(|question| crate::questions::is_agent_id(&question.id))
+                .map(crate::questions::AgentQuestion::asked)
+                .collect(),
+        )
+    }
+
+    /// The main agent's questions are numbered across the session's
+    /// conversations, one ask at a time.
+    fn question_numbers(&self, _run: uuid::Uuid, agent_name: &str, count: u32) -> Option<u32> {
+        let feed = self.feed.as_ref()?;
+        (agent_name == crate::agents::MAIN).then(|| feed.reserve_question_numbers(count))
+    }
+
+    /// The main agent's questions are open in the session as soon as its
+    /// task records them, before their card shows (see
+    /// [`open_questions`](Self::open_questions)).
+    fn questions_recorded(
+        &self,
+        run: uuid::Uuid,
+        agent_name: &str,
+        asked: &[arko_agents::questions::AskedQuestion],
+        wait: bool,
+    ) {
+        if let Some(feed) = &self.feed
+            && agent_name == crate::agents::MAIN
+        {
+            feed.record_asked(run, asked, wait);
+        }
+    }
+}
+
+/// The questions of `request`, or its text as one question.
+fn asked_of(request: &UserInputRequest) -> Vec<arko_agents::questions::AskedQuestion> {
+    if !request.asked.is_empty() {
+        return request.asked.clone();
+    }
+    vec![arko_agents::questions::AskedQuestion {
+        id: crate::questions::PLAIN_ID.to_string(),
+        question: arko_agents::questions::Question {
+            question: request.questions.trim().to_string(),
+            ..Default::default()
+        },
+    }]
 }

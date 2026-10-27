@@ -11,8 +11,9 @@ repository = "https://github.com/mesa-hills-research/arko"
 readme = "README.md"
 keywords = ["agent", "ai", "llm", "terminal", "cli"]
 categories = ["command-line-utilities", "development-tools"]
-# The evaluation harness runs from a checkout.
-exclude = ["evals/", ".agents/"]
+# The evaluation harness runs from a checkout. The page in web/ is built
+# into src/remote/page/, which the crate embeds.
+exclude = ["evals/", ".agents/", "web/"]
 
 [lib]
 name = "arko"
@@ -32,7 +33,16 @@ default = ["tui", "remote"]
 tui = ["dep:arboard", "dep:clap", "dep:crossterm", "dep:ratatui", "dep:rustyline", "dep:windows-sys"]
 # The web page's server (--remote, /remote). Without it, a session says
 # this build has no web page.
-remote = ["dep:axum", "dep:if-addrs", "dep:qrcodegen"]
+remote = [
+    "dep:axum", "dep:if-addrs", "dep:qrcodegen",
+    "dep:mesquite", "dep:mesquite_bash", "dep:mesquite_c", "dep:mesquite_c_sharp",
+    "dep:mesquite_cpp", "dep:mesquite_css", "dep:mesquite_diff", "dep:mesquite_go",
+    "dep:mesquite_html", "dep:mesquite_java", "dep:mesquite_javascript", "dep:mesquite_json",
+    "dep:mesquite_kotlin", "dep:mesquite_lua", "dep:mesquite_make", "dep:mesquite_php",
+    "dep:mesquite_python", "dep:mesquite_ruby", "dep:mesquite_rust", "dep:mesquite_sql",
+    "dep:mesquite_swift", "dep:mesquite_toml", "dep:mesquite_typescript", "dep:mesquite_yaml",
+    "dep:pulldown-cmark",
+]
 # `arko::testing` (a local model server and the client for it,
 # `Options::client`), for tests only, also those of an app built on the
 # library. Not for builds that ship.
@@ -42,8 +52,8 @@ testing = []
 # The framework, from crates.io. CONTRIBUTING.md shows how to build against
 # a local checkout of it.
 arko_ai = "0.2.2"
-arko_agents = "0.2.2"
-arko_workflows = "0.3.1"
+arko_agents = "0.3.0"
+arko_workflows = "0.4.0"
 arko_index = "0.3.0"
 
 async-trait = "0.1.79"
@@ -68,6 +78,34 @@ if-addrs = { version = "0.15.0", optional = true }
 ignore = "0.4.22"
 log = "0.4.21"
 qrcodegen = { version = "1.8.0", optional = true }
+# The web page's code highlighting: arko_index's grammars (Mesquite, a
+# tree-sitter port), with the highlight queries in src/remote/highlight/, and
+# the page's Markdown parser to find the code blocks as it does.
+mesquite = { version = "0.25.10", optional = true }
+mesquite_bash = { version = "0.1.0", optional = true }
+mesquite_c = { version = "0.1.0", optional = true }
+mesquite_c_sharp = { version = "0.1.0", optional = true }
+mesquite_cpp = { version = "0.1.0", optional = true }
+mesquite_css = { version = "0.1.0", optional = true }
+mesquite_diff = { version = "0.1.0", optional = true }
+mesquite_go = { version = "0.1.0", optional = true }
+mesquite_html = { version = "0.1.0", optional = true }
+mesquite_java = { version = "0.1.0", optional = true }
+mesquite_javascript = { version = "0.1.0", optional = true }
+mesquite_json = { version = "0.1.0", optional = true }
+mesquite_kotlin = { version = "0.1.0", optional = true }
+mesquite_lua = { version = "0.1.0", optional = true }
+mesquite_make = { version = "0.1.0", optional = true }
+mesquite_php = { version = "0.1.0", optional = true }
+mesquite_python = { version = "0.1.0", optional = true }
+mesquite_ruby = { version = "0.1.0", optional = true }
+mesquite_rust = { version = "0.1.0", optional = true }
+mesquite_sql = { version = "0.1.0", optional = true }
+mesquite_swift = { version = "0.1.0", optional = true }
+mesquite_toml = { version = "0.1.0", optional = true }
+mesquite_typescript = { version = "0.1.0", optional = true }
+mesquite_yaml = { version = "0.1.0", optional = true }
+pulldown-cmark = { version = "0.13.5", default-features = false, optional = true }
 ratatui = { version = "0.30.2", default-features = false, features = ["crossterm", "underline-color"], optional = true }
 # Built as arko_ai builds it, for OpenRouter's model list.
 reqwest = { version = "0.13.5", default-features = false }

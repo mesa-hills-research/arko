@@ -1,0 +1,104 @@
+Highlight queries of the web page's code blocks
+
+These are GPUI Kit's highlight queries
+(https://github.com/mesa-hills-research/gpui_kit, in
+crates/component/src/highlighter/languages/, at commit aacb74c), so code
+reads on the page as in the apps. GPUI Kit is under the Apache License 2.0,
+whose text is in LICENSE-APACHE at the root of this repository. The queries
+listed below come from the projects named with them, at the versions given,
+and the others (go.scm, html.scm, javascript.scm, json.scm, kotlin.scm,
+lua.scm, rust.scm and typescript.scm) from GPUI Kit's upstream,
+gpui-component, under the Apache License 2.0 too. Files marked "adapted"
+were changed to use the kit's highlight names. Each project is under the
+MIT License, except nvim-treesitter, which is under the Apache License 2.0.
+The MIT License text follows the list.
+
+nvim-treesitter (https://github.com/nvim-treesitter/nvim-treesitter, commit e289100), Apache-2.0
+  csharp.scm, adapted
+  The LICENSE names no copyright holder. The authors are the nvim-treesitter contributors.
+
+tree-sitter-bash 0.25.1 (https://github.com/tree-sitter/tree-sitter-bash), MIT
+  bash.scm
+  Copyright (c) 2017 Max Brunsfeld
+
+tree-sitter-c 0.24.2 (https://github.com/tree-sitter/tree-sitter-c), MIT
+  c.scm
+  Copyright (c) 2014 Max Brunsfeld
+
+tree-sitter-c-sharp 0.23.5 (https://github.com/tree-sitter/tree-sitter-c-sharp), MIT
+  csharp.scm, adapted together with nvim-treesitter's query
+  Copyright (c) 2014-2023 Max Brunsfeld, Damien Guard, Amaan Qureshi, and contributors.
+
+tree-sitter-cpp 0.23.4 (https://github.com/tree-sitter/tree-sitter-cpp), MIT
+  cpp.scm
+  Copyright (c) 2014 Max Brunsfeld
+
+tree-sitter-css 0.25.0 (https://github.com/tree-sitter/tree-sitter-css), MIT
+  css.scm
+  Copyright (c) 2018 Max Brunsfeld
+
+tree-sitter-diff 0.1.0 (https://github.com/the-mikedavis/tree-sitter-diff), MIT
+  diff.scm
+  Copyright (c) 2021 Michael Davis
+
+tree-sitter-java 0.23.5 (https://github.com/tree-sitter/tree-sitter-java), MIT
+  java.scm
+  Copyright (c) 2017 Ayman Nadeem
+
+tree-sitter-make 1.1.1 (https://github.com/tree-sitter-grammars/tree-sitter-make), MIT
+  make.scm
+  Copyright (c) 2021 Alexandre A. Muller
+
+tree-sitter-php 0.25.1 (https://github.com/tree-sitter/tree-sitter-php), MIT
+  php.scm
+  Copyright (c) 2017 Josh Vera, GitHub
+  Copyright (c) 2019 Max Brunsfeld, Amaan Qureshi, Christian Frøystad, Caleb White
+
+tree-sitter-python 0.25.0 (https://github.com/tree-sitter/tree-sitter-python), MIT
+  python.scm
+  Copyright (c) 2016 Max Brunsfeld
+
+tree-sitter-ruby 0.23.1 (https://github.com/tree-sitter/tree-sitter-ruby), MIT
+  ruby.scm
+  Copyright (c) 2016 Rob Rix
+
+tree-sitter-sequel 0.3.11 (https://github.com/DerekStride/tree-sitter-sql), MIT
+  sql.scm
+  Copyright (c) 2021 Derek Stride
+
+tree-sitter-swift 0.7.4 (https://github.com/alex-pinkus/tree-sitter-swift), MIT
+  swift.scm, adapted
+  Copyright (c) 2021 alex-pinkus
+
+tree-sitter-toml-ng 0.7.0 (https://github.com/tree-sitter-grammars/tree-sitter-toml), MIT
+  toml.scm
+  Copyright (c) Ika <ikatyang@gmail.com> (https://github.com/ikatyang)
+
+tree-sitter-typescript 0.23.2 (https://github.com/tree-sitter/tree-sitter-typescript), MIT
+  tsx.scm
+  Copyright (c) 2017 Max Brunsfeld
+
+tree-sitter-yaml 0.7.2 (https://github.com/tree-sitter-grammars/tree-sitter-yaml), MIT
+  yaml.scm
+  Copyright (c) 2024 tree-sitter-grammars contributors
+  Copyright (c) 2019-2021 Ika
+
+MIT License
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

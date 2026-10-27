@@ -1,6 +1,21 @@
 use std::time::Duration;
 
 use super::*;
+use crate::questions::ApprovalAnswer;
+
+/// Gives an approval its answer, as the user's decision.
+trait Decide {
+    fn decide(self, answer: ApprovalAnswer);
+}
+
+impl Decide for crate::inputs::Answering {
+    fn decide(self, answer: ApprovalAnswer) {
+        match self {
+            crate::inputs::Answering::Approval(sender) => sender.send(answer).unwrap(),
+            crate::inputs::Answering::Text(_) => panic!("not an approval"),
+        }
+    }
+}
 use crate::agents::{ExtraRules, ModelSettings, resolve_model};
 use crate::crew::{NewWorkers, Setup, WorkerSetup};
 use crate::profiles::Roots;
@@ -276,6 +291,7 @@ fn fixture(choice: ModelChoice, can_ask: bool) -> Fixture {
     let (sender, questions) = tokio::sync::mpsc::unbounded_channel();
     let asker = Arc::new(Asker {
         questions: can_ask.then_some(sender),
+        feed: None,
     });
     let mut tools = tools(
         crew.clone(),
@@ -357,7 +373,8 @@ fn the_tools_are_defined_for_the_main_agent() {
             ("scope", false),
         ]
     );
-    assert!(!save.parallel_safe);
+    // Several saves of one response run together, to ask in one card.
+    assert!(save.parallel_safe);
     assert!(!fixture.save.uses_host_timeout());
     // The tools are the main agent's, among the lead's.
     for name in ["worker_options", "save_worker_profile"] {
@@ -491,15 +508,15 @@ async fn a_profile_with_no_scope_is_kept_with_the_project_and_asks_when_git_trac
     let question = within(questions.recv()).await.unwrap();
     assert!(
         question
-            .text
+            .text()
             .contains("worker profile audit in this project's")
     );
-    question.answer.send("yes".into()).unwrap();
+    question.answer.unwrap().decide(ApprovalAnswer::Save);
     assert!(within(asking).await.unwrap().is_ok());
 }
 
 #[tokio::test]
-async fn a_profile_for_every_session_waits_for_the_users_yes() {
+async fn a_profile_for_every_session_waits_for_the_users_save() {
     let mut fixture = fixture(ModelChoice::Agent, true);
     let mut questions = fixture.questions.take().unwrap();
     let parameters = [
@@ -513,7 +530,7 @@ async fn a_profile_for_every_session_waits_for_the_users_yes() {
         ("instructions", "You judge 3D models.".into()),
         ("scope", "user".into()),
     ];
-    // "yes, but..." is the user's feedback, and saves nothing.
+    // Words of the user's ask for changes, and save nothing.
     let asking = {
         let save = fixture.save.clone();
         let parameters = parameters.clone();
@@ -521,35 +538,37 @@ async fn a_profile_for_every_session_waits_for_the_users_yes() {
     };
     let question = within(questions.recv()).await.unwrap();
     assert!(
-        question.text.starts_with(
+        question.text().starts_with(
             "The main agent wants to save the worker profile 3d-judge in your Arko folder, for every project.\n\nJudges 3D results against a reference image\nRuns on sol at high effort."
         ),
         "{}",
-        question.text
+        question.text()
     );
-    assert!(
-        question
-            .text
-            .ends_with("Reply yes to save it, or tell the agent what to change.")
+    // Its card shows what it approves, with Save and Don't save.
+    let card = question.approval.clone().unwrap();
+    assert_eq!(
+        card.title(),
+        "Save the worker profile 3d-judge for every project?"
     );
+    assert_eq!(card.runs_on(), "Runs on sol at high effort.");
+    assert_eq!(
+        card.description,
+        "Judges 3D results against a reference image"
+    );
+    assert_eq!(question.asked[0].question.choices, ["Save", "Don't save"]);
     question
         .answer
-        .send("yes, but use medium effort".into())
-        .unwrap();
+        .unwrap()
+        .decide(ApprovalAnswer::Edit("yes, but use medium effort".into()));
     assert_eq!(
         within(asking).await.unwrap().unwrap(),
-        "The user didn't save 3d-judge for every project and answered \"yes, but use medium effort\". Only a plain yes saves it. If they asked for a change, make it and ask again. If they meant yes, ask again and tell them to answer yes. Or save it for this session with scope session."
+        "The user didn't save 3d-judge for every project and wrote \"yes, but use medium effort\". If those words ask for changes to the profile, make them and call save_worker_profile again, which shows them the changed profile. If they don't (a new request, or words about something else), they are a message to you, not changes. Respond to it, call save_worker_profile again with the same profile, and end with a short reminder that it is still waiting for their decision."
     );
     assert!(profiles::read(&fixture.basis.roots, "3d-judge").is_err());
     // The user is told in the transcript that nothing was saved.
-    assert_eq!(
-        shown(&fixture.feed),
-        [
-            "Nothing was saved. Answer yes to save the profile as it is. Any other answer goes to the agent to change it."
-        ]
-    );
+    assert_eq!(shown(&fixture.feed), ["Not saved. Arko asks again."]);
 
-    // A plain yes saves it, in the user's place.
+    // Save saves it, in the user's place.
     let asking = {
         let save = fixture.save.clone();
         let parameters = parameters.clone();
@@ -559,8 +578,8 @@ async fn a_profile_for_every_session_waits_for_the_users_yes() {
         .await
         .unwrap()
         .answer
-        .send("Yes.".into())
-        .unwrap();
+        .unwrap()
+        .decide(ApprovalAnswer::Save);
     let result = within(asking).await.unwrap().unwrap();
     assert!(
         result.starts_with("Saved the worker profile 3d-judge in the user's Arko folder, for every project. start_agent takes it by name."),
@@ -595,10 +614,10 @@ async fn a_profile_for_every_session_waits_for_the_users_yes() {
     let question = within(questions.recv()).await.unwrap();
     assert!(
         question
-            .text
+            .text()
             .contains("in this project's .agents/profiles folder")
     );
-    question.answer.send("ok".into()).unwrap();
+    question.answer.unwrap().decide(ApprovalAnswer::Save);
     assert!(
         asking
             .await
@@ -634,11 +653,11 @@ async fn an_empty_answer_or_no_one_to_ask_saves_nothing() {
         .await
         .unwrap()
         .answer
-        .send("  ".into())
-        .unwrap();
+        .unwrap()
+        .decide(ApprovalAnswer::DontSave);
     assert_eq!(
         within(asking).await.unwrap().unwrap(),
-        "The user didn't save audit for every project. Change it and ask again, or save it for this session with scope session."
+        "The user chose not to save audit for every project, so don't ask again unless they want it. You may save it for this session with scope session."
     );
     // A session no one can answer in (-p, a script) can't approve.
     let alone = fixture_alone().await;
@@ -856,8 +875,8 @@ async fn a_saved_profile_hidden_by_a_nearer_one_says_so() {
         .await
         .unwrap()
         .answer
-        .send("yes".into())
-        .unwrap();
+        .unwrap()
+        .decide(ApprovalAnswer::Save);
     let result = within(asking).await.unwrap().unwrap();
     assert!(
         result.contains(

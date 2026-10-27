@@ -223,9 +223,10 @@ mod tests {
     /// setting by the one name.
     #[test]
     fn the_setting_has_one_name() {
-        let page = include_str!("remote/page/index.html");
+        let page: &[u8] = include_bytes!("remote/page/arko-web_bg.wasm");
         assert!(
-            page.contains(&format!("<span class=\"setting-name\">{NAME}</span>")),
+            page.windows(NAME.len())
+                .any(|bytes| bytes == NAME.as_bytes()),
             "the page's row"
         );
         let settings = crate::commands::find("/settings").unwrap();

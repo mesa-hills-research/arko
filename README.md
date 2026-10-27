@@ -11,6 +11,8 @@ models, and on your Claude plan through an installed Claude Code.
   its reply (`-p`)
 - Saved sessions you can continue or resume, with handovers to a fresh conversation as the
   context fills
+- [Questions](docs/questions.md) from the agent that don't stop its work, answered in a panel or
+  in a message when you're ready
 - Search indexes of code and docs (`arko index`), kept current while Arko runs
 - A web page for following a session and taking part from a browser, such as a phone's
   (`--remote`)
@@ -87,7 +89,6 @@ arko-tui = { version = "0.12.0", default-features = false, features = ["remote"]
 
 ```bash
 cargo test
-node --test src/remote/page-tests/core.test.js
 ```
 
 The tests run against a mock model server, so they need no API keys.

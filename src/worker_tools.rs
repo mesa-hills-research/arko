@@ -18,7 +18,6 @@ use arko_agents::{
     ToolRecovery, ToolTypeDetails,
 };
 use arko_ai::{Model, Provider};
-use arko_workflows::user_input::{UserInputHandler, UserInputRequest};
 use async_trait::async_trait;
 use serde_json::Value;
 
@@ -488,15 +487,6 @@ fn needs_warning(needs: &str) -> String {
     }
 }
 
-/// The answer cut to a length the agent reads in a line.
-fn cut(text: &str, chars: usize) -> String {
-    if text.chars().count() <= chars {
-        text.to_string()
-    } else {
-        format!("{}…", text.chars().take(chars).collect::<String>())
-    }
-}
-
 #[async_trait]
 impl Tool for SaveWorkerProfile {
     fn definition(&self) -> ToolDefinition {
@@ -536,7 +526,8 @@ impl Tool for SaveWorkerProfile {
                     false,
                 ),
             ],
-            parallel_safe: false,
+            // Several saves of one response ask the user in one card.
+            parallel_safe: true,
             tool_type_details: ToolTypeDetails::DeveloperDefined,
             raw_json_schema_override: None,
         }
@@ -603,40 +594,44 @@ impl Tool for SaveWorkerProfile {
                     "No one can approve it in this session. Save it for the session, or tell the user the setup you want.",
                 ));
             }
-            let question = profiles::approval_text(&profile, place);
+            use crate::questions::ApprovalAnswer;
             let answer = self
                 .0
                 .asker
-                .respond(UserInputRequest {
-                    workflow_run_id: uuid::Uuid::nil(),
-                    agent_run_id: context.task_id,
-                    agent_name: context.agent_name.to_string(),
-                    questions: question,
-                })
-                .await
-                .map_err(refused)?;
-            if !profiles::is_approval(&answer) {
-                // The user sees the answer didn't save it, since what they
-                // meant by "yes please, but..." is only the agent's to read.
-                self.0.crew.notice(
-                    Level::Info,
-                    "Nothing was saved. Answer yes to save the profile as it is. Any other answer goes to the agent to change it.",
-                );
-                let said = answer.trim();
-                return Ok(if said.is_empty() {
-                    format!(
-                        "The user didn't save {} for {}. Change it and ask again, or save it for this session with scope session.",
+                .approve(
+                    context.task_id,
+                    context.call_id.clone(),
+                    profiles::approval_text(&profile, place),
+                    profiles::approval(&profile, place),
+                )
+                .await;
+            match answer {
+                ApprovalAnswer::Save => {}
+                ApprovalAnswer::Unanswered => {
+                    return Ok(format!(
+                        "The user didn't answer, so {} wasn't saved.",
+                        profile.name
+                    ));
+                }
+                ApprovalAnswer::DontSave => {
+                    return Ok(format!(
+                        "The user chose not to save {} for {}, so don't ask again unless they want it. You may save it for this session with scope session.",
                         profile.name,
                         place.reach()
-                    )
-                } else {
-                    format!(
-                        "The user didn't save {} for {} and answered \"{}\". Only a plain yes saves it. If they asked for a change, make it and ask again. If they meant yes, ask again and tell them to answer yes. Or save it for this session with scope session.",
+                    ));
+                }
+                ApprovalAnswer::Edit(said) => {
+                    // What they wrote is only the agent's to read.
+                    self.0
+                        .crew
+                        .notice(Level::Info, "Not saved. Arko asks again.");
+                    return Ok(format!(
+                        "The user didn't save {} for {} and wrote \"{}\". If those words ask for changes to the profile, make them and call save_worker_profile again, which shows them the changed profile. If they don't (a new request, or words about something else), they are a message to you, not changes. Respond to it, call save_worker_profile again with the same profile, and end with a short reminder that it is still waiting for their decision.",
                         profile.name,
                         place.reach(),
-                        cut(said, 500)
-                    )
-                });
+                        said.trim()
+                    ));
+                }
             }
         }
         let saved =

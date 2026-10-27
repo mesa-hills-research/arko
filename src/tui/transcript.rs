@@ -1657,11 +1657,26 @@ fn entry_lines(
             wrap::prefixed(lines, mark("✉", theme.dim()), blank())
         }
         Kind::Question => {
-            let mut lines = vec![Wrapped::line(vec![Span::styled(
-                "The agent asks".to_string(),
-                theme.accent().add_modifier(Modifier::BOLD),
-            )])];
-            lines.extend(markdown::render(&item.text, theme.text(), theme, inner));
+            // One quiet line while its questions are open (the answer panel
+            // has them), then the record of what became of each, boxed as
+            // the panel is.
+            let Some(questions) = &item.questions else {
+                // Asked before questions had ids, or no longer kept.
+                let mut lines = vec![Wrapped::line(vec![Span::styled(
+                    "Arko asked".to_string(),
+                    theme.dim(),
+                )])];
+                lines.extend(markdown::render(&item.text, theme.text(), theme, inner));
+                return wrap::prefixed(lines, mark("?", theme.accent()), blank());
+            };
+            if questions.iter().any(|question| !question.state.is_open()) {
+                return record_lines(&item.text, questions, theme, width);
+            }
+            let lines: Vec<Wrapped> =
+                wrap::wrap(&[Span::styled(rendered(&item.text), theme.dim())], inner, 0)
+                    .into_iter()
+                    .map(Wrapped::line)
+                    .collect();
             wrap::prefixed(lines, mark("?", theme.accent()), blank())
         }
         Kind::Call => {
@@ -1963,6 +1978,103 @@ fn banner_lines(banner: &Banner, theme: &Theme, width: usize) -> Vec<Wrapped> {
     lines
 }
 
+/// The record of a question card whose questions settled, boxed as the
+/// answer panel is: `heading` in its top border, then each settled
+/// question, numbered as the panel numbered it, with what became of it
+/// under it. A copy takes the questions and outcomes, not the box.
+fn record_lines(
+    heading: &str,
+    questions: &[crate::questions::AgentQuestion],
+    theme: &Theme,
+    width: usize,
+) -> Vec<Wrapped> {
+    let set = theme.borders();
+    // Settled questions need nothing more from the user, so the box is
+    // drawn as quietly as an overlay's, not in the open panel's accent.
+    let border = Style::new().fg(if theme.is_terminal() {
+        ratatui::style::Color::Reset
+    } else {
+        theme.border
+    });
+    // As wide as the transcript, with the same margin on the right as on
+    // the left.
+    let outer = width.saturating_sub(2 * MARGIN).max(24);
+    let inner = outer - 4;
+    let edge = |left: &str, right: &str, title: Option<&str>| {
+        let mut spans = vec![
+            Span::raw(" ".repeat(MARGIN)),
+            Span::styled(left.to_string(), border),
+        ];
+        let mut used = 2;
+        if let Some(title) = title {
+            let title = cut_end(&rendered(title), outer.saturating_sub(4));
+            used += text_width(&title) + 2;
+            spans.push(Span::styled(format!(" {title} "), theme.dim()));
+        }
+        spans.push(Span::styled(
+            set.horizontal_top.repeat(outer.saturating_sub(used)),
+            border,
+        ));
+        spans.push(Span::styled(right.to_string(), border));
+        Wrapped {
+            bare: true,
+            ..Wrapped::line(spans)
+        }
+    };
+    // `line` in the box, `lead` columns in, between its sides.
+    let side = |line: Wrapped, lead: usize| {
+        let pad = inner.saturating_sub(lead + spans_width(&line.spans));
+        let mut spans = vec![
+            Span::raw(" ".repeat(MARGIN)),
+            Span::styled(format!("{} ", set.vertical_left), border),
+            Span::raw(" ".repeat(lead)),
+        ];
+        spans.extend(line.spans);
+        spans.push(Span::raw(" ".repeat(pad)));
+        spans.push(Span::styled(format!(" {}", set.vertical_right), border));
+        Wrapped {
+            spans,
+            skip: MARGIN + 2 + lead + line.skip,
+            tail: line.tail + pad + 2,
+            ..line
+        }
+    };
+    let mut lines = vec![edge(set.top_left, set.top_right, Some(heading))];
+    for question in questions {
+        let Some(outcome) = outcome(&question.state) else {
+            continue;
+        };
+        let number = question
+            .number
+            .map(|number| format!("{number}. "))
+            .unwrap_or_default();
+        let indent = 2 + text_width(&number);
+        let room = inner.saturating_sub(indent).max(4);
+        let text = match &question.approval {
+            Some(approval) => approval.title(),
+            None => question.question.trim().to_string(),
+        };
+        let mut text = markdown::render(&text, theme.text(), theme, room);
+        if text.is_empty() {
+            text.push(Wrapped::line(Vec::new()));
+        }
+        for (row, line) in text.into_iter().enumerate() {
+            if row == 0 {
+                let number = Span::styled(number.clone(), theme.text());
+                lines.push(side(line.decorated(number), 2));
+            } else {
+                lines.push(side(line, indent));
+            }
+        }
+        let outcome = [Span::styled(rendered(&outcome), theme.dim())];
+        for line in wrap::wrap_lines(&outcome, room, 0) {
+            lines.push(side(line, indent));
+        }
+    }
+    lines.push(edge(set.bottom_left, set.bottom_right, None));
+    lines
+}
+
 /// `text` in `width` columns, cut at its end with an ellipsis.
 pub(super) fn cut_end(text: &str, width: usize) -> String {
     if text_width(text) <= width {
@@ -2174,6 +2286,20 @@ fn heading_lines(worker: &WorkerSummary, theme: &Theme, width: usize) -> Vec<Wra
     )
 }
 
+/// What became of a question, as its card's record says it under the
+/// question (`None` while it is open).
+fn outcome(state: &crate::questions::QuestionState) -> Option<String> {
+    use crate::questions::QuestionState;
+    Some(match state {
+        QuestionState::Open => return None,
+        QuestionState::Answered { answer } => answer.clone(),
+        QuestionState::AnsweredInMessage => "Answered in your message".to_string(),
+        QuestionState::Closed { why: Some(why) } => format!("Arko closed it. {}", why.trim()),
+        QuestionState::Closed { why: None } => "Arko closed it".to_string(),
+        QuestionState::Dismissed => "Dismissed".to_string(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2202,6 +2328,55 @@ mod tests {
 
     fn full() -> Filter {
         Filter::Main(View::Full)
+    }
+
+    /// A question card is one quiet line while its questions are open (the
+    /// answer panel has them). Once one settles, it is their record, boxed
+    /// as the panel is, with each question settled, numbered as the panel
+    /// numbered it, and what became of it.
+    #[test]
+    fn a_question_card_is_a_line_until_its_questions_settle() {
+        use crate::questions::QuestionState;
+        let mut t = Transcript::new();
+        let mut card = item(1, Kind::Question, "Arko asked 2 questions");
+        let mut questions = crate::tui::app::tests::asking().questions;
+        questions[1].question = "Push now?".into();
+        card.questions = Some(questions.clone());
+        t.apply(Update::Item(card.clone()));
+        assert_eq!(rows(&mut t, &full(), 40, 1), ["? Arko asked 2 questions"]);
+        questions[0].state = QuestionState::Answered {
+            answer: "Spaces".into(),
+        };
+        card.questions = Some(questions.clone());
+        t.apply(Update::Change(card.clone()));
+        let top = format!("  ┌ Arko asked 2 questions {}┐", "─".repeat(10));
+        let bottom = format!("  └{}┘", "─".repeat(34));
+        let boxed = |text: &str| format!("  │ {text:<32} │");
+        assert_eq!(
+            rows(&mut t, &full(), 40, 4),
+            [
+                top.clone(),
+                boxed("  1. Tabs or spaces?"),
+                boxed("     Spaces"),
+                bottom.clone(),
+            ]
+        );
+        questions[1].state = QuestionState::Closed {
+            why: Some("Found it".into()),
+        };
+        card.questions = Some(questions);
+        t.apply(Update::Change(card));
+        assert_eq!(
+            rows(&mut t, &full(), 40, 6),
+            [
+                top,
+                boxed("  1. Tabs or spaces?"),
+                boxed("     Spaces"),
+                boxed("  2. Push now?"),
+                boxed("     Arko closed it. Found it"),
+                bottom,
+            ]
+        );
     }
 
     /// A message a worker got shows in its own view with whose it is, and

@@ -1,5 +1,5 @@
 //! Text outside the transcript that the mouse selects as it selects the
-//! transcript's: the agent's question, docked above the status line. A drag
+//! transcript's: the answer panel, docked above the status line. A drag
 //! highlights it and copies it when the button is let go, a double click
 //! takes a word, and a triple click a line.
 
@@ -16,7 +16,7 @@ pub type Spot = (usize, usize);
 /// Text drawn outside the transcript, as last drawn.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Docked {
-    /// What it shows (the question's ID).
+    /// What it shows (0 for the answer panel).
     pub id: u64,
     /// Where its lines are.
     pub area: Rect,

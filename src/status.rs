@@ -378,6 +378,11 @@ impl remote::Meter for Gauges {
                 models
             },
             conversations: lock(&self.conversations).clone(),
+            questions: self
+                .feed
+                .as_ref()
+                .map(remote::Feed::open_questions)
+                .unwrap_or_default(),
             page: lock(&self.page).clone(),
             title: lock(&self.title).clone(),
             context_window: stats.context_window,
