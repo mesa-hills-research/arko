@@ -167,7 +167,9 @@ impl Harness {
     }
 
     /// Posts run `run`'s kept notes not posted yet, each as a workflow note
-    /// for that run alone, and keeps which note carries each.
+    /// for that run alone under the kept note's own id, and keeps which note
+    /// carries each. A note the workflow has already, posted before Arko
+    /// could record it, is found by that id instead of posted again.
     pub(crate) fn post_kept_notes(&self, run: Uuid) {
         let Some(workflow) = self.workflow.as_ref() else {
             return;
@@ -179,11 +181,14 @@ impl Harness {
             let note = arko_workflows::notes::Note::new(pending.note.clone())
                 .to([crate::agents::MAIN])
                 .for_run(run);
-            match workflow.post_note(note) {
+            match workflow.post_note_once(pending.id, note) {
                 Ok(posted) => self
                     .feed
                     .note_posted(pending.id, Some((posted.id, posted.seq))),
-                Err(error) => log::warn!("could not pass the answers on ({error})"),
+                Err(error) => self.say(
+                    Level::Error,
+                    &format!("Couldn't pass your answers on ({error}). Arko tries again after the next turn."),
+                ),
             }
         }
     }

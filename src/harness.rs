@@ -8093,6 +8093,88 @@ pub(crate) mod tests {
         assert!(!harness.notes_waiting(run));
     }
 
+    /// A kept note the workflow posted, and saved, before the session
+    /// recorded which note carries it is found again by its own id instead
+    /// of posted twice. That holds after a restart that reads the session's
+    /// file from before the post, and in the same session when the record
+    /// wasn't kept (its save failed). The agent gets it once.
+    #[tokio::test]
+    async fn a_note_posted_before_its_record_was_saved_is_posted_once() {
+        use crate::mock_model::{ModelServer, complete, tool_call};
+        let bodies: Arc<Mutex<Vec<String>>> = Arc::default();
+        let server = ModelServer::start(Arc::new({
+            let bodies = bodies.clone();
+            move |_, body: String| {
+                bodies.lock().unwrap().push(body.clone());
+                Box::pin(async move {
+                    if body.contains("The user answered q1.") {
+                        complete("m3", "Got it.")
+                    } else if body.contains("Asked q1.") {
+                        complete("m2", "Asked.")
+                    } else {
+                        tool_call(
+                            "m1",
+                            ASK_USER_TOOL_NAME,
+                            serde_json::json!({"questions": ["Tabs or spaces?"]}),
+                        )
+                    }
+                })
+            }
+        }))
+        .await;
+        let temp = tempfile::tempdir().unwrap();
+        let kept = temp.path().join(crate::questions::FILE);
+        let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
+        harness.feed.keep_questions(kept.clone());
+        let end = tokio::time::timeout(
+            Duration::from_secs(30),
+            harness.turn(Prompt::User("Start.".into()), &mut inputs),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(end, TurnEnd::Answered));
+        asked(&mut harness, &mut inputs).await;
+        let run = harness.conversations.current_run().unwrap();
+        assert!(
+            harness
+                .answer_questions(answers(vec![text_answer("q1", "Spaces")]))
+                .is_some()
+        );
+        let pending = harness.feed.queued_notes(run).remove(0);
+        let (note, _) = pending.posted.unwrap();
+        assert_eq!(note, pending.id, "posted under its own id");
+        let posted = harness.workflow().notes().len();
+        // Restarted with the file as it was before the post was recorded.
+        let mut file: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&kept).unwrap()).unwrap();
+        file["pending"][0].as_object_mut().unwrap().remove("posted");
+        std::fs::write(&kept, file.to_string()).unwrap();
+        harness.feed = remote::Feed::new(MAIN);
+        harness.feed.keep_questions(kept);
+        assert_eq!(harness.feed.queued_notes(run)[0].posted, None);
+        harness.settle_answer_notes();
+        assert_eq!(harness.workflow().notes().len(), posted);
+        assert_eq!(
+            harness.feed.queued_notes(run),
+            std::slice::from_ref(&pending)
+        );
+        // The record lost in this session.
+        harness.feed.note_posted(pending.id, None);
+        harness.settle_answer_notes();
+        assert_eq!(harness.workflow().notes().len(), posted);
+        assert_eq!(harness.feed.queued_notes(run), [pending]);
+        let news = tokio::time::timeout(
+            Duration::from_secs(30),
+            harness.deliver_answers(&mut inputs),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(news, News::Done));
+        let last = bodies.lock().unwrap().last().unwrap().clone();
+        assert_eq!(last.matches("The user answered q1.").count(), 1, "{last}");
+        assert!(harness.feed.queued_notes(run).is_empty());
+    }
+
     /// An answer given after the agent's question was recorded but before
     /// its wait reached the harness goes once: as the note, which the wait,
     /// once up, hears follows.
