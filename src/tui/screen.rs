@@ -2131,30 +2131,20 @@ mod tests {
         let rows = screen(&mut app, 60, 24);
         let at = rows
             .iter()
-            .position(|row| row.contains("Arko asks 2 questions"))
+            .position(|row| row.contains("Question 1 of 2"))
             .unwrap_or_else(|| panic!("{rows:#?}"));
         let panel = rows[at..].join("\n");
-        // Numbered in their ask, without the agent's ids. One that takes
-        // any number of its choices says so after its text.
-        assert!(
-            panel.contains("  1. Tabs or spaces?  Choose any"),
-            "{panel}"
-        );
+        // Only the current question shows, without the agent's ids.
+        assert!(panel.contains("Tabs or spaces?  Choose any"), "{panel}");
         assert!(!panel.contains("q1"), "{panel}");
-        // The chips have the keys.
-        assert!(
-            panel.contains("›  1 Tabs   2 Spaces   3 You decide (Spaces)"),
-            "{panel}"
-        );
-        assert!(
-            panel.contains("    Other  type an answer of your own"),
-            "{panel}"
-        );
-        assert!(panel.contains("  2. Which branch?"), "{panel}");
-        assert!(panel.contains(" 1 You decide "), "{panel}");
+        for choice in ["1 Tabs", "2 Spaces", "3 You decide (Spaces)"] {
+            assert!(panel.contains(choice), "{panel}");
+        }
+        assert!(panel.contains("Type your own answer"), "{panel}");
+        assert!(!panel.contains("Other"), "{panel}");
+        assert!(!panel.contains("Which branch?"), "{panel}");
         assert!(!panel.contains("Anything else"), "{panel}");
-        assert!(!panel.contains("branch?  Choose any"), "{panel}");
-        assert!(panel.contains("Esc  answer in chat"), "{panel}");
+        assert!(panel.contains("Enter  next"), "{panel}");
         // Esc: the questions go with the next message, as the chip says.
         app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         let rows = screen(&mut app, 60, 24);
@@ -2336,8 +2326,9 @@ mod tests {
                 "Save the worker profile judge for every project?",
                 "Runs on sol.",
                 "Judges renders against a reference image",
-                " 1 Save   2 Don't save ",
-                "Other  tell Arko what to change",
+                "1 Save",
+                "2 Don't save",
+                "Tell Arko what to change",
                 "Check point 1 of the render.",
                 "PgDn  more",
             ] {
@@ -2998,7 +2989,7 @@ mod tests {
         app.set_reading(reading);
         let rows = screen(&mut app, 60, 24);
         assert!(
-            rows.iter().any(|row| row.contains("Arko asks 2 questions")),
+            rows.iter().any(|row| row.contains("Question 1 of 2")),
             "{rows:#?}"
         );
         let mut questions = card.questions.clone().unwrap();

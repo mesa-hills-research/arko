@@ -202,6 +202,12 @@ impl Editor {
         }
     }
 
+    /// Puts the cursor before character `at`, or at the end past it.
+    pub fn set_cursor(&mut self, at: usize) {
+        self.cursor = at.min(self.text.len());
+        self.goal = None;
+    }
+
     /// Where the cursor is, in characters: for [`fold_paste`].
     pub fn cursor(&self) -> usize {
         self.cursor

@@ -1,14 +1,6 @@
-//! The answer panel: the main agent's open questions, in a box above the
-//! message box. It opens by itself when questions come while the user isn't
-//! typing, else a chip says so, and Alt+Q opens it. Each question shows its
-//! choices as chips that number keys pick, an Other field and "You decide".
-//! An approval shows what it approves, with Save and Don't save. Enter sends what's filled in. Esc
-//! answers in chat instead: the questions are attached to the message box
-//! ("Replying to 2 questions"), and Backspace in an empty box takes them
-//! off. Ctrl+N dismisses them ("Not now").
-//!
-//! While a question is open, only the panel shows it. Its card in the
-//! transcript is one quiet line until then (see `transcript`).
+//! One question at a time, followed by a summary before sending.
+//! The panel opens when the user isn't typing. Alt+Q returns to it,
+//! Esc answers in chat, and Ctrl+N dismisses the open questions.
 
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
@@ -16,15 +8,19 @@ use std::time::{Duration, Instant};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::Frame;
 use ratatui::layout::{Position, Rect};
-use ratatui::style::Modifier;
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear};
 
 use super::app::{App, Effect};
+use super::input::{Editor, History};
 use super::markdown;
 use super::overlay::{Overlay, hints};
 use super::select::Docked;
-use super::wrap;
+use super::theme::Theme;
+use super::transcript;
+use super::wrap::{self, Wrapped};
+use crate::glyphs;
 use crate::questions::{AgentQuestion, Answer, Answers, CHOOSE_ANY, QuestionAnswer};
 use crate::ui::Input;
 
@@ -37,6 +33,8 @@ pub struct Draft {
     /// The choices picked, by their place among the question's choices.
     pub chosen: Vec<usize>,
     pub other: String,
+    /// Where the cursor is in `other`, in characters.
+    pub cursor: usize,
     pub you_decide: bool,
 }
 
@@ -48,11 +46,14 @@ impl Draft {
                 .iter()
                 .filter_map(|at| question.choices.get(*at).cloned())
                 .collect(),
-            text: Some(self.other.trim().to_string()).filter(|text| !text.is_empty()),
+            text: other_on(self, question).then(|| self.other.trim().to_string()),
             you_decide: self.you_decide,
         }
     }
 }
+
+#[cfg(test)]
+mod tests;
 
 /// The panel's state, and the questions attached to the message box.
 #[derive(Debug, Default)]
@@ -62,9 +63,6 @@ pub struct Panel {
     /// The question with the keys, by its id, so it keeps them as other
     /// questions come and go.
     pub focus: Option<String>,
-    /// The focused question's Other field has the keys, not its chips:
-    /// digits are text there.
-    pub typing: bool,
     /// What is filled in, by question.
     pub drafts: HashMap<String, Draft>,
     /// The questions attached to the message box: the next message answers
@@ -79,12 +77,21 @@ pub struct Panel {
     pub rung: HashSet<String>,
     /// New questions came while the window wasn't focused: the bell rings.
     pub ring: bool,
-    /// How many lines the panel is scrolled down from the focused
-    /// question's start (PgDn), for a long question.
-    pub scroll: usize,
     /// The window Alt+Q opened the panel over, which comes back when the
     /// panel closes.
     pub behind: Option<Overlay>,
+    /// The cursor among the focused question's options.
+    pub row: usize,
+    /// One at a time: the summary shows, with this row highlighted (the
+    /// questions, then Send).
+    pub review: Option<usize>,
+    /// One at a time: an answer changed from the summary goes back to it.
+    pub from_review: bool,
+    /// The width the panel was drawn at and its height: it keeps that
+    /// height while it shows the same questions.
+    pub height: (u16, u16),
+    /// How far PgUp and PgDn moved from where the focus is in sight.
+    pub offset: isize,
 }
 
 /// The chip above the message box, when the panel is closed.
@@ -114,12 +121,6 @@ impl Chip {
             Chip::Open(count) => format!("{count} open questions"),
         }
     }
-}
-
-/// Whether the Other field of `question` takes the keys when it gets the
-/// focus: it has no choices to pick.
-fn types_first(question: &AgentQuestion) -> bool {
-    question.choices.is_empty() && question.approval.is_none()
 }
 
 impl App {
@@ -180,6 +181,10 @@ impl App {
         self.panel.attached.retain(|id| open.contains(id));
         self.panel.seen.retain(|id| open.contains(id));
         self.panel.rung.retain(|id| open.contains(id));
+        self.panel.height = (0, 0);
+        if let Some(review) = &mut self.panel.review {
+            *review = (*review).min(open.len());
+        }
         if open.iter().any(|id| !self.panel.rung.contains(id)) {
             self.panel.ring |= !self.focused;
             self.panel.rung.extend(open.iter().cloned());
@@ -278,15 +283,24 @@ impl App {
     /// field when it has no choices.
     pub(super) fn focus_on(&mut self, at: usize) {
         let question = self.open_questions().get(at).cloned();
-        self.panel.typing = question.as_ref().is_some_and(types_first);
+        self.panel.offset = 0;
+        if let Some(question) = &question {
+            self.panel.row = picked_row(self.panel.drafts.get(&question.id), question)
+                .unwrap_or_else(|| options(question).len() - 1);
+            if let Some(draft) = self.panel.drafts.get_mut(&question.id) {
+                draft.cursor = draft.other.chars().count();
+            }
+        }
         self.panel.focus = question.map(|question| question.id);
-        self.panel.scroll = 0;
     }
 
     /// The panel closes, and the window it opened over comes back.
     pub(super) fn close_panel(&mut self) {
         self.panel.open = false;
-        self.panel.scroll = 0;
+        self.panel.offset = 0;
+        self.panel.review = None;
+        self.panel.from_review = false;
+        self.panel.height = (0, 0);
         if let Some(overlay) = self.panel.behind.take()
             && self.overlay.is_none()
         {
@@ -296,7 +310,7 @@ impl App {
 
     /// Esc and "Answer in chat": the panel closes and the open questions
     /// are attached to the message box.
-    fn answer_in_chat(&mut self) {
+    pub(super) fn answer_in_chat(&mut self) {
         self.close_panel();
         self.panel.attached = self
             .open_questions()
@@ -335,7 +349,7 @@ impl App {
 
     /// Enter in the panel: sends what's filled in, naming every question
     /// it shows. The questions left unanswered stay open.
-    fn send_answers(&mut self) {
+    pub(super) fn send_answers(&mut self) {
         let answers: Vec<QuestionAnswer> = self
             .open_questions()
             .iter()
@@ -367,49 +381,114 @@ impl App {
         self.transcript.follow();
     }
 
-    /// The text field with the keys: the focused question's Other.
-    fn field(&mut self) -> Option<&mut String> {
-        let id = self.open_questions().get(self.focus_index())?.id.clone();
-        Some(&mut self.panel.drafts.entry(id).or_default().other)
-    }
-
-    /// A paste while the panel has the keys: into its field, on one line.
+    /// Paste into the focused question's field, without folding long text.
     pub(super) fn panel_paste(&mut self, text: &str) {
-        let text = text.replace(['\r', '\n'], " ");
-        self.panel.typing = true;
-        if let Some(field) = self.field() {
-            field.push_str(&text);
-        }
-        self.typed_in_panel();
-    }
-
-    /// Typing an answer of its own leaves "You decide".
-    fn typed_in_panel(&mut self) {
-        if let Some(question) = self.reading.questions.get(self.focus_index()) {
-            let id = question.id.clone();
-            if let Some(draft) = self.panel.drafts.get_mut(&id) {
-                draft.you_decide = false;
-            }
-        }
-    }
-
-    /// Picks chip `at` of the focused question: a choice, or "You decide"
-    /// after them.
-    fn pick(&mut self, at: usize) {
-        let Some(question) = self.reading.questions.get(self.focus_index()).cloned() else {
+        let Some((_, question)) = self.focused_question() else {
             return;
         };
-        let draft = self.panel.drafts.entry(question.id.clone()).or_default();
-        if at == question.choices.len() {
-            draft.you_decide = !draft.you_decide;
-            if draft.you_decide {
-                draft.chosen.clear();
-                draft.other.clear();
+        self.panel.row = options(&question).len() - 1;
+        let draft = self.draft_mut(&question.id);
+        field_paste(draft, text);
+        pick(draft, &question, Opt::Other, false);
+    }
+
+    /// The panel's own keys, before the message box gets them.
+    pub(super) fn panel_key(&mut self, key: KeyEvent) -> bool {
+        if !self.panel.open || self.open_questions().is_empty() {
+            return false;
+        }
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let alt = key.modifiers.contains(KeyModifiers::ALT);
+        match key.code {
+            KeyCode::Char('c' | 'l' | 'o') if ctrl => return false,
+            KeyCode::Char('q') if alt => return true,
+            KeyCode::Char('n') if ctrl => self.not_now(),
+            KeyCode::Esc => self.answer_in_chat(),
+            KeyCode::PageDown => self.panel.offset += 5,
+            KeyCode::PageUp => self.panel.offset -= 5,
+            _ => {
+                self.panel.offset = 0;
+                self.steps_key(key);
             }
-        } else if at < question.choices.len() {
+        }
+        true
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Opt {
+    Choice(usize),
+    YouDecide,
+    Other,
+}
+
+/// A question's answers to pick, in order: its choices, "You decide" (not
+/// for an approval), and Other.
+fn options(question: &AgentQuestion) -> Vec<Opt> {
+    let mut options: Vec<Opt> = (0..question.choices.len()).map(Opt::Choice).collect();
+    if question.approval.is_none() {
+        options.push(Opt::YouDecide);
+    }
+    options.push(Opt::Other);
+    options
+}
+
+fn label(question: &AgentQuestion, opt: Opt) -> String {
+    match opt {
+        Opt::Choice(at) => question.choices.get(at).cloned().unwrap_or_default(),
+        Opt::YouDecide => "You decide".to_string(),
+        Opt::Other if question.approval.is_some() => "Tell Arko what to change".to_string(),
+        Opt::Other => placeholder(question).to_string(),
+    }
+}
+
+/// What "You decide" means: "(Spaces)".
+fn default_note(question: &AgentQuestion, opt: Opt) -> Option<String> {
+    match (opt, &question.default) {
+        (Opt::YouDecide, Some(default)) => Some(format!("({})", default.trim())),
+        _ => None,
+    }
+}
+
+/// What an empty Other field says.
+fn placeholder(question: &AgentQuestion) -> &'static str {
+    if question.approval.is_some() {
+        "Tell Arko what to change"
+    } else {
+        "Type your own answer"
+    }
+}
+
+// ----- what is picked -----
+
+/// Whether Other's words are the answer, or one of them. A question that
+/// takes one answer takes them while nothing else is picked.
+fn other_on(draft: &Draft, question: &AgentQuestion) -> bool {
+    !draft.other.trim().is_empty()
+        && !draft.you_decide
+        && (question.multiple || draft.chosen.is_empty())
+}
+
+fn is_on(draft: &Draft, question: &AgentQuestion, opt: Opt) -> bool {
+    match opt {
+        Opt::Choice(at) => draft.chosen.contains(&at),
+        Opt::YouDecide => draft.you_decide,
+        Opt::Other => other_on(draft, question),
+    }
+}
+
+/// Picks `opt`. With `toggle`, picking what is picked unpicks it (Space).
+/// A question that takes one answer has one: a choice, "You decide" or
+/// the words in Other (which stay, unpicked, when something else is).
+fn pick(draft: &mut Draft, question: &AgentQuestion, opt: Opt, toggle: bool) {
+    match opt {
+        Opt::Choice(at) => {
+            let on = draft.chosen.contains(&at);
             draft.you_decide = false;
-            if draft.chosen.contains(&at) {
-                draft.chosen.retain(|chosen| *chosen != at);
+            if on {
+                if toggle {
+                    draft.chosen.retain(|chosen| *chosen != at);
+                }
             } else if question.multiple {
                 draft.chosen.push(at);
                 draft.chosen.sort_unstable();
@@ -417,272 +496,430 @@ impl App {
                 draft.chosen = vec![at];
             }
         }
-    }
-
-    /// ↓ and Tab: from a question's chips to its Other field, and from
-    /// there to the next question (after the last, the first).
-    fn focus_down(&mut self) {
-        let (count, at) = (self.open_questions().len().max(1), self.focus_index());
-        if self.panel.typing {
-            self.focus_on((at + 1) % count);
-        } else {
-            self.panel.typing = true;
-        }
-    }
-
-    /// ↑ and Shift+Tab: the other way.
-    fn focus_up(&mut self) {
-        let (count, at) = (self.open_questions().len().max(1), self.focus_index());
-        if self.panel.typing {
-            self.panel.typing = false;
-        } else {
-            self.focus_on((at + count - 1) % count);
-            self.panel.typing = true;
-        }
-    }
-
-    /// A key while the panel has the keys. True when it took it.
-    pub(super) fn panel_key(&mut self, key: KeyEvent) -> bool {
-        if !self.panel.open || self.open_questions().is_empty() {
-            self.close_panel();
-            return false;
-        }
-        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-        let alt = key.modifiers.contains(KeyModifiers::ALT);
-        let chip_count = self
-            .open_questions()
-            .get(self.focus_index())
-            .map(|question| chips(question).len());
-        match key.code {
-            KeyCode::Esc => self.answer_in_chat(),
-            KeyCode::Char('q') if alt => {}
-            KeyCode::Char('n') if ctrl => self.not_now(),
-            KeyCode::Enter if !alt && !ctrl => self.send_answers(),
-            KeyCode::Down | KeyCode::Tab => self.focus_down(),
-            KeyCode::Up | KeyCode::BackTab => self.focus_up(),
-            KeyCode::PageDown => self.panel.scroll += 5,
-            KeyCode::PageUp => self.panel.scroll = self.panel.scroll.saturating_sub(5),
-            KeyCode::Backspace if self.panel.typing => {
-                if let Some(field) = self.field() {
-                    field.pop();
-                }
+        Opt::YouDecide => {
+            if draft.you_decide {
+                draft.you_decide = !toggle;
+            } else {
+                draft.you_decide = true;
+                draft.chosen.clear();
             }
-            // In the chips, a number picks one.
-            KeyCode::Char(c @ '1'..='9')
-                if !ctrl
-                    && !alt
-                    && !self.panel.typing
-                    && chip_count.is_some_and(|count| (c as usize - '1' as usize) < count) =>
-            {
-                self.pick(c as usize - '1' as usize);
-            }
-            // Any other character typed goes in the Other field.
-            KeyCode::Char(c) if !ctrl && !alt => {
-                self.panel.typing = true;
-                if let Some(field) = self.field() {
-                    field.push(c);
-                }
-                self.typed_in_panel();
-            }
-            // Keys that work whatever the panel shows.
-            KeyCode::Char('c' | 'l' | 'o') if ctrl => return false,
-            _ => {}
         }
-        true
+        Opt::Other => {
+            draft.you_decide = false;
+            if !question.multiple {
+                draft.chosen.clear();
+            }
+        }
     }
 }
 
-/// The chips a question shows, each with its number key: its choices, then
-/// "You decide" with its default. An approval has Save and Don't save.
-fn chips(question: &AgentQuestion) -> Vec<String> {
-    let mut chips = question.choices.clone();
-    if question.approval.is_none() {
-        chips.push(match &question.default {
-            Some(default) => format!("You decide ({default})"),
+/// Words were typed in Other: the answer of a question that takes one.
+fn typed(draft: &mut Draft, question: &AgentQuestion) {
+    pick(draft, question, Opt::Other, false);
+}
+
+/// The answer in a few words, for a summary: "Spaces", "You decide
+/// (Spaces)", the words typed.
+fn answer_text(draft: &Draft, question: &AgentQuestion) -> Option<String> {
+    if draft.you_decide {
+        return Some(match &question.default {
+            Some(default) => format!("You decide ({})", default.trim()),
             None => "You decide".to_string(),
         });
     }
-    chips
+    let mut parts: Vec<String> = draft
+        .chosen
+        .iter()
+        .filter_map(|at| question.choices.get(*at).cloned())
+        .collect();
+    if other_on(draft, question) {
+        parts.push(draft.other.trim().to_string());
+    }
+    (!parts.is_empty()).then(|| parts.join(", "))
 }
 
-/// The panel's title: "Arko asks 2 questions".
-fn title(questions: &[AgentQuestion]) -> String {
-    let approvals = questions.iter().all(|question| question.approval.is_some());
-    match (questions.len(), approvals) {
-        (1, true) => " Arko asks to save a worker profile ".to_string(),
-        (count, true) => format!(" Arko asks to save {count} worker profiles "),
-        (1, false) => " Arko asks ".to_string(),
-        (count, false) => format!(" Arko asks {count} questions "),
-    }
+/// The option the cursor starts on: what is picked, else the first (Other
+/// for a question without choices, which takes words first).
+fn picked_row(draft: Option<&Draft>, question: &AgentQuestion) -> Option<usize> {
+    let options = options(question);
+    let draft = draft?;
+    let picked = if let Some(first) = draft.chosen.first() {
+        Opt::Choice(*first)
+    } else if draft.you_decide {
+        Opt::YouDecide
+    } else if other_on(draft, question) {
+        Opt::Other
+    } else {
+        return None;
+    };
+    options.iter().position(|opt| *opt == picked)
 }
 
-/// The answer panel, above the status line. Returns the rows it takes.
-pub fn draw_panel(frame: &mut Frame, app: &mut App, above: Rect, previous: Option<Docked>) -> u16 {
-    let theme = app.theme.clone();
-    let questions = app.open_questions().to_vec();
-    if questions.is_empty() || above.height < 4 {
-        return 0;
-    }
-    let focus = app.focus_index();
-    let inner_width = (above.width as usize).saturating_sub(4).max(8);
-    // At most two thirds of the screen: a window that keeps the focused
-    // row in sight.
-    let room = (above.height as usize * 2 / 3).saturating_sub(2).max(3);
-    let mut lines: Vec<Line<'static>> = Vec::new();
-    // The rows of each question, to keep the focused one in sight.
-    let mut spans_of: Vec<(usize, usize)> = Vec::new();
-    let mut cursor: Option<(usize, u16)> = None;
-    let marker = crate::glyphs::render("› ").into_owned();
-    for (at, question) in questions.iter().enumerate() {
-        let focused = focus == at;
-        // The questions of another ask come after a blank line.
-        if at > 0 && questions[at - 1].item != question.item {
-            lines.push(Line::default());
+// ----- the Other field -----
+
+/// A key in the Other field of `draft`, at its cursor: readline's keys.
+/// True when it took it.
+fn field_key(draft: &mut Draft, key: KeyEvent) -> bool {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    let alt = key.modifiers.contains(KeyModifiers::ALT);
+    let mut chars: Vec<char> = draft.other.chars().collect();
+    let mut at = draft.cursor.min(chars.len());
+    let word_start = |chars: &[char], at: usize| {
+        let mut i = at;
+        while i > 0 && chars[i - 1] == ' ' {
+            i -= 1;
         }
-        let first = lines.len();
-        let style = if focused {
+        while i > 0 && chars[i - 1] != ' ' {
+            i -= 1;
+        }
+        i
+    };
+    let word_end = |chars: &[char], at: usize| {
+        let mut i = at;
+        while i < chars.len() && chars[i] == ' ' {
+            i += 1;
+        }
+        while i < chars.len() && chars[i] != ' ' {
+            i += 1;
+        }
+        i
+    };
+    match key.code {
+        KeyCode::Char('w') if ctrl => {
+            let from = word_start(&chars, at);
+            chars.drain(from..at);
+            at = from;
+        }
+        KeyCode::Backspace if ctrl || alt => {
+            let from = word_start(&chars, at);
+            chars.drain(from..at);
+            at = from;
+        }
+        KeyCode::Char('u') if ctrl => {
+            chars.drain(..at);
+            at = 0;
+        }
+        KeyCode::Char('k') if ctrl => chars.truncate(at),
+        KeyCode::Char('a') if ctrl => at = 0,
+        KeyCode::Char('e') if ctrl => at = chars.len(),
+        KeyCode::Char('b') if ctrl => at = at.saturating_sub(1),
+        KeyCode::Char('f') if ctrl => at = (at + 1).min(chars.len()),
+        KeyCode::Char('d') if ctrl => {
+            if at < chars.len() {
+                chars.remove(at);
+            }
+        }
+        KeyCode::Char('b') if alt => at = word_start(&chars, at),
+        KeyCode::Char('f') if alt => at = word_end(&chars, at),
+        KeyCode::Char(c) if !ctrl && !alt => {
+            chars.insert(at, c);
+            at += 1;
+        }
+        KeyCode::Backspace => {
+            if at > 0 {
+                at -= 1;
+                chars.remove(at);
+            }
+        }
+        KeyCode::Delete => {
+            if at < chars.len() {
+                chars.remove(at);
+            }
+        }
+        KeyCode::Left if ctrl || alt => at = word_start(&chars, at),
+        KeyCode::Right if ctrl || alt => at = word_end(&chars, at),
+        KeyCode::Left => at = at.saturating_sub(1),
+        KeyCode::Right => at = (at + 1).min(chars.len()),
+        KeyCode::Home => at = 0,
+        KeyCode::End => at = chars.len(),
+        _ => return false,
+    }
+    draft.other = chars.into_iter().collect();
+    draft.cursor = at;
+    true
+}
+
+/// Text pasted into the Other field of `draft`, at its cursor, on one line.
+fn field_paste(draft: &mut Draft, text: &str) {
+    let mut chars: Vec<char> = draft.other.chars().collect();
+    let at = draft.cursor.min(chars.len());
+    let pasted: Vec<char> = text
+        .chars()
+        .map(|c| if c == '\n' || c == '\r' { ' ' } else { c })
+        .filter(|c| !c.is_control())
+        .collect();
+    let count = pasted.len();
+    chars.splice(at..at, pasted);
+    draft.other = chars.into_iter().collect();
+    draft.cursor = at + count;
+}
+
+/// The field's text wrapped to `width` as the message box wraps its own,
+/// and its cursor's row and column.
+fn field_rows(
+    text: &str,
+    cursor: usize,
+    width: usize,
+    style: Style,
+) -> (Vec<Vec<Span<'static>>>, (usize, usize)) {
+    let mut editor = Editor::new(History::load(None));
+    for c in text.chars() {
+        editor.insert(c);
+    }
+    editor.set_cursor(cursor);
+    let mut rows = editor.lines(width, style, style);
+    let (row, column) = editor.position(width);
+    while rows.len() <= row {
+        rows.push(Vec::new());
+    }
+    (rows, (row, column))
+}
+
+// ----- lines -----
+
+fn spans_width(spans: &[Span]) -> usize {
+    spans.iter().map(|span| wrap::width(&span.content)).sum()
+}
+
+/// A question's own lines at `width`: its text (an approval's title, what
+/// it runs on and what it's for), "Choose any" after a question that takes
+/// several.
+fn question_lines(
+    question: &AgentQuestion,
+    style: Style,
+    theme: &Theme,
+    width: usize,
+) -> Vec<Line<'static>> {
+    let mut text = match &question.approval {
+        Some(approval) => {
+            let mut text = markdown::render(&approval.title(), style, theme, width);
+            for part in [approval.runs_on(), approval.description.clone()] {
+                text.extend(markdown::render(&part, theme.text(), theme, width));
+            }
+            text
+        }
+        None => markdown::render(&question.question, style, theme, width),
+    };
+    if text.is_empty() {
+        text.push(Wrapped::line(Vec::new()));
+    }
+    if question.multiple && !question.choices.is_empty() && question.approval.is_none() {
+        let hint = Span::styled(CHOOSE_ANY.to_string(), theme.dim());
+        let last = text.last_mut().expect("a line at least");
+        if spans_width(&last.spans) + 2 + wrap::width(CHOOSE_ANY) <= width {
+            last.spans.extend([Span::raw("  "), hint]);
+        } else {
+            text.push(Wrapped::line(vec![hint]));
+        }
+    }
+    text.into_iter()
+        .map(|line| Line::from(line.spans))
+        .collect()
+}
+
+/// An approval's instructions, on a quiet rule.
+fn instruction_lines(question: &AgentQuestion, theme: &Theme, width: usize) -> Vec<Line<'static>> {
+    let Some(approval) = &question.approval else {
+        return Vec::new();
+    };
+    if approval.instructions.trim().is_empty() {
+        return Vec::new();
+    }
+    let rule = glyphs::render("│ ").into_owned();
+    let mut lines = vec![Line::from(Span::styled(
+        "Instructions".to_string(),
+        theme.dim(),
+    ))];
+    for line in approval.instructions.trim_end().lines() {
+        let line = wrap::clean(line);
+        for row in wrap::wrap(
+            &[Span::styled(line, theme.text())],
+            width.saturating_sub(2).max(4),
+            0,
+        ) {
+            let mut spans = vec![Span::styled(rule.clone(), theme.dim())];
+            spans.extend(row);
+            lines.push(Line::from(spans));
+        }
+    }
+    lines
+}
+
+/// The rows instructions take beyond these count toward no panel's height
+/// (they scroll).
+const INSTRUCTION_ROWS: usize = 6;
+
+/// A question's options as a list.
+struct Rows {
+    lines: Vec<Line<'static>>,
+    /// Each option's first and last line.
+    spans: Vec<(usize, usize)>,
+    /// The text cursor, in Other.
+    cursor: Option<(usize, usize)>,
+}
+
+/// `question`'s options as a list at `width`, the highlight on `row`
+/// while it has the keys.
+fn list_rows(
+    question: &AgentQuestion,
+    draft: &Draft,
+    row: Option<usize>,
+    theme: &Theme,
+    width: usize,
+) -> Rows {
+    let options = options(question);
+    let mut rows = Rows {
+        lines: Vec::new(),
+        spans: Vec::new(),
+        cursor: None,
+    };
+    let pointer = glyphs::render("▸ ").into_owned();
+    let digits = options.len().to_string().len();
+    for (at, opt) in options.iter().copied().enumerate() {
+        let here = row == Some(at);
+        let on = is_on(draft, question, opt);
+        let first = rows.lines.len();
+        let mut lead: Vec<Span<'static>> = Vec::new();
+        if opt == Opt::Other {
+            // The field is a prompt of its own, under the numbers.
+            lead.push(Span::raw("  "));
+            lead.push(Span::styled(
+                format!("{:>digits$} ", glyphs::render("›")),
+                if here { theme.accent() } else { theme.dim() },
+            ));
+        } else {
+            lead.push(if here {
+                Span::styled(pointer.clone(), theme.accent())
+            } else {
+                Span::raw("  ")
+            });
+            let mark = Span::styled(
+                format!("{:>digits$} ", at + 1),
+                if here { theme.accent() } else { theme.dim() },
+            );
+            lead.push(mark);
+        }
+        let lead_width = spans_width(&lead);
+        let room = width.saturating_sub(lead_width).max(4);
+        let label_style = if here {
             theme.accent().add_modifier(Modifier::BOLD)
         } else {
             theme.text()
         };
-        let number = question
-            .number
-            .map(|number| format!("{number}. "))
-            .unwrap_or_default();
-        let indent = 2 + wrap::width(&number);
-        let width = inner_width.saturating_sub(indent).max(4);
-        // An approval says what it approves up front, and its instructions
-        // follow its choices.
-        let mut tail: Vec<wrap::Wrapped> = Vec::new();
-        let mut text = match &question.approval {
-            Some(approval) => {
-                let mut text = markdown::render(&approval.title(), style, &theme, width);
-                for part in [approval.runs_on(), approval.description.clone()] {
-                    text.extend(markdown::render(&part, theme.text(), &theme, width));
-                }
-                if !approval.instructions.is_empty() {
-                    tail.extend(markdown::render("Instructions", theme.dim(), &theme, width));
-                    for line in approval.instructions.lines() {
-                        tail.extend(
-                            wrap::wrap(&[Span::styled(line.to_string(), theme.text())], width, 0)
-                                .into_iter()
-                                .map(wrap::Wrapped::line),
-                        );
-                    }
-                }
-                text
-            }
-            None => markdown::render(&question.question, style, &theme, width),
-        };
-        if text.is_empty() {
-            text.push(wrap::Wrapped::line(Vec::new()));
-        }
-        // A question that takes any number of its choices says so after
-        // its text, on its line when it fits.
-        if question.multiple && !question.choices.is_empty() && question.approval.is_none() {
-            let hint = Span::styled(CHOOSE_ANY.to_string(), theme.dim());
-            let last = text.last_mut().expect("a line at least");
-            let used: usize = last
-                .spans
-                .iter()
-                .map(|span| wrap::width(&span.content))
-                .sum();
-            if used + 2 + wrap::width(CHOOSE_ANY) <= width {
-                last.spans.extend([Span::raw("  "), hint]);
-            } else {
-                text.push(wrap::Wrapped::line(vec![hint]));
-            }
-        }
-        for (row, wrapped) in text.into_iter().enumerate() {
-            let mut spans = if row == 0 {
-                vec![Span::raw("  "), Span::styled(number.clone(), style)]
-            } else {
-                vec![Span::raw(" ".repeat(indent))]
-            };
-            spans.extend(wrapped.spans);
-            lines.push(Line::from(spans));
-        }
-        let draft = app
-            .panel
-            .drafts
-            .get(&question.id)
-            .cloned()
-            .unwrap_or_default();
-        let on_chips = focused && !app.panel.typing;
-        let mut row: Vec<Span<'static>> = vec![Span::styled(
-            if on_chips {
-                format!("  {marker}")
-            } else {
-                "    ".to_string()
-            },
-            theme.accent(),
-        )];
-        for (number, chip) in chips(question).into_iter().enumerate() {
-            let on = if number == question.choices.len() {
-                draft.you_decide
-            } else {
-                draft.chosen.contains(&number)
-            };
-            let style = if on { theme.chosen() } else { theme.dim() };
-            row.push(Span::styled(format!(" {} {chip} ", number + 1), style));
-            row.push(Span::raw(" "));
-        }
-        for wrapped in wrap::wrap(&row, inner_width, 4) {
-            lines.push(Line::from(wrapped));
-        }
-        if focused || !draft.other.is_empty() {
-            let typing = focused && app.panel.typing;
-            let label = if typing {
-                format!("  {marker}Other  ")
-            } else {
-                "    Other  ".to_string()
-            };
-            let mut other = vec![Span::styled(
-                label.clone(),
-                if typing { theme.accent() } else { theme.dim() },
-            )];
-            if draft.other.is_empty() && focused {
-                let hint = if question.approval.is_some() {
-                    "tell Arko what to change"
+        let text_rows: Vec<Vec<Span<'static>>> = if opt == Opt::Other {
+            if here {
+                if draft.other.is_empty() {
+                    rows.cursor = Some((first, lead_width));
+                    vec![vec![Span::styled(
+                        placeholder(question).to_string(),
+                        theme.dim(),
+                    )]]
                 } else {
-                    "type an answer of your own"
-                };
-                other.push(Span::styled(hint.to_string(), theme.dim()));
+                    let (field, (r, c)) =
+                        field_rows(&draft.other, draft.cursor, room, theme.text());
+                    rows.cursor = Some((first + r, lead_width + c));
+                    field
+                }
+            } else if !draft.other.is_empty() {
+                let style = if on { theme.text() } else { theme.dim() };
+                wrap::wrap(&[Span::styled(draft.other.clone(), style)], room, 0)
             } else {
-                other.push(Span::styled(draft.other.clone(), theme.text()));
+                vec![vec![Span::styled(
+                    placeholder(question).to_string(),
+                    theme.dim(),
+                )]]
             }
-            if typing {
-                cursor = Some((
-                    lines.len(),
-                    (wrap::width(&label) + wrap::width(&draft.other)) as u16,
+        } else {
+            let mut text = vec![Span::styled(label(question, opt), label_style)];
+            if let Some(note) = default_note(question, opt) {
+                text.push(Span::styled(format!(" {note}"), theme.dim()));
+            }
+            if on {
+                text.push(Span::styled(
+                    format!(" {}", glyphs::render("✓")),
+                    theme.accent(),
                 ));
             }
-            lines.push(Line::from(other));
+            wrap::wrap(&text, room, 0)
+        };
+        for (n, text) in text_rows.into_iter().enumerate() {
+            let mut spans = if n == 0 {
+                lead.clone()
+            } else {
+                vec![Span::raw(" ".repeat(lead_width))]
+            };
+            spans.extend(text);
+            rows.lines.push(Line::from(spans));
         }
-        for wrapped in tail {
-            let mut spans = vec![Span::raw(" ".repeat(indent))];
-            spans.extend(wrapped.spans);
-            lines.push(Line::from(spans));
+        rows.spans.push((first, rows.lines.len() - 1));
+    }
+    rows
+}
+
+/// The key hints that fit in `width`, from the first.
+fn fitting(theme: &Theme, pairs: &[(&str, &str)], width: usize) -> Vec<Span<'static>> {
+    let mut count = pairs.len();
+    loop {
+        let spans = hints(theme, &pairs[..count]);
+        if count == 0 || spans_width(&spans) <= width {
+            return spans;
         }
-        spans_of.push((first, lines.len()));
+        count -= 1;
     }
-    // The focused question in sight from its start, and further down the
-    // page (PgDn) for what doesn't fit.
-    let (focus_first, focus_end) = spans_of[focus.min(spans_of.len() - 1)];
-    let last_skip = lines.len().saturating_sub(room);
-    let skip = focus_end.saturating_sub(room).min(focus_first);
-    app.panel.scroll = app.panel.scroll.min(last_skip - skip.min(last_skip));
-    let skip = (skip + app.panel.scroll).min(last_skip);
-    let shown: Vec<Line<'static>> = lines.iter().skip(skip).take(room).cloned().collect();
-    let mut pages: Vec<(&str, &str)> = Vec::new();
-    if skip > 0 {
-        pages.push(("PgUp", "more"));
+}
+
+/// What the docked panel shows.
+struct Card {
+    title: String,
+    /// Lines that stay at its top while the rest scrolls.
+    header: Vec<Line<'static>>,
+    body: Vec<Line<'static>>,
+    /// The body's lines to keep in sight.
+    focus: (usize, usize),
+    /// The text cursor in the body.
+    cursor: Option<(usize, usize)>,
+    keys: Vec<(&'static str, &'static str)>,
+    /// The tallest body any question needs here: the panel keeps that
+    /// height whichever has the keys.
+    tallest: usize,
+}
+
+/// Draws the answer panel above the status line and returns its height.
+pub fn draw_panel(frame: &mut Frame, app: &mut App, above: Rect, previous: Option<Docked>) -> u16 {
+    if app.open_questions().is_empty() || above.height < 5 {
+        return 0;
     }
-    if skip + room < lines.len() {
-        pages.push(("PgDn", "more"));
+    let width = (above.width as usize).saturating_sub(5).max(8);
+    let card = steps_card(app, width);
+    draw_card(frame, app, above, previous, card)
+}
+
+fn draw_card(
+    frame: &mut Frame,
+    app: &mut App,
+    above: Rect,
+    previous: Option<Docked>,
+    card: Card,
+) -> u16 {
+    let theme = app.theme.clone();
+    let room = (above.height as usize * 2 / 3)
+        .max(5)
+        .min(above.height as usize);
+    let wanted = card.header.len() + card.tallest.max(card.body.len()).max(1) + 2;
+    let mut height = wanted.min(room);
+    // It grows, and never shrinks, while it shows the same questions at
+    // the same width.
+    let (was_width, was_height) = app.panel.height;
+    if was_width == above.width {
+        height = height.max(was_height as usize).min(room);
     }
-    let height = (shown.len() as u16 + 2).min(above.height);
-    let rect = Rect::new(above.x, above.bottom() - height, above.width, height);
+    app.panel.height = (above.width, height as u16);
+    let rect = Rect::new(
+        above.x,
+        above.bottom() - height as u16,
+        above.width,
+        height as u16,
+    );
     frame.render_widget(Clear, rect);
     let block = Block::default()
         .borders(Borders::ALL)
@@ -690,32 +927,41 @@ pub fn draw_panel(frame: &mut Frame, app: &mut App, above: Rect, previous: Optio
         .border_style(theme.accent())
         .style(theme.base())
         .title(Line::from(Span::styled(
-            title(&questions),
+            card.title.clone(),
             theme.accent().add_modifier(Modifier::BOLD),
         )));
     let inner = block.inner(rect);
     frame.render_widget(block, rect);
-    let rows = shown.len().min(inner.height as usize);
-    for (row, line) in shown.iter().enumerate().take(rows) {
-        frame.buffer_mut().set_line(
-            inner.x + 1,
-            inner.y + row as u16,
-            line,
-            inner.width.saturating_sub(1),
-        );
-    }
-    // Its text is selected as the transcript's is: what was highlighted
-    // stays while the panel shows the same.
-    let area = Rect::new(
-        inner.x + 1,
-        inner.y,
-        inner.width.saturating_sub(1),
-        rows as u16,
+    let header = card.header.len().min(inner.height as usize);
+    let view = (inner.height as usize).saturating_sub(header);
+    // The focused lines in sight, then as far as PgUp and PgDn moved.
+    let last_skip = card.body.len().saturating_sub(view);
+    let (first, end) = card.cursor.map_or_else(
+        || {
+            card.body
+                .iter()
+                .position(|line| line.spans.iter().any(|span| span.style == theme.chosen()))
+                .map_or(card.focus, |row| (row, row))
+        },
+        |(row, _)| (row, row),
     );
-    let lines: Vec<wrap::Wrapped> = shown
+    let base = (end + 1).saturating_sub(view).min(first).min(last_skip);
+    let skip = (base as isize + app.panel.offset).clamp(0, last_skip as isize) as usize;
+    app.panel.offset = skip as isize - base as isize;
+    let mut shown: Vec<Line<'static>> = card.header[..header].to_vec();
+    shown.extend(card.body.iter().skip(skip).take(view).cloned());
+    let x = inner.x + 1;
+    let width = inner.width.saturating_sub(2);
+    for (row, line) in shown.iter().enumerate() {
+        frame
+            .buffer_mut()
+            .set_line(x, inner.y + row as u16, line, width);
+    }
+    // Its text selects as the transcript's does.
+    let area = Rect::new(x, inner.y, width, shown.len() as u16);
+    let lines: Vec<Wrapped> = shown
         .iter()
-        .take(rows)
-        .map(|line| wrap::Wrapped::line(line.spans.clone()))
+        .map(|line| Wrapped::line(line.spans.clone()))
         .collect();
     let selection = previous
         .filter(|docked| docked.area == area && docked.lines == lines)
@@ -728,36 +974,394 @@ pub fn draw_panel(frame: &mut Frame, app: &mut App, above: Rect, previous: Optio
     };
     docked.draw_selection(frame.buffer_mut(), &theme);
     app.docked = Some(docked);
-    if let Some((row, column)) = cursor
+    if let Some((row, column)) = card.cursor
         && row >= skip
-        && row - skip < inner.height as usize
+        && row - skip < view
         && app.overlay.is_none()
     {
         frame.set_cursor_position(Position {
-            x: (inner.x + 1 + column).min(inner.right().saturating_sub(1)),
-            y: inner.y + (row - skip) as u16,
+            x: (x + column as u16).min(inner.right().saturating_sub(1)),
+            y: inner.y + (header + row - skip) as u16,
         });
     }
-    pages.extend([
-        ("Enter", "send"),
-        ("Esc", "answer in chat"),
-        ("Ctrl+N", "not now"),
-    ]);
-    let keys = Line::from({
-        let mut spans = hints(&theme, &pages);
-        spans.push(Span::raw(" "));
-        spans
-    });
-    let width = keys.width() as u16;
-    if width + 4 < rect.width {
+    let mut pairs: Vec<(&str, &str)> = Vec::new();
+    if skip > 0 {
+        pairs.push(("PgUp", "more"));
+    }
+    if skip + view < card.body.len() {
+        pairs.push(("PgDn", "more"));
+    }
+    pairs.extend(card.keys.iter().copied());
+    let mut keys = fitting(&theme, &pairs, (rect.width as usize).saturating_sub(6));
+    if !keys.is_empty() {
+        keys.push(Span::raw(" "));
+        let keys = Line::from(keys);
+        let w = keys.width() as u16;
         frame
             .buffer_mut()
-            .set_line(rect.right() - width - 2, rect.bottom() - 1, &keys, width);
+            .set_line(rect.right() - w - 2, rect.bottom() - 1, &keys, w);
     }
-    height
+    height as u16
 }
 
-/// The chip above the message box (one row). Returns the rows it takes.
+/// The open questions, the focused one's place, and its draft.
+fn focused(app: &App) -> (Vec<AgentQuestion>, usize) {
+    let questions = app.open_questions().to_vec();
+    let focus = app.focus_index().min(questions.len().saturating_sub(1));
+    (questions, focus)
+}
+
+fn draft_of(app: &App, question: &AgentQuestion) -> Draft {
+    app.panel
+        .drafts
+        .get(&question.id)
+        .cloned()
+        .unwrap_or_default()
+}
+
+/// The focused question with numbered options and a field, or the summary.
+fn steps_card(app: &App, width: usize) -> Card {
+    let theme = &app.theme;
+    let (questions, focus) = focused(app);
+    let count = questions.len();
+    let page = |question: &AgentQuestion, row: Option<usize>| {
+        let mut lines = question_lines(
+            question,
+            theme.text().add_modifier(Modifier::BOLD),
+            theme,
+            width,
+        );
+        lines.push(Line::default());
+        let offset = lines.len();
+        let rows = list_rows(question, &draft_of(app, question), row, theme, width);
+        let focus = row
+            .and_then(|row| rows.spans.get(row).copied())
+            .map_or((0, 0), |(a, b)| (a + offset, b + offset));
+        let cursor = rows.cursor.map(|(r, c)| (r + offset, c));
+        lines.extend(rows.lines);
+        let tail = instruction_lines(question, theme, width);
+        let extra = tail.len().saturating_sub(INSTRUCTION_ROWS + 1);
+        if !tail.is_empty() {
+            lines.push(Line::default());
+            lines.extend(tail);
+        }
+        (lines, focus, cursor, extra)
+    };
+    let (summary, summary_focus) = review_lines(app, &questions, app.panel.review, width);
+    let tallest = questions
+        .iter()
+        .map(|question| {
+            let (lines, _, _, extra) = page(question, None);
+            lines.len() - extra
+        })
+        .chain([summary.len()])
+        .max()
+        .unwrap_or(0);
+    if app.panel.review.is_some() {
+        let on_send = app.panel.review == Some(count);
+        return Card {
+            title: " Your answers ".to_string(),
+            header: Vec::new(),
+            body: summary,
+            focus: summary_focus,
+            cursor: None,
+            keys: vec![
+                ("Enter", if on_send { "send" } else { "change" }),
+                ("↑↓", "choose"),
+                ("Esc", "chat"),
+                ("Ctrl+N", "not now"),
+            ],
+            tallest,
+        };
+    }
+    let question = &questions[focus];
+    let options = options(question);
+    let row = app.panel.row.min(options.len() - 1);
+    let (body, focus_rows, cursor, _) = page(question, Some(row));
+    let draft = draft_of(app, question);
+    let picks = options.len() - 1;
+    let number_keys = match picks {
+        1 => "1",
+        2 => "1-2",
+        3 => "1-3",
+        4 => "1-4",
+        5 => "1-5",
+        6 => "1-6",
+        7 => "1-7",
+        8 => "1-8",
+        _ => "1-9",
+    };
+    let mut keys: Vec<(&str, &str)> = Vec::new();
+    if options[row] == Opt::Other && !draft.other.is_empty() {
+        keys.push(("Enter", "next"));
+    } else {
+        keys.push((number_keys, "pick"));
+        keys.push(("↑↓", "choose"));
+        keys.push(("Enter", "next"));
+    }
+    if focus > 0 {
+        keys.push(("Shift+Tab", "back"));
+    }
+    keys.extend([("Esc", "chat"), ("Ctrl+N", "not now")]);
+    Card {
+        title: if count > 1 {
+            format!(" Question {} of {count} ", focus + 1)
+        } else {
+            title(&questions)
+        },
+        header: Vec::new(),
+        body,
+        focus: focus_rows,
+        cursor,
+        keys,
+        tallest,
+    }
+}
+
+/// The summary of one at a time: each question with its answer, then
+/// Send, the highlight on `selected` (the questions, then Send).
+fn review_lines(
+    app: &App,
+    questions: &[AgentQuestion],
+    selected: Option<usize>,
+    width: usize,
+) -> (Vec<Line<'static>>, (usize, usize)) {
+    let theme = &app.theme;
+    let pointer = glyphs::render("▸ ").into_owned();
+    let digits = questions.len().to_string().len();
+    let lead = 2 + digits + 2;
+    let column = ((width.saturating_sub(lead)) * 2 / 5).clamp(10, 40);
+    let answer_width = width.saturating_sub(lead + column + 2).max(8);
+    let mut lines = Vec::new();
+    let mut focus = (0, 0);
+    for (at, question) in questions.iter().enumerate() {
+        let here = selected == Some(at);
+        let first = lines.len();
+        let text = match &question.approval {
+            Some(approval) => approval.title(),
+            None => question
+                .question
+                .lines()
+                .next()
+                .unwrap_or_default()
+                .trim()
+                .to_string(),
+        };
+        let text = transcript::cut_end(&text, column);
+        let pad = column.saturating_sub(wrap::width(&text));
+        let draft = draft_of(app, question);
+        let answer = answer_text(&draft, question);
+        let answer_style = if answer.is_some() {
+            theme.text()
+        } else {
+            theme.dim()
+        };
+        let answer = answer.unwrap_or_else(|| "Not answered".to_string());
+        let rows = wrap::wrap(&[Span::styled(answer, answer_style)], answer_width, 0);
+        for (n, row) in rows.into_iter().enumerate() {
+            let mut spans = if n == 0 {
+                vec![
+                    if here {
+                        Span::styled(pointer.clone(), theme.accent())
+                    } else {
+                        Span::raw("  ")
+                    },
+                    Span::styled(format!("{:>digits$}  ", at + 1), theme.dim()),
+                    Span::styled(
+                        text.clone(),
+                        if here {
+                            theme.accent().add_modifier(Modifier::BOLD)
+                        } else {
+                            theme.text()
+                        },
+                    ),
+                    Span::raw(" ".repeat(pad + 2)),
+                ]
+            } else {
+                vec![Span::raw(" ".repeat(lead + column + 2))]
+            };
+            spans.extend(row);
+            lines.push(Line::from(spans));
+        }
+        if here {
+            focus = (first, lines.len() - 1);
+        }
+    }
+    lines.push(Line::default());
+    let on_send = selected == Some(questions.len());
+    if on_send {
+        focus = (lines.len(), lines.len());
+    }
+    lines.push(Line::from(vec![
+        if on_send {
+            Span::styled(pointer, theme.accent())
+        } else {
+            Span::raw("  ")
+        },
+        Span::styled(
+            "Send".to_string(),
+            if on_send {
+                theme.accent().add_modifier(Modifier::BOLD)
+            } else {
+                theme.text()
+            },
+        ),
+    ]));
+    (lines, focus)
+}
+
+impl App {
+    /// The focused question and its place.
+    fn focused_question(&self) -> Option<(usize, AgentQuestion)> {
+        let at = self.focus_index();
+        self.open_questions()
+            .get(at)
+            .cloned()
+            .map(|question| (at, question))
+    }
+
+    fn draft_mut(&mut self, id: &str) -> &mut Draft {
+        self.panel.drafts.entry(id.to_string()).or_default()
+    }
+
+    /// Types `key` into the focused question's Other field; true when the
+    /// text changed (its words become the answer).
+    fn type_key(&mut self, question: &AgentQuestion, key: KeyEvent) -> bool {
+        let draft = self.draft_mut(&question.id);
+        let before = draft.other.clone();
+        field_key(draft, key);
+        let changed = draft.other != before;
+        if changed {
+            typed(draft, question);
+        }
+        changed
+    }
+
+    /// A character typed away from Other: the cursor moves there, and it
+    /// is the start of an answer of one's own.
+    fn type_into_other(&mut self, question: &AgentQuestion, key: KeyEvent) {
+        self.panel.row = options(question).len() - 1;
+        let draft = self.draft_mut(&question.id);
+        draft.cursor = draft.other.chars().count();
+        self.type_key(question, key);
+    }
+
+    fn steps_key(&mut self, key: KeyEvent) {
+        if let Some(selected) = self.panel.review {
+            return self.review_key(key, selected);
+        }
+        let Some((at, question)) = self.focused_question() else {
+            return;
+        };
+        let options = options(&question);
+        let row = self.panel.row.min(options.len() - 1);
+        let on_other = options[row] == Opt::Other;
+        let plain = !key
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
+        let text_empty = self
+            .panel
+            .drafts
+            .get(&question.id)
+            .is_none_or(|draft| draft.other.is_empty());
+        match key.code {
+            KeyCode::Up => self.panel.row = (row + options.len() - 1) % options.len(),
+            KeyCode::Down => self.panel.row = (row + 1) % options.len(),
+            KeyCode::Tab => self.step_on(at),
+            KeyCode::BackTab => {
+                if at > 0 {
+                    self.panel.from_review = false;
+                    self.focus_on(at - 1);
+                }
+            }
+            KeyCode::Enter if plain => {
+                let draft = self.draft_mut(&question.id);
+                if on_other {
+                    if !draft.other.trim().is_empty() {
+                        pick(draft, &question, Opt::Other, false);
+                    }
+                } else if !(question.multiple && !draft.chosen.is_empty()) {
+                    pick(draft, &question, options[row], false);
+                }
+                self.step_on(at);
+            }
+            KeyCode::Char(' ') if plain && !on_other => {
+                pick(self.draft_mut(&question.id), &question, options[row], true);
+            }
+            KeyCode::Char(c @ '1'..='9')
+                if plain
+                    && (!on_other || (!question.choices.is_empty() && text_empty))
+                    && (c as usize - '1' as usize) < options.len() - 1 =>
+            {
+                let pick_at = c as usize - '1' as usize;
+                let multiple = question.multiple;
+                pick(
+                    self.draft_mut(&question.id),
+                    &question,
+                    options[pick_at],
+                    multiple,
+                );
+                if multiple {
+                    self.panel.row = pick_at;
+                } else {
+                    self.step_on(at);
+                }
+            }
+            KeyCode::Char(' ') if plain && text_empty => {}
+            _ if on_other => {
+                self.type_key(&question, key);
+            }
+            KeyCode::Char(_) if plain => self.type_into_other(&question, key),
+            _ => {}
+        }
+    }
+
+    /// One at a time moves on from question `at`: to the next, or to the
+    /// summary after the last (or back to it, when it came from there).
+    fn step_on(&mut self, at: usize) {
+        let count = self.open_questions().len();
+        if self.panel.from_review || at + 1 >= count {
+            self.panel.from_review = false;
+            self.panel.review = Some(count);
+        } else {
+            self.focus_on(at + 1);
+        }
+    }
+
+    fn review_key(&mut self, key: KeyEvent, selected: usize) {
+        let count = self.open_questions().len();
+        let selected = selected.min(count);
+        let change = |app: &mut App, at: usize| {
+            app.panel.review = None;
+            app.panel.from_review = true;
+            app.focus_on(at);
+        };
+        match key.code {
+            KeyCode::Up => self.panel.review = Some(selected.saturating_sub(1)),
+            KeyCode::Down => self.panel.review = Some((selected + 1).min(count)),
+            KeyCode::Enter if selected == count => self.send_answers(),
+            KeyCode::Enter => change(self, selected),
+            KeyCode::BackTab => change(self, count - 1),
+            KeyCode::Char(c @ '1'..='9') if (c as usize - '1' as usize) < count => {
+                change(self, c as usize - '1' as usize);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// The panel's title: "Arko asks 2 questions".
+pub(super) fn title(questions: &[AgentQuestion]) -> String {
+    let approvals = questions.iter().all(|question| question.approval.is_some());
+    match (questions.len(), approvals) {
+        (1, true) => " Arko asks to save a worker profile ".to_string(),
+        (count, true) => format!(" Arko asks to save {count} worker profiles "),
+        (1, false) => " Arko asks ".to_string(),
+        (count, false) => format!(" Arko asks {count} questions "),
+    }
+}
+
+/// The question chip while the panel is closed.
 pub fn draw_chip(frame: &mut Frame, app: &App, above: Rect) -> u16 {
     let Some(chip) = app.chip() else {
         return 0;
