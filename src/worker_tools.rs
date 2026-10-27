@@ -487,15 +487,6 @@ fn needs_warning(needs: &str) -> String {
     }
 }
 
-/// The answer cut to a length the agent reads in a line.
-fn cut(text: &str, chars: usize) -> String {
-    if text.chars().count() <= chars {
-        text.to_string()
-    } else {
-        format!("{}…", text.chars().take(chars).collect::<String>())
-    }
-}
-
 #[async_trait]
 impl Tool for SaveWorkerProfile {
     fn definition(&self) -> ToolDefinition {
@@ -638,7 +629,7 @@ impl Tool for SaveWorkerProfile {
                         "The user didn't save {} for {} and wrote \"{}\". If those words ask for changes to the profile, make them and call save_worker_profile again, which shows them the changed profile. If they don't (a new request, or words about something else), they are a message to you, not changes. Respond to it, call save_worker_profile again with the same profile, and end with a short reminder that it is still waiting for their decision.",
                         profile.name,
                         place.reach(),
-                        cut(&said, 500)
+                        said.trim()
                     ));
                 }
             }

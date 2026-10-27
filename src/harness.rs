@@ -1371,6 +1371,12 @@ impl Harness {
                 }
                 continue;
             }
+            // An answer too long to send isn't sent, and its questions stay
+            // open.
+            if let Some(refusal) = self.reply_refused(text, &attached) {
+                self.say(Level::Warn, &refusal);
+                continue;
+            }
             let shown = std::mem::take(&mut self.pending_refs);
             // What the user typed that the agent didn't read goes first, as
             // the message carries it.
@@ -3673,6 +3679,12 @@ impl Harness {
                             exit = true;
                             stopping |= self.stop(&workflow);
                         }
+                        continue;
+                    }
+                    if let Some(refusal) = self.reply_refused(&text, &attached) {
+                        self.pending_images = images;
+                        self.pending_refs = shown;
+                        self.say(Level::Warn, &refusal);
                         continue;
                     }
                     // A message that answers questions the agent waits for
@@ -8095,6 +8107,181 @@ pub(crate) mod tests {
             "nothing posted again"
         );
         assert!(!harness.notes_waiting(run));
+    }
+
+    /// A kept note the workflow posted, and saved, before the session
+    /// recorded which note carries it is found again by its own id instead
+    /// of posted twice. That holds after a restart that reads the session's
+    /// file from before the post, and in the same session when the record
+    /// wasn't kept (its save failed). The agent gets it once.
+    #[tokio::test]
+    async fn a_note_posted_before_its_record_was_saved_is_posted_once() {
+        use crate::mock_model::{ModelServer, complete, tool_call};
+        let bodies: Arc<Mutex<Vec<String>>> = Arc::default();
+        let server = ModelServer::start(Arc::new({
+            let bodies = bodies.clone();
+            move |_, body: String| {
+                bodies.lock().unwrap().push(body.clone());
+                Box::pin(async move {
+                    if body.contains("The user answered q1.") {
+                        complete("m3", "Got it.")
+                    } else if body.contains("Asked q1.") {
+                        complete("m2", "Asked.")
+                    } else {
+                        tool_call(
+                            "m1",
+                            ASK_USER_TOOL_NAME,
+                            serde_json::json!({"questions": ["Tabs or spaces?"]}),
+                        )
+                    }
+                })
+            }
+        }))
+        .await;
+        let temp = tempfile::tempdir().unwrap();
+        let kept = temp.path().join(crate::questions::FILE);
+        let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
+        harness.feed.keep_questions(kept.clone());
+        let end = tokio::time::timeout(
+            Duration::from_secs(30),
+            harness.turn(Prompt::User("Start.".into()), &mut inputs),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(end, TurnEnd::Answered));
+        asked(&mut harness, &mut inputs).await;
+        let run = harness.conversations.current_run().unwrap();
+        assert!(
+            harness
+                .answer_questions(answers(vec![text_answer("q1", "Spaces")]))
+                .is_some()
+        );
+        let pending = harness.feed.queued_notes(run).remove(0);
+        let (note, _) = pending.posted.unwrap();
+        assert_eq!(note, pending.id, "posted under its own id");
+        let posted = harness.workflow().notes().len();
+        // Restarted with the file as it was before the post was recorded.
+        let mut file: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&kept).unwrap()).unwrap();
+        file["pending"][0].as_object_mut().unwrap().remove("posted");
+        std::fs::write(&kept, file.to_string()).unwrap();
+        harness.feed = remote::Feed::new(MAIN);
+        harness.feed.keep_questions(kept);
+        assert_eq!(harness.feed.queued_notes(run)[0].posted, None);
+        harness.settle_answer_notes();
+        assert_eq!(harness.workflow().notes().len(), posted);
+        assert_eq!(
+            harness.feed.queued_notes(run),
+            std::slice::from_ref(&pending)
+        );
+        // The record lost in this session.
+        harness.feed.note_posted(pending.id, None);
+        harness.settle_answer_notes();
+        assert_eq!(harness.workflow().notes().len(), posted);
+        assert_eq!(harness.feed.queued_notes(run), [pending]);
+        let news = tokio::time::timeout(
+            Duration::from_secs(30),
+            harness.deliver_answers(&mut inputs),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(news, News::Done));
+        let last = bodies.lock().unwrap().last().unwrap().clone();
+        assert_eq!(last.matches("The user answered q1.").count(), 1, "{last}");
+        assert!(harness.feed.queued_notes(run).is_empty());
+    }
+
+    /// Answers too long to send as one note settle nothing: the questions
+    /// stay open, a wait gets nothing, no note is kept, and the user is
+    /// told how short to make them. That holds for one long answer, a batch
+    /// that is long together and a long message. A long question with a
+    /// short answer goes, since the note names the question by an excerpt.
+    #[tokio::test]
+    async fn answers_too_long_to_send_settle_nothing() {
+        let temp = tempfile::tempdir().unwrap();
+        let (mut harness, _inputs, _sender) = harness(temp.path(), LLMClient::new(), true);
+        let run = uuid::Uuid::new_v4();
+        harness.feed.questions_run(Some(run));
+        let max = crate::questions::MAX_ANSWER_NOTE_BYTES;
+        let long = "x".repeat(max);
+        let warned = |harness: &Harness, text: &str| {
+            harness
+                .feed
+                .subscribe()
+                .0
+                .items
+                .iter()
+                .any(|item| item.kind == remote::Kind::Notice && item.text == text)
+        };
+        // Asked without waiting.
+        ask_later(&mut harness, run, "q1", "Tabs?");
+        ask_later(&mut harness, run, "q2", "Which branch?");
+        assert!(
+            harness
+                .answer_questions(answers(vec![text_answer("q1", &long)]))
+                .is_none()
+        );
+        assert!(warned(
+            &harness,
+            "Your answer is too long to send. Shorten it to 15 KB."
+        ));
+        // Each alone would fit.
+        let half = "y".repeat(max / 2 + 100);
+        assert!(
+            harness
+                .answer_questions(answers(vec![
+                    text_answer("q1", &half),
+                    text_answer("q2", &half),
+                    text_answer("q2", "ignored, the first counts"),
+                    text_answer("q9", &half),
+                ]))
+                .is_none()
+        );
+        assert!(warned(
+            &harness,
+            "Your answers are too long to send. Shorten them to 15 KB."
+        ));
+        assert_eq!(harness.feed.open_questions().len(), 2);
+        assert!(harness.feed.queued_notes(run).is_empty());
+        let refusal = "Your message is too long to send as an answer. Shorten it to 15 KB.";
+        assert_eq!(
+            harness.reply_refused(&long, &["q1".into()]).as_deref(),
+            Some(refusal)
+        );
+        assert_eq!(harness.reply_refused("Tabs.", &["q1".into()]), None);
+        // A plain message, answering nothing, isn't held to it.
+        assert_eq!(harness.reply_refused(&long, &[]), None);
+        // Asked with a wait: the wait gets nothing, and its question stays.
+        let (answer, mut answered) = tokio::sync::oneshot::channel();
+        harness.question_asked(Question {
+            run,
+            asked: one_question("q3", &format!("Which {} file?", "long ".repeat(4000))),
+            answer: Some(crate::inputs::Answering::Text(answer)),
+            approval: None,
+            call: None,
+        });
+        assert!(
+            harness
+                .answer_questions(answers(vec![text_answer("q3", &long)]))
+                .is_none()
+        );
+        assert_eq!(harness.reply_refused(&long, &[]).as_deref(), Some(refusal));
+        assert!(answered.try_recv().is_err());
+        assert_eq!(harness.feed.open_questions().len(), 3);
+        assert!(harness.feed.queued_notes(run).is_empty());
+        // Short enough, all go, the long question named by an excerpt.
+        let note = harness
+            .answer_questions(answers(vec![
+                text_answer("q1", &half),
+                text_answer("q3", "main.rs"),
+            ]))
+            .unwrap();
+        assert!(note.len() < max, "{}", note.len());
+        assert!(note.contains("q3 Which long long"), "{note}");
+        assert_eq!(
+            answered.try_recv().unwrap(),
+            crate::questions::WAIT_ANSWERED
+        );
     }
 
     /// An answer given after the agent's question was recorded but before

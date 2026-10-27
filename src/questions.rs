@@ -287,6 +287,126 @@ pub(crate) fn plain_id() -> String {
 /// The file in a session's folder that keeps its questions.
 pub(crate) const FILE: &str = "questions.json";
 
+/// The longest note that can carry the user's answers to the agent, in
+/// bytes: what a workflow note takes.
+pub const MAX_ANSWER_NOTE_BYTES: usize = arko_workflows::notes::MAX_NOTE_BYTES;
+
+fn agent_ids_of(questions: &[AgentQuestion]) -> Vec<String> {
+    questions
+        .iter()
+        .filter(|question| is_agent_id(&question.id))
+        .map(|question| question.id.clone())
+        .collect()
+}
+
+/// The note that gives the agent the user's answers `given` to those of its
+/// questions among `settled` (the agent's of `open` stay open): the ids it
+/// is about and the note. `None` when it answers none of the agent's
+/// questions (only Arko's own).
+pub(crate) fn answers_note(
+    settled: &[AgentQuestion],
+    open: &[AgentQuestion],
+    given: &[QuestionAnswer],
+) -> Option<(Vec<String>, String)> {
+    let agent: Vec<QuestionAnswer> = given
+        .iter()
+        .filter(|given| is_agent_id(&given.id) && settled.iter().any(|q| q.id == given.id))
+        .cloned()
+        .collect();
+    if agent.is_empty() {
+        return None;
+    }
+    let asked: Vec<AskedQuestion> = settled.iter().map(AgentQuestion::asked).collect();
+    let ids = agent.iter().map(|given| given.id.clone()).collect();
+    let answers = Answers { answers: agent };
+    let note = arko_agents::questions::answer_note(&asked, &answers, &agent_ids_of(open));
+    Some((ids, note))
+}
+
+/// The note that gives the agent the user's message `text` as the answer to
+/// those of its questions among `settled` (the agent's of `open` stay
+/// open): the ids it is about and the note. `None` when it answers none of
+/// the agent's questions.
+pub(crate) fn message_note(
+    settled: &[AgentQuestion],
+    open: &[AgentQuestion],
+    text: &str,
+) -> Option<(Vec<String>, String)> {
+    let agent = agent_ids_of(settled);
+    if agent.is_empty() {
+        return None;
+    }
+    let labelled = arko_agents::questions::message_answers(&agent, text);
+    let note = arko_agents::questions::still_open(&labelled, &agent_ids_of(open));
+    Some((agent, note))
+}
+
+/// How many KB of their own words the user may send when `note`, which
+/// holds `words` bytes of them, is too long for a note. `None` when it fits.
+fn room_for(note: &str, words: usize) -> Option<usize> {
+    let bytes = note.trim().len();
+    (bytes > MAX_ANSWER_NOTE_BYTES).then(|| {
+        let rest = bytes.saturating_sub(words);
+        (MAX_ANSWER_NOTE_BYTES.saturating_sub(rest) / 1024).max(1)
+    })
+}
+
+/// Why the answers `answers` to the open questions `open` can't be sent, as
+/// the user reads it, or `None` when they can. The note that would carry
+/// them, or an approval's words, are too long. Checked before anything is
+/// settled, so the questions stay open and the answers can be shortened.
+pub fn answers_refusal(open: &[AgentQuestion], answers: &Answers) -> Option<String> {
+    // As they are taken: the first filled in for each question.
+    let mut given: Vec<QuestionAnswer> = Vec::new();
+    for answer in &answers.answers {
+        if !answer.answer.is_empty() && !given.iter().any(|known| known.id == answer.id) {
+            given.push(answer.clone());
+        }
+    }
+    let (settled, rest): (Vec<AgentQuestion>, Vec<AgentQuestion>) = open
+        .iter()
+        .cloned()
+        .partition(|question| given.iter().any(|given| given.id == question.id));
+    let words = |given: &QuestionAnswer| given.answer.words(None).len();
+    let room = settled
+        .iter()
+        .filter(|question| question.approval.is_some())
+        .filter_map(|question| given.iter().find(|given| given.id == question.id))
+        .find_map(|given| room_for(&given.answer.words(None), words(given)))
+        .or_else(|| {
+            let (_, note) = answers_note(&settled, &rest, &given)?;
+            let taken = given
+                .iter()
+                .filter(|given| settled.iter().any(|question| question.id == given.id));
+            room_for(&note, taken.map(words).sum())
+        })?;
+    Some(if given.len() == 1 {
+        format!("Your answer is too long to send. Shorten it to {room} KB.")
+    } else {
+        format!("Your answers are too long to send. Shorten them to {room} KB.")
+    })
+}
+
+/// Why the user's message `text` can't be sent as the answer to the
+/// questions `ids` (those of `open` it answers), as the user reads it, or
+/// `None` when it can. Checked before anything is settled.
+pub fn reply_refusal(open: &[AgentQuestion], ids: &[String], text: &str) -> Option<String> {
+    let (settled, rest): (Vec<AgentQuestion>, Vec<AgentQuestion>) = open
+        .iter()
+        .cloned()
+        .partition(|question| ids.contains(&question.id));
+    let note = match message_note(&settled, &rest, text) {
+        Some((_, note)) => note,
+        // An approval takes the words whole.
+        None if settled.iter().any(|question| question.approval.is_some()) => text.to_string(),
+        None => return None,
+    };
+    let room = room_for(&note, text.trim().len())?;
+    Some(format!(
+        "Your message is too long to send as an answer. Shorten it to {room} KB."
+    ))
+}
+
 /// A question with the conversation (the main agent's run) it belongs to,
 /// and the ask (its card) it came in, which outlasts the process's feed
 /// items.
@@ -1073,6 +1193,67 @@ mod tests {
 
     /// Only "Save", picked or typed alone, saves an approved profile. Other
     /// words ask for changes.
+    /// Answers are refused exactly when the note that would carry them is
+    /// over the note's limit, counted in UTF-8 bytes with the question's
+    /// excerpt and the labels. An approval's words are held to the same
+    /// limit, and a message that answers questions too.
+    #[test]
+    fn answers_are_refused_only_over_the_notes_limit() {
+        let open = [on_card("q1", "Which file?", 1), on_card("q2", "Why?", 1)];
+        let one = |text: &str| Answers {
+            answers: vec![QuestionAnswer::new(
+                "q1",
+                Answer {
+                    text: Some(text.into()),
+                    ..Answer::default()
+                },
+            )],
+        };
+        let note_of = |text: &str| {
+            let given = one(text).answers;
+            answers_note(&open[..1], &open[1..], &given).unwrap().1
+        };
+        let overhead = note_of("x").len() - 1;
+        // "é" is two bytes: the limit counts bytes, not characters.
+        let mut text = "é".repeat((MAX_ANSWER_NOTE_BYTES - overhead) / 2);
+        if note_of(&text).len() < MAX_ANSWER_NOTE_BYTES {
+            text.push('x');
+        }
+        assert_eq!(note_of(&text).len(), MAX_ANSWER_NOTE_BYTES);
+        assert_eq!(answers_refusal(&open, &one(&text)), None);
+        text.push('x');
+        assert_eq!(
+            answers_refusal(&open, &one(&text)).as_deref(),
+            Some("Your answer is too long to send. Shorten it to 15 KB.")
+        );
+        // Only what is open counts.
+        assert_eq!(answers_refusal(&open[1..], &one(&text)), None);
+        let mut approval = on_card("x1234abcd", "Save it?", 2);
+        approval.approval = Some(Approval::default());
+        let words = Answers {
+            answers: vec![QuestionAnswer::new(
+                "x1234abcd",
+                Answer {
+                    choices: vec![DONT_SAVE.into()],
+                    text: Some("y".repeat(MAX_ANSWER_NOTE_BYTES)),
+                    ..Answer::default()
+                },
+            )],
+        };
+        assert!(answers_refusal(std::slice::from_ref(&approval), &words).is_some());
+        let long = "z".repeat(MAX_ANSWER_NOTE_BYTES + 1);
+        for (open, room) in [(&open[..], 15), (std::slice::from_ref(&approval), 16)] {
+            let ids: Vec<String> = open.iter().map(|question| question.id.clone()).collect();
+            assert_eq!(
+                reply_refusal(open, &ids, &long),
+                Some(format!(
+                    "Your message is too long to send as an answer. Shorten it to {room} KB."
+                ))
+            );
+            assert_eq!(reply_refusal(open, &ids, "Short."), None);
+        }
+    }
+
     #[test]
     fn only_save_approves() {
         let picked = |choices: &[&str], text: Option<&str>, you_decide: bool| {

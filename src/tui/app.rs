@@ -2894,7 +2894,15 @@ pub(super) mod tests {
             })]
         );
         assert!(!app.panel.open);
+        // The drafts stay until their questions settle (answers too long to
+        // send settle nothing, and can be shortened).
+        assert_eq!(app.panel.drafts["q2"].other, "main 2");
+        let mut reading = asking();
+        reading.questions.clear();
+        app.set_reading(reading);
+        assert!(app.panel.drafts.is_empty());
         // Enter with nothing filled in sends nothing.
+        app.set_reading(asking());
         app.open_panel();
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         assert!(inputs(&mut app).is_empty());
