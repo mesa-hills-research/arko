@@ -6,7 +6,8 @@ back on their own. They sit in the session's folder (`kept-notes.json`), so a re
 them.
 
 The agent keeps a note with `keep_note` and removes one with `forget_note`. Each note is for the main
-agent, for chosen workers by ID (`r1`), or for every worker.
+agent, for chosen workers by ID (`r1`), or for every worker. The main agent's own list holds every
+note, so a note for workers is also its own, and an audience such as `lead, r1` is the same as `r1`.
 
 | Agent | Gets its notes |
 |---|---|
