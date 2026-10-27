@@ -4865,51 +4865,56 @@ mod tests {
         );
         first.settle_questions(None, &["q1".into()], |_| QuestionState::Dismissed);
 
-        let again = Feed::new("main");
-        again.keep_questions(path);
-        again.questions_run(Some(run));
-        let mut ask = Message::new_assistant("");
-        ask.tool_calls = vec![
-            serde_json::from_value::<ToolCall>(serde_json::json!({
-                "id": "ask",
-                "name": "ask_user",
-                "arguments": {"questions": ["Tabs or spaces?", "Push now?"]}
-            }))
-            .unwrap(),
-        ];
-        let messages = vec![
-            Message::new_user("Start."),
-            ask,
-            Message::new_user_with_contents(vec![Content::ToolResult(ToolResult::new(
-                Some("ask".into()),
-                "ask_user",
-                "Asked q1 and q2. Their answers reach you as a note, so go on with your work.",
-            ))]),
-        ];
-        again.restore(crate::remote::history(
-            &messages,
-            false,
-            &crate::images::Images::default(),
-        ));
-        let (snapshot, _) = again.subscribe();
-        let card = snapshot
-            .items
-            .iter()
-            .find(|item| item.kind == Kind::Question)
-            .unwrap();
-        let states = card
-            .questions
-            .as_ref()
-            .unwrap()
-            .iter()
-            .map(|question| question.state.clone())
-            .collect::<Vec<_>>();
-        assert_eq!(states, [QuestionState::Dismissed, QuestionState::Open]);
-        assert_eq!(card.text, "Arko asked 2 questions");
-        assert_eq!(again.open_questions()[0].item, card.id);
-        assert_eq!(again.open_questions()[0].number, Some(2));
-        // (The agent doesn't wait on them.)
-        assert_eq!(again.activity().question, None);
+        for output in [
+            "Asked q1 and q2. Their answers reach you as a note. Until then, do only work that no answer could change.",
+            "Asked q1 and q2. Their answers reach you as a note, so go on with your work.",
+        ] {
+            let again = Feed::new("main");
+            again.keep_questions(path.clone());
+            again.questions_run(Some(run));
+            let mut ask = Message::new_assistant("");
+            ask.tool_calls = vec![
+                serde_json::from_value::<ToolCall>(serde_json::json!({
+                    "id": "ask",
+                    "name": "ask_user",
+                    "arguments": {"questions": ["Tabs or spaces?", "Push now?"], "wait": false}
+                }))
+                .unwrap(),
+            ];
+            let messages = vec![
+                Message::new_user("Start."),
+                ask,
+                Message::new_user_with_contents(vec![Content::ToolResult(ToolResult::new(
+                    Some("ask".into()),
+                    "ask_user",
+                    output,
+                ))]),
+            ];
+            again.restore(crate::remote::history(
+                &messages,
+                false,
+                &crate::images::Images::default(),
+            ));
+            let (snapshot, _) = again.subscribe();
+            let card = snapshot
+                .items
+                .iter()
+                .find(|item| item.kind == Kind::Question)
+                .unwrap();
+            let states = card
+                .questions
+                .as_ref()
+                .unwrap()
+                .iter()
+                .map(|question| question.state.clone())
+                .collect::<Vec<_>>();
+            assert_eq!(states, [QuestionState::Dismissed, QuestionState::Open]);
+            assert_eq!(card.text, "Arko asked 2 questions");
+            assert_eq!(again.open_questions()[0].item, card.id);
+            assert_eq!(again.open_questions()[0].number, Some(2));
+            // (The agent doesn't wait on them.)
+            assert_eq!(again.activity().question, None);
+        }
     }
 
     /// A resumed session's transcript shows the record of each approval

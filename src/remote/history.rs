@@ -1060,8 +1060,7 @@ mod tests {
             .filter(|item| matches!(item.kind, Kind::User | Kind::Notice))
             .map(|item| (item.kind, item.text, item.turn))
             .collect();
-        let notice =
-            |opening: Opening, turn| (Kind::Notice, opening.notice().unwrap(), Some(turn));
+        let notice = |opening: Opening, turn| (Kind::Notice, opening.notice().unwrap(), Some(turn));
         assert_eq!(
             shown,
             [
@@ -1230,6 +1229,11 @@ mod tests {
     #[test]
     fn question_cards_take_their_ids_from_the_result() {
         for (arguments, output, ids) in [
+            (
+                serde_json::json!({"questions": [{"question": "Tabs or spaces?"}, "Push now?"], "wait": false}),
+                "Asked q3 and q4. Their answers reach you as a note. Until then, do only work that no answer could change.",
+                Some(vec!["q3", "q4"]),
+            ),
             (
                 serde_json::json!({"questions": [{"question": "Tabs or spaces?"}, "Push now?"]}),
                 "Asked q3 and q4. Their answers reach you as a note, so go on with your work.",

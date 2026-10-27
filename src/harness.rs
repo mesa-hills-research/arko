@@ -7512,7 +7512,7 @@ pub(crate) mod tests {
                     tool_call(
                         "m1",
                         ASK_USER_TOOL_NAME,
-                        serde_json::json!({"questions": ["Tabs or spaces?"]}),
+                        serde_json::json!({"questions": ["Tabs or spaces?"], "wait": false}),
                     )
                 }
             })
@@ -7548,10 +7548,10 @@ pub(crate) mod tests {
         drop(answering.await.unwrap());
     }
 
-    /// A question the agent waits for (`wait: true`) takes the panel's
-    /// answer at once, as the note.
+    /// A question waits by default and takes the panel's answer at once,
+    /// as the note.
     #[tokio::test]
-    async fn a_question_waited_for_takes_the_panels_answer() {
+    async fn a_question_waits_by_default_and_takes_the_panels_answer() {
         use crate::mock_model::{ModelServer, complete, tool_call};
         let server = ModelServer::start(Arc::new(move |_, body: String| {
             Box::pin(async move {
@@ -7562,8 +7562,7 @@ pub(crate) mod tests {
                         "m1",
                         ASK_USER_TOOL_NAME,
                         serde_json::json!({
-                            "questions": [{"question": "Push now?", "default": "not yet"}],
-                            "wait": true
+                            "questions": [{"question": "Push now?", "default": "not yet"}]
                         }),
                     )
                 }
@@ -7864,7 +7863,7 @@ pub(crate) mod tests {
                         tool_call(
                             "m1",
                             ASK_USER_TOOL_NAME,
-                            serde_json::json!({"questions": ["Tabs?", "Push now?"]}),
+                            serde_json::json!({"questions": ["Tabs?", "Push now?"], "wait": false}),
                         )
                     }
                 })
@@ -7996,7 +7995,7 @@ pub(crate) mod tests {
                         tool_call(
                             "m1",
                             ASK_USER_TOOL_NAME,
-                            serde_json::json!({"questions": ["Tabs or spaces?"]}),
+                            serde_json::json!({"questions": ["Tabs or spaces?"], "wait": false}),
                         )
                     }
                 })
@@ -8087,7 +8086,7 @@ pub(crate) mod tests {
                     tool_call(
                         "m1",
                         ASK_USER_TOOL_NAME,
-                        serde_json::json!({"questions": ["Tabs or spaces?"]}),
+                        serde_json::json!({"questions": ["Tabs or spaces?"], "wait": false}),
                     )
                 }
             })
@@ -8157,7 +8156,7 @@ pub(crate) mod tests {
                         tool_call(
                             "m1",
                             ASK_USER_TOOL_NAME,
-                            serde_json::json!({"questions": ["Tabs or spaces?"]}),
+                            serde_json::json!({"questions": ["Tabs or spaces?"], "wait": false}),
                         )
                     }
                 })
@@ -8475,7 +8474,7 @@ pub(crate) mod tests {
                     tool_call(
                         "m1",
                         ASK_USER_TOOL_NAME,
-                        serde_json::json!({"questions": ["Tabs?", "Push now?"]}),
+                        serde_json::json!({"questions": ["Tabs?", "Push now?"], "wait": false}),
                     )
                 }
             })
@@ -8554,13 +8553,13 @@ pub(crate) mod tests {
                     tool_call(
                         "m3",
                         ASK_USER_TOOL_NAME,
-                        serde_json::json!({"questions": ["Which branch?"]}),
+                        serde_json::json!({"questions": ["Which branch?"], "wait": false}),
                     )
                 } else {
                     tool_call(
                         "m1",
                         ASK_USER_TOOL_NAME,
-                        serde_json::json!({"questions": ["Tabs?", "Push now?"]}),
+                        serde_json::json!({"questions": ["Tabs?", "Push now?"], "wait": false}),
                     )
                 }
             })

@@ -1,10 +1,10 @@
 //! The main agent's questions to the user (`ask_user`), as front ends show
 //! them, and what the user does with them.
 //!
-//! The agent asks without waiting, unless it passes `wait: true`. Each
-//! question has an id that is unique in its session (`q1`, `q2`, ...), for
-//! the agent and the API. The user never sees it. A front end numbers the
-//! questions of each ask from 1 ([`AgentQuestion::number`]), and a lone
+//! The agent waits for the answer unless it passes `wait: false` to do
+//! work no answer could change. Each question has an id that is unique in
+//! its session (`q1`, `q2`, ...), for the agent and the API. The user never
+//! sees it. A front end numbers the questions of each ask from 1 ([`AgentQuestion::number`]), and a lone
 //! question gets no number. The session keeps the questions with what
 //! became of them ([`QuestionState`]) in its folder, so open questions
 //! survive a resume. [`Reading::questions`](crate::remote::Reading::questions)
@@ -81,8 +81,8 @@ pub struct AgentQuestion {
     pub default: Option<String>,
     #[serde(flatten)]
     pub state: QuestionState,
-    /// The agent waits for the answer (it asked with `wait`, or it waits
-    /// for an approval).
+    /// The agent waits for the answer (it didn't pass `wait: false`, or
+    /// it waits for an approval).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub waits: bool,
     /// The feed item of the ask it came in, its question card (0 when the
@@ -1158,10 +1158,20 @@ mod tests {
             ids_in_result("Asked q3 and q4. Their answers reach you as a note."),
             ["q3", "q4"]
         );
-        assert_eq!(
-            ids_in_result("Asked q1, q2 and q3. Their"),
-            ["q1", "q2", "q3"]
-        );
+        for result in [
+            "Asked q3. Its answer reaches you as a note. Until then, do only work that no answer could change.",
+            "Asked q3. Its answer reaches you as a note, so go on with your work.",
+        ] {
+            assert_eq!(ids_in_result(result), ["q3"]);
+            assert!(returned_at_once(result));
+        }
+        for result in [
+            "Asked q1, q2 and q3. Their answers reach you as a note. Until then, do only work that no answer could change.",
+            "Asked q1, q2 and q3. Their answers reach you as a note, so go on with your work.",
+        ] {
+            assert_eq!(ids_in_result(result), ["q1", "q2", "q3"]);
+            assert!(returned_at_once(result));
+        }
         assert_eq!(
             ids_in_result("q5 Push now?\n   Default: not yet\nq6 Why?"),
             ["q5", "q6"]

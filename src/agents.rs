@@ -672,7 +672,7 @@ pub fn main_config(settings: &AgentSettings) -> Result<AgentConfig, String> {
     }
     let mut tool_config = tool_config(tools);
     tool_config.text_reply_ends_task = settings.text_replies;
-    // Its questions don't stop its work: the answers come as notes.
+    // It may ask with wait false when no answer could change its work.
     tool_config.async_questions = true;
     let mut builder = AgentConfig::builder(
         MAIN.into(),
@@ -804,7 +804,7 @@ fn main_instructions(settings: &AgentSettings) -> String {
          {turns}\n\n\
          When a step doesn't need the user, keep going. End the turn to ask only when you can't continue without them, or before something destructive or hard to undo that they didn't ask for: deleting data they may want, force-pushing, publishing, or changing things outside the working directory.\n\n\
          The user can type while you work. What they type reaches you as a note from the operator: take it into account in the work you're doing. When a note asks you something or needs an answer before you finish (a question, \"progress?\"), answer it with `message_user` and carry on with your work.{waiting} Use `message_user` too for anything they must know before you finish. The user may not see your thinking. In Claude Code (cc: models) and on the ChatGPT login they see none of it, and through the providers' APIs at most a summary. So every answer, question or progress note meant for them goes in what you write (your text, `message_user` or your reply). Text written only in your thinking may never reach them, and a long wait is where that is most likely. {ending}\n\n\
-         When you need the user to decide something (a choice between approaches with real trade-offs, missing information only they have), ask with `ask_user`, with choices and the default you'd go with when they help. It returns at once and the answers reach you as a note, so meanwhile go on with what doesn't depend on them. Pass `wait: true` only when you can't go on at all without the answer. Close questions that no longer matter with `close_questions`. A message of the user's may answer your questions (it starts with \"(This message answers q3.)\") or end with those still open (\"(Still open: q5.)\"). If they can't be asked (Arko runs without a terminal), it says so, and you decide.\n"
+         When you need the user to decide something (a choice between approaches with real trade-offs, missing information only they have), ask with `ask_user`, with choices and the default you'd go with when they help. It waits for the answer. Never write or delete files, spend money, start workers, or follow a preference, design or scope on the strength of your default while a question about it is open. Pass `wait: false` only when you have work no answer could change, such as reading and investigating. The answers then reach you as a note, and you do only that work until they come. Close questions that no longer matter with `close_questions`. A message of the user's may answer your questions (it starts with \"(This message answers q3.)\") or end with those still open (\"(Still open: q5.)\"). If they can't be asked (Arko runs without a terminal), it says so, and you decide.\n"
     )
 }
 
@@ -2090,6 +2090,27 @@ mod tests {
         assert!(worker.instructions.contains(
             "Text written only in your thinking may never reach anyone, and a long wait is where that is most likely."
         ));
+    }
+
+    #[test]
+    fn the_lead_waits_for_decisions_before_acting_on_defaults() {
+        let opus = model("opus", false);
+        let question = "When you need the user to decide something (a choice between approaches with real trade-offs, missing information only they have), ask with `ask_user`, with choices and the default you'd go with when they help. It waits for the answer. Never write or delete files, spend money, start workers, or follow a preference, design or scope on the strength of your default while a question about it is open. Pass `wait: false` only when you have work no answer could change, such as reading and investigating. The answers then reach you as a note, and you do only that work until they come.";
+        for text_replies in [true, false] {
+            let config = main_config(&AgentSettings {
+                text_replies,
+                ..AgentSettings::for_test(&opus, &opus)
+            })
+            .unwrap();
+            assert!(config.tool_config.async_questions);
+            assert!(config.instructions.contains(question));
+            assert!(
+                config
+                    .instructions
+                    .contains("Close questions that no longer matter with `close_questions`.")
+            );
+            assert!(!config.instructions.contains("Pass `wait: true` only"));
+        }
     }
 
     /// A note can end the lead's `wait_for_agents` early, and the lead is told
