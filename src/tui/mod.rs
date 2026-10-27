@@ -513,7 +513,7 @@ async fn run(
                     };
                 }
                 Effect::Clear => {
-                    let _ = terminal.clear();
+                    let _ = clear_for_redraw(&mut terminal);
                 }
                 Effect::AddKey { key, value } => {
                     let outcome = setup.keys.add(key, value);
@@ -548,6 +548,15 @@ async fn run(
     let reply = app.transcript.last_reply().map(str::to_string);
     close();
     reply
+}
+
+fn clear_for_redraw<B: ratatui::backend::Backend>(
+    terminal: &mut Terminal<B>,
+) -> Result<(), B::Error> {
+    // Fullscreen resize clears and invalidates the buffers without asking
+    // for a cursor position to preserve, unlike Terminal::clear.
+    let area = terminal.size()?.into();
+    terminal.resize(area)
 }
 
 /// The events already waiting, without waiting for more. (Polled in this
@@ -668,6 +677,28 @@ mod tests {
         let mut bytes = Vec::new();
         clear_new_screen(&mut bytes).unwrap();
         assert_eq!(bytes, b"\x1b[2J\x1b[1;1H");
+    }
+
+    #[test]
+    fn clearing_for_redraw_repaints_unchanged_cells() {
+        use ratatui::backend::{Backend, TestBackend};
+
+        let mut terminal = Terminal::new(TestBackend::new(20, 3)).unwrap();
+        let draw = |terminal: &mut Terminal<TestBackend>| {
+            terminal
+                .draw(|frame| frame.render_widget("Still here", frame.area()))
+                .unwrap();
+        };
+        draw(&mut terminal);
+        // A corrupted screen needs repainting even when no cells changed.
+        terminal.backend_mut().clear().unwrap();
+        clear_for_redraw(&mut terminal).unwrap();
+        draw(&mut terminal);
+        terminal.backend().assert_buffer_lines([
+            "Still here          ",
+            "                    ",
+            "                    ",
+        ]);
     }
 
     /// A paste that comes as keys doesn't send at its line breaks, and a
