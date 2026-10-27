@@ -1576,7 +1576,10 @@ mod tests {
         for width in [80, 200] {
             let text = screen(&mut app, width, 30).join("\n");
             assert!(text.contains("API prices"), "{text}");
-            assert!(text.contains("Estimate plan-covered calls at API"), "{text}");
+            assert!(
+                text.contains("Estimate plan-covered calls at API"),
+                "{text}"
+            );
             assert!(text.contains("Billed costs always show."), "{text}");
         }
     }
