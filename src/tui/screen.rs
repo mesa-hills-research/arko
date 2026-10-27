@@ -211,10 +211,10 @@ fn indent(worker: &WorkerSummary) -> usize {
     2 * worker.depth.saturating_sub(1) as usize
 }
 
-/// The agent list, below the input: `● main` and a row for each worker
-/// running or waiting and each that ended in the last five minutes, the one
-/// shown marked, up to five workers, with a count of the workers above them
-/// and one of those below when there are. ↓ from the box moves into it,
+/// The agent list, below the input: `● main` with how many workers run,
+/// and a row for each worker running or waiting and each that ended in the
+/// last five minutes, the one shown marked, up to five workers, with a count
+/// of the workers above them and one of those below when there are. ↓ from the box moves into it,
 /// Enter shows a worker's own transcript, and the wheel scrolls it.
 fn draw_list(frame: &mut Frame, app: &mut App, area: Rect, rows: Vec<ListRow>) {
     let count = app.list().len();
@@ -250,6 +250,11 @@ fn draw_list(frame: &mut Frame, app: &mut App, area: Rect, rows: Vec<ListRow>) {
         .map(|w| w.tool_calls.to_string().len())
         .max()
         .unwrap_or(0);
+    let running = list
+        .iter()
+        .flatten()
+        .filter(|w| w.state == crate::remote::WorkerState::Running)
+        .count();
     let dot = glyphs::render(" · ");
     for (line, row) in rows.iter().enumerate() {
         let y = area.y + line as u16;
@@ -298,7 +303,14 @@ fn draw_list(frame: &mut Frame, app: &mut App, area: Rect, rows: Vec<ListRow>) {
         ];
         let mut right: Vec<Span<'static>> = Vec::new();
         match row {
-            None => left.push(Span::styled(format!("{:<id_width$}", "main"), name_style)),
+            None => {
+                left.push(Span::styled(format!("{:<id_width$}", "main"), name_style));
+                // How many of the workers run, at the end of the main
+                // agent's row.
+                if running > 0 {
+                    right.push(Span::styled(format!("{running} running "), theme.dim()));
+                }
+            }
             Some(worker) => {
                 left.push(Span::styled(
                     format!(
@@ -556,19 +568,6 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
         left.push(sep());
         left.push(Span::styled(
             format!("{} ${api:.2}", glyphs::render("≈")),
-            theme.dim(),
-        ));
-    }
-    let running = app
-        .transcript
-        .workers()
-        .iter()
-        .filter(|w| w.state.is_active())
-        .count();
-    if running > 0 {
-        left.push(sep());
-        left.push(Span::styled(
-            format!("{running} worker{}", if running == 1 { "" } else { "s" }),
             theme.dim(),
         ));
     }
@@ -1024,6 +1023,35 @@ mod tests {
         assert!(!rows.iter().any(|row| row.contains("r2")), "{rows:#?}");
     }
 
+    /// The main agent's row in the agent list counts the workers running,
+    /// which the status line leaves out, and says nothing once none runs.
+    #[test]
+    fn the_main_agents_row_counts_the_workers_running() {
+        use crate::remote::WorkerState::{Finished, Queued, Running};
+        use crate::tui::app::tests::worker;
+        let mut app = app();
+        for (id, state) in [
+            ("r1", Running),
+            ("r2", Queued),
+            ("r3", Running),
+            ("r4", Finished),
+        ] {
+            app.update(Update::Worker(worker(id, state)), Activity::default);
+        }
+        let rows = screen(&mut app, 80, 40);
+        let main = &rows[rows.len() - 5];
+        assert!(
+            main.starts_with(" ● main ") && main.ends_with(" 2 running"),
+            "{rows:#?}"
+        );
+        assert!(!status_row(&rows).contains("worker"), "{rows:#?}");
+        for id in ["r1", "r3"] {
+            app.update(Update::Worker(worker(id, Finished)), Activity::default);
+        }
+        let rows = screen(&mut app, 80, 40);
+        assert_eq!(rows[rows.len() - 5], " ● main", "{rows:#?}");
+    }
+
     /// A worker that ended stays in the agent list with a filled bullet in
     /// its state's colour, the theme's success colour once it finished. The
     /// one shown keeps its name in bold.
@@ -1441,14 +1469,14 @@ mod tests {
         app.update(Update::Worker(r1), Activity::default);
         app.reading.agents = vec![context_of("r1", 88_000, 190_000)];
 
-        let main = " ● working 0s · 142k/250k · $3.20 · 1 worker";
+        let main = " ● working 0s · 142k/250k · $3.20";
         let rows = screen(&mut app, 100, 12);
         assert!(status_row(&rows).starts_with(main), "{rows:#?}");
         app.watch(Some("r1".into()));
         let rows = screen(&mut app, 100, 12);
         let status = status_row(&rows);
         assert!(
-            status.starts_with(" viewing r1 · ● working 2m14s · 88k/190k · $0.12 · 1 worker"),
+            status.starts_with(" viewing r1 · ● working 2m14s · 88k/190k · $0.12"),
             "{status}"
         );
         assert!(status.ends_with("Esc  back"), "{status}");
@@ -1492,8 +1520,7 @@ mod tests {
     }
 
     /// A watched worker's starter is named in the status line while the row
-    /// has room, and goes before the count of workers and the plan's usage are
-    /// cut.
+    /// has room, and goes before the plan's usage is cut.
     #[test]
     fn the_status_line_drops_the_starter_before_it_cuts_a_figure() {
         use crate::tui::app::tests::worker;
@@ -1514,17 +1541,13 @@ mod tests {
         let wide = status(&mut app, 80);
         assert!(
             wide.starts_with(" viewing r4 (under r2) · ● working ")
-                && wide.contains("5 h 54%, 7 d 58%")
-                && wide.contains("2 workers"),
+                && wide.contains("5 h 54%, 7 d 58%"),
             "{wide}"
         );
-        // At 72 columns the usage and the count would be cut: the starter
-        // goes instead.
-        let narrow = status(&mut app, 72);
+        // At 64 columns the usage would be cut: the starter goes instead.
+        let narrow = status(&mut app, 64);
         assert!(
-            narrow.starts_with(" viewing r4 · ● working ")
-                && narrow.contains("5 h 54%, 7 d 58%")
-                && narrow.contains("2 workers"),
+            narrow.starts_with(" viewing r4 · ● working ") && narrow.contains("5 h 54%, 7 d 58%"),
             "{narrow}"
         );
     }
@@ -1594,14 +1617,14 @@ mod tests {
         let rows = screen(&mut app, 100, 14);
         assert_eq!(
             status_row(&rows).trim_end().split("   ").next().unwrap(),
-            " viewing r1 · queued · 2 workers",
+            " viewing r1 · queued",
             "{rows:#?}"
         );
         app.watch(Some("r2".into()));
         let rows = screen(&mut app, 100, 14);
         assert_eq!(
             status_row(&rows).trim_end().split("   ").next().unwrap(),
-            " viewing r2 · ● working · 2 workers",
+            " viewing r2 · ● working",
             "{rows:#?}"
         );
         // A context without a handover size shows alone.
@@ -1611,7 +1634,7 @@ mod tests {
         }];
         let rows = screen(&mut app, 100, 14);
         assert!(
-            status_row(&rows).starts_with(" viewing r2 · ● working · 12k · 2 workers"),
+            status_row(&rows).starts_with(" viewing r2 · ● working · 12k"),
             "{rows:#?}"
         );
     }
@@ -1729,9 +1752,7 @@ mod tests {
         let rows = screen(&mut app, 80, 14);
         let status = status_row(&rows);
         assert!(
-            status.starts_with(
-                " viewing r1 | * working 2m14s | 88k/190k | $0.12 | ~ $0.31 | 1 worker"
-            ),
+            status.starts_with(" viewing r1 | * working 2m14s | 88k/190k | $0.12 | ~ $0.31"),
             "{status}"
         );
         assert!(status.is_ascii(), "{status}");
