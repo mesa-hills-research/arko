@@ -188,8 +188,8 @@ pub(crate) struct SavedSetup {
     pub(crate) name: String,
     /// The configuration of each agent's latest run.
     pub(crate) configs: std::collections::HashMap<String, arko_agents::AgentConfig>,
-    /// The MCP tools any run of the main agent offered. A chat starts no
-    /// servers, and registers these for the runs to resume.
+    /// The MCP tools any run of the main agent offered, which a session that
+    /// keeps its runs' configurations registers for those that don't run.
     pub(crate) mcp_tools: std::collections::BTreeSet<String>,
 }
 
@@ -717,14 +717,24 @@ impl Harness {
         for tool in &self.tools {
             builder = builder.agent_tool(MAIN, tool.clone());
         }
-        // A chat starts no MCP servers, but the conversations of an agent's
-        // session that it keeps still offer their tools, and a resume needs
-        // each registered.
-        if self.settings.mode == Mode::Chat
-            && let Some(saved) = &saved
-        {
-            for name in &saved.mcp_tools {
-                builder = builder.agent_tool(MAIN, Arc::new(mcp::UnstartedTool(name.clone())));
+        // The conversations kept with their own configuration still offer the
+        // tools of servers that don't run (a chat starts none, and a server
+        // may be gone from the files or fail to start), and a resume needs
+        // each registered. Only those runs are offered the stand-ins.
+        if keep && let Some(saved) = &saved {
+            let running = self.mcp.tool_names();
+            for name in saved
+                .mcp_tools
+                .iter()
+                .filter(|name| !running.contains(name))
+            {
+                let name = name.clone();
+                let stand_in = if self.settings.mode == Mode::Chat {
+                    mcp::UnstartedTool::in_chat(name)
+                } else {
+                    mcp::UnstartedTool::not_running(name)
+                };
+                builder = builder.resume_only_agent_tool(MAIN, Arc::new(stand_in));
             }
         }
         // Registering a tool offers it, so a session saved before a main

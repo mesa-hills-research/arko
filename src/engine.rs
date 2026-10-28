@@ -3967,13 +3967,9 @@ mod tests {
         );
     }
 
-    /// A chat starts no MCP servers and doesn't ask about the project's
-    /// `.mcp.json`, also when it was an agent's, whose conversations offered
-    /// the servers' tools. An agent's session starts them as before, and
-    /// each switch to Agent starts them again.
-    #[tokio::test]
-    async fn a_chat_starts_no_mcp_servers() {
-        const STUB: &str = r#"
+    /// A stub MCP server with one tool, `ping`. It appends `start` to the file
+    /// `STUB_LOG` names as it starts, and `stop` as its input closes.
+    const MCP_STUB: &str = r#"
 import json, os, sys
 def note(text):
     with open(os.environ["STUB_LOG"], "a") as log:
@@ -3997,6 +3993,13 @@ for line in sys.stdin:
         reply(message["id"], {"content": [{"type": "text", "text": "pong"}]})
 note("stop")
 "#;
+
+    /// A chat starts no MCP servers and doesn't ask about the project's
+    /// `.mcp.json`, also when it was an agent's, whose conversations offered
+    /// the servers' tools. An agent's session starts them as before, and
+    /// each switch to Agent starts them again.
+    #[tokio::test]
+    async fn a_chat_starts_no_mcp_servers() {
         /// Counts the questions about the project's servers.
         struct Counting(Arc<std::sync::atomic::AtomicUsize>);
         #[async_trait::async_trait]
@@ -4032,7 +4035,7 @@ note("stop")
         )
         .unwrap();
         let script = temp.path().join("stub.py");
-        std::fs::write(&script, STUB).unwrap();
+        std::fs::write(&script, MCP_STUB).unwrap();
         let log = temp.path().join("stub.log");
         let python = std::env::var("ARKO_TEST_PYTHON")
             .unwrap_or_else(|_| if cfg!(windows) { "python" } else { "python3" }.into());
@@ -4201,6 +4204,171 @@ note("stop")
         assert_eq!((events("start"), asked_now()), (2, 2));
         assert!(!ask(&seam, "Hello.", 4).await.contains(ping));
         quit(seam, ended).await;
+    }
+
+    /// A session whose earlier runs offered an MCP server's tools opens
+    /// when the server is no longer set up or fails to start, also when it
+    /// was switched between Chat and Agent or branched, which keep their
+    /// runs' configurations. A server that fails to start is reported. A
+    /// run that offered the tool can still call it and is told the server
+    /// isn't running, and new conversations are not offered it.
+    #[tokio::test]
+    async fn a_session_opens_without_the_servers_its_runs_offered() {
+        let temp = tempfile::tempdir().unwrap();
+        let bodies: Arc<Mutex<Vec<String>>> = Arc::default();
+        let server = ModelServer::start(Arc::new({
+            let bodies = bodies.clone();
+            move |_, body: String| {
+                bodies.lock().unwrap().push(body.clone());
+                Box::pin(async move {
+                    if body.contains("Call ping.") && !body.contains("isn't running") {
+                        tool_call("c", "mcp__stub__ping", serde_json::json!({}))
+                    } else {
+                        reply("a", "Ahoy.")
+                    }
+                })
+            }
+        }))
+        .await;
+        let root = temp.path().join("arko");
+        let project = temp.path().join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        let script = temp.path().join("stub.py");
+        std::fs::write(&script, MCP_STUB).unwrap();
+        let log = temp.path().join("stub.log");
+        let python = std::env::var("ARKO_TEST_PYTHON")
+            .unwrap_or_else(|_| if cfg!(windows) { "python" } else { "python3" }.into());
+        let config = |name: &str, command: &str| {
+            let file = temp.path().join(name);
+            std::fs::write(
+                &file,
+                serde_json::json!({"mcpServers": {"stub": {
+                    "command": command,
+                    "args": [script],
+                    "env": {"STUB_LOG": log},
+                }}})
+                .to_string(),
+            )
+            .unwrap();
+            file
+        };
+        let running = config("running.json", &python);
+        let failing = config("failing.json", "arko-no-such-mcp-server");
+        let wait = Duration::from_secs(30);
+        let open = |session: SessionChoice, mode: crate::session::Mode, files: Vec<PathBuf>| {
+            let running = spawn(
+                Options {
+                    root: Some(root.clone()),
+                    session,
+                    mode,
+                    workspace: Some(project.clone()),
+                    mcp_config: files,
+                    model: Some("luna".into()),
+                    openai_auth: Some(OpenAiAuth::ApiKey),
+                    cache_1h: Some(false),
+                    text_replies: Some(true),
+                    client: Some(GivenClient(Arc::new(server.client()))),
+                    ..Options::default()
+                },
+                Arc::new(NoPrompter),
+            );
+            async move {
+                let opened = tokio::time::timeout(wait, running.opened)
+                    .await
+                    .unwrap()
+                    .unwrap();
+                (opened, running.ended)
+            }
+        };
+        let ask = |seam: &Seam, text: &str| {
+            let before = bodies.lock().unwrap().len();
+            seam.input.send(Input::Message(app_message(text))).unwrap();
+            let feed = seam.feed.clone();
+            let bodies = bodies.clone();
+            async move {
+                tokio::time::timeout(wait, async {
+                    while bodies.lock().unwrap().len() <= before || feed.activity().working {
+                        tokio::time::sleep(Duration::from_millis(20)).await;
+                    }
+                })
+                .await
+                .unwrap();
+                bodies.lock().unwrap().last().unwrap().clone()
+            }
+        };
+        let switch = |seam: &Seam, to: crate::session::Mode| {
+            let (reply_to, answer) = tokio::sync::oneshot::channel();
+            seam.requests
+                .send(Request::SwitchMode {
+                    to,
+                    workspace: None,
+                    reply: reply_to,
+                })
+                .unwrap();
+            async move { answer.await.unwrap() }
+        };
+        let ping = "mcp__stub__ping";
+        use crate::session::Mode::{Agent, Chat};
+
+        // An agent's session, one switched to Chat and back, and a branch of
+        // the first, each with a run that offered the server's tool.
+        let (opened, ended) = open(SessionChoice::New, Agent, vec![running.clone()]).await;
+        let seam = opened.unwrap();
+        let plain = seam.session.id.clone();
+        assert!(ask(&seam, "First.").await.contains(ping));
+        quit(seam, ended).await;
+        let (opened, ended) = open(SessionChoice::New, Agent, vec![running.clone()]).await;
+        let seam = opened.unwrap();
+        let switched = seam.session.id.clone();
+        assert!(ask(&seam, "First.").await.contains(ping));
+        assert_eq!(switch(&seam, Chat).await, Ok(()));
+        tokio::time::timeout(wait, ended).await.unwrap().unwrap();
+        let (opened, ended) = open(SessionChoice::Resume(switched.clone()), Chat, Vec::new()).await;
+        let seam = opened.unwrap();
+        assert_eq!(switch(&seam, Agent).await, Ok(()));
+        tokio::time::timeout(wait, ended).await.unwrap().unwrap();
+        let branched = crate::sessions::branch(&root, &plain).unwrap();
+
+        // The server is gone from the configuration, or fails to start.
+        let mut refused = Vec::new();
+        for (session, name) in [
+            (&plain, "plain"),
+            (&switched, "switched"),
+            (&branched, "branched"),
+        ] {
+            for (files, why) in [(Vec::new(), "removed"), (vec![failing.clone()], "failing")] {
+                let configured = files.len();
+                let (opened, ended) =
+                    open(SessionChoice::Resume(session.clone()), Agent, files).await;
+                match opened {
+                    Ok(seam) => {
+                        let servers = seam.details.mcp().servers;
+                        assert_eq!(servers.len(), configured, "{name} {why}");
+                        assert!(servers.iter().all(|server| server.tools.is_err()));
+                        assert!(ask(&seam, "Again.").await.contains("Again."));
+                        // A call to its tool says the server isn't running.
+                        if (name, why) == ("switched", "removed") {
+                            let called = ask(&seam, "Call ping.").await;
+                            assert!(
+                                called.contains(
+                                    "The MCP server stub isn't running. It's no longer set up, or it failed to start."
+                                ),
+                                "{called}"
+                            );
+                        }
+                        // A new conversation is not offered the tool.
+                        seam.input
+                            .send(Input::Message(app_message("/new")))
+                            .unwrap();
+                        let new = ask(&seam, "Newly.").await;
+                        assert!(!new.contains(ping), "{name} {why}");
+                        quit(seam, ended).await;
+                    }
+                    Err(error) => refused.push(format!("{name} {why}: {error}")),
+                }
+            }
+        }
+        assert!(refused.is_empty(), "{refused:#?}");
     }
 
     /// A session's conversation is read whole from what it saved, also

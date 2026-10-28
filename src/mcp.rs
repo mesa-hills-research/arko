@@ -636,18 +636,40 @@ impl Tool for ServerTool {
     }
 }
 
-/// Stands in for a tool of a server that isn't running, in a chat. A chat
-/// starts no servers, but a conversation saved from an agent's session can't
-/// resume unless the tools it offered are registered.
+/// Stands in for a tool of a server that isn't running. A conversation kept
+/// with its own configuration still offers the tools it was saved with, and
+/// can't resume unless each is registered, for those runs only
+/// (`resume_only_agent_tool`). A chat starts no servers, and in an agent's
+/// session a server may be gone from the files or fail to start.
 #[derive(Debug)]
-pub struct UnstartedTool(pub String);
+pub struct UnstartedTool {
+    name: String,
+    said: String,
+}
+
+impl UnstartedTool {
+    /// For a tool in a chat.
+    pub fn in_chat(name: String) -> Self {
+        let said = "This MCP server isn't running, because a chat starts none. The user can switch to Agent to use it.".into();
+        Self { name, said }
+    }
+
+    /// For a tool of a server that is no longer set up or didn't start.
+    pub fn not_running(name: String) -> Self {
+        let server = split_tool_name(&name).map_or(name.as_str(), |(server, _)| server);
+        let said = format!(
+            "The MCP server {server} isn't running. It's no longer set up, or it failed to start."
+        );
+        Self { name, said }
+    }
+}
 
 #[async_trait]
 impl Tool for UnstartedTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
-            name: self.0.clone(),
-            description: UNSTARTED.into(),
+            name: self.name.clone(),
+            description: self.said.clone(),
             output_based_example: None,
             parameters: vec![],
             parallel_safe: true,
@@ -663,11 +685,9 @@ impl Tool for UnstartedTool {
         _: &TaskContext<'_>,
         _: std::collections::HashMap<String, Value>,
     ) -> Result<String, ToolError> {
-        Err(ToolError::ExecutionFailed(UNSTARTED.into()))
+        Err(ToolError::ExecutionFailed(self.said.clone()))
     }
 }
-
-const UNSTARTED: &str = "This MCP server isn't running, because a chat starts none. The user can switch to Agent to use it.";
 
 /// A server Arko tried to start.
 pub struct Started {
@@ -1139,15 +1159,25 @@ mod tests {
         running.shutdown().await;
     }
 
-    /// A tool kept for a saved conversation, in a chat, answers a call by
-    /// saying its server isn't running.
+    /// A tool kept for a saved conversation answers a call by saying its
+    /// server isn't running, and why.
     #[tokio::test]
     async fn a_tool_of_a_server_not_started_says_so() {
-        let tool = UnstartedTool("mcp__stub__ping".into());
-        assert_eq!(tool.definition().name, "mcp__stub__ping");
         let context = TaskContext::new(uuid::Uuid::new_v4(), "main", "test", Path::new("."));
-        let error = tool.execute(&context, Default::default()).await;
-        assert!(error.unwrap_err().to_string().contains("isn't running"));
+        let said = async |tool: UnstartedTool| {
+            assert_eq!(tool.definition().name, "mcp__stub__ping");
+            let error = tool.execute(&context, Default::default()).await;
+            error.unwrap_err().to_string()
+        };
+        let chat = said(UnstartedTool::in_chat("mcp__stub__ping".into())).await;
+        assert!(chat.contains("a chat starts none"), "{chat}");
+        let gone = said(UnstartedTool::not_running("mcp__stub__ping".into())).await;
+        assert!(
+            gone.contains(
+                "The MCP server stub isn't running. It's no longer set up, or it failed to start."
+            ),
+            "{gone}"
+        );
     }
 
     const STUB_SERVER: &str = r#"
