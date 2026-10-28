@@ -602,17 +602,29 @@ pub fn cache_title(left: f64, cache: &CacheData, until: &str) -> String {
 }
 
 /// An image's caption, its label and its size ("chart.png · 12 KB"), as
-/// Studio says it. A label that ends with the size (`read_file` names its
-/// images so) says it once.
+/// Studio says it. A label that already ends with the size says it once.
+/// `read_file` and Claude Code's `Read` label an image "path, 240 KB", and
+/// round anything under 1 KB up to "1 KB" where this says its bytes.
 pub fn image_caption(label: &str, bytes: u64) -> String {
-    let size = match bytes {
-        0..1024 => format!("{bytes} B"),
-        1024..1_048_576 => format!("{} KB", bytes.div_ceil(1024)),
-        _ => format!("{:.1} MB", bytes as f64 / 1_048_576.0),
+    let rounded = if bytes < 1_048_576 {
+        format!("{} KB", bytes.div_ceil(1024))
+    } else {
+        format!("{:.1} MB", bytes as f64 / 1_048_576.0)
+    };
+    let size = if bytes < 1024 {
+        format!("{bytes} B")
+    } else {
+        rounded.clone()
+    };
+    // The size starts a word, so "20 KB" doesn't end "120 KB".
+    let ends_with = |size: &str| {
+        label
+            .strip_suffix(size)
+            .is_some_and(|before| !before.ends_with(|c: char| c.is_ascii_digit() || c == '.'))
     };
     if label.is_empty() {
         size
-    } else if label.ends_with(&size) {
+    } else if ends_with(&size) || ends_with(&rounded) {
         label.to_string()
     } else {
         format!("{label} · {size}")
@@ -625,14 +637,53 @@ mod tests {
     use crate::store::tests::worker;
 
     #[test]
-    fn an_images_caption_is_its_label_and_size() {
-        assert_eq!(image_caption("chart.png", 12_000), "chart.png · 12 KB");
-        assert_eq!(image_caption("", 512), "512 B");
-        assert_eq!(image_caption("photo.jpg", 3_500_000), "photo.jpg · 3.3 MB");
+    fn a_label_that_ends_with_its_size_says_it_once() {
         assert_eq!(
             image_caption("chart.png, 457 KB", 467_200),
             "chart.png, 457 KB"
         );
+        assert_eq!(
+            image_caption("photo.jpg, 3.3 MB", 3_500_000),
+            "photo.jpg, 3.3 MB"
+        );
+        // They round anything under 1 KB up to a kilobyte.
+        assert_eq!(image_caption("dot.png, 1 KB", 70), "dot.png, 1 KB");
+        assert_eq!(image_caption("empty.png, 0 KB", 0), "empty.png, 0 KB");
+        // As the page says it.
+        assert_eq!(image_caption("dot.png · 70 B", 70), "dot.png · 70 B");
+    }
+
+    #[test]
+    fn a_label_without_a_size_gets_one() {
+        assert_eq!(image_caption("chart.png", 12_000), "chart.png · 12 KB");
+        assert_eq!(image_caption("chart.png", 1_048_575), "chart.png · 1024 KB");
+        assert_eq!(image_caption("photo.jpg", 3_500_000), "photo.jpg · 3.3 MB");
+        assert_eq!(image_caption("image", 70), "image · 70 B");
+    }
+
+    #[test]
+    fn an_empty_label_is_the_size() {
+        assert_eq!(image_caption("", 512), "512 B");
+        assert_eq!(image_caption("", 12_000), "12 KB");
+        assert_eq!(image_caption("", 3_500_000), "3.3 MB");
+    }
+
+    #[test]
+    fn a_label_that_ends_with_another_size_gets_the_size() {
+        assert_eq!(
+            image_caption("chart.png, 457 KB", 20_480),
+            "chart.png, 457 KB · 20 KB"
+        );
+        // The size has to start a number, so "20 KB" doesn't end "120 KB".
+        assert_eq!(
+            image_caption("chart.png, 120 KB", 20_480),
+            "chart.png, 120 KB · 20 KB"
+        );
+        assert_eq!(
+            image_caption("photo.jpg, 12.2 MB", 2_306_867),
+            "photo.jpg, 12.2 MB · 2.2 MB"
+        );
+        assert_eq!(image_caption("dot.png, 2 KB", 70), "dot.png, 2 KB · 70 B");
     }
 
     #[test]
