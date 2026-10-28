@@ -585,9 +585,13 @@ fn note(text: String) -> Option<Item> {
 
 /// The items of the user's answer to questions the agent waited for: their
 /// message. (A note of the answers, which their card shows, and the wait's
-/// own reply, whose note follows, have none.)
+/// own replies, which point to that note, have none.)
 fn answer_items(text: &str) -> Vec<Item> {
-    if text.trim().ends_with(crate::questions::WAIT_ANSWERED) || is_answer_note(text) {
+    let trimmed = text.trim();
+    if trimmed.ends_with(crate::questions::WAIT_ANSWERED)
+        || trimmed.ends_with(crate::questions::READ_ALREADY)
+        || is_answer_note(text)
+    {
         return Vec::new();
     }
     let words = unlabelled(text);
@@ -1330,12 +1334,16 @@ mod tests {
 
     /// The answer to questions the agent waited for stays in their turn, in
     /// both forms Arko sends it: a note of the answers (which their card
-    /// shows), or the user's message.
+    /// shows), or the user's message. A reply to the wait that points to a
+    /// note shows nothing, also one saying the agent read the note already.
     #[test]
     fn a_waited_answer_stays_in_its_turn() {
+        let read = crate::questions::wait_answered_earlier(&["q1".to_string()]);
         for (answer, shown) in [
             ("The user answered q1.\nq1 Which file? README.md", None),
             ("(This message answers q1.)\nREADME.md", Some("README.md")),
+            (crate::questions::WAIT_ANSWERED, None),
+            (read.as_str(), None),
         ] {
             let mut ask = Message::new_assistant("");
             ask.tool_calls = vec![call(

@@ -448,6 +448,19 @@ pub(crate) struct Pending {
 pub(crate) const WAIT_ANSWERED: &str =
     "The user replied to your questions. What they said is in the note that follows.";
 
+/// How a wait's reply ends when the user's answer reached the agent before
+/// the wait came, in a note it read while the turn that asked went on.
+pub(crate) const READ_ALREADY: &str = "in a note you've already read. There's nothing new.";
+
+/// What the agent's wait for the questions `ids` reads when their note has
+/// reached it already. Nothing follows.
+pub(crate) fn wait_answered_earlier(ids: &[String]) -> String {
+    format!(
+        "The user's reply to {} reached you earlier, {READ_ALREADY}",
+        arko_agents::questions::id_list(ids)
+    )
+}
+
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct Saved {
     #[serde(default)]
