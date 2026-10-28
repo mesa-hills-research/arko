@@ -128,3 +128,8 @@ windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Syste
 
 [dev-dependencies]
 tempfile = "3"
+
+# The symbol table is about 14 MB of the release binary. Without it, a
+# backtrace shows addresses instead of function names.
+[profile.release]
+strip = true
