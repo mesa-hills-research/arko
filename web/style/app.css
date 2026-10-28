@@ -945,6 +945,58 @@ html:not(.apple) ::-webkit-scrollbar-corner { background: transparent; }
    the Clipboard API. */
 .copy-field { position: fixed; top: 0; left: -9999px; font-size: 16px; }
 
+/* ----- images ----- */
+
+/* Tiles of one size, so a row keeps its height as they load. */
+.thumbs { display: flex; flex-wrap: wrap; gap: 8px; }
+.bubble .thumbs { margin: 2px 0 6px; white-space: normal; }
+.row.call .thumbs { margin: 4px 0 6px 14px; }
+.thumb {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 160px;
+  height: 120px;
+  padding: 4px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--muted-bg);
+  color: var(--muted);
+  font: 12px/1.3 var(--sans);
+  text-align: center;
+  white-space: normal;
+}
+.thumb img { width: 100%; height: 100%; object-fit: contain; }
+button.thumb:not(:disabled) { cursor: zoom-in; }
+@media (hover: hover) {
+  button.thumb:not(:disabled):hover { border-color: var(--muted); }
+}
+
+dialog.viewer {
+  max-width: calc(100vw - 2 * var(--gutter));
+  max-height: calc(100dvh - 32px);
+  padding: 0 8px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-xl);
+  background: var(--popover);
+  color: var(--popover-text);
+  box-shadow: var(--shadow);
+}
+dialog.viewer[open] { display: flex; flex-direction: column; animation: fade 0.15s ease-out; }
+dialog.viewer::backdrop { background: rgba(0, 0, 0, 0.6); }
+.viewer-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 40px; padding-left: 8px; }
+.viewer-caption { min-width: 0; overflow: hidden; color: var(--muted); font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
+.viewer img {
+  display: block;
+  min-height: 0;
+  max-width: 100%;
+  max-height: calc(100dvh - 32px - 50px);
+  margin: 0 auto;
+  border-radius: var(--r-md);
+  object-fit: contain;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }

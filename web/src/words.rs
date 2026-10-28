@@ -601,10 +601,39 @@ pub fn cache_title(left: f64, cache: &CacheData, until: &str) -> String {
     text
 }
 
+/// An image's caption, its label and its size ("chart.png · 12 KB"), as
+/// Studio says it. A label that ends with the size (`read_file` names its
+/// images so) says it once.
+pub fn image_caption(label: &str, bytes: u64) -> String {
+    let size = match bytes {
+        0..1024 => format!("{bytes} B"),
+        1024..1_048_576 => format!("{} KB", bytes.div_ceil(1024)),
+        _ => format!("{:.1} MB", bytes as f64 / 1_048_576.0),
+    };
+    if label.is_empty() {
+        size
+    } else if label.ends_with(&size) {
+        label.to_string()
+    } else {
+        format!("{label} · {size}")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::store::tests::worker;
+
+    #[test]
+    fn an_images_caption_is_its_label_and_size() {
+        assert_eq!(image_caption("chart.png", 12_000), "chart.png · 12 KB");
+        assert_eq!(image_caption("", 512), "512 B");
+        assert_eq!(image_caption("photo.jpg", 3_500_000), "photo.jpg · 3.3 MB");
+        assert_eq!(
+            image_caption("chart.png, 457 KB", 467_200),
+            "chart.png, 457 KB"
+        );
+    }
 
     #[test]
     fn figures_and_workers_read_briefly() {

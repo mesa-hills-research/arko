@@ -14,7 +14,8 @@ use web_sys::{EventSource, MessageEvent, RequestCredentials, RequestInit};
 
 use crate::layout::View;
 use crate::protocol::{
-    Append, CodeData, CommandData, ItemData, JobSummary, Kind, Removed, StatusData, WorkerData,
+    Append, CodeData, CommandData, ImageData, ItemData, JobSummary, Kind, Removed, StatusData,
+    WorkerData,
 };
 use crate::store::Store;
 use crate::words::Connection;
@@ -71,6 +72,8 @@ pub struct Page {
     pub error: RwSignal<Option<String>>,
     pub commands: RwSignal<Option<Vec<CommandData>>>,
     pub sheet: RwSignal<Option<Sheet>>,
+    /// The image the viewer shows.
+    pub image: RwSignal<Option<ImageData>>,
     /// The text item that streams now, whose open table row is held.
     pub streaming: RwSignal<Option<u64>>,
     /// The newest item the reader saw at the bottom.
@@ -121,6 +124,7 @@ impl Page {
             error: RwSignal::new(None),
             commands: RwSignal::new(None),
             sheet: RwSignal::new(None),
+            image: RwSignal::new(None),
             streaming: RwSignal::new(None),
             seen: RwSignal::new(0),
             grew: RwSignal::new(false),

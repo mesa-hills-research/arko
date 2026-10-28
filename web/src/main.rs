@@ -8,6 +8,7 @@ mod app;
 mod chrome;
 mod composer;
 mod copy;
+mod images;
 mod layout;
 mod markdown;
 mod questions;
@@ -76,6 +77,7 @@ fn App() -> impl IntoView {
             <composer::Composer />
             <sheets::WorkersSheet />
             <sheets::SettingsSheet />
+            <images::ImageViewer />
         </Show>
     }
 }
@@ -152,7 +154,7 @@ fn listen(page: Page) {
                 questions::open_panel(None);
                 return;
             }
-            if page.sheet.get_untracked().is_some() {
+            if page.sheet.get_untracked().is_some() || page.image.get_untracked().is_some() {
                 return;
             }
             match event.key().as_str() {

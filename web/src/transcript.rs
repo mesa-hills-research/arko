@@ -5,6 +5,7 @@ use lucide_leptos::{ArrowDown, ChevronRight, LoaderCircle};
 
 use crate::app::{Cell, Page, STORE, cell, page, post};
 use crate::copy::CopyButton;
+use crate::images::Thumbnails;
 use crate::layout::{self, Count, Row, View};
 use crate::markdown::{self, Blocks};
 use crate::protocol::{CallStatus, ItemData, Kind, Level, Source, WorkerState};
@@ -212,9 +213,9 @@ fn item_row(id: u64, cell: Cell, thinking: Memo<Option<u64>>) -> AnyView {
                     (!tags.is_empty()).then(|| tags.join(" · "))
                 })
             };
-            // Under it, its tags and Copy.
+            // Its images, then its words, and under it its tags and Copy.
             view! {
-                <div class="bubble">{move || text.get()}</div>
+                <div class="bubble"><Thumbnails data=data />{move || text.get()}</div>
                 <div class="actions">
                     {move || tags().map(|tags| view! { <span class="tag">{tags}</span> })}
                     <CopyButton label="Copy message" text=text />
@@ -377,16 +378,18 @@ fn call_row(cell: Cell) -> AnyView {
             </span>
         }
     };
+    // The images its tool returned show under it, open or not.
     if long {
         view! {
             <details class="call">
                 <summary>{line}</summary>
                 <pre>{move || data.with(|item| item.detail.clone().unwrap_or_else(|| item.text.clone()))}</pre>
             </details>
+            <Thumbnails data=data />
         }
         .into_any()
     } else {
-        view! { {line} }.into_any()
+        view! { {line}<Thumbnails data=data /> }.into_any()
     }
 }
 
