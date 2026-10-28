@@ -350,7 +350,7 @@ pub fn with_working(mut rows: Vec<Row>, working: bool, store: &Store) -> Vec<Row
 /// Whether `item` is one thing to read, counted once by Latest. A call's
 /// results and a command's output belong to what they follow. The end of a
 /// turn, a new conversation and a worker's place are marks, and a notice
-/// counts only as it starts a turn (Arko's "⇠" lines).
+/// counts only when it opens a turn Arko started.
 fn is_read(item: &ItemData) -> bool {
     match item.kind {
         Kind::User
@@ -360,7 +360,7 @@ fn is_read(item: &ItemData) -> bool {
         | Kind::Call
         | Kind::Question
         | Kind::Reply => true,
-        Kind::Notice => item.text.starts_with('⇠'),
+        Kind::Notice => item.opens_turn,
         _ => false,
     }
 }
@@ -718,8 +718,17 @@ mod tests {
         }
     }
 
+    /// A notice that opens a turn Arko started.
+    fn opening(id: u64, text: &str) -> ItemData {
+        ItemData {
+            opens_turn: true,
+            level: Some(Level::Info),
+            ..item(id, Kind::Notice, MAIN, text)
+        }
+    }
+
     #[test]
-    fn marks_count_for_nothing_and_a_turn_starting_notice_counts() {
+    fn marks_count_for_nothing_and_a_notice_that_opens_a_turn_counts() {
         let mut items = vec![
             item(1, Kind::User, MAIN, "go"),
             item(2, Kind::Turn, MAIN, "3 s"),
@@ -727,9 +736,14 @@ mod tests {
             item(4, Kind::Output, MAIN, "output"),
             item(5, Kind::Notice, MAIN, "rate limited, retrying"),
             item(6, Kind::WorkerLine, MAIN, "r1"),
+            // The mark counts, not the words.
+            ItemData {
+                level: Some(Level::Info),
+                ..item(7, Kind::Notice, MAIN, "r1 reported")
+            },
         ];
         assert_eq!(says(&items, View::Full, None, 1), "Latest");
-        items.push(item(7, Kind::Notice, MAIN, "⇠ a background job finished"));
+        items.push(opening(8, "r1 reported"));
         assert_eq!(says(&items, View::Full, None, 1), "1 new");
     }
 
@@ -761,7 +775,7 @@ mod tests {
         items.push(item(2, Kind::Thinking, MAIN, "hmm"));
         items.extend(call_with_results(3, MAIN));
         items.extend(call_with_results(6, MAIN));
-        items.push(item(9, Kind::Notice, MAIN, "⇠ a monitor alerted"));
+        items.push(opening(9, "Monitor alerted · cargo test"));
         // Thinking, a result and an info notice are out of Messages.
         assert_eq!(says(&items, View::Messages, None, 2), "1 new");
         assert_eq!(says(&items, View::Full, None, 2), "3 new");
@@ -772,7 +786,7 @@ mod tests {
         let hidden = vec![
             item(1, Kind::User, MAIN, "go"),
             item(2, Kind::Thinking, MAIN, "hmm"),
-            item(3, Kind::Notice, MAIN, "⇠ a monitor alerted"),
+            opening(3, "Monitor alerted · cargo test"),
         ];
         assert_eq!(says(&hidden, View::Messages, None, 1), "Latest");
         assert_eq!(says(&hidden, View::Full, None, 1), "2 new");

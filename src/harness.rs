@@ -1405,13 +1405,24 @@ impl Harness {
     /// Prints `text` (dim, or as a warning or an error) and shows it on the
     /// remote page.
     pub(crate) fn say(&self, level: Level, text: &str) {
+        self.echo_line(level, text);
+        self.feed.notice(level, text);
+    }
+
+    /// Prints the line a turn Arko started opens with, and shows it on the
+    /// remote page as that line.
+    fn say_opening(&self, text: &str) {
+        self.echo_line(Level::Info, text);
+        self.feed.turn_opening(text);
+    }
+
+    fn echo_line(&self, level: Level, text: &str) {
         let out = &self.output;
         out.echo(&match level {
             Level::Info => out.dim(text),
             Level::Warn => out.warn(text),
             Level::Error => out.error(text),
         });
-        self.feed.notice(level, text);
     }
 
     /// Shows in the terminal what was typed on the remote page.
@@ -3506,7 +3517,7 @@ impl Harness {
             .message(&report);
         }
         if let Some(notice) = opening.and_then(|opening| opening.notice(&about)) {
-            self.say(Level::Info, &format!("  {notice}"));
+            self.say_opening(&format!("  {notice}"));
         }
         if resumes {
             self.say(
@@ -6106,8 +6117,9 @@ pub(crate) mod tests {
     }
 
     /// The lines of the turns Arko started, as a session that reopens shows
-    /// them, read back from the conversation.
-    fn reopened_notices(harness: &Harness) -> Vec<String> {
+    /// them, read back from the conversation. Only the notices marked as
+    /// opening a turn are in it.
+    fn reopened_openings(harness: &Harness) -> Vec<String> {
         let Conversation::Answered(result) = &harness.conversation else {
             panic!("the conversation wasn't answered");
         };
@@ -6118,9 +6130,22 @@ pub(crate) mod tests {
             &crate::images::Images::default(),
         )
         .into_iter()
-        .filter(|item| item.kind == remote::Kind::Notice)
+        .filter(|item| item.kind == remote::Kind::Notice && item.opens_turn)
         .map(|item| item.text)
         .collect()
+    }
+
+    /// The lines of the turns Arko started in the page's history, those
+    /// its items mark as opening a turn.
+    fn live_openings(feed: &remote::Feed) -> Vec<String> {
+        feed.subscribe()
+            .0
+            .items
+            .iter()
+            .map(|item| serde_json::to_value(item).unwrap())
+            .filter(|item| item["kind"] == "notice" && item["opens_turn"] == true)
+            .map(|item| item["text"].as_str().unwrap_or_default().to_string())
+            .collect()
     }
 
     /// The status is read without the cost ledger, which grows with every
@@ -6598,7 +6623,8 @@ pub(crate) mod tests {
         // The turn's line says who reported, in the live transcript and in
         // the one a reopened session reads from the conversation.
         assert!(has(&harness.feed, "notice", "r1 reported", ""));
-        assert_eq!(reopened_notices(&harness), ["r1 reported"]);
+        assert_eq!(live_openings(&harness.feed), ["r1 reported"]);
+        assert_eq!(reopened_openings(&harness), ["r1 reported"]);
         crew.shutdown().await;
     }
 
@@ -6666,7 +6692,8 @@ pub(crate) mod tests {
         for line in lines {
             assert!(has(&harness.feed, "notice", line, ""), "{line}");
         }
-        assert_eq!(reopened_notices(&harness), lines);
+        assert_eq!(live_openings(&harness.feed), lines);
+        assert_eq!(reopened_openings(&harness), lines);
         harness.crew.as_ref().unwrap().shutdown().await;
     }
 

@@ -2431,6 +2431,15 @@ mod tests {
             (read.outcome.as_deref(), read.call, read.pending),
             (Some("1 failed"), Some(6), true)
         );
+        // The mark of the line that opens a turn Arko started, which an
+        // item without it reads as unset.
+        assert!(!read.opens_turn);
+        let opening = Item::new(Kind::Notice, "r1 reported")
+            .level(Level::Info)
+            .opens_turn();
+        let read: ItemData =
+            serde_json::from_value(serde_json::to_value(&opening).unwrap()).unwrap();
+        assert!(read.opens_turn);
 
         // A question card's questions, in every state and with every field.
         let questions: Vec<crate::questions::AgentQuestion> = serde_json::from_value(serde_json::json!([

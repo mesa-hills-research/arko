@@ -167,6 +167,12 @@ pub struct Item {
     /// it ([`Update::Item`]), with a new `id` and this unset.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub pending: bool,
+    /// Whether it is the line that opens a turn Arko started without a
+    /// message from the user, naming who and what the turn is for (a worker's
+    /// report, a job that finished). Clients can tell it from Arko's other
+    /// notices, which say how the turn goes.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub opens_turn: bool,
     /// A question card's questions (`Kind::Question`), each with its id
     /// and what became of it, updated as that changes ([`Update::Change`]).
     /// `None` for a question asked before questions had ids.
@@ -203,6 +209,7 @@ impl Item {
             call: None,
             job: None,
             pending: false,
+            opens_turn: false,
             questions: None,
         }
     }
@@ -221,6 +228,12 @@ impl Item {
 
     pub fn level(mut self, level: Level) -> Self {
         self.level = Some(level);
+        self
+    }
+
+    /// Marks it as the line that opens a turn Arko started.
+    pub fn opens_turn(mut self) -> Self {
+        self.opens_turn = true;
         self
     }
 
@@ -2237,6 +2250,19 @@ impl Feed {
         let text = text.trim();
         if !text.is_empty() {
             self.add(Item::new(Kind::Notice, text).level(level));
+        }
+    }
+
+    /// The line that opens a turn Arko started without a message from the
+    /// user, naming who and what it is for.
+    pub fn turn_opening(&self, text: &str) {
+        let text = text.trim();
+        if !text.is_empty() {
+            self.add(
+                Item::new(Kind::Notice, text)
+                    .level(Level::Info)
+                    .opens_turn(),
+            );
         }
     }
 
@@ -4655,6 +4681,35 @@ mod tests {
                 (Kind::Turn, Some(2)),
             ]
         );
+    }
+
+    /// The line that opens a turn Arko started is marked, so a client can
+    /// tell it from Arko's other notices. The page's copy carries the mark
+    /// only there.
+    #[test]
+    fn the_line_that_opens_a_turn_is_marked_and_other_notices_are_not() {
+        let feed = Feed::new("main");
+        feed.notice(Level::Info, "Resumed.");
+        feed.turn_opening("  r1 reported");
+        feed.turn_opening("  ");
+        let marks: Vec<(String, bool)> = items(&feed)
+            .into_iter()
+            .map(|item| (item.text, item.opens_turn))
+            .collect();
+        assert_eq!(
+            marks,
+            [
+                ("Resumed.".to_string(), false),
+                ("r1 reported".to_string(), true)
+            ]
+        );
+        let wire: Vec<serde_json::Value> = items(&feed)
+            .iter()
+            .map(|item| serde_json::to_value(item).unwrap())
+            .collect();
+        assert!(wire[0].get("opens_turn").is_none());
+        assert_eq!(wire[1]["opens_turn"], true);
+        assert_eq!(wire[1]["level"], "info");
     }
 
     /// Restored items keep their turns, after the feed's own, and the next

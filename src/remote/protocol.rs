@@ -257,6 +257,10 @@ pub struct ItemData {
     pub job: Option<String>,
     #[serde(default)]
     pub pending: bool,
+    /// Whether this notice opens a turn Arko started without a message from
+    /// the user.
+    #[serde(default)]
+    pub opens_turn: bool,
     /// The highlighting of its Markdown's finished code blocks.
     #[serde(default)]
     pub code: Vec<CodeSpans>,

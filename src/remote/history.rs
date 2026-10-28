@@ -719,9 +719,11 @@ fn user_item(text: &str, about: &dyn Fn(Opening) -> Subjects) -> Option<Item> {
         Some((_, mine)) => mine,
         None => {
             if let Some(opening) = Opening::of(text) {
-                return opening
-                    .notice(&about(opening))
-                    .map(|notice| Item::new(Kind::Notice, notice).level(super::Level::Info));
+                return opening.notice(&about(opening)).map(|notice| {
+                    Item::new(Kind::Notice, notice)
+                        .level(super::Level::Info)
+                        .opens_turn()
+                });
             }
             // Only Arko's own sections, or its notes about the agent's
             // questions: no words of the user's.
@@ -1134,6 +1136,25 @@ mod tests {
                 notice("News from workers", 5),
                 (Kind::User, "hello\n\nthere".to_string(), Some(6)),
                 (Kind::User, "Again.".to_string(), Some(7)),
+            ]
+        );
+        // The lines are marked as opening a turn, as the live ones are, and
+        // the user's words aren't.
+        let marks: Vec<(Kind, bool)> = items(&messages, true, &Images::default())
+            .into_iter()
+            .filter(|item| matches!(item.kind, Kind::User | Kind::Notice))
+            .map(|item| (item.kind, item.opens_turn))
+            .collect();
+        assert_eq!(
+            marks,
+            [
+                (Kind::User, false),
+                (Kind::Notice, true),
+                (Kind::Notice, true),
+                (Kind::Notice, true),
+                (Kind::Notice, true),
+                (Kind::User, false),
+                (Kind::User, false),
             ]
         );
     }
