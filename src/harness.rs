@@ -1866,6 +1866,8 @@ impl Harness {
             "/background-after" => self.background_after_command(argument, source),
             "/monitor-wakes" => self.monitor_wakes_command(argument, source),
             "/worker-models" => self.worker_models_command(argument, source),
+            "/worker-billing" => self.worker_billing_command(argument, source),
+            "/api-budget" => self.api_budget_command(argument, source),
             "/worker-depth" => self.worker_depth_command(argument, source),
             "/worker-retry-cap" => self.worker_retry_cap_command(argument, source),
             "/message-copies" => self.message_copies_command(argument, source),
@@ -3265,6 +3267,13 @@ impl Harness {
                         self.settings.worker_models.label().to_lowercase(),
                         self.settings.worker_depth,
                         crate::workers::copies_state(self.settings.message_copies)
+                    )));
+                    out.line(&out.dim(&format!(
+                        "worker billing {}, daily API budget {}",
+                        self.settings.worker_billing.name(),
+                        self.settings
+                            .api_budget
+                            .map_or_else(|| "off".to_string(), crate::billing::money)
                     )));
                 }
                 out.line(&out.dim(&format!(
@@ -4729,7 +4738,7 @@ pub(crate) fn publish_title_from_disk(session: &Session, gauges: &Gauges) {
 /// The commands that change a setting while the session runs, which take
 /// an argument: `/outside`, `/model`, `/handover`, `/handover-at`, `/keys`.
 /// And `/message`, which works while the agent works too.
-pub(crate) const LIVE_COMMANDS: [&str; 23] = [
+pub(crate) const LIVE_COMMANDS: [&str; 25] = [
     "/outside",
     "/model",
     "/handover",
@@ -4746,6 +4755,8 @@ pub(crate) const LIVE_COMMANDS: [&str; 23] = [
     "/background-after",
     "/monitor-wakes",
     "/worker-models",
+    "/worker-billing",
+    "/api-budget",
     "/worker-depth",
     "/worker-retry-cap",
     "/message-copies",
@@ -5897,6 +5908,11 @@ pub(crate) mod tests {
             None,
             Some(feed.clone()),
         );
+        let (questions_sender, questions) = mpsc::unbounded_channel();
+        let asker = Arc::new(Asker {
+            feed: Some(feed.clone()),
+            questions: interactive.then_some(questions_sender),
+        });
         let (crew, woken) = Crew::new(crew::Setup {
             session_id: session.id.clone(),
             session_dir: session.dir.clone(),
@@ -5912,8 +5928,9 @@ pub(crate) mod tests {
                 let keys = keys.clone();
                 Arc::new(move |model: &arko_ai::Model| keys.refusal(model))
             }),
+            asker: Some(asker.clone()),
+            root: Some(root.clone()),
         });
-        let (questions_sender, questions) = mpsc::unbounded_channel();
         let (input_sender, receiver) = mpsc::unbounded_channel();
         let (remote_actions, remote_input) = mpsc::unbounded_channel();
         let outside = Arc::new(outside::Outside::new(false, Vec::new(), workspace.clone()));
@@ -5938,6 +5955,7 @@ pub(crate) mod tests {
             cc_compact: Default::default(),
             extra_rules: Default::default(),
             worker_models: Default::default(),
+            billing: Default::default(),
             monitor_wakes: Default::default(),
             worker_depth: Default::default(),
             worker_retry_cap: Default::default(),
@@ -6001,10 +6019,7 @@ pub(crate) mod tests {
             pending_images: Vec::new(),
             pending_refs: Vec::new(),
             crew: Some(crew),
-            asker: Arc::new(Asker {
-                feed: Some(feed.clone()),
-                questions: interactive.then_some(questions_sender),
-            }),
+            asker,
             one_shot: !interactive,
             naming: Default::default(),
             exit_warned: false,

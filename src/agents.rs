@@ -16,6 +16,7 @@ use arko_ai::input_limit::effective_max_input_tokens;
 use arko_ai::{AnthropicReasoningEffort, Model, OpenAIEffort, Provider};
 use serde::{Deserialize, Serialize};
 
+use crate::billing::WorkerBilling;
 use crate::builtin_skills::BuiltinSkills;
 use crate::crew;
 use crate::index;
@@ -365,6 +366,9 @@ pub struct AgentSettings<'a> {
     /// The worker profiles when the session started, each with the model it
     /// names, which the main agent's instructions list.
     pub profiles: &'a [ProfileName],
+    /// Whether workers may run on models billed per token, which the main
+    /// agent's instructions say when it chooses their models.
+    pub worker_billing: WorkerBilling,
 }
 
 /// A worker profile as the main agent's instructions name it: its name and
@@ -402,6 +406,7 @@ impl<'a> AgentSettings<'a> {
             worker_models: settings.worker_models,
             worker_depth: settings.worker_depth,
             profiles: &[],
+            worker_billing: settings.worker_billing,
         }
     }
 
@@ -431,6 +436,7 @@ impl<'a> AgentSettings<'a> {
             worker_models: ModelChoice::Agent,
             worker_depth: DEFAULT_WORKER_DEPTH,
             profiles: &[],
+            worker_billing: WorkerBilling::Api,
         }
     }
 }
@@ -956,6 +962,23 @@ pub(crate) const NESTING: &str = "A worker you start with `nested: true` can sta
 /// when it started.
 pub(crate) const NESTED_INSTRUCTIONS: &str = "# Workers of your own\nYou can start workers with `start_agent`. They report to you, and what your lead reads is your own report. Use them for parts of your task that can run apart, and do small things yourself. Start them on the profiles and models your task names. You can't report while they run, so wait for them with `wait_for_agents` or stop the ones you don't need with `stop_agent`. Stopping you stops them. If a worker of yours works in a worktree (`isolated: true`), commit what it needs first and merge its branch into yours before you report.";
 
+/// What the main agent is told of paying for workers under `billing`, when
+/// it chooses their models: the plans first, and what a model billed per
+/// token takes.
+pub(crate) fn billing_words(billing: WorkerBilling) -> &'static str {
+    match billing {
+        WorkerBilling::Plans => {
+            "The user lets workers run only on their plans (`cc:` models and the ChatGPT login), so a start on a model billed per token is refused."
+        }
+        WorkerBilling::Ask => {
+            "Prefer the models on the user's plans (`cc:` models, the ChatGPT login) when they do the job. A worker on a model billed per token starts only once the user allows it, so choose one only when the job needs it."
+        }
+        WorkerBilling::Api => {
+            "Prefer the models on the user's plans (`cc:` models, the ChatGPT login) when they do the job, since models billed per token cost the user money."
+        }
+    }
+}
+
 /// What it is told when the user lets it start workers with a profile only.
 const PROFILES_ONLY: &str = "A worker runs on the session's worker model unless you start it with a profile, a named setup the user saved. `worker_options` lists the profiles, which set each worker's model and effort, and what the models cost.";
 
@@ -1037,13 +1060,15 @@ fn worker_instructions(settings: &AgentSettings) -> String {
     match settings.worker_models {
         ModelChoice::Agent => {
             text.push_str(&format!(
-                "\n{CHOOSING}\n\n{SAVING}\n{}",
+                "\n{CHOOSING} {}\n\n{SAVING}\n{}",
+                billing_words(settings.worker_billing),
                 profile_names(settings.profiles)
             ));
         }
         ModelChoice::Profiles => {
             text.push_str(&format!(
-                "\n{PROFILES_ONLY}\n{}",
+                "\n{PROFILES_ONLY} {}\n{}",
+                billing_words(settings.worker_billing),
                 profile_names(settings.profiles)
             ));
         }
@@ -1462,6 +1487,42 @@ mod tests {
             let instructions = main_config(&with).unwrap().instructions;
             assert_eq!(instructions.contains(NESTING), told, "depth {depth}");
         }
+    }
+
+    /// The main agent hears how workers are paid for when it chooses their
+    /// models: the user's plans first, and under Ask before API that a
+    /// worker billed per token waits for the user's OK. With every worker on
+    /// the session's model it has nothing to choose, and hears nothing.
+    #[test]
+    fn the_lead_is_told_how_workers_are_paid_for() {
+        let opus = model("opus", false);
+        let text = |choice: ModelChoice, billing: WorkerBilling| {
+            let with = AgentSettings {
+                worker_models: choice,
+                worker_billing: billing,
+                ..AgentSettings::for_test(&opus, &opus)
+            };
+            main_config(&with).unwrap().instructions
+        };
+        for billing in WorkerBilling::ALL {
+            for choice in [ModelChoice::Agent, ModelChoice::Profiles] {
+                assert_eq!(
+                    text(choice, billing)
+                        .matches(billing_words(billing))
+                        .count(),
+                    1
+                );
+            }
+            assert!(!text(ModelChoice::Session, billing).contains("billed per token"));
+        }
+        let ask = text(ModelChoice::Agent, WorkerBilling::Ask);
+        assert!(ask.contains(
+            "Prefer the models on the user's plans (`cc:` models, the ChatGPT login) when they do the job. A worker on a model billed per token starts only once the user allows it"
+        ));
+        assert!(
+            text(ModelChoice::Agent, WorkerBilling::Plans).contains("billed per token is refused")
+        );
+        assert!(text(ModelChoice::Agent, WorkerBilling::Api).contains("cost the user money"));
     }
 
     /// What a worker that starts workers is told: who reports to whom, when

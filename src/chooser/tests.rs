@@ -31,6 +31,8 @@ fn basis(temp: &std::path::Path, worker: ModelSettings) -> Basis {
         worker_depth: 2,
         extra_rules: ExtraRules::Small,
         rules_text: Some("# Extra rules\n- Search with rg.\n".to_string()),
+        billing: WorkerBilling::Api,
+        api_budget: None,
     }
 }
 

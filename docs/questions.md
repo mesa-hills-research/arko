@@ -12,6 +12,12 @@ its instructions, with Save and Don't save. Only Save saves it. Words you type i
 the agent. It makes the changes they ask for, or replies when they are about something else, and
 asks again. Profiles the agent saves together come in one card, with a choice for each.
 
+With [worker billing](worker-profiles.md#worker-billing) on `ask`, the default, Arko also asks
+before a worker starts on a model billed per token. The question names the model, its price and the
+worker's task, with Allow, "Allow MODEL for this session" and Deny. Only a choice picked alone
+starts the worker. "You decide", "Not now" and words you type leave it unstarted, and the agent
+reads why.
+
 ## Answering in the full-screen view
 
 New questions open the answer panel above the message box when you aren't typing. While you type,

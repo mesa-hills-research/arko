@@ -47,6 +47,8 @@ fn basis(temp: &std::path::Path, choice: ModelChoice) -> Basis {
         worker_depth: 2,
         extra_rules: ExtraRules::Off,
         rules_text: None,
+        billing: crate::billing::WorkerBilling::Api,
+        api_budget: None,
     }
 }
 
@@ -109,8 +111,12 @@ fn the_options_list_the_profiles_and_the_models_usable_now() {
     );
     let text = options_text(&basis, Show::All, &needs, &plans());
 
+    // How workers are paid for comes first.
     assert!(
-        text.starts_with("Worker profiles (pass one as start_agent's profile)\n- default · gpt-6-luna, high effort · the session's worker model (/model worker)\n"),
+        text.starts_with(&format!(
+            "{}\n\nWorker profiles (pass one as start_agent's profile)\n- default · gpt-6-luna, high effort · the session's worker model (/model worker)\n",
+            crate::agents::billing_words(crate::billing::WorkerBilling::Api)
+        )),
         "{text}"
     );
     assert!(text.contains(
@@ -159,10 +165,10 @@ fn the_options_list_the_profiles_and_the_models_usable_now() {
     // One part alone.
     let profiles_only = options_text(&basis, Show::Profiles, &needs, &plans());
     assert!(
-        profiles_only.starts_with("Worker profiles") && !profiles_only.contains("Models usable")
+        profiles_only.contains("\n\nWorker profiles") && !profiles_only.contains("Models usable")
     );
     let models_only = options_text(&basis, Show::Models, &needs, &plans());
-    assert!(models_only.starts_with("Models usable now") && !models_only.contains("3d-judge"));
+    assert!(models_only.contains("\n\nModels usable now") && !models_only.contains("3d-judge"));
 }
 
 #[test]
@@ -246,6 +252,55 @@ fn a_setting_that_limits_the_choice_is_said_first() {
     ));
 }
 
+/// worker_options says how workers are paid for, and under Plans only a
+/// profile on a model billed per token can't start.
+#[test]
+fn the_options_say_how_workers_are_paid_for() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut basis = basis(temp.path(), ModelChoice::Agent);
+    basis.providers = providers::Setup::new(None);
+    write(
+        &basis,
+        Place::User,
+        "careful",
+        "---\ndescription: Reviews carefully\nmodel: opus\n---\n",
+    );
+    write(
+        &basis,
+        Place::User,
+        "planned",
+        "---\ndescription: Reviews on the plan\nmodel: cc:opus\n---\n",
+    );
+    let everything = |_: &Model| None;
+    for billing in crate::billing::WorkerBilling::ALL {
+        basis.billing = billing;
+        let text = options_text(&basis, Show::All, &everything, &BTreeMap::new());
+        assert!(
+            text.starts_with(crate::agents::billing_words(billing)),
+            "{text}"
+        );
+        let blocked = text.contains("Reviews carefully · can't start yet, billed per token");
+        assert_eq!(
+            blocked,
+            billing == crate::billing::WorkerBilling::Plans,
+            "{text}"
+        );
+        assert!(text.contains("\n- planned (user) · cc:opus · Reviews on the plan\n"));
+        // A model billed per token says so, a plan's says which plan.
+        assert!(
+            text.contains("\n- opus · efforts low to max · API, $"),
+            "{text}"
+        );
+        assert!(text.contains(
+            "\n- cc:opus · efforts low to max · Claude plan, shared with the user's own use"
+        ));
+    }
+    // With every worker on the session's model, there's nothing to choose.
+    basis.choice = ModelChoice::Session;
+    let text = options_text(&basis, Show::All, &everything, &BTreeMap::new());
+    assert!(!text.contains("Prefer the models"), "{text}");
+}
+
 #[test]
 fn efforts_and_sizes_read_briefly() {
     let efforts = |name: &str| efforts_range(&resolve_model(name).unwrap());
@@ -282,6 +337,8 @@ fn fixture(choice: ModelChoice, can_ask: bool) -> Fixture {
         cache_lifetime: arko_ai::prompt_cache::PromptCacheLifetime::Known(Duration::from_secs(300)),
         feed: Some(feed.clone()),
         refuse: None,
+        asker: None,
+        root: None,
     });
     let worker = settings("luna", Effort::High);
     let config =
@@ -825,6 +882,37 @@ async fn the_settings_limit_who_saves_profiles() {
         assert_eq!(why, said);
         assert!(profiles::read(&fixture.basis.roots, "x").is_err());
     }
+}
+
+/// Under Plans only, a profile on a model billed per token isn't saved,
+/// since no worker could start with it, and one on a plan's model is.
+#[tokio::test]
+async fn under_plans_only_a_profile_billed_per_token_is_refused() {
+    let fixture = fixture(ModelChoice::Agent, true);
+    let mut new = fixture.crew.new_workers().unwrap();
+    new.basis = Arc::new(Basis {
+        billing: WorkerBilling::Plans,
+        ..(*new.basis).clone()
+    });
+    fixture.crew.set_new_workers(new);
+    let save = |name: &str, model: &str| {
+        let pairs = vec![
+            ("name", Value::from(name)),
+            ("description", Value::from("Thinks hard")),
+            ("model", Value::from(model)),
+            ("scope", Value::from("session")),
+        ];
+        let save = fixture.save.clone();
+        async move { call(&save, &pairs).await }
+    };
+    let why = save("strong", "opus").await.unwrap_err();
+    assert_eq!(
+        why,
+        "The user lets workers run only on their plans (/worker-billing plans), and claude-opus-5-5 is billed per token, so a worker couldn't start with this profile. Give it a model on the user's plans, which worker_options lists."
+    );
+    assert!(profiles::read(&fixture.basis.roots, "strong").is_err());
+    // sol is on the ChatGPT plan here.
+    assert!(save("planned", "sol").await.is_ok());
 }
 
 #[tokio::test]

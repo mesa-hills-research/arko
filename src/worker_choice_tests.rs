@@ -477,7 +477,7 @@ async fn the_main_agent_lists_the_options_saves_a_profile_and_starts_a_worker_wi
 
     start_worker(&mut harness, &mut inputs, "Start by listing the options.").await;
     let options = last_result(&seen);
-    assert!(options.starts_with("Worker profiles (pass one as start_agent's profile)\n- default · gpt-6-luna, high effort · the session's worker model (/model worker)\n\nModels usable now"), "{options}");
+    assert!(options.starts_with(&format!("{}\n\nWorker profiles (pass one as start_agent's profile)\n- default · gpt-6-luna, high effort · the session's worker model (/model worker)\n\nModels usable now", crate::agents::billing_words(crate::billing::WorkerBilling::Api))), "{options}");
     assert!(options.contains("\n- sol · efforts low to max · "), "{options}");
     assert!(options.contains("Not usable now"), "{options}");
 
@@ -598,6 +598,66 @@ async fn a_profile_for_every_session_is_put_to_the_user_as_a_question() {
         last_result(&seen)
     );
     assert!(std::fs::read_to_string(&saved).unwrap().contains("made_by: agent"));
+    tokio::time::timeout(Duration::from_secs(20), answers)
+        .await
+        .expect("the answers were given in time")
+        .unwrap();
+    harness.crew.as_ref().unwrap().shutdown().await;
+}
+
+/// Under Ask before API, a worker on a model billed per token (OpenAI's on
+/// an API key here) waits for the user's answer on a card in the answer
+/// panel. Deny leaves it unstarted, and the agent reads why. Allow starts
+/// it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_worker_billed_per_token_starts_once_the_user_allows_it_on_the_card() {
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, input, _server, seen) = setup(temp.path()).await;
+    harness.settings.openai_auth = Some(providers::OpenAiAuth::ApiKey);
+    harness.providers = providers::Setup::new(Some(providers::OpenAiAuth::ApiKey));
+    harness.settings.worker_billing = crate::billing::WorkerBilling::Ask;
+    harness.start_new_workers();
+    let feed = harness.feed.clone();
+    // (The input stays open while the turns end: a closed one quits.)
+    let sender = input.clone();
+    let answers = tokio::spawn(async move {
+        for choice in ["Deny", "Allow"] {
+            until(|| feed.activity().question.is_some()).await;
+            let question = feed.activity().question.unwrap();
+            assert!(
+                question
+                    .text
+                    .starts_with("Start a worker on GPT-6 Astra, billed per token? It costs $"),
+                "{}",
+                question.text
+            );
+            sender
+                .send(Input::AnswerQuestions(crate::questions::Answers {
+                    answers: vec![crate::questions::QuestionAnswer::new(
+                        feed.open_questions()[0].id.clone(),
+                        crate::questions::Answer {
+                            choices: vec![choice.to_string()],
+                            text: None,
+                            you_decide: false,
+                        },
+                    )],
+                }))
+                .unwrap();
+            until(|| feed.activity().question.map(|asked| asked.id) != Some(question.id)).await;
+        }
+    });
+    start_worker(&mut harness, &mut inputs, "Start on a model.").await;
+    assert!(
+        last_result(&seen).contains(
+            "The user denied a worker on GPT-6 Astra, which is billed per token, so it didn't start."
+        ),
+        "{}",
+        last_result(&seen)
+    );
+    assert!(worker_with(&seen, "Start on a model.").is_none(), "no worker started");
+    start_worker(&mut harness, &mut inputs, "Start on a model.").await;
+    let (model, _, _) = worker_with(&seen, "Start on a model.").unwrap();
+    assert_eq!(model, "gpt-6-astra");
     tokio::time::timeout(Duration::from_secs(20), answers)
         .await
         .expect("the answers were given in time")

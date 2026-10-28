@@ -2593,6 +2593,8 @@ mod tests {
                 monitor_wakes: crate::monitors::Wakes::Always,
                 monitor_wakes_within: Some(7200),
                 worker_models: crate::agents::ModelChoice::Profiles,
+                worker_billing: crate::billing::WorkerBilling::Plans,
+                api_budget: Some(20.0),
                 worker_depth: 3,
                 worker_retry_cap: Some(4),
                 message_copies: true,
@@ -2735,6 +2737,10 @@ mod tests {
                 settings.worker_retry_cap
             ),
             (Some("profiles"), Some(3), Some(4))
+        );
+        assert_eq!(
+            (settings.worker_billing.as_deref(), settings.api_budget),
+            (Some("plans"), Some(20.0))
         );
         assert_eq!(
             (

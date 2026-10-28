@@ -22,6 +22,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 
 use crate::agents::{Effort, ModelChoice};
+use crate::billing::WorkerBilling;
 use crate::chooser::Basis;
 use crate::crew::{Crew, SAVE_WORKER_PROFILE, WORKER_OPTIONS};
 use crate::inputs::Asker;
@@ -184,6 +185,9 @@ fn options_text(
                 .to_string(),
         ),
     }
+    if basis.choice != ModelChoice::Session {
+        parts.push(crate::agents::billing_words(basis.billing).to_string());
+    }
     if show != Show::Models {
         parts.push(profiles_text(basis, needs));
     }
@@ -241,7 +245,19 @@ fn profiles_text(basis: &Basis, needs: &dyn Fn(&Model) -> Option<String>) -> Str
             profile.name, profile.description
         ));
         let blocked = found.note.clone().or_else(|| {
-            let model = providers::resolve_model(profile.model.as_deref()?).ok()?;
+            let model = providers::resolve_model(
+                profile
+                    .model
+                    .as_deref()
+                    .unwrap_or(basis.worker.model.as_str()),
+            )
+            .ok()?;
+            if basis.billing == WorkerBilling::Plans
+                && providers::plan_of(&model, basis.providers.openai_auth).is_none()
+            {
+                return Some("billed per token".to_string());
+            }
+            profile.model.as_ref()?;
             needs(&model).map(|needs| format!("needs {needs}"))
         });
         if let Some(blocked) = blocked {
@@ -570,6 +586,22 @@ impl Tool for SaveWorkerProfile {
                 "{} takes {} effort, not {effort}, and a profile with no model runs on it. Give the profile a model, or an effort that {} takes.",
                 providers::model_name(&model),
                 providers::efforts_text(&model),
+                providers::model_name(&model)
+            )));
+        }
+        // Under Plans only, a profile on a model billed per token couldn't
+        // start a worker.
+        if basis.billing == WorkerBilling::Plans
+            && let Ok(model) = providers::resolve_model(
+                profile
+                    .model
+                    .as_deref()
+                    .unwrap_or(basis.worker.model.as_str()),
+            )
+            && providers::plan_of(&model, basis.providers.openai_auth).is_none()
+        {
+            return Err(refused(format!(
+                "The user lets workers run only on their plans (/worker-billing plans), and {} is billed per token, so a worker couldn't start with this profile. Give it a model on the user's plans, which worker_options lists.",
                 providers::model_name(&model)
             )));
         }

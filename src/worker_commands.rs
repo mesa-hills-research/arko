@@ -1,12 +1,14 @@
-//! `/worker-models`, `/worker-depth`, `/worker-retry-cap`, `/message-copies`
-//! and `/profiles`: who chooses the workers' models, how deep workers go,
-//! how many failed requests stop a worker, whether the agent that started a
-//! worker gets a copy of the user's messages to it, and the worker profiles
-//! the user keeps.
+//! `/worker-models`, `/worker-billing`, `/api-budget`, `/worker-depth`,
+//! `/worker-retry-cap`, `/message-copies` and `/profiles`: who chooses the
+//! workers' models, whether they may run on models billed per token and the
+//! day's budget for those, how deep workers go, how many failed requests
+//! stop a worker, whether the agent that started a worker gets a copy of the
+//! user's messages to it, and the worker profiles the user keeps.
 
 use arko_workflows::notes::{Note, NoteSource};
 
 use crate::agents::{self, ModelChoice};
+use crate::billing::WorkerBilling;
 use crate::profiles::{self, Author, Place, Profile, Roots};
 use crate::remote::Source;
 use crate::ui;
@@ -162,6 +164,126 @@ impl Harness {
             }
         }
         Ok(sentence)
+    }
+
+    /// `/worker-billing`, typed at the prompt, sent from the page or chosen
+    /// in the settings: says whether workers may run on models billed per
+    /// token, and with `plans`, `ask` or `api` changes it, at any time. The
+    /// start hook holds each start to it. Before the conversation starts the
+    /// agents are built again, since the main agent's instructions say it.
+    /// After, the main agent is told in a note.
+    pub(crate) fn worker_billing_command(&mut self, argument: &str, source: Source) {
+        let before = self.settings.worker_billing;
+        let result = self.worker_billing_request(argument);
+        let changed = before != self.settings.worker_billing;
+        self.setting_reply(result, source, changed);
+    }
+
+    fn worker_billing_request(&mut self, argument: &str) -> Result<String, String> {
+        if self.settings.max_workers == 0 || self.crew.is_none() {
+            return Err("This session has no workers (it started with --workers 0, or with the old worker tools).".to_string());
+        }
+        let now = self.settings.worker_billing;
+        let name = workers::BILLING_NAME;
+        if argument.is_empty() {
+            return Ok(format!(
+                "{name} is {} ({}). {} {} plans, ask or api changes it.",
+                now.name(),
+                now.label(),
+                now.about(),
+                workers::BILLING_COMMAND
+            ));
+        }
+        let Some(billing) = WorkerBilling::parse(argument) else {
+            return Err(format!(
+                "`{}` isn't one of plans, ask or api, such as {}.",
+                argument.trim(),
+                WorkerBilling::Plans.command()
+            ));
+        };
+        if billing == now {
+            return Ok(format!(
+                "{name} is {} already. {}",
+                billing.name(),
+                billing.about()
+            ));
+        }
+        let mut settings = self.settings.clone();
+        settings.worker_billing = billing;
+        if self.conversation_started() {
+            self.settings = settings;
+            self.save_session();
+            self.start_new_workers();
+            self.publish_models();
+            // The main agent's instructions say how workers were paid for
+            // when the conversation started: a note tells it how now.
+            let told = format!(
+                "The user changed worker billing to {}. {}",
+                billing.label(),
+                agents::billing_words(billing)
+            );
+            if let Err(error) = self
+                .workflow()
+                .post_note(Note::new(told).source(NoteSource::Host).to([agents::MAIN]))
+            {
+                log::warn!("could not tell the main agent how workers are paid for: {error}");
+            }
+        } else {
+            self.rebuild_agents(settings)?;
+        }
+        Ok(format!(
+            "{name} is now {} ({}). {}",
+            billing.name(),
+            billing.label(),
+            billing.about()
+        ))
+    }
+
+    /// `/api-budget`, typed at the prompt, sent from the page or chosen in
+    /// the settings: says the daily API budget and the day's spend, or with
+    /// `off`, `on` or dollars sets it, at any time. The start hook holds each
+    /// start to it, and the agents aren't told.
+    pub(crate) fn api_budget_command(&mut self, argument: &str, source: Source) {
+        let before = self.settings.api_budget;
+        let result = self.api_budget_request(argument);
+        let changed = before != self.settings.api_budget;
+        self.setting_reply(result, source, changed);
+    }
+
+    fn api_budget_request(&mut self, argument: &str) -> Result<String, String> {
+        let Some(crew) = self.crew.clone().filter(|_| self.settings.max_workers > 0) else {
+            return Err("This session has no workers (it started with --workers 0, or with the old worker tools).".to_string());
+        };
+        let now = self.settings.api_budget;
+        let name = workers::BUDGET_NAME;
+        let state = |budget: Option<f64>| budget.map_or_else(|| "off".to_string(), workers::money);
+        if argument.is_empty() {
+            let spent = crew.spent_today().map_or_else(String::new, |spent| {
+                format!(
+                    " Today’s API spend across your sessions is {}.",
+                    workers::money(spent)
+                )
+            });
+            return Ok(format!(
+                "{name} is {}. {}{spent} {} off, on or an amount of dollars changes it.",
+                state(now),
+                workers::budget_about(now),
+                workers::BUDGET_COMMAND
+            ));
+        }
+        let budget = workers::parse_budget(argument)?;
+        if budget == now {
+            return Ok(format!("{name} is {} already.", state(budget)));
+        }
+        self.settings.api_budget = budget;
+        self.save_session();
+        self.start_new_workers();
+        self.publish_models();
+        Ok(format!(
+            "{name} is now {}. {}",
+            state(budget),
+            workers::budget_about(budget)
+        ))
     }
 
     /// What the main agent is told again once workers are not all on the

@@ -463,6 +463,10 @@ pub struct SettingsData {
     pub monitor_wakes_within: Option<u64>,
     /// `agent`, `profiles` or `session`.
     pub worker_models: Option<String>,
+    /// `plans`, `ask` or `api`.
+    pub worker_billing: Option<String>,
+    /// Dollars a day, none for no budget.
+    pub api_budget: Option<f64>,
     pub worker_depth: Option<u32>,
     pub worker_retry_cap: Option<u32>,
     #[serde(deserialize_with = "lenient")]

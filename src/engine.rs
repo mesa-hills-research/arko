@@ -562,6 +562,17 @@ impl Engine {
                 let copies = options.message_copies.is_some_and(|copies| {
                     std::mem::replace(&mut settings.message_copies, copies) != copies
                 });
+                // So can how workers are paid for.
+                let billing = options.worker_billing.is_some_and(|billing| {
+                    std::mem::replace(&mut settings.worker_billing, billing) != billing
+                });
+                let budget = match options.api_budget {
+                    Some(budget) => {
+                        let budget = budget.map(crate::billing::check_budget).transpose()?;
+                        std::mem::replace(&mut settings.api_budget, budget) != budget
+                    }
+                    None => false,
+                };
                 if project_from_options(&options, &mut settings)
                     | background
                     | wakes
@@ -570,6 +581,8 @@ impl Engine {
                     | cap
                     | skills
                     | copies
+                    | billing
+                    | budget
                 {
                     session
                         .save_settings(&settings)
@@ -879,6 +892,7 @@ impl Engine {
             cc_compact: Default::default(),
             extra_rules: Default::default(),
             worker_models: Default::default(),
+            billing: Default::default(),
             monitor_wakes: Default::default(),
             worker_depth: Default::default(),
             worker_retry_cap: Default::default(),
@@ -921,6 +935,8 @@ impl Engine {
                     let keys = keys.clone();
                     Arc::new(move |model: &arko_ai::Model| keys.refusal(model))
                 }),
+                asker: Some(asker.clone()),
+                root: Some(root.clone()),
             });
             (Some(crew), Some(woken))
         } else {
@@ -2955,6 +2971,8 @@ mod tests {
                 openai_auth: Some(OpenAiAuth::ApiKey),
                 cache_1h: Some(false),
                 text_replies: Some(true),
+                // (The tests' workers run on models billed per token.)
+                worker_billing: Some(crate::billing::WorkerBilling::Api),
                 client: Some(GivenClient(Arc::new(client))),
                 ..Options::default()
             },

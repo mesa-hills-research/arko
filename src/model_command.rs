@@ -182,6 +182,9 @@ impl Harness {
                     }
                     _ => resolved,
                 };
+                if target == Target::Workers {
+                    self.plans_allow(&resolved)?;
+                }
                 let current = match target {
                     Target::Main => &self.settings.main,
                     Target::Workers => &self.settings.worker,
@@ -216,8 +219,26 @@ impl Harness {
                 }
                 done
             }
-            Request::FollowMain => self.set_workers_model(None),
+            Request::FollowMain => {
+                self.plans_allow(&providers::resolve_model(&self.settings.main.model)?)?;
+                self.set_workers_model(None)
+            }
         }
+    }
+
+    /// Why the workers can't run `model` under the session's worker
+    /// billing: with Plans only, a model billed per token.
+    fn plans_allow(&self, model: &Model) -> Result<(), String> {
+        if self.settings.worker_billing != crate::billing::WorkerBilling::Plans
+            || providers::plan_of(model, self.settings.openai_auth).is_some()
+        {
+            return Ok(());
+        }
+        Err(format!(
+            "{} is billed per token, and worker billing is Plans only, so workers run on your plans. Choose a model on one of them, such as cc:sonnet, or {} first.",
+            crate::models::display_name(&providers::model_name(model)),
+            crate::billing::WorkerBilling::Ask.command()
+        ))
     }
 
     /// `/text-replies`, typed at the prompt, sent from the page or chosen
@@ -721,6 +742,8 @@ impl Harness {
             worker_depth: settings.worker_depth,
             extra_rules: settings.extra_rules,
             rules_text: agents::extra_rules(&agent_settings),
+            billing: settings.worker_billing,
+            api_budget: settings.api_budget,
         })
     }
 
@@ -748,6 +771,7 @@ impl Harness {
         );
         *lock(&self.gauges.extra_rules) = self.settings.extra_rules;
         *lock(&self.gauges.worker_models) = self.settings.worker_models;
+        *lock(&self.gauges.billing) = (self.settings.worker_billing, self.settings.api_budget);
         *lock(&self.gauges.monitor_wakes) = self.settings.monitor_wakes;
         self.gauges.worker_depth.store(
             self.settings.worker_depth,

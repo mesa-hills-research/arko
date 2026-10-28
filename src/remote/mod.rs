@@ -440,6 +440,12 @@ pub struct LiveSettings {
     /// Who chooses the workers' models (`/worker-models`). It applies to the
     /// next worker started.
     pub worker_models: crate::agents::ModelChoice,
+    /// Whether workers may run on models billed per token
+    /// (`/worker-billing`). It applies to the next worker started.
+    pub worker_billing: crate::billing::WorkerBilling,
+    /// The daily API budget in dollars (`/api-budget`), if any. It applies to
+    /// the next worker started.
+    pub api_budget: Option<f64>,
     /// How many levels of workers the session allows (`/worker-depth`).
     pub worker_depth: u32,
     /// A worker fails after this many failed model requests in a row

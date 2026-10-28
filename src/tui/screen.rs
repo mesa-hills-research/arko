@@ -2203,6 +2203,21 @@ mod tests {
                 ),
             ),
             (
+                SettingsRow::WorkerBilling,
+                workers::BILLING_NAME,
+                format!(
+                    "{} {} {}",
+                    workers::BILLING_ABOUT,
+                    workers::WorkerBilling::Ask.about(),
+                    workers::MODELS_APPLIES
+                ),
+            ),
+            (
+                SettingsRow::ApiBudget,
+                workers::BUDGET_NAME,
+                workers::budget_about(None),
+            ),
+            (
                 SettingsRow::WorkerDepth,
                 workers::DEPTH_NAME,
                 workers::depth_about().to_string(),

@@ -4,6 +4,7 @@
 use std::path::PathBuf;
 
 use crate::agents::{DEFAULT_WORKER_DEPTH, ExtraRules, ModelSettings, NO_LIMIT, resolve_model};
+use crate::billing::WorkerBilling;
 use crate::builtin_skills::BuiltinSkills;
 use crate::credentials::Need;
 use crate::options::Options;
@@ -302,6 +303,8 @@ pub(crate) fn new_settings(
             .map(crate::workers::check_retry_cap)
             .transpose()?,
         message_copies: options.message_copies.unwrap_or(false),
+        worker_billing: worker_billing_for(options)?,
+        api_budget: api_budget_for(options)?,
         nested_start: true,
         builtin_skills,
     };
@@ -331,6 +334,35 @@ pub(crate) fn new_settings(
 
 /// The shell a new session runs commands in on Windows: --shell, else
 /// ARKO_SHELL, else PowerShell.
+/// Whether a new session's workers may run on models billed per token: as
+/// the options say, else as ARKO_WORKER_BILLING does (`plans`, `ask` or
+/// `api`), else ask first.
+pub(crate) fn worker_billing_for(options: &Options) -> Result<WorkerBilling, String> {
+    if let Some(billing) = options.worker_billing {
+        return Ok(billing);
+    }
+    match credentials::var(credentials::WORKER_BILLING) {
+        None => Ok(WorkerBilling::default()),
+        Some(value) => WorkerBilling::parse(&value).ok_or_else(|| {
+            format!("ARKO_WORKER_BILLING is `{value}`. Set it to plans, ask or api")
+        }),
+    }
+}
+
+/// A new session's daily API budget: as the options say, else as
+/// ARKO_API_BUDGET does (dollars, or `off`), else none.
+pub(crate) fn api_budget_for(options: &Options) -> Result<Option<f64>, String> {
+    match options.api_budget {
+        Some(budget) => budget.map(crate::billing::check_budget).transpose(),
+        None => match credentials::var(credentials::API_BUDGET) {
+            None => Ok(None),
+            Some(value) => crate::billing::parse_budget(&value).map_err(|_| {
+                format!("ARKO_API_BUDGET is `{value}`. Set it to dollars, such as 20, or off")
+            }),
+        },
+    }
+}
+
 pub(crate) fn windows_shell(options: &Options) -> Result<WindowsShell, String> {
     if let Some(shell) = options.shell {
         return Ok(shell);

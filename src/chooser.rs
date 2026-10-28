@@ -30,6 +30,7 @@ use arko_workflows::subagents::StartRequest;
 use serde_json::Value;
 
 use crate::agents::{self, Effort, ExtraRules, ModelChoice, ModelSettings};
+use crate::billing::WorkerBilling;
 use crate::crew::{
     CACHE_PARAM, EFFORT_PARAM, MAX_OWN_WORKERS, MODEL_PARAM, NESTED_PARAM, NESTED_TOOL_NAMES,
     PROFILE_PARAM, Refuse, WorkerSetup,
@@ -61,6 +62,11 @@ pub struct Basis {
     /// (none when no rule applies to this session).
     pub extra_rules: ExtraRules,
     pub rules_text: Option<String>,
+    /// Whether a worker may run on a model billed per token
+    /// (`/worker-billing`), and the daily API budget (`/api-budget`). The
+    /// start hook holds each start to them ([`crate::billing::gate`]).
+    pub billing: WorkerBilling,
+    pub api_budget: Option<f64>,
 }
 
 /// The profile a start names. The built-in `default` is the session's worker
@@ -358,6 +364,35 @@ pub fn named_profiles(roots: &profiles::Roots) -> Vec<agents::ProfileName> {
                     && providers::resolve_model(model).is_ok()
             }),
             name: found.profile.name,
+        })
+        .collect()
+}
+
+/// The models on the user's plans that a worker can start on now (as
+/// `start_agent` takes them), for a refusal of one billed per token.
+/// `refuse` says why a model can't start (Claude Code isn't signed in).
+pub(crate) fn plan_models(basis: &Basis, refuse: Option<&Refuse>) -> Vec<String> {
+    let auth = basis.providers.openai_auth;
+    let unusable = |sample: &str| {
+        let model = providers::resolve_model(sample).ok()?;
+        refuse.and_then(|refuse| blocking(|| refuse(&model)))
+    };
+    providers::model_menu(unusable, auth, &[], &[])
+        .into_iter()
+        .filter(|group| group.needs.is_none())
+        .flat_map(|group| group.models)
+        .filter(|(name, _)| {
+            // (Claude Mythos needs access few accounts have.)
+            providers::model_note(name).is_none()
+                && providers::resolve_model(name)
+                    .is_ok_and(|model| providers::plan_of(&model, auth).is_some())
+        })
+        .map(|(name, alias)| {
+            if alias.is_empty() {
+                name
+            } else {
+                alias.to_string()
+            }
         })
         .collect()
 }

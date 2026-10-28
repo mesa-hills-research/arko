@@ -42,6 +42,9 @@ pub(crate) struct Gauges {
     /// Who chooses the workers' models, and how many levels of workers the
     /// session allows, as the harness last published them.
     pub(crate) worker_models: Mutex<crate::agents::ModelChoice>,
+    /// Whether workers may run on models billed per token, and the daily API
+    /// budget, as the harness last published them.
+    pub(crate) billing: Mutex<(crate::billing::WorkerBilling, Option<f64>)>,
     /// How long after the user's last message a monitor's warning wakes the
     /// agent, as the harness last published it.
     pub(crate) monitor_wakes: Mutex<crate::monitors::Wakes>,
@@ -162,6 +165,12 @@ impl Gauges {
                 let Some(this) = gauges.upgrade() else {
                     break;
                 };
+                // (The day's API spend is shared with the other sessions as
+                // it grows.)
+                let crew = lock(&this.crew).clone();
+                if let Some(crew) = crew {
+                    crew.track_spend();
+                }
                 let reading = remote::Meter::read(this.as_ref());
                 working = feed.activity().working
                     || !reading.workers_running.is_empty()
@@ -262,6 +271,7 @@ impl remote::Meter for Gauges {
         let stats = lock(&self.stats).clone();
         let (project_instructions, worker_project_instructions) = *lock(&self.project);
         let builtin_skills = lock(&self.builtin_skills).clone();
+        let (worker_billing, api_budget) = *lock(&self.billing);
         // What new workers hand over at, on their model (as the workflow
         // has them until the crew is told).
         let worker_at = |model: &arko_ai::Model, handover: Option<&arko_agents::HandoverConfig>| {
@@ -336,6 +346,8 @@ impl remote::Meter for Gauges {
                 cc_compact: self.cc_compact.load(std::sync::atomic::Ordering::Relaxed),
                 extra_rules: *lock(&self.extra_rules),
                 worker_models: *lock(&self.worker_models),
+                worker_billing,
+                api_budget,
                 worker_depth: self.worker_depth.load(std::sync::atomic::Ordering::Relaxed),
                 worker_retry_cap: Some(
                     self.worker_retry_cap

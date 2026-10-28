@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use crate::agents::{
     DEFAULT_WORKER_DEPTH, ExtraRules, MAX_WORKER_DEPTH, ModelChoice, ModelSettings,
 };
+use crate::billing::WorkerBilling;
 use crate::builtin_skills::BuiltinSkills;
 use crate::project;
 use crate::providers::OpenAiAuth;
@@ -174,6 +175,16 @@ pub struct Settings {
     /// sessions saved before it existed, as they always did.
     #[serde(default = "default_message_copies")]
     pub message_copies: bool,
+    /// Whether workers may run on models billed per token
+    /// (`/worker-billing`). Ask, the default, in sessions saved before it
+    /// existed.
+    #[serde(default)]
+    pub worker_billing: WorkerBilling,
+    /// The daily API budget in dollars (`/api-budget`): no new worker starts
+    /// on a model billed per token once the day's API spend reaches it.
+    /// None, no budget, in sessions saved before it existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_budget: Option<f64>,
     /// The session was made by an Arko whose `start_agent` takes `nested`.
     /// A conversation in Claude Code keeps the tools it started with, so one
     /// in a session made before has no `nested` whatever the settings are.
@@ -242,6 +253,10 @@ impl Settings {
             worker_depth: DEFAULT_WORKER_DEPTH,
             worker_retry_cap: None,
             message_copies: true,
+            // (Tests that start workers on models billed per token aren't
+            // about billing.)
+            worker_billing: WorkerBilling::Api,
+            api_budget: None,
             nested_start: true,
             builtin_skills: BuiltinSkills {
                 none: true,
@@ -917,6 +932,35 @@ mod tests {
         assert_eq!(loaded.worker_models, ModelChoice::Profiles);
         assert_eq!(loaded.worker_depth, 3);
         assert_eq!(loaded.worker_retry_cap, Some(5));
+    }
+
+    /// A session saved before worker billing asks before workers on models
+    /// billed per token, the default, and has no API budget. The setting is
+    /// always written, and the budget once it is set.
+    #[test]
+    fn worker_billing_and_the_api_budget_are_saved_with_the_session() {
+        let temp = tempfile::tempdir().unwrap();
+        let session = test_session(temp.path());
+        let file = session.dir.join(SETTINGS_FILE);
+        let text = std::fs::read_to_string(&file).unwrap();
+        assert!(text.contains("\"worker_billing\": \"api\""), "{text}");
+        assert!(!text.contains("api_budget"), "{text}");
+        let mut old: serde_json::Value = serde_json::from_str(&text).unwrap();
+        old.as_object_mut().unwrap().remove("worker_billing");
+        std::fs::write(&file, serde_json::to_string_pretty(&old).unwrap()).unwrap();
+        let mut settings = session.load_settings().unwrap();
+        assert_eq!(settings.worker_billing, WorkerBilling::Ask);
+        assert_eq!(settings.api_budget, None);
+
+        settings.worker_billing = WorkerBilling::Plans;
+        settings.api_budget = Some(12.5);
+        session.save_settings(&settings).unwrap();
+        let text = std::fs::read_to_string(&file).unwrap();
+        assert!(text.contains("\"worker_billing\": \"plans\""), "{text}");
+        assert!(text.contains("\"api_budget\": 12.5"), "{text}");
+        let loaded = session.load_settings().unwrap();
+        assert_eq!(loaded.worker_billing, WorkerBilling::Plans);
+        assert_eq!(loaded.api_budget, Some(12.5));
     }
 
     /// A session saved before message copies could be turned off has them on,

@@ -9,6 +9,15 @@
 //! them alike.
 
 pub use crate::agents::ModelChoice;
+/// Whether workers may run on models billed per token (`/worker-billing`,
+/// `--worker-billing`, `ARKO_WORKER_BILLING`), and the daily API budget
+/// (`/api-budget`, `--api-budget`, `ARKO_API_BUDGET`), with their names,
+/// commands and sentences.
+pub use crate::billing::{
+    ABOUT as BILLING_ABOUT, BUDGET_COMMAND, BUDGET_NAME, COMMAND as BILLING_COMMAND,
+    DEFAULT_BUDGET, NAME as BILLING_NAME, WorkerBilling, budget_about, budget_command,
+    check_budget, money, parse_budget,
+};
 
 /// The name of the setting that says who chooses the workers' models, as
 /// /settings and the web page call it. An app that lists the setting uses it

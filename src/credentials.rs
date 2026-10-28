@@ -66,13 +66,18 @@ pub const BUILTIN_SKILLS: &str = "ARKO_BUILTIN_SKILLS";
 pub const BUILTIN_SKILLS_OFF: &str = "ARKO_BUILTIN_SKILLS_OFF";
 /// The shell new sessions run commands in on Windows: `cmd` or `powershell`.
 pub const SHELL: &str = "ARKO_SHELL";
+/// Whether new sessions' workers may run on models billed per token:
+/// `plans`, `ask` or `api`.
+pub const WORKER_BILLING: &str = "ARKO_WORKER_BILLING";
+/// New sessions' daily API budget in dollars, or `off`.
+pub const API_BUDGET: &str = "ARKO_API_BUDGET";
 /// The Voyage API key, for the search indexes' embeddings.
 pub const VOYAGE_KEY: &str = "VOYAGE_API_KEY";
 /// The full-screen view's theme, by name.
 pub const THEME: &str = "ARKO_THEME";
 /// The settings a `.env` file can hold; it may set others, which are left
 /// alone.
-const DOTENV_KEYS: [&str; 15] = [
+const DOTENV_KEYS: [&str; 17] = [
     ANTHROPIC_KEY,
     OPENAI_KEY,
     GEMINI_KEY,
@@ -84,6 +89,8 @@ const DOTENV_KEYS: [&str; 15] = [
     BUILTIN_SKILLS,
     BUILTIN_SKILLS_OFF,
     SHELL,
+    WORKER_BILLING,
+    API_BUDGET,
     VOYAGE_KEY,
     crate::glyphs::SYMBOLS,
     THEME,
