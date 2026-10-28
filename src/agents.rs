@@ -2002,20 +2002,28 @@ mod tests {
         assert!(!text.contains("# Extra rules"), "{text}");
     }
 
-    /// Haiku and luna are small on every route; the others aren't.
+    /// Haiku and luna are small on every route and the others aren't. A name
+    /// that only resembles one, such as a "-v2" variant, a `:free` variant or
+    /// a fine-tune on OpenRouter, is not small.
     #[test]
     fn small_models_are_haiku_and_luna_on_any_route() {
+        let small = |name: &str| ExtraRules::Small.for_model(&model(name, false));
         for name in [
             "claude-haiku-5-5",
             "haiku",
             "cc:claude-haiku-5-5",
             "cc:haiku",
+            "claude-haiku-4-5-20251001",
+            "cc:claude-haiku-4-5-20251001",
             "openrouter:anthropic/claude-haiku-5.5",
+            "openrouter:anthropic/claude-haiku-4.5",
             "luna",
             "gpt-6-luna",
-            "openrouter:openai/gpt-6-luna:floor",
+            "gpt-5.6-luna",
+            "openrouter:openai/gpt-6-luna",
+            "openrouter:openai/gpt-5.6-luna",
         ] {
-            assert!(providers::is_small(&resolve_model(name).unwrap()), "{name}");
+            assert!(small(name), "{name}");
         }
         for name in [
             "opus",
@@ -2028,13 +2036,23 @@ mod tests {
             "astra",
             "terra",
             "gemini",
+            "flash",
             "openrouter:anthropic/claude-opus-5.5",
+            "openrouter:anthropic/claude-haiku-5.5-v2",
+            "openrouter:anthropic/claude-haiku-5.5:free",
+            "openrouter:someorg/haiku-finetune",
+            "openrouter:openai/gpt-6-luna-preview",
+            "openrouter:openai/gpt-6-luna:floor",
+            "openrouter:luna-something",
         ] {
-            assert!(
-                !providers::is_small(&resolve_model(name).unwrap()),
-                "{name}"
-            );
+            assert!(!small(name), "{name}");
         }
+        // A name that is no model gets no extra rules either.
+        let unknown = ModelSettings {
+            model: "luna-something".into(),
+            ..model("luna", false)
+        };
+        assert!(!ExtraRules::Small.for_model(&unknown));
     }
 
     /// With the default, the large models' configurations (and so what
