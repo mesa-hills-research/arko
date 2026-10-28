@@ -23,7 +23,9 @@ use crate::ui::Input;
 /// run with `cargo test remote_page_demo -- --ignored --nocapture` and
 /// open the link it prints. Messages: "Run the demo" (calls, two
 /// workers, a failed command, a question, a report), "demo:stream" (a
-/// long reply that streams), "demo:think" (reasoning that streams for 20 s),
+/// long reply that streams), "demo:worker" (a new worker whose long reply
+/// streams while the main agent waits), "demo:think" (reasoning that
+/// streams for 20 s),
 /// "demo:slow" (a 30 s command), "demo:ask" (a
 /// question), "demo:wait" (a question the agent waits for, which the next
 /// message answers), "demo:questions" (three numbered questions with choices),
@@ -35,9 +37,10 @@ use crate::ui::Input;
 /// `ARKO_DEMO_MODEL_MS` (900) is how long the model takes to answer, and a
 /// long one keeps "Working…" on the page.
 /// What starts a script: a message with one of these.
-const MARKERS: [&str; 10] = [
+const MARKERS: [&str; 11] = [
     "Run the demo",
     "demo:stream",
+    "demo:worker",
     "demo:think",
     "demo:slow",
     "demo:ask",
@@ -182,6 +185,35 @@ async fn remote_page_demo() {
                 }
                 done();
                 return complete("s1", "That was the stream.");
+            }
+            if let Some(step) = after("demo:worker") {
+                if step == 0 && let Some(feed) = feed.get() {
+                    // A worker of its own each time: r5, r6, and so on.
+                    let id = format!("r{}", 4 + body.matches("demo:worker").count());
+                    let run = Uuid::new_v4();
+                    let words = "The worker reads the parser's tests one case after another, and writes down what it finds so the lead can check it later. ".repeat(2);
+                    let send = |text: String| {
+                        feed.event(&WorkflowEvent {
+                            timestamp: chrono::Utc::now(),
+                            workflow_run_id: Uuid::nil(),
+                            agent_name: WORKER.into(),
+                            agent_run_id: run,
+                            event: AgentEvent::AssistantResponseChunk(text),
+                        }, Some(&id));
+                    };
+                    'paragraphs: for paragraph in 0..6 {
+                        for word in words.split_inclusive(' ') {
+                            if !feed.activity().working {
+                                break 'paragraphs;
+                            }
+                            send(word.to_string());
+                            tokio::time::sleep(Duration::from_millis(40)).await;
+                        }
+                        send(format!("(paragraph {})\n\n", paragraph + 1));
+                    }
+                }
+                done();
+                return complete("x1", "The worker is done.");
             }
             if let Some(step) = after("demo:think") {
                 if step == 0 && let Some(feed) = feed.get() {
