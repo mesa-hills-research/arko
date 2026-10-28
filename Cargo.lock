@@ -146,7 +146,7 @@ dependencies = [
 
 [[package]]
 name = "arko-tui"
-version = "0.13.1"
+version = "0.13.2"
 dependencies = [
  "arboard",
  "arko_agents",
@@ -211,9 +211,9 @@ dependencies = [
 
 [[package]]
 name = "arko_agents"
-version = "0.3.1"
+version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "df2ce78dee7c86f85b1739578a696324b9987c9d32a71c088474d7fb6e94ed31"
+checksum = "1eeaaf1c19db53bfe9cc703258c33c18727d75d1edcb95aad7523a39297bd79e"
 dependencies = [
  "arko_ai",
  "async-trait",
@@ -239,9 +239,9 @@ dependencies = [
 
 [[package]]
 name = "arko_ai"
-version = "0.2.2"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "07f7dd3ba3bd82ef7e0e3a3622865556e1cb5fa1537703c4345c64f481f61b59"
+checksum = "184ecde84eeb5fbc41357426a17543ea61d66658a49632f0da7d8b86853a5194"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -338,9 +338,9 @@ dependencies = [
 
 [[package]]
 name = "arko_workflows"
-version = "0.4.0"
+version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a5b672484ec5de4674e8b57d69c2578cb3174d0839e26793fefff9a18addf7f4"
+checksum = "e63e498259549551a7b4b058e2a159df9f85444eb0f0868e7ba456dbee5cc718"
 dependencies = [
  "arko_agents",
  "arko_ai",
