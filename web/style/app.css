@@ -435,9 +435,8 @@ details.thinking[open] > summary .first { display: none; }
 details.thinking .thinking-text { margin: 4px 0 0 18px; font-style: italic; }
 
 /* The agent waits on its model, or thinks: the word shimmers. "Working…"
-   stands where the thinking's label would, its mark kept for the place. */
-.row.working { display: flex; gap: 6px; margin: 4px 0; color: var(--muted); font-size: 13.5px; }
-.row.working .mark { visibility: hidden; }
+   starts at the left edge of the reply text. */
+.row.working { margin: 4px 0; color: var(--muted); font-size: 13.5px; }
 .row.working .what { font-weight: 600; }
 /* A band of the full text color, 60 % of the word wide, sweeps across the
    word from left to right over its muted color. */

@@ -125,7 +125,7 @@ pub fn Transcript() -> impl IntoView {
 fn row_view(row: Row, thinking: Memo<Option<u64>>) -> AnyView {
     match row {
         Row::Working => view! {
-            <div class="row working"><span class="mark">"▸"</span><span class="what shimmer">"Working…"</span></div>
+            <div class="row working"><span class="what shimmer">"Working…"</span></div>
         }
         .into_any(),
         Row::Count { id, count, .. } => count_row(id, count),
