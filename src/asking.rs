@@ -10,7 +10,9 @@
 //! run alone (`Note::for_run`), whose number the session records, and it
 //! leaves once the workflow counts the run as given it (`notes_given`),
 //! which the workflow saves itself. A wait for the answer gets only
-//! [`WAIT_ANSWERED`], and the note follows. An idle conversation starts a
+//! [`WAIT_ANSWERED`], and the note follows. A wait that comes after the
+//! agent read the note (Claude Code waits only once the turn that asked
+//! ends) is told the answer reached it already. An idle conversation starts a
 //! turn for it, a working one takes it at its next step, and a stopped one
 //! when it goes on. Arko posts any kept note not posted yet, or lost with a
 //! crash, as the session opens.
@@ -93,7 +95,9 @@ impl Harness {
     /// panel, and a wait for the answer is kept. A wait for questions the
     /// user answered already (as the ask was on its way, or before a
     /// resumed task took its wait up again) gets [`WAIT_ANSWERED`] at once,
-    /// and their note follows.
+    /// and their note follows. When the agent has read that note already
+    /// (a runtime that waits only once the turn that asked ends), the wait
+    /// is told so instead, or, with questions still open, waits for those.
     pub(crate) fn question_asked(&mut self, question: Question) {
         let plain = question.plain();
         let mut asked = question.asked;
@@ -137,11 +141,23 @@ impl Harness {
         let ids: Vec<String> = asked.iter().map(|asked| asked.id.clone()).collect();
         if !plain {
             let open = ids_of(&self.feed.open_questions_of(run));
-            if ids.iter().any(|id| !open.contains(id))
+            let (open, settled): (Vec<String>, Vec<String>) =
+                ids.iter().cloned().partition(|id| open.contains(id));
+            if !settled.is_empty()
                 && let Answering::Text(answer) = answer
             {
-                self.post_kept_notes(run);
-                let _ = answer.send(WAIT_ANSWERED.to_string());
+                if self.note_unread(run, &settled) {
+                    self.post_kept_notes(run);
+                    let _ = answer.send(WAIT_ANSWERED.to_string());
+                } else if open.is_empty() {
+                    let _ = answer.send(crate::questions::wait_answered_earlier(&settled));
+                } else {
+                    self.waiting.push(Waiting {
+                        run,
+                        ids: open,
+                        answer: Answering::Text(answer),
+                    });
+                }
                 return;
             }
         }
@@ -440,6 +456,20 @@ impl Harness {
             TurnEnd::Stopped => News::Stopped,
             TurnEnd::Failed => News::Failed,
         }
+    }
+
+    /// Whether a kept note about any of the questions `ids` hasn't reached
+    /// run `run` yet, posted or not. A note kept before notes named their
+    /// questions counts for every question.
+    fn note_unread(&self, run: Uuid, ids: &[String]) -> bool {
+        let given = self
+            .workflow
+            .as_ref()
+            .map_or(0, |workflow| workflow.notes_given(run));
+        self.feed.queued_notes(run).iter().any(|pending| {
+            (pending.ids.is_empty() || pending.ids.iter().any(|id| ids.contains(id)))
+                && pending.posted.is_none_or(|(_, seq)| seq > given)
+        })
     }
 
     /// Whether run `run` has a kept note posted that it hasn't been given

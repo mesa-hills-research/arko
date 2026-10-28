@@ -54,9 +54,10 @@ copies as the rest of the transcript does.
 Each question has an id that is unique in the session (`q1`, `q2`, ...), which the agent uses and
 you don't see. Each time you send answers, the agent gets one note. An idle agent starts a turn with
 it, as it does with a worker's report. An agent that waits for the answers hears that you replied,
-and the note follows. The note names each question by a short excerpt and gives your answers
-whole. Answers too long for one note (about 16 KB) aren't sent. Arko says how short to make them,
-and the questions stay open with what you typed in the panel.
+and the note follows. In Claude Code the agent starts waiting only when its turn ends, and doesn't
+wait for a question whose answer it read before then. The note names each question by a short
+excerpt and gives your answers whole. Answers too long for one note (about 16 KB) aren't sent.
+Arko says how short to make them, and the questions stay open with what you typed in the panel.
 
 ```
 The user answered q3 and q4.

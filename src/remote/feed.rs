@@ -998,6 +998,18 @@ struct State {
 }
 
 impl State {
+    /// The question card the transcript shows for all of `asked`, run
+    /// `run`'s questions, if they share one.
+    fn card_shown(&self, run: Uuid, asked: &[crate::questions::AskedQuestion]) -> Option<u64> {
+        let item = self.questions.card_of(run, asked)?;
+        let card = self.main.items.get(self.main.index(item)?)?;
+        let shown = card.questions.as_ref()?;
+        asked
+            .iter()
+            .all(|asked| shown.iter().any(|question| question.id == asked.id))
+            .then_some(item)
+    }
+
     /// `message` without the text of `agent`'s latest warning.
     fn unrepeated(&self, agent: &str, message: &str) -> String {
         match self.warned.get(agent) {
@@ -1386,6 +1398,18 @@ impl Feed {
     /// A workflow's event. `label` names the worker whose run sent it (the
     /// runs of other agents than the main one are workers too).
     pub fn event(&self, event: &WorkflowEvent, label: Option<&str>) {
+        // The main agent asked. The questions its task recorded get their
+        // card as the ask's result comes, in the transcript's order, also
+        // when the agent waits for them only once its turn ends.
+        if let AgentEvent::ToolResult {
+            tool_name, output, ..
+        } = &event.event
+            && tool_name == arko_agents::builtins::ASK_USER_TOOL_NAME
+            && label.is_none()
+            && event.agent_name == self.inner.main
+        {
+            self.card_recorded(event.agent_run_id, &crate::questions::ids_in_result(output));
+        }
         // The main agent closed questions: their cards say so.
         if let AgentEvent::QuestionsClosed { ids, why } = &event.event {
             if label.is_none() && event.agent_name == self.inner.main {
@@ -2416,9 +2440,10 @@ impl Feed {
 
     /// Run `run` of the main agent asks `asked` (`waits`: it waits for the
     /// answer), or Arko asks the user to approve `approval` for it. Their
-    /// card goes in the transcript, and its item is returned. An approval
-    /// asked while the card of another (with all its approvals open) is the
-    /// latest joins that card.
+    /// card goes in the transcript, and its item is returned. Questions
+    /// that share a card already keep it. An approval asked while the card
+    /// of another (with all its approvals open) is the latest joins that
+    /// card.
     pub(crate) fn ask(
         &self,
         run: Uuid,
@@ -2451,14 +2476,21 @@ impl Feed {
                     question
                 })
                 .collect();
-            let (item, key) = match joins {
-                Some(card) => card,
-                None => (
+            // Questions that have their card already (their ask's result
+            // gave them one before the wait came) keep it.
+            let carded = approval
+                .is_none()
+                .then(|| state.card_shown(run, asked))
+                .flatten();
+            let (item, key) = match (joins, carded) {
+                (Some((item, key)), _) => (item, Some(key)),
+                (None, Some(item)) => (item, None),
+                (None, None) => (
                     self.push(
                         &mut state,
                         Item::new(Kind::Question, crate::questions::card_line(&questions)),
                     ),
-                    Uuid::new_v4(),
+                    Some(Uuid::new_v4()),
                 ),
             };
             state.questions.ask(
@@ -2470,12 +2502,14 @@ impl Feed {
                         question
                     })
                     .collect(),
-                Some(key),
+                key,
                 call,
             );
             state.questions.number_card(item);
             state.questions.save();
-            if approval.is_some() {
+            if approval.is_some()
+                && let Some(key) = key
+            {
                 state.approval_card = Some((item, key));
             }
             self.refresh_card(&mut state, item);
@@ -2540,20 +2574,30 @@ impl Feed {
         first
     }
 
-    /// Run `run` asked `asked` (`wait`: it waits for the answer), as its
-    /// task records them: they are open at once (their card follows).
-    pub(crate) fn record_asked(
-        &self,
-        run: Uuid,
-        asked: &[crate::questions::AskedQuestion],
-        wait: bool,
-    ) {
+    /// Run `run` asked `asked`, as its task records them. They are open at
+    /// once, their card comes with the ask's result, and the agent waits for
+    /// them once its wait comes.
+    pub(crate) fn record_asked(&self, run: Uuid, asked: &[crate::questions::AskedQuestion]) {
         {
             let mut state = self.lock();
-            state.questions.register(run, asked, wait);
+            state.questions.register(run, asked);
             state.questions.save();
         }
         self.question_activity();
+    }
+
+    /// The questions `ids` that run `run` recorded without a card get one,
+    /// as their ask's result comes. (Those whose wait came first have it.)
+    fn card_recorded(&self, run: Uuid, ids: &[String]) {
+        let recorded = self.lock().questions.without_card(run, ids);
+        if recorded.is_empty() {
+            return;
+        }
+        let asked: Vec<_> = recorded
+            .iter()
+            .map(crate::questions::AgentQuestion::asked)
+            .collect();
+        self.ask(run, &asked, false, None, None);
     }
 
     /// Whether the numbers given out are to be counted from the tasks (an
@@ -4915,6 +4959,128 @@ mod tests {
         assert!(feed.questions().is_empty());
     }
 
+    /// Gives the feed the result `output` of run `run`'s ask.
+    fn ask_result(feed: &Feed, run: Uuid, output: &str) {
+        let mut result = event(
+            "main",
+            AgentEvent::ToolResult {
+                tool_call_id: Uuid::new_v4(),
+                tool_name: arko_agents::builtins::ASK_USER_TOOL_NAME.into(),
+                output: output.into(),
+            },
+        );
+        result.agent_run_id = run;
+        feed.event(&result, None);
+    }
+
+    fn question_cards(feed: &Feed) -> Vec<Item> {
+        let (snapshot, _) = feed.subscribe();
+        snapshot
+            .items
+            .into_iter()
+            .filter(|item| item.kind == Kind::Question)
+            .collect()
+    }
+
+    /// Claude Code records an ask's questions as its call ends, and waits for
+    /// them, if the agent waits, only when the turn ends. Their card comes
+    /// with the ask's result, with or without the wait, before the turn
+    /// ends, and the agent counts as waiting only once the wait comes. A
+    /// question answered meanwhile keeps the card, with its answer, and the
+    /// wait for the other keeps it too. The web page and the full-screen
+    /// view are sent the card once.
+    #[test]
+    fn an_asks_card_comes_with_its_result_once() {
+        use crate::questions::QuestionState;
+        for (wait, output) in [
+            (
+                true,
+                "Asked q1 and q2. End your turn now without calling tools, and the answer arrives as the next message.",
+            ),
+            (
+                false,
+                "Asked q1 and q2. Their answers reach you as a note. Until then, do only work that no answer could change.",
+            ),
+        ] {
+            let feed = Feed::new("main");
+            let run = Uuid::new_v4();
+            feed.questions_run(Some(run));
+            let (_, mut updates) = feed.subscribe();
+            let both = [asked("q1", "Tabs or spaces?"), asked("q2", "Push now?")];
+            feed.record_asked(run, &both);
+            assert!(
+                question_cards(&feed).is_empty(),
+                "no card before the result"
+            );
+            ask_result(&feed, run, output);
+            let cards = question_cards(&feed);
+            assert_eq!(cards.len(), 1, "{wait}");
+            assert_eq!(cards[0].text, "Arko asked 2 questions");
+            assert_eq!(feed.open_questions()[1].item, cards[0].id);
+            assert_eq!(feed.open_questions()[1].number, Some(2));
+            // The agent works on until its wait comes.
+            assert!(feed.open_questions().iter().all(|question| !question.waits));
+            assert_eq!(feed.activity().question, None);
+            feed.settle_questions(Some(run), &["q1".into()], |_| QuestionState::Answered {
+                answer: "Spaces".into(),
+            });
+            // The wait for q2 as the turn ends, or the asker hearing of an
+            // ask that doesn't wait.
+            let later = if wait { &both[1..] } else { &both[..] };
+            assert_eq!(feed.ask(run, later, wait, None, None), cards[0].id);
+            let cards = question_cards(&feed);
+            assert_eq!(cards.len(), 1, "{wait}");
+            let questions = cards[0].questions.clone().unwrap();
+            assert_eq!(
+                questions
+                    .iter()
+                    .map(|question| (question.id.as_str(), question.state.clone()))
+                    .collect::<Vec<_>>(),
+                [
+                    (
+                        "q1",
+                        QuestionState::Answered {
+                            answer: "Spaces".into()
+                        }
+                    ),
+                    ("q2", QuestionState::Open)
+                ]
+            );
+            assert_eq!(questions[1].waits, wait);
+            assert_eq!(
+                feed.activity().question.map(|question| question.id),
+                wait.then_some(cards[0].id)
+            );
+            let mut sent = 0;
+            while let Ok(update) = updates.try_recv() {
+                if matches!(update, Update::Item(item) if item.kind == Kind::Question) {
+                    sent += 1;
+                }
+            }
+            assert_eq!(sent, 1, "{wait}");
+        }
+    }
+
+    /// After a restart, a wait for questions whose card the transcript no
+    /// longer shows gets a card of its own.
+    #[test]
+    fn a_wait_after_a_restart_gets_a_card_of_its_own() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(crate::questions::FILE);
+        let run = Uuid::new_v4();
+        let first = Feed::new("main");
+        first.keep_questions(path.clone());
+        first.questions_run(Some(run));
+        first.ask(run, &[asked("q1", "Tabs or spaces?")], true, None, None);
+        let again = Feed::new("main");
+        again.keep_questions(path);
+        again.questions_run(Some(run));
+        again.ask(run, &[asked("q1", "Tabs or spaces?")], true, None, None);
+        let cards = question_cards(&again);
+        assert_eq!(cards.len(), 1);
+        assert_eq!(cards[0].questions.as_ref().unwrap()[0].id, "q1");
+    }
+
     /// An app's tests ask questions and set their states, and the card and
     /// the activity follow.
     #[test]
@@ -4944,75 +5110,83 @@ mod tests {
 
     /// A resumed session's question cards, made from its conversation,
     /// show what became of each question as the session kept it, and its
-    /// open questions are open again.
+    /// open questions are open again. A card the session made as the ask's
+    /// result came (as in Claude Code) restores as one made when the asker
+    /// heard of the ask.
     #[test]
     fn a_resumed_sessions_cards_keep_their_questions_states() {
         use crate::questions::QuestionState;
         use arko_ai::{Content, Message, ToolCall, ToolResult};
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join(crate::questions::FILE);
-        let run = Uuid::new_v4();
-        let first = Feed::new("main");
-        first.keep_questions(path.clone());
-        first.questions_run(Some(run));
-        first.ask(
-            run,
-            &[asked("q1", "Tabs or spaces?"), asked("q2", "Push now?")],
-            false,
-            None,
-            None,
-        );
-        first.settle_questions(None, &["q1".into()], |_| QuestionState::Dismissed);
+        for recorded in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join(crate::questions::FILE);
+            let run = Uuid::new_v4();
+            let first = Feed::new("main");
+            first.keep_questions(path.clone());
+            first.questions_run(Some(run));
+            let both = [asked("q1", "Tabs or spaces?"), asked("q2", "Push now?")];
+            if recorded {
+                first.record_asked(run, &both);
+                ask_result(
+                    &first,
+                    run,
+                    "Asked q1 and q2. Their answers reach you as a note. Until then, do only work that no answer could change.",
+                );
+            } else {
+                first.ask(run, &both, false, None, None);
+            }
+            assert_eq!(question_cards(&first).len(), 1);
+            first.settle_questions(None, &["q1".into()], |_| QuestionState::Dismissed);
 
-        for output in [
-            "Asked q1 and q2. Their answers reach you as a note. Until then, do only work that no answer could change.",
-            "Asked q1 and q2. Their answers reach you as a note, so go on with your work.",
-        ] {
-            let again = Feed::new("main");
-            again.keep_questions(path.clone());
-            again.questions_run(Some(run));
-            let mut ask = Message::new_assistant("");
-            ask.tool_calls = vec![
-                serde_json::from_value::<ToolCall>(serde_json::json!({
-                    "id": "ask",
-                    "name": "ask_user",
-                    "arguments": {"questions": ["Tabs or spaces?", "Push now?"], "wait": false}
-                }))
-                .unwrap(),
-            ];
-            let messages = vec![
-                Message::new_user("Start."),
-                ask,
-                Message::new_user_with_contents(vec![Content::ToolResult(ToolResult::new(
-                    Some("ask".into()),
-                    "ask_user",
-                    output,
-                ))]),
-            ];
-            again.restore(crate::remote::history(
-                &messages,
-                false,
-                &crate::images::Images::default(),
-            ));
-            let (snapshot, _) = again.subscribe();
-            let card = snapshot
-                .items
-                .iter()
-                .find(|item| item.kind == Kind::Question)
-                .unwrap();
-            let states = card
-                .questions
-                .as_ref()
-                .unwrap()
-                .iter()
-                .map(|question| question.state.clone())
-                .collect::<Vec<_>>();
-            assert_eq!(states, [QuestionState::Dismissed, QuestionState::Open]);
-            assert_eq!(card.text, "Arko asked 2 questions");
-            assert_eq!(again.open_questions()[0].item, card.id);
-            assert_eq!(again.open_questions()[0].number, Some(2));
-            // (The agent doesn't wait on them.)
-            assert_eq!(again.activity().question, None);
+            for output in [
+                "Asked q1 and q2. Their answers reach you as a note. Until then, do only work that no answer could change.",
+                "Asked q1 and q2. Their answers reach you as a note, so go on with your work.",
+            ] {
+                let again = Feed::new("main");
+                again.keep_questions(path.clone());
+                again.questions_run(Some(run));
+                let mut ask = Message::new_assistant("");
+                ask.tool_calls = vec![
+                    serde_json::from_value::<ToolCall>(serde_json::json!({
+                        "id": "ask",
+                        "name": "ask_user",
+                        "arguments": {"questions": ["Tabs or spaces?", "Push now?"], "wait": false}
+                    }))
+                    .unwrap(),
+                ];
+                let messages =
+                    vec![
+                        Message::new_user("Start."),
+                        ask,
+                        Message::new_user_with_contents(vec![Content::ToolResult(
+                            ToolResult::new(Some("ask".into()), "ask_user", output),
+                        )]),
+                    ];
+                again.restore(crate::remote::history(
+                    &messages,
+                    false,
+                    &crate::images::Images::default(),
+                ));
+                let (snapshot, _) = again.subscribe();
+                let card = snapshot
+                    .items
+                    .iter()
+                    .find(|item| item.kind == Kind::Question)
+                    .unwrap();
+                let states = card
+                    .questions
+                    .as_ref()
+                    .unwrap()
+                    .iter()
+                    .map(|question| question.state.clone())
+                    .collect::<Vec<_>>();
+                assert_eq!(states, [QuestionState::Dismissed, QuestionState::Open]);
+                assert_eq!(card.text, "Arko asked 2 questions");
+                assert_eq!(again.open_questions()[0].item, card.id);
+                assert_eq!(again.open_questions()[0].number, Some(2));
+                // (The agent doesn't wait on them.)
+                assert_eq!(again.activity().question, None);
+            }
         }
     }
 
