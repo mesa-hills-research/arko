@@ -129,14 +129,17 @@ async fn a_long_command_moves_to_the_background_and_its_end_wakes_the_idle_agent
     assert!(woken.contains("Terminal update"), "{woken}");
     assert!(woken.contains("succeeded"), "{woken}");
     assert!(woken.contains("built"), "{woken}");
+    // The line names the job's command, and a reopened session's
+    // transcript has the same line.
+    let line = "Job finished · echo started; sleep 2; echo built";
     assert!(
         shown(&harness.feed)
             .iter()
-            .any(|(kind, text, _)| kind == "notice"
-                && text.contains("a background job finished, and its update goes to the agent")),
+            .any(|(kind, text, _)| kind == "notice" && text.trim() == line),
         "{:?}",
         shown(&harness.feed)
     );
+    assert_eq!(reopened_notices(&harness), [line]);
     managers.shutdown().await;
 }
 
@@ -1337,14 +1340,18 @@ async fn a_monitors_alert_starts_a_turn_while_the_agent_waits_for_the_user() {
         "{woken}"
     );
     assert!(woken.contains("Monitor alert.") && woken.contains("ERROR boom"), "{woken}");
+    // The line names the monitor by its command, as the reopened
+    // session's transcript does.
+    let line =
+        "Monitor alerted · sleep 1; echo 'ERROR boom'; sleep 1; echo 'ERROR again'; sleep 30";
     assert!(
         shown(&harness.feed)
             .iter()
-            .any(|(kind, text, _)| kind == "notice"
-                && text.contains("a monitor alerted, and its alert goes to the agent")),
+            .any(|(kind, text, _)| kind == "notice" && text.trim() == line),
         "{:?}",
         shown(&harness.feed)
     );
+    assert_eq!(reopened_notices(&harness), [line]);
 
     // The second line came a second after the first: its alert waits.
     let alert = next_alert(&mut inputs, Duration::from_secs(10)).await;
@@ -1745,12 +1752,15 @@ async fn a_monitors_warning_wakes_the_agent_before_its_cache_expires() {
             && woken.contains(") ends in 10 min, at "),
         "{woken}"
     );
+    let line = "Monitor ends in 10 min · sleep 60";
     assert!(
-        shown(&harness.feed).iter().any(|(kind, text, _)| kind == "notice"
-            && text.contains("a monitor ends in 10 min, and the agent is asked whether to keep it")),
+        shown(&harness.feed)
+            .iter()
+            .any(|(kind, text, _)| kind == "notice" && text.trim() == line),
         "{:?}",
         shown(&harness.feed)
     );
+    assert_eq!(reopened_notices(&harness), [line]);
     managers.shutdown().await;
 }
 

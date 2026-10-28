@@ -49,9 +49,9 @@ pub use feed::{
     Kind, Level, MAIN_AGENT, Question, REFRESH_MESSAGE, Snapshot, Source, Update, WorkerChange,
     WorkerInfo, WorkerState, WorkerSummary, family_order, family_order_with_levels,
 };
-pub(crate) use history::all_items;
 pub use history::items as history;
 pub(crate) use history::own_words;
+pub(crate) use history::{all_items, job_ran};
 #[cfg(any(test, feature = "remote"))]
 pub use links::Kind as LinkKind;
 pub use links::{HOST_VARIABLE, Interface, Link};

@@ -2701,11 +2701,7 @@ mod tests {
         t.working = None;
         assert_eq!(last(&mut t, View::Full), "  All pass.");
         // A turn that begins without a message (the workers' news came).
-        t.apply(Update::Item(item(
-            9,
-            Kind::Notice,
-            "the workers' news goes to the agent",
-        )));
+        t.apply(Update::Item(item(9, Kind::Notice, "r1 reported")));
         t.working = Some(ended + 1);
         assert!(is_working(&last(&mut t, View::Full)));
     }

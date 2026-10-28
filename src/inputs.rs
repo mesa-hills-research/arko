@@ -149,15 +149,21 @@ impl Inputs {
         jobs
     }
 
-    /// Forgets the monitors' alerts so far: their news reaches the agent
-    /// with the turn starting.
-    pub(crate) fn drain_alerts(&mut self) {
+    /// Forgets the monitors' alerts so far, and returns them: their news
+    /// reaches the agent with the turn starting.
+    pub(crate) fn drain_alerts(&mut self) -> Vec<arko_agents::terminal::JobAlert> {
         self.late_alert = None;
+        let mut drained = Vec::new();
         if let Some(alerts) = &mut self.alerts {
-            while let Ok(_) | Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) =
-                alerts.try_recv()
-            {}
+            loop {
+                match alerts.try_recv() {
+                    Ok(alert) => drained.push(alert),
+                    Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => continue,
+                    Err(_) => break,
+                }
+            }
         }
+        drained
     }
 
     /// A pasted block arrives as several lines in quick succession (where

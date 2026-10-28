@@ -125,9 +125,7 @@ mod tests {
                 user.delivery = Some(Delivery::Turn);
                 app.transcript.apply(Update::Item(user));
             }
-            Above::Notice => add(&mut app, |id| {
-                item(id, Kind::Notice, "the workers' news goes to the agent")
-            }),
+            Above::Notice => add(&mut app, |id| item(id, Kind::Notice, "r1 reported")),
             Above::Worker => {
                 let mut line = item(100, Kind::WorkerLine, "");
                 line.worker = Some("r1".into());
