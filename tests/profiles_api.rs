@@ -58,7 +58,9 @@ fn an_app_makes_lists_edits_and_deletes_profiles_without_a_session() {
         Ok(found) => panic!("the profile was deleted, got {}", found.profile.name),
     }
     assert_eq!("1H".parse::<Cache>(), Ok(Cache::OneHour));
-    assert!("2h".parse::<Cache>().unwrap_err().contains("5m or 1h"));
+    assert_eq!("long".parse::<Cache>(), Ok(Cache::OneHour));
+    assert_eq!("short".parse::<Cache>(), Ok(Cache::FiveMinutes));
+    assert!("2h".parse::<Cache>().unwrap_err().contains("long or short"));
     assert!(profiles::check_name("Bad Name").is_err());
 }
 
