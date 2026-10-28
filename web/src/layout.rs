@@ -83,14 +83,6 @@ impl Row {
             Row::Working => "working".into(),
         }
     }
-
-    /// The item it stands for (a count's first call).
-    pub fn id(&self) -> Option<u64> {
-        match self {
-            Row::Item(id) | Row::Count { id, .. } => Some(*id),
-            Row::Working => None,
-        }
-    }
 }
 
 /// Whether a notice (or a failed call) is a warning or an error.
@@ -355,10 +347,34 @@ pub fn with_working(mut rows: Vec<Row>, working: bool, store: &Store) -> Vec<Row
     rows
 }
 
-/// How many of `rows` came after the item `seen` ("Working…" isn't new).
-pub fn unseen(rows: &[Row], seen: u64) -> usize {
+/// Whether `item` is one thing to read, counted once by Latest. A call's
+/// results and a command's output belong to what they follow. The end of a
+/// turn, a new conversation and a worker's place are marks, and a notice
+/// counts only when it opens a turn Arko started.
+fn is_read(item: &ItemData) -> bool {
+    match item.kind {
+        Kind::User
+        | Kind::Text
+        | Kind::Thinking
+        | Kind::Message
+        | Kind::Call
+        | Kind::Question
+        | Kind::Reply => true,
+        Kind::Notice => item.opens_turn,
+        _ => false,
+    }
+}
+
+/// How many of the things `rows` show came after the item `seen`. A
+/// turn's calls folded into one line (Messages) are one thing, where the
+/// first of them came, and "Working…" isn't new.
+pub fn unseen(rows: &[Row], store: &Store, seen: u64) -> usize {
     rows.iter()
-        .filter(|row| row.id().is_some_and(|id| id > seen))
+        .filter(|row| match row {
+            Row::Item(id) => *id > seen && store.get(*id).is_some_and(is_read),
+            Row::Count { id, .. } => *id > seen,
+            Row::Working => false,
+        })
         .count()
 }
 
@@ -369,11 +385,11 @@ fn grew(rows: &[Row], grown: &HashSet<u64>) -> bool {
         .any(|row| matches!(row, Row::Item(id) if grown.contains(id)))
 }
 
-/// What Latest says. It counts the rows that came after the item `seen`
+/// What Latest says. It counts the things that came after the item `seen`
 /// and, with none, says when text grew in a row of the view. Both read the
 /// same `rows`, so they agree with what the view shows.
-pub fn jump_label(rows: &[Row], seen: u64, grown: &HashSet<u64>) -> String {
-    let fresh = unseen(rows, seen);
+pub fn jump_label(rows: &[Row], store: &Store, seen: u64, grown: &HashSet<u64>) -> String {
+    let fresh = unseen(rows, store, seen);
     if fresh > 0 {
         format!("{fresh} new")
     } else if grew(rows, grown) {
@@ -551,7 +567,7 @@ mod tests {
         store.add(note, 0.0);
         let rows = with_working(layout(&store.items, View::Full, None), true, &store);
         assert_eq!(ids(&rows), ["i1", "working", "i2"]);
-        assert_eq!(unseen(&rows, 1), 1);
+        assert_eq!(unseen(&rows, &store, 1), 1);
     }
 
     #[test]
@@ -576,9 +592,17 @@ mod tests {
         ]
     }
 
+    fn store_of(items: &[ItemData]) -> Store {
+        let mut store = Store::default();
+        for item in items {
+            store.add(item.clone(), 0.0);
+        }
+        store
+    }
+
     fn label(items: &[ItemData], view: View, worker: Option<&str>, grown: &[u64]) -> String {
         let grown = grown.iter().copied().collect();
-        jump_label(&layout(items, view, worker), 5, &grown)
+        jump_label(&layout(items, view, worker), &store_of(items), 5, &grown)
     }
 
     #[test]
@@ -613,16 +637,18 @@ mod tests {
     }
 
     #[test]
-    fn latest_counts_new_rows_before_it_says_text_grew() {
+    fn latest_counts_what_is_new_before_it_says_text_grew() {
         let mut items = streaming();
         let grown: HashSet<u64> = [4].into();
         let rows = layout(&items, View::Full, None);
-        assert_eq!(jump_label(&rows, 4, &grown), "1 new");
-        assert_eq!(jump_label(&rows, 5, &grown), "New text");
+        let store = store_of(&items);
+        assert_eq!(jump_label(&rows, &store, 4, &grown), "1 new");
+        assert_eq!(jump_label(&rows, &store, 5, &grown), "New text");
         // A worker's text that came since isn't new in the main view.
         items.push(item(6, Kind::Text, "r1", "more"));
         let rows = layout(&items, View::Full, None);
-        assert_eq!(jump_label(&rows, 5, &HashSet::new()), "Latest");
+        let store = store_of(&items);
+        assert_eq!(jump_label(&rows, &store, 5, &HashSet::new()), "Latest");
     }
 
     #[test]
@@ -632,6 +658,137 @@ mod tests {
         let items = vec![item(1, Kind::User, MAIN, "go"), call];
         let rows = layout(&items, View::Messages, None);
         assert_eq!(ids(&rows), ["i1", "c1"]);
-        assert_eq!(jump_label(&rows, 3, &[3].into()), "Latest");
+        assert_eq!(
+            jump_label(&rows, &store_of(&items), 3, &[3].into()),
+            "Latest"
+        );
+    }
+
+    /// The label for `items` in a view, once the item `seen` was seen.
+    fn says(items: &[ItemData], view: View, worker: Option<&str>, seen: u64) -> String {
+        let rows = layout(items, view, worker);
+        jump_label(&rows, &store_of(items), seen, &HashSet::new())
+    }
+
+    /// A call with a result of two rows, which a command's output may follow.
+    fn call_with_results(id: u64, agent: &str) -> Vec<ItemData> {
+        let mut call = item(id, Kind::Call, agent, "shell");
+        call.status = Some(CallStatus::Ok);
+        let mut results = vec![
+            item(id + 1, Kind::Result, agent, "out"),
+            item(id + 2, Kind::Result, agent, "more"),
+        ];
+        for result in &mut results {
+            result.call = Some(id);
+        }
+        let mut items = vec![call];
+        items.append(&mut results);
+        items
+    }
+
+    #[test]
+    fn a_calls_result_rows_are_part_of_it() {
+        let mut items = vec![item(1, Kind::User, MAIN, "go")];
+        items.extend(call_with_results(2, MAIN));
+        assert_eq!(says(&items, View::Full, None, 1), "1 new");
+        // A result that comes after its call was seen isn't new.
+        assert_eq!(says(&items, View::Full, None, 2), "Latest");
+    }
+
+    #[test]
+    fn a_reply_and_ten_calls_with_results_are_eleven_new() {
+        let mut items = vec![item(1, Kind::User, MAIN, "go")];
+        for n in 0..10 {
+            items.extend(call_with_results(2 + n * 3, MAIN));
+        }
+        items.push(item(32, Kind::Reply, MAIN, "done"));
+        assert_eq!(says(&items, View::Full, None, 1), "11 new");
+        assert_eq!(says(&items, View::Quiet, None, 1), "11 new");
+    }
+
+    #[test]
+    fn a_user_message_and_a_reply_are_two_new() {
+        let items = vec![
+            item(1, Kind::Reply, MAIN, "earlier"),
+            item(2, Kind::User, MAIN, "and now?"),
+            item(3, Kind::Reply, MAIN, "this"),
+        ];
+        for view in View::ALL {
+            assert_eq!(says(&items, view, None, 1), "2 new", "{view:?}");
+        }
+    }
+
+    /// A notice that opens a turn Arko started.
+    fn opening(id: u64, text: &str) -> ItemData {
+        ItemData {
+            opens_turn: true,
+            level: Some(Level::Info),
+            ..item(id, Kind::Notice, MAIN, text)
+        }
+    }
+
+    #[test]
+    fn marks_count_for_nothing_and_a_notice_that_opens_a_turn_counts() {
+        let mut items = vec![
+            item(1, Kind::User, MAIN, "go"),
+            item(2, Kind::Turn, MAIN, "3 s"),
+            item(3, Kind::Conversation, MAIN, "New conversation"),
+            item(4, Kind::Output, MAIN, "output"),
+            item(5, Kind::Notice, MAIN, "rate limited, retrying"),
+            item(6, Kind::WorkerLine, MAIN, "r1"),
+            // The mark counts, not the words.
+            ItemData {
+                level: Some(Level::Info),
+                ..item(7, Kind::Notice, MAIN, "r1 reported")
+            },
+        ];
+        assert_eq!(says(&items, View::Full, None, 1), "Latest");
+        items.push(opening(8, "r1 reported"));
+        assert_eq!(says(&items, View::Full, None, 1), "1 new");
+    }
+
+    #[test]
+    fn a_workers_reply_and_messages_count_in_its_own_view_only() {
+        let items = vec![
+            item(1, Kind::User, MAIN, "go"),
+            item(2, Kind::Message, "r1", "Also the docs."),
+            item(3, Kind::Text, "r1", "On it."),
+            item(4, Kind::Reply, "r1", "Fixed."),
+        ];
+        assert_eq!(says(&items, View::Full, Some("r1"), 0), "3 new");
+        // The main views show it as a card, which changes in place.
+        for view in View::ALL {
+            assert_eq!(says(&items, view, None, 1), "Latest", "{view:?}");
+        }
+        // A worker's calls are rows of the main Full view.
+        let mut call = item(5, Kind::Call, "r1", "cat");
+        call.status = Some(CallStatus::Ok);
+        let mut items = items;
+        items.push(call);
+        assert_eq!(says(&items, View::Full, None, 1), "1 new");
+        assert_eq!(says(&items, View::Quiet, None, 1), "Latest");
+    }
+
+    #[test]
+    fn messages_count_what_it_shows_and_a_turns_calls_as_one() {
+        let mut items = vec![item(1, Kind::User, MAIN, "go")];
+        items.push(item(2, Kind::Thinking, MAIN, "hmm"));
+        items.extend(call_with_results(3, MAIN));
+        items.extend(call_with_results(6, MAIN));
+        items.push(opening(9, "Monitor alerted · cargo test"));
+        // Thinking, a result and an info notice are out of Messages.
+        assert_eq!(says(&items, View::Messages, None, 2), "1 new");
+        assert_eq!(says(&items, View::Full, None, 2), "3 new");
+        items.push(item(10, Kind::Reply, MAIN, "done"));
+        assert_eq!(says(&items, View::Messages, None, 2), "2 new");
+        assert_eq!(says(&items, View::Full, None, 2), "4 new");
+        // What Messages hides alone says nothing is new.
+        let hidden = vec![
+            item(1, Kind::User, MAIN, "go"),
+            item(2, Kind::Thinking, MAIN, "hmm"),
+            opening(3, "Monitor alerted · cargo test"),
+        ];
+        assert_eq!(says(&hidden, View::Messages, None, 1), "Latest");
+        assert_eq!(says(&hidden, View::Full, None, 1), "2 new");
     }
 }

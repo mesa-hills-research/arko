@@ -120,7 +120,9 @@ Each web component matches a GPUI Kit component and its variants.
 | `.sheet` | `Sheet` | From the bottom on phones, centered on wide screens, with a hairline in `--line` as the popovers have |
 | `.card` | `GroupBox` | Surface and hairline, no shadow |
 | `.copy` | `Clipboard` | A ghost icon button. Under a message or reply it shows on hover or focus, and always on touch screens. A code block has one in its corner, after its language |
+| `.jump` | Studio's jump-to-latest button | Says "N new" for what came while the reader was up the page, counting each reply, text, thinking, message, question, user message, call and turn-starting notice once, with a call's results in the call. A view counts what it shows, so Messages counts a turn's calls as one. With none new it says "New text" if text grew, else "Latest" |
 | `.thumb` | Studio's image tile | 160 by 120 px, the image contained in it, loaded as it nears the view |
+| `.md .table` | Markdown table | Keeps the width its cells ask for and scrolls sideways inside its row, as in Studio. A cell wraps past 40 characters. A table that fits has no scrollbar |
 | `dialog.viewer` | `ImageViewer` | One image as large as the screen allows, with its name and size |
 | `title` and `aria-label` | `Tooltip` | Required on icon-only buttons |
 | `kbd` | `Kbd` | One key cap per chord, mono |

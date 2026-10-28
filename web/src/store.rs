@@ -207,6 +207,7 @@ pub mod tests {
             call: None,
             job: None,
             pending: false,
+            opens_turn: false,
             code: Vec::new(),
             questions: None,
             images: Vec::new(),

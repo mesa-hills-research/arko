@@ -65,8 +65,10 @@ pub fn Transcript() -> impl IntoView {
     });
     let jump_label = move || {
         rows.with(|rows| {
-            page.grown
-                .with(|grown| layout::jump_label(rows, page.seen.get(), grown))
+            page.grown.with(|grown| {
+                STORE
+                    .with(|store| layout::jump_label(rows, &store.borrow(), page.seen.get(), grown))
+            })
         })
     };
     let empty = move || {
