@@ -119,6 +119,9 @@ Each web component matches a GPUI Kit component and its variants.
 | `.record-box` | The terminal's settled ask | A question card once any of its questions is settled, boxed as the panel is but in the hairline, its text as a muted heading, then each settled question with its outcome |
 | `.sheet` | `Sheet` | From the bottom on phones, centered on wide screens, with a hairline in `--line` as the popovers have |
 | `.card` | `GroupBox` | Surface and hairline, no shadow |
+| `.copy` | `Clipboard` | A ghost icon button. Under a message or reply it shows on hover or focus, and always on touch screens. A code block has one in its corner, after its language |
+| `.thumb` | Studio's image tile | 160 by 120 px, the image contained in it, loaded as it nears the view |
+| `dialog.viewer` | `ImageViewer` | One image as large as the screen allows, with its name and size |
 | `title` and `aria-label` | `Tooltip` | Required on icon-only buttons |
 | `kbd` | `Kbd` | One key cap per chord, mono |
 
@@ -209,6 +212,7 @@ motion to be understood.
 | Mouse wheel (Windows, Linux, Android) | A critically damped spring, about 0.2 s. Apple systems keep their own momentum |
 | Moving to the background, done, failed | The row changes in place, with no motion |
 | Menus, popovers, the Latest button | A fade of 150 ms |
+| Copied | The copy icon cross-fades to a check in `--success` (120 ms), which holds for a second, then fades back |
 | Sheets and panels | Appear without sliding |
 
 Not allowed are staggered entrances, pulses, bouncing, sliding panels and animated layout.
