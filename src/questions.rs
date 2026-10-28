@@ -601,15 +601,40 @@ impl Book {
         first
     }
 
-    /// Run `run` asked `asked` (`wait`: it waits for the answer), which have
-    /// no card yet. Those known already stay as they are.
-    pub(crate) fn register(&mut self, run: Uuid, asked: &[AskedQuestion], wait: bool) {
+    /// Run `run` asked `asked`, which have no card yet. Those known already
+    /// stay as they are. The agent waits for them once its wait comes
+    /// ([`ask`](Self::ask) with `waits`), which in Claude Code is only when
+    /// the turn that asked ends.
+    pub(crate) fn register(&mut self, run: Uuid, asked: &[AskedQuestion]) {
         let new: Vec<AgentQuestion> = asked
             .iter()
             .filter(|asked| !self.knows(run, &asked.id))
-            .map(|asked| AgentQuestion::of(asked, wait, 0))
+            .map(|asked| AgentQuestion::of(asked, false, 0))
             .collect();
         self.ask(run, new, None, None);
+    }
+
+    /// Run `run`'s questions among `ids` that have no card yet.
+    pub(crate) fn without_card(&self, run: Uuid, ids: &[String]) -> Vec<AgentQuestion> {
+        self.entries
+            .iter()
+            .filter(|entry| {
+                entry.run == run && entry.question.item == 0 && ids.contains(&entry.question.id)
+            })
+            .map(|entry| entry.question.clone())
+            .collect()
+    }
+
+    /// The card all of `asked`, run `run`'s questions, have already.
+    pub(crate) fn card_of(&self, run: Uuid, asked: &[AskedQuestion]) -> Option<u64> {
+        let mut items = asked.iter().map(|asked| {
+            self.entries
+                .iter()
+                .find(|entry| entry.run == run && entry.question.id == asked.id)
+                .map_or(0, |entry| entry.question.item)
+        });
+        let first = items.next().filter(|item| *item != 0)?;
+        items.all(|item| item == first).then_some(first)
     }
 
     /// Run `run` asked `questions` (with their card in `item`, which may

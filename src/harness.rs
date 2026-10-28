@@ -7265,7 +7265,18 @@ pub(crate) mod tests {
         .unwrap();
         assert!(matches!(end, TurnEnd::Answered));
         assert_eq!(summary(&harness), "Indented with two spaces.");
+        assert_eq!(question_cards(&harness), 1);
         drop(answering.await.unwrap());
+    }
+
+    /// How many question cards the transcript has.
+    fn question_cards(harness: &Harness) -> usize {
+        let (snapshot, _) = harness.feed.subscribe();
+        snapshot
+            .items
+            .iter()
+            .filter(|item| item.kind == crate::remote::Kind::Question)
+            .count()
     }
 
     /// The agent's questions as the feed has them, once the asker's question
@@ -7574,10 +7585,15 @@ pub(crate) mod tests {
         let (mut harness, mut inputs, sender) = harness(temp.path(), server.client(), true);
         let feed = harness.feed.clone();
         let answering = tokio::spawn(async move {
-            while feed.open_questions().is_empty() {
+            // (The question is open as its task records it, and waited
+            // for once the wait comes.)
+            while !feed
+                .open_questions()
+                .first()
+                .is_some_and(|question| question.waits)
+            {
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
-            assert!(feed.open_questions()[0].waits);
             sender
                 .send(Input::AnswerQuestions(answers(vec![
                     crate::questions::QuestionAnswer::new(
@@ -8027,6 +8043,7 @@ pub(crate) mod tests {
             approval: None,
             call: None,
         });
+        assert_eq!(question_cards(&harness), 1, "the wait keeps the ask's card");
         assert!(
             harness
                 .answer_questions(answers(vec![text_answer("q1", "Spaces")]))
@@ -8321,7 +8338,7 @@ pub(crate) mod tests {
         harness.feed.questions_run(Some(run));
         harness
             .feed
-            .record_asked(run, &one_question("q1", "Which file?"), true);
+            .record_asked(run, &one_question("q1", "Which file?"));
         assert!(
             harness
                 .answer_questions(answers(vec![text_answer("q1", "main.rs")]),)

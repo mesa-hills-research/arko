@@ -514,18 +514,19 @@ impl UserInputHandler for Asker {
 
     /// The main agent's questions are open in the session as soon as its
     /// task records them, before their card shows (see
-    /// [`open_questions`](Self::open_questions)).
+    /// [`open_questions`](Self::open_questions)). They count as waited for
+    /// once the wait comes.
     fn questions_recorded(
         &self,
         run: uuid::Uuid,
         agent_name: &str,
         asked: &[arko_agents::questions::AskedQuestion],
-        wait: bool,
+        _wait: bool,
     ) {
         if let Some(feed) = &self.feed
             && agent_name == crate::agents::MAIN
         {
-            feed.record_asked(run, asked, wait);
+            feed.record_asked(run, asked);
         }
     }
 }
