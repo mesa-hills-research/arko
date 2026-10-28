@@ -1719,6 +1719,16 @@ mod tests {
             assert!(page_has(choice.label()), "{}", choice.label());
             assert!(page_has(choice.about()), "{}", choice.about());
         }
+        for billing in workers::WorkerBilling::ALL {
+            assert!(page_has(billing.label()), "{}", billing.label());
+            assert!(page_has(billing.about()), "{}", billing.about());
+        }
+        assert!(page_has(&format!(
+            "{} {}",
+            workers::BILLING_ABOUT,
+            workers::MODELS_APPLIES
+        )));
+        assert!(page_has(&workers::budget_about(None)));
         assert!(page_has(workers::depth_about()));
         // The page writes the cap's sentence for a number from a template.
         assert!(page_has(&workers::retry_cap_about(None)));
@@ -1727,6 +1737,8 @@ mod tests {
         }
         for name in [
             workers::MODELS_NAME,
+            workers::BILLING_NAME,
+            workers::BUDGET_NAME,
             workers::DEPTH_NAME,
             workers::RETRY_CAP_NAME,
             workers::COPIES_NAME,
