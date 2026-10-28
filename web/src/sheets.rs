@@ -632,6 +632,21 @@ fn SettingsBody() -> impl IntoView {
                         settings.command(format!("/worker-models {key}"), "workers", Some(Box::new(move |s| s.worker_models.as_deref() == Some(want.as_str()))), Some(("worker-models", key)));
                     } />
                 <div class="setting"><div class="setting-text">
+                    <span class="setting-name">"Worker billing"</span>
+                    <span class="setting-about">{words::WORKER_BILLING_ABOUT}</span>
+                </div></div>
+                <Options label="Worker billing" key="worker-billing" options=option_list(&words::WORKER_BILLING)
+                    chosen=Signal::derive(move || s().worker_billing.unwrap_or_else(|| "ask".into()))
+                    choose=move |key: String| {
+                        let want = key.clone();
+                        settings.command(format!("/worker-billing {key}"), "workers", Some(Box::new(move |s| s.worker_billing.as_deref() == Some(want.as_str()))), Some(("worker-billing", key)));
+                    } />
+                <Switch name="Daily API budget" key="api-budget"
+                    about=Signal::derive(move || words::budget_about(s().api_budget))
+                    on=Signal::derive(move || s().api_budget.is_some())
+                    toggle=move |on| settings.command(format!("/api-budget {}", if on { "on" } else { "off" }), "workers",
+                        Some(Box::new(move |s| s.api_budget.is_some() == on)), Some(("api-budget", on.to_string()))) />
+                <div class="setting"><div class="setting-text">
                     <span class="setting-name">"Worker depth"</span>
                     <span class="setting-about">{words::WORKER_DEPTH_ABOUT}</span>
                 </div></div>

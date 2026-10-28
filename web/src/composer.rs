@@ -18,6 +18,9 @@ const CHOICES_FRESH: f64 = 10_000.0;
 
 thread_local! {
     static CHOICES: std::cell::RefCell<HashMap<String, (Option<Vec<String>>, f64)>> = std::cell::RefCell::new(HashMap::new());
+    /// What to know of the words that came, by word (how a model billed per
+    /// token is billed).
+    static NOTES: std::cell::RefCell<HashMap<String, String>> = std::cell::RefCell::new(HashMap::new());
 }
 
 #[component]
@@ -76,9 +79,12 @@ pub fn Composer() -> impl IntoView {
             && closed_for.get_untracked().as_deref() != Some(value.as_str())
             && let Some(commands) = page.commands.get_untracked()
         {
-            next = slash::menu(&commands, &value, &mut |name, before, typed| {
-                choices_of(name, before, typed, choices_came)
-            });
+            next = slash::menu(
+                &commands,
+                &value,
+                &mut |name, before, typed| choices_of(name, before, typed, choices_came),
+                &|word| NOTES.with(|notes| notes.borrow().get(word).cloned().unwrap_or_default()),
+            );
         }
         if !value.starts_with('/') {
             CHOICES.with(|choices| choices.borrow_mut().clear());
@@ -253,6 +259,7 @@ pub fn Composer() -> impl IntoView {
                                                     on:click=move |_| pick(at)>
                                                     <span class="slash-name">{entry.label.clone()}</span>
                                                     {(!entry.args.is_empty()).then(|| view! { <span class="slash-args">{entry.args.clone()}</span> })}
+                                                    {(!entry.note.is_empty()).then(|| view! { <span class="slash-args">{entry.note.clone()}</span> })}
                                                     {(!word).then(|| view! { <span class="slash-about">{entry.about.clone()}</span> })}
                                                 </li>
                                             }
@@ -356,10 +363,15 @@ fn choices_of(
         struct Answer {
             #[serde(default)]
             choices: Vec<String>,
+            #[serde(default)]
+            notes: HashMap<String, String>,
         }
-        let words = get_json::<Answer>("/api/choices", Some(body))
-            .await
-            .map(|answer| answer.choices)
+        let answer = get_json::<Answer>("/api/choices", Some(body)).await;
+        let words = answer
+            .map(|answer| {
+                NOTES.with(|notes| notes.borrow_mut().extend(answer.notes));
+                answer.choices
+            })
             .unwrap_or_default();
         // (The list may still be on its way, so no words stay good for 1.5 s only.)
         let fresh = if openrouter && words.is_empty() {
