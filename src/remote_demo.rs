@@ -282,6 +282,7 @@ async fn remote_page_demo() {
     // Arko's shell, and the live switches the page's settings change.
     let shell = Shell::detect(WindowsShell::Powershell);
     let managers = Managers::open(&harness.session, &shell).unwrap();
+    harness.background = managers.background.clone();
     harness.tools = managers.tools(&shell, harness.handover.runs());
     harness.outside = Arc::new(crate::outside::Outside::new(
         false,
