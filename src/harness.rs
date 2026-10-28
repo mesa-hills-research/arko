@@ -188,6 +188,9 @@ pub(crate) struct SavedSetup {
     pub(crate) name: String,
     /// The configuration of each agent's latest run.
     pub(crate) configs: std::collections::HashMap<String, arko_agents::AgentConfig>,
+    /// The MCP tools any run of the main agent offered. A chat starts no
+    /// servers, and registers these for the runs to resume.
+    pub(crate) mcp_tools: std::collections::BTreeSet<String>,
 }
 
 /// The parts of a checkpoint [`saved_setup`] reads. The rest of a long
@@ -214,11 +217,31 @@ pub(crate) fn saved_setup(checkpoint: &Path, run_dir: &Path) -> Result<SavedSetu
     let state: CheckpointSetup =
         serde_json::from_str(&text).map_err(|error| unreadable(error.to_string()))?;
     let mut configs = std::collections::HashMap::new();
+    let mut mcp_tools = std::collections::BTreeSet::new();
+    let mut offered = |config: &arko_agents::AgentConfig| {
+        mcp_tools.extend(
+            config
+                .tool_config
+                .available_tool_names
+                .iter()
+                .filter(|name| mcp::split_tool_name(name).is_some())
+                .cloned(),
+        );
+    };
     for result in state.agent_results {
+        if result.agent_name == MAIN {
+            offered(&result.info().agent_config);
+        }
         configs.insert(
             result.agent_name.clone(),
             result.info().agent_config.clone(),
         );
+    }
+    // (Every run's tools, as a resume checks them all.)
+    for run in &state.agent_runs {
+        if let Some(info) = run.info.as_ref().filter(|_| run.agent_name == MAIN) {
+            offered(&info.agent_config);
+        }
     }
     // An agent's latest run holds its configuration, so only that run is
     // read, however many runs the session has: from the checkpoint, which
@@ -250,9 +273,13 @@ pub(crate) fn saved_setup(checkpoint: &Path, run_dir: &Path) -> Result<SavedSetu
             })?;
         configs.insert(agent, task.agent_config);
     }
+    if let Some(latest) = configs.get(MAIN) {
+        offered(latest);
+    }
     Ok(SavedSetup {
         name: state.workflow_name,
         configs,
+        mcp_tools,
     })
 }
 
@@ -689,6 +716,16 @@ impl Harness {
         }
         for tool in &self.tools {
             builder = builder.agent_tool(MAIN, tool.clone());
+        }
+        // A chat starts no MCP servers, but the conversations of an agent's
+        // session that it keeps still offer their tools, and a resume needs
+        // each registered.
+        if self.settings.mode == Mode::Chat
+            && let Some(saved) = &saved
+        {
+            for name in &saved.mcp_tools {
+                builder = builder.agent_tool(MAIN, Arc::new(mcp::UnstartedTool(name.clone())));
+            }
         }
         // Registering a tool offers it, so a session saved before a main
         // agent with text replies had `message_user` (its saved
@@ -3323,7 +3360,8 @@ impl Harness {
     pub(crate) fn list_mcp(&self) {
         let out = &self.output;
         let facts = self.details.mcp();
-        if facts.servers.is_empty() {
+        // (A chat's note says why it has none.)
+        if facts.servers.is_empty() && self.settings.mode != Mode::Chat {
             out.line(&format!(
                 "No MCP servers. Arko starts those set up in {}, in the project's {} (once you approve them) and in --mcp-config files.",
                 facts.user_file.display(),
@@ -5372,6 +5410,7 @@ pub(crate) mod tests {
             .push(RUN_WORKFLOW_AGENT_TOOL_NAME.into());
         let saved = SavedSetup {
             name: WORKFLOW_NAME.into(),
+            mcp_tools: Default::default(),
             configs: [(MAIN.to_string(), old)].into(),
         };
         assert_eq!(
@@ -5398,6 +5437,7 @@ pub(crate) mod tests {
             .retain(|name| !MonitorTool::NAMES.contains(&name.as_str()));
         let saved = SavedSetup {
             name: WORKFLOW_NAME.into(),
+            mcp_tools: Default::default(),
             configs: [(MAIN.to_string(), old)].into(),
         };
         assert_eq!(
@@ -5423,6 +5463,7 @@ pub(crate) mod tests {
         let (cc, opus) = (model("cc:haiku"), model("opus"));
         let saved = |settings: &AgentSettings| SavedSetup {
             name: WORKFLOW_NAME.into(),
+            mcp_tools: Default::default(),
             configs: [(MAIN.to_string(), agents::main_config(settings).unwrap())].into(),
         };
         let now = AgentSettings::for_test(&cc, &cc);
@@ -5493,6 +5534,7 @@ pub(crate) mod tests {
             .retain(|name| name != crew::WORKER_OPTIONS && name != crew::SAVE_WORKER_PROFILE);
         let saved = SavedSetup {
             name: WORKFLOW_NAME.into(),
+            mcp_tools: Default::default(),
             configs: [(MAIN.to_string(), old.clone())].into(),
         };
         assert_eq!(
@@ -5505,6 +5547,7 @@ pub(crate) mod tests {
             .retain(|name| !crew::LEAD_TOOL_NAMES.contains(&name.as_str()));
         let saved = SavedSetup {
             name: WORKFLOW_NAME.into(),
+            mcp_tools: Default::default(),
             configs: [(MAIN.to_string(), old)].into(),
         };
         assert_eq!(
@@ -5887,6 +5930,7 @@ pub(crate) mod tests {
         let plain = AgentSettings::for_test(&opus, &opus);
         let saved = SavedSetup {
             name: WORKFLOW_NAME.into(),
+            mcp_tools: Default::default(),
             configs: [
                 (MAIN.to_string(), agents::main_config(&plain).unwrap()),
                 (WORKER.to_string(), agents::worker_config(&plain).unwrap()),

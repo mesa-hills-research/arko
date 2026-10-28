@@ -2,8 +2,10 @@
 //! Context Protocol. Arko starts the servers set up in the files
 //! `--mcp-config` names, in the project's `.mcp.json` (once the user
 //! approves them) and in `mcp.json` in Arko's folder, and offers their tools
-//! to the main agent and the workers as `mcp__<server>__<tool>`. Each Arko
-//! process starts its own servers, and stops them when it exits.
+//! to the main agent and the workers as `mcp__<server>__<tool>`. Each open
+//! agent session runs its own copy of each server and stops it when the
+//! session closes. Chat sessions run none. A launcher such as `npx -y` adds a
+//! wrapper process to each copy.
 //!
 //! A file is in Claude Code's format, servers by name:
 //! `{"mcpServers": {"github": {"command": "npx", "args": ["-y", "..."], "env": {"TOKEN": "${GITHUB_TOKEN}"}}}}`,
@@ -634,6 +636,39 @@ impl Tool for ServerTool {
     }
 }
 
+/// Stands in for a tool of a server that isn't running, in a chat. A chat
+/// starts no servers, but a conversation saved from an agent's session can't
+/// resume unless the tools it offered are registered.
+#[derive(Debug)]
+pub struct UnstartedTool(pub String);
+
+#[async_trait]
+impl Tool for UnstartedTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: self.0.clone(),
+            description: UNSTARTED.into(),
+            output_based_example: None,
+            parameters: vec![],
+            parallel_safe: true,
+            tool_type_details: arko_agents::ToolTypeDetails::DeveloperDefined,
+            raw_json_schema_override: Some(
+                serde_json::json!({"type":"object", "properties":{}, "additionalProperties":true}),
+            ),
+        }
+    }
+
+    async fn execute(
+        &self,
+        _: &TaskContext<'_>,
+        _: std::collections::HashMap<String, Value>,
+    ) -> Result<String, ToolError> {
+        Err(ToolError::ExecutionFailed(UNSTARTED.into()))
+    }
+}
+
+const UNSTARTED: &str = "This MCP server isn't running, because a chat starts none. The user can switch to Agent to use it.";
+
 /// A server Arko tried to start.
 pub struct Started {
     pub server: Server,
@@ -1102,6 +1137,17 @@ mod tests {
             .unwrap();
         assert_eq!(output, "echo: hi");
         running.shutdown().await;
+    }
+
+    /// A tool kept for a saved conversation, in a chat, answers a call by
+    /// saying its server isn't running.
+    #[tokio::test]
+    async fn a_tool_of_a_server_not_started_says_so() {
+        let tool = UnstartedTool("mcp__stub__ping".into());
+        assert_eq!(tool.definition().name, "mcp__stub__ping");
+        let context = TaskContext::new(uuid::Uuid::new_v4(), "main", "test", Path::new("."));
+        let error = tool.execute(&context, Default::default()).await;
+        assert!(error.unwrap_err().to_string().contains("isn't running"));
     }
 
     const STUB_SERVER: &str = r#"
