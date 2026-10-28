@@ -30,14 +30,15 @@ use crate::ui::Input;
 /// question), "demo:wait" (a question the agent waits for, which the next
 /// message answers), "demo:questions" (three numbered questions with choices),
 /// "demo:approval" (a worker profile to approve), "demo:image" (a file read
-/// that shows a large image), "demo:long" (3,500 calls, to reach the
+/// that shows a large image), "demo:table" (a reply with a narrow table, a
+/// wide one and one with long cells), "demo:long" (3,500 calls, to reach the
 /// history's limit; "demo:long 500", 500), anything else (a short turn).
 /// With `ARKO_DEMO_ITEMS`, an earlier message sends an image too.
 /// Lines added to the file `ARKO_DEMO_INPUT` are typed at the terminal.
 /// `ARKO_DEMO_MODEL_MS` (900) is how long the model takes to answer, and a
 /// long one keeps "Working…" on the page.
 /// What starts a script: a message with one of these.
-const MARKERS: [&str; 11] = [
+const MARKERS: [&str; 12] = [
     "Run the demo",
     "demo:stream",
     "demo:worker",
@@ -48,8 +49,25 @@ const MARKERS: [&str; 11] = [
     "demo:questions",
     "demo:approval",
     "demo:image",
+    "demo:table",
     "demo:long",
 ];
+
+/// The reply of "demo:table": a table that fits a phone, a wide one with
+/// many columns, and one whose cells hold long text.
+const TABLES: &str = "Three tables, from the narrowest.\n\n\
+| Check | Result |\n|---|---|\n| Tests | 40 passed |\n| Docs | 1 note |\n\n\
+A wide one, with a column for each of the page's views and workers.\n\n\
+| Worker | Task | State | Model | Effort | Calls | Failed | Cost | Time | Started | Branch | Report |\n\
+|---|---|---|---|---|---:|---:|---:|---:|---|---|---|\n\
+| r1 | Fix the flaky test | finished | claude-sonnet-5-5 | high | 14 | 0 | $0.41 | 2 min 10 s | 14:02:11 | fix/flaky-parser-setup | Fixed |\n\
+| r2 | Review the README | finished | claude-haiku-5-5 | low | 6 | 1 | $0.03 | 38 s | 14:02:15 | docs/readme-flags | One stale note |\n\
+| r3 | Write the changelog | running | claude-sonnet-5-5 | medium | 3 | 0 | $0.09 | 1 min 4 s | 14:04:40 | docs/changelog | |\n\n\
+And one with long cells, which wrap instead of making the table wider.\n\n\
+| Where | What happens |\n|---|---|\n\
+| The parser | The setup raced the clock, so the test failed one run in ten. Waiting for the fixture to signal that it is ready fixed it, and the test passed ten runs in a row. |\n\
+| The docs | The note on --remote's port still said 8765, though https://example.com/notes/remote/ports/the-default-port-is-now-chosen-for-you says otherwise. |\n\
+| The page | Short. |";
 
 #[derive(Default)]
 struct Script {
@@ -309,6 +327,10 @@ async fn remote_page_demo() {
                         complete("i1", "The chart is 1600 by 1000 pixels.")
                     }
                 };
+            }
+            if after("demo:table").is_some() {
+                done();
+                return complete("t0", TABLES);
             }
             if let Some(step) = after("demo:long") {
                 if step == 0 && let Some(feed) = feed.get() {
