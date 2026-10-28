@@ -1,5 +1,7 @@
 //! The transcript: its rows, laid out for the view, and Latest.
 
+use std::collections::HashSet;
+
 use leptos::prelude::*;
 use lucide_leptos::{ArrowDown, ChevronRight};
 
@@ -58,18 +60,14 @@ pub fn Transcript() -> impl IntoView {
         rows.track();
         if page.pinned.get() {
             page.seen.set(STORE.with(|store| store.borrow().newest()));
-            page.grew.set(false);
+            page.grown.update(HashSet::clear);
         }
     });
     let jump_label = move || {
-        let fresh = layout::unseen(&rows.get(), page.seen.get());
-        if fresh > 0 {
-            format!("{fresh} new")
-        } else if page.grew.get() {
-            "New text".into()
-        } else {
-            "Latest".into()
-        }
+        rows.with(|rows| {
+            page.grown
+                .with(|grown| layout::jump_label(rows, page.seen.get(), grown))
+        })
     };
     let empty = move || {
         if !rows.with(Vec::is_empty) || page.connection.get() != words::Connection::Live {

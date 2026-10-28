@@ -362,6 +362,27 @@ pub fn unseen(rows: &[Row], seen: u64) -> usize {
         .count()
 }
 
+/// Whether the text of one of the items `grown` shows in `rows`. A count
+/// row shows no text, and "Working…" isn't an item.
+fn grew(rows: &[Row], grown: &HashSet<u64>) -> bool {
+    rows.iter()
+        .any(|row| matches!(row, Row::Item(id) if grown.contains(id)))
+}
+
+/// What Latest says. It counts the rows that came after the item `seen`
+/// and, with none, says when text grew in a row of the view. Both read the
+/// same `rows`, so they agree with what the view shows.
+pub fn jump_label(rows: &[Row], seen: u64, grown: &HashSet<u64>) -> String {
+    let fresh = unseen(rows, seen);
+    if fresh > 0 {
+        format!("{fresh} new")
+    } else if grew(rows, grown) {
+        "New text".into()
+    } else {
+        "Latest".into()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -539,5 +560,78 @@ mod tests {
             first_line("\n  **Planning** the fix\nmore"),
             "Planning the fix"
         );
+    }
+
+    /// A conversation with the main agent's thinking and reply, and a worker
+    /// that streams text and makes a call.
+    fn streaming() -> Vec<ItemData> {
+        let mut worker_call = item(5, Kind::Call, "r1", "cat");
+        worker_call.status = Some(CallStatus::Ok);
+        vec![
+            item(1, Kind::User, MAIN, "hi"),
+            item(2, Kind::Thinking, MAIN, "hmm"),
+            item(3, Kind::Text, "r1", "worker text"),
+            item(4, Kind::Text, MAIN, "an answer"),
+            worker_call,
+        ]
+    }
+
+    fn label(items: &[ItemData], view: View, worker: Option<&str>, grown: &[u64]) -> String {
+        let grown = grown.iter().copied().collect();
+        jump_label(&layout(items, view, worker), 5, &grown)
+    }
+
+    #[test]
+    fn a_workers_text_isnt_new_text_in_the_main_view() {
+        let items = streaming();
+        for view in View::ALL {
+            assert_eq!(label(&items, view, None, &[3]), "Latest", "{view:?}");
+        }
+        // It is in the worker's own view.
+        assert_eq!(label(&items, View::Full, Some("r1"), &[3]), "New text");
+    }
+
+    #[test]
+    fn text_a_view_hides_isnt_new_text_in_it() {
+        let items = streaming();
+        // Messages leaves the agent's thinking out.
+        assert_eq!(label(&items, View::Messages, None, &[2]), "Latest");
+        assert_eq!(label(&items, View::Full, None, &[2]), "New text");
+        assert_eq!(label(&items, View::Quiet, None, &[2]), "New text");
+        // The main agent's text isn't in a worker's view.
+        assert_eq!(label(&items, View::Full, Some("r1"), &[4]), "Latest");
+    }
+
+    #[test]
+    fn a_visible_reply_that_grows_is_new_text_in_every_view() {
+        let items = streaming();
+        for view in View::ALL {
+            assert_eq!(label(&items, view, None, &[4]), "New text", "{view:?}");
+        }
+        // A worker's text beside it changes nothing.
+        assert_eq!(label(&items, View::Full, None, &[3, 4]), "New text");
+    }
+
+    #[test]
+    fn latest_counts_new_rows_before_it_says_text_grew() {
+        let mut items = streaming();
+        let grown: HashSet<u64> = [4].into();
+        let rows = layout(&items, View::Full, None);
+        assert_eq!(jump_label(&rows, 4, &grown), "1 new");
+        assert_eq!(jump_label(&rows, 5, &grown), "New text");
+        // A worker's text that came since isn't new in the main view.
+        items.push(item(6, Kind::Text, "r1", "more"));
+        let rows = layout(&items, View::Full, None);
+        assert_eq!(jump_label(&rows, 5, &HashSet::new()), "Latest");
+    }
+
+    #[test]
+    fn a_count_row_shows_no_text() {
+        let mut call = item(3, Kind::Call, MAIN, "ls");
+        call.status = Some(CallStatus::Ok);
+        let items = vec![item(1, Kind::User, MAIN, "go"), call];
+        let rows = layout(&items, View::Messages, None);
+        assert_eq!(ids(&rows), ["i1", "c1"]);
+        assert_eq!(jump_label(&rows, 3, &[3].into()), "Latest");
     }
 }

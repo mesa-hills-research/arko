@@ -1,7 +1,7 @@
 //! The page's state, the key exchange, the event stream and the actions.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use leptos::prelude::*;
 use leptos::task::spawn_local;
@@ -78,8 +78,9 @@ pub struct Page {
     pub streaming: RwSignal<Option<u64>>,
     /// The newest item the reader saw at the bottom.
     pub seen: RwSignal<u64>,
-    /// Text came below since the reader left the bottom.
-    pub grew: RwSignal<bool>,
+    /// The items whose text grew since the reader left the bottom. Latest
+    /// says "New text" when the rows of the view show one of them.
+    pub grown: RwSignal<HashSet<u64>>,
     pub pinned: RwSignal<bool>,
     /// The agent's questions as the page shows them.
     pub ask: crate::questions::Asking,
@@ -127,7 +128,7 @@ impl Page {
             image: RwSignal::new(None),
             streaming: RwSignal::new(None),
             seen: RwSignal::new(0),
-            grew: RwSignal::new(false),
+            grown: RwSignal::new(HashSet::new()),
             pinned: RwSignal::new(true),
             ask: crate::questions::Asking::new(),
         };
@@ -623,8 +624,17 @@ fn on_append(page: Page, data: &str) -> Result<(), String> {
     if let Some(cell) = cell(append.id) {
         cell.text.update(|text| text.push_str(&append.text));
     }
+    // Whether the text shows is for the label to say, from the rows of the
+    // view at that time.
     if !page.pinned.get_untracked() {
-        page.grew.set(true);
+        let known = page
+            .grown
+            .with_untracked(|grown| grown.contains(&append.id));
+        if !known {
+            page.grown.update(|grown| {
+                grown.insert(append.id);
+            });
+        }
     }
     crate::scroll::follow();
     Ok(())
