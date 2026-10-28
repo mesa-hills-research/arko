@@ -648,12 +648,13 @@ impl Engine {
             agents::worker_config(&agent_settings)?;
         }
         // A chat has no tools: no MCP servers, skills, indexes or workers. One
-        // that was an agent's has them still (its agent is offered none), for
-        // its agent's conversations, which resume with their tools.
+        // that was an agent's has the skills, indexes and workers still (its
+        // agent is offered none), for its agent's conversations, which resume
+        // with their tools. MCP servers are never started in a chat.
         let chat = settings.mode == crate::session::Mode::Chat;
         let bare = chat && !settings.switched_mode;
         // A project's MCP servers are started once the user approves them.
-        let (mcp_servers, mcp_notes) = if bare {
+        let (mcp_servers, mcp_notes) = if chat {
             (Vec::new(), Vec::new())
         } else {
             let mcp_plan = mcp::plan(
@@ -926,6 +927,12 @@ impl Engine {
             (None, None)
         };
 
+        // (What `/mcp` and an app's session info say of a chat's servers.)
+        let mcp_notes = if chat {
+            vec![crate::details::CHAT_MCP_NOTE.to_string()]
+        } else {
+            mcp_notes
+        };
         let details = Arc::new(crate::details::Details::new(
             session.id.clone(),
             session.dir.clone(),
@@ -3958,6 +3965,242 @@ mod tests {
             tokio::time::timeout(wait, ended).await.unwrap().unwrap(),
             RunEnd::Quit
         );
+    }
+
+    /// A chat starts no MCP servers and doesn't ask about the project's
+    /// `.mcp.json`, also when it was an agent's, whose conversations offered
+    /// the servers' tools. An agent's session starts them as before, and
+    /// each switch to Agent starts them again.
+    #[tokio::test]
+    async fn a_chat_starts_no_mcp_servers() {
+        const STUB: &str = r#"
+import json, os, sys
+def note(text):
+    with open(os.environ["STUB_LOG"], "a") as log:
+        log.write(text + "\n")
+def reply(id, result):
+    sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": id, "result": result}) + "\n")
+    sys.stdout.flush()
+note("start")
+for line in sys.stdin:
+    message = json.loads(line)
+    if "id" not in message:
+        continue
+    method = message.get("method")
+    if method == "initialize":
+        reply(message["id"], {"protocolVersion": message["params"]["protocolVersion"],
+              "capabilities": {"tools": {}}, "serverInfo": {"name": "stub", "version": "1"}})
+    elif method == "tools/list":
+        reply(message["id"], {"tools": [{"name": "ping", "description": "Answers pong.",
+              "inputSchema": {"type": "object", "properties": {}}}]})
+    else:
+        reply(message["id"], {"content": [{"type": "text", "text": "pong"}]})
+note("stop")
+"#;
+        /// Counts the questions about the project's servers.
+        struct Counting(Arc<std::sync::atomic::AtomicUsize>);
+        #[async_trait::async_trait]
+        impl Prompter for Counting {
+            async fn need_credentials(&self, need: &credentials::Need) -> Result<(), String> {
+                Err(need.message())
+            }
+            async fn approve_project_mcp(
+                &self,
+                _approval: &crate::prompter::McpApproval,
+            ) -> Result<Option<bool>, String> {
+                self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(None)
+            }
+            fn note(&self, _level: crate::remote::Level, _text: &str) {}
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let bodies: Arc<Mutex<Vec<String>>> = Arc::default();
+        let server = ModelServer::start(Arc::new({
+            let bodies = bodies.clone();
+            move |_, body: String| {
+                bodies.lock().unwrap().push(body);
+                Box::pin(async move { reply("a", "Ahoy.") })
+            }
+        }))
+        .await;
+        let root = temp.path().join("arko");
+        let project = temp.path().join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(
+            project.join(mcp::PROJECT_FILE),
+            r#"{"mcpServers": {"project": {"command": "arko-no-such-mcp-server"}}}"#,
+        )
+        .unwrap();
+        let script = temp.path().join("stub.py");
+        std::fs::write(&script, STUB).unwrap();
+        let log = temp.path().join("stub.log");
+        let python = std::env::var("ARKO_TEST_PYTHON")
+            .unwrap_or_else(|_| if cfg!(windows) { "python" } else { "python3" }.into());
+        let config = temp.path().join("mcp.json");
+        std::fs::write(
+            &config,
+            serde_json::json!({"mcpServers": {"stub": {
+                "command": python,
+                "args": [script],
+                "env": {"STUB_LOG": log},
+            }}})
+            .to_string(),
+        )
+        .unwrap();
+        let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let asked_now = || asked.load(std::sync::atomic::Ordering::SeqCst);
+        // How many times the stub started, and how many times it stopped.
+        let events = |event: &str| {
+            std::fs::read_to_string(&log)
+                .unwrap_or_default()
+                .lines()
+                .filter(|line| *line == event)
+                .count()
+        };
+        let wait = Duration::from_secs(30);
+        let open = |session: SessionChoice, mode: crate::session::Mode| {
+            let running = spawn(
+                Options {
+                    root: Some(root.clone()),
+                    session,
+                    mode,
+                    workspace: Some(project.clone()),
+                    mcp_config: vec![config.clone()],
+                    model: Some("luna".into()),
+                    openai_auth: Some(OpenAiAuth::ApiKey),
+                    cache_1h: Some(false),
+                    text_replies: Some(true),
+                    client: Some(GivenClient(Arc::new(server.client()))),
+                    ..Options::default()
+                },
+                Arc::new(Counting(asked.clone())),
+            );
+            async move {
+                let seam = tokio::time::timeout(wait, running.opened)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .unwrap();
+                (seam, running.ended)
+            }
+        };
+        let ask = |seam: &Seam, text: &str, count: usize| {
+            seam.input.send(Input::Message(app_message(text))).unwrap();
+            let feed = seam.feed.clone();
+            let bodies = bodies.clone();
+            async move {
+                tokio::time::timeout(wait, async {
+                    while bodies.lock().unwrap().len() < count || feed.activity().working {
+                        tokio::time::sleep(Duration::from_millis(20)).await;
+                    }
+                })
+                .await
+                .unwrap();
+                bodies.lock().unwrap()[count - 1].clone()
+            }
+        };
+        let stopped = |count: usize| async move {
+            tokio::time::timeout(wait, async {
+                while events("stop") < count {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .unwrap();
+        };
+        let switch = |seam: &Seam, to: crate::session::Mode| {
+            let (reply_to, answer) = tokio::sync::oneshot::channel();
+            seam.requests
+                .send(Request::SwitchMode {
+                    to,
+                    workspace: None,
+                    reply: reply_to,
+                })
+                .unwrap();
+            async move { answer.await.unwrap() }
+        };
+        let ping = "mcp__stub__ping";
+
+        // An agent's session starts the server and offers its tool.
+        let (seam, ended) = open(SessionChoice::New, crate::session::Mode::Agent).await;
+        let id = seam.session.id.clone();
+        assert_eq!((events("start"), asked_now()), (1, 1));
+        assert_eq!(seam.details.mcp().servers.len(), 1);
+        assert!(ask(&seam, "First.", 1).await.contains(ping));
+        assert_eq!(switch(&seam, crate::session::Mode::Chat).await, Ok(()));
+        assert_eq!(
+            tokio::time::timeout(wait, ended).await.unwrap().unwrap(),
+            RunEnd::Reopen
+        );
+        stopped(1).await;
+
+        // As a chat it starts nothing and asks nothing, and its first
+        // conversation, the agent's, goes on without tools.
+        let (seam, ended) = open(
+            SessionChoice::Resume(id.clone()),
+            crate::session::Mode::Chat,
+        )
+        .await;
+        assert_eq!((events("start"), asked_now()), (1, 1));
+        let mcp = seam.details.mcp();
+        assert!(mcp.servers.is_empty());
+        assert_eq!(mcp.notes, [crate::details::CHAT_MCP_NOTE]);
+        // `/mcp` says why, and not that no servers are set up.
+        seam.input
+            .send(Input::Message(app_message("/mcp")))
+            .unwrap();
+        let said = |seam: &Seam| {
+            seam.feed
+                .subscribe()
+                .0
+                .items
+                .iter()
+                .map(|item| item.text.clone())
+                .collect::<Vec<_>>()
+        };
+        tokio::time::timeout(wait, async {
+            while !said(&seam).contains(&crate::details::CHAT_MCP_NOTE.to_string()) {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(
+            !said(&seam)
+                .iter()
+                .any(|text| text.contains("No MCP servers"))
+        );
+        let chat = ask(&seam, "Second.", 2).await;
+        assert!(!chat.contains(ping) && chat.contains("First."), "{chat}");
+        assert_eq!(switch(&seam, crate::session::Mode::Agent).await, Ok(()));
+        assert_eq!(
+            tokio::time::timeout(wait, ended).await.unwrap().unwrap(),
+            RunEnd::Reopen
+        );
+
+        // Back to Agent, it starts the server again.
+        let (seam, ended) = open(SessionChoice::Resume(id), crate::session::Mode::Agent).await;
+        assert_eq!((events("start"), asked_now()), (2, 2));
+        assert!(
+            !seam
+                .details
+                .mcp()
+                .notes
+                .contains(&crate::details::CHAT_MCP_NOTE.to_string())
+        );
+        assert!(ask(&seam, "Third.", 3).await.contains(ping));
+        seam.input.send(Input::Quit(Some(Vec::new()))).unwrap();
+        assert_eq!(
+            tokio::time::timeout(wait, ended).await.unwrap().unwrap(),
+            RunEnd::Quit
+        );
+        stopped(2).await;
+
+        // A chat that never was an agent's starts none either.
+        let (seam, ended) = open(SessionChoice::New, crate::session::Mode::Chat).await;
+        assert_eq!((events("start"), asked_now()), (2, 2));
+        assert!(!ask(&seam, "Hello.", 4).await.contains(ping));
+        quit(seam, ended).await;
     }
 
     /// A session's conversation is read whole from what it saved, also

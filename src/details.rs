@@ -350,6 +350,10 @@ pub struct McpServerFacts {
     pub tools: Result<Vec<String>, String>,
 }
 
+/// What a chat's [`McpFacts::notes`] say in place of servers, which a chat
+/// doesn't start.
+pub const CHAT_MCP_NOTE: &str = "A chat runs no MCP servers. Switch to Agent to use them.";
+
 /// What `/mcp` says.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct McpFacts {
