@@ -8,7 +8,8 @@
 //! row shows once it's whole, so a table grows a row at a time.
 //!
 //! A finished code block is painted with the spans Arko highlighted it with
-//! (found by its code's hash), once they've come.
+//! (found by its code's hash), once they've come. Its language and its copy
+//! button sit in its corner.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -78,25 +79,29 @@ pub fn to_html(text: &str) -> String {
     let options = Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TABLES;
     // Inside a link, a web address stays text.
     let mut plain = 0u32;
-    // A code block's code, gathered to paint it whole.
+    // A code block's code, gathered to paint it whole, and its language.
     let mut code: Option<String> = None;
+    let mut language: Option<String> = None;
     for event in TextMergeStream::new(Parser::new_ext(text, options)) {
         match event {
             Event::Start(tag) => {
                 plain += u32::from(matches!(tag, Tag::Link { .. }));
-                if matches!(tag, Tag::CodeBlock(_)) {
+                if let Tag::CodeBlock(kind) = &tag {
                     code = Some(String::new());
+                    language = language_of(kind).map(str::to_string);
                 }
                 open(&mut html, tag)
             }
             Event::End(tag) => {
                 plain = plain.saturating_sub(u32::from(matches!(tag, TagEnd::Link)));
-                if matches!(tag, TagEnd::CodeBlock)
-                    && let Some(code) = code.take()
-                {
+                let block = matches!(tag, TagEnd::CodeBlock);
+                if block && let Some(code) = code.take() {
                     code_html(&mut html, &code);
                 }
-                close(&mut html, tag)
+                close(&mut html, tag);
+                if block {
+                    code_actions(&mut html, language.take().as_deref());
+                }
             }
             Event::Text(text) if code.is_some() => {
                 if let Some(code) = &mut code {
@@ -138,14 +143,11 @@ fn open(html: &mut String, tag: Tag) {
         }
         Tag::BlockQuote(_) => html.push_str("<blockquote>"),
         Tag::CodeBlock(kind) => {
-            html.push_str("<pre><code");
-            if let CodeBlockKind::Fenced(language) = kind {
-                let language = language.split_whitespace().next().unwrap_or("");
-                if !language.is_empty() {
-                    html.push_str(" data-lang=\"");
-                    escape(html, language);
-                    html.push('"');
-                }
+            html.push_str("<div class=\"code\"><pre><code");
+            if let Some(language) = language_of(&kind) {
+                html.push_str(" data-lang=\"");
+                escape(html, language);
+                html.push('"');
             }
             html.push('>');
         }
@@ -204,6 +206,27 @@ fn close(html: &mut String, tag: TagEnd) {
         _ => "",
     };
     html.push_str(end);
+}
+
+/// A fenced code block's language, as its fence names it.
+fn language_of<'a>(kind: &'a CodeBlockKind) -> Option<&'a str> {
+    match kind {
+        CodeBlockKind::Fenced(info) => info.split_whitespace().next(),
+        CodeBlockKind::Indented => None,
+    }
+}
+
+/// Closes a code block with its corner, which holds its language and its
+/// copy button.
+fn code_actions(html: &mut String, language: Option<&str>) {
+    html.push_str("<div class=\"code-actions\">");
+    if let Some(language) = language {
+        html.push_str("<span class=\"code-lang\">");
+        escape(html, language);
+        html.push_str("</span>");
+    }
+    html.push_str(&crate::copy::code_button());
+    html.push_str("</div></div>");
 }
 
 fn safe_url(url: &str) -> bool {
@@ -480,6 +503,52 @@ mod tests {
             "{html}"
         );
         assert!(!html.contains("hl-string"), "{html}");
+    }
+
+    /// A code block's text in the HTML, its markup left out as a browser's
+    /// `textContent` leaves it, is its code, which its copy button copies.
+    #[test]
+    fn a_code_block_has_its_language_and_a_copy_button_beside_its_code() {
+        let code = "let s = \"<a & b>\";\nfn main() {}\n";
+        remember(&[CodeSpans {
+            hash: code_hash(code),
+            spans: vec![[8, 18, 27]],
+        }]);
+        let html = to_html(&format!("```rust ignore\n{code}```\n\n    indented\n"));
+        assert!(
+            html.starts_with(r#"<div class="code"><pre><code data-lang="rust">"#),
+            "{html}"
+        );
+        assert!(
+            html.contains(
+                r#"<div class="code-actions"><span class="code-lang">rust</span><button"#
+            ),
+            "{html}"
+        );
+        assert_eq!(
+            html.matches(r#"aria-label="Copy code""#).count(),
+            2,
+            "{html}"
+        );
+        let inner = &html[html.find("<code").unwrap()..html.find("</code>").unwrap()];
+        let inner = &inner[inner.find('>').unwrap() + 1..];
+        let mut text = String::new();
+        let mut in_tag = false;
+        for c in inner.chars() {
+            match c {
+                '<' => in_tag = true,
+                '>' if in_tag => in_tag = false,
+                c if !in_tag => text.push(c),
+                _ => {}
+            }
+        }
+        let text = text
+            .replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .replace("&quot;", "\"")
+            .replace("&amp;", "&");
+        assert!(inner.contains("<span class=\"hl-string\">"), "{inner}");
+        assert_eq!(text, code);
     }
 
     #[test]

@@ -922,6 +922,25 @@ html:not(.apple) ::-webkit-scrollbar-corner { background: transparent; }
   .row:hover .actions .btn, .actions .btn:focus-visible, .actions .btn.copied { opacity: 1; }
 }
 
+/* A code block's language and copy button, in its corner, over its first
+   line where that runs long, as GPUI Kit draws them. */
+.md .code { position: relative; margin: 0 0 0.7em; }
+.md .code > pre { margin: 0; }
+.md .mdb:last-child > .code:last-child { margin-bottom: 0; }
+.code-actions {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding-left: 4px;
+  border-radius: var(--r-md);
+  background: var(--surface);
+  color: var(--muted);
+  font: 12px/1 var(--sans);
+}
+
 /* The field copy.rs copies from on plain HTTP, where browsers don't offer
    the Clipboard API. */
 .copy-field { position: fixed; top: 0; left: -9999px; font-size: 16px; }

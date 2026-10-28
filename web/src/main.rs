@@ -62,6 +62,7 @@ fn App() -> impl IntoView {
     let key = app::take_key();
     spawn_local(app::start(page, key));
     listen(page);
+    copy::listen_for_code_copies();
     questions::follow();
     view! {
         <Show

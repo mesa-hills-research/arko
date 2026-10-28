@@ -4,6 +4,7 @@
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use wasm_bindgen::JsCast;
+use wasm_bindgen::closure::Closure;
 
 use crate::composer::gloo_wait;
 
@@ -108,5 +109,73 @@ pub fn CopyButton(label: &'static str, text: RwSignal<String>) -> impl IntoView 
                 }
             }
         ></button>
+    }
+}
+
+/// The copy button of a code block, as the HTML of a reply's Markdown holds
+/// it. [`listen_for_code_copies`] hears it.
+pub fn code_button() -> String {
+    format!(
+        r#"<button type="button" class="btn ghost small icon copy code-copy" aria-label="Copy code" title="Copy">{ICONS}</button>"#
+    )
+}
+
+/// Copies a code block's code when its copy button is clicked. The blocks
+/// are HTML, so one listener on the page hears all their buttons.
+pub fn listen_for_code_copies() {
+    let listener = Closure::<dyn Fn(web_sys::MouseEvent)>::new(|event: web_sys::MouseEvent| {
+        let Some(button) = event
+            .target()
+            .and_then(|target| target.dyn_into::<web_sys::Element>().ok())
+            .and_then(|target| target.closest(".code-copy").ok().flatten())
+        else {
+            return;
+        };
+        let code = button
+            .closest(".code")
+            .ok()
+            .flatten()
+            .and_then(|block| block.query_selector("code").ok().flatten())
+            .and_then(|code| code.text_content())
+            .unwrap_or_default();
+        copy_text(code_of(&code).to_string(), move |done| {
+            if !done {
+                return;
+            }
+            let _ = button.class_list().add_1("copied");
+            spawn_local(async move {
+                gloo_wait(COPIED_MS).await;
+                let _ = button.class_list().remove_1("copied");
+            });
+        });
+    });
+    let _ = document().add_event_listener_with_callback("click", listener.as_ref().unchecked_ref());
+    listener.forget();
+}
+
+/// The code of a code block's text, which ends in the line end Markdown
+/// gives its last line.
+fn code_of(text: &str) -> &str {
+    text.strip_suffix('\n').unwrap_or(text)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn a_code_blocks_copy_leaves_out_the_last_line_end_only() {
+        assert_eq!(super::code_of("fn main() {}\n"), "fn main() {}");
+        assert_eq!(super::code_of("a\n\n"), "a\n");
+        assert_eq!(super::code_of("a"), "a");
+    }
+
+    #[test]
+    fn a_code_blocks_copy_button_has_both_icons() {
+        let button = super::code_button();
+        assert!(button.contains(r#"aria-label="Copy code""#), "{button}");
+        assert!(
+            button.contains("copy-icon") && button.contains("copied-icon"),
+            "{button}"
+        );
+        assert_eq!(button.matches("<svg").count(), 2, "{button}");
     }
 }
