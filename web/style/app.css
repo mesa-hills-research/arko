@@ -902,6 +902,26 @@ html:not(.apple) ::-webkit-scrollbar-corner { background: transparent; }
 
 /* ----- copying ----- */
 
+.btn.small.icon { width: 24px; }
+/* A copy button's icon cross-fades to a check in the success color, which
+   holds for a second (copy.rs), then fades back. */
+.copy { position: relative; color: var(--muted); }
+.copy .copy-icon, .copy .copied-icon { display: flex; transition: opacity 0.12s; }
+.copy .copied-icon { position: absolute; inset: 0; align-items: center; justify-content: center; color: var(--success); opacity: 0; }
+.copy.copied .copy-icon { opacity: 0; }
+.copy.copied .copied-icon { opacity: 1; }
+
+/* A message's actions keep their room under it, so showing them moves
+   nothing. Where a pointer hovers they show with it or the focus, and on
+   touch screens always. */
+.actions { display: flex; align-items: center; gap: 4px; margin-top: 2px; }
+.row.user .actions { justify-content: flex-end; }
+.actions .tag { margin-top: 0; }
+@media (hover: hover) {
+  .actions .btn { opacity: 0; }
+  .row:hover .actions .btn, .actions .btn:focus-visible, .actions .btn.copied { opacity: 1; }
+}
+
 /* The field copy.rs copies from on plain HTTP, where browsers don't offer
    the Clipboard API. */
 .copy-field { position: fixed; top: 0; left: -9999px; font-size: 16px; }

@@ -4,6 +4,7 @@ use leptos::prelude::*;
 use lucide_leptos::{ArrowDown, ChevronRight, LoaderCircle};
 
 use crate::app::{Cell, Page, STORE, cell, page, post};
+use crate::copy::CopyButton;
 use crate::layout::{self, Count, Row, View};
 use crate::markdown::{self, Blocks};
 use crate::protocol::{CallStatus, ItemData, Kind, Level, Source, WorkerState};
@@ -211,9 +212,13 @@ fn item_row(id: u64, cell: Cell, thinking: Memo<Option<u64>>) -> AnyView {
                     (!tags.is_empty()).then(|| tags.join(" · "))
                 })
             };
+            // Under it, its tags and Copy.
             view! {
                 <div class="bubble">{move || text.get()}</div>
-                {move || tags().map(|tags| view! { <div class="tag">{tags}</div> })}
+                <div class="actions">
+                    {move || tags().map(|tags| view! { <span class="tag">{tags}</span> })}
+                    <CopyButton label="Copy message" text=text />
+                </div>
             }
             .into_any()
         }
@@ -238,11 +243,21 @@ fn item_row(id: u64, cell: Cell, thinking: Memo<Option<u64>>) -> AnyView {
                 Some(from) => format!("Message from {from}"),
                 None => "Message".into(),
             };
-            view! { <span class="label">{label}</span><Md id=id text=text code=cell.code /> }.into_any()
+            view! {
+                <span class="label">{label}</span>
+                <Md id=id text=text code=cell.code />
+                <div class="actions"><CopyButton label="Copy message" text=text /></div>
+            }
+            .into_any()
         }
         Kind::Reply => {
             let report = (item.agent != MAIN).then(|| view! { <span class="label">"Report"</span> });
-            view! { {report}<Md id=id text=text code=cell.code /> }.into_any()
+            view! {
+                {report}
+                <Md id=id text=text code=cell.code />
+                <div class="actions"><CopyButton label="Copy message" text=text /></div>
+            }
+            .into_any()
         }
         Kind::Question => crate::questions::card_view(id, cell),
         Kind::Call => call_row(cell),
