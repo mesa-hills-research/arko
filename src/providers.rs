@@ -1512,6 +1512,20 @@ pub fn plan_name(plan: Option<SubscriptionPlan>) -> &'static str {
     }
 }
 
+/// The plan that pays for `model`'s calls when the session reaches OpenAI
+/// models by `openai_auth`, as `/cost` names it: the Claude plan for `cc:`
+/// models, the ChatGPT plan for OpenAI models on the ChatGPT login. `None`
+/// for a model billed per token (an API key, Gemini, OpenRouter).
+pub fn plan_of(model: &Model, openai_auth: Option<OpenAiAuth>) -> Option<&'static str> {
+    match model.provider {
+        Provider::ClaudeCode => Some(plan_name(Some(SubscriptionPlan::ClaudeCode))),
+        Provider::OpenAI if openai_auth != Some(OpenAiAuth::ApiKey) => {
+            Some(plan_name(Some(SubscriptionPlan::ChatGpt)))
+        }
+        _ => None,
+    }
+}
+
 /// What a call would have cost at API list prices: its estimate when a
 /// plan covered it, else what it was billed.
 pub(crate) fn at_api_prices(usage: &UsageInfo, billed: f64) -> f64 {
@@ -1643,12 +1657,10 @@ pub fn cost_report(
 
 /// The main agent's part of the costs in `ledger` and the workers'.
 pub fn cost_shares(ledger: &CostLedger, settings: &Settings) -> (CostShare, CostShare) {
-    let plan_of = |model: &ModelSettings| match resolve_model(&model.model).map(|m| m.provider) {
-        Ok(Provider::ClaudeCode) => Some(plan_name(Some(SubscriptionPlan::ClaudeCode))),
-        Ok(Provider::OpenAI) if settings.openai_auth != Some(OpenAiAuth::ApiKey) => {
-            Some(plan_name(Some(SubscriptionPlan::ChatGpt)))
-        }
-        _ => None,
+    let plan_of = |model: &ModelSettings| {
+        resolve_model(&model.model)
+            .ok()
+            .and_then(|model| plan_of(&model, settings.openai_auth))
     };
     let mut main = CostShare::default();
     let mut workers = CostShare::default();

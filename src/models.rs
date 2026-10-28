@@ -7,15 +7,29 @@ use crate::providers;
 pub use crate::providers::ModelGroup;
 use crate::remote::Models;
 
-/// The models by the way they are reached, as the picker lists them.
-pub fn menu(models: &Models, needs: impl Fn(&str) -> Option<String>) -> Vec<providers::ModelGroup> {
-    let auth = match models.openai_auth.as_deref() {
+/// How the session of `models` reaches OpenAI models.
+fn openai_auth(models: &Models) -> Option<providers::OpenAiAuth> {
+    match models.openai_auth.as_deref() {
         Some("OpenAI API key") => Some(providers::OpenAiAuth::ApiKey),
         Some(_) => Some(providers::OpenAiAuth::ChatGpt),
         None => None,
-    };
+    }
+}
+
+/// The models by the way they are reached, as the picker lists them.
+pub fn menu(models: &Models, needs: impl Fn(&str) -> Option<String>) -> Vec<providers::ModelGroup> {
     let current = [models.main.as_str(), models.workers.as_str()];
-    providers::model_menu(needs, auth, &current, &models.recent)
+    providers::model_menu(needs, openai_auth(models), &current, &models.recent)
+}
+
+/// How the model `name` (as `/model` takes it) is billed in the session of
+/// `models`, for a picker to show beside it: `API, $5/$25` (per million
+/// input and output tokens) for a model billed per token, or `API` when its
+/// price isn't known. `None` for a model on one of the user's plans (a
+/// `cc:` model, an OpenAI model on the ChatGPT login), which needs no label
+/// beside the others.
+pub fn billing(models: &Models, name: &str) -> Option<String> {
+    crate::billing::label(name, openai_auth(models))
 }
 
 /// The models the picker lets you choose, as `/model` takes them, with

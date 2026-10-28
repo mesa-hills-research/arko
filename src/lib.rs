@@ -29,6 +29,7 @@
 
 mod agents;
 mod asking;
+mod billing;
 pub mod builtin_skills;
 mod cache_memory;
 pub mod cache_timer;

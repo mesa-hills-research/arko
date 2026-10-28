@@ -137,7 +137,7 @@ fn the_options_list_the_profiles_and_the_models_usable_now() {
     // The models: what the session reaches, with plan usage for the
     // ChatGPT login, and what it doesn't with how to get it.
     assert!(text.contains(
-        "\n\nModels usable now (price per million input and output tokens, and the size where a worker hands over to a fresh conversation)\n"
+        "\n\nModels usable now (the plan that pays, or API and the price per million input and output tokens, and the size where a worker hands over to a fresh conversation)\n"
     ));
     assert!(
         text.contains("\n- sol · efforts low to max · ChatGPT plan 5 h 12%, 7 d 40%, shared with the user's own use · hands over at 250k · cache 30m, fixed"),
@@ -179,12 +179,8 @@ fn a_claude_model_by_key_shows_its_prices_and_cache_and_a_plan_model_its_usage()
     let opus = resolve_model("opus").unwrap();
     // (The prices of today, as the tool prints them: a model's price can
     // have a period that starts on a date.)
-    let today = opus.pricing.at(std::time::SystemTime::now());
-    let prices = format!(
-        "${} / ${}",
-        dollars(today.input_cost_per_million),
-        dollars(today.output_cost_per_million)
-    );
+    let prices = crate::billing::api_label(&opus);
+    assert!(prices.starts_with("API, $"), "{prices}");
     let line = text
         .lines()
         .find(|line| line.starts_with("- opus ·"))
@@ -204,10 +200,8 @@ fn a_claude_model_by_key_shows_its_prices_and_cache_and_a_plan_model_its_usage()
         .find(|line| line.starts_with("- sol ·"))
         .unwrap();
     assert!(sol.ends_with(" · cache 30m, fixed"), "{sol}");
-    assert!(text.contains("\n- gemini · efforts low to high · $"));
-    assert!(
-        text.contains("\n- openrouter:<slug> · any model OpenRouter serves · billed per token")
-    );
+    assert!(text.contains("\n- gemini · efforts low to high · API, $"));
+    assert!(text.contains("\n- openrouter:<slug> · any model OpenRouter serves · API · "));
     assert!(!text.contains("Not usable now"));
     // A session that hands over in Claude Code says so.
     basis.cc_compact = false;
@@ -253,15 +247,12 @@ fn a_setting_that_limits_the_choice_is_said_first() {
 }
 
 #[test]
-fn efforts_dollars_and_sizes_read_briefly() {
+fn efforts_and_sizes_read_briefly() {
     let efforts = |name: &str| efforts_range(&resolve_model(name).unwrap());
     assert_eq!(efforts("opus"), "low to max");
     assert_eq!(efforts("gemini"), "low to high");
     assert_eq!(efforts("gpt-5-pro-2025-10-06"), "high");
     assert_eq!(efforts("gpt-5.4-nano-2026-03-17"), "low to xhigh");
-    assert_eq!(dollars(5.0), "5");
-    assert_eq!(dollars(1.25), "1.25");
-    assert_eq!(dollars(0.1), "0.1");
     assert_eq!(thousands(950_000), "950k");
 }
 

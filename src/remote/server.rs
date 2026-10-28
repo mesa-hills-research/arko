@@ -1547,7 +1547,8 @@ struct ChoicesBody {
 /// full-screen view completes them (fixed ones, or the session's workers,
 /// models and so on). `"typed"` is the start of the word being typed, which
 /// `/model` completes from OpenRouter's models when it starts with
-/// `openrouter:`.
+/// `openrouter:`. `"notes"` has a note for some words, by word: how a model
+/// billed per token is billed (`API, $5/$25`).
 async fn choices(
     State(app): State<Arc<App>>,
     ConnectInfo(peer): Peer,
@@ -1573,21 +1574,30 @@ async fn choices(
     }
     let reading = app.meter.read();
     // (Finding the models can ask Claude Code for its login.)
-    let words = tokio::task::spawn_blocking(move || {
+    let (words, notes) = tokio::task::spawn_blocking(move || {
         let command = crate::commands::on_page().find(|command| command.name == body.command)?;
         let before: Vec<&str> = body.before.iter().map(String::as_str).collect();
-        Some(crate::commands::dynamic_choices_typed(
-            &reading,
-            command.name,
-            &before,
-            &body.typed,
-        ))
+        let words =
+            crate::commands::dynamic_choices_typed(&reading, command.name, &before, &body.typed);
+        // A model billed per token says so beside its name.
+        let notes: serde_json::Map<String, serde_json::Value> = if command.name == "/model" {
+            words
+                .iter()
+                .filter_map(|word| {
+                    let note = crate::models::billing(&reading.models, word)?;
+                    Some((word.clone(), note.into()))
+                })
+                .collect()
+        } else {
+            serde_json::Map::new()
+        };
+        Some((words, notes))
     })
     .await
     .ok()
     .flatten()
     .unwrap_or_default();
-    axum::Json(serde_json::json!({ "choices": words })).into_response()
+    axum::Json(serde_json::json!({ "choices": words, "notes": notes })).into_response()
 }
 
 /// `POST /api/stop`: stops the turn, as Ctrl-C does.
@@ -2052,6 +2062,11 @@ mod tests {
                 handover_at: None,
                 compacts: false,
             }],
+            models: crate::remote::Models {
+                reachable: vec!["anthropic".into(), "openai".into()],
+                openai_auth: Some("ChatGPT".into()),
+                ..crate::remote::Models::default()
+            },
             ..Reading::default()
         })));
         let served = serve_with(&feed, "127.0.0.1:0", Info::default(), meter);
@@ -2106,6 +2121,30 @@ mod tests {
             let answer: serde_json::Value = response.json().await.unwrap();
             assert_eq!(answer["choices"], serde_json::json!(words), "{command}");
         }
+        // A model billed per token has a note that says so, with its
+        // price. A plan's model has none.
+        let body = serde_json::json!({ "command": "/model", "before": ["worker"] });
+        let answer: serde_json::Value = served
+            .post("/api/choices", Some(&cookie), &body.to_string())
+            .await
+            .json()
+            .await
+            .unwrap();
+        let words = answer["choices"].as_array().unwrap();
+        assert!(
+            words.contains(&"opus".into()) && words.contains(&"sol".into()),
+            "{answer}"
+        );
+        let notes = answer["notes"].as_object().unwrap();
+        assert_eq!(
+            notes["opus"],
+            crate::models::billing(&crate::remote::Models::default(), "opus").unwrap()
+        );
+        assert!(notes["opus"].as_str().unwrap().starts_with("API, $"));
+        assert!(
+            !notes.contains_key("sol") && !notes.contains_key("main"),
+            "{answer}"
+        );
         let response = served.post("/api/choices", Some(&cookie), "{}").await;
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         // Words that are too long are refused, and the most allowed isn't.

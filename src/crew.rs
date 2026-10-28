@@ -23,6 +23,7 @@ use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use crate::agents::NO_LIMIT;
+use crate::billing;
 use crate::chooser;
 use crate::kept_notes::KeptNotes;
 use crate::remote;
@@ -356,6 +357,7 @@ fn prepare(
         feed,
         refuse,
         default_long,
+        ..
     } = hook;
     let (feed, refuse, default_long) = (feed.as_ref(), refuse.as_ref(), *default_long);
     // (The lock is held briefly: choosing may read files, and Claude Code's
@@ -588,6 +590,9 @@ struct StartHook {
     feed: Option<remote::Feed>,
     refuse: Option<Refuse>,
     default_long: bool,
+    /// How the session reaches OpenAI models, which says whether one is
+    /// billed per token.
+    openai_auth: Option<crate::providers::OpenAiAuth>,
 }
 
 impl SubagentHook for StartHook {
@@ -598,14 +603,23 @@ impl SubagentHook for StartHook {
     /// What the worker runs and its profile, for its starter: the start's
     /// result and `list_agents` say it, so a starter that chose a model sees
     /// what it got and one that lost track of its workers sees what each is.
+    /// A model billed per token says so.
     fn describe(&self, record: &SubagentRecord) -> Option<String> {
         let models = self.models.lock().unwrap();
         let setup = models.runs.get(&record.run_id)?;
-        Some(runs_words(
-            &crate::providers::model_name(&setup.llm_config.model),
+        let model = &setup.llm_config.model;
+        let mut text = runs_words(
+            &crate::providers::model_name(model),
             setup.effort.map(|effort| effort.to_string()).as_deref(),
             setup.profile.as_deref(),
-        ))
+        );
+        if crate::providers::plan_of(model, self.openai_auth).is_none() {
+            text.push_str(&format!(
+                ", billed per token ({})",
+                billing::api_label(model)
+            ));
+        }
+        Some(text)
     }
 
     /// What the worker used, as the last line of the news its starter gets
@@ -841,6 +855,7 @@ impl Crew {
                 feed,
                 refuse,
                 default_long,
+                openai_auth: self.setup.openai_auth,
             }))
             // Asked as each worker starts: a run keeps its first message.
             .start_context(Arc::new(move |request: &StartRequest| {
