@@ -119,6 +119,9 @@ Each web component matches a GPUI Kit component and its variants.
 | `.record-box` | The terminal's settled ask | A question card once any of its questions is settled, boxed as the panel is but in the hairline, its text as a muted heading, then each settled question with its outcome |
 | `.sheet` | `Sheet` | From the bottom on phones, centered on wide screens, with a hairline in `--line` as the popovers have |
 | `.card` | `GroupBox` | Surface and hairline, no shadow |
+| `.copy` | `Clipboard` | A ghost icon button. Under a message or reply it shows on hover or focus, and always on touch screens. A code block has one in its corner, after its language |
+| `.thumb` | Studio's image tile | 160 by 120 px, the image contained in it, loaded as it nears the view |
+| `dialog.viewer` | `ImageViewer` | One image as large as the screen allows, with its name and size |
 | `title` and `aria-label` | `Tooltip` | Required on icon-only buttons |
 | `kbd` | `Kbd` | One key cap per chord, mono |
 
@@ -176,8 +179,9 @@ Icons are 16 px in rows and bars and 18 px in the header, drawn with Lucide's 2 
 
 The web page's calls, thinking and call counts use text marks rather than icons. ▸ starts each
 one and turns down as it opens. After a call come ✓ in `--success` once it succeeded, ✗ in
-`--error` once it failed, or the running spinner. A command's output that warns has a rule in
-`--warn-mark` beside it.
+`--error` once it failed, or the running spinner, Lucide's loader circle as two arcs half a turn
+apart so it turns without wobbling. A command's output that warns has a rule in `--warn-mark`
+beside it.
 
 ## States
 
@@ -201,7 +205,7 @@ motion to be understood.
 
 | State | Motion |
 |---|---|
-| Working, thinking | A shimmer across the label: one sweep every 2 s, the band's half-width 30 % of the label, its color the text's mixed 20 % toward the background (light themes) or the text color (dark ones), at most 12 frames a second in Studio. The terminal sweeps its highlight the same way |
+| Working, thinking | A shimmer across the label, one sweep every 2 s. On the web page and in the terminal a band about 60 % of the label wide, in the text color, sweeps over the muted label. In Studio the band's half-width is 30 % of the label and its color the text's mixed 20 % toward the background (light themes) or the text color (dark ones), at most 12 frames a second |
 | A call running | A spinner on its row, at most 30 frames a second |
 | Streaming text | Appears as it comes, with no fade |
 | A new row arriving | Appears in place. The view follows only if the reader is at the bottom |
@@ -209,6 +213,7 @@ motion to be understood.
 | Mouse wheel (Windows, Linux, Android) | A critically damped spring, about 0.2 s. Apple systems keep their own momentum |
 | Moving to the background, done, failed | The row changes in place, with no motion |
 | Menus, popovers, the Latest button | A fade of 150 ms |
+| Copied | The copy icon cross-fades to a check in `--success` (120 ms), which holds for a second, then fades back |
 | Sheets and panels | Appear without sliding |
 
 Not allowed are staggered entrances, pulses, bouncing, sliding panels and animated layout.

@@ -12,11 +12,13 @@ use super::{Action, Feed, Info, Meter};
 pub enum Server {}
 
 impl Server {
+    #[allow(clippy::too_many_arguments)]
     pub fn start(
         _addr: SocketAddr,
         _key: String,
         _info: Info,
         _feed: Feed,
+        _images: crate::images::Images,
         _actions: mpsc::UnboundedSender<Action>,
         _meter: Arc<dyn Meter>,
         _sessions_file: Option<std::path::PathBuf>,

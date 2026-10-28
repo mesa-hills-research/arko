@@ -23,22 +23,28 @@ use crate::ui::Input;
 /// run with `cargo test remote_page_demo -- --ignored --nocapture` and
 /// open the link it prints. Messages: "Run the demo" (calls, two
 /// workers, a failed command, a question, a report), "demo:stream" (a
-/// long reply that streams), "demo:slow" (a 30 s command), "demo:ask" (a
+/// long reply that streams), "demo:think" (reasoning that streams for 20 s),
+/// "demo:slow" (a 30 s command), "demo:ask" (a
 /// question), "demo:wait" (a question the agent waits for, which the next
 /// message answers), "demo:questions" (three numbered questions with choices),
-/// "demo:approval" (a worker profile to approve), "demo:long" (3,500
-/// calls, to reach the history's limit; "demo:long 500", 500), anything
-/// else (a short turn). Lines added to the file `ARKO_DEMO_INPUT` are typed
-/// at the terminal.
+/// "demo:approval" (a worker profile to approve), "demo:image" (a file read
+/// that shows a large image), "demo:long" (3,500 calls, to reach the
+/// history's limit; "demo:long 500", 500), anything else (a short turn).
+/// With `ARKO_DEMO_ITEMS`, an earlier message sends an image too.
+/// Lines added to the file `ARKO_DEMO_INPUT` are typed at the terminal.
+/// `ARKO_DEMO_MODEL_MS` (900) is how long the model takes to answer, and a
+/// long one keeps "Working…" on the page.
 /// What starts a script: a message with one of these.
-const MARKERS: [&str; 8] = [
+const MARKERS: [&str; 10] = [
     "Run the demo",
     "demo:stream",
+    "demo:think",
     "demo:slow",
     "demo:ask",
     "demo:wait",
     "demo:questions",
     "demo:approval",
+    "demo:image",
     "demo:long",
 ];
 
@@ -78,6 +84,10 @@ async fn remote_page_demo() {
         stream
     }
     let stamps = std::env::var("ARKO_DEMO_STAMPS").is_ok_and(|value| value == "1");
+    let model_ms: u64 = std::env::var("ARKO_DEMO_MODEL_MS")
+        .ok()
+        .and_then(|ms| ms.parse().ok())
+        .unwrap_or(900);
     let feed_cell: Arc<std::sync::OnceLock<remote::Feed>> = Arc::new(std::sync::OnceLock::new());
     let feed_for_model = feed_cell.clone();
     // The script running: started by its marker in a new message, it goes
@@ -87,7 +97,7 @@ async fn remote_page_demo() {
         let feed = feed_for_model.clone();
         let script = script.clone();
         Box::pin(async move {
-            tokio::time::sleep(Duration::from_millis(900)).await;
+            tokio::time::sleep(Duration::from_millis(model_ms)).await;
             let shell = |command: &str| (SHELL_TOOL_NAME, serde_json::json!({"command": command}));
             if body.contains("You are agent run r") && body.contains("Fix the flaky test") {
                 let step = body.matches("function_call_output").count();
@@ -173,6 +183,26 @@ async fn remote_page_demo() {
                 done();
                 return complete("s1", "That was the stream.");
             }
+            if let Some(step) = after("demo:think") {
+                if step == 0 && let Some(feed) = feed.get() {
+                    let words = "The user wants the parser's last test to pass, so first I should read how it splits each line, then check what the empty input does, and only then change anything. ".repeat(3);
+                    for word in words.split_inclusive(' ').cycle().take(130) {
+                        if !feed.activity().working {
+                            break;
+                        }
+                        feed.event(&WorkflowEvent {
+                            timestamp: chrono::Utc::now(),
+                            workflow_run_id: Uuid::nil(),
+                            agent_name: MAIN.into(),
+                            agent_run_id: Uuid::nil(),
+                            event: AgentEvent::ReasoningChunk(word.to_string()),
+                        }, None);
+                        tokio::time::sleep(Duration::from_millis(150)).await;
+                    }
+                }
+                done();
+                return complete("k1", "That was the thinking.");
+            }
             if let Some(step) = after("demo:slow") {
                 return match step {
                     0 => turn("z0", "This takes a while.", Some(shell("sleep 30; echo done"))),
@@ -239,6 +269,15 @@ async fn remote_page_demo() {
                     }
                 };
             }
+            if let Some(step) = after("demo:image") {
+                return match step {
+                    0 => turn("i0", "Here's the chart.", Some((READ_FILE_TOOL_NAME, serde_json::json!({"path": "chart.png"})))),
+                    _ => {
+                        done();
+                        complete("i1", "The chart is 1600 by 1000 pixels.")
+                    }
+                };
+            }
             if let Some(step) = after("demo:long") {
                 if step == 0 && let Some(feed) = feed.get() {
                     // "demo:long 500": that many.
@@ -282,6 +321,7 @@ async fn remote_page_demo() {
     // Arko's shell, and the live switches the page's settings change.
     let shell = Shell::detect(WindowsShell::Powershell);
     let managers = Managers::open(&harness.session, &shell).unwrap();
+    harness.background = managers.background.clone();
     harness.tools = managers.tools(&shell, harness.handover.runs());
     harness.outside = Arc::new(crate::outside::Outside::new(
         false,
@@ -322,8 +362,30 @@ async fn remote_page_demo() {
         .ok()
         .and_then(|count| count.parse().ok())
     {
-        harness.feed.restore(earlier_turns(count));
+        let mut items = earlier_turns(count);
+        // The message of the last turn that has its reply.
+        let replied = items
+            .iter()
+            .rposition(|item| item.kind == remote::Kind::Reply)
+            .unwrap_or(0);
+        if let Some(message) = items[..replied]
+            .iter_mut()
+            .rev()
+            .find(|item| item.kind == remote::Kind::User)
+        {
+            message.images.push(harness.images.add(
+                demo_png(480, 300).into(),
+                "image/png",
+                "sketch.png",
+            ));
+        }
+        harness.feed.restore(items);
     }
+    std::fs::write(
+        harness.settings.workspace.join("chart.png"),
+        demo_png(1600, 1000),
+    )
+    .unwrap();
     let _ = feed_cell.set(harness.feed.clone());
     let port = std::env::var("ARKO_DEMO_PORT")
         .ok()
@@ -372,6 +434,49 @@ async fn remote_page_demo() {
         .notice(Level::Info, "Arko closed. The session is saved.");
     harness.stop_remote().await;
     managers.shutdown().await;
+}
+
+/// A PNG of `width` by `height` pixels, a gradient with rings.
+fn demo_png(width: u32, height: u32) -> Vec<u8> {
+    use std::io::Write;
+    let mut pixels = Vec::with_capacity(((width * 3 + 1) * height) as usize);
+    for y in 0..height {
+        // Each row starts with its filter, none.
+        pixels.push(0);
+        for x in 0..width {
+            let (dx, dy) = (x as f32 - width as f32 / 2., y as f32 - height as f32 / 2.);
+            let ring = (((dx * dx + dy * dy).sqrt() / 40.) as u32).is_multiple_of(2);
+            let shade = if ring { 40 } else { 0 };
+            pixels.extend([
+                (x * 200 / width) as u8 + shade,
+                (y * 180 / height) as u8 + 30,
+                200 - shade,
+            ]);
+        }
+    }
+    let mut packed = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::fast());
+    packed.write_all(&pixels).unwrap();
+    let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
+    let mut chunk = |kind: &[u8], body: &[u8]| {
+        png.extend((body.len() as u32).to_be_bytes());
+        png.extend(kind);
+        png.extend(body);
+        let mut crc = flate2::Crc::new();
+        crc.update(kind);
+        crc.update(body);
+        png.extend(crc.sum().to_be_bytes());
+    };
+    // 8-bit RGB.
+    let header = [
+        &width.to_be_bytes()[..],
+        &height.to_be_bytes(),
+        &[8, 2, 0, 0, 0],
+    ]
+    .concat();
+    chunk(b"IHDR", &header);
+    chunk(b"IDAT", &packed.finish().unwrap());
+    chunk(b"IEND", &[]);
+    png
 }
 
 /// `count` items of earlier turns, each a message, some calls, a result and

@@ -644,8 +644,9 @@ pub fn parse_bind(text: &str) -> Result<Bind, String> {
 /// Starts serving where `bind` says, on [`DEFAULT_PORT`] when it names no
 /// port, or on another free one when that one is taken. `earlier`, the
 /// port of the page served before, is tried first when `bind` names no
-/// port, so that the pages open on it reconnect. The page's sessions are kept
-/// in `sessions_file` when there is one, so they outlast a restart.
+/// port, so that the pages open on it reconnect. The page shows the images
+/// of `feed`'s items from `images`. The page's sessions are kept in
+/// `sessions_file` when there is one, so they outlast a restart.
 #[allow(clippy::too_many_arguments)]
 pub fn start(
     bind: Bind,
@@ -653,6 +654,7 @@ pub fn start(
     key: String,
     info: Info,
     feed: Feed,
+    images: crate::images::Images,
     actions: mpsc::UnboundedSender<Action>,
     meter: Arc<dyn Meter>,
     sessions_file: Option<PathBuf>,
@@ -663,6 +665,7 @@ pub fn start(
         key,
         info,
         feed,
+        images,
         actions,
         meter,
         sessions_file,
@@ -678,6 +681,7 @@ pub(crate) fn start_preferred(
     key: String,
     info: Info,
     feed: Feed,
+    images: crate::images::Images,
     actions: mpsc::UnboundedSender<Action>,
     meter: Arc<dyn Meter>,
     sessions_file: Option<PathBuf>,
@@ -688,6 +692,7 @@ pub(crate) fn start_preferred(
         key,
         info,
         feed,
+        images,
         actions,
         meter,
         sessions_file,
@@ -701,6 +706,7 @@ fn start_with(
     key: String,
     info: Info,
     feed: Feed,
+    images: crate::images::Images,
     actions: mpsc::UnboundedSender<Action>,
     meter: Arc<dyn Meter>,
     sessions_file: Option<PathBuf>,
@@ -711,6 +717,7 @@ fn start_with(
             key.clone(),
             info.clone(),
             feed.clone(),
+            images.clone(),
             actions.clone(),
             meter.clone(),
             sessions_file.clone(),

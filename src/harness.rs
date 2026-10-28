@@ -1649,6 +1649,7 @@ impl Harness {
                     app: harness.app_name.to_string(),
                 },
                 harness.feed.clone(),
+                harness.images.clone(),
                 harness.remote_actions.clone(),
                 harness.gauges.clone(),
                 Some(harness.session.dir.join(remote::SESSIONS_FILE)),

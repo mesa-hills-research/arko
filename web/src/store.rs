@@ -209,6 +209,7 @@ pub mod tests {
             pending: false,
             code: Vec::new(),
             questions: None,
+            images: Vec::new(),
         }
     }
 

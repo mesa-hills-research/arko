@@ -818,10 +818,10 @@ fn LinkCard(link: LinkData) -> impl IntoView {
                 <input class="link-url" readonly value=link.url.clone() aria-label="Link"
                     on:focus=move |event| { event_target::<web_sys::HtmlInputElement>(&event).select(); } />
                 <button type="button" class="btn small" on:click=move |_| {
-                    let clipboard = window().navigator().clipboard();
-                    let _ = clipboard.write_text(&url);
-                    copied.set(true);
-                    spawn_local(async move { gloo_wait(1500).await; copied.set(false); });
+                    crate::copy::copy_text(url.clone(), move |done| if done {
+                        copied.set(true);
+                        spawn_local(async move { gloo_wait(1500).await; copied.try_set(false); });
+                    });
                 }>{move || if copied.get() { "Copied" } else { "Copy link" }}</button>
             </div>
         </div>

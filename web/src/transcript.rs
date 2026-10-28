@@ -1,12 +1,15 @@
 //! The transcript: its rows, laid out for the view, and Latest.
 
 use leptos::prelude::*;
-use lucide_leptos::{ArrowDown, ChevronRight, LoaderCircle};
+use lucide_leptos::{ArrowDown, ChevronRight};
 
 use crate::app::{Cell, Page, STORE, cell, page, post};
+use crate::copy::CopyButton;
+use crate::images::Thumbnails;
 use crate::layout::{self, Count, Row, View};
 use crate::markdown::{self, Blocks};
 use crate::protocol::{CallStatus, ItemData, Kind, Level, Source, WorkerState};
+use crate::spinner::Spinner;
 use crate::store::{MAIN, call_actions};
 use crate::{scroll, words};
 
@@ -124,7 +127,7 @@ pub fn Transcript() -> impl IntoView {
 fn row_view(row: Row, thinking: Memo<Option<u64>>) -> AnyView {
     match row {
         Row::Working => view! {
-            <div class="row working"><span class="mark">"▸"</span><span class="what shimmer">"Working…"</span></div>
+            <div class="row working"><span class="what shimmer">"Working…"</span></div>
         }
         .into_any(),
         Row::Count { id, count, .. } => count_row(id, count),
@@ -211,9 +214,13 @@ fn item_row(id: u64, cell: Cell, thinking: Memo<Option<u64>>) -> AnyView {
                     (!tags.is_empty()).then(|| tags.join(" · "))
                 })
             };
+            // Its images, then its words, and under it its tags and Copy.
             view! {
-                <div class="bubble">{move || text.get()}</div>
-                {move || tags().map(|tags| view! { <div class="tag">{tags}</div> })}
+                <div class="bubble"><Thumbnails data=data />{move || text.get()}</div>
+                <div class="actions">
+                    {move || tags().map(|tags| view! { <span class="tag">{tags}</span> })}
+                    <CopyButton label="Copy message" text=text />
+                </div>
             }
             .into_any()
         }
@@ -238,11 +245,21 @@ fn item_row(id: u64, cell: Cell, thinking: Memo<Option<u64>>) -> AnyView {
                 Some(from) => format!("Message from {from}"),
                 None => "Message".into(),
             };
-            view! { <span class="label">{label}</span><Md id=id text=text code=cell.code /> }.into_any()
+            view! {
+                <span class="label">{label}</span>
+                <Md id=id text=text code=cell.code />
+                <div class="actions"><CopyButton label="Copy message" text=text /></div>
+            }
+            .into_any()
         }
         Kind::Reply => {
             let report = (item.agent != MAIN).then(|| view! { <span class="label">"Report"</span> });
-            view! { {report}<Md id=id text=text code=cell.code /> }.into_any()
+            view! {
+                {report}
+                <Md id=id text=text code=cell.code />
+                <div class="actions"><CopyButton label="Copy message" text=text /></div>
+            }
+            .into_any()
         }
         Kind::Question => crate::questions::card_view(id, cell),
         Kind::Call => call_row(cell),
@@ -332,7 +349,7 @@ fn call_row(cell: Cell) -> AnyView {
         // As on the earlier page: the status and the outcome after the call.
         let outcome = match item.status {
             Some(CallStatus::Running) => Some(
-                view! { <span class="outcome turning"><span class="running"><LoaderCircle size=12 /></span></span> }
+                view! { <span class="outcome"><span class="running"><Spinner /></span></span> }
                     .into_any(),
             ),
             Some(status) => {
@@ -362,16 +379,18 @@ fn call_row(cell: Cell) -> AnyView {
             </span>
         }
     };
+    // The images its tool returned show under it, open or not.
     if long {
         view! {
             <details class="call">
                 <summary>{line}</summary>
                 <pre>{move || data.with(|item| item.detail.clone().unwrap_or_else(|| item.text.clone()))}</pre>
             </details>
+            <Thumbnails data=data />
         }
         .into_any()
     } else {
-        view! { {line} }.into_any()
+        view! { {line}<Thumbnails data=data /> }.into_any()
     }
 }
 

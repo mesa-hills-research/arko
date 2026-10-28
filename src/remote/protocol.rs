@@ -264,6 +264,29 @@ pub struct ItemData {
     /// question asked before questions had ids.
     #[serde(default)]
     pub questions: Option<Vec<QuestionData>>,
+    /// The images it shows, which the user sent with a message or a call's
+    /// tool returned.
+    #[serde(default)]
+    pub images: Vec<ImageData>,
+}
+
+/// The types of image the page shows, the only ones Arko serves it.
+pub const IMAGE_TYPES: [&str; 4] = ["image/png", "image/jpeg", "image/gif", "image/webp"];
+
+/// An image an item shows, whose bytes are at `url`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(test, serde(deny_unknown_fields))]
+pub struct ImageData {
+    pub id: u64,
+    /// Its MIME type, such as `image/png`.
+    pub mime: String,
+    /// What it is, such as a file's name.
+    pub label: String,
+    /// Its size in bytes.
+    pub bytes: u64,
+    /// Where the page gets it. The address holds the server's version, so a
+    /// browser may keep it as long as the server runs.
+    pub url: String,
 }
 
 /// One of the main agent's questions, as a card and the status give it.

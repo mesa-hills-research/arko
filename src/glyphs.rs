@@ -79,11 +79,13 @@ pub const SYMBOLS_TABLE: &[(char, &str, &str)] = &[
 
 /// A spinner's frames in `symbols`, and how long each shows (in
 /// milliseconds): braille dots where the font has them, else a turning
-/// line. Only the full-screen view draws one.
+/// line. Only the full-screen view draws one. Each braille frame has seven
+/// of the eight dots and splits them between the cell's two columns, 4 and
+/// 3, so the dots stay in the middle of the cell as the gap goes round.
 #[cfg(any(feature = "tui", test))]
 pub fn spinner_frames(symbols: Symbols) -> (&'static [&'static str], u64) {
     match symbols {
-        Symbols::Full => (&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"], 100),
+        Symbols::Full => (&["⣷", "⣯", "⣟", "⡿", "⢿", "⣻", "⣽", "⣾"], 100),
         Symbols::Basic | Symbols::Ascii => (&["|", "/", "-", "\\"], 200),
     }
 }
@@ -235,17 +237,42 @@ pub(crate) mod tests {
         }
     }
 
-    /// The spinner's frames are one column wide, and the stand-ins' are
-    /// ASCII (which the classic console's fonts have too).
+    /// The spinner's frames are one character and one column wide, and the
+    /// stand-ins' are ASCII (which the classic console's fonts have too).
     #[test]
     fn the_spinner_has_frames_for_every_terminal() {
+        use unicode_width::UnicodeWidthStr;
         for symbols in [Symbols::Full, Symbols::Basic, Symbols::Ascii] {
             let (frames, ms) = spinner_frames(symbols);
             assert!(frames.len() >= 4 && ms >= 80, "{symbols:?}");
             for frame in frames {
                 assert_eq!(frame.chars().count(), 1, "{frame:?}");
+                assert_eq!(frame.width(), 1, "{frame:?}");
                 assert!(symbols == Symbols::Full || frame.is_ascii(), "{frame:?}");
             }
+        }
+    }
+
+    /// A braille cell's dots sit in two columns (the bits 0x47 on the left
+    /// and 0xb8 on the right). A frame with its dots in one column leaves
+    /// the other half of the cell empty, so the visible part swings from
+    /// side to side. Each frame has both columns lit to within a dot, and
+    /// the next frame moves one dot, so the gap goes round smoothly.
+    #[test]
+    fn the_braille_frames_balance_the_cells_two_columns() {
+        let (frames, _) = spinner_frames(Symbols::Full);
+        let bits = |frame: &str| {
+            let dots = frame.chars().next().unwrap();
+            assert!(('\u{2800}'..='\u{28ff}').contains(&dots), "{frame:?}");
+            u32::from(dots) - 0x2800
+        };
+        for (at, frame) in frames.iter().enumerate() {
+            let dots = bits(frame);
+            let (left, right) = ((dots & 0x47).count_ones(), (dots & 0xb8).count_ones());
+            assert!(left.abs_diff(right) <= 1, "{frame:?}: {left} {right}");
+            assert!(left + right >= 6, "{frame:?}");
+            let next = bits(frames[(at + 1) % frames.len()]);
+            assert_eq!((dots ^ next).count_ones(), 2, "{frame:?}");
         }
     }
 

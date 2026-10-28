@@ -7,6 +7,8 @@
 mod app;
 mod chrome;
 mod composer;
+mod copy;
+mod images;
 mod layout;
 mod markdown;
 mod questions;
@@ -14,6 +16,7 @@ mod scroll;
 mod select;
 mod sheets;
 mod slash;
+mod spinner;
 mod store;
 mod theme_list;
 mod transcript;
@@ -61,6 +64,7 @@ fn App() -> impl IntoView {
     let key = app::take_key();
     spawn_local(app::start(page, key));
     listen(page);
+    copy::listen_for_code_copies();
     questions::follow();
     view! {
         <Show
@@ -74,6 +78,7 @@ fn App() -> impl IntoView {
             <composer::Composer />
             <sheets::WorkersSheet />
             <sheets::SettingsSheet />
+            <images::ImageViewer />
         </Show>
     }
 }
@@ -150,7 +155,7 @@ fn listen(page: Page) {
                 questions::open_panel(None);
                 return;
             }
-            if page.sheet.get_untracked().is_some() {
+            if page.sheet.get_untracked().is_some() || page.image.get_untracked().is_some() {
                 return;
             }
             match event.key().as_str() {

@@ -3195,6 +3195,45 @@ mod tests {
             .unwrap()
     }
 
+    /// The images a call's tool returned show on its item, whether they came
+    /// before the call's event or after its result, and a client that
+    /// connects later gets them with the item.
+    #[test]
+    fn a_calls_images_show_on_its_item_whichever_comes_first() {
+        use crate::images::ImageRef;
+        let feed = Feed::new("main");
+        let image = |id: u64| ImageRef {
+            id,
+            mime: "image/png".into(),
+            label: format!("{id}.png"),
+            bytes: 4,
+        };
+        let (early, late) = (Uuid::new_v4(), Uuid::new_v4());
+        feed.call_images(early, vec![image(1)]);
+        feed.event(&event("main", lookup(early)), None);
+        feed.event(&event("main", lookup(late)), None);
+        let result = AgentEvent::ToolResult {
+            tool_call_id: late,
+            tool_name: "mcp__search__lookup".into(),
+            output: "found".into(),
+        };
+        feed.event(&event("main", result), None);
+        let (_, mut updates) = feed.subscribe();
+        feed.call_images(late, vec![image(2)]);
+        assert!(
+            matches!(updates.try_recv(), Ok(Update::Change(item)) if item.images == [image(2)])
+        );
+        let shown: Vec<Vec<ImageRef>> = feed
+            .subscribe()
+            .0
+            .items
+            .into_iter()
+            .filter(|item| item.kind == Kind::Call)
+            .map(|item| item.images)
+            .collect();
+        assert_eq!(shown, [vec![image(1)], vec![image(2)]]);
+    }
+
     /// A monitor's call says it is monitoring, and its line follows the
     /// monitor: its alerts, then how it ended. The monitor's summary says
     /// what it watches, its alerts and its end.
