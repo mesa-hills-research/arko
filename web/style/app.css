@@ -360,16 +360,14 @@ kbd {
 .call-line .outcome::before { content: "· "; color: var(--muted); }
 .call-line .ok { color: var(--success); }
 .call-line .failed { color: var(--error); }
-/* The spinner turns on a layer of its own, around the centre of its
-   square box, so it doesn't wobble, in a box that doesn't clip its corners. */
-.call-line .outcome.turning { overflow: visible; }
-.call-line .running {
-  display: inline-block;
-  width: 12px;
-  height: 12px;
-  vertical-align: -1px;
-  animation: spin 1s linear infinite;
-  will-change: transform;
+/* The spinner turns inside its own drawing, about the circle's centre, so
+   wherever the line puts its box can't move it. It's two arcs, half a turn
+   apart, so the ink stays centred as it turns. */
+.call-line .running { display: inline-block; width: 12px; height: 12px; vertical-align: -1px; }
+.spinner .turn {
+  transform-box: view-box;
+  transform-origin: 12px 12px;
+  animation: spin 1.2s linear infinite;
 }
 .call-line .call-action { margin-left: 4px; font-family: var(--sans); }
 details.call > summary, details.thinking > summary, details.more > summary { cursor: pointer; list-style: none; }

@@ -176,8 +176,9 @@ Icons are 16 px in rows and bars and 18 px in the header, drawn with Lucide's 2 
 
 The web page's calls, thinking and call counts use text marks rather than icons. ▸ starts each
 one and turns down as it opens. After a call come ✓ in `--success` once it succeeded, ✗ in
-`--error` once it failed, or the running spinner. A command's output that warns has a rule in
-`--warn-mark` beside it.
+`--error` once it failed, or the running spinner, Lucide's loader circle as two arcs half a turn
+apart so it turns without wobbling. A command's output that warns has a rule in `--warn-mark`
+beside it.
 
 ## States
 

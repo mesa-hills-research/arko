@@ -14,6 +14,7 @@ mod scroll;
 mod select;
 mod sheets;
 mod slash;
+mod spinner;
 mod store;
 mod theme_list;
 mod transcript;
