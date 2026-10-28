@@ -439,16 +439,16 @@ details.thinking .thinking-text { margin: 4px 0 0 18px; font-style: italic; }
 .row.working { display: flex; gap: 6px; margin: 4px 0; color: var(--muted); font-size: 13.5px; }
 .row.working .mark { visibility: hidden; }
 .row.working .what { font-weight: 600; }
+/* A band of the full text color, 60 % of the word wide, sweeps across the
+   word from left to right over its muted color. */
 .shimmer,
 details.thinking.streaming > summary .what {
-  --shine: color-mix(in oklab, currentColor 80%, var(--shine-toward));
-  background: linear-gradient(90deg, currentColor 35%, var(--shine) 50%, currentColor 65%) 100% 0 / 300% 100%;
+  background: linear-gradient(90deg, var(--muted) 40%, var(--text) 50%, var(--muted) 60%) 100% 0 / 300% 100%;
   -webkit-background-clip: text;
   background-clip: text;
   -webkit-text-fill-color: transparent;
   animation: shimmer 2s linear infinite;
 }
-.state .shimmer { color: var(--text); }
 @keyframes shimmer { to { background-position: 0 0; } }
 @keyframes spin { to { transform: rotate(1turn); } }
 
@@ -900,4 +900,7 @@ html:not(.apple) ::-webkit-scrollbar-corner { background: transparent; }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
+  /* A still label is plain text, in the color the label has. */
+  .shimmer, details.thinking.streaming > summary .what { background: none; -webkit-text-fill-color: currentcolor; }
+  .state .shimmer { color: var(--text); }
 }

@@ -227,14 +227,7 @@ fn block(theme: &Theme, fallback: &Theme, indent: &str) -> String {
         let radius = theme.value[key].as_f64().unwrap_or(default);
         css.push_str(&format!("{indent}--{name}: {radius}px;\n"));
     }
-    // A shimmer's highlight leans toward the background in a light theme
-    // and toward the text in a dark one, as the kit's does.
-    let (shine, scheme) = if theme.dark {
-        ("var(--text)", "dark")
-    } else {
-        ("var(--bg)", "light")
-    };
-    css.push_str(&format!("{indent}--shine-toward: {shine};\n"));
+    let scheme = if theme.dark { "dark" } else { "light" };
     css.push_str(&format!("{indent}color-scheme: {scheme};\n"));
     css
 }
@@ -426,5 +419,60 @@ mod tests {
             over([1.0, 1.0, 1.0, 0.5], 0.3, [0.0, 0.0, 0.0, 1.0]),
             "#262626"
         );
+    }
+
+    /// The names of the custom properties that `css` sets (`--name:`) and
+    /// reads (`var(--name`).
+    fn properties(css: &str) -> (Vec<String>, Vec<String>) {
+        let (mut set, mut read) = (Vec::new(), Vec::new());
+        for (at, _) in css.match_indices("--") {
+            let name: String = css[at + 2..]
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '-')
+                .collect();
+            if name.is_empty() {
+                continue;
+            }
+            let after = css[at + 2 + name.len()..].trim_start();
+            if css[..at].ends_with("var(") {
+                read.push(name);
+            } else if after.starts_with(':') {
+                set.push(name);
+            }
+        }
+        (set, read)
+    }
+
+    /// Every variable the page's styles read is set by its own rules or by
+    /// every theme, such as the muted and text colors a shimmer sweeps
+    /// between, so a leftover name can't leave a color unset.
+    #[test]
+    fn the_page_reads_only_variables_that_something_sets() {
+        let themes = read_themes(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../themes"));
+        let find = |dark: bool| {
+            themes
+                .iter()
+                .find(|theme| theme.name == if dark { DEFAULT_DARK } else { DEFAULT_LIGHT })
+                .unwrap()
+        };
+        let (app, read) = properties(include_str!("../../style/app.css"));
+        for theme in &themes {
+            let block = block(theme, find(theme.dark), "");
+            let (set, _) = properties(&block);
+            let mode = if theme.dark { "dark" } else { "light" };
+            assert!(
+                block.contains(&format!("color-scheme: {mode};")),
+                "{}",
+                theme.name
+            );
+            for name in &read {
+                // The syntax colors come from the highlight rules, not the block.
+                assert!(
+                    app.contains(name) || set.contains(name) || name.starts_with("syn-"),
+                    "--{name} is set by neither the page's styles nor {}",
+                    theme.name
+                );
+            }
+        }
     }
 }

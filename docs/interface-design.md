@@ -202,7 +202,7 @@ motion to be understood.
 
 | State | Motion |
 |---|---|
-| Working, thinking | A shimmer across the label: one sweep every 2 s, the band's half-width 30 % of the label, its color the text's mixed 20 % toward the background (light themes) or the text color (dark ones), at most 12 frames a second in Studio. The terminal sweeps its highlight the same way |
+| Working, thinking | A shimmer across the label, one sweep every 2 s. On the web page and in the terminal a band about 60 % of the label wide, in the text color, sweeps over the muted label. In Studio the band's half-width is 30 % of the label and its color the text's mixed 20 % toward the background (light themes) or the text color (dark ones), at most 12 frames a second |
 | A call running | A spinner on its row, at most 30 frames a second |
 | Streaming text | Appears as it comes, with no fade |
 | A new row arriving | Appears in place. The view follows only if the reader is at the bottom |

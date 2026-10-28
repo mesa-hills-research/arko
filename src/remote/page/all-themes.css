@@ -30,7 +30,6 @@
   --outline: #D5DAE2;
   --radius: 6px;
   --radius-lg: 8px;
-  --shine-toward: var(--bg);
   color-scheme: light;
   --syn-attribute: #8B6F26;
   --syn-boolean: #C5060B;
@@ -94,7 +93,6 @@
   --outline: #D4D7DE;
   --radius: 6px;
   --radius-lg: 8px;
-  --shine-toward: var(--bg);
   color-scheme: light;
   --syn-attribute: #0070af;
   --syn-boolean: #8259a8;
@@ -173,7 +171,6 @@
   --outline: #3A3A3A;
   --radius: 6px;
   --radius-lg: 8px;
-  --shine-toward: var(--bg);
   color-scheme: light;
   --syn-attribute: #502E8E;
   --syn-boolean: #9E170C;
@@ -252,7 +249,6 @@
   --outline: #acb0be;
   --radius: 6px;
   --radius-lg: 8px;
-  --shine-toward: var(--bg);
   color-scheme: light;
   --syn-attribute: #ad4000;
   --syn-boolean: #ad4000;
@@ -335,7 +331,6 @@
   --outline: #C6BCB4;
   --radius: 6px;
   --radius-lg: 8px;
-  --shine-toward: var(--bg);
   color-scheme: light;
   --syn-attribute: #AA4D75;
   --syn-boolean: #BD4049;
@@ -413,7 +408,6 @@
   --outline: #D9D7C7;
   --radius: 6px;
   --radius-lg: 8px;
-  --shine-toward: var(--bg);
   color-scheme: light;
   --syn-attribute: #7f6225;
   --syn-boolean: #9a5332;
@@ -476,7 +470,6 @@
   --outline: #B6C2B9;
   --radius: 6px;
   --radius-lg: 8px;
-  --shine-toward: var(--bg);
   color-scheme: light;
   --syn-attribute: #725195;
   --syn-boolean: #AE4346;
@@ -554,7 +547,6 @@
   --outline: #D9D7CC;
   --radius: 6px;
   --radius-lg: 8px;
-  --shine-toward: var(--bg);
   color-scheme: light;
   --syn-attribute: #205EA6;
   --syn-boolean: #B74D0D;
@@ -613,7 +605,6 @@
   --outline: #BBBBB9;
   --radius: 6px;
   --radius-lg: 8px;
-  --shine-toward: var(--bg);
   color-scheme: light;
   --syn-attribute: #71476D;
   --syn-boolean: #8C541F;
@@ -693,7 +684,6 @@
   --outline: #B2B0AC;
   --radius: 6px;
   --radius-lg: 8px;
-  --shine-toward: var(--bg);
   color-scheme: light;
   --syn-attribute: #40546E;
   --syn-boolean: #83451E;
@@ -774,7 +764,6 @@
   --outline: #B9C2CA;
   --radius: 6px;
   --radius-lg: 8px;
-  --shine-toward: var(--bg);
   color-scheme: light;
   --syn-attribute: #9A6100;
   --syn-boolean: #7A4B9A;
@@ -852,7 +841,6 @@
   --outline: initial;
   --radius: 6px;
   --radius-lg: 8px;
-  --shine-toward: var(--bg);
   color-scheme: light;
   --syn-attribute: #895600;
   --syn-boolean: #825900;
@@ -915,7 +903,6 @@
   --outline: #B9C2BF;
   --radius: 6px;
   --radius-lg: 8px;
-  --shine-toward: var(--bg);
   color-scheme: light;
   --syn-attribute: #973F6E;
   --syn-boolean: #B64E10;
@@ -993,7 +980,6 @@
   --outline: #C2C2C2;
   --radius: 6px;
   --radius-lg: 8px;
-  --shine-toward: var(--bg);
   color-scheme: light;
   --syn-attribute: #6A5B00;
   --syn-boolean: #005F00;
@@ -1055,7 +1041,6 @@
   --outline: #BEBCB8;
   --radius: 6px;
   --radius-lg: 8px;
-  --shine-toward: var(--bg);
   color-scheme: light;
   --syn-attribute: #6A588A;
   --syn-boolean: #95525D;
@@ -1133,7 +1118,6 @@
   --outline: #BEAA95;
   --radius: 6px;
   --radius-lg: 8px;
-  --shine-toward: var(--bg);
   color-scheme: light;
   --syn-attribute: #893D5E;
   --syn-boolean: #9D3533;
@@ -1211,7 +1195,6 @@
   --outline: #BCBCBC;
   --radius: 6px;
   --radius-lg: 8px;
-  --shine-toward: var(--bg);
   color-scheme: light;
   --syn-attribute: #896D23;
   --syn-boolean: #C5060B;
@@ -1272,7 +1255,6 @@
   --outline: #CDCDCF;
   --radius: 6px;
   --radius-lg: 8px;
-  --shine-toward: var(--bg);
   color-scheme: light;
   --syn-attribute: #815F03;
   --syn-boolean: #1C00CF;
@@ -1350,7 +1332,6 @@
   --outline: #c4c4c4;
   --radius: 6px;
   --radius-lg: 8px;
-  --shine-toward: var(--bg);
   color-scheme: light;
   --syn-attribute: #5c5c5c;
   --syn-boolean: #755739;
@@ -1413,7 +1394,6 @@
   --outline: #C8BBAE;
   --radius: 6px;
   --radius-lg: 8px;
-  --shine-toward: var(--bg);
   color-scheme: light;
   --syn-attribute: #973F6E;
   --syn-boolean: #955E00;
@@ -1491,7 +1471,6 @@
   --outline: #DBD5D1;
   --radius: 6px;
   --radius-lg: 8px;
-  --shine-toward: var(--bg);
   color-scheme: light;
   --syn-attribute: #bc1f58;
   --syn-boolean: #915400;
@@ -1554,7 +1533,6 @@
   --outline: #BCBCC7;
   --radius: 6px;
   --radius-lg: 8px;
-  --shine-toward: var(--bg);
   color-scheme: light;
   --syn-attribute: #007C59;
   --syn-boolean: #D02E1E;
@@ -1632,7 +1610,6 @@
   --outline: #B1C2C7;
   --radius: 6px;
   --radius-lg: 8px;
-  --shine-toward: var(--bg);
   color-scheme: light;
   --syn-attribute: #6E519D;
   --syn-boolean: #A23E7C;
@@ -1710,7 +1687,6 @@
   --outline: #D9D1B9;
   --radius: 6px;
   --radius-lg: 8px;
-  --shine-toward: var(--bg);
   color-scheme: light;
   --syn-attribute: #856300;
   --syn-boolean: #BB3E00;
@@ -1772,7 +1748,6 @@
   --outline: #C9BFCB;
   --radius: 6px;
   --radius-lg: 8px;
-  --shine-toward: var(--bg);
   color-scheme: light;
   --syn-attribute: #9351A2;
   --syn-boolean: #A9541A;
@@ -1852,7 +1827,6 @@
   --outline: #7A7A7A;
   --radius: 0px;
   --radius-lg: 0px;
-  --shine-toward: var(--bg);
   color-scheme: light;
   --syn-attribute: #007995;
   --syn-boolean: #007E52;
@@ -1930,7 +1904,6 @@
   --outline: #333333;
   --radius: 6px;
   --radius-lg: 8px;
-  --shine-toward: var(--text);
   color-scheme: dark;
   --syn-attribute: #eebb6e;
   --syn-boolean: #5da602;
@@ -1993,7 +1966,6 @@
   --outline: #555465;
   --radius: 6px;
   --radius-lg: 8px;
-  --shine-toward: var(--text);
   color-scheme: dark;
   --syn-attribute: #c19d55;
   --syn-boolean: #E1D797;
@@ -2054,7 +2026,6 @@
   --outline: #504945;
   --radius: 6px;
   --radius-lg: 8px;
-  --shine-toward: var(--text);
   color-scheme: dark;
   --syn-attribute: #be9a52;
   --syn-boolean: #E1D797;
@@ -2115,7 +2086,6 @@
   --outline: #3a3a3a;
   --radius: 6px;
   --radius-lg: 8px;
-  --shine-toward: var(--text);
   color-scheme: dark;
   --syn-attribute: #ddaf3c;
   --syn-boolean: #bf5ae7;
@@ -2176,7 +2146,6 @@
   --outline: #585B5E;
   --radius: 6px;
   --radius-lg: 8px;
-  --shine-toward: var(--text);
   color-scheme: dark;
   --syn-attribute: #ECBBE7;
   --syn-boolean: #FBC592;
@@ -2254,7 +2223,6 @@
   --outline: #2D2F34;
   --radius: 6px;
   --radius-lg: 8px;
-  --shine-toward: var(--text);
   color-scheme: dark;
   --syn-attribute: #5ac1feff;
   --syn-boolean: #d2a6ffff;
@@ -2333,7 +2301,6 @@
   --outline: #9E9E9E;
   --radius: 6px;
   --radius-lg: 8px;
-  --shine-toward: var(--text);
   color-scheme: dark;
   --syn-attribute: #C3BAFF;
   --syn-boolean: #FFAF78;
@@ -2412,7 +2379,6 @@
   --outline: #51576d;
   --radius: 6px;
   --radius-lg: 8px;
-  --shine-toward: var(--text);
   color-scheme: dark;
   --syn-attribute: #e7d682;
   --syn-boolean: #e78284;
@@ -2473,7 +2439,6 @@
   --outline: initial;
   --radius: 6px;
   --radius-lg: 8px;
-  --shine-toward: var(--text);
   color-scheme: dark;
   --syn-attribute: #eed49f;
   --syn-boolean: #f5bde6;
@@ -2536,7 +2501,6 @@
   --outline: #6c7086;
   --radius: 6px;
   --radius-lg: 8px;
-  --shine-toward: var(--text);
   color-scheme: dark;
   --syn-attribute: #f9e2af;
   --syn-boolean: #f5c2e7;
@@ -2599,7 +2563,6 @@
   --outline: #473F39;
   --radius: 6px;
   --radius-lg: 8px;
-  --shine-toward: var(--text);
   color-scheme: dark;
   --syn-attribute: #E297BA;
   --syn-boolean: #F49191;
@@ -2677,7 +2640,6 @@
   --outline: #485156;
   --radius: 6px;
   --radius-lg: 8px;
-  --shine-toward: var(--text);
   color-scheme: dark;
   --syn-attribute: #ceaa62;
   --syn-boolean: #E1D797;
@@ -2738,7 +2700,6 @@
   --outline: #272727;
   --radius: 6px;
   --radius-lg: 8px;
-  --shine-toward: var(--text);
   color-scheme: dark;
   --syn-attribute: #fecf75;
   --syn-boolean: #fd9f4d;
@@ -2799,7 +2760,6 @@
   --outline: #3A463E;
   --radius: 6px;
   --radius-lg: 8px;
-  --shine-toward: var(--text);
   color-scheme: dark;
   --syn-attribute: #C5A9E6;
   --syn-boolean: #F08F87;
@@ -2877,7 +2837,6 @@
   --outline: #2F2E2D;
   --radius: 6px;
   --radius-lg: 8px;
-  --shine-toward: var(--text);
   color-scheme: dark;
   --syn-attribute: #498BC4;
   --syn-boolean: #DA702C;
@@ -2936,7 +2895,6 @@
   --outline: #424345;
   --radius: 6px;
   --radius-lg: 8px;
-  --shine-toward: var(--text);
   color-scheme: dark;
   --syn-attribute: #B5CBF3;
   --syn-boolean: #E3BD8A;
@@ -3016,7 +2974,6 @@
   --outline: #3A454E;
   --radius: 6px;
   --radius-lg: 8px;
-  --shine-toward: var(--text);
   color-scheme: dark;
   --syn-attribute: #E9C67D;
   --syn-boolean: #CBAFED;
@@ -3094,7 +3051,6 @@
   --outline: #504945;
   --radius: 6px;
   --radius-lg: 8px;
-  --shine-toward: var(--text);
   color-scheme: dark;
   --syn-attribute: #be9a52;
   --syn-boolean: #E1D797;
@@ -3155,7 +3111,6 @@
   --outline: initial;
   --radius: 6px;
   --radius-lg: 8px;
-  --shine-toward: var(--text);
   color-scheme: dark;
   --syn-attribute: #b296c6;
   --syn-boolean: #f8b63f;
@@ -3218,7 +3173,6 @@
   --outline: #3E373B;
   --radius: 6px;
   --radius-lg: 8px;
-  --shine-toward: var(--text);
   color-scheme: dark;
   --syn-attribute: #E79AD6;
   --syn-boolean: #F36164;
@@ -3296,7 +3250,6 @@
   --outline: #394C3F;
   --radius: 6px;
   --radius-lg: 8px;
-  --shine-toward: var(--text);
   color-scheme: dark;
   --syn-attribute: #F6A0C1;
   --syn-boolean: #FF9F68;
@@ -3374,7 +3327,6 @@
   --outline: #35383d;
   --radius: 6px;
   --radius-lg: 8px;
-  --shine-toward: var(--text);
   color-scheme: dark;
   --syn-attribute: #be9a52;
   --syn-boolean: #E1D797;
@@ -3435,7 +3387,6 @@
   --outline: #4E4847;
   --radius: 6px;
   --radius-lg: 8px;
-  --shine-toward: var(--text);
   color-scheme: dark;
   --syn-attribute: #be9a52;
   --syn-boolean: #E1D797;
@@ -3496,7 +3447,6 @@
   --outline: #333333;
   --radius: 6px;
   --radius-lg: 8px;
-  --shine-toward: var(--text);
   color-scheme: dark;
   --syn-attribute: #5f80ff;
   --syn-boolean: #c7a302;
@@ -3559,7 +3509,6 @@
   --outline: #4F4D4A;
   --radius: 6px;
   --radius-lg: 8px;
-  --shine-toward: var(--text);
   color-scheme: dark;
   --syn-attribute: #B8A8D8;
   --syn-boolean: #D99FA7;
@@ -3637,7 +3586,6 @@
   --outline: #48392A;
   --radius: 6px;
   --radius-lg: 8px;
-  --shine-toward: var(--text);
   color-scheme: dark;
   --syn-attribute: #EDA6C1;
   --syn-boolean: #EA8881;
@@ -3715,7 +3663,6 @@
   --outline: #4C4C4C;
   --radius: 6px;
   --radius-lg: 8px;
-  --shine-toward: var(--text);
   color-scheme: dark;
   --syn-attribute: #7FAEF9;
   --syn-boolean: #CC9E00;
@@ -3777,7 +3724,6 @@
   --outline: #4A4A4C;
   --radius: 6px;
   --radius-lg: 8px;
-  --shine-toward: var(--text);
   color-scheme: dark;
   --syn-attribute: #BF8555;
   --syn-boolean: #D0BF69;
@@ -3855,7 +3801,6 @@
   --outline: initial;
   --radius: 6px;
   --radius-lg: 8px;
-  --shine-toward: var(--text);
   color-scheme: dark;
   --syn-attribute: #929292;
   --syn-boolean: #d19a66;
@@ -3918,7 +3863,6 @@
   --outline: #4E423A;
   --radius: 6px;
   --radius-lg: 8px;
-  --shine-toward: var(--text);
   color-scheme: dark;
   --syn-attribute: #E391B8;
   --syn-boolean: #EBB76C;
@@ -3996,7 +3940,6 @@
   --outline: #374155;
   --radius: 6px;
   --radius-lg: 8px;
-  --shine-toward: var(--text);
   color-scheme: dark;
   --syn-attribute: #C1A9EE;
   --syn-boolean: #EF9687;
@@ -4074,7 +4017,6 @@
   --outline: #3b3b3b;
   --radius: 6px;
   --radius-lg: 8px;
-  --shine-toward: var(--text);
   color-scheme: dark;
   --syn-attribute: #be9a52;
   --syn-boolean: #E1D797;
@@ -4135,7 +4077,6 @@
   --outline: #272727;
   --radius: 6px;
   --radius-lg: 8px;
-  --shine-toward: var(--text);
   color-scheme: dark;
   --syn-attribute: #DCA0D6;
   --syn-boolean: #F2AD73;
@@ -4213,7 +4154,6 @@
   --outline: #3C3C4D;
   --radius: 6px;
   --radius-lg: 8px;
-  --shine-toward: var(--text);
   color-scheme: dark;
   --syn-attribute: #41DCA5;
   --syn-boolean: #FF9A5F;
@@ -4291,7 +4231,6 @@
   --outline: #432F18;
   --radius: 6px;
   --radius-lg: 8px;
-  --shine-toward: var(--text);
   color-scheme: dark;
   --syn-attribute: #FFB6A0;
   --syn-boolean: #D8E57D;
@@ -4370,7 +4309,6 @@
   --outline: #1E3E26;
   --radius: 6px;
   --radius-lg: 8px;
-  --shine-toward: var(--text);
   color-scheme: dark;
   --syn-attribute: #AAD47F;
   --syn-boolean: #EBE377;
@@ -4449,7 +4387,6 @@
   --outline: #2B444A;
   --radius: 6px;
   --radius-lg: 8px;
-  --shine-toward: var(--text);
   color-scheme: dark;
   --syn-attribute: #BD9FF2;
   --syn-boolean: #F294CA;
@@ -4527,7 +4464,6 @@
   --outline: #104452;
   --radius: 6px;
   --radius-lg: 8px;
-  --shine-toward: var(--text);
   color-scheme: dark;
   --syn-attribute: #be9a52;
   --syn-boolean: #E1D797;
@@ -4588,7 +4524,6 @@
   --outline: #4D4656;
   --radius: 6px;
   --radius-lg: 8px;
-  --shine-toward: var(--text);
   color-scheme: dark;
   --syn-attribute: #DBA9E6;
   --syn-boolean: #FAC092;
@@ -4668,7 +4603,6 @@
   --outline: #292E44;
   --radius: 6px;
   --radius-lg: 8px;
-  --shine-toward: var(--text);
   color-scheme: dark;
   --syn-attribute: #f2ce00;
   --syn-boolean: #f2ce00;
@@ -4730,7 +4664,6 @@
   --outline: #444b6a;
   --radius: 6px;
   --radius-lg: 8px;
-  --shine-toward: var(--text);
   color-scheme: dark;
   --syn-attribute: #ffc777;
   --syn-boolean: #c3e88d;
@@ -4792,7 +4725,6 @@
   --outline: #2f3549;
   --radius: 6px;
   --radius-lg: 8px;
-  --shine-toward: var(--text);
   color-scheme: dark;
   --syn-attribute: #e0af68;
   --syn-boolean: #9ece6a;
@@ -4854,7 +4786,6 @@
   --outline: #414868;
   --radius: 6px;
   --radius-lg: 8px;
-  --shine-toward: var(--text);
   color-scheme: dark;
   --syn-attribute: #be9a52;
   --syn-boolean: #E1D797;
@@ -4915,7 +4846,6 @@
   --outline: #3e3e3e;
   --radius: 6px;
   --radius-lg: 8px;
-  --shine-toward: var(--text);
   color-scheme: dark;
   --syn-attribute: #be9a52;
   --syn-boolean: #E1D797;
@@ -4976,7 +4906,6 @@
   --outline: #858585;
   --radius: 0px;
   --radius-lg: 0px;
-  --shine-toward: var(--text);
   color-scheme: dark;
   --syn-attribute: #4EC9B0;
   --syn-boolean: #B5CEA8;
