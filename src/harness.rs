@@ -21,7 +21,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use crate::agents::{MAIN, NO_LIMIT, WORKER};
 use crate::crew::Crew;
 use crate::inputs::{Alert, Asker, Event, Inputs, alert_waits, unread_notes, waits_with};
-use crate::openings::Opening;
+use crate::openings::{Opening, Subjects};
 use crate::remote::{Action, Delivery, Level, REFRESH_MESSAGE, Source};
 use crate::session::{Mode, Session, Settings};
 use crate::shell::{Shell, ShellTool};
@@ -423,15 +423,17 @@ pub(crate) enum Prompt {
     /// whether the news holds mail that reached the agent earlier but not
     /// whole.
     News { resent: bool },
-    /// A background job of the agent's finished, without a message from
-    /// the user: its terminal update follows.
-    Jobs,
+    /// A background job of the agent's finished (with those that finished
+    /// by then, by ID), without a message from the user: its terminal
+    /// update follows.
+    Jobs(Vec<uuid::Uuid>),
     /// What the user typed during the last turn, which the agent finished
     /// before it read, without a new message.
     Unread,
     /// A monitor of the agent's alerted, or ends soon (the opening says
-    /// which), without a message from the user: its news follows.
-    Monitor(Opening),
+    /// which), without a message from the user: its news follows. The
+    /// monitors it is for come by ID.
+    Monitor(Opening, Vec<uuid::Uuid>),
     /// A turn Arko stopped in the middle of goes on, without a message.
     Recover,
     /// The user answered or dismissed the agent's questions, without a
@@ -446,8 +448,8 @@ impl Prompt {
         match self {
             Prompt::News { resent: false } => Some(Opening::News),
             Prompt::News { resent: true } => Some(Opening::ResentNews),
-            Prompt::Jobs => Some(Opening::Job),
-            Prompt::Monitor(opening) => Some(*opening),
+            Prompt::Jobs(_) => Some(Opening::Job),
+            Prompt::Monitor(opening, _) => Some(*opening),
             Prompt::Answers => Some(Opening::Answers),
             Prompt::User(_) | Prompt::Unread | Prompt::Recover => None,
         }
@@ -3464,6 +3466,7 @@ impl Harness {
         let resumes = !matches!(prompt, Prompt::Recover)
             && matches!(&self.conversation, Conversation::Stopped(run) if run.restart != Restart::Recover);
         let opening = prompt.opening();
+        let about = self.subjects(&prompt);
         if matches!(prompt, Prompt::User(_)) {
             self.user_present();
         }
@@ -3502,7 +3505,7 @@ impl Harness {
             }
             .message(&report);
         }
-        if let Some(notice) = opening.and_then(Opening::notice) {
+        if let Some(notice) = opening.and_then(|opening| opening.notice(&about)) {
             self.say(Level::Info, &format!("  {notice}"));
         }
         if resumes {
@@ -3922,9 +3925,13 @@ impl Harness {
         }
         // Others that finished meanwhile go with it, and the monitors' news
         // the task holds.
-        input.drain_finished();
+        let jobs: Vec<uuid::Uuid> = std::iter::once(finished)
+            .chain(input.drain_finished())
+            .filter(|job| job.owner == run)
+            .map(|job| job.job_id)
+            .collect();
         input.late_alert = None;
-        match self.turn(Prompt::Jobs, input).await {
+        match self.turn(Prompt::Jobs(jobs), input).await {
             TurnEnd::Answered => News::Done,
             TurnEnd::Exit => News::Exit,
             TurnEnd::Stopped => News::Stopped,
@@ -3973,19 +3980,69 @@ impl Harness {
             return News::Waiting;
         }
         // Other alerts go with it, and the job updates the task holds.
-        input.drain_alerts();
+        let drained = input.drain_alerts();
         input.late = None;
+        // The monitors it is for: those whose news came meanwhile too, of
+        // its kind (a warning, or an alert).
+        let mut monitors: Vec<uuid::Uuid> = alert.job.into_iter().collect();
+        for other in drained {
+            let warning = matches!(other.kind, arko_agents::terminal::AlertKind::EndsSoon);
+            if other.owner == run && warning == alert.ends_soon && !monitors.contains(&other.job_id)
+            {
+                monitors.push(other.job_id);
+            }
+        }
         // A warning says how long its monitor has left.
-        let prompt = Prompt::Monitor(if alert.ends_soon {
+        let opening = if alert.ends_soon {
             Opening::EndsSoon(alert.job.and_then(|job| self.monitor_minutes_left(job)))
         } else {
             Opening::Alert
-        });
-        match self.turn(prompt, input).await {
+        };
+        match self.turn(Prompt::Monitor(opening, monitors), input).await {
             TurnEnd::Answered => News::Done,
             TurnEnd::Exit => News::Exit,
             TurnEnd::Stopped => News::Stopped,
             TurnEnd::Failed => News::Failed,
+        }
+    }
+
+    /// Who and what the turn `prompt` starts for news is about, which its
+    /// line in the transcript names.
+    fn subjects(&self, prompt: &Prompt) -> Subjects {
+        match prompt {
+            Prompt::News { .. } => {
+                let (Some(workflow), Some(run)) = (
+                    self.crew.as_ref().and_then(|crew| crew.workflow()),
+                    self.conversation_run(),
+                ) else {
+                    return Subjects::default();
+                };
+                let runs = workflow.subagents();
+                Subjects::of_mail(&workflow.pending_news(run), |from| {
+                    runs.iter()
+                        .find(|worker| worker.run_id == from)
+                        .map(|worker| worker.handle.clone())
+                })
+            }
+            // What each ran is in the conversation, in the call that
+            // started it, as a reopened session reads it.
+            Prompt::Jobs(jobs) | Prompt::Monitor(_, jobs) => {
+                let task = match &self.conversation {
+                    Conversation::Answered(result) => result.task().ok(),
+                    _ => None,
+                };
+                let messages = task
+                    .as_ref()
+                    .map_or(&[][..], |task| task.conversation.messages.as_slice());
+                Subjects {
+                    commands: jobs
+                        .iter()
+                        .map(|job| remote::job_ran(messages, *job))
+                        .collect(),
+                    ..Subjects::default()
+                }
+            }
+            _ => Subjects::default(),
         }
     }
 
@@ -4380,9 +4437,9 @@ impl Harness {
             // As the agent reads it, with the questions still open.
             Prompt::User(message) => Some(self.labelled.take().unwrap_or(message)),
             Prompt::News { .. }
-            | Prompt::Jobs
+            | Prompt::Jobs(_)
             | Prompt::Unread
-            | Prompt::Monitor(_)
+            | Prompt::Monitor(..)
             | Prompt::Answers => None,
         };
         let mut parts = Vec::new();
@@ -6048,6 +6105,24 @@ pub(crate) mod tests {
         }
     }
 
+    /// The lines of the turns Arko started, as a session that reopens shows
+    /// them, read back from the conversation.
+    fn reopened_notices(harness: &Harness) -> Vec<String> {
+        let Conversation::Answered(result) = &harness.conversation else {
+            panic!("the conversation wasn't answered");
+        };
+        let task = result.task().unwrap();
+        remote::history(
+            &task.conversation.messages,
+            task.agent_config.tool_config.ends_task_with_text(),
+            &crate::images::Images::default(),
+        )
+        .into_iter()
+        .filter(|item| item.kind == remote::Kind::Notice)
+        .map(|item| item.text)
+        .collect()
+    }
+
     /// The status is read without the cost ledger, which grows with every
     /// call: run with --ignored --nocapture for the times, with 10,000
     /// entries, of a read and of what each read did before (the list price
@@ -6520,7 +6595,79 @@ pub(crate) mod tests {
             news.contains(&crate::openings::Opening::News.text()),
             "{news}"
         );
+        // The turn's line says who reported, in the live transcript and in
+        // the one a reopened session reads from the conversation.
+        assert!(has(&harness.feed, "notice", "r1 reported", ""));
+        assert_eq!(reopened_notices(&harness), ["r1 reported"]);
         crew.shutdown().await;
+    }
+
+    /// A worker's message to the idle agent starts a turn whose line says
+    /// who sent it, and its report starts the next, in the live transcript
+    /// and in a reopened session's.
+    #[tokio::test]
+    async fn the_line_of_a_turn_for_a_workers_message_names_the_worker() {
+        use crate::mock_model::{ModelServer, complete, tool_call};
+        let server = ModelServer::start(Arc::new(move |_, body: String| {
+            Box::pin(async move {
+                if body.contains("You are agent run r1") {
+                    if body.contains("Use the blue branch.") {
+                        complete("w3", "Blue branch checked.")
+                    } else if body.contains("Sent. Your lead") {
+                        tool_call(
+                            "w2",
+                            crew::WAIT_FOR_AGENTS,
+                            serde_json::json!({"timeout_seconds": 10}),
+                        )
+                    } else {
+                        tool_call(
+                            "w1",
+                            crew::MESSAGE_AGENT,
+                            serde_json::json!({"to": "lead", "message": "Which branch should I check?"}),
+                        )
+                    }
+                } else if body.contains("Blue branch checked.") {
+                    complete("m5", "The blue branch is checked.")
+                } else if body.contains("Which branch should I check?") {
+                    if body.contains("Sent.") {
+                        complete("m4", "I told r1 to use blue.")
+                    } else {
+                        tool_call(
+                            "m3",
+                            crew::MESSAGE_AGENT,
+                            serde_json::json!({"to": "r1", "message": "Use the blue branch."}),
+                        )
+                    }
+                } else if body.contains("Started r1") {
+                    complete("m2", "r1 is on it.")
+                } else {
+                    tool_call(
+                        "m1",
+                        crew::START_AGENT,
+                        serde_json::json!({"agent": WORKER, "task": "Check a branch after asking which one."}),
+                    )
+                }
+            })
+        }))
+        .await;
+        let temp = tempfile::tempdir().unwrap();
+        let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), false);
+        let end = harness
+            .turn(Prompt::User("Check a branch.".into()), &mut inputs)
+            .await;
+        assert!(matches!(end, TurnEnd::Answered));
+        let end =
+            tokio::time::timeout(Duration::from_secs(30), harness.finish_workers(&mut inputs))
+                .await
+                .unwrap();
+        assert!(matches!(end, TurnEnd::Answered));
+        assert_eq!(summary(&harness), "The blue branch is checked.");
+        let lines = ["Message from r1", "r1 reported"];
+        for line in lines {
+            assert!(has(&harness.feed, "notice", line, ""), "{line}");
+        }
+        assert_eq!(reopened_notices(&harness), lines);
+        harness.crew.as_ref().unwrap().shutdown().await;
     }
 
     /// The message of a turn started for news that goes out again says part of

@@ -13,7 +13,7 @@ use super::feed::{Delivery, Item, Kind, Source};
 use super::render;
 use crate::crew;
 use crate::images::Images;
-use crate::openings::Opening;
+use crate::openings::{Opening, Subjects};
 
 /// The messages read back at most (the feed keeps fewer items anyway).
 const MESSAGES: usize = 600;
@@ -141,7 +141,8 @@ fn items_from(
                             }
                         }
                         Content::Text(text) => {
-                            for (mut item, editable) in user_items(text) {
+                            let about = |opening| subjects_of(opening, messages, index);
+                            for (mut item, editable) in user_items(text, &about) {
                                 // A message that started a turn can be
                                 // edited at its index.
                                 if editable && item.delivery == Some(Delivery::Turn) {
@@ -429,16 +430,16 @@ const OPERATOR_NOTE: &str = " from the operator (the person running this workflo
 /// that message after the reopening notice, in a context update, where the
 /// live transcript doesn't offer to edit it either. The news that went
 /// with it there (a monitor's alert, a job's update) isn't theirs.
-fn user_items(text: &str) -> Vec<(Item, bool)> {
+fn user_items(text: &str, about: &dyn Fn(Opening) -> Subjects) -> Vec<(Item, bool)> {
     let Some(update) = context_update(text) else {
-        return composed(text)
+        return composed(text, about)
             .into_iter()
             .map(|item| (item, true))
             .collect();
     };
     let items = match reopened_with(update) {
         Some((prompt, rest)) => {
-            let mut items = composed(prompt);
+            let mut items = composed(prompt, about);
             items.extend(operator_notes(rest).into_iter().filter_map(note));
             items
         }
@@ -505,10 +506,69 @@ fn is_news(text: &str) -> bool {
 
 /// The items of a message Arko composed: the notes in its section of what
 /// the user typed during the last turn, then the user's words.
-fn composed(text: &str) -> Vec<Item> {
+fn composed(text: &str, about: &dyn Fn(Opening) -> Subjects) -> Vec<Item> {
     let mut items: Vec<Item> = unread_notes(text).into_iter().filter_map(note).collect();
-    items.extend(user_item(text));
+    items.extend(user_item(text, about));
     items
+}
+
+/// Who and what the turn `opening` opens (in the message at `index`) is for,
+/// from the news that went to the agent with it, in that message and the
+/// context updates right after it.
+fn subjects_of(opening: Opening, messages: &[Message], index: usize) -> Subjects {
+    let texts = |message: &Message| -> Vec<String> {
+        message
+            .content
+            .iter()
+            .filter_map(Content::as_text)
+            .map(str::to_string)
+            .collect()
+    };
+    let mut news = texts(&messages[index]);
+    for message in &messages[index + 1..] {
+        let updates: Vec<String> = texts(message)
+            .into_iter()
+            .filter(|text| text.trim_start().starts_with("# Workflow context update"))
+            .collect();
+        if message.role != Role::User || updates.is_empty() {
+            break;
+        }
+        news.extend(updates);
+    }
+    Subjects::in_news(opening, &news.join("\n\n"), |job| {
+        job_ran(&messages[..index], job)
+    })
+}
+
+/// What job `id` ran, from the call in `messages` that started it or moved
+/// to it, whose result names the job: its command, or a call as it is shown.
+pub(crate) fn job_ran(messages: &[Message], id: uuid::Uuid) -> Option<String> {
+    let id = id.to_string();
+    let call_id = messages
+        .iter()
+        .flat_map(|message| &message.content)
+        .find_map(|content| match content {
+            Content::ToolResult(result) if result.output.contains(&id) => result.call_id.clone(),
+            _ => None,
+        })?;
+    let call = messages
+        .iter()
+        .flat_map(|message| &message.tool_calls)
+        .find(|call| call.id.as_deref() == Some(call_id.as_str()))?;
+    let parameters: HashMap<String, serde_json::Value> = call
+        .arguments
+        .as_object()
+        .map(|object| object.clone().into_iter().collect())
+        .unwrap_or_default();
+    Some(
+        match parameters
+            .get("command")
+            .and_then(|command| command.as_str())
+        {
+            Some(command) => crate::jobs::label(command),
+            None => crate::jobs::label(&crate::ui::brief(&call.name, &parameters)),
+        },
+    )
 }
 
 /// The notes in the section of `text` that holds what the user typed during
@@ -636,7 +696,7 @@ fn unlabelled(text: &str) -> &str {
 /// keeps it under "# My message". Context updates aren't the user's words,
 /// nor is a handover's report. A turn Arko started for news (the workers',
 /// a job's, a monitor's) shows the line the live transcript showed.
-fn user_item(text: &str) -> Option<Item> {
+fn user_item(text: &str, about: &dyn Fn(Opening) -> Subjects) -> Option<Item> {
     let heading = arko_agents::handover::REPORT_HEADING;
     let text = text
         .find(&format!("\n\n{heading}"))
@@ -660,7 +720,7 @@ fn user_item(text: &str) -> Option<Item> {
         None => {
             if let Some(opening) = Opening::of(text) {
                 return opening
-                    .notice()
+                    .notice(&about(opening))
                     .map(|notice| Item::new(Kind::Notice, notice).level(super::Level::Info));
             }
             // Only Arko's own sections, or its notes about the agent's
@@ -1060,17 +1120,93 @@ mod tests {
             .filter(|item| matches!(item.kind, Kind::User | Kind::Notice))
             .map(|item| (item.kind, item.text, item.turn))
             .collect();
-        let notice = |opening: Opening, turn| (Kind::Notice, opening.notice().unwrap(), Some(turn));
+        let notice = |text: &str, turn| (Kind::Notice, text.to_string(), Some(turn));
         assert_eq!(
             shown,
             [
                 (Kind::User, "Watch it.".to_string(), Some(1)),
-                notice(Opening::Alert, 2),
-                notice(Opening::EndsSoon(Some(25)), 3),
-                notice(Opening::Job, 4),
-                notice(Opening::News, 5),
+                notice(
+                    "Monitor alerted · while true; do echo ERROR tick; sleep 5; done",
+                    2
+                ),
+                notice("Monitor ends in 25 min", 3),
+                notice("Job finished", 4),
+                notice("News from workers", 5),
                 (Kind::User, "hello\n\nthere".to_string(), Some(6)),
                 (Kind::User, "Again.".to_string(), Some(7)),
+            ]
+        );
+    }
+
+    /// The line of a turn Arko started names the workers, jobs and monitors
+    /// its news is from, as the live transcript did. A job is named by the
+    /// call that started it or moved to it.
+    #[test]
+    fn arkos_turns_for_news_name_who_and_what() {
+        let (job, started, monitor) = (
+            "4d2c1a9b-0f3e-4c7a-9b1e-5a6d7c8e9f00",
+            "b57d52ff-2c3e-4c4b-9a55-0d1f6a1e2b3c",
+            "1f0c2d3e-0000-4000-8000-000000000000",
+        );
+        let moved_call = |id: &str, command: &str| {
+            let mut message = Message::new_assistant("");
+            message.tool_calls = vec![call(id, "shell", serde_json::json!({"command": command}))];
+            message
+        };
+        let result = |id: &str, tool: &str, output: String| {
+            Message::new_user_with_contents(vec![Content::ToolResult(ToolResult::new(
+                Some(id.into()),
+                tool,
+                &output,
+            ))])
+        };
+        let mut start = Message::new_assistant("");
+        start.tool_calls = vec![call(
+            "bg",
+            "terminal_start",
+            serde_json::json!({"command": "npm run dev"}),
+        )];
+        let mail = "# Workflow context update\n\nNew mail from the agent runs you work with, oldest first. Reply with message_agent; wait_for_agents waits for more.\n- [mail 3] r1 (agent `worker`) finished. Its report:\n  Done.\n  [end of mail 3]\n- [mail 4] r2 (agent `worker`) sent you a message (it goes on working):\n  Which branch?\n  [end of mail 4]";
+        let messages = vec![
+            Message::new_user("Build."),
+            moved_call("sh", "cargo build --release"),
+            result(
+                "sh",
+                "shell",
+                format!("in the background as job {job}, 95.3 s\nIt ran longer than 10 minutes."),
+            ),
+            start,
+            result(
+                "bg",
+                "terminal_start",
+                format!("{{\"job_id\":\"{started}\",\"state\":\"running\"}}"),
+            ),
+            Message::new_assistant("Going on."),
+            Message::new_user(&Opening::Job.text()),
+            Message::new_user(&format!(
+                "# Workflow context update\n\nTerminal update:\n{{\"job_id\":\"{job}\",\"revision\":2,\"state\":\"succeeded\"}}\n\nTerminal update:\n{{\"job_id\":\"{started}\",\"revision\":2,\"state\":\"failed\"}}"
+            )),
+            Message::new_assistant("Both ended."),
+            Message::new_user(&Opening::News.text()),
+            Message::new_user(mail),
+            Message::new_assistant("Noted."),
+            Message::new_user(&Opening::EndsSoon(Some(2)).text()),
+            Message::new_user(&format!(
+                "# Workflow context update\n\nMonitor {monitor} (`npm run dev`) ends in 2 min, at 11:00 UTC. monitor_control rearm keeps it going."
+            )),
+            Message::new_assistant("Kept it."),
+        ];
+        let shown: Vec<String> = items(&messages, true, &Images::default())
+            .into_iter()
+            .filter(|item| item.kind == Kind::Notice)
+            .map(|item| item.text)
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                "2 jobs finished · cargo build --release and npm run dev",
+                "r1 reported · r2 sent a message",
+                "Monitor ends in 2 min · npm run dev",
             ]
         );
     }
