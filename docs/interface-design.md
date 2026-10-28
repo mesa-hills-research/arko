@@ -179,8 +179,9 @@ Icons are 16 px in rows and bars and 18 px in the header, drawn with Lucide's 2 
 
 The web page's calls, thinking and call counts use text marks rather than icons. ▸ starts each
 one and turns down as it opens. After a call come ✓ in `--success` once it succeeded, ✗ in
-`--error` once it failed, or the running spinner. A command's output that warns has a rule in
-`--warn-mark` beside it.
+`--error` once it failed, or the running spinner, Lucide's loader circle as two arcs half a turn
+apart so it turns without wobbling. A command's output that warns has a rule in `--warn-mark`
+beside it.
 
 ## States
 
@@ -204,7 +205,7 @@ motion to be understood.
 
 | State | Motion |
 |---|---|
-| Working, thinking | A shimmer across the label: one sweep every 2 s, the band's half-width 30 % of the label, its color the text's mixed 20 % toward the background (light themes) or the text color (dark ones), at most 12 frames a second in Studio. The terminal sweeps its highlight the same way |
+| Working, thinking | A shimmer across the label, one sweep every 2 s. On the web page and in the terminal a band about 60 % of the label wide, in the text color, sweeps over the muted label. In Studio the band's half-width is 30 % of the label and its color the text's mixed 20 % toward the background (light themes) or the text color (dark ones), at most 12 frames a second |
 | A call running | A spinner on its row, at most 30 frames a second |
 | Streaming text | Appears as it comes, with no fade |
 | A new row arriving | Appears in place. The view follows only if the reader is at the bottom |

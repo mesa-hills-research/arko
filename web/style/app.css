@@ -360,16 +360,14 @@ kbd {
 .call-line .outcome::before { content: "· "; color: var(--muted); }
 .call-line .ok { color: var(--success); }
 .call-line .failed { color: var(--error); }
-/* The spinner turns on a layer of its own, around the centre of its
-   square box, so it doesn't wobble, in a box that doesn't clip its corners. */
-.call-line .outcome.turning { overflow: visible; }
-.call-line .running {
-  display: inline-block;
-  width: 12px;
-  height: 12px;
-  vertical-align: -1px;
-  animation: spin 1s linear infinite;
-  will-change: transform;
+/* The spinner turns inside its own drawing, about the circle's centre, so
+   wherever the line puts its box can't move it. It's two arcs, half a turn
+   apart, so the ink stays centred as it turns. */
+.call-line .running { display: inline-block; width: 12px; height: 12px; vertical-align: -1px; }
+.spinner .turn {
+  transform-box: view-box;
+  transform-origin: 12px 12px;
+  animation: spin 1.2s linear infinite;
 }
 .call-line .call-action { margin-left: 4px; font-family: var(--sans); }
 details.call > summary, details.thinking > summary, details.more > summary { cursor: pointer; list-style: none; }
@@ -428,7 +426,7 @@ pre.block {
 .row.notice.level-warn { color: var(--warn); }
 .row.notice.level-error { color: var(--error); }
 
-.row.thinking { margin: 4px 0; color: var(--muted); font-size: 13.5px; }
+.row.thinking { margin: 12px 0; color: var(--muted); font-size: 13.5px; }
 details.thinking > summary { display: flex; gap: 6px; min-width: 0; }
 details.thinking > summary .mark { flex: none; transition: transform 0.12s; }
 details.thinking > summary .what { flex: none; font-weight: 600; }
@@ -437,20 +435,29 @@ details.thinking[open] > summary .first { display: none; }
 details.thinking .thinking-text { margin: 4px 0 0 18px; font-style: italic; }
 
 /* The agent waits on its model, or thinks: the word shimmers. "Working…"
-   stands where the thinking's label would, its mark kept for the place. */
-.row.working { display: flex; gap: 6px; margin: 4px 0; color: var(--muted); font-size: 13.5px; }
-.row.working .mark { visibility: hidden; }
+   starts at the left edge of the reply text. */
+.row.working { margin: 12px 0; color: var(--muted); font-size: 13.5px; }
 .row.working .what { font-weight: 600; }
+/* A Thinking row and "Working…" have the same space above and below,
+   whatever stands beside them. A neighbour's margin collapses with theirs,
+   so theirs is as large as a reply's, and a turn's mark next to them gives
+   up its larger gap. A message keeps its own, since its box has no line
+   spacing inside its edge. At the end of the transcript the padding below
+   counts as space too, so they take it back. */
+.row.thinking + :is(.row.turn, .row.conversation),
+.row.working + :is(.row.turn, .row.conversation) { margin-top: 12px; }
+.row:is(.turn, .conversation):has(+ :is(.row.thinking, .row.working)) { margin-bottom: 12px; }
+.row.thinking:last-child, .row.working:last-child { margin-bottom: -12px; }
+/* A band of the full text color, 60 % of the word wide, sweeps across the
+   word from left to right over its muted color. */
 .shimmer,
 details.thinking.streaming > summary .what {
-  --shine: color-mix(in oklab, currentColor 80%, var(--shine-toward));
-  background: linear-gradient(90deg, currentColor 35%, var(--shine) 50%, currentColor 65%) 100% 0 / 300% 100%;
+  background: linear-gradient(90deg, var(--muted) 40%, var(--text) 50%, var(--muted) 60%) 100% 0 / 300% 100%;
   -webkit-background-clip: text;
   background-clip: text;
   -webkit-text-fill-color: transparent;
   animation: shimmer 2s linear infinite;
 }
-.state .shimmer { color: var(--text); }
 @keyframes shimmer { to { background-position: 0 0; } }
 @keyframes spin { to { transform: rotate(1turn); } }
 
@@ -999,4 +1006,7 @@ dialog.viewer::backdrop { background: rgba(0, 0, 0, 0.6); }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
+  /* A still label is plain text, in the color the label has. */
+  .shimmer, details.thinking.streaming > summary .what { background: none; -webkit-text-fill-color: currentcolor; }
+  .state .shimmer { color: var(--text); }
 }

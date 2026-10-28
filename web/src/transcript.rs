@@ -1,7 +1,7 @@
 //! The transcript: its rows, laid out for the view, and Latest.
 
 use leptos::prelude::*;
-use lucide_leptos::{ArrowDown, ChevronRight, LoaderCircle};
+use lucide_leptos::{ArrowDown, ChevronRight};
 
 use crate::app::{Cell, Page, STORE, cell, page, post};
 use crate::copy::CopyButton;
@@ -9,6 +9,7 @@ use crate::images::Thumbnails;
 use crate::layout::{self, Count, Row, View};
 use crate::markdown::{self, Blocks};
 use crate::protocol::{CallStatus, ItemData, Kind, Level, Source, WorkerState};
+use crate::spinner::Spinner;
 use crate::store::{MAIN, call_actions};
 use crate::{scroll, words};
 
@@ -126,7 +127,7 @@ pub fn Transcript() -> impl IntoView {
 fn row_view(row: Row, thinking: Memo<Option<u64>>) -> AnyView {
     match row {
         Row::Working => view! {
-            <div class="row working"><span class="mark">"▸"</span><span class="what shimmer">"Working…"</span></div>
+            <div class="row working"><span class="what shimmer">"Working…"</span></div>
         }
         .into_any(),
         Row::Count { id, count, .. } => count_row(id, count),
@@ -348,7 +349,7 @@ fn call_row(cell: Cell) -> AnyView {
         // As on the earlier page: the status and the outcome after the call.
         let outcome = match item.status {
             Some(CallStatus::Running) => Some(
-                view! { <span class="outcome turning"><span class="running"><LoaderCircle size=12 /></span></span> }
+                view! { <span class="outcome"><span class="running"><Spinner /></span></span> }
                     .into_any(),
             ),
             Some(status) => {

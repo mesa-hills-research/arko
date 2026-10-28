@@ -30,7 +30,6 @@
   --outline: #BCBCBC;
   --radius: 6px;
   --radius-lg: 8px;
-  --shine-toward: var(--bg);
   color-scheme: light;
 }
 :root:not([data-theme]) {
@@ -94,7 +93,6 @@
     --outline: #4C4C4C;
     --radius: 6px;
     --radius-lg: 8px;
-    --shine-toward: var(--text);
     color-scheme: dark;
     --syn-attribute: #7FAEF9;
     --syn-attribute-style: initial;

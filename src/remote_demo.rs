@@ -23,7 +23,8 @@ use crate::ui::Input;
 /// run with `cargo test remote_page_demo -- --ignored --nocapture` and
 /// open the link it prints. Messages: "Run the demo" (calls, two
 /// workers, a failed command, a question, a report), "demo:stream" (a
-/// long reply that streams), "demo:slow" (a 30 s command), "demo:ask" (a
+/// long reply that streams), "demo:think" (reasoning that streams for 20 s),
+/// "demo:slow" (a 30 s command), "demo:ask" (a
 /// question), "demo:wait" (a question the agent waits for, which the next
 /// message answers), "demo:questions" (three numbered questions with choices),
 /// "demo:approval" (a worker profile to approve), "demo:image" (a file read
@@ -31,10 +32,13 @@ use crate::ui::Input;
 /// history's limit; "demo:long 500", 500), anything else (a short turn).
 /// With `ARKO_DEMO_ITEMS`, an earlier message sends an image too.
 /// Lines added to the file `ARKO_DEMO_INPUT` are typed at the terminal.
+/// `ARKO_DEMO_MODEL_MS` (900) is how long the model takes to answer, and a
+/// long one keeps "Working…" on the page.
 /// What starts a script: a message with one of these.
-const MARKERS: [&str; 9] = [
+const MARKERS: [&str; 10] = [
     "Run the demo",
     "demo:stream",
+    "demo:think",
     "demo:slow",
     "demo:ask",
     "demo:wait",
@@ -80,6 +84,10 @@ async fn remote_page_demo() {
         stream
     }
     let stamps = std::env::var("ARKO_DEMO_STAMPS").is_ok_and(|value| value == "1");
+    let model_ms: u64 = std::env::var("ARKO_DEMO_MODEL_MS")
+        .ok()
+        .and_then(|ms| ms.parse().ok())
+        .unwrap_or(900);
     let feed_cell: Arc<std::sync::OnceLock<remote::Feed>> = Arc::new(std::sync::OnceLock::new());
     let feed_for_model = feed_cell.clone();
     // The script running: started by its marker in a new message, it goes
@@ -89,7 +97,7 @@ async fn remote_page_demo() {
         let feed = feed_for_model.clone();
         let script = script.clone();
         Box::pin(async move {
-            tokio::time::sleep(Duration::from_millis(900)).await;
+            tokio::time::sleep(Duration::from_millis(model_ms)).await;
             let shell = |command: &str| (SHELL_TOOL_NAME, serde_json::json!({"command": command}));
             if body.contains("You are agent run r") && body.contains("Fix the flaky test") {
                 let step = body.matches("function_call_output").count();
@@ -174,6 +182,26 @@ async fn remote_page_demo() {
                 }
                 done();
                 return complete("s1", "That was the stream.");
+            }
+            if let Some(step) = after("demo:think") {
+                if step == 0 && let Some(feed) = feed.get() {
+                    let words = "The user wants the parser's last test to pass, so first I should read how it splits each line, then check what the empty input does, and only then change anything. ".repeat(3);
+                    for word in words.split_inclusive(' ').cycle().take(130) {
+                        if !feed.activity().working {
+                            break;
+                        }
+                        feed.event(&WorkflowEvent {
+                            timestamp: chrono::Utc::now(),
+                            workflow_run_id: Uuid::nil(),
+                            agent_name: MAIN.into(),
+                            agent_run_id: Uuid::nil(),
+                            event: AgentEvent::ReasoningChunk(word.to_string()),
+                        }, None);
+                        tokio::time::sleep(Duration::from_millis(150)).await;
+                    }
+                }
+                done();
+                return complete("k1", "That was the thinking.");
             }
             if let Some(step) = after("demo:slow") {
                 return match step {
@@ -293,6 +321,7 @@ async fn remote_page_demo() {
     // Arko's shell, and the live switches the page's settings change.
     let shell = Shell::detect(WindowsShell::Powershell);
     let managers = Managers::open(&harness.session, &shell).unwrap();
+    harness.background = managers.background.clone();
     harness.tools = managers.tools(&shell, harness.handover.runs());
     harness.outside = Arc::new(crate::outside::Outside::new(
         false,
