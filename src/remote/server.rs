@@ -15,7 +15,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use axum::Router;
 use axum::body::Bytes;
-use axum::extract::{ConnectInfo, DefaultBodyLimit, RawQuery, State};
+use axum::extract::{ConnectInfo, DefaultBodyLimit, Path as UrlPath, RawQuery, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
@@ -27,7 +27,9 @@ use tokio::task::JoinHandle;
 
 use super::feed::{Activity, Feed, Item, Kind, Update};
 use super::highlight;
+use super::protocol::{IMAGE_TYPES, ImageData};
 use super::{Action, Info, Meter, Reading};
+use crate::images::Images;
 
 // The page, written in Rust with Leptos in `web/` and built into `page/`.
 const INDEX: &str = include_str!("page/index.html");
@@ -373,13 +375,16 @@ pub struct Server {
 }
 
 impl Server {
-    /// Serves on `addr`, with `key`. The feed goes out, the actions come in
-    /// on `actions`, and `meter` tells the status.
+    /// Serves on `addr`, with `key`. The feed goes out with the images its
+    /// items show from `images`, the actions come in on `actions`, and
+    /// `meter` tells the status.
+    #[allow(clippy::too_many_arguments)]
     pub fn start(
         addr: SocketAddr,
         key: String,
         info: Info,
         feed: Feed,
+        images: Images,
         actions: mpsc::UnboundedSender<Action>,
         meter: Arc<dyn Meter>,
         sessions_file: Option<PathBuf>,
@@ -398,6 +403,8 @@ impl Server {
             sessions,
             failures: Mutex::new(HashMap::new()),
             feed,
+            images,
+            image_version: super::random_token(9),
             actions,
             meter,
             info,
@@ -581,6 +588,7 @@ fn router(app: Arc<App>) -> Router {
         .route("/api/links", get(links))
         .route("/api/commands", get(commands))
         .route("/api/choices", axum::routing::post(choices))
+        .route("/api/images/{id}", get(image))
         .layer(DefaultBodyLimit::max(MAX_BODY))
         .layer(axum::middleware::map_response(harden))
         .with_state(app)
@@ -664,6 +672,11 @@ struct App {
     /// Wrong keys, by address.
     failures: Mutex<HashMap<IpAddr, Failures>>,
     feed: Feed,
+    /// The images the feed's items show.
+    images: Images,
+    /// Goes in the images' addresses. An image's ID names the same bytes
+    /// while this server runs, and another Arko numbers its images again.
+    image_version: String,
     actions: mpsc::UnboundedSender<Action>,
     meter: Arc<dyn Meter>,
     info: Info,
@@ -1019,20 +1032,34 @@ struct Stream {
 }
 
 /// An item as the page gets it: with its Markdown's finished code blocks
-/// highlighted.
+/// highlighted, and the addresses of its images.
 #[derive(Serialize)]
 struct PageItem<'a> {
     #[serde(flatten)]
     item: &'a Item,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     code: Vec<super::protocol::CodeSpans>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    images: Vec<ImageData>,
 }
 
 impl<'a> PageItem<'a> {
-    fn of(item: &'a Item) -> Self {
+    /// `item`, whose images are at addresses with `image_version`.
+    fn of(item: &'a Item, image_version: &str) -> Self {
         PageItem {
             item,
             code: highlight::item_code(item),
+            images: item
+                .images
+                .iter()
+                .map(|image| ImageData {
+                    id: image.id,
+                    mime: image.mime.clone(),
+                    label: image.label.clone(),
+                    bytes: image.bytes as u64,
+                    url: format!("/api/images/{}?v={image_version}", image.id),
+                })
+                .collect(),
         }
     }
 }
@@ -1046,7 +1073,11 @@ impl Stream {
         self.status = self.app.status(&snapshot.activity);
         let status: serde_json::Value = serde_json::from_str(&self.status).unwrap_or_default();
         self.streaming.clear();
-        let items: Vec<PageItem> = snapshot.items.iter().map(PageItem::of).collect();
+        let items: Vec<PageItem> = snapshot
+            .items
+            .iter()
+            .map(|item| PageItem::of(item, &self.app.image_version))
+            .collect();
         for item in &items {
             self.follow(item);
         }
@@ -1075,7 +1106,7 @@ impl Stream {
     fn take(&mut self, update: Update) {
         match update {
             Update::Item(item) => {
-                let page_item = PageItem::of(&item);
+                let page_item = PageItem::of(&item, &self.app.image_version);
                 self.follow(&page_item);
                 self.pending.push_back(
                     Event::default()
@@ -1098,7 +1129,7 @@ impl Stream {
             }
             Update::Change(item) => {
                 self.streaming.remove(&item.id);
-                let page_item = PageItem::of(&item);
+                let page_item = PageItem::of(&item, &self.app.image_version);
                 self.follow(&page_item);
                 self.pending.push_back(
                     Event::default()
@@ -1620,6 +1651,44 @@ async fn stop_job(
     app.act(Action::StopJob { job: body.job })
 }
 
+/// `GET /api/images/{id}`: the bytes of an image an item shows, while Arko
+/// keeps it, and only of a type the page shows. Asked for with the server's
+/// version, an ID's bytes never change, so a browser may keep them.
+async fn image(
+    State(app): State<Arc<App>>,
+    ConnectInfo(peer): Peer,
+    headers: HeaderMap,
+    UrlPath(id): UrlPath<String>,
+    RawQuery(query): RawQuery,
+) -> Response {
+    if let Err(refusal) = app.authorize(&headers, peer.ip()) {
+        return refusal.into_response();
+    }
+    let Some(image) = id.parse().ok().and_then(|id| app.images.get(id)) else {
+        return (StatusCode::NOT_FOUND, error_body("no such image")).into_response();
+    };
+    let Some(kind) = IMAGE_TYPES.iter().find(|kind| **kind == image.mime) else {
+        return (
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            error_body("the page doesn't show this type of image"),
+        )
+            .into_response();
+    };
+    let mut response = (
+        [(header::CONTENT_TYPE, *kind)],
+        Bytes::from_owner(image.bytes.clone()),
+    )
+        .into_response();
+    if query.is_some_and(|query| query == format!("v={}", app.image_version)) {
+        // Private, since it needs the session.
+        response.headers_mut().insert(
+            header::CACHE_CONTROL,
+            HeaderValue::from_static("private, max-age=31536000, immutable"),
+        );
+    }
+    response
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1695,6 +1764,8 @@ mod tests {
             sessions: Store::open(file, key, now_secs()),
             failures: Mutex::new(HashMap::new()),
             feed: Feed::new("main"),
+            images: Images::default(),
+            image_version: "v1".into(),
             actions,
             meter: Arc::new(Still),
             info: Info::default(),
@@ -1862,12 +1933,23 @@ mod tests {
     }
 
     fn serve_with(feed: &Feed, addr: &str, info: Info, meter: Arc<dyn Meter>) -> Served {
+        serve_all(feed, Images::default(), addr, info, meter)
+    }
+
+    fn serve_all(
+        feed: &Feed,
+        images: Images,
+        addr: &str,
+        info: Info,
+        meter: Arc<dyn Meter>,
+    ) -> Served {
         let (actions, received) = mpsc::unbounded_channel();
         let server = Server::start(
             addr.parse().unwrap(),
             KEY.into(),
             info,
             feed.clone(),
+            images,
             actions,
             meter,
             None,
@@ -2141,6 +2223,92 @@ mod tests {
         assert!(INDEX.contains("<link href=/icon-small.svg rel=icon"));
         assert!(INDEX.contains("<link href=/apple-touch-icon.png rel=apple-touch-icon>"));
         assert!(page_has("/icon.svg"));
+    }
+
+    /// An item's images reach the page with their addresses, and their bytes
+    /// need a session. Only an image Arko keeps, of a type the page shows,
+    /// comes back, as that type and never sniffed. Asked for with the
+    /// server's version, a browser keeps it.
+    #[tokio::test]
+    async fn an_items_images_come_with_a_session_as_their_own_type() {
+        use super::super::feed::{Delivery, Source};
+        use super::super::protocol::ResetData;
+        let feed = Feed::new("main");
+        let images = Images::default();
+        let png = images.add(APPLE_ICON.into(), "image/png", "icon.png");
+        let svg = images.add(b"<svg/>"[..].into(), "image/svg+xml", "mark.svg");
+        feed.user_with("Look.", Source::Web, Delivery::Turn, vec![png.clone(), svg]);
+        let served = serve_all(
+            &feed,
+            images,
+            "127.0.0.1:0",
+            Info::default(),
+            Arc::new(Still),
+        );
+        let cookie = served.login().await;
+        let mut stream = served.get("/api/events", Some(&cookie)).await;
+        let mut buffer = String::new();
+        let events = read_until(&mut stream, &mut buffer, |name, _| name == "reset").await;
+        // (The page's types refuse a field they don't know.)
+        let reset: ResetData = serde_json::from_value(events.last().unwrap().1.clone()).unwrap();
+        let shown = &reset.items[0].images;
+        assert_eq!(shown.len(), 2);
+        assert_eq!(
+            (shown[0].id, shown[0].mime.as_str(), shown[0].label.as_str()),
+            (png.id, "image/png", "icon.png")
+        );
+        assert_eq!(shown[0].bytes, APPLE_ICON.len() as u64);
+        let url = shown[0].url.clone();
+        assert!(
+            url.starts_with(&format!("/api/images/{}?v=", png.id)),
+            "{url}"
+        );
+
+        assert_eq!(
+            served.get(&url, None).await.status(),
+            StatusCode::UNAUTHORIZED
+        );
+        let response = served.get(&url, Some(&cookie)).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let headers = response.headers().clone();
+        assert_eq!(headers[header::CONTENT_TYPE], "image/png");
+        assert_eq!(headers[header::X_CONTENT_TYPE_OPTIONS], "nosniff");
+        assert_eq!(
+            headers[header::CACHE_CONTROL],
+            "private, max-age=31536000, immutable"
+        );
+        assert_eq!(&response.bytes().await.unwrap()[..], APPLE_ICON);
+        // Without the version, or with another server's, it isn't kept.
+        for path in [
+            format!("/api/images/{}", png.id),
+            format!("/api/images/{}?v=other", png.id),
+        ] {
+            let response = served.get(&path, Some(&cookie)).await;
+            assert_eq!(response.status(), StatusCode::OK, "{path}");
+            assert_eq!(
+                response.headers()[header::CACHE_CONTROL],
+                "no-store",
+                "{path}"
+            );
+        }
+        // An ID it doesn't keep, and a type the page doesn't show, aren't served.
+        for path in ["/api/images/999", "/api/images/x", "/api/images/-1"] {
+            let response = served.get(path, Some(&cookie)).await;
+            assert_eq!(response.status(), StatusCode::NOT_FOUND, "{path}");
+        }
+        let response = served.get(&shown[1].url, Some(&cookie)).await;
+        assert_eq!(response.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+        assert_ne!(response.headers()[header::CONTENT_TYPE], "image/svg+xml");
+        // Another site's page can't load it with the cookie.
+        let response = served
+            .http
+            .get(format!("{}{url}", served.base))
+            .header(header::COOKIE, &cookie)
+            .header("sec-fetch-site", "cross-site")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
     }
 
     /// The page asks for its files with the build's version, a hash of
@@ -3408,6 +3576,7 @@ mod tests {
             KEY.into(),
             Info::default(),
             feed.clone(),
+            Images::default(),
             actions,
             Arc::new(Still),
             Some(file),
