@@ -2,8 +2,10 @@
 //! Context Protocol. Arko starts the servers set up in the files
 //! `--mcp-config` names, in the project's `.mcp.json` (once the user
 //! approves them) and in `mcp.json` in Arko's folder, and offers their tools
-//! to the main agent and the workers as `mcp__<server>__<tool>`. Each Arko
-//! process starts its own servers, and stops them when it exits.
+//! to the main agent and the workers as `mcp__<server>__<tool>`. Each open
+//! agent session runs its own copy of each server and stops it when the
+//! session closes. Chat sessions run none. A launcher such as `npx -y` adds a
+//! wrapper process to each copy.
 //!
 //! A file is in Claude Code's format, servers by name:
 //! `{"mcpServers": {"github": {"command": "npx", "args": ["-y", "..."], "env": {"TOKEN": "${GITHUB_TOKEN}"}}}}`,
