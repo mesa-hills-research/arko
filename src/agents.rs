@@ -2002,9 +2002,10 @@ mod tests {
         assert!(!text.contains("# Extra rules"), "{text}");
     }
 
-    /// Haiku and luna are small on every route and the others aren't. A name
-    /// that only resembles one, such as a "-v2" variant, a `:free` variant or
-    /// a fine-tune on OpenRouter, is not small.
+    /// Haiku and luna are small on every route, also with OpenRouter's
+    /// `:floor`, `:nitro` or `:free`, and the others aren't. A name that only
+    /// resembles one, such as a "-v2" variant, another suffix or a fine-tune
+    /// on OpenRouter, is not small.
     #[test]
     fn small_models_are_haiku_and_luna_on_any_route() {
         let small = |name: &str| ExtraRules::Small.for_model(&model(name, false));
@@ -2022,6 +2023,10 @@ mod tests {
             "gpt-5.6-luna",
             "openrouter:openai/gpt-6-luna",
             "openrouter:openai/gpt-5.6-luna",
+            "openrouter:openai/gpt-6-luna:floor",
+            "openrouter:anthropic/claude-haiku-5.5:free",
+            "openrouter:anthropic/claude-haiku-4.5:nitro",
+            "openrouter:openai/gpt-5.6-luna:nitro",
         ] {
             assert!(small(name), "{name}");
         }
@@ -2039,10 +2044,14 @@ mod tests {
             "flash",
             "openrouter:anthropic/claude-opus-5.5",
             "openrouter:anthropic/claude-haiku-5.5-v2",
-            "openrouter:anthropic/claude-haiku-5.5:free",
+            "openrouter:anthropic/claude-haiku-5.5:preview",
+            "openrouter:anthropic/claude-haiku-5.5:free:floor",
             "openrouter:someorg/haiku-finetune",
+            "openrouter:someorg/claude-haiku-5.5:free",
             "openrouter:openai/gpt-6-luna-preview",
-            "openrouter:openai/gpt-6-luna:floor",
+            "openrouter:openai/gpt-6-luna:online",
+            "openrouter:openai/gpt-6-luna:beta",
+            "openrouter:OpenAI/GPT-6-Luna:floor",
             "openrouter:luna-something",
         ] {
             assert!(!small(name), "{name}");

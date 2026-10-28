@@ -61,14 +61,21 @@ pub const ALIASES: [(&str, &str); 11] = [
 ];
 
 /// Registry models and the exact slug each has on OpenRouter. A slug names
-/// its model only by equality, so a "-v2" variant, a fine-tune or a `:free`
-/// variant is none of these.
+/// its model only by equality, after one of [`OPENROUTER_ROUTING_SUFFIXES`]
+/// comes off, so a "-v2" variant or a fine-tune is none of these.
 pub const OPENROUTER_EQUIVALENTS: [(&str, &str); 4] = [
     ("claude-haiku-5-5", "anthropic/claude-haiku-5.5"),
     ("claude-haiku-4-5-20251001", "anthropic/claude-haiku-4.5"),
     ("gpt-6-luna", "openai/gpt-6-luna"),
     ("gpt-5.6-luna", "openai/gpt-5.6-luna"),
 ];
+
+/// The suffixes of an OpenRouter slug that pick a provider or a free tier
+/// for the same model, `:floor` (the cheapest provider), `:nitro` (the
+/// fastest) and `:free`. A slug with one of them, and only one, is looked up
+/// in [`OPENROUTER_EQUIVALENTS`] without it. Other suffixes stay part of the
+/// slug.
+pub const OPENROUTER_ROUTING_SUFFIXES: [&str; 3] = [":floor", ":nitro", ":free"];
 
 /// The handover size of a model whose input limit Arko can't tell (an
 /// OpenRouter model when its catalog can't be read): 80% of 128k, the
@@ -307,13 +314,20 @@ const SMALL_MODELS: [&str; 4] = [
 
 /// Whether `model` is one of [`SMALL_MODELS`], on any route: its registry ID
 /// through the API or `cc:`, or its slug in [`OPENROUTER_EQUIVALENTS`]
-/// through OpenRouter. The ID or slug must match exactly.
+/// through OpenRouter, with or without one of
+/// [`OPENROUTER_ROUTING_SUFFIXES`]. The ID or slug must match exactly.
 pub fn is_small(model: &Model) -> bool {
     let id = match model.provider {
-        Provider::OpenRouter => OPENROUTER_EQUIVALENTS
-            .iter()
-            .find(|(_, slug)| *slug == model.id)
-            .map(|(id, _)| *id),
+        Provider::OpenRouter => {
+            let slug = OPENROUTER_ROUTING_SUFFIXES
+                .iter()
+                .find_map(|suffix| model.id.strip_suffix(suffix))
+                .unwrap_or(&model.id);
+            OPENROUTER_EQUIVALENTS
+                .iter()
+                .find(|(_, equivalent)| *equivalent == slug)
+                .map(|(id, _)| *id)
+        }
         _ => Some(model.id.as_str()),
     };
     id.is_some_and(|id| SMALL_MODELS.contains(&id))
@@ -3415,7 +3429,8 @@ mod tests {
     }
 
     /// Every small model is small by its ID, its alias, their `cc:` forms
-    /// (Claude models only) and its exact OpenRouter slug.
+    /// (Claude models only) and its exact OpenRouter slug, with or without a
+    /// routing suffix.
     #[test]
     fn each_small_model_is_small_on_every_route() {
         for id in SMALL_MODELS {
@@ -3436,6 +3451,9 @@ mod tests {
                 .unwrap_or_else(|| panic!("{id} has no OpenRouter slug"))
                 .1;
             names.push(format!("openrouter:{slug}"));
+            for suffix in OPENROUTER_ROUTING_SUFFIXES {
+                names.push(format!("openrouter:{slug}{suffix}"));
+            }
             for name in names {
                 let model = resolve_model(&name).unwrap();
                 assert!(is_small(&model), "{name}");
@@ -3464,14 +3482,21 @@ mod tests {
     }
 
     /// A name that only resembles a small model is not one: other versions,
-    /// publishers, fine-tunes, variants, other letter cases and registry IDs
-    /// that OpenRouter doesn't use as slugs.
+    /// publishers, fine-tunes, variants other than the routing suffixes, two
+    /// suffixes, other letter cases and registry IDs that OpenRouter doesn't
+    /// use as slugs.
     #[test]
     fn lookalikes_are_not_small() {
         for slug in [
             "anthropic/claude-haiku-5.5-v2",
-            "anthropic/claude-haiku-5.5:free",
-            "anthropic/claude-haiku-5.5:floor",
+            "anthropic/claude-haiku-5.5:preview",
+            "anthropic/claude-haiku-5.5:online",
+            "anthropic/claude-haiku-5.5:beta",
+            "anthropic/claude-haiku-5.5:turbo",
+            "anthropic/claude-haiku-5.5:free:floor",
+            "anthropic/claude-haiku-5.5:Free",
+            "anthropic/claude-haiku-5.5-v2:floor",
+            "someorg/claude-haiku-5.5:free",
             "anthropic/claude-haiku-5.5@preset/short-answers",
             "anthropic/claude-haiku-5-5",
             "anthropic/claude-haiku-5.5-ft-acme",
@@ -3483,8 +3508,12 @@ mod tests {
             "haiku",
             "claude-haiku-5-5",
             "openai/gpt-6-luna-preview",
-            "openai/gpt-6-luna:free",
-            "openai/gpt-6-luna:floor",
+            "openai/gpt-6-luna:preview",
+            "openai/gpt-6-luna:online",
+            "openai/gpt-6-luna:nitro:free",
+            "openai/gpt-6-luna:NITRO",
+            "OpenAI/GPT-6-Luna:floor",
+            "openai/gpt-6-luna-ft-acme:nitro",
             "openai/gpt-6.1-luna",
             "openai/gpt-5.6-luna-mini",
             "someorg/luna",
