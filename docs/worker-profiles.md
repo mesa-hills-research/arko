@@ -27,7 +27,7 @@ materials. Say what is wrong, in order of how much it matters.
 | `model` | A model as `/model` takes it, such as `opus`, `sol`, `cc:haiku` or `openrouter:<slug>`. Without one, the session's worker model |
 | `effort` | `low`, `medium`, `high`, `xhigh` or `max`, as the model takes it |
 | `fast` | `true` for fast mode, where the model has it |
-| `cache` | `5m` or `1h`, the prompt cache of Claude workers that take a choice |
+| `cache` | `long` or `short` (`1h` and `5m` mean the same), the prompt cache of workers whose model has a long one. Long is an hour on Claude models and 12 hours on OpenAI GPT-5.6 and later with an API key. Short is 5 minutes on Claude and 30 minutes on OpenAI |
 | `nested` | `true` to let the worker start workers of its own, down to the session's worker depth. The call's `nested` wins, so `nested: false` leaves it out for one worker |
 | `made_by` | `agent` when the main agent saved the profile |
 
@@ -110,6 +110,8 @@ in your Arko folder once you turn outside access on. So treat a project's profil
 | `/profiles add NAME MODEL [EFFORT] [DESCRIPTION]` | Writes a profile for every project and prints its file to edit |
 | `/profiles remove NAME` | Deletes the profile `/profiles` shows under that name |
 | `/worker-models agent`, `profiles` or `session` | Who chooses the workers' models. See below |
+| `/worker-billing plans`, `ask` or `api` | Whether workers may run on models billed per token. See [Worker billing](#worker-billing) |
+| `/api-budget DOLLARS`, `on` or `off` | A daily budget for what is billed per token |
 | `/worker-depth 1` to `4` | How many levels of workers the session allows |
 | `/worker-retry-cap off`, `on` or a number | How many failed model requests in a row stop a worker |
 | `/message-copies on` or `off` | Whether the agent that started a worker gets a copy of the messages you send the worker |
@@ -139,6 +141,39 @@ web page. With it on, the agent that started a worker gets a copy of each messag
 worker, with its next news and without a turn of its own. With it off, that agent doesn't see your
 messages. A change applies from the next message, and a session saved before the setting existed has
 it on.
+
+## Worker billing
+
+`cc:` models run on your Claude plan, and OpenAI models on your ChatGPT plan when the session uses
+the ChatGPT login. Models on an API key, Gemini and OpenRouter are billed per token.
+`/worker-billing` (also `--worker-billing`, and `ARKO_WORKER_BILLING` for new sessions) says
+whether workers may run on those. It is the "Worker billing" row in `/settings` and the setting of
+that name on the web page, and it applies to the next worker started.
+
+| Value | A worker on a model billed per token |
+|---|---|
+| `plans` | Is refused, and the main agent is told which plan models it can use |
+| `ask` (the default) | Starts once you allow it on a card that names the model and its price |
+| `api` | Starts without asking |
+
+On the card, Allow starts that worker, "Allow MODEL for this session" also allows that model's
+next workers in the session, and Deny refuses it. The main agent waits for your answer, and words
+you type instead reach it with the refusal. Only the main agent's starts can ask, so a worker's own
+start on a model billed per token is refused unless you allowed that model for the session. With
+`plans`, `/model worker` and the profiles the main agent saves take a plan's model only. The main
+agent's own model stays your choice, and its instructions tell it to prefer your plans' models for
+workers.
+
+`/api-budget` (also `--api-budget`, and `ARKO_API_BUDGET` for new sessions) sets a daily budget in
+dollars, off by default and $10 with `on`. It counts what your sessions were billed per token since
+local midnight, the main agent's calls included. Each session shares its spend with the others in
+`api-spend.json` in Arko's folder. Once the day's spend reaches the budget, a new worker on a model
+billed per token is refused with `api`, and asked about with `ask` even for a model you allowed for
+the session. You're told once, and running workers go on.
+
+`worker_options`, the `/model` picker and the web page's `/model` choices show `API, $5/$25` (the
+price per million input and output tokens) beside a model billed per token, and the result of a
+start says it too.
 
 ## Workers that start workers
 
@@ -206,8 +241,10 @@ whether the agent's save asks you first. `Profile::check` tells whether a profil
 with a model Arko knows and an effort it takes. `profiles::folders` gives the folders for an "open
 the folder" button, and `profiles::approval_text` and `profiles::is_approval` are the question the
 agent's save puts to the user and the rule for its answer. `arko::workers` has the names,
-commands and sentences of the two settings, and `ModelChoice::label` and `about` the words for each
-value, so an app labels and sets them as the terminal and the web page do.
+commands and sentences of the workers' settings, and `ModelChoice::label` and `about` and
+`WorkerBilling::label` and `about` the words for each value, so an app labels and sets them as the
+terminal and the web page do. `arko::models::billing` gives the label a picker shows beside a model
+billed per token.
 
 A worker's summary (`WorkerSummary`) names the worker that started it in `parent`, its `depth`
 (1 for the main agent's workers), whether it may start workers of its own in `nested`, and what it

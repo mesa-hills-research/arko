@@ -10,7 +10,6 @@ use arko_agents::{
     AgentConfig, AgentLLMConfig, ClaudeCodeSettings, HandoverConfig, TaskContext, Tool,
     ToolDefinition, ToolError, ToolParameterDefinition, ToolParameterType, ToolTypeDetails,
 };
-use arko_ai::AnthropicCacheTtl;
 use arko_ai::prompt_cache::PromptCacheLifetime;
 use arko_workflows::prelude::*;
 use arko_workflows::subagents::{
@@ -24,6 +23,7 @@ use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use crate::agents::NO_LIMIT;
+use crate::billing;
 use crate::chooser;
 use crate::kept_notes::KeptNotes;
 use crate::remote;
@@ -81,7 +81,10 @@ pub struct Setup {
     pub session_dir: PathBuf,
     pub output: Arc<Output>,
     pub max_running: u32,
+    /// The long prompt cache for workers on the session's worker model.
     pub cache_1h: bool,
+    /// How the session reaches OpenAI models.
+    pub openai_auth: Option<crate::providers::OpenAiAuth>,
     /// The client's cache lifetime for the worker model and authentication.
     pub cache_lifetime: PromptCacheLifetime,
     pub feed: Option<remote::Feed>,
@@ -89,6 +92,115 @@ pub struct Setup {
     /// provider has no key in this session (or its key was removed while
     /// Arko runs), or Claude Code isn't installed and signed in.
     pub refuse: Option<Refuse>,
+    /// Who asks the user to allow a worker billed per token (none: no one
+    /// can).
+    pub(crate) asker: Option<Arc<crate::inputs::Asker>>,
+    /// Arko's folder, where the sessions share the day's API spend (none:
+    /// the session counts its own only).
+    pub(crate) root: Option<PathBuf>,
+}
+
+/// What the start hook holds a worker's billing to (see [`billing`]): the
+/// models the user allowed for the session, the day's API spend, and who
+/// asks the user.
+struct Spending {
+    allowed: billing::Allowed,
+    spend: billing::DaySpend,
+    asker: Option<Arc<crate::inputs::Asker>>,
+    output: Arc<Output>,
+    feed: Option<remote::Feed>,
+}
+
+impl Spending {
+    /// Tells the user, once a day, that the day's API spend `spent` reached
+    /// the budget of `basis`, when workers are held to it.
+    fn tell_budget(&self, basis: &chooser::Basis, spent: f64) {
+        let Some(budget) = basis.api_budget else {
+            return;
+        };
+        if basis.billing == billing::WorkerBilling::Plans
+            || spent < budget
+            || !self.spend.tell_once()
+        {
+            return;
+        }
+        let text = billing::budget_notice(basis.billing, spent, budget);
+        self.output.echo(&self.output.warn(&text));
+        if let Some(feed) = &self.feed {
+            feed.notice(remote::Level::Warn, &text);
+        }
+    }
+
+    /// Asks the user to allow the worker `request` starts on `model`, with
+    /// the day's spend and the budget it reached (`over`), and waits for
+    /// the answer. The wait ends without one when the turn stops or the
+    /// workflow does.
+    fn ask(
+        &self,
+        request: &StartRequest,
+        model: &arko_ai::Model,
+        over: Option<(f64, f64)>,
+        workflow: &Weak<Workflow>,
+    ) -> Result<billing::Decision, String> {
+        let questions = self
+            .asker
+            .as_ref()
+            .and_then(|asker| asker.questions.clone())
+            .ok_or_else(|| billing::cant_ask(model))?;
+        // (The start hook can't wait asynchronously, so it waits on a thread
+        // the runtime can do without.)
+        let runtime = match tokio::runtime::Handle::try_current() {
+            Ok(runtime)
+                if runtime.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread =>
+            {
+                runtime
+            }
+            _ => return Err(billing::cant_ask(model)),
+        };
+        let (text, choices) = billing::question(model, &request.task, over);
+        let (answer, answered) = tokio::sync::oneshot::channel();
+        let question = crate::inputs::Question {
+            run: request.caller_run_id,
+            asked: vec![arko_agents::questions::AskedQuestion {
+                id: crate::questions::PLAIN_ID.to_string(),
+                question: arko_agents::questions::Question {
+                    question: text,
+                    choices,
+                    ..Default::default()
+                },
+            }],
+            answer: Some(crate::inputs::Answering::Text(answer)),
+            approval: None,
+            call: None,
+        };
+        if questions.send(question).is_err() {
+            return Err(billing::cant_ask(model));
+        }
+        let feed = self.feed.clone();
+        let stopped = move || {
+            feed.as_ref().is_some_and(remote::Feed::turn_is_stopping)
+                || workflow
+                    .upgrade()
+                    .is_some_and(|workflow| workflow.is_cancelled())
+        };
+        let words = tokio::task::block_in_place(|| {
+            runtime.block_on(async {
+                let stops = async {
+                    while !stopped() {
+                        tokio::time::sleep(Duration::from_millis(200)).await;
+                    }
+                };
+                tokio::select! {
+                    words = answered => words.ok(),
+                    () = stops => None,
+                }
+            })
+        });
+        let name = crate::models::display_name(&crate::providers::model_name(model));
+        Ok(words.map_or(billing::Decision::Unanswered, |words| {
+            billing::decision(&words, &name)
+        }))
+    }
 }
 
 /// See [`Setup::refuse`]. The text is written for the main agent.
@@ -306,26 +418,33 @@ impl WorkerRecords {
     }
 }
 
+/// Whether `start_agent`'s `cache` (or a profile's) asks for the long prompt
+/// cache: `long`, or `1h` as it was first called, against `short` or `5m`.
+pub(crate) fn long_cache_asked(text: &str) -> Result<bool, String> {
+    match text.trim().to_ascii_lowercase().as_str() {
+        "long" | "1h" => Ok(true),
+        "short" | "5m" => Ok(false),
+        _ => Err(format!("cache is long or short, not {text}")),
+    }
+}
+
 /// The prompt cache a worker run asks for in `start_agent`'s `cache`, else
-/// `default_1h`, on the models that take one: on `config`.
+/// `default_long`, on `config`. Models without a long cache ignore it.
 fn apply_cache(
     request: &StartRequest,
     config: &mut AgentConfig,
-    default_1h: bool,
+    default_long: bool,
 ) -> Result<(), String> {
-    let chosen = request.parameters.get(CACHE_PARAM).and_then(Value::as_str);
-    let one_hour = match chosen {
-        Some("1h") => true,
-        Some("5m") => false,
-        Some(other) => return Err(format!("cache is 5m or 1h, not {other}")),
-        None => default_1h,
-    };
-    if crate::providers::takes_cache_ttl(&config.llm_config.model) {
-        let generation = &mut config.llm_config.generation_config;
-        generation.anthropic_cache_ttl = one_hour.then_some(AnthropicCacheTtl::OneHour);
-        if chosen == Some("5m") {
-            crate::providers::ask_five_minutes(&config.llm_config.model, generation);
-        }
+    let chosen = request
+        .parameters
+        .get(CACHE_PARAM)
+        .and_then(Value::as_str)
+        .map(long_cache_asked)
+        .transpose()?;
+    let generation = &mut config.llm_config.generation_config;
+    generation.long_prompt_cache = chosen.unwrap_or(default_long).then_some(true);
+    if chosen == Some(false) {
+        crate::providers::ask_short_cache(&config.llm_config.model, generation);
     }
     Ok(())
 }
@@ -346,9 +465,11 @@ fn prepare(
         flight,
         feed,
         refuse,
-        default_1h,
+        default_long,
+        spending,
+        ..
     } = hook;
-    let (feed, refuse, default_1h) = (feed.as_ref(), refuse.as_ref(), *default_1h);
+    let (feed, refuse, default_long) = (feed.as_ref(), refuse.as_ref(), *default_long);
     // (The lock is held briefly: choosing may read files, and Claude Code's
     // login check runs a command.)
     let (started, attached, new) = {
@@ -364,7 +485,7 @@ fn prepare(
         return Ok(());
     }
     if !attached {
-        return apply_cache(request, config, default_1h);
+        return apply_cache(request, config, default_long);
     }
     let setup = match new {
         Some(new) => {
@@ -391,7 +512,11 @@ fn prepare(
                 }
                 found
             };
-            let setup = chooser::choose_in(&new.basis, request, refuse, family);
+            let setup = chooser::choose_in(&new.basis, request, refuse, family).and_then(|setup| {
+                let weak = workflow.lock().unwrap().clone();
+                pay_for(&setup, &new.basis, request, family, refuse, spending, &weak)?;
+                Ok(setup)
+            });
             let setup = match setup {
                 Ok(setup) => setup,
                 Err(why) => {
@@ -410,7 +535,7 @@ fn prepare(
             if let Some(why) = refuse.and_then(|refuse| refuse(&config.llm_config.model)) {
                 return Err(why);
             }
-            apply_cache(request, config, default_1h)?;
+            apply_cache(request, config, default_long)?;
             WorkerSetup::of(config)
         }
     };
@@ -418,6 +543,51 @@ fn prepare(
     let mut models = models.lock().unwrap();
     models.runs.insert(request.run_id, setup);
     models.save()
+}
+
+/// Holds the start `request` of a worker with `setup` (at `family`) to the
+/// session's worker billing ([`billing::gate`]). A model billed per token
+/// may be refused, or wait here for the user's OK.
+fn pay_for(
+    setup: &WorkerSetup,
+    basis: &chooser::Basis,
+    request: &StartRequest,
+    family: chooser::Family,
+    refuse: Option<&Refuse>,
+    spending: &Spending,
+    workflow: &Weak<Workflow>,
+) -> Result<(), String> {
+    let model = &setup.llm_config.model;
+    let spent = std::cell::Cell::new(None);
+    let gate = billing::gate(
+        basis.billing,
+        basis.api_budget,
+        model,
+        basis.providers.openai_auth,
+        family.depth > 1,
+        spending.allowed.has(model),
+        || {
+            let today = spending.spend.today(workflow.upgrade().as_deref(), true);
+            spent.set(Some(today));
+            today
+        },
+        || chooser::plan_models(basis, refuse),
+    );
+    if let Some(spent) = spent.get() {
+        spending.tell_budget(basis, spent);
+    }
+    match gate {
+        billing::Gate::Go => Ok(()),
+        billing::Gate::Refuse(why) => Err(why),
+        billing::Gate::Ask { over } => match spending.ask(request, model, over, workflow)? {
+            billing::Decision::Allow => Ok(()),
+            billing::Decision::AllowForSession => {
+                spending.allowed.add(model);
+                Ok(())
+            }
+            other => Err(billing::refusal(&other, model)),
+        },
+    }
 }
 
 /// How long a start that passed the hook keeps its place while its record
@@ -578,7 +748,11 @@ struct StartHook {
     flight: Mutex<HashMap<Uuid, (Uuid, Instant)>>,
     feed: Option<remote::Feed>,
     refuse: Option<Refuse>,
-    default_1h: bool,
+    default_long: bool,
+    spending: Arc<Spending>,
+    /// How the session reaches OpenAI models, which says whether one is
+    /// billed per token.
+    openai_auth: Option<crate::providers::OpenAiAuth>,
 }
 
 impl SubagentHook for StartHook {
@@ -589,14 +763,23 @@ impl SubagentHook for StartHook {
     /// What the worker runs and its profile, for its starter: the start's
     /// result and `list_agents` say it, so a starter that chose a model sees
     /// what it got and one that lost track of its workers sees what each is.
+    /// A model billed per token says so.
     fn describe(&self, record: &SubagentRecord) -> Option<String> {
         let models = self.models.lock().unwrap();
         let setup = models.runs.get(&record.run_id)?;
-        Some(runs_words(
-            &crate::providers::model_name(&setup.llm_config.model),
+        let model = &setup.llm_config.model;
+        let mut text = runs_words(
+            &crate::providers::model_name(model),
             setup.effort.map(|effort| effort.to_string()).as_deref(),
             setup.profile.as_deref(),
-        ))
+        );
+        if crate::providers::plan_of(model, self.openai_auth).is_none() {
+            text.push_str(&format!(
+                ", billed per token ({})",
+                billing::api_label(model)
+            ));
+        }
+        Some(text)
     }
 
     /// What the worker used, as the last line of the news its starter gets
@@ -659,7 +842,7 @@ fn start_parameters() -> Vec<ToolParameterDefinition> {
     vec![
         text(
             CACHE_PARAM,
-            "1h or 5m, how long the worker's prompt cache lasts after its last step. Only Claude workers take it, on an API key, on OpenRouter or in Claude Code, which uses 1h on a Claude plan when you choose none. ChatGPT keeps its own 30-minute cache.",
+            "`long` or `short` (`1h` and `5m` work too), how long the worker's prompt cache lasts after its last step. `long` is an hour on Claude models and 12 hours on OpenAI GPT-5.6 and later with an API key, and costs more to write. `short` is 5 minutes on Claude and 30 minutes on OpenAI. Claude Code uses an hour on a Claude plan when you choose none. ChatGPT keeps its own 30-minute cache.",
         ),
         text(
             PROFILE_PARAM,
@@ -782,6 +965,8 @@ pub struct Crew {
     /// How many failed model requests in a row stop a worker (see
     /// `config`), if any do.
     retry_cap: Mutex<Option<u32>>,
+    /// What workers billed per token may spend.
+    spending: Arc<Spending>,
     wake: mpsc::UnboundedSender<()>,
     events: Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
@@ -789,11 +974,19 @@ pub struct Crew {
 impl Crew {
     pub fn new(setup: Setup) -> (Arc<Self>, mpsc::UnboundedReceiver<()>) {
         let (wake, woken) = mpsc::unbounded_channel();
+        let spending = Arc::new(Spending {
+            allowed: billing::Allowed::load(&setup.session_dir),
+            spend: billing::DaySpend::new(setup.root.as_deref(), &setup.session_id),
+            asker: setup.asker.clone(),
+            output: setup.output.clone(),
+            feed: setup.feed.clone(),
+        });
         (
             Arc::new(Self {
                 models: Arc::new(Mutex::new(WorkerRecords::load(&setup.session_dir))),
                 project: Arc::default(),
                 kept: KeptNotes::new(&setup.session_dir),
+                spending,
                 setup,
                 workflow: Arc::default(),
                 lead: Mutex::new(None),
@@ -806,7 +999,7 @@ impl Crew {
     }
 
     pub fn config(&self) -> SubagentsConfig {
-        let default_1h = self.setup.cache_1h;
+        let default_long = self.setup.cache_1h;
         let models = self.models.clone();
         let records = self.models.clone();
         let workflow = self.workflow.clone();
@@ -831,7 +1024,9 @@ impl Crew {
                 flight: Mutex::default(),
                 feed,
                 refuse,
-                default_1h,
+                default_long,
+                spending: self.spending.clone(),
+                openai_auth: self.setup.openai_auth,
             }))
             // Asked as each worker starts: a run keeps its first message.
             .start_context(Arc::new(move |request: &StartRequest| {
@@ -864,6 +1059,26 @@ impl Crew {
     /// The model new workers start on from now on.
     pub fn set_new_workers(&self, new: NewWorkers) {
         self.models.lock().unwrap().new = Some(new);
+    }
+
+    /// The day's API spend across the sessions of Arko's folder, once the
+    /// session's workflow is there.
+    pub(crate) fn spent_today(&self) -> Option<f64> {
+        let workflow = self.workflow()?;
+        Some(self.spending.spend.today(Some(&workflow), true))
+    }
+
+    /// Shares the session's API spend of the day with the folder's other
+    /// sessions when it changed, and tells the user once a day that the
+    /// spend reached the budget. Called as the status is read.
+    pub(crate) fn track_spend(&self) {
+        let Some(workflow) = self.workflow() else {
+            return;
+        };
+        let spent = self.spending.spend.today(Some(&workflow), false);
+        if let Some(new) = self.new_workers() {
+            self.spending.tell_budget(&new.basis, spent);
+        }
     }
 
     /// Tells the user something, in the terminal and on the page.
@@ -1325,19 +1540,20 @@ impl Crew {
                 // A run Arko didn't record: the cache it asked for, on the
                 // registered worker's model.
                 if started.is_none()
-                    && workflow
-                        .context()
-                        .agent_configs
-                        .get(&run.agent)
-                        .is_some_and(|config| {
-                            crate::providers::takes_cache_ttl(&config.llm_config.model)
-                        })
+                    && let Some(config) = workflow.context().agent_configs.get(&run.agent)
+                    && let Some(Ok(long)) = run
+                        .parameters
+                        .get(CACHE_PARAM)
+                        .and_then(Value::as_str)
+                        .map(long_cache_asked)
                 {
-                    lifetime = match run.parameters.get(CACHE_PARAM).and_then(Value::as_str) {
-                        Some("1h") => PromptCacheLifetime::Known(Duration::from_secs(3600)),
-                        Some("5m") => PromptCacheLifetime::Known(Duration::from_secs(300)),
-                        _ => lifetime,
-                    };
+                    let model = &config.llm_config.model;
+                    let mut generation = config.llm_config.generation_config.clone();
+                    generation.long_prompt_cache = Some(long);
+                    let chatgpt = model.provider == arko_ai::Provider::OpenAI
+                        && self.setup.openai_auth != Some(crate::providers::OpenAiAuth::ApiKey);
+                    lifetime =
+                        arko_ai::prompt_cache::prompt_cache_lifetime(model, &generation, chatgpt);
                 }
                 let summary = self
                     .setup
@@ -1493,6 +1709,7 @@ mod tests {
     use super::*;
     use crate::agents::MAIN;
     use arko_agents::AgentLLMConfig;
+    use arko_ai::AnthropicCacheTtl;
 
     #[test]
     fn native_worker_options_preserve_cache_choices_and_queue_limits() {
@@ -1503,9 +1720,12 @@ mod tests {
             output: Arc::new(Output::new(None, true)),
             max_running: 2,
             cache_1h: true,
+            openai_auth: Some(crate::providers::OpenAiAuth::ApiKey),
             cache_lifetime: PromptCacheLifetime::Known(Duration::from_secs(3600)),
             feed: None,
             refuse: None,
+            asker: None,
+            root: None,
         });
         let native = crew.config();
         assert_eq!(native.max_running.unwrap().get(), 2);
@@ -1534,36 +1754,42 @@ mod tests {
             task: "Check it".into(),
             parameters: Default::default(),
         };
+        let ttl = |config: &AgentConfig| config.llm_config.generation_config.claude_cache_ttl();
         hook.prepare(&request, &mut config).unwrap();
-        assert_eq!(
-            config.llm_config.generation_config.anthropic_cache_ttl,
-            Some(AnthropicCacheTtl::OneHour)
-        );
-        request.parameters.insert(CACHE_PARAM.into(), "5m".into());
-        hook.prepare(&request, &mut config).unwrap();
-        assert_eq!(
-            config.llm_config.generation_config.anthropic_cache_ttl,
-            None
-        );
-        request.parameters.insert(CACHE_PARAM.into(), "1h".into());
-        hook.prepare(&request, &mut config).unwrap();
-        assert_eq!(
-            config.llm_config.generation_config.anthropic_cache_ttl,
-            Some(AnthropicCacheTtl::OneHour)
-        );
-        request.parameters.insert(CACHE_PARAM.into(), "2h".into());
-        assert!(hook.prepare(&request, &mut config).is_err());
-        // Claude Code chooses its own cache unless one is asked for, so 5m is
-        // asked for outright.
-        config.llm_config.model = crate::agents::resolve_model("cc:opus").unwrap();
+        assert_eq!(ttl(&config), Some(AnthropicCacheTtl::OneHour));
+        // `long` and `short`, and the names they had first.
         for (cache, expected) in [
-            ("5m", Some(AnthropicCacheTtl::FiveMinutes)),
+            ("5m", None),
             ("1h", Some(AnthropicCacheTtl::OneHour)),
+            ("short", None),
+            ("Long", Some(AnthropicCacheTtl::OneHour)),
         ] {
             request.parameters.insert(CACHE_PARAM.into(), cache.into());
             hook.prepare(&request, &mut config).unwrap();
+            assert_eq!(ttl(&config), expected, "{cache}");
+        }
+        request.parameters.insert(CACHE_PARAM.into(), "2h".into());
+        let error = hook.prepare(&request, &mut config).unwrap_err();
+        assert!(error.contains("long or short"), "{error}");
+        // Claude Code chooses its own cache unless one is asked for, so the
+        // short one is asked for outright.
+        config.llm_config.model = crate::agents::resolve_model("cc:opus").unwrap();
+        for (cache, expected) in [
+            ("short", Some(AnthropicCacheTtl::FiveMinutes)),
+            ("5m", Some(AnthropicCacheTtl::FiveMinutes)),
+            ("long", Some(AnthropicCacheTtl::OneHour)),
+        ] {
+            request.parameters.insert(CACHE_PARAM.into(), cache.into());
+            hook.prepare(&request, &mut config).unwrap();
+            assert_eq!(ttl(&config), expected, "{cache}");
+        }
+        // On OpenAI the long cache is the 12-hour one.
+        config.llm_config.model = crate::agents::resolve_model("sol").unwrap();
+        for (cache, long) in [("long", Some(true)), ("1h", Some(true)), ("short", None)] {
+            request.parameters.insert(CACHE_PARAM.into(), cache.into());
+            hook.prepare(&request, &mut config).unwrap();
             assert_eq!(
-                config.llm_config.generation_config.anthropic_cache_ttl, expected,
+                config.llm_config.generation_config.long_prompt_cache, long,
                 "{cache}"
             );
         }
@@ -1619,9 +1845,12 @@ mod tests {
             output: Arc::new(Output::new(None, true)),
             max_running: 4,
             cache_1h: false,
+            openai_auth: None,
             cache_lifetime: PromptCacheLifetime::Known(Duration::from_secs(300)),
             feed: None,
             refuse: None,
+            asker: None,
+            root: None,
         });
         let registered =
             crate::agents::worker_config(&crate::agents::AgentSettings::for_test(worker, worker))
@@ -1640,6 +1869,8 @@ mod tests {
                 worker_depth: 2,
                 extra_rules: crate::agents::ExtraRules::Off,
                 rules_text: None,
+                billing: crate::billing::WorkerBilling::Api,
+                api_budget: None,
             }),
         });
         crew.models.lock().unwrap().attached = true;
@@ -2277,5 +2508,342 @@ mod tests {
         assert_eq!(started_by(&records, r4.run_id).as_deref(), Some("r3"));
         assert_eq!(below(&records, r1.run_id), ["r3", "r4"]);
         assert!(below(&records, r2.run_id).is_empty());
+    }
+
+    /// A crew over `session_dir` whose new workers run luna on the ChatGPT
+    /// login under `billing` and `budget`, sharing the day's spend in
+    /// `root`, with someone to ask (`can_ask`): its questions come to the
+    /// receiver. Its feed has what the user is told.
+    fn billed_crew(
+        session_dir: &Path,
+        root: &Path,
+        billing: billing::WorkerBilling,
+        budget: Option<f64>,
+        can_ask: bool,
+    ) -> (
+        Arc<Crew>,
+        AgentConfig,
+        mpsc::UnboundedReceiver<crate::inputs::Question>,
+        remote::Feed,
+    ) {
+        std::fs::create_dir_all(session_dir).unwrap();
+        let (sender, questions) = mpsc::unbounded_channel();
+        let feed = remote::Feed::new(MAIN);
+        let (crew, _) = Crew::new(Setup {
+            session_id: session_dir.display().to_string(),
+            session_dir: session_dir.into(),
+            output: Arc::new(Output::new(None, true)),
+            max_running: 4,
+            cache_1h: false,
+            openai_auth: None,
+            cache_lifetime: PromptCacheLifetime::Known(Duration::from_secs(300)),
+            feed: Some(feed.clone()),
+            refuse: None,
+            asker: Some(Arc::new(crate::inputs::Asker {
+                questions: can_ask.then_some(sender),
+                feed: None,
+            })),
+            root: Some(root.into()),
+        });
+        let worker = luna();
+        let registered =
+            crate::agents::worker_config(&crate::agents::AgentSettings::for_test(&worker, &worker))
+                .unwrap();
+        crew.set_new_workers(NewWorkers {
+            model: WorkerSetup::of(&registered),
+            cache_lifetime: PromptCacheLifetime::Known(Duration::from_secs(300)),
+            basis: Arc::new(chooser::Basis {
+                roots: crate::profiles::Roots::new(root).session(session_dir),
+                worker,
+                providers: crate::providers::Setup::new(None),
+                thinking_text: true,
+                cc_compact: true,
+                handover_at: 200_000,
+                choice: crate::agents::ModelChoice::Agent,
+                worker_depth: 2,
+                extra_rules: crate::agents::ExtraRules::Off,
+                rules_text: None,
+                billing,
+                api_budget: budget,
+            }),
+        });
+        crew.models.lock().unwrap().attached = true;
+        (crew, registered, questions, feed)
+    }
+
+    /// Starts a worker on `model` through `crew`'s start hook, on a thread of
+    /// the runtime's, as `start_agent` does.
+    fn start_on(
+        crew: &Crew,
+        base: &AgentConfig,
+        model: &str,
+    ) -> tokio::task::JoinHandle<Result<(), String>> {
+        let hook = crew.config().hook.unwrap();
+        let mut config = base.clone();
+        let request = start("r1", &[(MODEL_PARAM, model)]);
+        tokio::spawn(async move { hook.prepare(&request, &mut config) })
+    }
+
+    /// The next question of the user's, in time.
+    async fn asked(
+        questions: &mut mpsc::UnboundedReceiver<crate::inputs::Question>,
+    ) -> crate::inputs::Question {
+        tokio::time::timeout(Duration::from_secs(10), questions.recv())
+            .await
+            .expect("asked in time")
+            .expect("a question")
+    }
+
+    /// The question's text and choices.
+    fn words_of(question: &crate::inputs::Question) -> (String, Vec<String>) {
+        let asked = &question.asked[0].question;
+        (asked.question.clone(), asked.choices.clone())
+    }
+
+    /// Answers `question` with `words`, as the answer panel does.
+    fn answer(question: crate::inputs::Question, words: &str) {
+        match question.answer {
+            Some(crate::inputs::Answering::Text(answer)) => answer.send(words.into()).unwrap(),
+            _ => panic!("a wait for the answer's words"),
+        }
+    }
+
+    /// The texts the feed shows.
+    fn notices(feed: &remote::Feed) -> Vec<String> {
+        feed.subscribe()
+            .0
+            .items
+            .iter()
+            .map(|item| {
+                serde_json::to_value(item).unwrap()["text"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string()
+            })
+            .collect()
+    }
+
+    /// Under Ask before API, a worker on a model billed per token waits for
+    /// the user's answer on a card that names the model and its price.
+    /// Allow starts it, and the next one asks again. Allow for the session
+    /// starts it and the next ones without asking, also once the session is
+    /// opened again. Deny, words of the user's own and a stopped turn refuse
+    /// it, in words the agent can act on. A plan's model never asks.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_worker_billed_per_token_starts_once_the_user_allows_it() {
+        let temp = tempfile::tempdir().unwrap();
+        let (session, root) = (temp.path().join("session"), temp.path().join("arko"));
+        let (crew, base, mut questions, feed) =
+            billed_crew(&session, &root, billing::WorkerBilling::Ask, None, true);
+
+        let starting = start_on(&crew, &base, "opus");
+        let question = asked(&mut questions).await;
+        let (text, choices) = words_of(&question);
+        assert!(
+            text.starts_with("Start a worker on Opus 5.5, billed per token? It costs $"),
+            "{text}"
+        );
+        assert!(text.ends_with(" The task is “Check it”."), "{text}");
+        assert_eq!(
+            choices,
+            ["Allow", "Allow Opus 5.5 for this session", "Deny"]
+        );
+        assert!(question.plain() && question.approval.is_none());
+        answer(question, "Allow");
+        assert_eq!(starting.await.unwrap(), Ok(()));
+
+        // Once only: the next start asks again, and Deny refuses it.
+        let starting = start_on(&crew, &base, "opus");
+        answer(asked(&mut questions).await, "Deny");
+        assert_eq!(
+            starting.await.unwrap(),
+            Err("The user denied a worker on Opus 5.5, which is billed per token, so it didn't start. Start it on a plan model, which worker_options lists, or ask the user what they want.".into())
+        );
+
+        // Words of the user's own go back to the agent.
+        let starting = start_on(&crew, &base, "opus");
+        answer(asked(&mut questions).await, "Use sonnet");
+        let why = starting.await.unwrap().unwrap_err();
+        assert!(
+            why.contains("and wrote “Use sonnet”. Act on what they wrote."),
+            "{why}"
+        );
+
+        // A turn stopped while the card waits ends the wait.
+        let starting = start_on(&crew, &base, "opus");
+        let waiting = asked(&mut questions).await;
+        feed.turn_stopping("Stopping the turn…");
+        let why = tokio::time::timeout(Duration::from_secs(10), starting)
+            .await
+            .expect("the wait ended")
+            .unwrap()
+            .unwrap_err();
+        assert!(why.starts_with("No answer came"), "{why}");
+        drop(waiting);
+        feed.turn_started();
+
+        // Allowed for the session: it starts, and so do the next ones, with
+        // no question, also in the session opened again.
+        let starting = start_on(&crew, &base, "opus");
+        answer(
+            asked(&mut questions).await,
+            "Allow Opus 5.5 for this session",
+        );
+        assert_eq!(starting.await.unwrap(), Ok(()));
+        assert_eq!(start_on(&crew, &base, "opus").await.unwrap(), Ok(()));
+        let (again, base, mut more, _) =
+            billed_crew(&session, &root, billing::WorkerBilling::Ask, None, true);
+        assert_eq!(start_on(&again, &base, "opus").await.unwrap(), Ok(()));
+        // Another model billed per token asks, and a plan's never does.
+        let starting = start_on(&again, &base, "sonnet");
+        answer(asked(&mut more).await, "Allow");
+        assert_eq!(starting.await.unwrap(), Ok(()));
+        for plan in ["cc:sonnet", "sol"] {
+            assert_eq!(start_on(&again, &base, plan).await.unwrap(), Ok(()));
+        }
+        assert!(questions.try_recv().is_err() && more.try_recv().is_err());
+    }
+
+    /// Plans only refuses a worker billed per token and names the plan
+    /// models to use. API allowed starts it without asking. With no one to
+    /// ask, Ask before API refuses it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn each_setting_refuses_asks_or_starts_a_worker_billed_per_token() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("arko");
+        let (plans, base, mut asked_plans, _) = billed_crew(
+            &temp.path().join("plans"),
+            &root,
+            billing::WorkerBilling::Plans,
+            None,
+            true,
+        );
+        assert_eq!(
+            start_on(&plans, &base, "gemini").await.unwrap(),
+            Err("The user lets workers run only on their plans (/worker-billing plans), and Gemini 3.1 Pro Preview is billed per token. Start it on a plan model instead. Those usable now are cc:opus, cc:fable, cc:sonnet, cc:haiku, sol, astra, terra, and luna.".into())
+        );
+        assert_eq!(start_on(&plans, &base, "cc:haiku").await.unwrap(), Ok(()));
+        // The session's own worker model, luna, is on the ChatGPT plan here.
+        assert_eq!(start_on(&plans, &base, "luna").await.unwrap(), Ok(()));
+        let (api, base, mut asked_api, _) = billed_crew(
+            &temp.path().join("api"),
+            &root,
+            billing::WorkerBilling::Api,
+            None,
+            true,
+        );
+        assert_eq!(start_on(&api, &base, "opus").await.unwrap(), Ok(()));
+        assert!(asked_plans.try_recv().is_err() && asked_api.try_recv().is_err());
+        let (alone, base, _, _) = billed_crew(
+            &temp.path().join("alone"),
+            &root,
+            billing::WorkerBilling::Ask,
+            None,
+            false,
+        );
+        let why = start_on(&alone, &base, "opus").await.unwrap().unwrap_err();
+        assert!(
+            why.starts_with("No one can allow a worker billed per token in this session"),
+            "{why}"
+        );
+        // The start's line says when a worker is billed per token.
+        let hook = api.config().hook.unwrap();
+        let records = api
+            .models
+            .lock()
+            .unwrap()
+            .runs
+            .keys()
+            .copied()
+            .collect::<Vec<_>>();
+        let mut record = record("r1", Uuid::new_v4());
+        record.run_id = records[0];
+        let said = hook.describe(&record).unwrap();
+        assert!(said.starts_with("runs claude-opus-5-5 at "), "{said}");
+        assert!(said.contains(", billed per token (API, $"), "{said}");
+        let plan_runs = plans
+            .models
+            .lock()
+            .unwrap()
+            .runs
+            .keys()
+            .copied()
+            .collect::<Vec<_>>();
+        record.run_id = plan_runs[0];
+        let said = plans.config().hook.unwrap().describe(&record).unwrap();
+        assert!(!said.contains("billed per token"), "{said}");
+    }
+
+    /// Once the day's API spend across the sessions reaches the budget, a
+    /// worker billed per token is refused under API allowed, and the card
+    /// says so under Ask before API, also for a model allowed for the
+    /// session. The user is told once.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_budget_reached_refuses_or_asks_and_is_told_once() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("arko");
+        std::fs::create_dir_all(&root).unwrap();
+        // Another session billed $30 today.
+        std::fs::write(
+            root.join(billing::SPEND_FILE),
+            serde_json::json!({
+                "day": chrono::Local::now().date_naive().to_string(),
+                "sessions": {"other": 30.0}
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let (api, base, _, feed) = billed_crew(
+            &temp.path().join("api"),
+            &root,
+            billing::WorkerBilling::Api,
+            Some(20.0),
+            true,
+        );
+        let why = start_on(&api, &base, "opus").await.unwrap().unwrap_err();
+        assert!(
+            why.starts_with(
+                "Today's API spend of $30 has reached the user's daily budget of $20 (/api-budget)"
+            ),
+            "{why}"
+        );
+        assert!(start_on(&api, &base, "opus").await.unwrap().is_err());
+        assert_eq!(start_on(&api, &base, "cc:opus").await.unwrap(), Ok(()));
+        let told = billing::budget_notice(billing::WorkerBilling::Api, 30.0, 20.0);
+        assert_eq!(
+            notices(&feed).iter().filter(|text| **text == told).count(),
+            1,
+            "{:?}",
+            notices(&feed)
+        );
+
+        let (ask, base, mut questions, _) = billed_crew(
+            &temp.path().join("ask"),
+            &root,
+            billing::WorkerBilling::Ask,
+            Some(20.0),
+            true,
+        );
+        ask.spending
+            .allowed
+            .add(&crate::providers::resolve_model("opus").unwrap());
+        let starting = start_on(&ask, &base, "opus");
+        let question = asked(&mut questions).await;
+        let (text, _) = words_of(&question);
+        assert!(
+            text.contains(" Today’s API spend of $30 has reached your daily budget of $20. "),
+            "{text}"
+        );
+        answer(question, "Allow");
+        assert_eq!(starting.await.unwrap(), Ok(()));
+        // Raised past the spend, the saved OK holds again.
+        let mut new = ask.new_workers().unwrap();
+        new.basis = Arc::new(chooser::Basis {
+            api_budget: Some(50.0),
+            ..(*new.basis).clone()
+        });
+        ask.set_new_workers(new);
+        assert_eq!(start_on(&ask, &base, "opus").await.unwrap(), Ok(()));
+        assert!(questions.try_recv().is_err());
     }
 }

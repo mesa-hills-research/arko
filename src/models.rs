@@ -7,15 +7,29 @@ use crate::providers;
 pub use crate::providers::ModelGroup;
 use crate::remote::Models;
 
-/// The models by the way they are reached, as the picker lists them.
-pub fn menu(models: &Models, needs: impl Fn(&str) -> Option<String>) -> Vec<providers::ModelGroup> {
-    let auth = match models.openai_auth.as_deref() {
+/// How the session of `models` reaches OpenAI models.
+fn openai_auth(models: &Models) -> Option<providers::OpenAiAuth> {
+    match models.openai_auth.as_deref() {
         Some("OpenAI API key") => Some(providers::OpenAiAuth::ApiKey),
         Some(_) => Some(providers::OpenAiAuth::ChatGpt),
         None => None,
-    };
+    }
+}
+
+/// The models by the way they are reached, as the picker lists them.
+pub fn menu(models: &Models, needs: impl Fn(&str) -> Option<String>) -> Vec<providers::ModelGroup> {
     let current = [models.main.as_str(), models.workers.as_str()];
-    providers::model_menu(needs, auth, &current, &models.recent)
+    providers::model_menu(needs, openai_auth(models), &current, &models.recent)
+}
+
+/// How the model `name` (as `/model` takes it) is billed in the session of
+/// `models`, for a picker to show beside it: `API, $5/$25` (per million
+/// input and output tokens) for a model billed per token, or `API` when its
+/// price isn't known. `None` for a model on one of the user's plans (a
+/// `cc:` model, an OpenAI model on the ChatGPT login), which needs no label
+/// beside the others.
+pub fn billing(models: &Models, name: &str) -> Option<String> {
+    crate::billing::label(name, openai_auth(models))
 }
 
 /// The models the picker lets you choose, as `/model` takes them, with
@@ -133,13 +147,21 @@ pub fn image_refusal(model: &str, mime: &str) -> Option<String> {
     })
 }
 
-/// Whether a session's 1-hour prompt cache ([`Options::cache_1h`](crate::Options::cache_1h))
-/// applies to the model `model` (as `/model` takes it). It does to Claude
-/// models on an API key, on OpenRouter or in Claude Code (which otherwise
-/// chooses its own, an hour on a Claude plan), and the other providers have
-/// none to choose.
+/// Whether a session's long prompt cache ([`Options::cache_1h`](crate::Options::cache_1h))
+/// applies to the model `model` (as `/model` takes it), when the session
+/// reaches OpenAI models by `openai_auth`. It does to Claude models on an API
+/// key, on OpenRouter or in Claude Code (an hour, and Claude Code otherwise
+/// chooses its own, an hour on a Claude plan), and to OpenAI GPT-5.6 and
+/// later on an API key (12 hours). The other models have none to choose.
+pub fn takes_long_cache(model: &str, openai_auth: Option<crate::OpenAiAuth>) -> bool {
+    providers::resolve_model(model)
+        .is_ok_and(|model| providers::takes_long_cache(&model, openai_auth))
+}
+
+/// Whether the model `model` takes Claude's 1-hour prompt cache, which is
+/// [`takes_long_cache`] without an OpenAI API key.
 pub fn takes_cache_1h(model: &str) -> bool {
-    providers::resolve_model(model).is_ok_and(|model| providers::takes_cache_ttl(&model))
+    takes_long_cache(model, None)
 }
 
 /// A model's name as people say it ("Opus 5.5", "GPT-6.1 Sol", "Gemini
@@ -184,9 +206,12 @@ mod tests {
     use super::*;
 
     /// The 1-hour cache applies to Claude models on an API key, on OpenRouter
-    /// or in Claude Code, and to no other.
+    /// or in Claude Code, and to no other. The long cache also applies to
+    /// OpenAI models that have one, on an API key.
     #[test]
     fn the_1_hour_cache_applies_to_claude_by_api_key_openrouter_or_claude_code() {
+        assert!(takes_long_cache("sol", Some(crate::OpenAiAuth::ApiKey)));
+        assert!(!takes_long_cache("sol", Some(crate::OpenAiAuth::ChatGpt)));
         for model in [
             "opus",
             "sonnet",

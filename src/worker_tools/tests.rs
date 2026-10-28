@@ -47,6 +47,8 @@ fn basis(temp: &std::path::Path, choice: ModelChoice) -> Basis {
         worker_depth: 2,
         extra_rules: ExtraRules::Off,
         rules_text: None,
+        billing: crate::billing::WorkerBilling::Api,
+        api_budget: None,
     }
 }
 
@@ -109,8 +111,12 @@ fn the_options_list_the_profiles_and_the_models_usable_now() {
     );
     let text = options_text(&basis, Show::All, &needs, &plans());
 
+    // How workers are paid for comes first.
     assert!(
-        text.starts_with("Worker profiles (pass one as start_agent's profile)\n- default · gpt-6-luna, high effort · the session's worker model (/model worker)\n"),
+        text.starts_with(&format!(
+            "{}\n\nWorker profiles (pass one as start_agent's profile)\n- default · gpt-6-luna, high effort · the session's worker model (/model worker)\n",
+            crate::agents::billing_words(crate::billing::WorkerBilling::Api)
+        )),
         "{text}"
     );
     assert!(text.contains(
@@ -137,7 +143,7 @@ fn the_options_list_the_profiles_and_the_models_usable_now() {
     // The models: what the session reaches, with plan usage for the
     // ChatGPT login, and what it doesn't with how to get it.
     assert!(text.contains(
-        "\n\nModels usable now (price per million input and output tokens, and the size where a worker hands over to a fresh conversation)\n"
+        "\n\nModels usable now (the plan that pays, or API and the price per million input and output tokens, and the size where a worker hands over to a fresh conversation)\n"
     ));
     assert!(
         text.contains("\n- sol · efforts low to max · ChatGPT plan 5 h 12%, 7 d 40%, shared with the user's own use · hands over at 250k · cache 30m, fixed"),
@@ -159,10 +165,10 @@ fn the_options_list_the_profiles_and_the_models_usable_now() {
     // One part alone.
     let profiles_only = options_text(&basis, Show::Profiles, &needs, &plans());
     assert!(
-        profiles_only.starts_with("Worker profiles") && !profiles_only.contains("Models usable")
+        profiles_only.contains("\n\nWorker profiles") && !profiles_only.contains("Models usable")
     );
     let models_only = options_text(&basis, Show::Models, &needs, &plans());
-    assert!(models_only.starts_with("Models usable now") && !models_only.contains("3d-judge"));
+    assert!(models_only.contains("\n\nModels usable now") && !models_only.contains("3d-judge"));
 }
 
 #[test]
@@ -179,12 +185,8 @@ fn a_claude_model_by_key_shows_its_prices_and_cache_and_a_plan_model_its_usage()
     let opus = resolve_model("opus").unwrap();
     // (The prices of today, as the tool prints them: a model's price can
     // have a period that starts on a date.)
-    let today = opus.pricing.at(std::time::SystemTime::now());
-    let prices = format!(
-        "${} / ${}",
-        dollars(today.input_cost_per_million),
-        dollars(today.output_cost_per_million)
-    );
+    let prices = crate::billing::api_label(&opus);
+    assert!(prices.starts_with("API, $"), "{prices}");
     let line = text
         .lines()
         .find(|line| line.starts_with("- opus ·"))
@@ -192,21 +194,39 @@ fn a_claude_model_by_key_shows_its_prices_and_cache_and_a_plan_model_its_usage()
     assert_eq!(
         line,
         format!(
-            "- opus · efforts low to max · {prices} · hands over at 950k · cache 5m or 1h (1h costs twice the input price to write)"
+            "- opus · efforts low to max · {prices} · hands over at 950k · cache short (5m) or long (1h, twice the input price to write)"
         )
     );
     assert!(text.contains(
-        "\n- cc:opus · efforts low to max · Claude plan 5 h 62%, 7 d 31%, shared with the user's own use · hands over at 950k, Claude Code compacts · cache 5m or 1h (1h when you choose none, on a Claude plan)"
+        "\n- cc:opus · efforts low to max · Claude plan 5 h 62%, 7 d 31%, shared with the user's own use · hands over at 950k, Claude Code compacts · cache short (5m) or long (1h, when you choose none on a Claude plan)"
     ), "{text}");
-    assert!(text.contains("\n- gemini · efforts low to high · $"));
-    assert!(
-        text.contains("\n- openrouter:<slug> · any model OpenRouter serves · billed per token")
-    );
+    // Without an API key, OpenAI models keep the ChatGPT login's cache.
+    let sol = text
+        .lines()
+        .find(|line| line.starts_with("- sol ·"))
+        .unwrap();
+    assert!(sol.ends_with(" · cache 30m, fixed"), "{sol}");
+    assert!(text.contains("\n- gemini · efforts low to high · API, $"));
+    assert!(text.contains("\n- openrouter:<slug> · any model OpenRouter serves · API · "));
     assert!(!text.contains("Not usable now"));
     // A session that hands over in Claude Code says so.
     basis.cc_compact = false;
     let text = options_text(&basis, Show::Models, &everything, &plans);
-    assert!(text.contains("hands over at 950k · cache 5m or 1h (1h when you choose none"));
+    assert!(
+        text.contains("hands over at 950k · cache short (5m) or long (1h, when you choose none")
+    );
+    // On an API key, OpenAI's long cache is 12 hours, at 2.5 times the input
+    // price to write.
+    basis.providers = providers::Setup::new(Some(providers::OpenAiAuth::ApiKey));
+    let text = options_text(&basis, Show::Models, &everything, &plans);
+    let sol = text
+        .lines()
+        .find(|line| line.starts_with("- sol ·"))
+        .unwrap();
+    assert!(
+        sol.ends_with(" · cache short (30m) or long (12h, 2.5 times the input price to write)"),
+        "{sol}"
+    );
 }
 
 #[test]
@@ -232,16 +252,62 @@ fn a_setting_that_limits_the_choice_is_said_first() {
     ));
 }
 
+/// worker_options says how workers are paid for, and under Plans only a
+/// profile on a model billed per token can't start.
 #[test]
-fn efforts_dollars_and_sizes_read_briefly() {
+fn the_options_say_how_workers_are_paid_for() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut basis = basis(temp.path(), ModelChoice::Agent);
+    basis.providers = providers::Setup::new(None);
+    write(
+        &basis,
+        Place::User,
+        "careful",
+        "---\ndescription: Reviews carefully\nmodel: opus\n---\n",
+    );
+    write(
+        &basis,
+        Place::User,
+        "planned",
+        "---\ndescription: Reviews on the plan\nmodel: cc:opus\n---\n",
+    );
+    let everything = |_: &Model| None;
+    for billing in crate::billing::WorkerBilling::ALL {
+        basis.billing = billing;
+        let text = options_text(&basis, Show::All, &everything, &BTreeMap::new());
+        assert!(
+            text.starts_with(crate::agents::billing_words(billing)),
+            "{text}"
+        );
+        let blocked = text.contains("Reviews carefully · can't start yet, billed per token");
+        assert_eq!(
+            blocked,
+            billing == crate::billing::WorkerBilling::Plans,
+            "{text}"
+        );
+        assert!(text.contains("\n- planned (user) · cc:opus · Reviews on the plan\n"));
+        // A model billed per token says so, a plan's says which plan.
+        assert!(
+            text.contains("\n- opus · efforts low to max · API, $"),
+            "{text}"
+        );
+        assert!(text.contains(
+            "\n- cc:opus · efforts low to max · Claude plan, shared with the user's own use"
+        ));
+    }
+    // With every worker on the session's model, there's nothing to choose.
+    basis.choice = ModelChoice::Session;
+    let text = options_text(&basis, Show::All, &everything, &BTreeMap::new());
+    assert!(!text.contains("Prefer the models"), "{text}");
+}
+
+#[test]
+fn efforts_and_sizes_read_briefly() {
     let efforts = |name: &str| efforts_range(&resolve_model(name).unwrap());
     assert_eq!(efforts("opus"), "low to max");
     assert_eq!(efforts("gemini"), "low to high");
     assert_eq!(efforts("gpt-5-pro-2025-10-06"), "high");
     assert_eq!(efforts("gpt-5.4-nano-2026-03-17"), "low to xhigh");
-    assert_eq!(dollars(5.0), "5");
-    assert_eq!(dollars(1.25), "1.25");
-    assert_eq!(dollars(0.1), "0.1");
     assert_eq!(thousands(950_000), "950k");
 }
 
@@ -267,9 +333,12 @@ fn fixture(choice: ModelChoice, can_ask: bool) -> Fixture {
         output: Arc::new(Output::new(None, true)),
         max_running: 4,
         cache_1h: false,
+        openai_auth: None,
         cache_lifetime: arko_ai::prompt_cache::PromptCacheLifetime::Known(Duration::from_secs(300)),
         feed: Some(feed.clone()),
         refuse: None,
+        asker: None,
+        root: None,
     });
     let worker = settings("luna", Effort::High);
     let config =
@@ -813,6 +882,37 @@ async fn the_settings_limit_who_saves_profiles() {
         assert_eq!(why, said);
         assert!(profiles::read(&fixture.basis.roots, "x").is_err());
     }
+}
+
+/// Under Plans only, a profile on a model billed per token isn't saved,
+/// since no worker could start with it, and one on a plan's model is.
+#[tokio::test]
+async fn under_plans_only_a_profile_billed_per_token_is_refused() {
+    let fixture = fixture(ModelChoice::Agent, true);
+    let mut new = fixture.crew.new_workers().unwrap();
+    new.basis = Arc::new(Basis {
+        billing: WorkerBilling::Plans,
+        ..(*new.basis).clone()
+    });
+    fixture.crew.set_new_workers(new);
+    let save = |name: &str, model: &str| {
+        let pairs = vec![
+            ("name", Value::from(name)),
+            ("description", Value::from("Thinks hard")),
+            ("model", Value::from(model)),
+            ("scope", Value::from("session")),
+        ];
+        let save = fixture.save.clone();
+        async move { call(&save, &pairs).await }
+    };
+    let why = save("strong", "opus").await.unwrap_err();
+    assert_eq!(
+        why,
+        "The user lets workers run only on their plans (/worker-billing plans), and claude-opus-5-5 is billed per token, so a worker couldn't start with this profile. Give it a model on the user's plans, which worker_options lists."
+    );
+    assert!(profiles::read(&fixture.basis.roots, "strong").is_err());
+    // sol is on the ChatGPT plan here.
+    assert!(save("planned", "sol").await.is_ok());
 }
 
 #[tokio::test]

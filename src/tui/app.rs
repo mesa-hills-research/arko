@@ -1745,6 +1745,10 @@ impl App {
             if commands::find("/worker-models agent").is_some() {
                 rows.push(SettingsRow::WorkerModels);
             }
+            if commands::find("/worker-billing ask").is_some() {
+                rows.push(SettingsRow::WorkerBilling);
+                rows.push(SettingsRow::ApiBudget);
+            }
             if commands::find("/worker-depth 2").is_some() {
                 rows.push(SettingsRow::WorkerDepth);
             }
@@ -1989,6 +1993,17 @@ impl App {
                     let next = (index.unwrap_or(0) as i32 + step).rem_euclid(all.len() as i32);
                     self.send(&all[next as usize].command());
                 }
+                SettingsRow::WorkerBilling => {
+                    let all = crate::workers::WorkerBilling::ALL;
+                    let index = all
+                        .iter()
+                        .position(|billing| *billing == self.worker_billing());
+                    let next = (index.unwrap_or(0) as i32 + step).rem_euclid(all.len() as i32);
+                    self.send(&all[next as usize].command());
+                }
+                SettingsRow::ApiBudget => {
+                    self.send(&crate::workers::budget_command(self.api_budget().is_none()));
+                }
                 SettingsRow::WorkerDepth => {
                     let most = crate::workers::MAX_DEPTH as i32;
                     let next = (self.worker_depth() as i32 + step).clamp(1, most) as u32;
@@ -2123,6 +2138,16 @@ impl App {
     /// Who chooses the workers' models.
     pub fn worker_models(&self) -> crate::agents::ModelChoice {
         self.reading.settings.worker_models
+    }
+
+    /// Whether workers may run on models billed per token.
+    pub fn worker_billing(&self) -> crate::workers::WorkerBilling {
+        self.reading.settings.worker_billing
+    }
+
+    /// The daily API budget in dollars, if any.
+    pub fn api_budget(&self) -> Option<f64> {
+        self.reading.settings.api_budget
     }
 
     /// How many levels of workers the session allows.
@@ -3791,14 +3816,38 @@ pub(super) mod tests {
             .iter()
             .position(|row| *row == SettingsRow::WorkerModels)
             .unwrap();
+        assert_eq!(rows[models + 1], SettingsRow::WorkerBilling);
+        assert_eq!(rows[models + 2], SettingsRow::ApiBudget);
+        let models = models + 2;
         assert_eq!(rows[models + 1], SettingsRow::WorkerDepth);
         assert_eq!(rows[models + 2], SettingsRow::WorkerRetryCap);
         assert_eq!(rows[models + 3], SettingsRow::MessageCopies);
         assert_eq!(rows[models + 4], SettingsRow::KeepProfilesOutOfGit);
         assert_eq!(rows[models + 5], SettingsRow::RepoRootProfiles);
         assert_eq!(rows[models + 6], SettingsRow::Keys);
+        // Worker billing steps through plans, ask and api, ask by default.
+        app.overlay = Some(Overlay::Settings {
+            row: models - 1,
+            picker: None,
+        });
+        assert_eq!(app.worker_billing(), crate::workers::WorkerBilling::Ask);
+        press(&mut app, KeyCode::Right, KeyModifiers::NONE);
+        press(&mut app, KeyCode::Left, KeyModifiers::NONE);
+        assert_eq!(
+            sent(&mut app),
+            ["/worker-billing api", "/worker-billing plans"]
+        );
+        // The budget turns on (at $10) and off.
         app.overlay = Some(Overlay::Settings {
             row: models,
+            picker: None,
+        });
+        press(&mut app, KeyCode::Right, KeyModifiers::NONE);
+        app.reading.settings.api_budget = Some(25.0);
+        press(&mut app, KeyCode::Left, KeyModifiers::NONE);
+        assert_eq!(sent(&mut app), ["/api-budget on", "/api-budget off"]);
+        app.overlay = Some(Overlay::Settings {
+            row: models - 2,
             picker: None,
         });
         // The main agent chooses by default: right goes to profiles, left

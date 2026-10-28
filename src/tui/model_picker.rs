@@ -101,6 +101,9 @@ pub struct ModelPicker {
     pub recent: Vec<Listed>,
     /// What the OpenRouter settings rule out or set, in a few words.
     pub summary: Option<String>,
+    /// How each model billed per token is billed (`API, $5/$25`), by name.
+    /// The plans' models have none.
+    pub billing: std::collections::BTreeMap<String, String>,
     /// The filter and the model the browse step was on, while the efforts
     /// of a model chosen there are open: Back goes there.
     via_browse: Option<(String, usize)>,
@@ -180,6 +183,15 @@ impl ModelPicker {
             }
         }
         rows.push(Row::Other);
+        let billing = rows
+            .iter()
+            .filter_map(|row| match row {
+                Row::Model { name, .. } => {
+                    crate::models::billing(models, name).map(|label| (name.clone(), label))
+                }
+                _ => None,
+            })
+            .collect();
         let follows = target == Target::Workers && models.workers_follow;
         // On the setting now.
         let selected = rows
@@ -205,6 +217,7 @@ impl ModelPicker {
             catalog,
             recent,
             summary,
+            billing,
             via_browse: None,
         }
     }
@@ -225,12 +238,14 @@ impl ModelPicker {
     }
 
     /// What OpenRouter says of the model `name`, in few characters, from
-    /// its list in memory or else from when it was picked.
+    /// its list in memory or else from when it was picked. Another model
+    /// billed per token says how (`API, $5/$25`).
     fn details(&self, name: &str) -> String {
         self.catalog
             .get(name)
             .or_else(|| self.recent.iter().find(|model| model.name == name))
             .map(Listed::short)
+            .or_else(|| self.billing.get(name).cloned())
             .unwrap_or_default()
     }
 
@@ -979,6 +994,50 @@ mod tests {
             column("OpenAI, on your ChatGPT plan")
         );
         assert_eq!(column("Type a model ID"), column("Another model"));
+    }
+
+    /// A model billed per token says so with its price beside its name, as
+    /// worker_options and the web page say it. A plan's model needs nothing
+    /// beside it, its group names the plan.
+    #[test]
+    fn the_models_billed_per_token_show_it_beside_their_names() {
+        let models = Models {
+            main: "cc:claude-opus-5-5".into(),
+            main_effort: "high".into(),
+            workers: "cc:claude-opus-5-5".into(),
+            workers_effort: "high".into(),
+            openai_auth: Some("ChatGPT".into()),
+            ..Models::default()
+        };
+        let picker = ModelPicker::open(Target::Workers, &models, |_| None);
+        let rows = screen(&picker);
+        let row = |name: &str| {
+            rows.iter()
+                .find(|row| row.split_whitespace().any(|word| word == name))
+                .unwrap_or_else(|| panic!("no {name} in {rows:#?}"))
+                .clone()
+        };
+        let opus = crate::models::billing(&models, "opus").unwrap();
+        assert!(opus.starts_with("API, $"), "{opus}");
+        assert!(row("opus").contains(&opus), "{rows:#?}");
+        assert!(!row("cc:opus").contains("API"), "{rows:#?}");
+        assert!(
+            picker
+                .details("gemini-3.1-pro-preview")
+                .starts_with("API, $")
+        );
+        for plan in ["cc:claude-sonnet-5-5", "gpt-6.1-sol"] {
+            assert_eq!(picker.details(plan), "", "{plan}");
+        }
+        // On an API key OpenAI's models are billed per token too.
+        let keyed = Models {
+            openai_auth: Some("OpenAI API key".into()),
+            ..models
+        };
+        assert!(
+            crate::models::billing(&keyed, "sol").is_some_and(|label| label.starts_with("API"))
+        );
+        assert_eq!(crate::models::billing(&keyed, "cc:opus"), None);
     }
 
     /// Claude Mythos 5.1 shows the access it needs on the row under its

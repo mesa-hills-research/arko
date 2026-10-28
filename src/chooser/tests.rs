@@ -31,6 +31,8 @@ fn basis(temp: &std::path::Path, worker: ModelSettings) -> Basis {
         worker_depth: 2,
         extra_rules: ExtraRules::Small,
         rules_text: Some("# Extra rules\n- Search with rg.\n".to_string()),
+        billing: WorkerBilling::Api,
+        api_budget: None,
     }
 }
 
@@ -300,12 +302,12 @@ fn fast_mode_is_off_unless_the_profile_asks_or_the_session_s_model_has_it() {
 }
 
 /// The cache: the call, else the profile, else the session, and only for the
-/// models that take a lifetime.
+/// models that have a long one.
 #[test]
 fn the_cache_comes_from_the_call_then_the_profile_then_the_session() {
     let temp = tempfile::tempdir().unwrap();
     let basis = basis(temp.path(), settings("opus", Effort::High));
-    let ttl = |setup: &WorkerSetup| setup.llm_config.generation_config.anthropic_cache_ttl;
+    let ttl = |setup: &WorkerSetup| setup.llm_config.generation_config.claude_cache_ttl();
     assert_eq!(ttl(&pick(&basis, &[]).unwrap()), None);
     assert_eq!(
         ttl(&pick(&basis, &[("cache", "1h")]).unwrap()),
@@ -352,7 +354,31 @@ fn the_cache_comes_from_the_call_then_the_profile_then_the_session() {
     );
     assert_eq!(
         pick(&basis, &[("cache", "2h")]).unwrap_err(),
-        "cache is 5m or 1h, not 2h"
+        "cache is long or short, not 2h"
+    );
+    assert_eq!(
+        ttl(&pick(&basis, &[("cache", "long")]).unwrap()),
+        Some(arko_ai::AnthropicCacheTtl::OneHour)
+    );
+    // OpenAI's long cache is the 12-hour one, on an API key only.
+    let long = |basis: &Basis, parameters: &[(&str, &str)]| {
+        pick(basis, parameters)
+            .unwrap()
+            .llm_config
+            .generation_config
+            .long_prompt_cache
+    };
+    assert_eq!(long(&hour, &[("model", "luna")]), None);
+    let mut on_key = basis_with_worker(&basis, settings("luna", Effort::High));
+    on_key.providers = providers::Setup::new(Some(providers::OpenAiAuth::ApiKey));
+    assert_eq!(long(&on_key, &[("cache", "long")]), Some(true));
+    assert_eq!(long(&on_key, &[("cache", "short")]), None);
+    assert_eq!(
+        long(
+            &on_key,
+            &[("model", "gpt-5.5-2026-04-23"), ("cache", "long")]
+        ),
+        None
     );
 }
 

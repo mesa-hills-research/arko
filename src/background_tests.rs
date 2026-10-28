@@ -1798,9 +1798,9 @@ async fn the_monitor_wakes_command_sets_and_keeps() {
             .iter()
             .any(|(kind, text, _)| (kind == "output" || kind == "notice") && text.contains(start))
     };
-    // (Auto: 90% of the 5-minute cache the test's model has.)
+    // (Auto: 90% of the 30-minute cache the test's model has.)
     assert!(said(
-        "A monitor's warning wakes the agent while the prompt cache from your last message lasts (now 270 seconds)"
+        "A monitor's warning wakes the agent while the prompt cache from your last message lasts (now 27 minutes)"
     ));
     assert!(said("isn't a time"));
     assert!(said("Monitor wakes was set to 30m from the web page."));

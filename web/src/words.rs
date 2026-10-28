@@ -79,6 +79,54 @@ pub const WORKER_MODELS: [(&str, &str, &str); 3] = [
     ),
 ];
 
+/// Whether workers may run on models billed per token, as `/worker-billing`
+/// takes it, with the library's names and sentences (`WorkerBilling::label`
+/// and `about`, which a test of Arko's finds in the built page).
+pub const WORKER_BILLING: [(&str, &str, &str); 3] = [
+    (
+        "plans",
+        "Plans only",
+        "Workers run only on your plans, the cc: models and the ChatGPT login.",
+    ),
+    (
+        "ask",
+        "Ask before API",
+        "A worker on a model billed per token starts only once you allow it.",
+    ),
+    (
+        "api",
+        "API allowed",
+        "Workers may run on models billed per token without asking.",
+    ),
+];
+
+/// What the worker billing setting is (the library's `workers::BILLING_ABOUT`
+/// and `MODELS_APPLIES`).
+pub const WORKER_BILLING_ABOUT: &str = "Whether workers may run on models billed per token. A change applies to the next worker started.";
+
+/// What the daily API budget does with `budget` (none: off), as the
+/// library's `workers::budget_about` says it.
+pub fn budget_about(budget: Option<f64>) -> String {
+    match budget {
+        None => "No daily limit. On, new workers on API models stop starting once $10 is billed per token in a day, across your sessions.".into(),
+        Some(budget) => format!(
+            "Once {} is billed per token today, across your sessions, new workers on API models stop starting. Running workers go on.",
+            money(budget)
+        ),
+    }
+}
+
+/// An amount of dollars as people write it: `$20`, `$7.50` (the library's
+/// `workers::money`).
+pub fn money(amount: f64) -> String {
+    let cents = (amount * 100.0).round();
+    if cents % 100.0 == 0.0 {
+        format!("${:.0}", cents / 100.0)
+    } else {
+        format!("${:.2}", cents / 100.0)
+    }
+}
+
 /// What the worker depth setting does (the library's `workers::depth_about`).
 pub const WORKER_DEPTH_ABOUT: &str = "How many levels of workers there can be, from 1 to 4. With 1 only the main agent starts workers. With more, a worker can start workers of its own when the agent that starts it says so, down to that level.";
 
@@ -764,6 +812,16 @@ mod tests {
                 .starts_with("A worker fails after 1 failed model request in a row")
         );
         assert!(retry_cap_about(None).starts_with("Workers keep retrying"));
+        assert_eq!(
+            budget_about(Some(7.5)),
+            "Once $7.50 is billed per token today, across your sessions, new workers on API models stop starting. Running workers go on."
+        );
+        assert!(budget_about(None).starts_with("No daily limit."));
+        assert_eq!(
+            (money(20.0), money(0.254)),
+            ("$20".to_string(), "$0.25".to_string())
+        );
+        assert_eq!(WORKER_BILLING.map(|(key, ..)| key), ["plans", "ask", "api"]);
         assert!(builtin_skills_about(true).contains("keeps its skills"));
         assert!(!builtin_skills_about(false).contains("keeps its skills"));
     }

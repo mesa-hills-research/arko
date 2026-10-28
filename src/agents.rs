@@ -16,6 +16,7 @@ use arko_ai::input_limit::effective_max_input_tokens;
 use arko_ai::{AnthropicReasoningEffort, Model, OpenAIEffort, Provider};
 use serde::{Deserialize, Serialize};
 
+use crate::billing::WorkerBilling;
 use crate::builtin_skills::BuiltinSkills;
 use crate::crew;
 use crate::index;
@@ -242,8 +243,11 @@ pub struct ModelSettings {
     pub effort: Effort,
     /// Anthropic fast mode, or OpenAI's Fast mode over ChatGPT OAuth.
     pub fast: bool,
-    /// Anthropic's 1-hour prompt cache instead of the 5-minute one (Claude
-    /// models only). Off in sessions saved before it existed.
+    /// The long prompt cache, on a model that has one
+    /// ([`providers::takes_long_cache`]). That is an hour instead of 5 minutes
+    /// on Claude models, and 12 hours instead of 30 minutes on OpenAI GPT-5.6
+    /// and later with an API key. Named for Claude's, the first it meant.
+    /// Off in sessions saved before it existed.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub cache_1h: bool,
     /// The input size, in tokens, at which the agent hands over. `None` in
@@ -265,8 +269,10 @@ impl ModelSettings {
         if self.fast {
             details.push("fast".to_string());
         }
-        if self.cache_1h {
-            details.push("1h cache".to_string());
+        if self.cache_1h
+            && let Ok(model) = resolve_model(&self.model)
+        {
+            details.push(format!("{} cache", providers::CacheChoice::of(&model).long));
         }
         if details.is_empty() {
             self.model.clone()
@@ -285,11 +291,11 @@ impl ModelSettings {
             .is_ok_and(|provider| provider == Provider::ClaudeCode)
     }
 
-    /// A model that takes Anthropic's cache lifetimes, so a worker's
-    /// `cache` chooses one: Claude by API key, on OpenRouter or in Claude
-    /// Code.
-    fn takes_cache_ttl(&self) -> bool {
-        resolve_model(&self.model).is_ok_and(|model| providers::takes_cache_ttl(&model))
+    /// A model with a long prompt cache to choose, so a worker's `cache`
+    /// chooses ([`providers::takes_long_cache`]).
+    fn takes_long_cache(&self, openai_auth: Option<OpenAiAuth>) -> bool {
+        resolve_model(&self.model)
+            .is_ok_and(|model| providers::takes_long_cache(&model, openai_auth))
     }
 
     pub(crate) fn llm_config(&self, thinking_text: bool) -> Result<AgentLLMConfig, String> {
@@ -360,6 +366,9 @@ pub struct AgentSettings<'a> {
     /// The worker profiles when the session started, each with the model it
     /// names, which the main agent's instructions list.
     pub profiles: &'a [ProfileName],
+    /// Whether workers may run on models billed per token, which the main
+    /// agent's instructions say when it chooses their models.
+    pub worker_billing: WorkerBilling,
 }
 
 /// A worker profile as the main agent's instructions name it: its name and
@@ -397,6 +406,7 @@ impl<'a> AgentSettings<'a> {
             worker_models: settings.worker_models,
             worker_depth: settings.worker_depth,
             profiles: &[],
+            worker_billing: settings.worker_billing,
         }
     }
 
@@ -426,6 +436,7 @@ impl<'a> AgentSettings<'a> {
             worker_models: ModelChoice::Agent,
             worker_depth: DEFAULT_WORKER_DEPTH,
             profiles: &[],
+            worker_billing: WorkerBilling::Api,
         }
     }
 }
@@ -951,6 +962,23 @@ pub(crate) const NESTING: &str = "A worker you start with `nested: true` can sta
 /// when it started.
 pub(crate) const NESTED_INSTRUCTIONS: &str = "# Workers of your own\nYou can start workers with `start_agent`. They report to you, and what your lead reads is your own report. Use them for parts of your task that can run apart, and do small things yourself. Start them on the profiles and models your task names. You can't report while they run, so wait for them with `wait_for_agents` or stop the ones you don't need with `stop_agent`. Stopping you stops them. If a worker of yours works in a worktree (`isolated: true`), commit what it needs first and merge its branch into yours before you report.";
 
+/// What the main agent is told of paying for workers under `billing`, when
+/// it chooses their models: the plans first, and what a model billed per
+/// token takes.
+pub(crate) fn billing_words(billing: WorkerBilling) -> &'static str {
+    match billing {
+        WorkerBilling::Plans => {
+            "The user lets workers run only on their plans (`cc:` models and the ChatGPT login), so a start on a model billed per token is refused."
+        }
+        WorkerBilling::Ask => {
+            "Prefer the models on the user's plans (`cc:` models, the ChatGPT login) when they do the job. A worker on a model billed per token starts only once the user allows it, so choose one only when the job needs it."
+        }
+        WorkerBilling::Api => {
+            "Prefer the models on the user's plans (`cc:` models, the ChatGPT login) when they do the job, since models billed per token cost the user money."
+        }
+    }
+}
+
 /// What it is told when the user lets it start workers with a profile only.
 const PROFILES_ONLY: &str = "A worker runs on the session's worker model unless you start it with a profile, a named setup the user saved. `worker_options` lists the profiles, which set each worker's model and effort, and what the models cost.";
 
@@ -983,11 +1011,23 @@ fn profile_names(profiles: &[ProfileName]) -> String {
 fn cache_paragraph(settings: &AgentSettings) -> String {
     let openai = settings.worker.provider() == Ok(Provider::OpenAI);
     if settings.worker.in_claude_code() {
-        "\nA worker runs in Claude Code and keeps a prompt cache of its conversation. Set `start_agent`'s `cache` to `1h` for a worker you expect to send messages or follow-up work after it reports, so continuing it reuses its cache, and to `5m` for a quick one-off such as a research task. Without `cache`, Claude Code uses an hour on a Claude plan. Continuing a worker after its cache has expired rereads its whole conversation uncached, which uses more of the plan's limits. If it finished more than an hour ago, start a fresh worker instead, unless its context is worth that.\n".to_string()
-    } else if settings.worker.takes_cache_ttl() {
+        "\nA worker runs in Claude Code and keeps a prompt cache of its conversation. Set `start_agent`'s `cache` to `long` (an hour) for a worker you expect to send messages or follow-up work after it reports, so continuing it reuses its cache, and to `short` (5 minutes) for a quick one-off such as a research task. Without `cache`, Claude Code uses an hour on a Claude plan. Continuing a worker after its cache has expired rereads its whole conversation uncached, which uses more of the plan's limits. If it finished more than an hour ago, start a fresh worker instead, unless its context is worth that.\n".to_string()
+    } else if let Ok(model) = resolve_model(&settings.worker.model)
+        && settings
+            .worker
+            .takes_long_cache(settings.providers.openai_auth)
+    {
+        let choice = providers::CacheChoice::of(&model);
         format!(
-            "\nA worker keeps a prompt cache of its conversation. Set `start_agent`'s `cache` to `1h` for a worker you expect to send messages or follow-up work after it reports, so continuing it reuses its cache, and to `5m` for a quick one-off such as a research task (a 1h cache costs more to write, twice the input price instead of 1.25 times). The default is `{}`. Continuing a worker after its cache has expired rereads its whole conversation at full price. If it finished more than an hour ago, start a fresh worker instead, unless its context is worth that.\n",
-            if settings.worker.cache_1h { "1h" } else { "5m" }
+            "\nA worker keeps a prompt cache of its conversation for {} after its last step, or {} with a long cache. Set `start_agent`'s `cache` to `long` for a worker you expect to send messages or follow-up work after it reports, so continuing it reuses its cache, and to `short` for a quick one-off such as a research task. A long cache costs more to write, {} the input price instead of 1.25 times, and reads cost the same. The default is `{}`. Continuing a worker after its cache has expired rereads its whole conversation at full price. If it finished longer ago than its cache lasts, start a fresh worker instead, unless its context is worth that.\n",
+            choice.short_words,
+            choice.long_words,
+            choice.long_write,
+            if settings.worker.cache_1h {
+                "long"
+            } else {
+                "short"
+            }
         )
     } else if openai && settings.providers.openai_auth != Some(OpenAiAuth::ApiKey) {
         "\nA worker keeps a prompt cache of its conversation for 30 minutes after its last step (ChatGPT's cache, which no setting changes). Continuing a worker after its cache has expired rereads its whole conversation uncached, which uses more of the ChatGPT plan's limits. If it finished more than 30 minutes ago, start a fresh worker instead, unless its context is worth that.\n".to_string()
@@ -1020,13 +1060,15 @@ fn worker_instructions(settings: &AgentSettings) -> String {
     match settings.worker_models {
         ModelChoice::Agent => {
             text.push_str(&format!(
-                "\n{CHOOSING}\n\n{SAVING}\n{}",
+                "\n{CHOOSING} {}\n\n{SAVING}\n{}",
+                billing_words(settings.worker_billing),
                 profile_names(settings.profiles)
             ));
         }
         ModelChoice::Profiles => {
             text.push_str(&format!(
-                "\n{PROFILES_ONLY}\n{}",
+                "\n{PROFILES_ONLY} {}\n{}",
+                billing_words(settings.worker_billing),
                 profile_names(settings.profiles)
             ));
         }
@@ -1078,13 +1120,10 @@ mod tests {
     }
 
     #[test]
-    fn the_one_hour_cache_is_asked_for_only_when_enabled() {
+    fn the_long_cache_is_asked_for_only_when_enabled() {
         let opus = model("opus", false);
         let config = main_config(&AgentSettings::for_test(&opus, &opus)).unwrap();
-        assert_eq!(
-            config.llm_config.generation_config.anthropic_cache_ttl,
-            None
-        );
+        assert_eq!(config.llm_config.generation_config.claude_cache_ttl(), None);
         let opus = ModelSettings {
             cache_1h: true,
             handover_at: None,
@@ -1092,15 +1131,68 @@ mod tests {
         };
         let config = main_config(&AgentSettings::for_test(&opus, &opus)).unwrap();
         assert_eq!(
-            config.llm_config.generation_config.anthropic_cache_ttl,
+            config.llm_config.generation_config.claude_cache_ttl(),
             Some(AnthropicCacheTtl::OneHour)
         );
         let config = worker_config(&AgentSettings::for_test(&opus, &opus)).unwrap();
         assert_eq!(
-            config.llm_config.generation_config.anthropic_cache_ttl,
+            config.llm_config.generation_config.claude_cache_ttl(),
             Some(AnthropicCacheTtl::OneHour)
         );
         assert_eq!(opus.describe(), "claude-opus-5-5 (xhigh effort, 1h cache)");
+        // On OpenAI it is the 12-hour cache.
+        let sol = ModelSettings {
+            cache_1h: true,
+            ..model("sol", false)
+        };
+        let config = worker_config(&AgentSettings::for_test(&sol, &sol)).unwrap();
+        assert_eq!(
+            config.llm_config.generation_config.long_prompt_cache,
+            Some(true)
+        );
+        assert_eq!(sol.describe(), "gpt-6.1-sol (xhigh effort, 12h cache)");
+    }
+
+    /// With every worker on the session's model, the main agent learns what
+    /// the long cache is there and what it costs to write, and the ChatGPT
+    /// login's fixed cache.
+    #[test]
+    fn the_worker_cache_paragraph_names_each_routes_caches_and_costs() {
+        let paragraph = |name: &str, long: bool, auth: Option<OpenAiAuth>| {
+            let worker = ModelSettings {
+                cache_1h: long,
+                ..model(name, false)
+            };
+            let mut settings = AgentSettings::for_test(&worker, &worker);
+            settings.providers = Box::leak(Box::new(providers::Setup::new(auth)));
+            cache_paragraph(&settings)
+        };
+        let sol = paragraph("sol", true, Some(OpenAiAuth::ApiKey));
+        assert!(
+            sol.contains("for 30 minutes after its last step, or 12 hours with a long cache"),
+            "{sol}"
+        );
+        assert!(
+            sol.contains("2.5 times the input price instead of 1.25 times"),
+            "{sol}"
+        );
+        assert!(sol.contains("The default is `long`."), "{sol}");
+        let opus = paragraph("opus", false, None);
+        assert!(
+            opus.contains("for 5 minutes after its last step, or an hour with a long cache"),
+            "{opus}"
+        );
+        assert!(opus.contains("twice the input price"), "{opus}");
+        assert!(opus.contains("The default is `short`."), "{opus}");
+        let chatgpt = paragraph("sol", false, Some(OpenAiAuth::ChatGpt));
+        assert!(
+            chatgpt.contains("ChatGPT's cache, which no setting changes"),
+            "{chatgpt}"
+        );
+        assert_eq!(
+            paragraph("gpt-5.5-2026-04-23", false, Some(OpenAiAuth::ApiKey)),
+            ""
+        );
     }
 
     #[test]
@@ -1234,10 +1326,10 @@ mod tests {
     }
 
     /// With every worker on the session's worker model, its provider's cache
-    /// gets a paragraph: the `cache` choice where Anthropic's cache
-    /// lifetimes apply (in Claude Code too, which uses an hour on a plan
-    /// without one), ChatGPT's 30 minutes, and nothing where Arko can't
-    /// tell. Where the main agent chooses the
+    /// gets a paragraph: the `cache` choice where the model has a long cache
+    /// (Claude, in Claude Code too, which uses an hour on a plan without one,
+    /// and OpenAI on an API key), ChatGPT's 30 minutes, and nothing where
+    /// Arko can't tell. Where the main agent chooses the
     /// models, `worker_options` tells it each model's cache instead.
     #[test]
     fn the_lead_hears_about_its_workers_caches_by_provider() {
@@ -1254,12 +1346,13 @@ mod tests {
         let openrouter_claude = model("openrouter:anthropic/claude-opus-5.5", false);
         assert!(instructions(&openrouter_claude, None).contains("`cache`"));
         let claude_code = instructions(&model("cc:opus", false), None);
-        assert!(claude_code.contains("`cache` to `1h`") && claude_code.contains("`5m`"));
+        assert!(claude_code.contains("`cache` to `long`") && claude_code.contains("`short`"));
         assert!(claude_code.contains("Without `cache`, Claude Code uses an hour"));
         let sol = model("sol", false);
-        assert!(instructions(&sol, None).contains("for 30 minutes after its last step"));
+        assert!(instructions(&sol, None).contains("ChatGPT's cache, which no setting changes"));
+        let on_key = instructions(&sol, Some(OpenAiAuth::ApiKey));
         assert!(
-            !instructions(&sol, Some(OpenAiAuth::ApiKey)).contains("30 minutes"),
+            !on_key.contains("ChatGPT's cache") && on_key.contains("or 12 hours with a long cache"),
             "an API key's cache isn't ChatGPT's"
         );
         let gemini = model("gemini", false);
@@ -1394,6 +1487,42 @@ mod tests {
             let instructions = main_config(&with).unwrap().instructions;
             assert_eq!(instructions.contains(NESTING), told, "depth {depth}");
         }
+    }
+
+    /// The main agent hears how workers are paid for when it chooses their
+    /// models: the user's plans first, and under Ask before API that a
+    /// worker billed per token waits for the user's OK. With every worker on
+    /// the session's model it has nothing to choose, and hears nothing.
+    #[test]
+    fn the_lead_is_told_how_workers_are_paid_for() {
+        let opus = model("opus", false);
+        let text = |choice: ModelChoice, billing: WorkerBilling| {
+            let with = AgentSettings {
+                worker_models: choice,
+                worker_billing: billing,
+                ..AgentSettings::for_test(&opus, &opus)
+            };
+            main_config(&with).unwrap().instructions
+        };
+        for billing in WorkerBilling::ALL {
+            for choice in [ModelChoice::Agent, ModelChoice::Profiles] {
+                assert_eq!(
+                    text(choice, billing)
+                        .matches(billing_words(billing))
+                        .count(),
+                    1
+                );
+            }
+            assert!(!text(ModelChoice::Session, billing).contains("billed per token"));
+        }
+        let ask = text(ModelChoice::Agent, WorkerBilling::Ask);
+        assert!(ask.contains(
+            "Prefer the models on the user's plans (`cc:` models, the ChatGPT login) when they do the job. A worker on a model billed per token starts only once the user allows it"
+        ));
+        assert!(
+            text(ModelChoice::Agent, WorkerBilling::Plans).contains("billed per token is refused")
+        );
+        assert!(text(ModelChoice::Agent, WorkerBilling::Api).contains("cost the user money"));
     }
 
     /// What a worker that starts workers is told: who reports to whom, when
@@ -1873,20 +2002,28 @@ mod tests {
         assert!(!text.contains("# Extra rules"), "{text}");
     }
 
-    /// Haiku and luna are small on every route; the others aren't.
+    /// Haiku and luna are small on every route and the others aren't. A name
+    /// that only resembles one, such as a "-v2" variant, a `:free` variant or
+    /// a fine-tune on OpenRouter, is not small.
     #[test]
     fn small_models_are_haiku_and_luna_on_any_route() {
+        let small = |name: &str| ExtraRules::Small.for_model(&model(name, false));
         for name in [
             "claude-haiku-5-5",
             "haiku",
             "cc:claude-haiku-5-5",
             "cc:haiku",
+            "claude-haiku-4-5-20251001",
+            "cc:claude-haiku-4-5-20251001",
             "openrouter:anthropic/claude-haiku-5.5",
+            "openrouter:anthropic/claude-haiku-4.5",
             "luna",
             "gpt-6-luna",
-            "openrouter:openai/gpt-6-luna:floor",
+            "gpt-5.6-luna",
+            "openrouter:openai/gpt-6-luna",
+            "openrouter:openai/gpt-5.6-luna",
         ] {
-            assert!(providers::is_small(&resolve_model(name).unwrap()), "{name}");
+            assert!(small(name), "{name}");
         }
         for name in [
             "opus",
@@ -1899,13 +2036,23 @@ mod tests {
             "astra",
             "terra",
             "gemini",
+            "flash",
             "openrouter:anthropic/claude-opus-5.5",
+            "openrouter:anthropic/claude-haiku-5.5-v2",
+            "openrouter:anthropic/claude-haiku-5.5:free",
+            "openrouter:someorg/haiku-finetune",
+            "openrouter:openai/gpt-6-luna-preview",
+            "openrouter:openai/gpt-6-luna:floor",
+            "openrouter:luna-something",
         ] {
-            assert!(
-                !providers::is_small(&resolve_model(name).unwrap()),
-                "{name}"
-            );
+            assert!(!small(name), "{name}");
         }
+        // A name that is no model gets no extra rules either.
+        let unknown = ModelSettings {
+            model: "luna-something".into(),
+            ..model("luna", false)
+        };
+        assert!(!ExtraRules::Small.for_model(&unknown));
     }
 
     /// With the default, the large models' configurations (and so what

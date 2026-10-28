@@ -42,6 +42,9 @@ pub(crate) struct Gauges {
     /// Who chooses the workers' models, and how many levels of workers the
     /// session allows, as the harness last published them.
     pub(crate) worker_models: Mutex<crate::agents::ModelChoice>,
+    /// Whether workers may run on models billed per token, and the daily API
+    /// budget, as the harness last published them.
+    pub(crate) billing: Mutex<(crate::billing::WorkerBilling, Option<f64>)>,
     /// How long after the user's last message a monitor's warning wakes the
     /// agent, as the harness last published it.
     pub(crate) monitor_wakes: Mutex<crate::monitors::Wakes>,
@@ -162,6 +165,12 @@ impl Gauges {
                 let Some(this) = gauges.upgrade() else {
                     break;
                 };
+                // (The day's API spend is shared with the other sessions as
+                // it grows.)
+                let crew = lock(&this.crew).clone();
+                if let Some(crew) = crew {
+                    crew.track_spend();
+                }
                 let reading = remote::Meter::read(this.as_ref());
                 working = feed.activity().working
                     || !reading.workers_running.is_empty()
@@ -262,6 +271,7 @@ impl remote::Meter for Gauges {
         let stats = lock(&self.stats).clone();
         let (project_instructions, worker_project_instructions) = *lock(&self.project);
         let builtin_skills = lock(&self.builtin_skills).clone();
+        let (worker_billing, api_budget) = *lock(&self.billing);
         // What new workers hand over at, on their model (as the workflow
         // has them until the crew is told).
         let worker_at = |model: &arko_ai::Model, handover: Option<&arko_agents::HandoverConfig>| {
@@ -336,6 +346,8 @@ impl remote::Meter for Gauges {
                 cc_compact: self.cc_compact.load(std::sync::atomic::Ordering::Relaxed),
                 extra_rules: *lock(&self.extra_rules),
                 worker_models: *lock(&self.worker_models),
+                worker_billing,
+                api_budget,
                 worker_depth: self.worker_depth.load(std::sync::atomic::Ordering::Relaxed),
                 worker_retry_cap: Some(
                     self.worker_retry_cap
@@ -438,9 +450,13 @@ fn cache_status(stats: &crate::ui::Stats, models: &remote::Models) -> remote::Ca
     let tokens = stats.context_tokens;
     let (miss_cost, refresh_cost) = match (&model, tokens) {
         (Some(model), Some(tokens)) if on_plan.is_none() => {
-            let hour = stats.cache_lifetime
-                == Some(arko_ai::prompt_cache::ANTHROPIC_EXTENDED_PROMPT_CACHE_LIFETIME);
-            let (write, read) = providers::cache_prices(model, tokens, models.main_fast, hour);
+            // A long cache (Claude's hour, OpenAI's 12 hours) is written at
+            // its own price.
+            let long = stats.cache_lifetime.is_some_and(|lifetime| {
+                lifetime == arko_ai::prompt_cache::ANTHROPIC_EXTENDED_PROMPT_CACHE_LIFETIME
+                    || lifetime == arko_ai::prompt_cache::OPENAI_EXTENDED_PROMPT_CACHE_LIFETIME
+            });
+            let (write, read) = providers::cache_prices(model, tokens, models.main_fast, long);
             let cost = |per_million: f64| Some(tokens as f64 * per_million / 1e6);
             (cost(write), cost(read))
         }
@@ -552,5 +568,33 @@ mod tests {
         let cache = cache_status(&stats, &models);
         assert_eq!((cache.miss_cost, cache.refresh_cost), (None, None));
         assert_eq!(cache.on_plan, Some("your Claude plan"));
+        // OpenAI's 12-hour cache on an API key costs 2.5 times the input
+        // price to write, and its 30-minute one 1.25 times.
+        let sol = providers::resolve_model("sol").unwrap().pricing;
+        let models = remote::Models {
+            main: "sol".into(),
+            openai_auth: Some(providers::OpenAiAuth::ApiKey.describe().to_string()),
+            ..remote::Models::default()
+        };
+        for (lifetime, rate) in [
+            (
+                arko_ai::prompt_cache::OPENAI_EXTENDED_PROMPT_CACHE_LIFETIME,
+                2.5,
+            ),
+            (
+                arko_ai::prompt_cache::OPENAI_STANDARD_PROMPT_CACHE_LIFETIME,
+                1.25,
+            ),
+        ] {
+            let stats = Stats {
+                cache_lifetime: Some(lifetime),
+                ..stats.clone()
+            };
+            let cache = cache_status(&stats, &models);
+            assert!(close(
+                cache.miss_cost,
+                0.2 * rate * sol.input_cost_per_million
+            ));
+        }
     }
 }

@@ -10,6 +10,9 @@ pub struct Entry {
     pub args: String,
     /// What a command does (empty for a word).
     pub about: String,
+    /// What to know of a word, such as how a model billed per token is
+    /// billed (`API, $5/$25`). Empty for a command and most words.
+    pub note: String,
     /// What a pick puts in the box from `Menu::from`.
     pub insert: String,
 }
@@ -28,11 +31,13 @@ pub struct Menu {
 
 /// The menu for `text`, or none when it isn't a command line.
 /// `choices(name, before, typed)` gives the words an argument may be after
-/// the words `before`, or none while they aren't known yet.
+/// the words `before`, or none while they aren't known yet, and `note` what
+/// to know of a word (empty for most).
 pub fn menu(
     commands: &[CommandData],
     text: &str,
     choices: &mut dyn FnMut(&str, &[String], &str) -> Option<Vec<String>>,
+    note: &dyn Fn(&str) -> String,
 ) -> Option<Menu> {
     if !text.starts_with('/') || text.contains('\n') {
         return None;
@@ -46,6 +51,7 @@ pub fn menu(
                 label: command.name.clone(),
                 args: command.args.clone(),
                 about: command.about.clone(),
+                note: String::new(),
                 insert: if command.args.is_empty() {
                     command.name.clone()
                 } else {
@@ -94,6 +100,7 @@ pub fn menu(
             label: word.clone(),
             args: String::new(),
             about: String::new(),
+            note: note(word),
             insert: format!("{word} "),
         })
         .collect();
@@ -165,10 +172,14 @@ mod tests {
         None
     }
 
+    fn no_note(_: &str) -> String {
+        String::new()
+    }
+
     #[test]
     fn the_menu_filters_the_commands_by_what_is_typed_and_shows_each_ones_arguments() {
         let list = commands();
-        let menu = menu(&list, "/m", &mut no_choices).unwrap();
+        let menu = menu(&list, "/m", &mut no_choices, &no_note).unwrap();
         let labels: Vec<&str> = menu
             .entries
             .iter()
@@ -178,11 +189,14 @@ mod tests {
         assert_eq!(menu.entries[0].insert, "/model ");
         assert_eq!(menu.selected, Some(0));
         assert_eq!(
-            super::menu(&list, "/new", &mut no_choices).unwrap().entries[0].insert,
+            super::menu(&list, "/new", &mut no_choices, &no_note)
+                .unwrap()
+                .entries[0]
+                .insert,
             "/new"
         );
-        assert!(super::menu(&list, "/x", &mut no_choices).is_none());
-        assert!(super::menu(&list, "hello", &mut no_choices).is_none());
+        assert!(super::menu(&list, "/x", &mut no_choices, &no_note).is_none());
+        assert!(super::menu(&list, "hello", &mut no_choices, &no_note).is_none());
     }
 
     #[test]
@@ -195,26 +209,42 @@ mod tests {
                 .push((name.to_string(), before.to_vec(), typed.to_string()));
             Some(vec!["r1".to_string(), "r10".to_string(), "r2".to_string()])
         };
-        let menu = menu(&list, "/message r", &mut choices).unwrap();
+        let menu = menu(&list, "/message r", &mut choices, &no_note).unwrap();
         assert_eq!(menu.entries.len(), 3);
         assert_eq!(menu.from, 9);
         assert_eq!(menu.selected, Some(0));
         assert!(menu.command.is_some());
         // A word typed whole is sent as it is.
-        let menu = super::menu(&list, "/message r1", &mut choices).unwrap();
+        let menu = super::menu(&list, "/message r1", &mut choices, &no_note).unwrap();
         assert_eq!(menu.selected, None);
         assert_eq!(
             asked.borrow()[0],
             ("/message".to_string(), vec![], "r".to_string())
         );
+        // A word's note comes with it, and a command has none.
+        let noted = super::menu(&list, "/message ", &mut choices, &|word| {
+            if word == "r2" {
+                "API, $5/$25".into()
+            } else {
+                String::new()
+            }
+        })
+        .unwrap();
+        let notes: Vec<&str> = noted
+            .entries
+            .iter()
+            .map(|entry| entry.note.as_str())
+            .collect();
+        assert_eq!(notes, ["", "", "API, $5/$25"]);
+        assert!(menu.entries.iter().all(|entry| entry.about.is_empty()));
         // Past the words, free text asks for nothing.
-        assert!(super::menu(&list, "/message r1 hello there", &mut choices).is_none());
+        assert!(super::menu(&list, "/message r1 hello there", &mut choices, &no_note).is_none());
     }
 
     #[test]
     fn the_menus_keys_move_pick_and_close_and_enter_sends_a_word_that_is_whole() {
         let list = commands();
-        let menu = menu(&list, "/m", &mut no_choices).unwrap();
+        let menu = menu(&list, "/m", &mut no_choices, &no_note).unwrap();
         assert_eq!(key(&menu, Some(0), "ArrowDown", "/m"), Some(Key::Select(1)));
         assert_eq!(key(&menu, Some(0), "ArrowUp", "/m"), Some(Key::Select(1)));
         assert_eq!(key(&menu, None, "Tab", "/m"), Some(Key::Pick(0)));

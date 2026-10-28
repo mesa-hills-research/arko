@@ -45,7 +45,8 @@ fn now_ms() -> i64 {
     chrono::Utc::now().timestamp_millis()
 }
 
-const FIVE_MINUTES: Duration = Duration::from_secs(300);
+/// GPT-6 Luna's cache on an API key.
+const THIRTY_MINUTES: Duration = Duration::from_secs(30 * 60);
 
 /// Sends `text`, and waits until the turn it starts ended with a request
 /// that `ended` says is its own, then gives the cache's status.
@@ -83,14 +84,14 @@ async fn a_resumed_session_counts_its_cache_from_the_wall_clock() {
     assert_eq!(seam.meter.read().cache.refreshed_at, None);
     let first = say_and_wait(&seam, "One.", |cache| cache.read.is_some()).await;
     let at = first.refreshed_at.unwrap();
-    assert_eq!(first.lifetime, Some(FIVE_MINUTES));
+    assert_eq!(first.lifetime, Some(THIRTY_MINUTES));
     assert_eq!((first.read, first.written), (Some(900), Some(0)));
     quit(seam, ended).await;
     // Kept in the session's folder, with the request's own time.
     let record = cache_record(&root, &id);
     assert_eq!(record["version"], 1);
     assert_eq!(record["conversations"][0]["at"], at);
-    assert_eq!(record["conversations"][0]["lifetime"], 300);
+    assert_eq!(record["conversations"][0]["lifetime"], 1800);
     assert_eq!(
         record["conversations"][0]["model"],
         resolve_model("luna").unwrap().id
@@ -101,32 +102,32 @@ async fn a_resumed_session_counts_its_cache_from_the_wall_clock() {
     let (seam, ended) = open_app(&root, &project, &server, SessionChoice::Resume(id.clone())).await;
     let restored = seam.meter.read().cache;
     assert_eq!(restored.refreshed_at, Some(at));
-    assert_eq!(restored.lifetime, Some(FIVE_MINUTES));
+    assert_eq!(restored.lifetime, Some(THIRTY_MINUTES));
     assert_eq!((restored.read, restored.written), (Some(900), Some(0)));
     assert_eq!(restored.tokens, first.tokens);
-    // For two clocks, 1:48 and a little over five minutes after the
+    // For two clocks, 1:48 and a little over thirty minutes after the
     // request.
     use crate::cache_timer::CacheTimer;
     let timer = |cache: &crate::remote::CacheStatus, now: i64| CacheTimer::of(cache, false, now);
     let counting = timer(&restored, at + 108_000).unwrap();
-    assert_eq!(counting.label(), "cache 3:12");
+    assert_eq!(counting.label(), "cache 28:12");
     assert!(!counting.warns());
-    assert!(timer(&restored, at + 250_000).unwrap().warns());
-    assert_eq!(timer(&restored, at + 301_000), Some(CacheTimer::Expired));
+    assert!(timer(&restored, at + 1_750_000).unwrap().warns());
+    assert_eq!(timer(&restored, at + 1_801_000), Some(CacheTimer::Expired));
     assert!(
         CacheTimer::of(&restored, false, now_ms())
             .is_some_and(|timer| timer != CacheTimer::Expired)
     );
     quit(seam, ended).await;
 
-    // Closed for ten minutes: the record's request is that old now, so the
-    // cache expired meanwhile.
+    // Closed for forty minutes: the record's request is that old now, so
+    // the cache expired meanwhile.
     change_record(&root, &id, |entry| {
-        entry["at"] = (at - 600_000).into();
+        entry["at"] = (at - 2_400_000).into();
     });
     let (seam, ended) = open_app(&root, &project, &server, SessionChoice::Resume(id.clone())).await;
     let expired = seam.meter.read().cache;
-    assert_eq!(expired.refreshed_at, Some(at - 600_000));
+    assert_eq!(expired.refreshed_at, Some(at - 2_400_000));
     assert_eq!(
         CacheTimer::of(&expired, false, now_ms()),
         Some(CacheTimer::Expired)
@@ -139,7 +140,7 @@ async fn a_resumed_session_counts_its_cache_from_the_wall_clock() {
     let fresh = say_and_wait(&seam, "Two.", |cache| cache.read == Some(0)).await;
     assert!(fresh.refreshed_at.unwrap() >= before);
     let counting = CacheTimer::of(&fresh, false, now_ms()).unwrap();
-    assert!(matches!(counting, CacheTimer::Counting { left } if left > 290_000));
+    assert!(matches!(counting, CacheTimer::Counting { left } if left > 1_790_000));
     assert_eq!((fresh.read, fresh.written), (Some(0), Some(0)), "a miss");
     quit(seam, ended).await;
     assert_eq!(
@@ -174,7 +175,7 @@ async fn a_record_that_cannot_be_trusted_shows_no_time() {
     let cache = resume().await;
     assert!(cache.refreshed_at.unwrap() <= now_ms());
     let timer = crate::cache_timer::CacheTimer::of(&cache, false, now_ms()).unwrap();
-    assert!(matches!(timer, crate::cache_timer::CacheTimer::Counting { left } if left <= 300_000));
+    assert!(matches!(timer, crate::cache_timer::CacheTimer::Counting { left } if left <= 1_800_000));
     // (The resume kept the record as it was: it saves at the next request.)
 
     change_record(&root, &id, |entry| {
@@ -197,7 +198,7 @@ async fn a_record_that_cannot_be_trusted_shows_no_time() {
     std::fs::remove_file(&path).unwrap();
     let cache = resume().await;
     assert_eq!(cache.refreshed_at, None);
-    assert_eq!(cache.lifetime, Some(FIVE_MINUTES), "its length is known");
+    assert_eq!(cache.lifetime, Some(THIRTY_MINUTES), "its length is known");
     assert!(cache.tokens.is_some());
 }
 
@@ -241,7 +242,7 @@ async fn the_cache_follows_the_conversation() {
     settled(Some(at)).await;
     let back = seam.meter.read().cache;
     assert_eq!((back.read, back.written), (first.read, first.written));
-    assert_eq!(back.lifetime, Some(FIVE_MINUTES));
+    assert_eq!(back.lifetime, Some(THIRTY_MINUTES));
     // The second conversation has its own, kept apart.
     say("/resume 2");
     settled(Some(second)).await;

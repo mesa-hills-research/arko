@@ -63,7 +63,18 @@ pub struct Options {
     /// messages to the worker, by default no in a new session, and a
     /// resumed session's own. It can change as a session resumes.
     pub message_copies: Option<bool>,
-    /// The 1-hour prompt cache, by default as `ARKO_CACHE_1H` says.
+    /// Whether workers may run on models billed per token, by default as
+    /// `ARKO_WORKER_BILLING` says (else ask first) in a new session, and a
+    /// resumed session's own. It can change as a session resumes.
+    pub worker_billing: Option<crate::billing::WorkerBilling>,
+    /// The daily API budget, by default as `ARKO_API_BUDGET` says (else
+    /// none) in a new session, and a resumed session's own. `Some(None)` is
+    /// no budget, and `Some(Some(dollars))` a budget, above 0. It can change
+    /// as a session resumes.
+    pub api_budget: Option<Option<f64>>,
+    /// The long prompt cache (an hour on Claude models, 12 hours on OpenAI
+    /// GPT-5.6 and later with an API key), by default as `ARKO_CACHE_1H`
+    /// says. Named for Claude's, the first it meant.
     pub cache_1h: Option<bool>,
     /// The main agent ends its turns with a plain reply. By default it does
     /// when someone takes part in the session as it runs (it is
@@ -210,6 +221,8 @@ impl Default for Options {
             worker_depth: None,
             worker_retry_cap: None,
             message_copies: None,
+            worker_billing: None,
+            api_budget: None,
             cache_1h: None,
             text_replies: None,
             cc_compact: None,

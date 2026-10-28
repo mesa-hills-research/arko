@@ -84,6 +84,10 @@ pub enum SettingsRow {
     BuiltinSkill(usize),
     /// Who chooses the workers' models.
     WorkerModels,
+    /// Whether workers may run on models billed per token.
+    WorkerBilling,
+    /// The daily API budget.
+    ApiBudget,
     /// How many levels of workers there can be.
     WorkerDepth,
     /// Whether a worker fails after a number of failed model requests in a
@@ -716,6 +720,30 @@ fn settings(frame: &mut Frame, app: &App, area: Rect, selected: usize) {
                     app.worker_models().about(),
                     crate::workers::MODELS_APPLIES
                 ),
+            ),
+            SettingsRow::WorkerBilling => (
+                "Workers",
+                crate::workers::BILLING_NAME,
+                choices(
+                    theme,
+                    &crate::workers::WorkerBilling::ALL.map(crate::workers::WorkerBilling::name),
+                    crate::workers::WorkerBilling::ALL
+                        .iter()
+                        .position(|billing| *billing == app.worker_billing())
+                        .unwrap_or(0),
+                ),
+                format!(
+                    "{} {} {}",
+                    crate::workers::BILLING_ABOUT,
+                    app.worker_billing().about(),
+                    crate::workers::MODELS_APPLIES
+                ),
+            ),
+            SettingsRow::ApiBudget => (
+                "Workers",
+                crate::workers::BUDGET_NAME,
+                choices(theme, &["on", "off"], usize::from(app.api_budget().is_none())),
+                crate::workers::budget_about(app.api_budget()),
             ),
             SettingsRow::WorkerDepth => (
                 "Workers",

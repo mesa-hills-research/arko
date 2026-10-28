@@ -30,6 +30,7 @@ use arko_workflows::subagents::StartRequest;
 use serde_json::Value;
 
 use crate::agents::{self, Effort, ExtraRules, ModelChoice, ModelSettings};
+use crate::billing::WorkerBilling;
 use crate::crew::{
     CACHE_PARAM, EFFORT_PARAM, MAX_OWN_WORKERS, MODEL_PARAM, NESTED_PARAM, NESTED_TOOL_NAMES,
     PROFILE_PARAM, Refuse, WorkerSetup,
@@ -61,6 +62,11 @@ pub struct Basis {
     /// (none when no rule applies to this session).
     pub extra_rules: ExtraRules,
     pub rules_text: Option<String>,
+    /// Whether a worker may run on a model billed per token
+    /// (`/worker-billing`), and the daily API budget (`/api-budget`). The
+    /// start hook holds each start to them ([`crate::billing::gate`]).
+    pub billing: WorkerBilling,
+    pub api_budget: Option<f64>,
 }
 
 /// The profile a start names. The built-in `default` is the session's worker
@@ -261,12 +267,12 @@ fn choose_at(
     let effort = effort_for(basis, &call, profile, &model, same_model)?;
     let fast = profile.is_some_and(|profile| profile.fast) || (same_model && basis.worker.fast);
     let cache_choice = cache_for(&call, profile)?;
-    let cache_1h = cache_choice.unwrap_or(basis.worker.cache_1h);
+    let long_cache = cache_choice.unwrap_or(basis.worker.cache_1h);
     let worker = ModelSettings {
         model: model_name,
         effort,
         fast,
-        cache_1h: cache_1h && providers::takes_cache_ttl(&model),
+        cache_1h: long_cache && providers::takes_long_cache(&model, basis.providers.openai_auth),
         handover_at: if same_model {
             basis.worker.handover_at
         } else {
@@ -290,9 +296,10 @@ fn choose_at(
         _ => why,
     })?;
 
-    // Claude Code has its own cache unless 5 minutes is asked for outright.
+    // Claude Code has its own cache unless the short one is asked for
+    // outright.
     if cache_choice == Some(false) {
-        providers::ask_five_minutes(&model, &mut setup.llm_config.generation_config);
+        providers::ask_short_cache(&model, &mut setup.llm_config.generation_config);
     }
 
     // What goes into the run's first message: the profile's instructions,
@@ -357,6 +364,35 @@ pub fn named_profiles(roots: &profiles::Roots) -> Vec<agents::ProfileName> {
                     && providers::resolve_model(model).is_ok()
             }),
             name: found.profile.name,
+        })
+        .collect()
+}
+
+/// The models on the user's plans that a worker can start on now (as
+/// `start_agent` takes them), for a refusal of one billed per token.
+/// `refuse` says why a model can't start (Claude Code isn't signed in).
+pub(crate) fn plan_models(basis: &Basis, refuse: Option<&Refuse>) -> Vec<String> {
+    let auth = basis.providers.openai_auth;
+    let unusable = |sample: &str| {
+        let model = providers::resolve_model(sample).ok()?;
+        refuse.and_then(|refuse| blocking(|| refuse(&model)))
+    };
+    providers::model_menu(unusable, auth, &[], &[])
+        .into_iter()
+        .filter(|group| group.needs.is_none())
+        .flat_map(|group| group.models)
+        .filter(|(name, _)| {
+            // (Claude Mythos needs access few accounts have.)
+            providers::model_note(name).is_none()
+                && providers::resolve_model(name)
+                    .is_ok_and(|model| providers::plan_of(&model, auth).is_some())
+        })
+        .map(|(name, alias)| {
+            if alias.is_empty() {
+                name
+            } else {
+                alias.to_string()
+            }
         })
         .collect()
 }
@@ -467,13 +503,11 @@ fn effort_for(
     })
 }
 
-/// The prompt cache the call or the profile asks for: `Some(true)` is the
-/// 1-hour one.
+/// The prompt cache the call or the profile asks for, `Some(true)` for the
+/// long one.
 fn cache_for(call: &Call, profile: Option<&profiles::Profile>) -> Result<Option<bool>, String> {
     match call.cache.as_deref() {
-        Some("1h") => Ok(Some(true)),
-        Some("5m") => Ok(Some(false)),
-        Some(other) => Err(format!("cache is 5m or 1h, not {other}")),
+        Some(text) => crate::crew::long_cache_asked(text).map(Some),
         None => Ok(profile
             .and_then(|profile| profile.cache)
             .map(|cache| cache == Cache::OneHour)),

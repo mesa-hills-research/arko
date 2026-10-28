@@ -2304,6 +2304,11 @@ impl Feed {
         self.push(&mut state, Item::new(Kind::Notice, text).level(Level::Warn));
     }
 
+    /// Whether the user stopped the turn and it hasn't ended yet.
+    pub(crate) fn turn_is_stopping(&self) -> bool {
+        self.lock().stopping.is_some()
+    }
+
     /// A command's output.
     pub fn output(&self, text: &str) {
         self.output_at(text, None);

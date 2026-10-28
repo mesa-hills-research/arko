@@ -3,7 +3,7 @@
 //! from the environment or `.env` files, and the setup screen that asks for
 //! them when the chosen model has none or its file fails. The screen also
 //! checks Claude Code, whose own login Arko uses. `.env` files can also
-//! turn on the 1-hour prompt cache (ARKO_CACHE_1H), choose how sessions
+//! turn on the long prompt cache (ARKO_CACHE_1H), choose how sessions
 //! reach OpenAI models (ARKO_OPENAI_AUTH), choose the shell on Windows
 //! (ARKO_SHELL) and hold the Voyage API key the search indexes embed with
 //! (VOYAGE_API_KEY), which the setup screen also takes.
@@ -57,7 +57,8 @@ pub const OPENROUTER_KEY: &str = "OPENROUTER_API_KEY";
 pub const CODEX_AUTH: &str = "ARKO_CODEX_AUTH";
 /// How new sessions reach OpenAI models: `chatgpt` or `api-key`.
 pub const OPENAI_AUTH: &str = "ARKO_OPENAI_AUTH";
-/// Anthropic's 1-hour prompt cache for new sessions: `1` or `0`.
+/// The long prompt cache for new sessions (Claude's hour, OpenAI's 12
+/// hours on an API key), `1` or `0`.
 pub const CACHE_1H: &str = "ARKO_CACHE_1H";
 /// Whether new sessions have Arko's built-in skills: `1` or `0`.
 pub const BUILTIN_SKILLS: &str = "ARKO_BUILTIN_SKILLS";
@@ -65,13 +66,18 @@ pub const BUILTIN_SKILLS: &str = "ARKO_BUILTIN_SKILLS";
 pub const BUILTIN_SKILLS_OFF: &str = "ARKO_BUILTIN_SKILLS_OFF";
 /// The shell new sessions run commands in on Windows: `cmd` or `powershell`.
 pub const SHELL: &str = "ARKO_SHELL";
+/// Whether new sessions' workers may run on models billed per token:
+/// `plans`, `ask` or `api`.
+pub const WORKER_BILLING: &str = "ARKO_WORKER_BILLING";
+/// New sessions' daily API budget in dollars, or `off`.
+pub const API_BUDGET: &str = "ARKO_API_BUDGET";
 /// The Voyage API key, for the search indexes' embeddings.
 pub const VOYAGE_KEY: &str = "VOYAGE_API_KEY";
 /// The full-screen view's theme, by name.
 pub const THEME: &str = "ARKO_THEME";
 /// The settings a `.env` file can hold; it may set others, which are left
 /// alone.
-const DOTENV_KEYS: [&str; 15] = [
+const DOTENV_KEYS: [&str; 17] = [
     ANTHROPIC_KEY,
     OPENAI_KEY,
     GEMINI_KEY,
@@ -83,6 +89,8 @@ const DOTENV_KEYS: [&str; 15] = [
     BUILTIN_SKILLS,
     BUILTIN_SKILLS_OFF,
     SHELL,
+    WORKER_BILLING,
+    API_BUDGET,
     VOYAGE_KEY,
     crate::glyphs::SYMBOLS,
     THEME,

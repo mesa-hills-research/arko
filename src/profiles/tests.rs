@@ -757,8 +757,12 @@ fn quotes_that_are_not_a_pair_stay_and_a_delete_takes_no_path() {
 fn a_cache_that_is_not_read_says_what_it_takes() {
     assert_eq!(" 5M ".parse::<Cache>(), Ok(Cache::FiveMinutes));
     assert_eq!("1h".parse::<Cache>(), Ok(Cache::OneHour));
+    assert_eq!("long".parse::<Cache>(), Ok(Cache::OneHour));
+    assert_eq!("Short".parse::<Cache>(), Ok(Cache::FiveMinutes));
+    // A profile file keeps the names earlier versions read.
+    assert_eq!(Cache::OneHour.as_str(), "1h");
     let why = "2h".parse::<Cache>().unwrap_err();
-    assert!(why.contains("5m or 1h"), "{why}");
+    assert!(why.contains("long or short"), "{why}");
 }
 
 #[test]

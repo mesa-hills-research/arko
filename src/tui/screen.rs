@@ -2203,6 +2203,21 @@ mod tests {
                 ),
             ),
             (
+                SettingsRow::WorkerBilling,
+                workers::BILLING_NAME,
+                format!(
+                    "{} {} {}",
+                    workers::BILLING_ABOUT,
+                    workers::WorkerBilling::Ask.about(),
+                    workers::MODELS_APPLIES
+                ),
+            ),
+            (
+                SettingsRow::ApiBudget,
+                workers::BUDGET_NAME,
+                workers::budget_about(None),
+            ),
+            (
                 SettingsRow::WorkerDepth,
                 workers::DEPTH_NAME,
                 workers::depth_about().to_string(),
@@ -3199,8 +3214,9 @@ mod tests {
         let rows = screen(&mut app, 100, 30).join("\n");
         assert!(rows.contains("┌ Main agent's model "), "{rows}");
         assert!(rows.contains("OpenAI, with your API key"), "{rows}");
+        // A model billed per token says so with its price.
         assert!(
-            rows.contains("▸ gpt-6-luna     luna   now, high effort"),
+            rows.contains("▸ gpt-6-luna     luna   API, $0.10/$0.50  now, high effort"),
             "{rows}"
         );
         assert!(rows.contains("  gpt-6.1-sol    sol"), "{rows}");

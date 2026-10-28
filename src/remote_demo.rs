@@ -395,6 +395,7 @@ async fn remote_page_demo() {
         cc_compact: Default::default(),
         extra_rules: Default::default(),
         worker_models: Default::default(),
+        billing: Default::default(),
         monitor_wakes: Default::default(),
         worker_depth: Default::default(),
         worker_retry_cap: Default::default(),

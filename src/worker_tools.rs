@@ -22,6 +22,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 
 use crate::agents::{Effort, ModelChoice};
+use crate::billing::WorkerBilling;
 use crate::chooser::Basis;
 use crate::crew::{Crew, SAVE_WORKER_PROFILE, WORKER_OPTIONS};
 use crate::inputs::Asker;
@@ -184,6 +185,9 @@ fn options_text(
                 .to_string(),
         ),
     }
+    if basis.choice != ModelChoice::Session {
+        parts.push(crate::agents::billing_words(basis.billing).to_string());
+    }
     if show != Show::Models {
         parts.push(profiles_text(basis, needs));
     }
@@ -241,7 +245,19 @@ fn profiles_text(basis: &Basis, needs: &dyn Fn(&Model) -> Option<String>) -> Str
             profile.name, profile.description
         ));
         let blocked = found.note.clone().or_else(|| {
-            let model = providers::resolve_model(profile.model.as_deref()?).ok()?;
+            let model = providers::resolve_model(
+                profile
+                    .model
+                    .as_deref()
+                    .unwrap_or(basis.worker.model.as_str()),
+            )
+            .ok()?;
+            if basis.billing == WorkerBilling::Plans
+                && providers::plan_of(&model, basis.providers.openai_auth).is_none()
+            {
+                return Some("billed per token".to_string());
+            }
+            profile.model.as_ref()?;
             needs(&model).map(|needs| format!("needs {needs}"))
         });
         if let Some(blocked) = blocked {
@@ -303,12 +319,6 @@ fn efforts_range(model: &Model) -> String {
     }
 }
 
-/// `5`, `1.25`, `0.1`.
-fn dollars(amount: f64) -> String {
-    let text = format!("{amount:.2}");
-    text.trim_end_matches('0').trim_end_matches('.').to_string()
-}
-
 /// `950000` as `950k`.
 fn thousands(tokens: usize) -> String {
     format!("{}k", tokens / 1000)
@@ -331,21 +341,9 @@ fn model_line(
         let usage = plans.get(key).cloned().unwrap_or_else(|| key.to_string());
         format!("{usage}, shared with the user's own use")
     };
-    let cost = if model.provider == Provider::ClaudeCode {
-        plan("Claude plan")
-    } else if chatgpt {
-        plan("ChatGPT plan")
-    } else {
-        let pricing = model.pricing.at(std::time::SystemTime::now());
-        if pricing.input_cost_per_million == 0.0 && pricing.output_cost_per_million == 0.0 {
-            "billed per token".to_string()
-        } else {
-            format!(
-                "${} / ${}",
-                dollars(pricing.input_cost_per_million),
-                dollars(pricing.output_cost_per_million)
-            )
-        }
+    let cost = match providers::plan_of(model, basis.providers.openai_auth) {
+        Some(name) => plan(name),
+        None => crate::billing::api_label(model),
     };
     let mut handover = format!(
         "hands over at {}",
@@ -362,9 +360,13 @@ fn model_line(
         efforts_range(model)
     );
     if model.provider == Provider::ClaudeCode {
-        line.push_str(" · cache 5m or 1h (1h when you choose none, on a Claude plan)");
-    } else if providers::takes_cache_ttl(model) {
-        line.push_str(" · cache 5m or 1h (1h costs twice the input price to write)");
+        line.push_str(" · cache short (5m) or long (1h, when you choose none on a Claude plan)");
+    } else if providers::takes_long_cache(model, basis.providers.openai_auth) {
+        let choice = providers::CacheChoice::of(model);
+        line.push_str(&format!(
+            " · cache short ({}) or long ({}, {} the input price to write)",
+            choice.short, choice.long, choice.long_write
+        ));
     } else if chatgpt {
         line.push_str(" · cache 30m, fixed");
     }
@@ -387,7 +389,7 @@ fn models_text(
         &[],
     );
     let mut usable = String::from(
-        "Models usable now (price per million input and output tokens, and the size where a worker hands over to a fresh conversation)",
+        "Models usable now (the plan that pays, or API and the price per million input and output tokens, and the size where a worker hands over to a fresh conversation)",
     );
     let mut unusable = String::new();
     for group in &menu {
@@ -423,7 +425,7 @@ fn models_text(
             usable.push_str(&model_line(&resolved, alias, basis, plans));
             if resolved.provider == Provider::OpenRouter {
                 usable.push_str(
-                    "\n- openrouter:<slug> · any model OpenRouter serves · billed per token · hands over at 100k unless Arko knows its limit",
+                    "\n- openrouter:<slug> · any model OpenRouter serves · API · hands over at 100k unless Arko knows its limit",
                 );
             }
         }
@@ -584,6 +586,22 @@ impl Tool for SaveWorkerProfile {
                 "{} takes {} effort, not {effort}, and a profile with no model runs on it. Give the profile a model, or an effort that {} takes.",
                 providers::model_name(&model),
                 providers::efforts_text(&model),
+                providers::model_name(&model)
+            )));
+        }
+        // Under Plans only, a profile on a model billed per token couldn't
+        // start a worker.
+        if basis.billing == WorkerBilling::Plans
+            && let Ok(model) = providers::resolve_model(
+                profile
+                    .model
+                    .as_deref()
+                    .unwrap_or(basis.worker.model.as_str()),
+            )
+            && providers::plan_of(&model, basis.providers.openai_auth).is_none()
+        {
+            return Err(refused(format!(
+                "The user lets workers run only on their plans (/worker-billing plans), and {} is billed per token, so a worker couldn't start with this profile. Give it a model on the user's plans, which worker_options lists.",
                 providers::model_name(&model)
             )));
         }

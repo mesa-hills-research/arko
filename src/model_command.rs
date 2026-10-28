@@ -182,6 +182,9 @@ impl Harness {
                     }
                     _ => resolved,
                 };
+                if target == Target::Workers {
+                    self.plans_allow(&resolved)?;
+                }
                 let current = match target {
                     Target::Main => &self.settings.main,
                     Target::Workers => &self.settings.worker,
@@ -216,8 +219,26 @@ impl Harness {
                 }
                 done
             }
-            Request::FollowMain => self.set_workers_model(None),
+            Request::FollowMain => {
+                self.plans_allow(&providers::resolve_model(&self.settings.main.model)?)?;
+                self.set_workers_model(None)
+            }
         }
+    }
+
+    /// Why the workers can't run `model` under the session's worker
+    /// billing: with Plans only, a model billed per token.
+    fn plans_allow(&self, model: &Model) -> Result<(), String> {
+        if self.settings.worker_billing != crate::billing::WorkerBilling::Plans
+            || providers::plan_of(model, self.settings.openai_auth).is_some()
+        {
+            return Ok(());
+        }
+        Err(format!(
+            "{} is billed per token, and worker billing is Plans only, so workers run on your plans. Choose a model on one of them, such as cc:sonnet, or {} first.",
+            crate::models::display_name(&providers::model_name(model)),
+            crate::billing::WorkerBilling::Ask.command()
+        ))
     }
 
     /// `/text-replies`, typed at the prompt, sent from the page or chosen
@@ -721,6 +742,8 @@ impl Harness {
             worker_depth: settings.worker_depth,
             extra_rules: settings.extra_rules,
             rules_text: agents::extra_rules(&agent_settings),
+            billing: settings.worker_billing,
+            api_budget: settings.api_budget,
         })
     }
 
@@ -748,6 +771,7 @@ impl Harness {
         );
         *lock(&self.gauges.extra_rules) = self.settings.extra_rules;
         *lock(&self.gauges.worker_models) = self.settings.worker_models;
+        *lock(&self.gauges.billing) = (self.settings.worker_billing, self.settings.api_budget);
         *lock(&self.gauges.monitor_wakes) = self.settings.monitor_wakes;
         self.gauges.worker_depth.store(
             self.settings.worker_depth,
@@ -790,7 +814,7 @@ impl Harness {
 }
 
 /// `old`'s settings on `model` at `effort`: fast mode where the model has
-/// it, the 1-hour cache where it takes one and it was asked for, and the
+/// it, the long cache where it takes one and it was asked for, and the
 /// handover size the model's own unless one was given (held under what
 /// the model leaves room for).
 fn switched(
@@ -809,7 +833,7 @@ fn switched(
         }
         _ => Some(agents::default_handover(model, openai_auth)),
     };
-    let wants_1h = old.cache_1h
+    let wants_long = old.cache_1h
         || crate::credentials::switch(crate::credentials::CACHE_1H)
             .ok()
             .flatten()
@@ -818,7 +842,7 @@ fn switched(
         model: providers::model_name(model),
         effort,
         fast: old.fast && providers::generation(model, effort, true, false, false).is_ok(),
-        cache_1h: wants_1h && providers::takes_cache_ttl(model),
+        cache_1h: wants_long && providers::takes_long_cache(model, openai_auth),
         handover_at,
     }
 }
@@ -899,7 +923,7 @@ mod tests {
         let on_gemini = switched(&opus, &gemini, Effort::High, None);
         assert_eq!(on_gemini.model, "gemini-3.1-pro-preview");
         assert!(!on_gemini.fast, "Gemini has no fast mode");
-        assert!(!on_gemini.cache_1h, "nor Anthropic's cache");
+        assert!(!on_gemini.cache_1h, "nor a long cache");
         assert_eq!(on_gemini.handover_at, Some(200_000), "the model's own size");
         // And back, to the size of a Claude model.
         let back = switched(
@@ -913,6 +937,11 @@ mod tests {
         let on_cc = switched(&opus, &cc, Effort::Xhigh, None);
         assert!(on_cc.fast);
         assert!(on_cc.cache_1h, "Claude Code takes a cache lifetime too");
+        // OpenAI keeps it for 12 hours on an API key, and has none to choose
+        // on the ChatGPT login.
+        let sol = providers::resolve_model("sol").unwrap();
+        assert!(switched(&opus, &sol, Effort::High, Some(OpenAiAuth::ApiKey)).cache_1h);
+        assert!(!switched(&opus, &sol, Effort::High, Some(OpenAiAuth::ChatGpt)).cache_1h);
         assert_eq!(on_cc.handover_at, Some(950_000));
         // A size given (--handover-at) stays, up to 95% of what the new
         // model accepts.

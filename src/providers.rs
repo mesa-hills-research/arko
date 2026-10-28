@@ -25,10 +25,9 @@ use std::path::{Path, PathBuf};
 
 use arko_ai::model::ModelType;
 use arko_ai::{
-    AnthropicCacheTtl, BillingKind, CodexAuthFile, GeminiThinkingLevel, GenerationConfig,
-    LLMClient, Model, OpenAIServiceTier, OpenRouterCatalog, OpenRouterReasoning, PlanUsage,
-    Provider, ReasoningConfig, ReasoningEffort, ReasoningSummary, ServiceTier, SubscriptionPlan,
-    UsageInfo,
+    BillingKind, CodexAuthFile, GeminiThinkingLevel, GenerationConfig, LLMClient, Model,
+    OpenAIServiceTier, OpenRouterCatalog, OpenRouterReasoning, PlanUsage, Provider,
+    ReasoningConfig, ReasoningEffort, ReasoningSummary, ServiceTier, SubscriptionPlan, UsageInfo,
 };
 use arko_workflows::budget::{CostLedger, CostSource};
 use serde::{Deserialize, Serialize};
@@ -59,6 +58,16 @@ pub const ALIASES: [(&str, &str); 11] = [
     ("luna", "gpt-6-luna"),
     ("gemini", "gemini-3.1-pro-preview"),
     ("flash", "gemini-3.8-flash"),
+];
+
+/// Registry models and the exact slug each has on OpenRouter. A slug names
+/// its model only by equality, so a "-v2" variant, a fine-tune or a `:free`
+/// variant is none of these.
+pub const OPENROUTER_EQUIVALENTS: [(&str, &str); 4] = [
+    ("claude-haiku-5-5", "anthropic/claude-haiku-5.5"),
+    ("claude-haiku-4-5-20251001", "anthropic/claude-haiku-4.5"),
+    ("gpt-6-luna", "openai/gpt-6-luna"),
+    ("gpt-5.6-luna", "openai/gpt-5.6-luna"),
 ];
 
 /// The handover size of a model whose input limit Arko can't tell (an
@@ -220,37 +229,94 @@ pub fn is_claude_slug(slug: &str) -> bool {
     slug.trim_start_matches('~').starts_with("anthropic/")
 }
 
-/// Whether `model` takes Anthropic's prompt-cache lifetime (5 minutes or
-/// 1 hour): Claude models on an API key, on OpenRouter or in Claude Code.
-/// Claude Code chooses its own when none is asked for: an hour on a Claude
-/// plan.
-pub fn takes_cache_ttl(model: &Model) -> bool {
+/// Whether `model` has a longer prompt cache to choose (the session's long
+/// cache, and a worker's `cache`). Claude models on an API key, on
+/// OpenRouter or in Claude Code keep it an hour instead of 5 minutes, and
+/// OpenAI GPT-5.6 and later on an API key 12 hours instead of 30 minutes.
+/// Claude Code chooses its own when none is asked for, an hour on a Claude
+/// plan. The ChatGPT login keeps its own 30-minute cache.
+pub fn takes_long_cache(model: &Model, openai_auth: Option<OpenAiAuth>) -> bool {
     match model.provider {
         Provider::Anthropic | Provider::ClaudeCode => true,
         Provider::OpenRouter => is_claude_slug(&model.id),
-        _ => false,
+        Provider::OpenAI => {
+            openai_auth == Some(OpenAiAuth::ApiKey) && model.supports_openai_prompt_cache_options()
+        }
+        Provider::Google => false,
     }
 }
 
-/// Asks for the 5-minute prompt cache outright where leaving it out gives a
-/// longer one: in Claude Code, which otherwise chooses its own. The other
-/// models have it when none is asked for.
-pub fn ask_five_minutes(model: &Model, generation: &mut GenerationConfig) {
+/// The shorter and the longer prompt cache of a model that takes a choice
+/// ([`takes_long_cache`]), as Arko's words name them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CacheChoice {
+    /// "5m" or "30m".
+    pub short: &'static str,
+    /// "1h" or "12h".
+    pub long: &'static str,
+    /// "5 minutes" or "30 minutes".
+    pub short_words: &'static str,
+    /// "an hour" or "12 hours".
+    pub long_words: &'static str,
+    /// What a long cache's write costs, "twice" or "2.5 times" the input
+    /// price (a short one's is 1.25 times on both).
+    pub long_write: &'static str,
+}
+
+impl CacheChoice {
+    /// `model`'s caches, OpenAI's for OpenAI models and Claude's for the
+    /// others.
+    pub fn of(model: &Model) -> Self {
+        if model.provider == Provider::OpenAI {
+            CacheChoice {
+                short: "30m",
+                long: "12h",
+                short_words: "30 minutes",
+                long_words: "12 hours",
+                long_write: "2.5 times",
+            }
+        } else {
+            CacheChoice {
+                short: "5m",
+                long: "1h",
+                short_words: "5 minutes",
+                long_words: "an hour",
+                long_write: "twice",
+            }
+        }
+    }
+}
+
+/// Asks for the shorter prompt cache outright where leaving it out gives a
+/// longer one, which is in Claude Code (it otherwise chooses its own). The
+/// other models have it when none is asked for.
+pub fn ask_short_cache(model: &Model, generation: &mut GenerationConfig) {
     if model.provider == Provider::ClaudeCode {
-        generation.anthropic_cache_ttl = Some(AnthropicCacheTtl::FiveMinutes);
+        generation.long_prompt_cache = Some(false);
     }
 }
 
-/// The families of small models: fast, cheap models that do better with
+/// The small models, by registry ID: fast, cheap models that do better with
 /// plain, explicit rules than the large ones need (`agents::extra_rules`).
-const SMALL_FAMILIES: [&str; 2] = ["haiku", "luna"];
+const SMALL_MODELS: [&str; 4] = [
+    "claude-haiku-5-5",
+    "claude-haiku-4-5-20251001",
+    "gpt-6-luna",
+    "gpt-5.6-luna",
+];
 
-/// Whether `model` is a small model: its ID names a small family, whatever
-/// the route (`claude-haiku-5-5`, `cc:claude-haiku-5-5`,
-/// `openrouter:anthropic/claude-haiku-5.5`, `gpt-6-luna`).
+/// Whether `model` is one of [`SMALL_MODELS`], on any route: its registry ID
+/// through the API or `cc:`, or its slug in [`OPENROUTER_EQUIVALENTS`]
+/// through OpenRouter. The ID or slug must match exactly.
 pub fn is_small(model: &Model) -> bool {
-    let id = model.id.to_ascii_lowercase();
-    SMALL_FAMILIES.iter().any(|family| id.contains(family))
+    let id = match model.provider {
+        Provider::OpenRouter => OPENROUTER_EQUIVALENTS
+            .iter()
+            .find(|(_, slug)| *slug == model.id)
+            .map(|(id, _)| *id),
+        _ => Some(model.id.as_str()),
+    };
+    id.is_some_and(|id| SMALL_MODELS.contains(&id))
 }
 
 /// What the session says, once, when OpenAI refuses the reasoning summaries
@@ -259,7 +325,8 @@ pub fn is_small(model: &Model) -> bool {
 pub const THINKING_REFUSED: &str = "OpenAI gives reasoning summaries only to verified organizations, and this one isn't verified, so the agents' thinking isn't shown and Arko stops asking for it. Verifying the organization in OpenAI's settings turns it on for new sessions.";
 
 /// The generation settings of an agent on `model`: its reasoning at
-/// `effort`, and fast mode and the 1-hour cache where the provider has them.
+/// `effort`, fast mode where the provider has it, and the long prompt cache
+/// with `long_cache` (which the caller asks for where [`takes_long_cache`]).
 /// With `thinking_text`, the model is asked for the text of its thinking
 /// where it needs asking, for the views to show: Claude by API key for its
 /// summarized thinking (Claude Code passes it on by itself), OpenAI and
@@ -270,7 +337,7 @@ pub fn generation(
     model: &Model,
     effort: Effort,
     fast: bool,
-    cache_1h: bool,
+    long_cache: bool,
     thinking_text: bool,
 ) -> Result<GenerationConfig, String> {
     let mut generation = GenerationConfig::default().with_prompt_caching(true);
@@ -335,8 +402,8 @@ pub fn generation(
             generation = generation.with_reasoning(ReasoningConfig::openrouter(reasoning));
         }
     }
-    if cache_1h && takes_cache_ttl(model) {
-        generation = generation.with_anthropic_cache_ttl(AnthropicCacheTtl::OneHour);
+    if long_cache {
+        generation = generation.with_long_prompt_cache(true);
     }
     Ok(generation)
 }
@@ -1466,6 +1533,20 @@ pub fn plan_name(plan: Option<SubscriptionPlan>) -> &'static str {
     }
 }
 
+/// The plan that pays for `model`'s calls when the session reaches OpenAI
+/// models by `openai_auth`, as `/cost` names it: the Claude plan for `cc:`
+/// models, the ChatGPT plan for OpenAI models on the ChatGPT login. `None`
+/// for a model billed per token (an API key, Gemini, OpenRouter).
+pub fn plan_of(model: &Model, openai_auth: Option<OpenAiAuth>) -> Option<&'static str> {
+    match model.provider {
+        Provider::ClaudeCode => Some(plan_name(Some(SubscriptionPlan::ClaudeCode))),
+        Provider::OpenAI if openai_auth != Some(OpenAiAuth::ApiKey) => {
+            Some(plan_name(Some(SubscriptionPlan::ChatGpt)))
+        }
+        _ => None,
+    }
+}
+
 /// What a call would have cost at API list prices: its estimate when a
 /// plan covered it, else what it was billed.
 pub(crate) fn at_api_prices(usage: &UsageInfo, billed: f64) -> f64 {
@@ -1597,12 +1678,10 @@ pub fn cost_report(
 
 /// The main agent's part of the costs in `ledger` and the workers'.
 pub fn cost_shares(ledger: &CostLedger, settings: &Settings) -> (CostShare, CostShare) {
-    let plan_of = |model: &ModelSettings| match resolve_model(&model.model).map(|m| m.provider) {
-        Ok(Provider::ClaudeCode) => Some(plan_name(Some(SubscriptionPlan::ClaudeCode))),
-        Ok(Provider::OpenAI) if settings.openai_auth != Some(OpenAiAuth::ApiKey) => {
-            Some(plan_name(Some(SubscriptionPlan::ChatGpt)))
-        }
-        _ => None,
+    let plan_of = |model: &ModelSettings| {
+        resolve_model(&model.model)
+            .ok()
+            .and_then(|model| plan_of(&model, settings.openai_auth))
     };
     let mut main = CostShare::default();
     let mut workers = CostShare::default();
@@ -1715,9 +1794,10 @@ impl Setup {
 /// What writing the conversation's `tokens` to the prompt cache, and reading
 /// them from it, cost on `model` now, per million tokens: at the prices in
 /// effect today, the long-context rates above their threshold, the fast
-/// mode's price when `fast`, and the 1-hour write price when `one_hour`.
+/// mode's price when `fast`, and the long cache's write price (Claude's
+/// hour, OpenAI's 12 hours) when `long_cache`.
 /// Writes cost input where the provider charges nothing extra for them.
-pub fn cache_prices(model: &Model, tokens: usize, fast: bool, one_hour: bool) -> (f64, f64) {
+pub fn cache_prices(model: &Model, tokens: usize, fast: bool, long_cache: bool) -> (f64, f64) {
     let pricing = model.pricing.at(std::time::SystemTime::now());
     let long = pricing
         .large_input_threshold
@@ -1728,7 +1808,7 @@ pub fn cache_prices(model: &Model, tokens: usize, fast: bool, one_hour: bool) ->
         pricing.large_input_cost_per_million,
     )
     .unwrap_or(pricing.input_cost_per_million);
-    let write = one_hour
+    let write = long_cache
         .then(|| {
             rate(
                 pricing.cache_write_1h_cost_per_million,
@@ -1753,6 +1833,7 @@ pub fn cache_prices(model: &Model, tokens: usize, fast: bool, one_hour: bool) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+    use arko_ai::AnthropicCacheTtl;
 
     /// The cache's prices are those in effect now: the fast mode's at its
     /// price, and the long-context rates above their threshold.
@@ -1777,6 +1858,62 @@ mod tests {
             .unwrap();
         let (_, long) = cache_prices(&sol, threshold + 1, false, false);
         assert!((long - long_read).abs() < 1e-9);
+        // A write costs 1.25 times the input price, and 2.5 times for
+        // OpenAI's long cache, which Claude's hour charges at twice.
+        let write = |model: &Model, long: bool| cache_prices(model, 100_000, false, long).0;
+        assert!((write(&sol, false) - 1.25 * pricing.input_cost_per_million).abs() < 1e-9);
+        assert!((write(&sol, true) - 2.5 * pricing.input_cost_per_million).abs() < 1e-9);
+        let opus = resolve_model("opus").unwrap();
+        let input = opus.pricing.input_cost_per_million;
+        assert!((write(&opus, true) - 2.0 * input).abs() < 1e-9);
+    }
+
+    /// The long cache is Claude's hour on every Claude route, and OpenAI's
+    /// 12 hours on GPT-5.6 and later with an API key. The ChatGPT login,
+    /// earlier OpenAI models and the other providers have none to choose.
+    #[test]
+    fn the_long_cache_is_each_routes_own() {
+        use OpenAiAuth::{ApiKey, ChatGpt};
+        let takes = |name: &str, auth| takes_long_cache(&resolve_model(name).unwrap(), auth);
+        for name in ["opus", "cc:opus", "openrouter:anthropic/claude-opus-5.5"] {
+            for auth in [None, Some(ApiKey), Some(ChatGpt)] {
+                assert!(takes(name, auth), "{name} {auth:?}");
+            }
+            assert_eq!(CacheChoice::of(&resolve_model(name).unwrap()).long, "1h");
+        }
+        for name in ["sol", "luna", "gpt-5.6-sol", "gpt-6-astra"] {
+            assert!(takes(name, Some(ApiKey)), "{name}");
+            assert!(!takes(name, Some(ChatGpt)), "{name}");
+            assert!(!takes(name, None), "{name}");
+        }
+        for name in [
+            "gpt-5.5-2026-04-23",
+            "gemini",
+            "openrouter:openai/gpt-6-luna",
+            "openrouter:deepseek/deepseek-v4",
+        ] {
+            assert!(!takes(name, Some(ApiKey)), "{name}");
+        }
+        let sol = resolve_model("sol").unwrap();
+        let choice = CacheChoice::of(&sol);
+        assert_eq!((choice.short, choice.long), ("30m", "12h"));
+        // What the setting asks for, and the lifetime it reports, by auth.
+        let long = generation(&sol, Effort::High, false, true, false).unwrap();
+        let lifetime = |chatgpt| arko_ai::prompt_cache::prompt_cache_lifetime(&sol, &long, chatgpt);
+        assert_eq!(
+            lifetime(false),
+            arko_ai::PromptCacheLifetime::Known(std::time::Duration::from_secs(12 * 3600))
+        );
+        assert_eq!(
+            lifetime(true),
+            arko_ai::PromptCacheLifetime::Known(std::time::Duration::from_secs(30 * 60))
+        );
+        let opus = resolve_model("opus").unwrap();
+        let long = generation(&opus, Effort::High, false, true, false).unwrap();
+        assert_eq!(
+            arko_ai::prompt_cache::prompt_cache_lifetime(&opus, &long, false),
+            arko_ai::PromptCacheLifetime::Known(std::time::Duration::from_secs(3600))
+        );
     }
     use crate::agents::ModelSettings;
 
@@ -1940,20 +2077,20 @@ mod tests {
         assert_eq!(
             config("opus", Effort::High, false, true)
                 .unwrap()
-                .anthropic_cache_ttl,
+                .claude_cache_ttl(),
             Some(AnthropicCacheTtl::OneHour)
         );
         // Claude Code passes the lifetime on, and chooses its own without one.
         assert_eq!(
             config("cc:opus", Effort::High, false, true)
                 .unwrap()
-                .anthropic_cache_ttl,
+                .claude_cache_ttl(),
             Some(AnthropicCacheTtl::OneHour)
         );
         assert_eq!(
             config("cc:opus", Effort::High, false, false)
                 .unwrap()
-                .anthropic_cache_ttl,
+                .claude_cache_ttl(),
             None
         );
         // OpenAI: its reasoning and Fast tier.
@@ -1963,7 +2100,9 @@ mod tests {
             Some(ReasoningConfig::OpenAI { .. })
         ));
         assert_eq!(sol.openai_service_tier, Some(OpenAIServiceTier::Fast));
-        assert_eq!(sol.anthropic_cache_ttl, None);
+        // The long cache is OpenAI's 12 hours, which the framework asks for
+        // with an API key.
+        assert_eq!(sol.long_prompt_cache, Some(true));
         // Gemini: thinking levels, no fast mode.
         let level = |name: &str, effort: Effort| match config(name, effort, false, false)
             .unwrap()
@@ -2005,7 +2144,7 @@ mod tests {
             &claude.reasoning,
             Some(ReasoningConfig::OpenRouter(reasoning)) if reasoning.effort == Some(ReasoningEffort::XHigh)
         ));
-        assert_eq!(claude.anthropic_cache_ttl, Some(AnthropicCacheTtl::OneHour));
+        assert_eq!(claude.claude_cache_ttl(), Some(AnthropicCacheTtl::OneHour));
         let other = config("openrouter:deepseek/deepseek-v4", Effort::High, false, true).unwrap();
         assert_eq!(other.anthropic_cache_ttl, None);
         let error =
@@ -3273,5 +3412,107 @@ mod tests {
         // Other errors are short as they are.
         let openrouter = resolve_model("openrouter:").unwrap_err();
         assert_eq!(briefly(&openrouter), openrouter);
+    }
+
+    /// Every small model is small by its ID, its alias, their `cc:` forms
+    /// (Claude models only) and its exact OpenRouter slug.
+    #[test]
+    fn each_small_model_is_small_on_every_route() {
+        for id in SMALL_MODELS {
+            let registered = Model::find(id).unwrap_or_else(|| panic!("{id} isn't registered"));
+            let mut names = vec![id.to_string()];
+            names.extend(
+                ALIASES
+                    .iter()
+                    .filter(|(_, registry)| *registry == id)
+                    .map(|(alias, _)| alias.to_string()),
+            );
+            if registered.provider == Provider::Anthropic {
+                names.extend(names.clone().into_iter().map(|name| format!("cc:{name}")));
+            }
+            let slug = OPENROUTER_EQUIVALENTS
+                .iter()
+                .find(|(registry, _)| *registry == id)
+                .unwrap_or_else(|| panic!("{id} has no OpenRouter slug"))
+                .1;
+            names.push(format!("openrouter:{slug}"));
+            for name in names {
+                let model = resolve_model(&name).unwrap();
+                assert!(is_small(&model), "{name}");
+            }
+        }
+    }
+
+    /// The table holds the Haiku and Luna models the registry has, so a new
+    /// one fails here until someone decides whether it is small.
+    #[test]
+    fn the_small_models_are_the_registered_haiku_and_luna() {
+        let mut registered: Vec<String> = Model::all()
+            .into_iter()
+            .map(|model| model.id)
+            .filter(|id| id.contains("haiku") || id.contains("luna"))
+            .collect();
+        registered.sort();
+        let mut small: Vec<String> = SMALL_MODELS.iter().map(|id| id.to_string()).collect();
+        small.sort();
+        assert_eq!(small, registered);
+        for (id, slug) in OPENROUTER_EQUIVALENTS {
+            assert!(Model::find(id).is_some(), "{id}");
+            assert_eq!(slug.split('/').count(), 2, "{slug}");
+            assert!(!slug.contains([':', '@', '~', ' ']), "{slug}");
+        }
+    }
+
+    /// A name that only resembles a small model is not one: other versions,
+    /// publishers, fine-tunes, variants, other letter cases and registry IDs
+    /// that OpenRouter doesn't use as slugs.
+    #[test]
+    fn lookalikes_are_not_small() {
+        for slug in [
+            "anthropic/claude-haiku-5.5-v2",
+            "anthropic/claude-haiku-5.5:free",
+            "anthropic/claude-haiku-5.5:floor",
+            "anthropic/claude-haiku-5.5@preset/short-answers",
+            "anthropic/claude-haiku-5-5",
+            "anthropic/claude-haiku-5.5-ft-acme",
+            "anthropic/claude-haiku-4.5-20251001",
+            "~anthropic/claude-haiku-latest",
+            "Anthropic/Claude-Haiku-5.5",
+            "someorg/claude-haiku-5.5",
+            "someorg/haiku-finetune",
+            "haiku",
+            "claude-haiku-5-5",
+            "openai/gpt-6-luna-preview",
+            "openai/gpt-6-luna:free",
+            "openai/gpt-6-luna:floor",
+            "openai/gpt-6.1-luna",
+            "openai/gpt-5.6-luna-mini",
+            "someorg/luna",
+            "luna",
+            "luna-something",
+            "gpt-6-luna",
+            "openai/gpt-6-sol",
+            "anthropic/claude-opus-5.5",
+        ] {
+            let model = resolve_model(&format!("openrouter:{slug}")).unwrap();
+            assert!(!is_small(&model), "openrouter:{slug}");
+        }
+    }
+
+    /// The other models, by every route they have, are not small, and a
+    /// name Arko doesn't know resolves to no model at all.
+    #[test]
+    fn the_other_models_are_not_small() {
+        for model in Model::all() {
+            let small = SMALL_MODELS.contains(&model.id.as_str());
+            assert_eq!(is_small(&model), small, "{}", model.id);
+            if model.provider == Provider::Anthropic {
+                let model = Model::claude_code(model);
+                assert_eq!(is_small(&model), small, "cc:{}", model.id);
+            }
+        }
+        for name in ["luna-something", "haiku-finetune", "claude-haiku-5-5-v2"] {
+            assert!(resolve_model(name).is_err(), "{name}");
+        }
     }
 }

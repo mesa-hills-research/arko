@@ -29,6 +29,7 @@
 
 mod agents;
 mod asking;
+mod billing;
 pub mod builtin_skills;
 mod cache_memory;
 pub mod cache_timer;
@@ -99,6 +100,7 @@ pub mod workers;
 use std::sync::Mutex;
 
 pub use crate::agents::{Effort, ExtraRules, ModelChoice};
+pub use crate::billing::WorkerBilling;
 #[cfg(feature = "tui")]
 pub use crate::cli::cli_main;
 pub use crate::credentials::{Env, Need};

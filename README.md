@@ -21,6 +21,8 @@ models, and on your Claude plan through an installed Claude Code.
   [worker profiles](docs/worker-profiles.md) you write
 - Workers that start workers of their own, down to a depth you set
   ([docs](docs/worker-profiles.md#workers-that-start-workers))
+- Workers on your Claude and ChatGPT plans first, with your OK before one is billed per token,
+  and an optional daily API budget ([docs](docs/worker-profiles.md#worker-billing))
 - [Notes](docs/kept-notes.md) the main agent keeps for itself and its workers, which come back
   after a handover or a compaction, or when a conversation is resumed
 - MCP servers in Claude Code's `.mcp.json` format, and [skills](docs/skills.md) from
