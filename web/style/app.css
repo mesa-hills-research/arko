@@ -555,9 +555,14 @@ details.more > summary { width: max-content; padding: 4px 0; color: var(--link);
   font: 12.5px/1.5 var(--mono);
 }
 .md pre code { padding: 0; background: none; font: inherit; white-space: pre; }
-.md .table { overflow-x: auto; }
-.md table { border-collapse: collapse; font-size: 14px; }
-.md th, .md td { padding: 4px 8px; border: 1px solid var(--line); text-align: left; vertical-align: top; }
+/* A table keeps the width its cells ask for and scrolls sideways inside its
+   wrapper, as Studio's tables do, rather than squeeze its columns until
+   every cell wraps. A cell wraps past 40 characters (padding included), so
+   a long one can't make the table endless. A table that fits has no
+   scrollbar, and a swipe at its end doesn't pass to the page. */
+.md .table { overflow-x: auto; overscroll-behavior-x: contain; }
+.md table { width: max-content; border-collapse: collapse; font-size: 14px; }
+.md th, .md td { max-width: 40ch; padding: 4px 8px; border: 1px solid var(--line); text-align: left; vertical-align: top; }
 .md thead td { background: var(--code); font-weight: 600; }
 
 /* ----- message box ----- */
@@ -880,19 +885,19 @@ dialog.sheet::backdrop { background: rgba(0, 0, 0, 0.36); }
    boxy. Apple's overlay scrollbars stay as they are (the page marks Apple
    systems with .apple), and Firefox takes the standard properties. */
 
-html:not(.apple) :is(.log, .field textarea, pre, .sheet-body, .slash-list, .select-list, .answers-list, .answers-instructions-box)::-webkit-scrollbar { width: 10px; height: 10px; }
-html:not(.apple) :is(.log, .field textarea, pre, .sheet-body, .slash-list, .select-list, .answers-list, .answers-instructions-box)::-webkit-scrollbar-track { margin: 4px; background: transparent; }
-html:not(.apple) :is(.log, .field textarea, pre, .sheet-body, .slash-list, .select-list, .answers-list, .answers-instructions-box)::-webkit-scrollbar-thumb {
+html:not(.apple) :is(.log, .field textarea, pre, .md .table, .sheet-body, .slash-list, .select-list, .answers-list, .answers-instructions-box)::-webkit-scrollbar { width: 10px; height: 10px; }
+html:not(.apple) :is(.log, .field textarea, pre, .md .table, .sheet-body, .slash-list, .select-list, .answers-list, .answers-instructions-box)::-webkit-scrollbar-track { margin: 4px; background: transparent; }
+html:not(.apple) :is(.log, .field textarea, pre, .md .table, .sheet-body, .slash-list, .select-list, .answers-list, .answers-instructions-box)::-webkit-scrollbar-thumb {
   min-height: 24px;
   border: 3px solid transparent;
   border-radius: 999px;
   background: var(--thumb) padding-box;
 }
-html:not(.apple) :is(.log, .field textarea, pre, .sheet-body, .slash-list, .select-list, .answers-list, .answers-instructions-box)::-webkit-scrollbar-thumb:hover { background: var(--thumb-hover) padding-box; }
+html:not(.apple) :is(.log, .field textarea, pre, .md .table, .sheet-body, .slash-list, .select-list, .answers-list, .answers-instructions-box)::-webkit-scrollbar-thumb:hover { background: var(--thumb-hover) padding-box; }
 html:not(.apple) ::-webkit-scrollbar-corner { background: transparent; }
 
 @supports not selector(::-webkit-scrollbar) {
-  .log, .field textarea, pre, .sheet-body, .slash-list, .select-list, .answers-list, .answers-instructions-box {
+  .log, .field textarea, pre, .md .table, .sheet-body, .slash-list, .select-list, .answers-list, .answers-instructions-box {
     scrollbar-width: thin;
     scrollbar-color: var(--thumb) transparent;
   }
