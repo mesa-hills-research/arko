@@ -7,6 +7,7 @@
 mod app;
 mod chrome;
 mod composer;
+mod copy;
 mod layout;
 mod markdown;
 mod questions;

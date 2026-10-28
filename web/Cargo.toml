@@ -62,6 +62,7 @@ web-sys = { version = "0.3", features = [
     "ScrollIntoViewOptions",
     "FocusEvent",
     "ScrollLogicalPosition",
+    "HtmlDocument",
 ] }
 
 [profile.release]
