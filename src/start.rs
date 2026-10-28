@@ -148,14 +148,9 @@ pub(crate) fn new_settings(
         (None, Some(default)) => name(&default.main)?,
         (None, None) => unreachable!("a default without --model"),
     };
-    // The 1-hour cache is Anthropic's, by API key, on OpenRouter or in Claude
-    // Code; other models ignore it.
-    let want_1h = match options.cache_1h {
+    let want_long = match options.cache_1h {
         Some(on) => on,
         None => credentials::switch(credentials::CACHE_1H)?.unwrap_or(false),
-    };
-    let cache_1h = |id: &str| {
-        want_1h && resolve_model(id).is_ok_and(|model| providers::takes_cache_ttl(&model))
     };
     // The last session's workers' model goes with its main model.
     let worker_model = match &options.worker_model {
@@ -188,6 +183,12 @@ pub(crate) fn new_settings(
             );
         }
         None
+    };
+    // The long cache is Claude's hour and OpenAI's 12 hours on an API key.
+    // Other models have none to choose.
+    let cache_1h = |id: &str| {
+        want_long
+            && resolve_model(id).is_ok_and(|model| providers::takes_long_cache(&model, openai_auth))
     };
     // On the ChatGPT login, OpenAI models hand over below its backend's
     // input limit. A size given is held under what the model leaves room
@@ -257,7 +258,7 @@ pub(crate) fn new_settings(
     if options.cache_1h == Some(true) && !main.cache_1h && !worker.cache_1h {
         prompter.note(
             Level::Warn,
-            "--cache-1h is for Claude models, by API key, on OpenRouter or in Claude Code. This session has none, so it is ignored",
+            "--long-cache is for Claude models, and for OpenAI GPT-5.6 and later with an API key. This session has neither, so it is ignored",
         );
     }
     let (builtin_skills, skipped) = builtin_skills_for(options)?;

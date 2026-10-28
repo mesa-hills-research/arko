@@ -362,9 +362,13 @@ fn model_line(
         efforts_range(model)
     );
     if model.provider == Provider::ClaudeCode {
-        line.push_str(" · cache 5m or 1h (1h when you choose none, on a Claude plan)");
-    } else if providers::takes_cache_ttl(model) {
-        line.push_str(" · cache 5m or 1h (1h costs twice the input price to write)");
+        line.push_str(" · cache short (5m) or long (1h, when you choose none on a Claude plan)");
+    } else if providers::takes_long_cache(model, basis.providers.openai_auth) {
+        let choice = providers::CacheChoice::of(model);
+        line.push_str(&format!(
+            " · cache short ({}) or long ({}, {} the input price to write)",
+            choice.short, choice.long, choice.long_write
+        ));
     } else if chatgpt {
         line.push_str(" · cache 30m, fixed");
     }

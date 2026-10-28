@@ -133,13 +133,21 @@ pub fn image_refusal(model: &str, mime: &str) -> Option<String> {
     })
 }
 
-/// Whether a session's 1-hour prompt cache ([`Options::cache_1h`](crate::Options::cache_1h))
-/// applies to the model `model` (as `/model` takes it). It does to Claude
-/// models on an API key, on OpenRouter or in Claude Code (which otherwise
-/// chooses its own, an hour on a Claude plan), and the other providers have
-/// none to choose.
+/// Whether a session's long prompt cache ([`Options::cache_1h`](crate::Options::cache_1h))
+/// applies to the model `model` (as `/model` takes it), when the session
+/// reaches OpenAI models by `openai_auth`. It does to Claude models on an API
+/// key, on OpenRouter or in Claude Code (an hour, and Claude Code otherwise
+/// chooses its own, an hour on a Claude plan), and to OpenAI GPT-5.6 and
+/// later on an API key (12 hours). The other models have none to choose.
+pub fn takes_long_cache(model: &str, openai_auth: Option<crate::OpenAiAuth>) -> bool {
+    providers::resolve_model(model)
+        .is_ok_and(|model| providers::takes_long_cache(&model, openai_auth))
+}
+
+/// Whether the model `model` takes Claude's 1-hour prompt cache, which is
+/// [`takes_long_cache`] without an OpenAI API key.
 pub fn takes_cache_1h(model: &str) -> bool {
-    providers::resolve_model(model).is_ok_and(|model| providers::takes_cache_ttl(&model))
+    takes_long_cache(model, None)
 }
 
 /// A model's name as people say it ("Opus 5.5", "GPT-6.1 Sol", "Gemini
@@ -184,9 +192,12 @@ mod tests {
     use super::*;
 
     /// The 1-hour cache applies to Claude models on an API key, on OpenRouter
-    /// or in Claude Code, and to no other.
+    /// or in Claude Code, and to no other. The long cache also applies to
+    /// OpenAI models that have one, on an API key.
     #[test]
     fn the_1_hour_cache_applies_to_claude_by_api_key_openrouter_or_claude_code() {
+        assert!(takes_long_cache("sol", Some(crate::OpenAiAuth::ApiKey)));
+        assert!(!takes_long_cache("sol", Some(crate::OpenAiAuth::ChatGpt)));
         for model in [
             "opus",
             "sonnet",

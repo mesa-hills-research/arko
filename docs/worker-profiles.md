@@ -27,7 +27,7 @@ materials. Say what is wrong, in order of how much it matters.
 | `model` | A model as `/model` takes it, such as `opus`, `sol`, `cc:haiku` or `openrouter:<slug>`. Without one, the session's worker model |
 | `effort` | `low`, `medium`, `high`, `xhigh` or `max`, as the model takes it |
 | `fast` | `true` for fast mode, where the model has it |
-| `cache` | `5m` or `1h`, the prompt cache of Claude workers that take a choice |
+| `cache` | `long` or `short` (`1h` and `5m` mean the same), the prompt cache of workers whose model has a long one. Long is an hour on Claude models and 12 hours on OpenAI GPT-5.6 and later with an API key. Short is 5 minutes on Claude and 30 minutes on OpenAI |
 | `nested` | `true` to let the worker start workers of its own, down to the session's worker depth. The call's `nested` wins, so `nested: false` leaves it out for one worker |
 | `made_by` | `agent` when the main agent saved the profile |
 

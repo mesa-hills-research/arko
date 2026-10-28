@@ -790,7 +790,7 @@ impl Harness {
 }
 
 /// `old`'s settings on `model` at `effort`: fast mode where the model has
-/// it, the 1-hour cache where it takes one and it was asked for, and the
+/// it, the long cache where it takes one and it was asked for, and the
 /// handover size the model's own unless one was given (held under what
 /// the model leaves room for).
 fn switched(
@@ -809,7 +809,7 @@ fn switched(
         }
         _ => Some(agents::default_handover(model, openai_auth)),
     };
-    let wants_1h = old.cache_1h
+    let wants_long = old.cache_1h
         || crate::credentials::switch(crate::credentials::CACHE_1H)
             .ok()
             .flatten()
@@ -818,7 +818,7 @@ fn switched(
         model: providers::model_name(model),
         effort,
         fast: old.fast && providers::generation(model, effort, true, false, false).is_ok(),
-        cache_1h: wants_1h && providers::takes_cache_ttl(model),
+        cache_1h: wants_long && providers::takes_long_cache(model, openai_auth),
         handover_at,
     }
 }
@@ -899,7 +899,7 @@ mod tests {
         let on_gemini = switched(&opus, &gemini, Effort::High, None);
         assert_eq!(on_gemini.model, "gemini-3.1-pro-preview");
         assert!(!on_gemini.fast, "Gemini has no fast mode");
-        assert!(!on_gemini.cache_1h, "nor Anthropic's cache");
+        assert!(!on_gemini.cache_1h, "nor a long cache");
         assert_eq!(on_gemini.handover_at, Some(200_000), "the model's own size");
         // And back, to the size of a Claude model.
         let back = switched(
@@ -913,6 +913,11 @@ mod tests {
         let on_cc = switched(&opus, &cc, Effort::Xhigh, None);
         assert!(on_cc.fast);
         assert!(on_cc.cache_1h, "Claude Code takes a cache lifetime too");
+        // OpenAI keeps it for 12 hours on an API key, and has none to choose
+        // on the ChatGPT login.
+        let sol = providers::resolve_model("sol").unwrap();
+        assert!(switched(&opus, &sol, Effort::High, Some(OpenAiAuth::ApiKey)).cache_1h);
+        assert!(!switched(&opus, &sol, Effort::High, Some(OpenAiAuth::ChatGpt)).cache_1h);
         assert_eq!(on_cc.handover_at, Some(950_000));
         // A size given (--handover-at) stays, up to 95% of what the new
         // model accepts.

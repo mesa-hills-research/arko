@@ -438,9 +438,13 @@ fn cache_status(stats: &crate::ui::Stats, models: &remote::Models) -> remote::Ca
     let tokens = stats.context_tokens;
     let (miss_cost, refresh_cost) = match (&model, tokens) {
         (Some(model), Some(tokens)) if on_plan.is_none() => {
-            let hour = stats.cache_lifetime
-                == Some(arko_ai::prompt_cache::ANTHROPIC_EXTENDED_PROMPT_CACHE_LIFETIME);
-            let (write, read) = providers::cache_prices(model, tokens, models.main_fast, hour);
+            // A long cache (Claude's hour, OpenAI's 12 hours) is written at
+            // its own price.
+            let long = stats.cache_lifetime.is_some_and(|lifetime| {
+                lifetime == arko_ai::prompt_cache::ANTHROPIC_EXTENDED_PROMPT_CACHE_LIFETIME
+                    || lifetime == arko_ai::prompt_cache::OPENAI_EXTENDED_PROMPT_CACHE_LIFETIME
+            });
+            let (write, read) = providers::cache_prices(model, tokens, models.main_fast, long);
             let cost = |per_million: f64| Some(tokens as f64 * per_million / 1e6);
             (cost(write), cost(read))
         }
@@ -552,5 +556,33 @@ mod tests {
         let cache = cache_status(&stats, &models);
         assert_eq!((cache.miss_cost, cache.refresh_cost), (None, None));
         assert_eq!(cache.on_plan, Some("your Claude plan"));
+        // OpenAI's 12-hour cache on an API key costs 2.5 times the input
+        // price to write, and its 30-minute one 1.25 times.
+        let sol = providers::resolve_model("sol").unwrap().pricing;
+        let models = remote::Models {
+            main: "sol".into(),
+            openai_auth: Some(providers::OpenAiAuth::ApiKey.describe().to_string()),
+            ..remote::Models::default()
+        };
+        for (lifetime, rate) in [
+            (
+                arko_ai::prompt_cache::OPENAI_EXTENDED_PROMPT_CACHE_LIFETIME,
+                2.5,
+            ),
+            (
+                arko_ai::prompt_cache::OPENAI_STANDARD_PROMPT_CACHE_LIFETIME,
+                1.25,
+            ),
+        ] {
+            let stats = Stats {
+                cache_lifetime: Some(lifetime),
+                ..stats.clone()
+            };
+            let cache = cache_status(&stats, &models);
+            assert!(close(
+                cache.miss_cost,
+                0.2 * rate * sol.input_cost_per_million
+            ));
+        }
     }
 }

@@ -10,7 +10,6 @@ use arko_agents::{
     AgentConfig, AgentLLMConfig, ClaudeCodeSettings, HandoverConfig, TaskContext, Tool,
     ToolDefinition, ToolError, ToolParameterDefinition, ToolParameterType, ToolTypeDetails,
 };
-use arko_ai::AnthropicCacheTtl;
 use arko_ai::prompt_cache::PromptCacheLifetime;
 use arko_workflows::prelude::*;
 use arko_workflows::subagents::{
@@ -81,7 +80,10 @@ pub struct Setup {
     pub session_dir: PathBuf,
     pub output: Arc<Output>,
     pub max_running: u32,
+    /// The long prompt cache for workers on the session's worker model.
     pub cache_1h: bool,
+    /// How the session reaches OpenAI models.
+    pub openai_auth: Option<crate::providers::OpenAiAuth>,
     /// The client's cache lifetime for the worker model and authentication.
     pub cache_lifetime: PromptCacheLifetime,
     pub feed: Option<remote::Feed>,
@@ -306,26 +308,33 @@ impl WorkerRecords {
     }
 }
 
+/// Whether `start_agent`'s `cache` (or a profile's) asks for the long prompt
+/// cache: `long`, or `1h` as it was first called, against `short` or `5m`.
+pub(crate) fn long_cache_asked(text: &str) -> Result<bool, String> {
+    match text.trim().to_ascii_lowercase().as_str() {
+        "long" | "1h" => Ok(true),
+        "short" | "5m" => Ok(false),
+        _ => Err(format!("cache is long or short, not {text}")),
+    }
+}
+
 /// The prompt cache a worker run asks for in `start_agent`'s `cache`, else
-/// `default_1h`, on the models that take one: on `config`.
+/// `default_long`, on `config`. Models without a long cache ignore it.
 fn apply_cache(
     request: &StartRequest,
     config: &mut AgentConfig,
-    default_1h: bool,
+    default_long: bool,
 ) -> Result<(), String> {
-    let chosen = request.parameters.get(CACHE_PARAM).and_then(Value::as_str);
-    let one_hour = match chosen {
-        Some("1h") => true,
-        Some("5m") => false,
-        Some(other) => return Err(format!("cache is 5m or 1h, not {other}")),
-        None => default_1h,
-    };
-    if crate::providers::takes_cache_ttl(&config.llm_config.model) {
-        let generation = &mut config.llm_config.generation_config;
-        generation.anthropic_cache_ttl = one_hour.then_some(AnthropicCacheTtl::OneHour);
-        if chosen == Some("5m") {
-            crate::providers::ask_five_minutes(&config.llm_config.model, generation);
-        }
+    let chosen = request
+        .parameters
+        .get(CACHE_PARAM)
+        .and_then(Value::as_str)
+        .map(long_cache_asked)
+        .transpose()?;
+    let generation = &mut config.llm_config.generation_config;
+    generation.long_prompt_cache = chosen.unwrap_or(default_long).then_some(true);
+    if chosen == Some(false) {
+        crate::providers::ask_short_cache(&config.llm_config.model, generation);
     }
     Ok(())
 }
@@ -346,9 +355,9 @@ fn prepare(
         flight,
         feed,
         refuse,
-        default_1h,
+        default_long,
     } = hook;
-    let (feed, refuse, default_1h) = (feed.as_ref(), refuse.as_ref(), *default_1h);
+    let (feed, refuse, default_long) = (feed.as_ref(), refuse.as_ref(), *default_long);
     // (The lock is held briefly: choosing may read files, and Claude Code's
     // login check runs a command.)
     let (started, attached, new) = {
@@ -364,7 +373,7 @@ fn prepare(
         return Ok(());
     }
     if !attached {
-        return apply_cache(request, config, default_1h);
+        return apply_cache(request, config, default_long);
     }
     let setup = match new {
         Some(new) => {
@@ -410,7 +419,7 @@ fn prepare(
             if let Some(why) = refuse.and_then(|refuse| refuse(&config.llm_config.model)) {
                 return Err(why);
             }
-            apply_cache(request, config, default_1h)?;
+            apply_cache(request, config, default_long)?;
             WorkerSetup::of(config)
         }
     };
@@ -578,7 +587,7 @@ struct StartHook {
     flight: Mutex<HashMap<Uuid, (Uuid, Instant)>>,
     feed: Option<remote::Feed>,
     refuse: Option<Refuse>,
-    default_1h: bool,
+    default_long: bool,
 }
 
 impl SubagentHook for StartHook {
@@ -659,7 +668,7 @@ fn start_parameters() -> Vec<ToolParameterDefinition> {
     vec![
         text(
             CACHE_PARAM,
-            "1h or 5m, how long the worker's prompt cache lasts after its last step. Only Claude workers take it, on an API key, on OpenRouter or in Claude Code, which uses 1h on a Claude plan when you choose none. ChatGPT keeps its own 30-minute cache.",
+            "`long` or `short` (`1h` and `5m` work too), how long the worker's prompt cache lasts after its last step. `long` is an hour on Claude models and 12 hours on OpenAI GPT-5.6 and later with an API key, and costs more to write. `short` is 5 minutes on Claude and 30 minutes on OpenAI. Claude Code uses an hour on a Claude plan when you choose none. ChatGPT keeps its own 30-minute cache.",
         ),
         text(
             PROFILE_PARAM,
@@ -806,7 +815,7 @@ impl Crew {
     }
 
     pub fn config(&self) -> SubagentsConfig {
-        let default_1h = self.setup.cache_1h;
+        let default_long = self.setup.cache_1h;
         let models = self.models.clone();
         let records = self.models.clone();
         let workflow = self.workflow.clone();
@@ -831,7 +840,7 @@ impl Crew {
                 flight: Mutex::default(),
                 feed,
                 refuse,
-                default_1h,
+                default_long,
             }))
             // Asked as each worker starts: a run keeps its first message.
             .start_context(Arc::new(move |request: &StartRequest| {
@@ -1325,19 +1334,20 @@ impl Crew {
                 // A run Arko didn't record: the cache it asked for, on the
                 // registered worker's model.
                 if started.is_none()
-                    && workflow
-                        .context()
-                        .agent_configs
-                        .get(&run.agent)
-                        .is_some_and(|config| {
-                            crate::providers::takes_cache_ttl(&config.llm_config.model)
-                        })
+                    && let Some(config) = workflow.context().agent_configs.get(&run.agent)
+                    && let Some(Ok(long)) = run
+                        .parameters
+                        .get(CACHE_PARAM)
+                        .and_then(Value::as_str)
+                        .map(long_cache_asked)
                 {
-                    lifetime = match run.parameters.get(CACHE_PARAM).and_then(Value::as_str) {
-                        Some("1h") => PromptCacheLifetime::Known(Duration::from_secs(3600)),
-                        Some("5m") => PromptCacheLifetime::Known(Duration::from_secs(300)),
-                        _ => lifetime,
-                    };
+                    let model = &config.llm_config.model;
+                    let mut generation = config.llm_config.generation_config.clone();
+                    generation.long_prompt_cache = Some(long);
+                    let chatgpt = model.provider == arko_ai::Provider::OpenAI
+                        && self.setup.openai_auth != Some(crate::providers::OpenAiAuth::ApiKey);
+                    lifetime =
+                        arko_ai::prompt_cache::prompt_cache_lifetime(model, &generation, chatgpt);
                 }
                 let summary = self
                     .setup
@@ -1493,6 +1503,7 @@ mod tests {
     use super::*;
     use crate::agents::MAIN;
     use arko_agents::AgentLLMConfig;
+    use arko_ai::AnthropicCacheTtl;
 
     #[test]
     fn native_worker_options_preserve_cache_choices_and_queue_limits() {
@@ -1503,6 +1514,7 @@ mod tests {
             output: Arc::new(Output::new(None, true)),
             max_running: 2,
             cache_1h: true,
+            openai_auth: Some(crate::providers::OpenAiAuth::ApiKey),
             cache_lifetime: PromptCacheLifetime::Known(Duration::from_secs(3600)),
             feed: None,
             refuse: None,
@@ -1534,36 +1546,42 @@ mod tests {
             task: "Check it".into(),
             parameters: Default::default(),
         };
+        let ttl = |config: &AgentConfig| config.llm_config.generation_config.claude_cache_ttl();
         hook.prepare(&request, &mut config).unwrap();
-        assert_eq!(
-            config.llm_config.generation_config.anthropic_cache_ttl,
-            Some(AnthropicCacheTtl::OneHour)
-        );
-        request.parameters.insert(CACHE_PARAM.into(), "5m".into());
-        hook.prepare(&request, &mut config).unwrap();
-        assert_eq!(
-            config.llm_config.generation_config.anthropic_cache_ttl,
-            None
-        );
-        request.parameters.insert(CACHE_PARAM.into(), "1h".into());
-        hook.prepare(&request, &mut config).unwrap();
-        assert_eq!(
-            config.llm_config.generation_config.anthropic_cache_ttl,
-            Some(AnthropicCacheTtl::OneHour)
-        );
-        request.parameters.insert(CACHE_PARAM.into(), "2h".into());
-        assert!(hook.prepare(&request, &mut config).is_err());
-        // Claude Code chooses its own cache unless one is asked for, so 5m is
-        // asked for outright.
-        config.llm_config.model = crate::agents::resolve_model("cc:opus").unwrap();
+        assert_eq!(ttl(&config), Some(AnthropicCacheTtl::OneHour));
+        // `long` and `short`, and the names they had first.
         for (cache, expected) in [
-            ("5m", Some(AnthropicCacheTtl::FiveMinutes)),
+            ("5m", None),
             ("1h", Some(AnthropicCacheTtl::OneHour)),
+            ("short", None),
+            ("Long", Some(AnthropicCacheTtl::OneHour)),
         ] {
             request.parameters.insert(CACHE_PARAM.into(), cache.into());
             hook.prepare(&request, &mut config).unwrap();
+            assert_eq!(ttl(&config), expected, "{cache}");
+        }
+        request.parameters.insert(CACHE_PARAM.into(), "2h".into());
+        let error = hook.prepare(&request, &mut config).unwrap_err();
+        assert!(error.contains("long or short"), "{error}");
+        // Claude Code chooses its own cache unless one is asked for, so the
+        // short one is asked for outright.
+        config.llm_config.model = crate::agents::resolve_model("cc:opus").unwrap();
+        for (cache, expected) in [
+            ("short", Some(AnthropicCacheTtl::FiveMinutes)),
+            ("5m", Some(AnthropicCacheTtl::FiveMinutes)),
+            ("long", Some(AnthropicCacheTtl::OneHour)),
+        ] {
+            request.parameters.insert(CACHE_PARAM.into(), cache.into());
+            hook.prepare(&request, &mut config).unwrap();
+            assert_eq!(ttl(&config), expected, "{cache}");
+        }
+        // On OpenAI the long cache is the 12-hour one.
+        config.llm_config.model = crate::agents::resolve_model("sol").unwrap();
+        for (cache, long) in [("long", Some(true)), ("1h", Some(true)), ("short", None)] {
+            request.parameters.insert(CACHE_PARAM.into(), cache.into());
+            hook.prepare(&request, &mut config).unwrap();
             assert_eq!(
-                config.llm_config.generation_config.anthropic_cache_ttl, expected,
+                config.llm_config.generation_config.long_prompt_cache, long,
                 "{cache}"
             );
         }
@@ -1619,6 +1637,7 @@ mod tests {
             output: Arc::new(Output::new(None, true)),
             max_running: 4,
             cache_1h: false,
+            openai_auth: None,
             cache_lifetime: PromptCacheLifetime::Known(Duration::from_secs(300)),
             feed: None,
             refuse: None,

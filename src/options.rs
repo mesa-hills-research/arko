@@ -63,7 +63,9 @@ pub struct Options {
     /// messages to the worker, by default no in a new session, and a
     /// resumed session's own. It can change as a session resumes.
     pub message_copies: Option<bool>,
-    /// The 1-hour prompt cache, by default as `ARKO_CACHE_1H` says.
+    /// The long prompt cache (an hour on Claude models, 12 hours on OpenAI
+    /// GPT-5.6 and later with an API key), by default as `ARKO_CACHE_1H`
+    /// says. Named for Claude's, the first it meant.
     pub cache_1h: Option<bool>,
     /// The main agent ends its turns with a plain reply. By default it does
     /// when someone takes part in the session as it runs (it is

@@ -148,8 +148,11 @@ impl Place {
     }
 }
 
-/// How long a worker's prompt cache lasts, for the Claude models on an API
-/// key, on OpenRouter or in Claude Code that take a choice.
+/// How long a worker's prompt cache lasts, for the models that take a
+/// choice. `OneHour` is the long cache (an hour on Claude models, and 12
+/// hours on OpenAI GPT-5.6 and later with an API key), and `FiveMinutes`
+/// the short one (5 minutes on Claude, 30 on OpenAI). They are named for
+/// Claude's, the first they meant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Cache {
@@ -158,7 +161,7 @@ pub enum Cache {
 }
 
 impl Cache {
-    /// `5m` or `1h`, as the file and the tools write it.
+    /// `5m` or `1h`, as the file writes it, so earlier versions read it.
     pub fn as_str(self) -> &'static str {
         match self {
             Cache::FiveMinutes => "5m",
@@ -170,11 +173,12 @@ impl Cache {
 impl std::str::FromStr for Cache {
     type Err = String;
 
+    /// `long` or `short`, or `1h` or `5m`.
     fn from_str(text: &str) -> Result<Self, String> {
-        match text.trim().to_ascii_lowercase().as_str() {
-            "5m" => Ok(Cache::FiveMinutes),
-            "1h" => Ok(Cache::OneHour),
-            _ => Err("the cache is 5m or 1h".to_string()),
+        match crate::crew::long_cache_asked(text) {
+            Ok(true) => Ok(Cache::OneHour),
+            Ok(false) => Ok(Cache::FiveMinutes),
+            Err(_) => Err("the cache is long or short".to_string()),
         }
     }
 }
@@ -298,7 +302,7 @@ impl Profile {
                         "" => None,
                         other => Some(other.parse::<Cache>().map_err(|_| {
                             format!(
-                                "`cache: {}` isn't a prompt cache (5m or 1h)",
+                                "`cache: {}` isn't a prompt cache (long or short)",
                                 cut(other, 40)
                             )
                         })?),

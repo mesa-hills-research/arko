@@ -261,12 +261,12 @@ fn choose_at(
     let effort = effort_for(basis, &call, profile, &model, same_model)?;
     let fast = profile.is_some_and(|profile| profile.fast) || (same_model && basis.worker.fast);
     let cache_choice = cache_for(&call, profile)?;
-    let cache_1h = cache_choice.unwrap_or(basis.worker.cache_1h);
+    let long_cache = cache_choice.unwrap_or(basis.worker.cache_1h);
     let worker = ModelSettings {
         model: model_name,
         effort,
         fast,
-        cache_1h: cache_1h && providers::takes_cache_ttl(&model),
+        cache_1h: long_cache && providers::takes_long_cache(&model, basis.providers.openai_auth),
         handover_at: if same_model {
             basis.worker.handover_at
         } else {
@@ -290,9 +290,10 @@ fn choose_at(
         _ => why,
     })?;
 
-    // Claude Code has its own cache unless 5 minutes is asked for outright.
+    // Claude Code has its own cache unless the short one is asked for
+    // outright.
     if cache_choice == Some(false) {
-        providers::ask_five_minutes(&model, &mut setup.llm_config.generation_config);
+        providers::ask_short_cache(&model, &mut setup.llm_config.generation_config);
     }
 
     // What goes into the run's first message: the profile's instructions,
@@ -467,13 +468,11 @@ fn effort_for(
     })
 }
 
-/// The prompt cache the call or the profile asks for: `Some(true)` is the
-/// 1-hour one.
+/// The prompt cache the call or the profile asks for, `Some(true)` for the
+/// long one.
 fn cache_for(call: &Call, profile: Option<&profiles::Profile>) -> Result<Option<bool>, String> {
     match call.cache.as_deref() {
-        Some("1h") => Ok(Some(true)),
-        Some("5m") => Ok(Some(false)),
-        Some(other) => Err(format!("cache is 5m or 1h, not {other}")),
+        Some(text) => crate::crew::long_cache_asked(text).map(Some),
         None => Ok(profile
             .and_then(|profile| profile.cache)
             .map(|cache| cache == Cache::OneHour)),

@@ -909,6 +909,7 @@ impl Engine {
                 output: output.clone(),
                 max_running: settings.max_workers,
                 cache_1h: settings.worker.cache_1h,
+                openai_auth: settings.openai_auth,
                 cache_lifetime: client
                     .prompt_cache_lifetime(
                         &worker_config.llm_config.model,

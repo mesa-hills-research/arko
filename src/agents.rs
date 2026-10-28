@@ -242,8 +242,11 @@ pub struct ModelSettings {
     pub effort: Effort,
     /// Anthropic fast mode, or OpenAI's Fast mode over ChatGPT OAuth.
     pub fast: bool,
-    /// Anthropic's 1-hour prompt cache instead of the 5-minute one (Claude
-    /// models only). Off in sessions saved before it existed.
+    /// The long prompt cache, on a model that has one
+    /// ([`providers::takes_long_cache`]). That is an hour instead of 5 minutes
+    /// on Claude models, and 12 hours instead of 30 minutes on OpenAI GPT-5.6
+    /// and later with an API key. Named for Claude's, the first it meant.
+    /// Off in sessions saved before it existed.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub cache_1h: bool,
     /// The input size, in tokens, at which the agent hands over. `None` in
@@ -265,8 +268,10 @@ impl ModelSettings {
         if self.fast {
             details.push("fast".to_string());
         }
-        if self.cache_1h {
-            details.push("1h cache".to_string());
+        if self.cache_1h
+            && let Ok(model) = resolve_model(&self.model)
+        {
+            details.push(format!("{} cache", providers::CacheChoice::of(&model).long));
         }
         if details.is_empty() {
             self.model.clone()
@@ -285,11 +290,11 @@ impl ModelSettings {
             .is_ok_and(|provider| provider == Provider::ClaudeCode)
     }
 
-    /// A model that takes Anthropic's cache lifetimes, so a worker's
-    /// `cache` chooses one: Claude by API key, on OpenRouter or in Claude
-    /// Code.
-    fn takes_cache_ttl(&self) -> bool {
-        resolve_model(&self.model).is_ok_and(|model| providers::takes_cache_ttl(&model))
+    /// A model with a long prompt cache to choose, so a worker's `cache`
+    /// chooses ([`providers::takes_long_cache`]).
+    fn takes_long_cache(&self, openai_auth: Option<OpenAiAuth>) -> bool {
+        resolve_model(&self.model)
+            .is_ok_and(|model| providers::takes_long_cache(&model, openai_auth))
     }
 
     pub(crate) fn llm_config(&self, thinking_text: bool) -> Result<AgentLLMConfig, String> {
@@ -983,11 +988,23 @@ fn profile_names(profiles: &[ProfileName]) -> String {
 fn cache_paragraph(settings: &AgentSettings) -> String {
     let openai = settings.worker.provider() == Ok(Provider::OpenAI);
     if settings.worker.in_claude_code() {
-        "\nA worker runs in Claude Code and keeps a prompt cache of its conversation. Set `start_agent`'s `cache` to `1h` for a worker you expect to send messages or follow-up work after it reports, so continuing it reuses its cache, and to `5m` for a quick one-off such as a research task. Without `cache`, Claude Code uses an hour on a Claude plan. Continuing a worker after its cache has expired rereads its whole conversation uncached, which uses more of the plan's limits. If it finished more than an hour ago, start a fresh worker instead, unless its context is worth that.\n".to_string()
-    } else if settings.worker.takes_cache_ttl() {
+        "\nA worker runs in Claude Code and keeps a prompt cache of its conversation. Set `start_agent`'s `cache` to `long` (an hour) for a worker you expect to send messages or follow-up work after it reports, so continuing it reuses its cache, and to `short` (5 minutes) for a quick one-off such as a research task. Without `cache`, Claude Code uses an hour on a Claude plan. Continuing a worker after its cache has expired rereads its whole conversation uncached, which uses more of the plan's limits. If it finished more than an hour ago, start a fresh worker instead, unless its context is worth that.\n".to_string()
+    } else if let Ok(model) = resolve_model(&settings.worker.model)
+        && settings
+            .worker
+            .takes_long_cache(settings.providers.openai_auth)
+    {
+        let choice = providers::CacheChoice::of(&model);
         format!(
-            "\nA worker keeps a prompt cache of its conversation. Set `start_agent`'s `cache` to `1h` for a worker you expect to send messages or follow-up work after it reports, so continuing it reuses its cache, and to `5m` for a quick one-off such as a research task (a 1h cache costs more to write, twice the input price instead of 1.25 times). The default is `{}`. Continuing a worker after its cache has expired rereads its whole conversation at full price. If it finished more than an hour ago, start a fresh worker instead, unless its context is worth that.\n",
-            if settings.worker.cache_1h { "1h" } else { "5m" }
+            "\nA worker keeps a prompt cache of its conversation for {} after its last step, or {} with a long cache. Set `start_agent`'s `cache` to `long` for a worker you expect to send messages or follow-up work after it reports, so continuing it reuses its cache, and to `short` for a quick one-off such as a research task. A long cache costs more to write, {} the input price instead of 1.25 times, and reads cost the same. The default is `{}`. Continuing a worker after its cache has expired rereads its whole conversation at full price. If it finished longer ago than its cache lasts, start a fresh worker instead, unless its context is worth that.\n",
+            choice.short_words,
+            choice.long_words,
+            choice.long_write,
+            if settings.worker.cache_1h {
+                "long"
+            } else {
+                "short"
+            }
         )
     } else if openai && settings.providers.openai_auth != Some(OpenAiAuth::ApiKey) {
         "\nA worker keeps a prompt cache of its conversation for 30 minutes after its last step (ChatGPT's cache, which no setting changes). Continuing a worker after its cache has expired rereads its whole conversation uncached, which uses more of the ChatGPT plan's limits. If it finished more than 30 minutes ago, start a fresh worker instead, unless its context is worth that.\n".to_string()
@@ -1078,13 +1095,10 @@ mod tests {
     }
 
     #[test]
-    fn the_one_hour_cache_is_asked_for_only_when_enabled() {
+    fn the_long_cache_is_asked_for_only_when_enabled() {
         let opus = model("opus", false);
         let config = main_config(&AgentSettings::for_test(&opus, &opus)).unwrap();
-        assert_eq!(
-            config.llm_config.generation_config.anthropic_cache_ttl,
-            None
-        );
+        assert_eq!(config.llm_config.generation_config.claude_cache_ttl(), None);
         let opus = ModelSettings {
             cache_1h: true,
             handover_at: None,
@@ -1092,15 +1106,68 @@ mod tests {
         };
         let config = main_config(&AgentSettings::for_test(&opus, &opus)).unwrap();
         assert_eq!(
-            config.llm_config.generation_config.anthropic_cache_ttl,
+            config.llm_config.generation_config.claude_cache_ttl(),
             Some(AnthropicCacheTtl::OneHour)
         );
         let config = worker_config(&AgentSettings::for_test(&opus, &opus)).unwrap();
         assert_eq!(
-            config.llm_config.generation_config.anthropic_cache_ttl,
+            config.llm_config.generation_config.claude_cache_ttl(),
             Some(AnthropicCacheTtl::OneHour)
         );
         assert_eq!(opus.describe(), "claude-opus-5-5 (xhigh effort, 1h cache)");
+        // On OpenAI it is the 12-hour cache.
+        let sol = ModelSettings {
+            cache_1h: true,
+            ..model("sol", false)
+        };
+        let config = worker_config(&AgentSettings::for_test(&sol, &sol)).unwrap();
+        assert_eq!(
+            config.llm_config.generation_config.long_prompt_cache,
+            Some(true)
+        );
+        assert_eq!(sol.describe(), "gpt-6.1-sol (xhigh effort, 12h cache)");
+    }
+
+    /// With every worker on the session's model, the main agent learns what
+    /// the long cache is there and what it costs to write, and the ChatGPT
+    /// login's fixed cache.
+    #[test]
+    fn the_worker_cache_paragraph_names_each_routes_caches_and_costs() {
+        let paragraph = |name: &str, long: bool, auth: Option<OpenAiAuth>| {
+            let worker = ModelSettings {
+                cache_1h: long,
+                ..model(name, false)
+            };
+            let mut settings = AgentSettings::for_test(&worker, &worker);
+            settings.providers = Box::leak(Box::new(providers::Setup::new(auth)));
+            cache_paragraph(&settings)
+        };
+        let sol = paragraph("sol", true, Some(OpenAiAuth::ApiKey));
+        assert!(
+            sol.contains("for 30 minutes after its last step, or 12 hours with a long cache"),
+            "{sol}"
+        );
+        assert!(
+            sol.contains("2.5 times the input price instead of 1.25 times"),
+            "{sol}"
+        );
+        assert!(sol.contains("The default is `long`."), "{sol}");
+        let opus = paragraph("opus", false, None);
+        assert!(
+            opus.contains("for 5 minutes after its last step, or an hour with a long cache"),
+            "{opus}"
+        );
+        assert!(opus.contains("twice the input price"), "{opus}");
+        assert!(opus.contains("The default is `short`."), "{opus}");
+        let chatgpt = paragraph("sol", false, Some(OpenAiAuth::ChatGpt));
+        assert!(
+            chatgpt.contains("ChatGPT's cache, which no setting changes"),
+            "{chatgpt}"
+        );
+        assert_eq!(
+            paragraph("gpt-5.5-2026-04-23", false, Some(OpenAiAuth::ApiKey)),
+            ""
+        );
     }
 
     #[test]
@@ -1234,10 +1301,10 @@ mod tests {
     }
 
     /// With every worker on the session's worker model, its provider's cache
-    /// gets a paragraph: the `cache` choice where Anthropic's cache
-    /// lifetimes apply (in Claude Code too, which uses an hour on a plan
-    /// without one), ChatGPT's 30 minutes, and nothing where Arko can't
-    /// tell. Where the main agent chooses the
+    /// gets a paragraph: the `cache` choice where the model has a long cache
+    /// (Claude, in Claude Code too, which uses an hour on a plan without one,
+    /// and OpenAI on an API key), ChatGPT's 30 minutes, and nothing where
+    /// Arko can't tell. Where the main agent chooses the
     /// models, `worker_options` tells it each model's cache instead.
     #[test]
     fn the_lead_hears_about_its_workers_caches_by_provider() {
@@ -1254,12 +1321,13 @@ mod tests {
         let openrouter_claude = model("openrouter:anthropic/claude-opus-5.5", false);
         assert!(instructions(&openrouter_claude, None).contains("`cache`"));
         let claude_code = instructions(&model("cc:opus", false), None);
-        assert!(claude_code.contains("`cache` to `1h`") && claude_code.contains("`5m`"));
+        assert!(claude_code.contains("`cache` to `long`") && claude_code.contains("`short`"));
         assert!(claude_code.contains("Without `cache`, Claude Code uses an hour"));
         let sol = model("sol", false);
-        assert!(instructions(&sol, None).contains("for 30 minutes after its last step"));
+        assert!(instructions(&sol, None).contains("ChatGPT's cache, which no setting changes"));
+        let on_key = instructions(&sol, Some(OpenAiAuth::ApiKey));
         assert!(
-            !instructions(&sol, Some(OpenAiAuth::ApiKey)).contains("30 minutes"),
+            !on_key.contains("ChatGPT's cache") && on_key.contains("or 12 hours with a long cache"),
             "an API key's cache isn't ChatGPT's"
         );
         let gemini = model("gemini", false);

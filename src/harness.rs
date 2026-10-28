@@ -5903,6 +5903,7 @@ pub(crate) mod tests {
             output: output.clone(),
             max_running: NO_LIMIT,
             cache_1h: false,
+            openai_auth: None,
             cache_lifetime: arko_ai::prompt_cache::PromptCacheLifetime::Known(Duration::from_secs(
                 300,
             )),

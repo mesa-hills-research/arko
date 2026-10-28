@@ -192,12 +192,18 @@ fn a_claude_model_by_key_shows_its_prices_and_cache_and_a_plan_model_its_usage()
     assert_eq!(
         line,
         format!(
-            "- opus · efforts low to max · {prices} · hands over at 950k · cache 5m or 1h (1h costs twice the input price to write)"
+            "- opus · efforts low to max · {prices} · hands over at 950k · cache short (5m) or long (1h, twice the input price to write)"
         )
     );
     assert!(text.contains(
-        "\n- cc:opus · efforts low to max · Claude plan 5 h 62%, 7 d 31%, shared with the user's own use · hands over at 950k, Claude Code compacts · cache 5m or 1h (1h when you choose none, on a Claude plan)"
+        "\n- cc:opus · efforts low to max · Claude plan 5 h 62%, 7 d 31%, shared with the user's own use · hands over at 950k, Claude Code compacts · cache short (5m) or long (1h, when you choose none on a Claude plan)"
     ), "{text}");
+    // Without an API key, OpenAI models keep the ChatGPT login's cache.
+    let sol = text
+        .lines()
+        .find(|line| line.starts_with("- sol ·"))
+        .unwrap();
+    assert!(sol.ends_with(" · cache 30m, fixed"), "{sol}");
     assert!(text.contains("\n- gemini · efforts low to high · $"));
     assert!(
         text.contains("\n- openrouter:<slug> · any model OpenRouter serves · billed per token")
@@ -206,7 +212,21 @@ fn a_claude_model_by_key_shows_its_prices_and_cache_and_a_plan_model_its_usage()
     // A session that hands over in Claude Code says so.
     basis.cc_compact = false;
     let text = options_text(&basis, Show::Models, &everything, &plans);
-    assert!(text.contains("hands over at 950k · cache 5m or 1h (1h when you choose none"));
+    assert!(
+        text.contains("hands over at 950k · cache short (5m) or long (1h, when you choose none")
+    );
+    // On an API key, OpenAI's long cache is 12 hours, at 2.5 times the input
+    // price to write.
+    basis.providers = providers::Setup::new(Some(providers::OpenAiAuth::ApiKey));
+    let text = options_text(&basis, Show::Models, &everything, &plans);
+    let sol = text
+        .lines()
+        .find(|line| line.starts_with("- sol ·"))
+        .unwrap();
+    assert!(
+        sol.ends_with(" · cache short (30m) or long (12h, 2.5 times the input price to write)"),
+        "{sol}"
+    );
 }
 
 #[test]
@@ -267,6 +287,7 @@ fn fixture(choice: ModelChoice, can_ask: bool) -> Fixture {
         output: Arc::new(Output::new(None, true)),
         max_running: 4,
         cache_1h: false,
+        openai_auth: None,
         cache_lifetime: arko_ai::prompt_cache::PromptCacheLifetime::Known(Duration::from_secs(300)),
         feed: Some(feed.clone()),
         refuse: None,
