@@ -74,8 +74,6 @@ struct DockPress {
 pub struct Info {
     /// The working directory's name.
     pub workspace: String,
-    /// The working directory, where the project's `.arko` folder is.
-    pub workspace_dir: Option<PathBuf>,
     /// The handover size the session started with, until the status says.
     pub handover_at: usize,
     /// The session's folder: the web page's key is there.
@@ -2057,27 +2055,31 @@ impl App {
                 SettingsRow::MessageCopies => {
                     self.send(&crate::workers::copies_command(!self.message_copies()));
                 }
-                SettingsRow::KeepProfilesOutOfGit | SettingsRow::RepoRootProfiles => {
-                    let mut now = self.profile_prefs;
-                    if rows[row] == SettingsRow::KeepProfilesOutOfGit {
-                        now.keep_out_of_git = !now.keep_out_of_git;
+                SettingsRow::KeepProfilesOutOfGit => {
+                    // The session saves it and follows it in the project's
+                    // `.arko/.gitignore`, and tells the web page.
+                    self.send(if self.reading.settings.keep_agents_files_out_of_git {
+                        "/extensions keep-out-of-git off"
                     } else {
-                        now.repo_root = !now.repo_root;
-                    }
-                    if let Some(root) = self.info.root.as_deref() {
-                        // The keep-out-of-git choice also reaches the project's
-                        // `.arko/.gitignore`.
-                        let saved = match self.info.workspace_dir.as_deref() {
-                            Some(workspace) => now.save_in(root, workspace),
-                            None => now.save(root),
-                        };
-                        // (A `.gitignore` that couldn't change still saved the choice.)
-                        self.profile_prefs = crate::profiles::Preferences::load(root);
-                        if let Err(error) = saved {
-                            self.say(error);
-                        }
-                    } else {
-                        self.profile_prefs = now;
+                        "/extensions keep-out-of-git on"
+                    });
+                }
+                SettingsRow::RepoRootProfiles => {
+                    // (Read again, as the git switch is the session's to save.)
+                    let mut now = self
+                        .info
+                        .root
+                        .as_deref()
+                        .map_or(self.profile_prefs, crate::profiles::Preferences::load);
+                    now.repo_root = !now.repo_root;
+                    match self
+                        .info
+                        .root
+                        .as_deref()
+                        .map_or(Ok(()), |root| now.save(root))
+                    {
+                        Ok(()) => self.profile_prefs = now,
+                        Err(error) => self.say(error),
                     }
                 }
                 SettingsRow::AskBeforeMcp => {
@@ -3961,10 +3963,11 @@ pub(super) mod tests {
         );
     }
 
-    /// The two profile rows are the user's for every project, so they are
-    /// saved in Arko's folder and not sent to the session.
+    /// The repo root row is the user's for every project, so it is saved in
+    /// Arko's folder and not sent to the session, and it leaves the git switch
+    /// as the session last saved it.
     #[test]
-    fn the_profile_rows_are_saved_in_arkos_folder() {
+    fn the_repo_root_row_is_saved_in_arkos_folder() {
         use crate::profiles::Preferences;
         let temp = tempfile::tempdir().unwrap();
         let mut app = App::new(
@@ -3978,69 +3981,57 @@ pub(super) mod tests {
             Depth::Rgb,
         );
         app.reading.models.has_workers = true;
-        let rows = app.settings_rows();
-        let at = |wanted| rows.iter().position(|row| *row == wanted).unwrap();
-        for (row, read) in [
-            (
-                at(SettingsRow::KeepProfilesOutOfGit),
-                (|prefs: Preferences| prefs.keep_out_of_git) as fn(Preferences) -> bool,
-            ),
-            (at(SettingsRow::RepoRootProfiles), |prefs| prefs.repo_root),
-        ] {
-            app.overlay = Some(Overlay::Settings { row, picker: None });
-            assert!(read(app.profile_prefs), "on at first");
-            press(&mut app, KeyCode::Right, KeyModifiers::NONE);
-            assert!(!read(Preferences::load(temp.path())), "off in the file");
-            assert!(!read(app.profile_prefs));
-            press(&mut app, KeyCode::Left, KeyModifiers::NONE);
-            assert!(read(Preferences::load(temp.path())), "on again");
-            press(&mut app, KeyCode::Right, KeyModifiers::NONE);
+        let row = app
+            .settings_rows()
+            .iter()
+            .position(|row| *row == SettingsRow::RepoRootProfiles)
+            .unwrap();
+        app.overlay = Some(Overlay::Settings { row, picker: None });
+        assert!(app.profile_prefs.repo_root, "on at first");
+        // (The session turned the git switch off meanwhile.)
+        Preferences {
+            keep_out_of_git: false,
+            ..Preferences::default()
         }
-        assert_eq!(
-            Preferences::load(temp.path()),
-            Preferences {
-                keep_out_of_git: false,
-                repo_root: false
-            }
+        .save(temp.path())
+        .unwrap();
+        press(&mut app, KeyCode::Right, KeyModifiers::NONE);
+        assert!(!Preferences::load(temp.path()).repo_root, "off in the file");
+        assert!(!app.profile_prefs.repo_root);
+        press(&mut app, KeyCode::Left, KeyModifiers::NONE);
+        assert!(Preferences::load(temp.path()).repo_root, "on again");
+        assert!(
+            !Preferences::load(temp.path()).keep_out_of_git,
+            "the git switch stays as it was saved"
         );
         assert!(sent(&mut app).is_empty(), "nothing goes to the session");
     }
 
-    /// The git row also takes Arko's `.gitignore` out of the project's `.arko`
-    /// folder when it goes off, and writes it back when it goes on.
+    /// The git row is the session's to save, so it sends `/extensions` and
+    /// shows what the session reports.
     #[test]
-    fn the_git_row_changes_the_projects_gitignore() {
-        let temp = tempfile::tempdir().unwrap();
-        let root = temp.path().join("arko");
-        let workspace = temp.path().join("work");
-        std::fs::create_dir_all(&workspace).unwrap();
-        let ignore = crate::arko_dir::ensure(&workspace, &root)
-            .unwrap()
-            .join(".gitignore");
-        assert!(ignore.is_file(), "made with the folder");
-        let mut app = App::new(
-            Snapshot::default(),
-            Editor::new(History::load(None)),
-            Info {
-                root: Some(root),
-                workspace_dir: Some(workspace),
-                ..Info::default()
-            },
-            Catalog::load(None),
-            Depth::Rgb,
-        );
+    fn the_git_row_sends_the_command() {
+        let mut app = app();
         let row = app
             .settings_rows()
             .iter()
             .position(|row| *row == SettingsRow::KeepProfilesOutOfGit)
             .unwrap();
         app.overlay = Some(Overlay::Settings { row, picker: None });
+        assert!(
+            app.reading.settings.keep_agents_files_out_of_git,
+            "on at first"
+        );
         press(&mut app, KeyCode::Right, KeyModifiers::NONE);
-        assert!(!app.profile_prefs.keep_out_of_git);
-        assert!(!ignore.exists(), "off removes it");
+        app.reading.settings.keep_agents_files_out_of_git = false;
         press(&mut app, KeyCode::Left, KeyModifiers::NONE);
-        assert!(app.profile_prefs.keep_out_of_git);
-        assert!(ignore.is_file(), "on writes it again");
+        assert_eq!(
+            sent(&mut app),
+            [
+                "/extensions keep-out-of-git off",
+                "/extensions keep-out-of-git on"
+            ]
+        );
     }
 
     /// The approval rows send `/extensions`. Turning asking about MCP servers
@@ -4124,10 +4115,10 @@ pub(super) mod tests {
         );
     }
 
-    /// Opening the settings reads the git row again, as the web page may
-    /// have changed it.
+    /// Opening the settings reads the repo root row again, as another
+    /// program may have changed it.
     #[test]
-    fn the_settings_read_the_git_row_when_they_open() {
+    fn the_settings_read_the_repo_root_row_when_they_open() {
         use crate::profiles::Preferences;
         let temp = tempfile::tempdir().unwrap();
         let mut app = App::new(
@@ -4140,16 +4131,16 @@ pub(super) mod tests {
             Catalog::load(None),
             Depth::Rgb,
         );
-        assert!(app.profile_prefs.keep_out_of_git);
+        assert!(app.profile_prefs.repo_root);
         Preferences {
-            keep_out_of_git: false,
+            repo_root: false,
             ..Preferences::default()
         }
         .save(temp.path())
         .unwrap();
         app.editor.set("/settings");
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
-        assert!(!app.profile_prefs.keep_out_of_git);
+        assert!(!app.profile_prefs.repo_root);
     }
 
     /// Text replies are a session setting: the row turns them on or off with

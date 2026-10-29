@@ -623,11 +623,11 @@ fn SettingsBody() -> impl IntoView {
             <h3>"Approvals"</h3>
             <Switch name=words::ASK_MCP_NAME key="ask-mcp"
                 about=words::ASK_MCP_ABOUT
-                on=Signal::derive(move || s().ask_before_adding_mcp)
+                on=Signal::derive(move || s().ask_before_adding_mcp != Some(false))
                 toggle=move |on| {
                     if on {
                         settings.command("/extensions ask-mcp on".into(), "approvals",
-                            Some(Box::new(|s| s.ask_before_adding_mcp)), Some(("ask-mcp", "true".into())));
+                            Some(Box::new(|s| s.ask_before_adding_mcp != Some(false))), Some(("ask-mcp", "true".into())));
                     } else {
                         // Turning it off lets agents run programs unasked, so it asks first.
                         ask_mcp_confirm.set(true);
@@ -641,7 +641,7 @@ fn SettingsBody() -> impl IntoView {
                         <button type="button" class="btn primary" on:click=move |_| {
                             ask_mcp_confirm.set(false);
                             settings.command("/extensions ask-mcp off".into(), "approvals",
-                                Some(Box::new(|s| !s.ask_before_adding_mcp)), Some(("ask-mcp", "false".into())));
+                                Some(Box::new(|s| s.ask_before_adding_mcp == Some(false))), Some(("ask-mcp", "false".into())));
                         }>"Turn off"</button>
                     </div>
                 </div>
@@ -658,9 +658,9 @@ fn SettingsBody() -> impl IntoView {
             <h3>"Project files"</h3>
             <Switch name=words::KEEP_OUT_OF_GIT_NAME key="keep-out-of-git"
                 about=words::KEEP_OUT_OF_GIT_ABOUT
-                on=Signal::derive(move || s().keep_agents_files_out_of_git)
+                on=Signal::derive(move || s().keep_agents_files_out_of_git != Some(false))
                 toggle=move |on| settings.command(format!("/extensions keep-out-of-git {}", if on { "on" } else { "off" }), "project-files",
-                    Some(Box::new(move |s| s.keep_agents_files_out_of_git == on)), Some(("keep-out-of-git", on.to_string()))) />
+                    Some(Box::new(move |s| (s.keep_agents_files_out_of_git != Some(false)) == on)), Some(("keep-out-of-git", on.to_string()))) />
             <Note key="project-files" />
         </section>
 

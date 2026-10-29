@@ -862,7 +862,7 @@ fn settings(frame: &mut Frame, app: &App, area: Rect, selected: usize) {
                 choices(
                     theme,
                     &["on", "off"],
-                    usize::from(!app.profile_prefs.keep_out_of_git),
+                    usize::from(!app.reading.settings.keep_agents_files_out_of_git),
                 ),
                 extension_prefs::KEEP_OUT_OF_GIT_ABOUT.to_string(),
             ),

@@ -139,7 +139,6 @@ pub fn start(setup: Setup, output: &Arc<Output>) -> Option<Screen> {
         .unwrap_or_else(|| setup.workspace.display().to_string());
     let info = Info {
         workspace,
-        workspace_dir: Some(setup.workspace.clone()),
         handover_at: setup.handover_at,
         session_dir: setup.session_dir.clone(),
         prefs: Some(setup.root.join("tui.json")),

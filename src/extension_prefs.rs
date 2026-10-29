@@ -285,6 +285,34 @@ mod tests {
         assert_eq!(Switches::default(), Switches::load(temp.path()));
     }
 
+    /// A client that hasn't got a status yet never shows the two switches
+    /// that guard what agents add as off.
+    #[test]
+    fn before_a_status_the_clients_show_the_defaults() {
+        let live = crate::remote::LiveSettings::default();
+        assert!(live.ask_before_adding_mcp);
+        assert!(!live.review_project_skills);
+        assert!(live.keep_agents_files_out_of_git);
+        // The page's copy of the settings, from a status with none of them
+        // and from one that has them.
+        let page = |json: serde_json::Value| -> crate::remote::protocol::SettingsData {
+            serde_json::from_value(json).unwrap()
+        };
+        let none = page(serde_json::json!({}));
+        assert_ne!(none.ask_before_adding_mcp, Some(false));
+        assert_ne!(none.keep_agents_files_out_of_git, Some(false));
+        assert!(!none.review_project_skills);
+        let sent = page(serde_json::to_value(&live).unwrap());
+        assert_eq!(sent.ask_before_adding_mcp, Some(true));
+        assert_eq!(sent.keep_agents_files_out_of_git, Some(true));
+        let off = page(serde_json::json!({
+            "ask_before_adding_mcp": false,
+            "keep_agents_files_out_of_git": false,
+        }));
+        assert_eq!(off.ask_before_adding_mcp, Some(false));
+        assert_eq!(off.keep_agents_files_out_of_git, Some(false));
+    }
+
     #[test]
     fn a_new_session_reads_what_was_saved() {
         let temp = tempfile::tempdir().unwrap();
