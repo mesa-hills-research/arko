@@ -637,8 +637,7 @@ impl Harness {
         settings: &Settings,
         setup: &providers::Setup,
     ) -> Result<(arko_agents::AgentConfig, arko_agents::AgentConfig), String> {
-        let mcp_tools = self.mcp.tool_names();
-        let mcp_servers = self.mcp.started();
+        let mcp_servers = self.mcp.servers.running();
         let known = self
             .indexes
             .as_ref()
@@ -651,8 +650,8 @@ impl Harness {
         );
         let agent_settings = AgentSettings {
             profiles: &profile_names,
-            mcp_tools: &mcp_tools,
             mcp_servers: &mcp_servers,
+            mcp_for_workers: self.mcp.servers.any_for_workers(),
             skill_folders: &self.skill_folders,
             index_tools: if self.indexes.is_some() {
                 index::TOOL_NAMES

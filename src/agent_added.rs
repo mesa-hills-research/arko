@@ -1,0 +1,230 @@
+//! The record of what agents added: the skills an agent saved and the MCP
+//! servers it added, in `agent-added.json` in Arko's folder.
+//!
+//! The record lives in Arko's folder rather than in the skill or the
+//! server's entry, so a file committed to a cloned repository can't claim an
+//! agent added it, and an agent can't remove a user's skill or server by
+//! marking it. Only what the record names can be removed by an agent, or by
+//! the user's remove command for what agents added.
+//!
+//! Each write takes a lock beside the record, as `mcp-approvals.json` does,
+//! so sessions open at the same time keep each other's entries. An entry
+//! whose skill folder is gone, or whose server's file no longer sets the
+//! server up, is left out when the record is read, and dropped from the file
+//! at its next write.
+
+use std::path::{Path, PathBuf};
+
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+
+/// The record's file, in Arko's folder.
+pub const FILE: &str = "agent-added.json";
+
+/// Where an agent added something: this project, or every project.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Scope {
+    #[default]
+    Project,
+    User,
+}
+
+/// A skill an agent saved.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SkillRecord {
+    /// The skill's folder.
+    pub path: PathBuf,
+    pub scope: Scope,
+    /// The session it was saved in, by ID.
+    pub session: String,
+    /// That session's name when the skill was saved.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_title: Option<String>,
+    pub added: DateTime<Utc>,
+    /// Why, in the agent's words.
+    pub why: String,
+    /// Where the agent took it from (a URL, a folder or a file), if not its
+    /// own writing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+}
+
+/// An MCP server an agent added.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ServerRecord {
+    /// The file its entry is in (a project's `.arko/mcp.json`, or Arko's
+    /// `mcp.json`).
+    pub file: PathBuf,
+    pub name: String,
+    /// The session it was added in, by ID.
+    pub session: String,
+    /// That session's name when the server was added.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_title: Option<String>,
+    pub added: DateTime<Utc>,
+    /// Why, in the agent's words.
+    pub why: String,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct Record {
+    #[serde(default)]
+    skills: Vec<SkillRecord>,
+    #[serde(default)]
+    servers: Vec<ServerRecord>,
+}
+
+impl Record {
+    /// The record without the entries whose skill or server is gone.
+    fn present(mut self) -> Self {
+        self.skills.retain(|skill| skill.path.is_dir());
+        self.servers
+            .retain(|server| crate::mcp::sets_up(&server.file, &server.name));
+        self
+    }
+}
+
+fn path(root: &Path) -> PathBuf {
+    root.join(FILE)
+}
+
+/// The record as the file holds it, or an empty one when there is none.
+fn read(root: &Path) -> Result<Record, String> {
+    let path = path(root);
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(Record::default());
+        }
+        Err(error) => {
+            return Err(format!(
+                "Couldn't read {} ({}).",
+                path.display(),
+                crate::profiles::reason_of(&error)
+            ));
+        }
+    };
+    serde_json::from_str(&text)
+        .map_err(|error| format!("Couldn't read {} ({error}).", path.display()))
+}
+
+/// The record as it is now. One that can't be read counts as empty, and
+/// says so in the log.
+fn current(root: &Path) -> Record {
+    match read(root) {
+        Ok(record) => record.present(),
+        Err(error) => {
+            log::warn!("{error}");
+            Record::default()
+        }
+    }
+}
+
+/// Changes the record with `change` under the lock, writing it back only
+/// when `change` says it changed something, without the entries that are
+/// gone.
+fn update<T>(root: &Path, change: impl FnOnce(&mut Record) -> (T, bool)) -> Result<T, String> {
+    let _lock = lock_record(root)?;
+    let read = read(root)?;
+    let before = (read.skills.len(), read.servers.len());
+    let mut record = read.present();
+    let pruned = before != (record.skills.len(), record.servers.len());
+    let (result, changed) = change(&mut record);
+    if changed || pruned {
+        let text = serde_json::to_string_pretty(&record).map_err(|error| error.to_string())?;
+        let path = path(root);
+        crate::session::write_whole(&path, text.as_bytes()).map_err(|error| {
+            format!(
+                "Couldn't save {} ({}).",
+                path.display(),
+                crate::profiles::reason_of(&error)
+            )
+        })?;
+    }
+    Ok(result)
+}
+
+fn lock_record(root: &Path) -> Result<std::fs::File, String> {
+    let path = root.join(format!("{FILE}.lock"));
+    let file = std::fs::create_dir_all(root)
+        .and_then(|()| {
+            std::fs::OpenOptions::new()
+                .create(true)
+                .truncate(false)
+                .read(true)
+                .write(true)
+                .open(&path)
+        })
+        .map_err(|error| format!("Couldn't open {} ({error}).", path.display()))?;
+    file.lock()
+        .map_err(|error| format!("Couldn't lock {} ({error}).", path.display()))?;
+    Ok(file)
+}
+
+/// The skills agents saved whose folders are still there.
+pub fn skills(root: &Path) -> Vec<SkillRecord> {
+    current(root).skills
+}
+
+/// The record of the skill in the folder `path`, if an agent saved it.
+pub fn skill_at(root: &Path, path: &Path) -> Option<SkillRecord> {
+    skills(root).into_iter().find(|skill| skill.path == path)
+}
+
+/// Records a skill an agent saved, in place of an entry for the same folder.
+pub fn record_skill(root: &Path, record: SkillRecord) -> Result<(), String> {
+    update(root, |kept| {
+        kept.skills.retain(|skill| skill.path != record.path);
+        kept.skills.push(record);
+        ((), true)
+    })
+}
+
+/// Drops the record of the skill in the folder `path`. Says whether it had
+/// one.
+pub fn forget_skill(root: &Path, path: &Path) -> Result<bool, String> {
+    update(root, |kept| {
+        let before = kept.skills.len();
+        kept.skills.retain(|skill| skill.path != path);
+        let removed = kept.skills.len() != before;
+        (removed, removed)
+    })
+}
+
+/// The MCP servers agents added that their files still set up.
+pub fn servers(root: &Path) -> Vec<ServerRecord> {
+    current(root).servers
+}
+
+/// The record of the server `name` in `file`, if an agent added it there.
+pub fn server_in(root: &Path, file: &Path, name: &str) -> Option<ServerRecord> {
+    servers(root)
+        .into_iter()
+        .find(|server| server.file == file && server.name == name)
+}
+
+/// Records a server an agent added, in place of an entry for the same name
+/// in the same file.
+pub fn record_server(root: &Path, record: ServerRecord) -> Result<(), String> {
+    update(root, |kept| {
+        kept.servers
+            .retain(|server| !(server.file == record.file && server.name == record.name));
+        kept.servers.push(record);
+        ((), true)
+    })
+}
+
+/// Drops the record of the server `name` in `file`. Says whether it had one.
+pub fn forget_server(root: &Path, file: &Path, name: &str) -> Result<bool, String> {
+    update(root, |kept| {
+        let before = kept.servers.len();
+        kept.servers
+            .retain(|server| !(server.file == file && server.name == name));
+        let removed = kept.servers.len() != before;
+        (removed, removed)
+    })
+}
+
+#[cfg(test)]
+mod tests;

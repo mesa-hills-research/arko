@@ -323,10 +323,12 @@ pub struct AgentSettings<'a> {
     /// The models are asked for the text of their thinking, which the
     /// views show (not with `--hide-thinking`).
     pub thinking_text: bool,
-    /// The tools of the MCP servers running, offered to both agents.
-    pub mcp_tools: &'a [String],
-    /// The MCP servers running, by name.
+    /// The MCP servers running, by name, which the main agent's
+    /// instructions name. The main agent reaches them, and any added later,
+    /// through `mcp`, which it has in every session.
     pub mcp_servers: &'a [String],
+    /// Workers may reach a server, so the registered worker has `mcp`.
+    pub mcp_for_workers: bool,
     /// The skill folders, read at the start of each run.
     pub skill_folders: &'a [std::path::PathBuf],
     /// Which of Arko's built-in skills the agents get, beside those in the
@@ -391,8 +393,8 @@ impl<'a> AgentSettings<'a> {
             max_workers: settings.max_workers,
             handover_at: settings.handover_at,
             thinking_text: !settings.hide_thinking,
-            mcp_tools: &[],
             mcp_servers: &[],
+            mcp_for_workers: false,
             skill_folders: &[],
             builtin_skills: &settings.builtin_skills,
             index_tools: &[],
@@ -421,8 +423,8 @@ impl<'a> AgentSettings<'a> {
             max_workers: 4,
             handover_at: 200_000,
             thinking_text: true,
-            mcp_tools: &[],
             mcp_servers: &[],
+            mcp_for_workers: false,
             skill_folders: &[],
             builtin_skills: &NO_BUILTIN_SKILLS,
             index_tools: &[],
@@ -559,13 +561,12 @@ pub fn terminal_tool_names(monitors: bool) -> Vec<String> {
 }
 
 /// The tools both agents have: the shell, the terminal and monitor tools,
-/// the file tools, the search index tools and the MCP servers' tools.
-/// (`load_skill` is added for each run when there are skills to load.)
+/// the file tools and the search index tools. (`load_skill` is added for
+/// each run when there are skills to load, and the main agent has `mcp`.)
 fn shared_tool_names(settings: &AgentSettings) -> Vec<String> {
     let mut tools = terminal_tool_names(settings.monitors);
     tools.extend(FILE_TOOL_NAMES.iter().map(|name| name.to_string()));
     tools.extend(settings.index_tools.iter().map(|name| name.to_string()));
-    tools.extend(settings.mcp_tools.iter().cloned());
     tools
 }
 
@@ -664,6 +665,8 @@ pub fn main_config(settings: &AgentSettings) -> Result<AgentConfig, String> {
         return crate::chat::config(settings);
     }
     let mut tools = shared_tool_names(settings);
+    // The MCP servers, also in a session with none, so the agent can add one.
+    tools.push(crate::mcp::MCP_TOOL_NAME.into());
     tools.push(ASK_USER_TOOL_NAME.into());
     tools.push(CLOSE_QUESTIONS_TOOL_NAME.into());
     tools.push(crate::message::MESSAGE_USER.into());
@@ -768,6 +771,9 @@ pub fn worker_config(settings: &AgentSettings) -> Result<AgentConfig, String> {
     .instructions(instructions)
     .tool_config(tool_config({
         let mut tools = shared_tool_names(settings);
+        if settings.mcp_for_workers {
+            tools.push(crate::mcp::MCP_TOOL_NAME.into());
+        }
         tools.extend(crew::WORKER_TOOL_NAMES.iter().map(|name| name.to_string()));
         tools
     }))
@@ -870,16 +876,16 @@ fn tool_instructions(settings: &AgentSettings, worker: bool) -> String {
             "\n\nTo search another project, use its index instead of running `rg` there. When a non-trivial project you work in has no index, create one with `index_create`.\n",
         );
     }
-    if !settings.mcp_servers.is_empty() {
+    if worker && settings.mcp_for_workers {
+        text.push_str(
+            "\n# MCP servers\n\
+             The `mcp` tool reaches the MCP servers you may use, programs that give you more tools. List them with action servers and a server's tools with action tools, then call the one you need. They act outside the command guard, so take the same care with what they change.\n",
+        );
+    } else if !worker && !settings.mcp_servers.is_empty() {
         text.push_str(&format!(
             "\n# MCP servers\n\
-             Tools named `mcp__<server>__<tool>` come from MCP servers the user set up ({}). Use them where they fit the task better than the shell. They act outside the command guard, so take the same care with what they change.\n",
-            settings
-                .mcp_servers
-                .iter()
-                .map(|name| format!("`{name}`"))
-                .collect::<Vec<_>>()
-                .join(", ")
+             The `mcp` tool reaches MCP servers, programs that give you more tools ({} when the session started). List a server's tools with action tools, then call the one you need. They act outside the command guard, so take the same care with what they change. To add a server, use action add, which the user approves.\n",
+            crate::and_list(settings.mcp_servers)
         ));
     }
     let builtin = settings.builtin_skills.given().next().is_some();
@@ -1626,43 +1632,61 @@ mod tests {
         }
     }
 
+    /// The main agent reaches MCP servers through `mcp` in every session,
+    /// and its instructions name the servers when there are any. A worker
+    /// has `mcp` only when workers may reach a server. No conversation is
+    /// offered a tool per MCP tool.
     #[test]
     fn mcp_index_and_skill_tools_reach_both_agents_with_their_instructions() {
         let opus = model("opus", false);
         let plain = AgentSettings::for_test(&opus, &opus);
-        for config in [main_config(&plain).unwrap(), worker_config(&plain).unwrap()] {
+        let has = |config: &AgentConfig, tool: &str| {
+            config
+                .tool_config
+                .available_tool_names
+                .iter()
+                .any(|name| name == tool)
+        };
+        let main = main_config(&plain).unwrap();
+        let worker = worker_config(&plain).unwrap();
+        assert!(has(&main, "mcp") && !has(&worker, "mcp"));
+        for config in [main, worker] {
             assert!(config.skills_config.is_none());
             for section in ["# MCP servers", "# Skills", "# Search indexes"] {
                 assert!(!config.instructions.contains(section), "{section}");
             }
         }
-        let tools = ["mcp__github__create_issue".to_string()];
-        let servers = ["github".to_string()];
+        let servers = ["github".to_string(), "sentry".to_string()];
         let folders = [std::path::PathBuf::from("/work/.claude/skills")];
         let with = AgentSettings {
-            mcp_tools: &tools,
             mcp_servers: &servers,
+            mcp_for_workers: true,
             skill_folders: &folders,
             index_tools: &["index_search", "index_create"],
             ..AgentSettings::for_test(&opus, &opus)
         };
-        for config in [main_config(&with).unwrap(), worker_config(&with).unwrap()] {
-            let names = &config.tool_config.available_tool_names;
-            for tool in [
-                "shell",
-                "mcp__github__create_issue",
-                "index_search",
-                "index_create",
-            ] {
-                assert!(names.iter().any(|name| name == tool), "{tool}");
+        let main = main_config(&with).unwrap();
+        assert!(main.instructions.contains(
+            "The `mcp` tool reaches MCP servers, programs that give you more tools (github and sentry when the session started). List a server's tools with action tools, then call the one you need. They act outside the command guard, so take the same care with what they change. To add a server, use action add, which the user approves."
+        ));
+        let worker = worker_config(&with).unwrap();
+        assert!(worker.instructions.contains(
+            "The `mcp` tool reaches the MCP servers you may use, programs that give you more tools. List them with action servers"
+        ));
+        assert!(!worker.instructions.contains("action add"));
+        for config in [main, worker] {
+            assert!(
+                !config
+                    .tool_config
+                    .available_tool_names
+                    .iter()
+                    .any(|name| name.starts_with("mcp__"))
+            );
+            for tool in ["shell", "mcp", "index_search", "index_create"] {
+                assert!(has(&config, tool), "{tool}");
             }
             let skills = config.skills_config.as_ref().unwrap();
             assert_eq!(skills.global_sources[0].path, "/work/.claude/skills");
-            assert!(
-                config
-                    .instructions
-                    .contains("from MCP servers the user set up (`github`)")
-            );
             assert!(
                 config
                     .instructions

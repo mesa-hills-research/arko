@@ -254,7 +254,10 @@ pub struct Details {
     gauges: Arc<Gauges>,
     indexes: Option<Arc<index::Indexes>>,
     skill_folders: Vec<PathBuf>,
-    mcp: Mutex<McpFacts>,
+    /// The session's MCP servers, and what was left out of them.
+    mcp: (mcp::Servers, Vec<String>),
+    /// What a resumed session's agents weren't offered.
+    unoffered: Mutex<Option<String>>,
     /// The session's facts and settings, as the session last published
     /// them.
     session: Mutex<Option<(SessionFacts, Settings)>>,
@@ -346,8 +349,48 @@ pub struct McpServerFacts {
     pub shown: String,
     /// The file that sets it up.
     pub file: PathBuf,
-    /// Its tools, as the server names them, or why it didn't start.
+    /// Its tools, as the server names them when they were last listed, or
+    /// why it didn't start.
     pub tools: Result<Vec<String>, String>,
+    pub state: McpState,
+    /// The environment variables it gets, by name, and whether each has a
+    /// value. The values are never shown.
+    pub env: Vec<(String, bool)>,
+    /// Workers may use it.
+    pub workers: bool,
+    /// Sessions open at the same time share one copy of it.
+    pub shared: bool,
+    /// When, in which session and why an agent added it, if one did.
+    pub added: Option<crate::agent_added::ServerRecord>,
+}
+
+impl Default for McpServerFacts {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            shown: String::new(),
+            file: PathBuf::new(),
+            tools: Ok(Vec::new()),
+            state: McpState::Stopped,
+            env: Vec::new(),
+            workers: true,
+            shared: false,
+            added: None,
+        }
+    }
+}
+
+/// A server's state, as `/mcp` and an app show it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum McpState {
+    Starting,
+    Running,
+    /// It was stopped, and not by an agent (a start that was dropped).
+    Stopped,
+    /// An agent stopped it with the action `stop`.
+    StoppedByAgent,
+    /// It didn't start, or it ended on its own, for this reason.
+    Failed(String),
 }
 
 /// What a chat's [`McpFacts::notes`] say in place of servers, which a chat
@@ -365,37 +408,46 @@ pub struct McpFacts {
     /// The tools a resumed session's agents weren't offered, as they started
     /// without them.
     pub unoffered: Option<String>,
+    /// Agents add servers without asking, as the user chose ("Ask before
+    /// adding MCP servers" is off).
+    pub adds_without_asking: bool,
 }
 
 impl McpFacts {
-    /// The servers in `running`, and `notes`.
-    pub(crate) fn of(running: &mcp::Running, notes: &[String], root: &std::path::Path) -> Self {
+    /// The servers of `servers` as they are now, and `notes`.
+    pub(crate) fn of(servers: &mcp::Servers, notes: &[String], root: &std::path::Path) -> Self {
+        let added = crate::agent_added::servers(root);
         McpFacts {
-            servers: running
-                .servers
-                .iter()
-                .map(|started| McpServerFacts {
-                    name: started.server.name.clone(),
-                    shown: started.server.shown.clone(),
-                    file: started.server.file.clone(),
-                    tools: started
-                        .result
-                        .as_ref()
-                        .map(|tools| {
-                            tools
-                                .iter()
-                                .map(|name| {
-                                    mcp::split_tool_name(name)
-                                        .map_or(name.clone(), |(_, tool)| tool.to_string())
-                                })
-                                .collect()
-                        })
-                        .map_err(Clone::clone),
+            servers: servers
+                .known()
+                .into_iter()
+                .map(|server| {
+                    let state = servers.state(&server.name).unwrap_or(McpState::Stopped);
+                    let tools = match &state {
+                        McpState::Failed(reason) => Err(reason.clone()),
+                        _ => Ok(servers.tool_names(&server.name).unwrap_or_default()),
+                    };
+                    let file = mcp::normal(&server.file);
+                    McpServerFacts {
+                        added: added
+                            .iter()
+                            .find(|record| record.name == server.name && record.file == file)
+                            .cloned(),
+                        env: server.env_names(),
+                        name: server.name,
+                        shown: server.shown,
+                        file: server.file,
+                        tools,
+                        state,
+                        workers: server.workers,
+                        shared: server.shared,
+                    }
                 })
                 .collect(),
             notes: notes.to_vec(),
             user_file: root.join(mcp::USER_FILE),
             unoffered: None,
+            adds_without_asking: !crate::extension_prefs::load(root).ask_before_adding_mcp,
         }
     }
 }
@@ -443,7 +495,8 @@ impl Details {
         gauges: Arc<Gauges>,
         indexes: Option<Arc<index::Indexes>>,
         skill_folders: Vec<PathBuf>,
-        mcp: McpFacts,
+        mcp: mcp::Servers,
+        mcp_notes: Vec<String>,
     ) -> Self {
         Self {
             session_id,
@@ -452,7 +505,8 @@ impl Details {
             gauges,
             indexes,
             skill_folders,
-            mcp: Mutex::new(mcp),
+            mcp: (mcp, mcp_notes),
+            unoffered: Mutex::new(None),
             session: Mutex::new(None),
         }
     }
@@ -466,7 +520,7 @@ impl Details {
     /// What a resumed session's agents weren't offered, as they started
     /// without it.
     pub(crate) fn set_unoffered(&self, note: Option<String>) {
-        lock(&self.mcp).unoffered = note;
+        *lock(&self.unoffered) = note;
     }
 
     /// What the session billed, and what the calls a plan covered would
@@ -539,9 +593,13 @@ impl Details {
             })
     }
 
-    /// The MCP servers the session started, and what was left out.
+    /// The MCP servers of the session as they are now, and what was left
+    /// out.
     pub fn mcp(&self) -> McpFacts {
-        lock(&self.mcp).clone()
+        let (servers, notes) = &self.mcp;
+        let mut facts = McpFacts::of(servers, notes, &self.root);
+        facts.unoffered = lock(&self.unoffered).clone();
+        facts
     }
 
     /// The built-in skills the session gives its agents.

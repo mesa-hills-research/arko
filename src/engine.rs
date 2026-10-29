@@ -676,11 +676,12 @@ impl Engine {
                 &options.mcp_config,
                 options.mcp_config_required,
             )?;
-            let mcp_answer = match &mcp_plan.approval {
-                Some(approval) => prompter.approve_project_mcp(approval).await?,
-                None => None,
-            };
-            mcp_plan.decide(mcp_answer)?
+            // One question for each of the project's files that waits.
+            let mut mcp_answers = Vec::new();
+            for approval in &mcp_plan.approvals {
+                mcp_answers.push(prompter.approve_project_mcp(approval).await?);
+            }
+            mcp_plan.decide(&mcp_answers)?
         };
 
         let session = match session {
@@ -748,8 +749,8 @@ impl Engine {
         for note in &mcp_notes {
             startup.line(&startup.warn(&crate::ui::sentence(note)));
         }
-        let mcp = if mcp_servers.is_empty() {
-            mcp::Running::default()
+        let mcp_servers = if mcp_servers.is_empty() {
+            mcp::Servers::of(Vec::new(), None)
         } else {
             startup.line(&startup.dim(&format!(
                 "Starting MCP servers {}…",
@@ -759,14 +760,14 @@ impl Engine {
                     .collect::<Vec<_>>()
                     .join(", ")
             )));
-            mcp::Running::start(mcp_servers).await
+            mcp::Servers::start(mcp_servers, Some(&root)).await
         };
-        for started in &mcp.servers {
-            if let Err(error) = &started.result {
+        for server in mcp_servers.known() {
+            if let Some(mcp::McpState::Failed(error)) = mcp_servers.state(&server.name) {
                 startup.line(&startup.warn(&format!(
                     "The MCP server `{}` (in {}) didn't start ({error}).",
-                    started.server.name,
-                    started.server.file.display()
+                    server.name,
+                    server.file.display()
                 )));
             }
         }
@@ -815,8 +816,7 @@ impl Engine {
         // A key added in another session open on Arko's folder is used here too.
         keys.share_async(root.clone()).await;
         keys.use_codex_auth(options.codex_auth.clone());
-        let mcp_tools = mcp.tool_names();
-        let mcp_started = mcp.started();
+        let mcp_started = mcp_servers.running();
         let known_indexes = indexes
             .as_ref()
             .map(|indexes| indexes.known(&settings.workspace))
@@ -828,8 +828,8 @@ impl Engine {
         );
         let agent_settings = AgentSettings {
             profiles: &profile_names,
-            mcp_tools: &mcp_tools,
             mcp_servers: &mcp_started,
+            mcp_for_workers: mcp_servers.any_for_workers(),
             skill_folders: &skill_folders,
             index_tools: if indexes.is_some() {
                 index::TOOL_NAMES
@@ -856,7 +856,6 @@ impl Engine {
                 !arko_agents::terminal::MonitorTool::NAMES.contains(&tool.name().as_str())
             });
         }
-        tools.extend(mcp.tools().iter().cloned());
         if let Some(indexes) = &indexes {
             tools.extend(indexes.tools());
         }
@@ -958,8 +957,30 @@ impl Engine {
             gauges.clone(),
             indexes.clone(),
             skill_folders.clone(),
-            crate::details::McpFacts::of(&mcp, &mcp_notes, &root),
+            mcp_servers.clone(),
+            mcp_notes,
         ));
+        // The main agent adds and removes servers, except in a chat.
+        let mcp_notices = mcp::changes::Notices::new(output.clone(), Some(feed.clone()));
+        let mcp = mcp::Session {
+            changes: (!chat).then(|| {
+                let gauges = gauges.clone();
+                Arc::new(mcp::changes::Changes {
+                    root: root.clone(),
+                    workspace: settings.workspace.clone(),
+                    given: options.mcp_config.clone(),
+                    servers: mcp_servers.clone(),
+                    ask: asker.clone(),
+                    notices: Some(mcp_notices.clone()),
+                    session: session.id.clone(),
+                    title: Arc::new(move || {
+                        Some(crate::lock(&gauges.title).clone()).filter(|title| !title.is_empty())
+                    }),
+                })
+            }),
+            notices: Some(mcp_notices),
+            servers: mcp_servers,
+        };
         let mut harness = Harness {
             ask_about_workers: false,
             input_source: options.source,
@@ -1204,7 +1225,7 @@ impl Engine {
         // their moved calls wait on, so the jobs are saved as stopped by the
         // exit, and the session continued later names them.
         self.managers.shutdown().await;
-        harness.mcp.shutdown().await;
+        harness.mcp.servers.shutdown().await;
         if let Some(indexes) = &harness.indexes {
             indexes.shutdown().await;
         }
@@ -4142,14 +4163,14 @@ note("stop")
                 .unwrap();
             async move { answer.await.unwrap() }
         };
-        let ping = "mcp__stub__ping";
+        let offers_mcp = |body: &str| offered(body).contains(&"mcp".to_string());
 
-        // An agent's session starts the server and offers its tool.
+        // An agent's session starts the server and offers `mcp`.
         let (seam, ended) = open(SessionChoice::New, crate::session::Mode::Agent).await;
         let id = seam.session.id.clone();
         assert_eq!((events("start"), asked_now()), (1, 1));
         assert_eq!(seam.details.mcp().servers.len(), 1);
-        assert!(ask(&seam, "First.", 1).await.contains(ping));
+        assert!(offers_mcp(&ask(&seam, "First.", 1).await));
         assert_eq!(switch(&seam, crate::session::Mode::Chat).await, Ok(()));
         assert_eq!(
             tokio::time::timeout(wait, ended).await.unwrap().unwrap(),
@@ -4194,7 +4215,7 @@ note("stop")
                 .any(|text| text.contains("No MCP servers"))
         );
         let chat = ask(&seam, "Second.", 2).await;
-        assert!(!chat.contains(ping) && chat.contains("First."), "{chat}");
+        assert!(!offers_mcp(&chat) && chat.contains("First."), "{chat}");
         assert_eq!(switch(&seam, crate::session::Mode::Agent).await, Ok(()));
         assert_eq!(
             tokio::time::timeout(wait, ended).await.unwrap().unwrap(),
@@ -4211,7 +4232,7 @@ note("stop")
                 .notes
                 .contains(&crate::details::CHAT_MCP_NOTE.to_string())
         );
-        assert!(ask(&seam, "Third.", 3).await.contains(ping));
+        assert!(offers_mcp(&ask(&seam, "Third.", 3).await));
         seam.input.send(Input::Quit(Some(Vec::new()))).unwrap();
         assert_eq!(
             tokio::time::timeout(wait, ended).await.unwrap().unwrap(),
@@ -4222,16 +4243,17 @@ note("stop")
         // A chat that never was an agent's starts none either.
         let (seam, ended) = open(SessionChoice::New, crate::session::Mode::Chat).await;
         assert_eq!((events("start"), asked_now()), (2, 2));
-        assert!(!ask(&seam, "Hello.", 4).await.contains(ping));
+        assert!(!offers_mcp(&ask(&seam, "Hello.", 4).await));
         quit(seam, ended).await;
     }
 
-    /// A session whose earlier runs offered an MCP server's tools opens
-    /// when the server is no longer set up or fails to start, also when it
-    /// was switched between Chat and Agent or branched, which keep their
-    /// runs' configurations. A server that fails to start is reported. A
-    /// run that offered the tool can still call it and is told the server
-    /// isn't running, and new conversations are not offered it.
+    /// A session whose earlier runs offered an MCP server's tools (as an
+    /// Arko before `mcp` saved them) opens when the server is no longer set
+    /// up or fails to start, also when it was switched between Chat and
+    /// Agent or branched, which keep their runs' configurations. A server
+    /// that fails to start is reported. A run that offered the tool can
+    /// still call it and is told the server isn't running, and new
+    /// conversations are not offered it.
     #[tokio::test]
     async fn a_session_opens_without_the_servers_its_runs_offered() {
         let temp = tempfile::tempdir().unwrap();
@@ -4335,18 +4357,21 @@ note("stop")
         let (opened, ended) = open(SessionChoice::New, Agent, vec![running.clone()]).await;
         let seam = opened.unwrap();
         let plain = seam.session.id.clone();
-        assert!(ask(&seam, "First.").await.contains(ping));
+        assert!(offered(&ask(&seam, "First.").await).contains(&"mcp".to_string()));
         quit(seam, ended).await;
         let (opened, ended) = open(SessionChoice::New, Agent, vec![running.clone()]).await;
         let seam = opened.unwrap();
         let switched = seam.session.id.clone();
-        assert!(ask(&seam, "First.").await.contains(ping));
+        assert!(offered(&ask(&seam, "First.").await).contains(&"mcp".to_string()));
         assert_eq!(switch(&seam, Chat).await, Ok(()));
         tokio::time::timeout(wait, ended).await.unwrap().unwrap();
         let (opened, ended) = open(SessionChoice::Resume(switched.clone()), Chat, Vec::new()).await;
         let seam = opened.unwrap();
         assert_eq!(switch(&seam, Agent).await, Ok(()));
         tokio::time::timeout(wait, ended).await.unwrap().unwrap();
+        for session in [&plain, &switched] {
+            to_direct_tools(&Session::open(&root, session).unwrap().dir, ping);
+        }
         let branched = crate::sessions::branch(&root, &plain).unwrap();
 
         // The server is gone from the configuration, or fails to start.
@@ -5346,4 +5371,5 @@ note("stop")
     }
 
     include!("cache_tests.rs");
+    include!("mcp_engine_tests.rs");
 }

@@ -27,6 +27,7 @@
 //! and `remote` the web page's server. Both are on by default. An app builds
 //! Arko with `default-features = false` and adds `remote` for the web page.
 
+pub mod agent_added;
 mod agents;
 pub mod arko_dir;
 mod asking;
@@ -61,6 +62,7 @@ mod keys;
 pub mod logging;
 mod logins;
 mod mcp;
+mod mcp_command;
 mod message;
 #[cfg(any(test, feature = "testing"))]
 mod mock_model;

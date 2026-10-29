@@ -1,11 +1,14 @@
 //! MCP servers: programs that give the agents more tools over the Model
 //! Context Protocol. Arko starts the servers set up in the files
-//! `--mcp-config` names, in the project's `.mcp.json` (once the user
-//! approves them) and in `mcp.json` in Arko's folder, and offers their tools
-//! to the main agent and the workers as `mcp__<server>__<tool>`. Each open
-//! agent session runs its own copy of each server and stops it when the
-//! session closes. Chat sessions run none. A launcher such as `npx -y` adds a
-//! wrapper process to each copy.
+//! `--mcp-config` names, in the project's `.arko/mcp.json` and `.mcp.json`
+//! (once the user approves them) and in `mcp.json` in Arko's folder. The
+//! agents reach them through one tool, `mcp` ([`McpBridgeTool`]), whose
+//! definition stays the same while servers start, stop, come and go, so the
+//! prompt cache holds. A conversation saved when each MCP tool was a tool of
+//! its own (`mcp__<server>__<tool>`) keeps those, called through the same
+//! hub. Each open agent session runs its own copy of each server and stops
+//! it when the session closes, except a server marked `"shared": true`,
+//! which sessions open at the same time share. Chat sessions run none.
 //!
 //! A file is in Claude Code's format, servers by name:
 //! `{"mcpServers": {"github": {"command": "npx", "args": ["-y", "..."], "env": {"TOKEN": "${GITHUB_TOKEN}"}}}}`,
@@ -13,36 +16,58 @@
 //! `${VAR:-default}` in a command, its arguments and its environment are
 //! taken from Arko's environment. Servers talk over standard input and
 //! output: HTTP servers (`url`, or a `type` other than `stdio`) and servers
-//! marked `"disabled": true` are skipped.
+//! marked `"disabled": true` are skipped. Arko reads two fields of its own
+//! in any file, `workers` (false keeps a server to the main agent) and
+//! `shared`.
 //!
-//! A project's `.mcp.json` would run programs as soon as Arko starts in its
-//! folder, so Arko asks before starting them, and remembers the answer (in
-//! `mcp-approvals.json` in its folder) until the file's servers change.
+//! A project's `.arko/mcp.json` and `.mcp.json` would run programs as soon
+//! as Arko starts in its folder, so Arko asks before starting them, and
+//! remembers the answer (in `mcp-approvals.json` in its folder) until the
+//! file's servers change. The main agent adds servers with the action
+//! `add` ([`changes`]), which asks the user, writes the entry and remembers
+//! the file as approved.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use arko_agents::mcp::McpTool;
+use arko_agents::mcp::{McpAccess, McpBridgeTool, McpChanges, McpHub, ServerState};
 use arko_agents::tool::{ToolOutput, ToolRecovery};
-use arko_agents::{
-    McpConfig, McpManager, McpServerConfig, TaskContext, Tool, ToolDefinition, ToolError,
-};
+use arko_agents::{McpServerConfig, TaskContext, Tool, ToolDefinition, ToolError};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+pub use crate::details::McpState;
+
+pub mod changes;
+
+pub use arko_agents::mcp::MCP_TOOL_NAME;
 
 /// The servers set up for every project, in Arko's folder.
 pub const USER_FILE: &str = "mcp.json";
 /// A project's servers, in the working directory (as Claude Code reads it).
 pub const PROJECT_FILE: &str = ".mcp.json";
+/// The servers agents add for a project, in its `.arko` folder.
+pub const LOCAL_FILE: &str = "mcp.json";
 /// The answers about projects' servers, in Arko's folder.
 const APPROVALS_FILE: &str = "mcp-approvals.json";
 /// How long a server gets to start and list its tools.
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(60);
-/// The longest tool name the model providers take (`^[a-zA-Z0-9_-]{1,64}$`).
-const MAX_TOOL_NAME: usize = 64;
+/// How long an action of `mcp` other than `add` may take before Arko stops
+/// it, as long as the host gives any other tool's call. (`add` waits for the
+/// user's answer without a limit, so the tool is exempt from the host's.)
+const CALL_LIMIT: Duration = Duration::from_secs(20 * 60);
+
+/// The project's `.arko/mcp.json`, where agents add its servers.
+pub fn local_file(workspace: &Path) -> PathBuf {
+    crate::arko_dir::dir(workspace).join(LOCAL_FILE)
+}
+
+/// What the main agent's `mcp` says after its description, the same for
+/// every conversation.
+pub const NOTE: &str = "Project servers go in the project's .arko/mcp.json, which git ignores until the user turns off Keep agents' project files out of git in Arko's settings.";
 
 /// A server to start.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -51,21 +76,42 @@ pub struct Server {
     pub command: String,
     pub args: Vec<String>,
     pub env: BTreeMap<String, String>,
+    /// The environment as the file writes it, before `${VAR}`s are
+    /// expanded.
+    pub written_env: BTreeMap<String, String>,
     /// The command line as the file writes it, before `${VAR}`s are
     /// expanded: what the user is shown.
     pub shown: String,
     /// The file that sets it up.
     pub file: PathBuf,
+    /// Workers may reach it (Arko's `workers` field, true unless the entry
+    /// says false).
+    pub workers: bool,
+    /// Sessions open at the same time share one copy of it (Arko's `shared`
+    /// field).
+    pub shared: bool,
 }
 
 impl Server {
-    fn config(&self) -> McpServerConfig {
-        McpServerConfig {
-            name: self.name.clone(),
-            command: self.command.clone(),
-            args: self.args.clone(),
-            env: self.env.clone().into_iter().collect(),
-        }
+    /// The server for the hub, with `description` for the bridge's
+    /// `servers` action (an agent's reason for adding it).
+    fn config(&self, description: Option<String>) -> McpServerConfig {
+        let mut config = McpServerConfig::new(self.name.clone(), self.command.clone())
+            .with_args(self.args.clone())
+            .with_env(self.env.clone());
+        config.workers = self.workers;
+        config.shared = self.shared;
+        config.description = description;
+        config
+    }
+
+    /// The names of the environment variables it gets, and whether each has
+    /// a value.
+    pub fn env_names(&self) -> Vec<(String, bool)> {
+        self.env
+            .iter()
+            .map(|(name, value)| (name.clone(), !value.is_empty()))
+            .collect()
     }
 }
 
@@ -101,22 +147,8 @@ fn parse(
         .get("mcpServers")
         .ok_or("it has no `mcpServers`")?
         .clone();
-    let entries: Vec<(Option<String>, &Value)> = match &raw {
-        Value::Object(servers) => servers
-            .iter()
-            .map(|(name, entry)| (Some(name.clone()), entry))
-            .collect(),
-        Value::Array(servers) => servers
-            .iter()
-            .map(|entry| {
-                let name = entry.get("name").and_then(Value::as_str).map(String::from);
-                (name, entry)
-            })
-            .collect(),
-        _ => return Err("its `mcpServers` is neither an object nor a list".into()),
-    };
     let mut parsed = Parsed::default();
-    for (index, (name, entry)) in entries.into_iter().enumerate() {
+    for (index, (name, entry)) in entries(&raw)?.into_iter().enumerate() {
         let Some(name) = name.filter(|name| !name.trim().is_empty()) else {
             parsed
                 .skipped
@@ -145,6 +177,45 @@ fn parse(
     }
     parsed.raw = raw;
     Ok(parsed)
+}
+
+/// The entries of a file's `mcpServers`, each with its name if it has one.
+fn entries(raw: &Value) -> Result<Vec<(Option<String>, &Value)>, String> {
+    Ok(match raw {
+        Value::Object(servers) => servers
+            .iter()
+            .map(|(name, entry)| (Some(name.clone()), entry))
+            .collect(),
+        Value::Array(servers) => servers
+            .iter()
+            .map(|entry| {
+                let name = entry.get("name").and_then(Value::as_str).map(String::from);
+                (name, entry)
+            })
+            .collect(),
+        _ => return Err("its `mcpServers` is neither an object nor a list".into()),
+    })
+}
+
+/// Whether the file at `file` has an entry for the server `name` (enabled
+/// or not), as written.
+pub(crate) fn sets_up(file: &Path, name: &str) -> bool {
+    names_in(file).is_some_and(|names| names.iter().any(|known| known == name))
+}
+
+/// The names of the servers the file at `file` has entries for, or `None`
+/// when it can't be read.
+fn names_in(file: &Path) -> Option<Vec<String>> {
+    let text = std::fs::read_to_string(file).ok()?;
+    let value: Value = serde_json::from_str(&text).ok()?;
+    let raw = value.get("mcpServers")?;
+    Some(
+        entries(raw)
+            .ok()?
+            .into_iter()
+            .filter_map(|(name, _)| name)
+            .collect(),
+    )
 }
 
 /// The command line of a server's `entry` as the file writes it, as far
@@ -206,7 +277,7 @@ fn server(
             .collect::<Result<_, _>>()?,
         Some(_) => return Err("has `args` that aren't a list".into()),
     };
-    let env = match entry.get("env") {
+    let env: BTreeMap<String, String> = match entry.get("env") {
         None | Some(Value::Null) => BTreeMap::new(),
         Some(Value::Object(env)) => env
             .iter()
@@ -218,6 +289,13 @@ fn server(
             .collect::<Result<_, _>>()?,
         Some(_) => return Err("has an `env` that isn't an object".into()),
     };
+    let flag = |field: &str, default: bool| match entry.get(field) {
+        None | Some(Value::Null) => Ok(default),
+        Some(Value::Bool(value)) => Ok(*value),
+        Some(_) => Err(format!("has a `{field}` that isn't true or false")),
+    };
+    let workers = flag("workers", true)?;
+    let shared = flag("shared", false)?;
     let shown = std::iter::once(command.to_string())
         .chain(args.iter().cloned())
         .collect::<Vec<_>>()
@@ -234,8 +312,11 @@ fn server(
             .iter()
             .map(|(key, value)| Ok((key.clone(), expand(value)?)))
             .collect::<Result<_, String>>()?,
+        written_env: env,
         shown,
         file: file.to_path_buf(),
+        workers,
+        shared,
     }))
 }
 
@@ -272,11 +353,19 @@ pub(crate) fn environment(name: &str) -> Option<String> {
     std::env::var(name).ok()
 }
 
+/// `path` made absolute and without `.` and `..`, as the approvals and the
+/// record of what agents added name files and folders.
+pub(crate) fn normal(path: &Path) -> PathBuf {
+    arko_agents::utils::normalize_path(
+        &std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf()),
+    )
+}
+
 /// A project's servers that wait for the user's answer before they start,
 /// as a front end shows them when it asks.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct McpApproval {
-    /// The project's `.mcp.json`.
+    /// The project's `.arko/mcp.json` or `.mcp.json`.
     pub file: PathBuf,
     /// Each server's name, and its command line as the file writes it.
     pub servers: Vec<(String, String)>,
@@ -284,12 +373,22 @@ pub struct McpApproval {
     pub skipped: Vec<String>,
 }
 
+/// Which of a project's files an answer is for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Asked {
+    /// The project's `.arko/mcp.json`, kept in the approvals' `local` map.
+    Local,
+    /// The project's `.mcp.json`, kept in their `projects` map.
+    Project,
+}
+
 /// The servers to start, as [`plan`] finds them, before the user answers
-/// about the project's (`approval`).
+/// about the project's files (`approvals`).
 #[derive(Debug)]
 pub struct Plan {
-    /// The project's servers, when they wait for the user's answer.
-    pub approval: Option<McpApproval>,
+    /// The project's files whose servers wait for the user's answer, in
+    /// the order [`Plan::decide`] takes the answers.
+    pub approvals: Vec<McpApproval>,
     steps: Vec<Step>,
     root: PathBuf,
     workspace: PathBuf,
@@ -300,18 +399,18 @@ pub struct Plan {
 enum Step {
     /// Starts a file's servers.
     Add(Parsed),
-    /// Starts the project's servers if the user agrees.
-    Ask(Parsed),
+    /// Starts a project file's servers if the user agrees.
+    Ask(Asked, Parsed),
     Note(String),
 }
 
 /// The servers to start: those in `files` (from `--mcp-config`, or an
-/// app's), in the project's `.mcp.json` when the user approves them, and in
-/// Arko's own `mcp.json`. A name set up twice is taken from the first of
-/// these. The user's answer about the project's servers, unless one is
-/// remembered for them, is for [`Plan::decide`]. A file of `files` that
-/// can't be read is an error when they are `required`, else a note (its
-/// servers aren't started), as the project's and Arko's are.
+/// app's), in the project's `.arko/mcp.json` and `.mcp.json` when the user
+/// approves them, and in Arko's own `mcp.json`. A name set up twice is
+/// taken from the first of these. The user's answer about a project file's
+/// servers, unless one is remembered for them, is for [`Plan::decide`]. A
+/// file of `files` that can't be read is an error when they are `required`,
+/// else a note (its servers aren't started), as the others are.
 pub fn plan(
     root: &Path,
     workspace: &Path,
@@ -319,32 +418,38 @@ pub fn plan(
     required: bool,
 ) -> Result<Plan, String> {
     let mut steps = Vec::new();
-    let mut approval = None;
+    let mut approvals = Vec::new();
     let mut read = HashSet::new();
+    let unread = |error: &str| {
+        Step::Note(format!(
+            "MCP servers not started. {}",
+            crate::ui::sentence(error)
+        ))
+    };
     for file in files {
-        let file = arko_agents::utils::normalize_path(
-            &std::path::absolute(file).unwrap_or_else(|_| file.clone()),
-        );
+        let file = normal(file);
         match parse_file(&file, &environment) {
             Ok(parsed) => steps.push(Step::Add(parsed)),
             Err(error) if required => return Err(error),
-            Err(error) => steps.push(Step::Note(format!(
-                "MCP servers not started. {}",
-                crate::ui::sentence(&error)
-            ))),
+            Err(error) => steps.push(unread(&error)),
         }
         read.insert(file);
     }
-    let project = workspace.join(PROJECT_FILE);
-    if project.is_file() && !read.contains(&project) {
-        match parse_file(&project, &environment) {
+    for (asked, file) in [
+        (Asked::Local, local_file(workspace)),
+        (Asked::Project, workspace.join(PROJECT_FILE)),
+    ] {
+        if !file.is_file() || read.contains(&normal(&file)) {
+            continue;
+        }
+        match parse_file(&file, &environment) {
             Ok(parsed) if parsed.servers.is_empty() && parsed.skipped.is_empty() => {}
-            Ok(parsed) => match remembered(root, workspace, &parsed) {
+            Ok(parsed) => match remembered_as(root, workspace, asked, &parsed) {
                 Some(true) => steps.push(Step::Add(parsed)),
                 Some(false) => {}
                 None => {
-                    approval = Some(McpApproval {
-                        file: project.clone(),
+                    approvals.push(McpApproval {
+                        file: file.clone(),
                         servers: parsed
                             .servers
                             .iter()
@@ -352,27 +457,22 @@ pub fn plan(
                             .collect(),
                         skipped: parsed.skipped.clone(),
                     });
-                    steps.push(Step::Ask(parsed));
+                    steps.push(Step::Ask(asked, parsed));
                 }
             },
-            Err(error) => steps.push(Step::Note(format!(
-                "MCP servers not started. {}",
-                crate::ui::sentence(&error)
-            ))),
+            Err(error) => steps.push(unread(&error)),
         }
+        read.insert(normal(&file));
     }
     let user = root.join(USER_FILE);
-    if user.is_file() && !read.contains(&user) {
+    if user.is_file() && !read.contains(&normal(&user)) {
         match parse_file(&user, &environment) {
             Ok(parsed) => steps.push(Step::Add(parsed)),
-            Err(error) => steps.push(Step::Note(format!(
-                "MCP servers not started. {}",
-                crate::ui::sentence(&error)
-            ))),
+            Err(error) => steps.push(unread(&error)),
         }
     }
     Ok(Plan {
-        approval,
+        approvals,
         steps,
         root: root.to_path_buf(),
         workspace: workspace.to_path_buf(),
@@ -380,11 +480,12 @@ pub fn plan(
 }
 
 impl Plan {
-    /// The servers to start, with `answer` about the project's servers
-    /// (`None`: no one could answer, so they don't start), and the notes
+    /// The servers to start, with `answers` about the project's files in
+    /// the order of [`approvals`](Self::approvals) (`None`, or no answer
+    /// at all: no one could answer, so they don't start), and the notes
     /// that say what is left out and why. An answer is remembered until the
     /// file's servers change.
-    pub fn decide(self, answer: Option<bool>) -> Result<(Vec<Server>, Vec<String>), String> {
+    pub fn decide(self, answers: &[Option<bool>]) -> Result<(Vec<Server>, Vec<String>), String> {
         let mut servers: Vec<Server> = Vec::new();
         let mut notes = Vec::new();
         let mut add = |parsed: Parsed, notes: &mut Vec<String>| {
@@ -404,20 +505,25 @@ impl Plan {
                 }
             }
         };
+        let mut answers = answers.iter().copied();
         for step in self.steps {
             match step {
                 Step::Add(parsed) => add(parsed, &mut notes),
                 Step::Note(note) => notes.push(note),
-                Step::Ask(parsed) => match answer {
+                Step::Ask(asked, parsed) => match answers.next().flatten() {
                     Some(start) => {
-                        remember(&self.root, &self.workspace, &parsed, start)?;
+                        remember_as(&self.root, &self.workspace, asked, &parsed.raw, start)?;
                         if start {
                             add(parsed, &mut notes);
                         }
                     }
                     None => notes.push(format!(
                         "the MCP servers in {} aren't started, because a project's servers start only once the user agrees, and no one here can be asked",
-                        self.workspace.join(PROJECT_FILE).display()
+                        match asked {
+                            Asked::Local => local_file(&self.workspace),
+                            Asked::Project => self.workspace.join(PROJECT_FILE),
+                        }
+                        .display()
                     )),
                 },
             }
@@ -429,9 +535,22 @@ impl Plan {
 /// The answers about projects' servers.
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct Approvals {
-    /// By working directory.
+    /// The answers about projects' `.mcp.json`, by working directory.
     #[serde(default)]
     projects: BTreeMap<String, Approval>,
+    /// The answers about projects' `.arko/mcp.json`, by working directory.
+    /// A server an agent adds there is remembered as approved.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    local: BTreeMap<String, Approval>,
+}
+
+impl Approvals {
+    fn of(&mut self, asked: Asked) -> &mut BTreeMap<String, Approval> {
+        match asked {
+            Asked::Local => &mut self.local,
+            Asked::Project => &mut self.projects,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -460,9 +579,32 @@ fn approvals(root: &Path) -> Approvals {
     read_approvals(root).unwrap_or_default()
 }
 
+/// The key a project's answers are kept under. `.mcp.json`'s answers have
+/// been kept under the working directory as given, and `.arko/mcp.json`'s
+/// are kept under it made absolute.
+fn approval_key(workspace: &Path, asked: Asked) -> String {
+    match asked {
+        Asked::Project => workspace.display().to_string(),
+        Asked::Local => normal(workspace).display().to_string(),
+    }
+}
+
 pub(crate) fn project_approval(root: &Path, workspace: &Path) -> Result<Option<bool>, String> {
+    file_approval(root, workspace, Asked::Project)
+}
+
+pub(crate) fn local_approval(root: &Path, workspace: &Path) -> Result<Option<bool>, String> {
+    file_approval(root, workspace, Asked::Local)
+}
+
+/// The answer remembered for the project file `asked` as it is now, if
+/// any. An absent file has none.
+fn file_approval(root: &Path, workspace: &Path, asked: Asked) -> Result<Option<bool>, String> {
     let workspace = approval_workspace(workspace)?;
-    let file = workspace.join(PROJECT_FILE);
+    let file = match asked {
+        Asked::Local => local_file(&workspace),
+        Asked::Project => workspace.join(PROJECT_FILE),
+    };
     // An absent config has no current approval. Other read errors reach the caller.
     match std::fs::metadata(&file) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -471,8 +613,8 @@ pub(crate) fn project_approval(root: &Path, workspace: &Path) -> Result<Option<b
     }
     let parsed = parse_file(&file, &environment)?;
     Ok(read_approvals(root)?
-        .projects
-        .get(&workspace.display().to_string())
+        .of(asked)
+        .get(&approval_key(&workspace, asked))
         .filter(|approval| approval.servers == parsed.raw)
         .map(|approval| approval.start))
 }
@@ -484,39 +626,84 @@ fn approval_workspace(workspace: &Path) -> Result<PathBuf, String> {
 }
 
 pub(crate) fn forget_project_approval(root: &Path, workspace: &Path) -> Result<bool, String> {
+    forget_approval(root, workspace, Asked::Project)
+}
+
+pub(crate) fn forget_local_approval(root: &Path, workspace: &Path) -> Result<bool, String> {
+    forget_approval(root, workspace, Asked::Local)
+}
+
+fn forget_approval(root: &Path, workspace: &Path, asked: Asked) -> Result<bool, String> {
     let workspace = approval_workspace(workspace)?;
-    let key = workspace.display().to_string();
-    if !read_approvals(root)?.projects.contains_key(&key) {
+    let key = approval_key(&workspace, asked);
+    if !read_approvals(root)?.of(asked).contains_key(&key) {
         return Ok(false);
     }
     let _lock = approval_lock(root)?;
     let mut approvals = read_approvals(root)?;
-    let removed = approvals.projects.remove(&key).is_some();
+    let removed = approvals.of(asked).remove(&key).is_some();
     if removed {
         save_approvals(root, &approvals)?;
     }
     Ok(removed)
 }
 
-/// The answer remembered for the project's servers, if any (for these
-/// servers: a change to them asks again).
+/// The answer remembered for the project's `.mcp.json` servers, if any (for
+/// these servers: a change to them asks again).
 pub(crate) fn remembered(root: &Path, workspace: &Path, parsed: &Parsed) -> Option<bool> {
-    approvals(root)
-        .projects
-        .get(&workspace.display().to_string())
-        .filter(|approval| approval.servers == parsed.raw)
+    remembered_as(root, workspace, Asked::Project, parsed)
+}
+
+/// The answer remembered for the project's `.arko/mcp.json` servers, if any.
+pub(crate) fn remembered_local(root: &Path, workspace: &Path, parsed: &Parsed) -> Option<bool> {
+    remembered_as(root, workspace, Asked::Local, parsed)
+}
+
+fn remembered_as(root: &Path, workspace: &Path, asked: Asked, parsed: &Parsed) -> Option<bool> {
+    remembered_raw(&approvals(root), workspace, asked, &parsed.raw)
+}
+
+fn remembered_raw(
+    approvals: &Approvals,
+    workspace: &Path,
+    asked: Asked,
+    raw: &Value,
+) -> Option<bool> {
+    let map = match asked {
+        Asked::Local => &approvals.local,
+        Asked::Project => &approvals.projects,
+    };
+    map.get(&approval_key(workspace, asked))
+        .filter(|approval| approval.servers == *raw)
         .map(|approval| approval.start)
 }
 
-/// Remembers the user's answer about the project's servers.
-fn remember(root: &Path, workspace: &Path, parsed: &Parsed, start: bool) -> Result<(), String> {
+/// Remembers the user's answer about a project file's servers.
+fn remember_as(
+    root: &Path,
+    workspace: &Path,
+    asked: Asked,
+    raw: &Value,
+    start: bool,
+) -> Result<(), String> {
     let _lock = approval_lock(root)?;
+    remember_locked(root, workspace, asked, raw, start)
+}
+
+/// [`remember_as`] with the lock held.
+fn remember_locked(
+    root: &Path,
+    workspace: &Path,
+    asked: Asked,
+    raw: &Value,
+    start: bool,
+) -> Result<(), String> {
     let mut approvals = read_approvals(root)?;
-    approvals.projects.insert(
-        workspace.display().to_string(),
+    approvals.of(asked).insert(
+        approval_key(workspace, asked),
         Approval {
             start,
-            servers: parsed.raw.clone(),
+            servers: raw.clone(),
         },
     );
     save_approvals(root, &approvals)
@@ -546,34 +733,120 @@ fn save_approvals(root: &Path, approvals: &Approvals) -> Result<(), String> {
         .map_err(|error| format!("could not save {} ({error})", path.display()))
 }
 
-/// The tool name of `server`'s tool `tool`: `mcp__<server>__<tool>`, with
-/// the characters the providers don't take replaced by `_`, and cut to 64
-/// characters (ending in a hash of the full name, to stay unique).
-pub fn tool_name(server: &str, tool: &str) -> String {
-    let clean = |text: &str| -> String {
-        text.chars()
-            .map(|c| {
-                if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
-                    c
-                } else {
-                    '_'
-                }
-            })
-            .collect()
-    };
-    let name = format!("mcp__{}__{}", clean(server), clean(tool));
-    if name.len() <= MAX_TOOL_NAME {
-        return name;
+/// The file at `path` as JSON, or an empty one when there is none.
+fn read_servers_file(path: &Path) -> Result<Value, String> {
+    match std::fs::read_to_string(path) {
+        Ok(text) => serde_json::from_str(&text)
+            .map_err(|error| format!("Couldn't read {} ({error}).", path.display())),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            Ok(serde_json::json!({"mcpServers": {}}))
+        }
+        Err(error) => Err(format!(
+            "Couldn't read {} ({}).",
+            path.display(),
+            crate::profiles::reason_of(&error)
+        )),
     }
-    // FNV-1a: stable across Rust versions, as names saved in a session's
-    // checkpoints must be.
-    let hash = format!("{server}\n{tool}")
-        .bytes()
-        .fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
-            (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3)
-        });
-    let hash = format!("{:08x}", hash as u32);
-    format!("{}_{hash}", &name[..MAX_TOOL_NAME - hash.len() - 1])
+}
+
+fn save_servers_file(path: &Path, value: &Value) -> Result<(), String> {
+    let mut text = serde_json::to_string_pretty(value).map_err(|error| error.to_string())?;
+    text.push('\n');
+    crate::session::write_whole(path, text.as_bytes()).map_err(|error| {
+        format!(
+            "Couldn't save {} ({}).",
+            path.display(),
+            crate::profiles::reason_of(&error)
+        )
+    })
+}
+
+/// Writes `entry` as the server `name` in the file at `path`, keeping its
+/// other entries and fields, in place of an entry of the same name. A file
+/// that lists its servers keeps the list, and any other gets them by name,
+/// as Claude Code writes them. Returns the file's `mcpServers` before and
+/// after.
+fn write_entry(path: &Path, name: &str, entry: Value) -> Result<(Value, Value), String> {
+    let mut file = read_servers_file(path)?;
+    let Some(object) = file.as_object_mut() else {
+        return Err(format!(
+            "Couldn't add to {}, because it isn't a JSON object.",
+            path.display()
+        ));
+    };
+    let servers = object
+        .entry("mcpServers")
+        .or_insert_with(|| Value::Object(Default::default()));
+    let before = servers.clone();
+    match servers {
+        Value::Object(servers) => {
+            servers.insert(name.to_string(), entry);
+        }
+        Value::Array(servers) => {
+            let mut entry = entry;
+            if let Value::Object(fields) = &mut entry {
+                let mut named = serde_json::Map::new();
+                named.insert("name".into(), Value::from(name));
+                named.extend(std::mem::take(fields));
+                *fields = named;
+            }
+            match servers
+                .iter()
+                .position(|known| known.get("name").and_then(Value::as_str) == Some(name))
+            {
+                Some(index) => servers[index] = entry,
+                None => servers.push(entry),
+            }
+        }
+        _ => {
+            return Err(format!(
+                "Couldn't add to {}, because its mcpServers is neither an object nor a list.",
+                path.display()
+            ));
+        }
+    }
+    let after = servers.clone();
+    save_servers_file(path, &file)?;
+    Ok((before, after))
+}
+
+/// Takes the entry of the server `name` out of the file at `path`, keeping
+/// the rest. Returns its `mcpServers` before and after, or `None` when it
+/// has no such entry.
+fn remove_entry(path: &Path, name: &str) -> Result<Option<(Value, Value)>, String> {
+    if !path.is_file() {
+        return Ok(None);
+    }
+    let mut file = read_servers_file(path)?;
+    let Some(servers) = file.get_mut("mcpServers") else {
+        return Ok(None);
+    };
+    let before = servers.clone();
+    let removed = match servers {
+        Value::Object(servers) => servers.remove(name).is_some(),
+        Value::Array(servers) => {
+            let count = servers.len();
+            servers.retain(|known| known.get("name").and_then(Value::as_str) != Some(name));
+            servers.len() != count
+        }
+        _ => false,
+    };
+    if !removed {
+        return Ok(None);
+    }
+    let after = servers.clone();
+    save_servers_file(path, &file)?;
+    Ok(Some((before, after)))
+}
+
+/// The tool name of `server`'s tool `tool` as a tool of its own, as
+/// conversations saved before the `mcp` tool name them:
+/// `mcp__<server>__<tool>`, with the characters the providers don't take
+/// replaced by `_`, and cut to 64 characters (ending in a hash of the full
+/// name, to stay unique).
+#[cfg(test)]
+pub fn tool_name(server: &str, tool: &str) -> String {
+    arko_agents::mcp::direct_tool_name(server, tool)
 }
 
 /// The server and tool an MCP tool name stands for, to show it.
@@ -581,42 +854,340 @@ pub fn split_tool_name(name: &str) -> Option<(&str, &str)> {
     name.strip_prefix("mcp__")?.split_once("__")
 }
 
-/// An MCP tool under a name the providers take.
-#[derive(Debug)]
-struct ServerTool {
-    name: String,
-    tool: Arc<McpTool>,
+/// A session's MCP servers: the hub its agents reach them through, with
+/// what Arko read of each from its file. Clones share the servers.
+#[derive(Clone)]
+pub struct Servers {
+    pub hub: Arc<McpHub>,
+    /// Each server as its file sets it up, added ones last.
+    known: Arc<Mutex<Vec<Server>>>,
+    /// The servers an agent stopped.
+    stopped: Arc<Mutex<BTreeSet<String>>>,
 }
 
-#[async_trait]
-impl Tool for ServerTool {
-    fn definition(&self) -> ToolDefinition {
-        ToolDefinition {
-            name: self.name.clone(),
-            ..self.tool.definition()
+impl std::fmt::Debug for Servers {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Servers")
+            .field("hub", &self.hub)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Default for Servers {
+    fn default() -> Self {
+        Self::of(Vec::new(), None)
+    }
+}
+
+impl Servers {
+    /// The hub of `servers`, none started yet. With Arko's folder `root`,
+    /// a server an agent added has its reason as its description.
+    pub fn of(servers: Vec<Server>, root: Option<&Path>) -> Self {
+        let added = root.map(crate::agent_added::servers).unwrap_or_default();
+        let configs = servers
+            .iter()
+            .map(|server| {
+                let why = added
+                    .iter()
+                    .find(|record| {
+                        record.name == server.name && record.file == normal(&server.file)
+                    })
+                    .map(|record| record.why.clone());
+                server.config(why)
+            })
+            .collect();
+        Self {
+            hub: McpHub::new(configs),
+            known: Arc::new(Mutex::new(servers)),
+            stopped: Arc::default(),
         }
     }
 
-    fn allow_result_interception(&self) -> bool {
-        self.tool.allow_result_interception()
+    /// Starts `servers` at the same time, each given a minute to start.
+    pub async fn start(servers: Vec<Server>, root: Option<&Path>) -> Self {
+        let started = Self::of(servers, root);
+        started.hub.start_all(STARTUP_TIMEOUT).await;
+        started
     }
 
+    /// Each server as its file sets it up, in the hub's order.
+    pub fn known(&self) -> Vec<Server> {
+        crate::lock(&self.known).clone()
+    }
+
+    /// The server `name` as its file sets it up.
+    pub fn server(&self, name: &str) -> Option<Server> {
+        crate::lock(&self.known)
+            .iter()
+            .find(|server| server.name == name)
+            .cloned()
+    }
+
+    /// The state of the server `name`.
+    pub fn state(&self, name: &str) -> Option<McpState> {
+        let facts = self
+            .hub
+            .servers()
+            .into_iter()
+            .find(|facts| facts.name == name)?;
+        Some(match facts.state {
+            ServerState::Starting => McpState::Starting,
+            ServerState::Running => McpState::Running,
+            ServerState::Stopped if crate::lock(&self.stopped).contains(name) => {
+                McpState::StoppedByAgent
+            }
+            ServerState::Stopped => McpState::Stopped,
+            ServerState::Failed(reason) => McpState::Failed(reason),
+        })
+    }
+
+    /// The names of the tools of the server `name` when they were last
+    /// listed.
+    pub fn tool_names(&self, name: &str) -> Option<Vec<String>> {
+        self.hub
+            .listed_tools(name)
+            .map(|tools| tools.iter().map(|tool| tool.name.clone()).collect())
+    }
+
+    /// The servers that run, by name.
+    pub fn running(&self) -> Vec<String> {
+        self.hub
+            .servers()
+            .into_iter()
+            .filter(|facts| facts.state == ServerState::Running)
+            .map(|facts| facts.name)
+            .collect()
+    }
+
+    /// Whether workers may reach any of the servers.
+    pub fn any_for_workers(&self) -> bool {
+        self.hub.servers().iter().any(|facts| facts.workers)
+    }
+
+    /// The servers, in a line: `MCP servers github (12 tools), figma
+    /// (failed)`.
+    pub fn summary(&self) -> Option<String> {
+        let servers = self.hub.servers();
+        if servers.is_empty() {
+            return None;
+        }
+        let servers = servers
+            .iter()
+            .map(|facts| match (&facts.state, facts.tools) {
+                (ServerState::Failed(_), _) => format!("{} (failed)", facts.name),
+                (_, Some(count)) => format!(
+                    "{} ({count} tool{})",
+                    facts.name,
+                    if count == 1 { "" } else { "s" }
+                ),
+                (_, None) => facts.name.clone(),
+            })
+            .collect::<Vec<_>>();
+        Some(format!("MCP servers {}", servers.join(", ")))
+    }
+
+    /// The server an agent added, after its entry was written: added to the
+    /// hub and started. `Err` is a config the hub won't take.
+    async fn add(
+        &self,
+        server: Server,
+        description: Option<String>,
+    ) -> Result<arko_agents::mcp::ServerFacts, String> {
+        let config = server.config(description);
+        {
+            let mut known = crate::lock(&self.known);
+            known.retain(|known| known.name != server.name);
+            known.push(server);
+        }
+        crate::lock(&self.stopped).remove(&config.name);
+        self.hub.add(config).await
+    }
+
+    /// Takes the server `name` out of the hub, stopping it.
+    pub async fn remove(&self, name: &str) {
+        crate::lock(&self.known).retain(|known| known.name != name);
+        crate::lock(&self.stopped).remove(name);
+        let _ = self.hub.remove(name).await;
+    }
+
+    /// Stops the servers, each given three seconds to exit, and lets go of
+    /// the shared ones.
+    pub async fn shutdown(&self) {
+        self.hub.shutdown().await;
+    }
+}
+
+/// What a session has of MCP: its servers, and how the main agent adds and
+/// removes them.
+#[derive(Default)]
+pub struct Session {
+    pub servers: Servers,
+    /// How the main agent adds and removes servers. None in a chat, which
+    /// runs no servers, and its agents' saved conversations get stand-ins.
+    pub changes: Option<Arc<changes::Changes>>,
+    /// Where the main agent's starts and stops show.
+    pub notices: Option<changes::Notices>,
+}
+
+impl Session {
+    /// The main agent's `mcp`, as a registry takes it.
+    pub fn lead_tool(&self, access: Arc<dyn McpAccess>) -> Arc<dyn Tool> {
+        match &self.changes {
+            Some(changes) => Arc::new(Bridge::lead(
+                &self.servers,
+                access,
+                changes.clone(),
+                self.notices.clone(),
+            )),
+            None => Arc::new(UnstartedTool::bridge_in_chat(Role::Lead)),
+        }
+    }
+
+    /// A worker's `mcp`, as a registry takes it.
+    pub fn worker_tool(&self, access: Arc<dyn McpAccess>) -> Arc<dyn Tool> {
+        match &self.changes {
+            Some(_) => Arc::new(Bridge::worker(&self.servers, access)),
+            None => Arc::new(UnstartedTool::bridge_in_chat(Role::Worker)),
+        }
+    }
+}
+
+/// Who an `mcp` tool is for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Role {
+    Lead,
+    Worker,
+}
+
+/// Arko's `mcp` tool: the framework's [`McpBridgeTool`] with Arko's time
+/// limit and transcript lines. An `add` waits for the user's answer without
+/// a limit, so the host's limit doesn't apply to the tool, and any other
+/// action gets [`CALL_LIMIT`]. The main agent's starts and stops show in the
+/// transcript, and its stops are kept for `/mcp`.
+pub struct Bridge {
+    inner: McpBridgeTool,
+    role: Role,
+    servers: Servers,
+    notices: Option<changes::Notices>,
+}
+
+impl std::fmt::Debug for Bridge {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Bridge")
+            .field("role", &self.role)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Bridge {
+    /// The main agent's `mcp`, which adds and removes servers through
+    /// `changes`.
+    pub fn lead(
+        servers: &Servers,
+        access: Arc<dyn McpAccess>,
+        changes: Arc<dyn McpChanges>,
+        notices: Option<changes::Notices>,
+    ) -> Self {
+        Self {
+            inner: McpBridgeTool::lead(servers.hub.clone(), access, changes).with_note(NOTE),
+            role: Role::Lead,
+            servers: servers.clone(),
+            notices,
+        }
+    }
+
+    /// A worker's `mcp`.
+    pub fn worker(servers: &Servers, access: Arc<dyn McpAccess>) -> Self {
+        Self {
+            inner: McpBridgeTool::worker(servers.hub.clone(), access),
+            role: Role::Worker,
+            servers: servers.clone(),
+            notices: None,
+        }
+    }
+
+    /// The definition of `role`'s `mcp`, the same in every session.
+    pub fn definition_of(role: Role) -> ToolDefinition {
+        let servers = Servers::default();
+        let access: Arc<dyn McpAccess> = Arc::new(arko_agents::mcp::AllServers);
+        match role {
+            Role::Lead => Self::lead(&servers, access, Arc::new(changes::NoChanges), None),
+            Role::Worker => Self::worker(&servers, access),
+        }
+        .definition()
+    }
+
+    fn action(params: &std::collections::HashMap<String, Value>) -> &str {
+        params
+            .get("action")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or_default()
+    }
+
+    /// Says in the transcript that the main agent started or stopped a
+    /// server, and keeps its stops.
+    fn after(&self, action: &str, server: Option<&str>, result: &Result<ToolOutput, ToolError>) {
+        let (Some(server), Ok(output)) = (server, result) else {
+            return;
+        };
+        match action {
+            "stop" => {
+                crate::lock(&self.servers.stopped).insert(server.to_string());
+                if let Some(notices) = &self.notices {
+                    notices.info(&format!("The main agent stopped the MCP server {server}."));
+                }
+            }
+            "start" => {
+                crate::lock(&self.servers.stopped).remove(server);
+                if output.text.starts_with("Started ")
+                    && let Some(notices) = &self.notices
+                {
+                    notices.info(&format!("The main agent started the MCP server {server}."));
+                }
+            }
+            "call" | "tools" => {
+                crate::lock(&self.servers.stopped).remove(server);
+            }
+            _ => {}
+        }
+    }
+}
+
+#[async_trait]
+impl Tool for Bridge {
+    fn definition(&self) -> ToolDefinition {
+        self.inner.definition()
+    }
+
+    fn allow_result_interception(&self) -> bool {
+        self.inner.allow_result_interception()
+    }
+
+    /// An `add` waits for the user's answer, which no host limit cuts
+    /// short. The other actions keep their own limit ([`CALL_LIMIT`]).
     fn uses_host_timeout(&self) -> bool {
-        self.tool.uses_host_timeout()
+        false
     }
 
     fn interruptible(&self) -> bool {
-        self.tool.interruptible()
+        self.inner.interruptible()
     }
 
     fn recovery_mode(&self) -> ToolRecovery {
-        self.tool.recovery_mode()
+        self.inner.recovery_mode()
     }
 
-    /// A call can move to the background (Ctrl+B), its job awaiting the
-    /// server's response.
+    fn recovery_mode_for(&self, params: &std::collections::HashMap<String, Value>) -> ToolRecovery {
+        self.inner.recovery_mode_for(params)
+    }
+
+    fn parallel_safe_for(&self, params: &std::collections::HashMap<String, Value>) -> Option<bool> {
+        self.inner.parallel_safe_for(params)
+    }
+
     fn background_mode(&self) -> arko_agents::ToolBackground {
-        self.tool.background_mode()
+        self.inner.background_mode()
     }
 
     async fn execute(
@@ -624,7 +1195,9 @@ impl Tool for ServerTool {
         context: &TaskContext<'_>,
         params: std::collections::HashMap<String, Value>,
     ) -> Result<String, ToolError> {
-        self.tool.execute(context, params).await
+        self.execute_with_output(context, params)
+            .await
+            .map(|output| output.text)
     }
 
     async fn execute_with_output(
@@ -632,26 +1205,91 @@ impl Tool for ServerTool {
         context: &TaskContext<'_>,
         params: std::collections::HashMap<String, Value>,
     ) -> Result<ToolOutput, ToolError> {
-        self.tool.execute_with_output(context, params).await
+        let action = Self::action(&params).to_string();
+        let server = params
+            .get("server")
+            .and_then(Value::as_str)
+            .map(|name| name.trim().to_string());
+        let result = if action == "add" {
+            self.inner.execute_with_output(context, params).await
+        } else {
+            match tokio::time::timeout(CALL_LIMIT, self.inner.execute_with_output(context, params))
+                .await
+            {
+                Ok(result) => result,
+                Err(_) => Err(ToolError::ExecutionFailed(format!(
+                    "The {action} action got no answer within {} minutes, so Arko stopped it.",
+                    CALL_LIMIT.as_secs() / 60
+                ))),
+            }
+        };
+        if self.role == Role::Lead {
+            self.after(&action, server.as_deref(), &result);
+        }
+        result
     }
 }
 
-/// Stands in for a tool of a server that isn't running. A conversation kept
-/// with its own configuration still offers the tools it was saved with, and
-/// can't resume unless each is registered, for those runs only
-/// (`resume_only_agent_tool`). A chat starts no servers, and in an agent's
-/// session a server may be gone from the files or fail to start.
+/// The servers each run may reach: every one for the main agent's runs, and
+/// a worker's own set ([`crate::crew::Crew`] records it with the run).
+pub struct Access {
+    crew: Option<std::sync::Weak<crate::crew::Crew>>,
+}
+
+impl Access {
+    pub fn new(crew: Option<&Arc<crate::crew::Crew>>) -> Self {
+        Self {
+            crew: crew.map(Arc::downgrade),
+        }
+    }
+}
+
+impl McpAccess for Access {
+    fn servers_for(&self, ctx: &TaskContext<'_>) -> Option<Vec<String>> {
+        let crew = self.crew.as_ref()?.upgrade()?;
+        mcp_servers_of(&crew, ctx.task_id)
+    }
+}
+
+/// The servers the worker run `run` may reach, or `None` for every one.
+// Until the crew records each worker's servers, every run reaches every
+// server (the worker bridge still leaves out those marked `workers: false`).
+fn mcp_servers_of(_crew: &crate::crew::Crew, _run: uuid::Uuid) -> Option<Vec<String>> {
+    None
+}
+
+/// Stands in for a tool a saved conversation offers that this session
+/// doesn't run. A conversation kept with its own configuration still offers
+/// the tools it was saved with, and can't resume unless each is registered,
+/// for those runs only (`resume_only_agent_tool`). A chat starts no servers,
+/// and in an agent's session a server may be gone from the files or fail to
+/// start.
 #[derive(Debug)]
 pub struct UnstartedTool {
     name: String,
     said: String,
+    /// The definition the conversation was offered, for the `mcp` tool.
+    definition: Option<ToolDefinition>,
 }
 
 impl UnstartedTool {
     /// For a tool in a chat.
     pub fn in_chat(name: String) -> Self {
         let said = "This MCP server isn't running, because a chat starts none. The user can switch to Agent to use it.".into();
-        Self { name, said }
+        Self {
+            name,
+            said,
+            definition: None,
+        }
+    }
+
+    /// For `role`'s `mcp` tool in a chat.
+    pub fn bridge_in_chat(role: Role) -> Self {
+        Self {
+            name: MCP_TOOL_NAME.into(),
+            said: crate::details::CHAT_MCP_NOTE.into(),
+            definition: Some(Bridge::definition_of(role)),
+        }
     }
 
     /// For a tool of a server that is no longer set up or didn't start.
@@ -660,13 +1298,20 @@ impl UnstartedTool {
         let said = format!(
             "The MCP server {server} isn't running. It's no longer set up, or it failed to start."
         );
-        Self { name, said }
+        Self {
+            name,
+            said,
+            definition: None,
+        }
     }
 }
 
 #[async_trait]
 impl Tool for UnstartedTool {
     fn definition(&self) -> ToolDefinition {
+        if let Some(definition) = &self.definition {
+            return definition.clone();
+        }
         ToolDefinition {
             name: self.name.clone(),
             description: self.said.clone(),
@@ -689,524 +1334,5 @@ impl Tool for UnstartedTool {
     }
 }
 
-/// A server Arko tried to start.
-pub struct Started {
-    pub server: Server,
-    /// Its tools' names, or why it didn't start.
-    pub result: Result<Vec<String>, String>,
-}
-
-/// The servers running for this Arko process.
-#[derive(Default)]
-pub struct Running {
-    pub servers: Vec<Started>,
-    tools: Vec<Arc<dyn Tool>>,
-    managers: Vec<McpManager>,
-}
-
-impl Running {
-    /// Starts `servers` at the same time, each given a minute to start.
-    pub async fn start(servers: Vec<Server>) -> Self {
-        let starting: Vec<_> = servers
-            .into_iter()
-            .map(|server| {
-                let config = McpConfig {
-                    mcp_servers: vec![server.config()],
-                };
-                let task = tokio::spawn(async move {
-                    match tokio::time::timeout(STARTUP_TIMEOUT, McpManager::from_config(&config))
-                        .await
-                    {
-                        Ok(Ok(manager)) => Ok(manager),
-                        Ok(Err(error)) => Err(error.to_string()),
-                        Err(_) => Err(format!(
-                            "it didn't start within {} s",
-                            STARTUP_TIMEOUT.as_secs()
-                        )),
-                    }
-                });
-                (server, task)
-            })
-            .collect();
-        let mut running = Self::default();
-        let mut taken = HashSet::new();
-        for (server, task) in starting {
-            let manager = task.await.unwrap_or_else(|error| Err(error.to_string()));
-            let result = manager.map(|manager| {
-                let mut names = Vec::new();
-                for tool in manager.tools() {
-                    let name = tool_name(&server.name, tool.remote_tool_name());
-                    if !taken.insert(name.clone()) {
-                        log::warn!(
-                            "MCP server '{}': tool '{}' is left out, as its name {name} is taken",
-                            server.name,
-                            tool.remote_tool_name()
-                        );
-                        continue;
-                    }
-                    running.tools.push(Arc::new(ServerTool {
-                        name: name.clone(),
-                        tool: tool.clone(),
-                    }));
-                    names.push(name);
-                }
-                running.managers.push(manager);
-                names
-            });
-            running.servers.push(Started { server, result });
-        }
-        running
-    }
-
-    pub fn tools(&self) -> &[Arc<dyn Tool>] {
-        &self.tools
-    }
-
-    /// The names of the tools, in the servers' order.
-    pub fn tool_names(&self) -> Vec<String> {
-        self.tools.iter().map(|tool| tool.name()).collect()
-    }
-
-    /// The names of the servers that started.
-    pub fn started(&self) -> Vec<String> {
-        self.servers
-            .iter()
-            .filter(|started| started.result.is_ok())
-            .map(|started| started.server.name.clone())
-            .collect()
-    }
-
-    /// The servers, one line each: `github (12 tools)`.
-    pub fn summary(&self) -> Option<String> {
-        if self.servers.is_empty() {
-            return None;
-        }
-        let servers = self
-            .servers
-            .iter()
-            .map(|started| match &started.result {
-                Ok(tools) => format!(
-                    "{} ({} tool{})",
-                    started.server.name,
-                    tools.len(),
-                    if tools.len() == 1 { "" } else { "s" }
-                ),
-                Err(_) => format!("{} (failed)", started.server.name),
-            })
-            .collect::<Vec<_>>();
-        Some(format!("MCP servers {}", servers.join(", ")))
-    }
-
-    /// Stops the servers: each gets three seconds to exit, then is killed.
-    pub async fn shutdown(&mut self) {
-        let stopping: Vec<_> = self
-            .managers
-            .drain(..)
-            .map(|manager| tokio::spawn(manager.shutdown()))
-            .collect();
-        for task in stopping {
-            let _ = task.await;
-        }
-    }
-}
-
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn lookup(name: &str) -> Option<String> {
-        match name {
-            "TOKEN" => Some("secret".into()),
-            "EMPTY" => Some(String::new()),
-            _ => None,
-        }
-    }
-
-    fn parsed(text: &str) -> Parsed {
-        parse(text, Path::new("/x/.mcp.json"), &lookup).unwrap()
-    }
-
-    #[test]
-    fn both_formats_are_read() {
-        let claude = parsed(
-            r#"{"mcpServers": {"github": {"command": "npx", "args": ["-y", "server-github"], "env": {"GITHUB_TOKEN": "${TOKEN}"}}}}"#,
-        );
-        assert!(claude.skipped.is_empty());
-        let server = &claude.servers[0];
-        assert_eq!(server.name, "github");
-        assert_eq!(server.command, "npx");
-        assert_eq!(server.args, ["-y", "server-github"]);
-        assert_eq!(server.env["GITHUB_TOKEN"], "secret");
-        assert_eq!(server.shown, "npx -y server-github");
-        assert_eq!(server.file, Path::new("/x/.mcp.json"));
-
-        let arko = parsed(
-            r#"{"mcpServers": [{"name": "files", "command": "fs-server", "args": ["/tmp", 8080]}, {"command": "nameless"}]}"#,
-        );
-        assert_eq!(arko.servers.len(), 1);
-        assert_eq!(arko.servers[0].name, "files");
-        assert_eq!(arko.servers[0].args, ["/tmp", "8080"]);
-        assert_eq!(arko.skipped, ["server 2 has no name"]);
-    }
-
-    #[test]
-    fn http_disabled_and_broken_servers_are_skipped() {
-        let parsed = parsed(
-            r#"{"mcpServers": {
-                "remote": {"type": "http", "url": "https://example.com/mcp"},
-                "bare": {"url": "https://example.com/sse"},
-                "off": {"command": "x", "disabled": true},
-                "unset": {"command": "x", "args": ["--token=${MISSING}"]},
-                "empty": {"command": " "},
-                "ok": {"type": "stdio", "command": "run", "args": ["${MISSING:-fallback}", "${EMPTY:-used}", "a${TOKEN}b"]}
-            }}"#,
-        );
-        assert_eq!(parsed.servers.len(), 1);
-        assert_eq!(parsed.servers[0].args, ["fallback", "used", "asecretb"]);
-        let skipped = parsed.skipped.join("\n");
-        assert!(skipped.contains("`remote` is a `http` server"), "{skipped}");
-        assert!(skipped.contains("`bare` is an HTTP server"), "{skipped}");
-        assert!(
-            skipped.contains("`unset` uses ${MISSING}, which isn't set"),
-            "{skipped}"
-        );
-        assert!(skipped.contains("`empty` has no `command`"), "{skipped}");
-        assert!(!skipped.contains("off"), "{skipped}");
-        assert!(parse("{}", Path::new("f"), &lookup).is_err());
-        assert!(parse("not json", Path::new("f"), &lookup).is_err());
-    }
-
-    #[test]
-    fn variables_expand_and_text_without_them_stays() {
-        assert_eq!(
-            expand("plain $HOME {x}", &lookup).unwrap(),
-            "plain $HOME {x}"
-        );
-        assert_eq!(expand("${TOKEN}${TOKEN}", &lookup).unwrap(), "secretsecret");
-        assert_eq!(expand("${EMPTY}", &lookup).unwrap(), "");
-        assert_eq!(expand("open ${TOKEN", &lookup).unwrap(), "open ${TOKEN");
-    }
-
-    #[test]
-    fn tool_names_are_ones_the_providers_take() {
-        assert_eq!(
-            tool_name("github", "create_issue"),
-            "mcp__github__create_issue"
-        );
-        assert_eq!(
-            tool_name("my server", "files.read"),
-            "mcp__my_server__files_read"
-        );
-        let long = tool_name(
-            "a-server-with-a-long-name",
-            "a_tool_with_an_even_longer_name_than_that",
-        );
-        let other = tool_name(
-            "a-server-with-a-long-name",
-            "a_tool_with_an_even_longer_name_than_this",
-        );
-        assert_eq!(long.len(), 64);
-        assert_ne!(long, other);
-        // The same name every time: sessions keep tool names.
-        assert_eq!(
-            long,
-            tool_name(
-                "a-server-with-a-long-name",
-                "a_tool_with_an_even_longer_name_than_that"
-            )
-        );
-        let valid = |name: &str| {
-            name.chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
-        };
-        assert!(valid(&long) && valid(&tool_name("ü s", "ö.t")));
-        assert_eq!(
-            split_tool_name("mcp__github__create_issue"),
-            Some(("github", "create_issue"))
-        );
-        assert_eq!(split_tool_name("shell"), None);
-    }
-
-    /// The files are read in order, a name is taken from the first file
-    /// that has it, and a project's servers start only when approved.
-    #[test]
-    fn servers_come_from_the_flag_the_project_and_fins_folder() {
-        let temp = tempfile::tempdir().unwrap();
-        let root = temp.path().join("arko");
-        let workspace = temp.path().join("project");
-        std::fs::create_dir_all(&root).unwrap();
-        std::fs::create_dir_all(&workspace).unwrap();
-        std::fs::write(
-            root.join(USER_FILE),
-            r#"{"mcpServers": {"shared": {"command": "user-shared"}, "mine": {"command": "user-mine"}}}"#,
-        )
-        .unwrap();
-        let flag = temp.path().join("extra.json");
-        std::fs::write(
-            &flag,
-            r#"{"mcpServers": {"shared": {"command": "flag-shared"}}}"#,
-        )
-        .unwrap();
-        let (servers, notes) = servers_of(&root, &workspace, std::slice::from_ref(&flag));
-        assert_eq!(servers, ["shared=flag-shared", "mine=user-mine"]);
-        assert!(notes[0].contains("`shared`"), "{notes:?}");
-
-        // A project's servers wait for an answer, which needs a terminal.
-        let project = r#"{"mcpServers": {"proj": {"command": "project-server"}}}"#;
-        std::fs::write(workspace.join(PROJECT_FILE), project).unwrap();
-        let (servers, notes) = servers_of(&root, &workspace, &[]);
-        // A file's servers by name come in the order of their names.
-        assert_eq!(servers, ["mine=user-mine", "shared=user-shared"]);
-        assert!(
-            notes.iter().any(|note| note.contains("aren't started")),
-            "{notes:?}"
-        );
-
-        // Approved, they start; changed, they wait again.
-        let mut approvals = Approvals::default();
-        approvals.projects.insert(
-            workspace.display().to_string(),
-            Approval {
-                start: true,
-                servers: serde_json::from_str::<Value>(project).unwrap()["mcpServers"].clone(),
-            },
-        );
-        std::fs::write(
-            root.join(APPROVALS_FILE),
-            serde_json::to_string(&approvals).unwrap(),
-        )
-        .unwrap();
-        let (servers, _) = servers_of(&root, &workspace, &[]);
-        assert_eq!(
-            servers,
-            [
-                "proj=project-server",
-                "mine=user-mine",
-                "shared=user-shared"
-            ]
-        );
-        std::fs::write(
-            workspace.join(PROJECT_FILE),
-            r#"{"mcpServers": {"proj": {"command": "something-else"}}}"#,
-        )
-        .unwrap();
-        let (servers, _) = servers_of(&root, &workspace, &[]);
-        assert_eq!(servers, ["mine=user-mine", "shared=user-shared"]);
-        // Named with --mcp-config, they start without an answer.
-        let (servers, _) = servers_of(&root, &workspace, &[workspace.join(PROJECT_FILE)]);
-        assert_eq!(
-            servers,
-            [
-                "proj=something-else",
-                "mine=user-mine",
-                "shared=user-shared"
-            ]
-        );
-        // A file --mcp-config names must be readable.
-        let missing = temp.path().join("missing.json");
-        assert!(plan(&root, &workspace, std::slice::from_ref(&missing), true).is_err());
-        // An app's: its servers aren't started, and a note names it; the
-        // others start.
-        let (servers, notes) = plan(&root, &workspace, std::slice::from_ref(&missing), false)
-            .unwrap()
-            .decide(None)
-            .unwrap();
-        assert_eq!(servers.len(), 2);
-        assert!(
-            notes
-                .iter()
-                .any(|note| note.contains(&missing.display().to_string())),
-            "{notes:?}"
-        );
-    }
-
-    /// The project's servers wait for the front end's answer: the plan
-    /// says what it would ask, the answer starts them or not, and is
-    /// remembered until the file's servers change. With no answer (no one
-    /// can ask), they don't start.
-    #[test]
-    fn project_mcp_servers_wait_for_the_prompters_answer() {
-        let temp = tempfile::tempdir().unwrap();
-        let root = temp.path().join("arko");
-        let workspace = temp.path().join("project");
-        std::fs::create_dir_all(&workspace).unwrap();
-        std::fs::write(
-            workspace.join(PROJECT_FILE),
-            r#"{"mcpServers": {"proj": {"command": "project-server", "args": ["--fast"]}, "web": {"url": "https://example.com"}}}"#,
-        )
-        .unwrap();
-        let names = |servers: &[Server]| {
-            servers
-                .iter()
-                .map(|server| server.name.clone())
-                .collect::<Vec<_>>()
-        };
-        let asked = plan(&root, &workspace, &[], true).unwrap();
-        let approval = asked.approval.clone().unwrap();
-        assert_eq!(approval.file, workspace.join(PROJECT_FILE));
-        assert_eq!(
-            approval.servers,
-            [("proj".to_string(), "project-server --fast".to_string())]
-        );
-        assert_eq!(approval.skipped.len(), 1, "{approval:?}");
-        // No one to ask: they don't start, and nothing is remembered.
-        let (servers, notes) = asked.decide(None).unwrap();
-        assert!(servers.is_empty());
-        assert!(
-            notes.iter().any(|note| note.contains("aren't started")),
-            "{notes:?}"
-        );
-        assert!(
-            plan(&root, &workspace, &[], true)
-                .unwrap()
-                .approval
-                .is_some()
-        );
-        // Yes: they start, and the next session doesn't ask.
-        let (servers, _) = plan(&root, &workspace, &[], true)
-            .unwrap()
-            .decide(Some(true))
-            .unwrap();
-        assert_eq!(names(&servers), ["proj"]);
-        let remembered = plan(&root, &workspace, &[], true).unwrap();
-        assert!(remembered.approval.is_none());
-        assert_eq!(names(&remembered.decide(None).unwrap().0), ["proj"]);
-        // Changed, it asks again, and no is remembered too.
-        std::fs::write(
-            workspace.join(PROJECT_FILE),
-            r#"{"mcpServers": {"proj": {"command": "other-server"}}}"#,
-        )
-        .unwrap();
-        let changed = plan(&root, &workspace, &[], true).unwrap();
-        assert!(changed.approval.is_some());
-        assert!(changed.decide(Some(false)).unwrap().0.is_empty());
-        let refused = plan(&root, &workspace, &[], true).unwrap();
-        assert!(refused.approval.is_none());
-        assert!(refused.decide(None).unwrap().0.is_empty());
-    }
-
-    fn servers_of(root: &Path, workspace: &Path, files: &[PathBuf]) -> (Vec<String>, Vec<String>) {
-        let (servers, notes) = plan(root, workspace, files, true)
-            .unwrap()
-            .decide(None)
-            .unwrap();
-        (
-            servers
-                .into_iter()
-                .map(|server| format!("{}={}", server.name, server.command))
-                .collect(),
-            notes,
-        )
-    }
-
-    /// A stub server over standard input and output (Python's standard
-    /// library): its tools are offered under their MCP names, and called.
-    #[tokio::test]
-    async fn a_server_starts_and_its_tools_are_called_and_one_that_fails_is_reported() {
-        let temp = tempfile::tempdir().unwrap();
-        let script = temp.path().join("stub.py");
-        std::fs::write(&script, STUB_SERVER).unwrap();
-        let python = std::env::var("ARKO_TEST_PYTHON")
-            .unwrap_or_else(|_| if cfg!(windows) { "python" } else { "python3" }.into());
-        let stub = Server {
-            name: "stub server".into(),
-            command: python,
-            args: vec![script.display().to_string()],
-            env: BTreeMap::from([("STUB_PREFIX".into(), "echo".into())]),
-            shown: String::new(),
-            file: PathBuf::new(),
-        };
-        let missing = Server {
-            name: "missing".into(),
-            command: "arko-no-such-mcp-server".into(),
-            ..stub.clone()
-        };
-        let mut running = Running::start(vec![stub, missing]).await;
-        assert_eq!(
-            running.tool_names(),
-            ["mcp__stub_server__echo", "mcp__stub_server__write_note"]
-        );
-        assert_eq!(running.started(), ["stub server"]);
-        assert!(
-            running.servers[1]
-                .result
-                .as_ref()
-                .unwrap_err()
-                .contains("arko-no-such-mcp-server")
-        );
-        assert_eq!(
-            running.summary().unwrap(),
-            "MCP servers stub server (2 tools), missing (failed)"
-        );
-        let echo = running.tools()[0].clone();
-        let definition = echo.definition();
-        assert!(definition.description.contains("Echoes text"));
-        assert!(definition.parallel_safe, "the stub marks echo read-only");
-        // Its calls can move to the background, as the framework's MCP
-        // tools' can.
-        assert_eq!(echo.background_mode(), arko_agents::ToolBackground::Detach);
-        let context = TaskContext::new(uuid::Uuid::new_v4(), "main", "test", temp.path());
-        let output = echo
-            .execute(
-                &context,
-                [("text".to_string(), Value::from("hi"))]
-                    .into_iter()
-                    .collect(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(output, "echo: hi");
-        running.shutdown().await;
-    }
-
-    /// A tool kept for a saved conversation answers a call by saying its
-    /// server isn't running, and why.
-    #[tokio::test]
-    async fn a_tool_of_a_server_not_started_says_so() {
-        let context = TaskContext::new(uuid::Uuid::new_v4(), "main", "test", Path::new("."));
-        let said = async |tool: UnstartedTool| {
-            assert_eq!(tool.definition().name, "mcp__stub__ping");
-            let error = tool.execute(&context, Default::default()).await;
-            error.unwrap_err().to_string()
-        };
-        let chat = said(UnstartedTool::in_chat("mcp__stub__ping".into())).await;
-        assert!(chat.contains("a chat starts none"), "{chat}");
-        let gone = said(UnstartedTool::not_running("mcp__stub__ping".into())).await;
-        assert!(
-            gone.contains(
-                "The MCP server stub isn't running. It's no longer set up, or it failed to start."
-            ),
-            "{gone}"
-        );
-    }
-
-    const STUB_SERVER: &str = r#"
-import json, os, sys
-TOOLS = [
-    {"name": "echo", "description": "Echoes text.", "annotations": {"readOnlyHint": True},
-     "inputSchema": {"type": "object", "properties": {"text": {"type": "string"}}}},
-    {"name": "write.note", "description": "Writes a note.",
-     "inputSchema": {"type": "object", "properties": {"text": {"type": "string"}}}},
-]
-def reply(id, result):
-    sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": id, "result": result}) + "\n")
-    sys.stdout.flush()
-for line in sys.stdin:
-    message = json.loads(line)
-    if "id" not in message:
-        continue
-    method = message.get("method")
-    if method == "initialize":
-        reply(message["id"], {"protocolVersion": message["params"]["protocolVersion"],
-              "capabilities": {"tools": {}}, "serverInfo": {"name": "stub", "version": "1"}})
-    elif method == "tools/list":
-        reply(message["id"], {"tools": TOOLS})
-    elif method == "tools/call":
-        text = message["params"].get("arguments", {}).get("text", "")
-        reply(message["id"], {"content": [{"type": "text", "text": os.environ["STUB_PREFIX"] + ": " + text}]})
-    else:
-        sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": message["id"],
-                         "error": {"code": -32601, "message": "unknown"}}) + "\n")
-        sys.stdout.flush()
-"#;
-}
+pub(crate) mod tests;

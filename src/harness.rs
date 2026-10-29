@@ -314,9 +314,16 @@ pub(crate) fn unoffered_with(
             // One saved before edit_file edits files with apply_diff.
             let edits_with_apply_diff = name == EDIT_FILE_TOOL_NAME
                 && offered.iter().any(|name| name == APPLY_DIFF_TOOL_NAME);
+            // One saved with a tool for each MCP tool reaches the servers
+            // through those.
+            let reaches_servers = name == mcp::MCP_TOOL_NAME
+                && offered
+                    .iter()
+                    .any(|name| mcp::split_tool_name(name).is_some());
             if !offered.contains(name)
                 && !missing.contains(&name.as_str())
                 && !edits_with_apply_diff
+                && !reaches_servers
             {
                 missing.push(name);
             }
@@ -380,6 +387,9 @@ pub(crate) fn unoffered_with(
     if missing.iter().any(|name| MonitorTool::NAMES.contains(name)) {
         parts.push("monitors (monitor_start)".to_string());
     }
+    if missing.contains(&mcp::MCP_TOOL_NAME) {
+        parts.push("MCP servers (mcp)".to_string());
+    }
     let mut servers: Vec<&str> = Vec::new();
     for (server, _) in missing.iter().filter_map(|name| mcp::split_tool_name(name)) {
         if !servers.contains(&server) {
@@ -399,6 +409,7 @@ pub(crate) fn unoffered_with(
     let named = |name: &str| {
         index::TOOL_NAMES.contains(&name)
             || mcp::split_tool_name(name).is_some()
+            || name == mcp::MCP_TOOL_NAME
             || crew::LEAD_TOOL_NAMES.contains(&name)
             || crew::WORKER_TOOL_NAMES.contains(&name)
             || agents::FILE_TOOL_NAMES.contains(&name)
@@ -515,7 +526,8 @@ pub(crate) struct Harness {
     /// Arko's folder.
     pub(crate) root: PathBuf,
     /// The MCP servers started, and what was left out and why.
-    pub(crate) mcp: mcp::Running,
+    /// The MCP servers, and how the main agent adds and removes them.
+    pub(crate) mcp: mcp::Session,
     /// The skill folders that exist.
     pub(crate) skill_folders: Vec<PathBuf>,
     /// The search indexes; `None` when they couldn't be opened.
@@ -717,12 +729,24 @@ impl Harness {
         for tool in &self.tools {
             builder = builder.agent_tool(MAIN, tool.clone());
         }
+        // The MCP servers: `mcp`, offered to the conversations whose
+        // configuration lists it (every new one), and a tool for each tool
+        // of a running server, for the conversations saved with those, which
+        // keep their tool list and their prompt cache. Neither is offered to
+        // a conversation that doesn't list it.
+        let access: Arc<dyn arko_agents::mcp::McpAccess> =
+            Arc::new(mcp::Access::new(self.crew.as_ref()));
+        builder = builder.resume_only_agent_tool(MAIN, self.mcp.lead_tool(access.clone()));
+        let direct = self.mcp.servers.hub.direct_tools();
+        for tool in &direct {
+            builder = builder.resume_only_agent_tool(MAIN, tool.clone());
+        }
         // The conversations kept with their own configuration still offer the
         // tools of servers that don't run (a chat starts none, and a server
         // may be gone from the files or fail to start), and a resume needs
         // each registered. Only those runs are offered the stand-ins.
         if keep && let Some(saved) = &saved {
-            let running = self.mcp.tool_names();
+            let running: Vec<String> = direct.iter().map(|tool| tool.name()).collect();
             for name in saved
                 .mcp_tools
                 .iter()
@@ -807,6 +831,10 @@ impl Harness {
                 .agent_handover_threshold(WORKER, self.handover.workers_threshold());
             for tool in &self.tools {
                 builder = builder.agent_tool(WORKER, tool.clone());
+            }
+            builder = builder.resume_only_agent_tool(WORKER, self.mcp.worker_tool(access));
+            for tool in direct {
+                builder = builder.resume_only_agent_tool(WORKER, tool);
             }
             if legacy {
                 for name in crew::LEGACY_TOOL_NAMES {
@@ -974,7 +1002,7 @@ impl Harness {
     /// session started).
     pub(crate) fn header(&self, model_note: Option<String>) -> ui::Banner {
         let mut tools = Vec::new();
-        tools.extend(self.mcp.summary());
+        tools.extend(self.mcp.servers.summary());
         let mut notes: Vec<(String, Option<Level>)> = Vec::new();
         let count = self.own_skills();
         if count > 0 {
@@ -1043,7 +1071,7 @@ impl Harness {
                 .unwrap_or_default()
         )));
         let mut extras = Vec::new();
-        extras.extend(self.mcp.summary());
+        extras.extend(self.mcp.servers.summary());
         let count = self.own_skills();
         if count > 0 {
             extras.push(format!(
@@ -1935,6 +1963,7 @@ impl Harness {
             "/profiles" => self.profiles_command(argument),
             "/jobs" => self.jobs_command(argument),
             "/notes" => self.notes_command(argument),
+            "/mcp" => self.mcp_command(argument),
             _ => self.handover_at_command(argument, source),
         }
         // (A setting it changed shows in the status and the details.)
@@ -3373,42 +3402,6 @@ impl Harness {
                     "While the agent works, what you type adds to its task, and Ctrl-C stops the turn (the workers go on). When it asks you something, type the answer.",
                 ));
             }
-        }
-    }
-
-    /// `/mcp`: each server with its tools, or why it didn't start.
-    pub(crate) fn list_mcp(&self) {
-        let out = &self.output;
-        let facts = self.details.mcp();
-        // (A chat's note says why it has none.)
-        if facts.servers.is_empty() && self.settings.mode != Mode::Chat {
-            out.line(&format!(
-                "No MCP servers. Arko starts those set up in {}, in the project's {} (once you approve them) and in --mcp-config files.",
-                facts.user_file.display(),
-                mcp::PROJECT_FILE
-            ));
-        }
-        for server in &facts.servers {
-            out.line(&format!(
-                "{}  {}",
-                out.bold(&server.name),
-                out.dim(&format!(
-                    "{} · {}",
-                    ui::cut(&server.shown, 100),
-                    server.file.display()
-                ))
-            ));
-            match &server.tools {
-                Ok(tools) if tools.is_empty() => out.line(&out.dim("  no tools")),
-                Ok(tools) => out.line(&format!("  {}", tools.join(", "))),
-                Err(error) => out.line(&out.error(&format!("  didn't start ({error})"))),
-            }
-        }
-        for note in &facts.notes {
-            out.line(&out.dim(note));
-        }
-        if let Some(note) = &facts.unoffered {
-            out.line(&out.warn(note));
         }
     }
 
@@ -4855,7 +4848,7 @@ pub(crate) fn publish_title_from_disk(session: &Session, gauges: &Gauges) {
 /// The commands that change a setting while the session runs, which take
 /// an argument: `/outside`, `/model`, `/handover`, `/handover-at`, `/keys`.
 /// And `/message`, which works while the agent works too.
-pub(crate) const LIVE_COMMANDS: [&str; 26] = [
+pub(crate) const LIVE_COMMANDS: [&str; 27] = [
     "/outside",
     "/model",
     "/handover",
@@ -4881,6 +4874,7 @@ pub(crate) const LIVE_COMMANDS: [&str; 26] = [
     "/profiles",
     "/jobs",
     "/notes",
+    "/mcp",
     "/message",
 ];
 
@@ -5939,8 +5933,10 @@ pub(crate) mod tests {
         assert_eq!(asker.respond(request("Hello?")).await.unwrap(), CANT_ASK);
     }
 
-    /// A session started before an MCP server, the search indexes or
-    /// skills were there is told that its agents don't get them.
+    /// A session started before the search indexes, skills or the `mcp`
+    /// tool were there is told that its agents don't get them. One saved
+    /// with a tool for each MCP tool reaches the servers through those, so
+    /// it isn't told of `mcp`.
     #[test]
     fn a_resumed_session_says_which_tools_its_agents_lack() {
         let opus = ModelSettings {
@@ -5951,39 +5947,59 @@ pub(crate) mod tests {
             handover_at: None,
         };
         let plain = AgentSettings::for_test(&opus, &opus);
-        let saved = SavedSetup {
-            name: WORKFLOW_NAME.into(),
-            mcp_tools: Default::default(),
-            configs: [
-                (MAIN.to_string(), agents::main_config(&plain).unwrap()),
-                (WORKER.to_string(), agents::worker_config(&plain).unwrap()),
-            ]
-            .into(),
+        let saved_with = |change: &dyn Fn(&mut arko_agents::AgentConfig)| {
+            let mut main = agents::main_config(&plain).unwrap();
+            let mut worker = agents::worker_config(&plain).unwrap();
+            change(&mut main);
+            change(&mut worker);
+            SavedSetup {
+                name: WORKFLOW_NAME.into(),
+                mcp_tools: Default::default(),
+                configs: [(MAIN.to_string(), main), (WORKER.to_string(), worker)].into(),
+            }
         };
-        let fresh = |settings: &AgentSettings| {
+        let saved = saved_with(&|_| {});
+        let fresh = |saved: &SavedSetup, settings: &AgentSettings| {
             let main = agents::main_config(settings).unwrap();
             let worker = agents::worker_config(settings).unwrap();
-            unoffered(&saved, &[(MAIN, &main), (WORKER, &worker)])
+            unoffered(saved, &[(MAIN, &main), (WORKER, &worker)])
         };
-        assert_eq!(fresh(&plain), None);
-        let tools = [
-            "mcp__github__create_issue".to_string(),
-            "mcp__db__query".to_string(),
-        ];
+        assert_eq!(fresh(&saved, &plain), None);
         let servers = ["github".to_string(), "db".to_string()];
         let folders = [PathBuf::from("/work/.claude/skills")];
-        let note = fresh(&AgentSettings {
-            mcp_tools: &tools,
+        let with = AgentSettings {
             mcp_servers: &servers,
             skill_folders: &folders,
             index_tools: index::TOOL_NAMES,
             indexes: &[],
-            ..plain
-        })
-        .unwrap();
+            ..AgentSettings::for_test(&opus, &opus)
+        };
         assert_eq!(
-            note,
-            "This session started without the search index tools, the tools of the MCP servers github and db, and skills, so its agents don't get them. A new session does."
+            fresh(&saved, &with).unwrap(),
+            "This session started without the search index tools and skills, so its agents don't get them. A new session does."
+        );
+        // Saved before `mcp`: with a tool for each MCP tool, nothing is said
+        // of it, and without, it is.
+        let direct = saved_with(&|config| {
+            let tools = &mut config.tool_config.available_tool_names;
+            tools.retain(|name| name != "mcp");
+            tools.push("mcp__github__create_issue".into());
+        });
+        let workers_too = AgentSettings {
+            mcp_servers: &servers,
+            mcp_for_workers: true,
+            ..AgentSettings::for_test(&opus, &opus)
+        };
+        assert_eq!(fresh(&direct, &workers_too), None);
+        let before = saved_with(&|config| {
+            config
+                .tool_config
+                .available_tool_names
+                .retain(|name| name != "mcp");
+        });
+        assert_eq!(
+            fresh(&before, &plain).unwrap(),
+            "This session started without MCP servers (mcp), so its agents don't get them. A new session does."
         );
     }
 
@@ -6101,7 +6117,8 @@ pub(crate) mod tests {
             gauges.clone(),
             None,
             Vec::new(),
-            details::McpFacts::of(&mcp::Running::default(), &[], &root),
+            mcp::Servers::default(),
+            Vec::new(),
         ));
         let mut harness = Harness {
             ask_about_workers: false,
@@ -6119,7 +6136,7 @@ pub(crate) mod tests {
             worker_config,
             tools: Vec::new(),
             root,
-            mcp: mcp::Running::default(),
+            mcp: Default::default(),
             skill_folders: Vec::new(),
             indexes: None,
             unoffered: None,
