@@ -109,9 +109,17 @@ pub struct SkillRecord {
 }
 
 impl ServerRecord {
-    /// Whether its entry is in the file at `file`, by the file's real path.
+    /// Whether its entry is in the file at `file`: the file's real path is
+    /// its file, and the folder that really holds it is the one the add
+    /// wrote in, by its identity (a record without one goes by the path). A
+    /// folder moved into the place, such as another project's `.arko`,
+    /// isn't.
     pub fn is_in(&self, file: &Path) -> bool {
-        self.file == real_path(file)
+        let real = real_path(file);
+        self.file == real
+            && self
+                .folder
+                .is_none_or(|id| real.parent().and_then(file_id) == Some(id))
     }
 }
 
@@ -301,13 +309,12 @@ pub fn servers(root: &Path) -> Vec<ServerRecord> {
     current(root).servers
 }
 
-/// The record of the server `name` in `file`, if an agent added it there,
-/// by the file's real path.
+/// The record of the server `name` in `file`, if an agent added it there
+/// ([`ServerRecord::is_in`]).
 pub fn server_in(root: &Path, file: &Path, name: &str) -> Option<ServerRecord> {
-    let real = real_path(file);
     servers(root)
         .into_iter()
-        .find(|server| server.file == real && server.name == name)
+        .find(|server| server.name == name && server.is_in(file))
 }
 
 /// Records a server an agent added, in place of an entry for the same name
