@@ -913,6 +913,11 @@ impl Engine {
         let asker = Arc::new(Asker {
             questions: interactive.then_some(questions_sender),
             feed: Some(feed.clone()),
+            approvals: crate::approvals::Approvals::new(
+                Some(feed.clone()),
+                interactive,
+                Some(output.clone()),
+            ),
         });
         // The main agent's questions, kept with the session.
         feed.keep_questions(session.dir.join(crate::questions::FILE));
@@ -970,7 +975,7 @@ impl Engine {
                     workspace: settings.workspace.clone(),
                     given: options.mcp_config.clone(),
                     servers: mcp_servers.clone(),
-                    ask: asker.clone(),
+                    ask: Arc::new(asker.approvals.clone()),
                     notices: Some(mcp_notices.clone()),
                     session: session.id.clone(),
                     title: Arc::new(move || {

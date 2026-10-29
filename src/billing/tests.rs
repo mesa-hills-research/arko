@@ -167,62 +167,98 @@ fn the_budget_reached_refuses_or_asks() {
     assert!(!read.get(), "no budget, no spend read");
 }
 
-/// The card names the model, that it's billed per token and its price, the
-/// task, and the budget when it was reached. Its choices allow once, allow
-/// the model for the session, or deny.
+/// The request names the model, that it's billed per token and its price,
+/// the day's spend, the task, and the budget when it was reached. Its option
+/// allows the model for the session.
 #[test]
-fn the_card_says_what_the_worker_costs() {
+fn the_request_says_what_the_worker_costs() {
+    use crate::approvals::{Approval, Look};
     let opus = model("opus");
-    let (text, choices) = question(&opus, "Review the parser", None);
     let (input, output) = prices(&opus).unwrap();
+    let card = Approval::WorkerBilling(approval(&opus, "Review the parser", Some(3.2), None));
     assert_eq!(
-        text,
+        card.title(),
+        "Start a worker on Opus 5.5, billed per token?"
+    );
+    assert_eq!(
+        (card.kind_word(), card.name(), card.scope()),
+        ("Worker", "Opus 5.5", "billed per token")
+    );
+    assert_eq!(
+        card.summary(),
         format!(
-            "Start a worker on Opus 5.5, billed per token? It costs ${} per million input tokens and ${} per million output tokens. The task is “Review the parser”.",
+            "${}/${} per million tokens, $3.20 spent today",
             per_million(input),
             per_million(output)
         )
     );
     assert_eq!(
-        choices,
-        ["Allow", "Allow Opus 5.5 for this session", "Deny"]
+        card.option().as_deref(),
+        Some("Allow Opus 5.5 for this session")
     );
-    let (text, _) = question(&opus, "  ", Some((21.3, 20.0)));
-    assert!(
-        text.ends_with("per million output tokens. Today’s API spend of $21.30 has reached your daily budget of $20."),
-        "{text}"
+    let lines: Vec<(Look, String)> = card
+        .details()
+        .into_iter()
+        .map(|detail| (detail.look, detail.text))
+        .collect();
+    assert_eq!(
+        lines,
+        [
+            (
+                Look::Text,
+                format!(
+                    "It costs ${} per million input tokens and ${} per million output tokens.",
+                    per_million(input),
+                    per_million(output)
+                )
+            ),
+            (Look::Text, "Today’s API spend is $3.20.".to_string()),
+            (Look::Text, "The task is “Review the parser”.".to_string()),
+        ]
+    );
+    // Over the budget, the spend shows as a warning.
+    let over = Approval::WorkerBilling(approval(&opus, "  ", Some(1.0), Some((21.3, 20.0))));
+    let details = over.details();
+    assert_eq!(details.len(), 2, "no task");
+    assert_eq!(details[1].look, Look::Warning);
+    assert_eq!(
+        details[1].text,
+        "Today’s API spend of $21.30 has reached your daily budget of $20."
     );
     // A long task is cut, and one that ends a sentence gets no second
     // period.
-    let (text, _) = question(&opus, &"word ".repeat(100), None);
-    assert!(text.chars().count() < 300, "{text}");
-    let (text, _) = question(&opus, "Review it.", None);
-    assert!(text.ends_with(" The task is “Review it.”"), "{text}");
+    let long = Approval::WorkerBilling(approval(&opus, &"word ".repeat(100), None, None));
+    assert!(long.details().last().unwrap().text.chars().count() < 160);
+    let ends = Approval::WorkerBilling(approval(&opus, "Review it.", None, None));
+    assert_eq!(
+        ends.details().last().unwrap().text,
+        "The task is “Review it.”"
+    );
 }
 
-/// Only a choice alone allows. Words beside it, or of the user's own, go
-/// back to the agent with a refusal, and so do "You decide" and "Not now".
+/// Approve allows the worker, with the option on for the session too.
+/// Reject refuses it, and the user's words go back to the agent with the
+/// refusal, so do the words beside an approval as a note of their own.
 #[test]
 fn the_answer_decides_and_the_agent_reads_why_it_did_not_start() {
-    let name = "Opus 5.5";
-    assert_eq!(decision("Allow", name), Decision::Allow);
-    assert_eq!(decision(" allow. ", name), Decision::Allow);
+    use crate::approvals::Answer;
+    let approved = |option: bool| Answer::Approved {
+        words: None,
+        option,
+    };
+    assert_eq!(Decision::of(&approved(false)), Decision::Allow);
+    assert_eq!(Decision::of(&approved(true)), Decision::AllowForSession);
     assert_eq!(
-        decision("Allow Opus 5.5 for this session", name),
-        Decision::AllowForSession
-    );
-    assert_eq!(decision("Deny", name), Decision::Deny(None));
-    assert_eq!(decision("deny", name), Decision::Deny(None));
-    assert_eq!(decision("", name), Decision::Dismissed);
-    assert_eq!(decision("You decide", name), Decision::LeftToAgent);
-    assert_eq!(
-        decision("Allow. Only for the tests", name),
-        Decision::Deny(Some("Allow. Only for the tests".into()))
+        Decision::of(&Answer::Rejected { words: None }),
+        Decision::Deny(None)
     );
     assert_eq!(
-        decision("use sonnet", name),
+        Decision::of(&Answer::Rejected {
+            words: Some("use sonnet".into())
+        }),
         Decision::Deny(Some("use sonnet".into()))
     );
+    assert_eq!(Decision::of(&Answer::Unanswered), Decision::Unanswered);
     let opus = model("opus");
     assert_eq!(
         refusal(&Decision::Deny(None), &opus),
@@ -232,14 +268,12 @@ fn the_answer_decides_and_the_agent_reads_why_it_did_not_start() {
         refusal(&Decision::Deny(Some("use sonnet".into())), &opus),
         "The user didn't allow a worker on Opus 5.5, which is billed per token, and wrote “use sonnet”. Act on what they wrote. A worker on a model billed per token asks them again."
     );
-    for decided in [
-        Decision::LeftToAgent,
-        Decision::Dismissed,
-        Decision::Unanswered,
-    ] {
-        let why = refusal(&decided, &opus);
-        assert!(why.contains("didn't start on Opus 5.5"), "{why}");
-    }
+    let why = refusal(&Decision::Unanswered, &opus);
+    assert!(why.contains("didn't start on Opus 5.5"), "{why}");
+    assert_eq!(
+        allowed_with(&opus, " keep it short "),
+        "The user allowed the worker on Opus 5.5, which is billed per token, and wrote “keep it short”."
+    );
     assert!(cant_ask(&opus).starts_with("No one can allow a worker billed per token"));
 }
 

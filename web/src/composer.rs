@@ -1,5 +1,5 @@
 //! The message box, with the command menu and Stop, and the agent's
-//! questions above it.
+//! questions and the approval tray above it.
 
 use std::collections::HashMap;
 
@@ -227,6 +227,7 @@ pub fn Composer() -> impl IntoView {
                 {move || page.ask.note.get().map(|note| view! { <p class="note-line" role="status">{note}</p> })}
                 {move || page.error.get().map(|error| view! { <p class="error" role="alert">{error}</p> })}
                 <crate::questions::Replying />
+                <crate::approvals::Tray />
                 <form
                     class="compose"
                     class:expanded=move || expanded.get()

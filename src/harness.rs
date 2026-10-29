@@ -1363,6 +1363,14 @@ impl Harness {
                     }
                     continue;
                 }
+                Event::Input(Some(Input::AnswerApprovals(answers))) => {
+                    self.answer_approvals(answers, Some(self.input_source));
+                    continue;
+                }
+                Event::Remote(Action::AnswerApprovals(answers)) => {
+                    self.answer_approvals(answers, Some(Source::Web));
+                    continue;
+                }
                 Event::Remote(Action::Message(text)) => {
                     self.echo_web(&text);
                     (text, Source::Web, Vec::new())
@@ -1964,6 +1972,8 @@ impl Harness {
             "/jobs" => self.jobs_command(argument),
             "/notes" => self.notes_command(argument),
             "/mcp" => self.mcp_command(argument),
+            "/approve" => self.approve_command(true, argument),
+            "/reject" => self.approve_command(false, argument),
             _ => self.handover_at_command(argument, source),
         }
         // (A setting it changed shows in the status and the details.)
@@ -3700,6 +3710,14 @@ impl Harness {
                             self.dismiss_questions(ids);
                             continue;
                         }
+                        Event::Input(Some(Input::AnswerApprovals(answers))) => {
+                            self.answer_approvals(answers, Some(self.input_source));
+                            continue;
+                        }
+                        Event::Remote(Action::AnswerApprovals(answers)) => {
+                            self.answer_approvals(answers, Some(Source::Web));
+                            continue;
+                        }
                         Event::Remote(
                             action @ (Action::Background { .. } | Action::StopJob { .. }),
                         ) => {
@@ -4463,13 +4481,15 @@ impl Harness {
                     | Action::Answer { .. }
                     | Action::Reply { .. }
                     | Action::AnswerQuestions(_)
-                    | Action::DismissQuestions(_),
+                    | Action::DismissQuestions(_)
+                    | Action::AnswerApprovals(_),
                 )
                 | Event::Input(Some(
                     Input::Message(_)
                     | Input::Answer { .. }
                     | Input::AnswerQuestions(_)
-                    | Input::DismissQuestions(_),
+                    | Input::DismissQuestions(_)
+                    | Input::AnswerApprovals(_),
                 )) => {
                     self.feed.notice(
                         Level::Warn,
@@ -4847,8 +4867,9 @@ pub(crate) fn publish_title_from_disk(session: &Session, gauges: &Gauges) {
 
 /// The commands that change a setting while the session runs, which take
 /// an argument: `/outside`, `/model`, `/handover`, `/handover-at`, `/keys`.
-/// And `/message`, which works while the agent works too.
-pub(crate) const LIVE_COMMANDS: [&str; 27] = [
+/// And `/message`, `/approve` and `/reject`, which work while the agent
+/// works too.
+pub(crate) const LIVE_COMMANDS: [&str; 29] = [
     "/outside",
     "/model",
     "/handover",
@@ -4875,6 +4896,8 @@ pub(crate) const LIVE_COMMANDS: [&str; 27] = [
     "/jobs",
     "/notes",
     "/mcp",
+    "/approve",
+    "/reject",
     "/message",
 ];
 
@@ -5866,6 +5889,7 @@ pub(crate) mod tests {
         let alone = Asker {
             questions: None,
             feed: None,
+            approvals: crate::approvals::Approvals::none(),
         };
         assert_eq!(alone.respond(request("Which?")).await.unwrap(), CANT_ASK);
         assert_eq!(
@@ -5878,6 +5902,7 @@ pub(crate) mod tests {
         let asker = Arc::new(Asker {
             questions: Some(sender),
             feed: Some(feed.clone()),
+            approvals: crate::approvals::Approvals::none(),
         });
         let asking = tokio::spawn({
             let asker = asker.clone();
@@ -5917,7 +5942,7 @@ pub(crate) mod tests {
         assert_eq!(asker.asked(later.clone()).await.unwrap(), None);
         let question = questions.recv().await.unwrap();
         assert!(question.answer.is_none() && !question.plain());
-        feed.ask(later.agent_run_id, &question.asked, false, None, None);
+        feed.ask(later.agent_run_id, &question.asked, false);
         assert_eq!(
             asker.open_questions(later.agent_run_id),
             Some(later.asked.clone())
@@ -6052,6 +6077,11 @@ pub(crate) mod tests {
         let asker = Arc::new(Asker {
             feed: Some(feed.clone()),
             questions: interactive.then_some(questions_sender),
+            approvals: crate::approvals::Approvals::new(
+                Some(feed.clone()),
+                interactive,
+                Some(output.clone()),
+            ),
         });
         let (crew, woken) = Crew::new(crew::Setup {
             session_id: session.id.clone(),
@@ -7612,34 +7642,44 @@ pub(crate) mod tests {
             run,
             asked: one_question(id, text),
             answer: None,
-            approval: None,
-            call: None,
         });
     }
 
-    /// An approval of a worker profile named `name` the agent waits for in
-    /// conversation `run`, and where its answer comes.
-    fn ask_approval(
-        harness: &mut Harness,
-        run: uuid::Uuid,
-        name: &str,
-    ) -> tokio::sync::oneshot::Receiver<crate::questions::ApprovalAnswer> {
-        let (answer, answered) = tokio::sync::oneshot::channel();
+    /// A request in the approval tray to save a worker profile named
+    /// `name`, which conversation `run` waits for, and where its answer
+    /// comes.
+    fn ask_approval(harness: &Harness, run: uuid::Uuid, name: &str) -> crate::approvals::Waiter {
         let profile = crate::profiles::Profile::new(name, "Reviews");
-        harness.question_asked(Question {
-            run,
-            asked: one_question(
-                crate::questions::PLAIN_ID,
-                &crate::profiles::approval_text(&profile, crate::profiles::Place::User),
-            ),
-            answer: Some(crate::inputs::Answering::Approval(answer)),
-            approval: Some(crate::profiles::approval(
-                &profile,
-                crate::profiles::Place::User,
-            )),
-            call: None,
-        });
-        answered
+        crate::approvals::Approvals::new(Some(harness.feed.clone()), true, None)
+            .ask(
+                run,
+                None,
+                crate::approvals::Approval::Profile(crate::profiles::approval(
+                    &profile,
+                    crate::profiles::Place::User,
+                )),
+            )
+            .unwrap()
+    }
+
+    /// The tray's answer that approves those of the requests waiting whose
+    /// place is in `approved` and rejects the others, with `words`.
+    fn tray_answer(
+        harness: &Harness,
+        approved: &[usize],
+        words: &str,
+    ) -> crate::approvals::ApprovalAnswers {
+        let requests = harness.feed.approvals();
+        crate::approvals::ApprovalAnswers::of(
+            &requests,
+            |id| {
+                approved
+                    .iter()
+                    .any(|at| requests.get(*at).is_some_and(|request| request.id == id))
+            },
+            |_| false,
+            words,
+        )
     }
 
     /// Asked without waiting, the questions don't stop the turn. Answers
@@ -7893,46 +7933,167 @@ pub(crate) mod tests {
         drop(answering.await.unwrap());
     }
 
-    /// A submission that answers an open question and an approval the
-    /// agent waits for gives the approval its own answer, in either order,
-    /// and the other answer still reaches the agent as a note. Only Save
-    /// saves.
+    /// The approval tray and the agent's questions are answered apart. An
+    /// answer from the panel leaves the tray's request waiting, and the
+    /// tray's answer leaves the question open. A message sent while a
+    /// request waits is an ordinary message, which answers neither.
     #[tokio::test]
-    async fn an_approval_takes_its_own_answer_beside_other_questions() {
-        for (approve, reversed) in [(false, false), (false, true), (true, false), (true, true)] {
-            let temp = tempfile::tempdir().unwrap();
-            let (mut harness, _inputs, _sender) = harness(temp.path(), LLMClient::new(), true);
-            let run = uuid::Uuid::new_v4();
-            ask_later(&mut harness, run, "q1", "Push now?");
-            let mut answered = ask_approval(&mut harness, run, "reviewer");
-            let approval = harness
-                .feed
-                .open_questions()
-                .into_iter()
-                .find(|question| question.approval.is_some())
-                .unwrap();
-            let (choice, other) = if approve {
-                (crate::questions::SAVE, "No")
-            } else {
-                (crate::questions::DONT_SAVE, "Yes")
-            };
-            let mut given = vec![text_answer("q1", other), chose(&approval.id, choice)];
-            if reversed {
-                given.reverse();
+    async fn approvals_and_questions_are_answered_apart() {
+        use crate::approvals::Answer;
+        let temp = tempfile::tempdir().unwrap();
+        let (mut harness, _inputs, _sender) = harness(temp.path(), LLMClient::new(), true);
+        let run = uuid::Uuid::new_v4();
+        ask_later(&mut harness, run, "q1", "Push now?");
+        let mut waiter = ask_approval(&harness, run, "reviewer");
+        assert_eq!(harness.feed.open_questions().len(), 1, "not a question");
+        let note = harness
+            .answer_questions(answers(vec![text_answer("q1", "No")]))
+            .unwrap();
+        assert_eq!(note, "The user answered q1.\nq1 Push now? No");
+        assert!(waiter.receiver().try_recv().is_err());
+        ask_later(&mut harness, run, "q2", "Which branch?");
+        assert_eq!(
+            harness.reply_text("Hold on.", &[]),
+            Some(crate::asking::Reply {
+                text: "Hold on.\n\n(Still open: q2.)".into(),
+                kept: false
+            })
+        );
+        assert!(waiter.receiver().try_recv().is_err());
+        harness.answer_approvals(tray_answer(&harness, &[0], ""), Some(Source::Terminal));
+        assert_eq!(
+            waiter.receiver().try_recv().unwrap(),
+            Answer::Approved {
+                words: None,
+                option: false
             }
-            let note = harness.answer_questions(answers(given)).unwrap();
-            assert_eq!(
-                answered.try_recv().unwrap(),
-                if approve {
-                    crate::questions::ApprovalAnswer::Save
-                } else {
-                    crate::questions::ApprovalAnswer::DontSave
+        );
+        assert!(harness.feed.approvals().is_empty());
+        assert_eq!(harness.feed.open_questions().len(), 1, "q2 stays open");
+        assert!(harness.waiting.is_empty());
+    }
+
+    /// Requests that come together share the tray, and one answer settles
+    /// them all: those selected are approved and the others rejected, each
+    /// with the words the message box held, which the transcript shows as
+    /// the user's answer. Words too long to send settle nothing, and an
+    /// answer to requests no longer waiting is dropped.
+    #[tokio::test]
+    async fn a_batch_of_approvals_is_answered_at_once() {
+        use crate::approvals::Answer;
+        let temp = tempfile::tempdir().unwrap();
+        let (mut harness, _inputs, _sender) = harness(temp.path(), LLMClient::new(), true);
+        let run = uuid::Uuid::new_v4();
+        let mut waiters: Vec<_> = ["reviewer", "tester", "judge"]
+            .into_iter()
+            .map(|name| ask_approval(&harness, run, name))
+            .collect();
+        let requests = harness.feed.approvals();
+        assert_eq!(requests.len(), 3);
+        assert!(
+            requests
+                .iter()
+                .all(|request| request.batch == requests[0].batch)
+        );
+        let long = "y".repeat(crate::approvals::MAX_APPROVAL_WORDS + 1);
+        harness.answer_approvals(
+            tray_answer(&harness, &[0, 2], &long),
+            Some(Source::Terminal),
+        );
+        assert_eq!(harness.feed.approvals().len(), 3, "nothing settled");
+        assert!(has(
+            &harness.feed,
+            "notice",
+            "Your words are too long to send. Shorten them to 16 KB.",
+            ""
+        ));
+        harness.answer_approvals(
+            tray_answer(&harness, &[0, 2], " Keep them small. "),
+            Some(Source::Web),
+        );
+        let words = Some("Keep them small.".to_string());
+        let answers: Vec<Answer> = waiters
+            .iter_mut()
+            .map(|waiter| waiter.receiver().try_recv().unwrap())
+            .collect();
+        assert_eq!(
+            answers,
+            [
+                Answer::Approved {
+                    words: words.clone(),
+                    option: false
                 },
-                "approve {approve}, reversed {reversed}"
-            );
-            assert_eq!(note, format!("The user answered q1.\nq1 Push now? {other}"));
-            assert!(harness.waiting.is_empty());
-        }
+                Answer::Rejected {
+                    words: words.clone()
+                },
+                Answer::Approved {
+                    words,
+                    option: false
+                },
+            ]
+        );
+        assert!(harness.feed.approvals().is_empty());
+        assert!(has(&harness.feed, "user", "Keep them small.", "answer"));
+        let stale = crate::approvals::ApprovalAnswers::of(&requests, |_| true, |_| false, "");
+        harness.answer_approvals(stale, Some(Source::Terminal));
+        assert!(has(
+            &harness.feed,
+            "notice",
+            "Those approvals are no longer open.",
+            ""
+        ));
+    }
+
+    /// `/approve` and `/reject` answer the tray at the line prompt.
+    /// `/approve 2 WORDS` approves the second request with the words after
+    /// the numbers and rejects the rest, `2+` turns its option on, and
+    /// `/reject WORDS` rejects them all.
+    #[tokio::test]
+    async fn the_line_prompt_answers_the_tray_with_commands() {
+        use crate::approvals::{Answer, Approval, Approvals, BillingApproval};
+        let temp = tempfile::tempdir().unwrap();
+        let (mut harness, _inputs, _sender) = harness(temp.path(), LLMClient::new(), true);
+        let run = uuid::Uuid::new_v4();
+        assert!(harness.live_command("/reject", Source::Terminal));
+        assert!(has(&harness.feed, "notice", "No approvals wait.", ""));
+        let mut profile = ask_approval(&harness, run, "reviewer");
+        let mut billing = Approvals::new(Some(harness.feed.clone()), true, None)
+            .ask(
+                run,
+                None,
+                Approval::WorkerBilling(BillingApproval {
+                    model: "Opus 5.5".into(),
+                    ..BillingApproval::default()
+                }),
+            )
+            .unwrap();
+        assert!(harness.live_command("/approve 3", Source::Terminal));
+        assert!(has(
+            &harness.feed,
+            "notice",
+            "There's no approval 3. The tray holds 2.",
+            ""
+        ));
+        assert!(harness.live_command("/approve 2+ only this once", Source::Terminal));
+        assert_eq!(
+            profile.receiver().try_recv().unwrap(),
+            Answer::Rejected {
+                words: Some("only this once".into())
+            }
+        );
+        assert_eq!(
+            billing.receiver().try_recv().unwrap(),
+            Answer::Approved {
+                words: Some("only this once".into()),
+                option: true
+            }
+        );
+        let mut again = ask_approval(&harness, run, "tester");
+        assert!(harness.live_command("/reject", Source::Terminal));
+        assert_eq!(
+            again.receiver().try_recv().unwrap(),
+            Answer::Rejected { words: None }
+        );
     }
 
     /// A question without ids (a host's own `ask_user`, or a wait saved by
@@ -7949,8 +8110,6 @@ pub(crate) mod tests {
                 run,
                 asked: one_question(crate::questions::PLAIN_ID, "Which file?"),
                 answer: Some(crate::inputs::Answering::Text(answer)),
-                approval: None,
-                call: None,
             });
             let id = harness.feed.open_questions()[0].id.clone();
             assert!(!crate::questions::is_agent_id(&id));
@@ -7966,43 +8125,6 @@ pub(crate) mod tests {
             assert_eq!(answered.try_recv().unwrap(), "main.rs");
             assert!(harness.waiting.is_empty());
         }
-    }
-
-    /// Approvals the agent asks for together show in one card, a choice
-    /// each, and each takes its own answer: Save saves, and words of the
-    /// user's ask for changes.
-    #[tokio::test]
-    async fn approvals_asked_together_are_answered_each() {
-        let temp = tempfile::tempdir().unwrap();
-        let (mut harness, _inputs, _sender) = harness(temp.path(), LLMClient::new(), true);
-        let run = uuid::Uuid::new_v4();
-        let mut first = ask_approval(&mut harness, run, "reviewer");
-        let mut second = ask_approval(&mut harness, run, "tester");
-        let open = harness.feed.open_questions();
-        assert_eq!(open.len(), 2);
-        assert_eq!(open[0].item, open[1].item, "one card");
-        assert_eq!(
-            harness.feed.main_item(open[0].item).unwrap().text,
-            "Arko asked to save 2 worker profiles"
-        );
-        assert!(
-            harness
-                .answer_questions(answers(vec![
-                    chose(&open[0].id, crate::questions::SAVE),
-                    text_answer(&open[1].id, "Use high effort"),
-                ]),)
-                .is_none(),
-            "nothing for the agent beside the approvals"
-        );
-        assert_eq!(
-            first.try_recv().unwrap(),
-            crate::questions::ApprovalAnswer::Save
-        );
-        assert_eq!(
-            second.try_recv().unwrap(),
-            crate::questions::ApprovalAnswer::Edit("Use high effort".into())
-        );
-        assert!(harness.waiting.is_empty());
     }
 
     /// The agent's closing of a question its ask hadn't brought to the
@@ -8089,7 +8211,6 @@ pub(crate) mod tests {
         let run = uuid::Uuid::new_v4();
         ask_later(&mut harness, run, "q1", "Tabs?");
         let card = harness.feed.open_questions()[0].item;
-        let mut answered = ask_approval(&mut harness, run, "reviewer");
         assert!(harness.dismiss_questions(vec!["q1".into()]).is_some());
         assert_eq!(
             harness
@@ -8098,15 +8219,7 @@ pub(crate) mod tests {
                 .as_deref(),
             Some("Yes.")
         );
-        assert!(answered.try_recv().is_err(), "the approval still waits");
-        assert_eq!(harness.waiting.len(), 1);
         assert_eq!(harness.card_answered(card), None);
-        // A message without questions attached is the approval's answer.
-        assert_eq!(harness.reply_text("save", &[]), None);
-        assert_eq!(
-            answered.try_recv().unwrap(),
-            crate::questions::ApprovalAnswer::Save
-        );
     }
 
     /// The questions shown are the current conversation's, and an answer
@@ -8249,8 +8362,6 @@ pub(crate) mod tests {
             run,
             asked: one_question("q1", "Tabs?"),
             answer: Some(crate::inputs::Answering::Text(answer)),
-            approval: None,
-            call: None,
         });
         assert_eq!(
             answered.try_recv().unwrap(),
@@ -8314,8 +8425,6 @@ pub(crate) mod tests {
             run,
             asked: one_question("q1", "Tabs or spaces?"),
             answer: Some(crate::inputs::Answering::Text(answer)),
-            approval: None,
-            call: None,
         });
         assert_eq!(question_cards(&harness), 1, "the wait keeps the ask's card");
         assert!(
@@ -8574,8 +8683,6 @@ pub(crate) mod tests {
             run,
             asked: one_question("q3", &format!("Which {} file?", "long ".repeat(4000))),
             answer: Some(crate::inputs::Answering::Text(answer)),
-            approval: None,
-            call: None,
         });
         assert!(
             harness
@@ -8623,8 +8730,6 @@ pub(crate) mod tests {
             run,
             asked: one_question("q1", "Which file?"),
             answer: Some(crate::inputs::Answering::Text(answer)),
-            approval: None,
-            call: None,
         });
         assert_eq!(
             answered.try_recv().unwrap(),
@@ -8690,8 +8795,6 @@ pub(crate) mod tests {
                 run,
                 asked,
                 answer: Some(crate::inputs::Answering::Text(answer)),
-                approval: None,
-                call: None,
             });
             answered
         };
@@ -8781,16 +8884,12 @@ pub(crate) mod tests {
         .unwrap();
         assert!(matches!(end, TurnEnd::Answered));
         let run = harness.conversations.current_run().unwrap();
-        harness.feed.ask(
-            run,
-            &one_question("q1", "Tabs or spaces?"),
-            false,
-            None,
-            None,
-        );
         harness
             .feed
-            .ask(run, &one_question("q2", "Push now?"), false, None, None);
+            .ask(run, &one_question("q1", "Tabs or spaces?"), false);
+        harness
+            .feed
+            .ask(run, &one_question("q2", "Push now?"), false);
         let feed = harness.feed.clone();
         let typing = tokio::spawn(async move {
             while !feed.activity().working {
@@ -8898,42 +8997,30 @@ pub(crate) mod tests {
         assert_eq!(harness.feed.reserve_question_numbers(1), 3);
     }
 
-    /// An approval left open when Arko stopped waited in a process that is
-    /// gone: the session closes it as it opens, so only the approval the
-    /// tool asks again can be answered.
+    /// A request whose tool stops waiting (its turn stopped) leaves the
+    /// tray, and a session that opens again has none: its tool, run again,
+    /// asks anew.
     #[tokio::test]
-    async fn an_approval_left_open_by_a_stop_is_closed_on_reopening() {
+    async fn a_request_leaves_the_tray_when_its_tool_stops_waiting() {
         let temp = tempfile::tempdir().unwrap();
         let kept = temp.path().join(crate::questions::FILE);
         let run = uuid::Uuid::new_v4();
         {
-            let (mut harness, _inputs, _sender) =
+            let (harness, _inputs, _sender) =
                 harness(&temp.path().join("one"), LLMClient::new(), true);
             harness.feed.keep_questions(kept.clone());
-            let _waiting = ask_approval(&mut harness, run, "reviewer");
-            assert_eq!(harness.feed.open_questions().len(), 1);
+            let waiting = ask_approval(&harness, run, "reviewer");
+            assert_eq!(harness.feed.approvals().len(), 1);
+            assert!(harness.feed.open_questions().is_empty(), "not a question");
+            drop(waiting);
+            assert!(harness.feed.approvals().is_empty());
+            let _left = ask_approval(&harness, run, "tester");
         }
-        let (mut harness, _inputs, _sender) =
-            harness(&temp.path().join("two"), LLMClient::new(), true);
+        let (harness, _inputs, _sender) = harness(&temp.path().join("two"), LLMClient::new(), true);
         harness.feed.keep_questions(kept);
         harness.feed.questions_run(Some(run));
-        assert!(harness.feed.open_questions().is_empty());
-        assert_eq!(
-            harness.feed.questions()[0].state,
-            crate::questions::QuestionState::Closed { why: None }
-        );
-        let mut answered = ask_approval(&mut harness, run, "reviewer");
-        let open = harness.feed.open_questions();
-        assert_eq!(open.len(), 1);
-        assert!(
-            harness
-                .answer_questions(answers(vec![chose(&open[0].id, crate::questions::SAVE)]),)
-                .is_none()
-        );
-        assert_eq!(
-            answered.try_recv().unwrap(),
-            crate::questions::ApprovalAnswer::Save
-        );
+        assert!(harness.feed.approvals().is_empty());
+        assert!(harness.feed.questions().is_empty());
     }
 
     /// Question ids go on across the session's conversations: a new

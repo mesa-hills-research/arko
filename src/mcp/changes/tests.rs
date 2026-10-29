@@ -1,13 +1,14 @@
 use std::sync::Mutex;
 
 use super::*;
+use crate::approvals::Look;
 use crate::mcp::tests::{python, stub_server};
 
 /// Answers each card with `answer` and keeps the cards.
 struct Fake {
     can: bool,
     answer: Mutex<Answer>,
-    cards: Mutex<Vec<ServerCard>>,
+    cards: Mutex<Vec<ServerApproval>>,
 }
 
 impl Fake {
@@ -19,7 +20,7 @@ impl Fake {
         })
     }
 
-    fn cards(&self) -> Vec<ServerCard> {
+    fn cards(&self) -> Vec<ServerApproval> {
         self.cards.lock().unwrap().clone()
     }
 }
@@ -30,7 +31,7 @@ impl Ask for Fake {
         self.can
     }
 
-    async fn ask(&self, _: &TaskContext<'_>, card: ServerCard) -> Answer {
+    async fn ask(&self, _: &TaskContext<'_>, card: ServerApproval) -> Answer {
         self.cards.lock().unwrap().push(card);
         self.answer.lock().unwrap().clone()
     }
@@ -95,6 +96,16 @@ fn notices(feed: &Feed) -> Vec<String> {
         .collect()
 }
 
+/// The card's details as the tray shows them, a line each.
+fn details(card: &ServerApproval) -> Vec<String> {
+    Approval::McpServer(card.clone())
+        .details()
+        .into_iter()
+        .filter(|detail| detail.look != Look::Box)
+        .map(|detail| detail.text)
+        .collect()
+}
+
 fn json(path: &Path) -> Value {
     serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
 }
@@ -108,7 +119,10 @@ fn json(path: &Path) -> Value {
 #[tokio::test]
 async fn an_add_writes_through_the_arko_folder_and_keeps_the_rest() {
     let temp = tempfile::tempdir().unwrap();
-    let ask = Fake::new(Answer::Approved { words: None });
+    let ask = Fake::new(Answer::Approved {
+        words: None,
+        option: false,
+    });
     let setup = setup(temp.path(), ask.clone(), Vec::new());
     let request = stub_request(&setup, "stubby", &["PATH"]);
     let said = setup
@@ -139,21 +153,30 @@ async fn an_add_writes_through_the_arko_folder_and_keeps_the_rest() {
     let cards = ask.cards();
     assert_eq!(cards.len(), 1);
     let card = &cards[0];
-    assert_eq!(card.title(), "Add the MCP server stubby for this project?");
-    assert_eq!(card.env, [("PATH".to_string(), true)]);
+    assert_eq!(
+        Approval::McpServer(card.clone()).title(),
+        "Add the MCP server stubby for this project?"
+    );
+    assert_eq!(
+        card.env,
+        [EnvName {
+            name: "PATH".into(),
+            set: true
+        }]
+    );
     assert!(card.ignored && card.workers && card.shared.is_none());
     let path = std::env::var("PATH").unwrap();
     assert!(!format!("{card:?}").contains(&path));
-    assert!(!card.lines().join("\n").contains(&path));
     assert_eq!(
-        card.lines(),
+        details(card),
         [
             format!("Runs `{} {}`.", python(), setup.script.display()),
             "Gets PATH from your environment.".to_string(),
             "Workers can use it too.".to_string(),
             "Kept in this project's .arko/mcp.json, which git ignores.".to_string(),
-            WARNING.to_string(),
-            "Why. Echoes text for the tests.".to_string(),
+            "It runs with your permissions, outside the command guard.".to_string(),
+            "Why".to_string(),
+            "Echoes text for the tests.".to_string(),
         ]
     );
     // Remembered as approved, so a session starts it without asking.
@@ -188,10 +211,10 @@ async fn an_add_writes_through_the_arko_folder_and_keeps_the_rest() {
     );
     let card = &ask.cards()[1];
     assert_eq!(
-        card.lines()[1],
+        details(card)[1],
         "Gets ARKO_SURELY_UNSET_VARIABLE from your environment. ARKO_SURELY_UNSET_VARIABLE isn't set."
     );
-    assert_eq!(card.lines()[2], "Only the main agent can use it.");
+    assert_eq!(details(card)[2], "Only the main agent can use it.");
     let written = json(&local);
     assert!(written["mcpServers"]["stubby"].is_object());
     assert_eq!(written["mcpServers"]["other"]["workers"], false);
@@ -206,14 +229,18 @@ async fn an_add_writes_through_the_arko_folder_and_keeps_the_rest() {
         .unwrap();
     let card = &ask.cards()[2];
     assert!(card.replaces.is_some());
+    assert_eq!(card.why, "It keeps no state between calls.");
+    let shown = details(card);
+    assert!(shown.contains(&"Sessions open at the same time share one copy.".to_string()));
+    // The agent's check is its reason, shown once.
     assert_eq!(
-        card.shared.as_deref(),
-        Some("It keeps no state between calls.")
+        shown
+            .iter()
+            .filter(|line| *line == "It keeps no state between calls.")
+            .count(),
+        1
     );
-    assert!(
-        card.lines()
-            .contains(&"Sessions open at the same time share one copy.".to_string())
-    );
+    assert!(!shown.contains(&"Why shared".to_string()));
     assert_eq!(json(&local)["mcpServers"]["stubby"]["shared"], true);
     setup.changes.servers.shutdown().await;
 }
@@ -261,7 +288,10 @@ async fn the_setting_off_skips_the_card_and_records_the_approval() {
 #[tokio::test]
 async fn an_add_is_checked_before_anyone_is_asked() {
     let temp = tempfile::tempdir().unwrap();
-    let ask = Fake::new(Answer::Approved { words: None });
+    let ask = Fake::new(Answer::Approved {
+        words: None,
+        option: false,
+    });
     let setup = setup(temp.path(), ask.clone(), Vec::new());
     std::fs::write(
         setup.workspace.join(crate::mcp::PROJECT_FILE),
@@ -397,7 +427,10 @@ async fn a_card_turned_down_writes_nothing() {
 #[tokio::test]
 async fn an_add_to_a_file_the_user_turned_down_leaves_it_to_ask() {
     let temp = tempfile::tempdir().unwrap();
-    let ask = Fake::new(Answer::Approved { words: None });
+    let ask = Fake::new(Answer::Approved {
+        words: None,
+        option: false,
+    });
     let setup = setup(temp.path(), ask, Vec::new());
     std::fs::create_dir_all(crate::arko_dir::dir(&setup.workspace)).unwrap();
     let local = local_file(&setup.workspace);
@@ -428,7 +461,10 @@ async fn an_add_to_a_file_the_user_turned_down_leaves_it_to_ask() {
 #[tokio::test]
 async fn remove_takes_out_only_what_an_agent_added() {
     let temp = tempfile::tempdir().unwrap();
-    let ask = Fake::new(Answer::Approved { words: None });
+    let ask = Fake::new(Answer::Approved {
+        words: None,
+        option: false,
+    });
     let users = temp.path().join("users.json");
     std::fs::write(
         &users,
@@ -470,20 +506,4 @@ async fn remove_takes_out_only_what_an_agent_added() {
     assert!(
         notices(&setup.feed).contains(&"The main agent removed the MCP server added.".to_string())
     );
-}
-
-/// The question that stands in for the approval tray reads Add, Don't add
-/// and words as a card's answer.
-#[test]
-fn a_questions_answer_reads_as_a_cards() {
-    assert_eq!(answer_of("Add"), Answer::Approved { words: None });
-    assert_eq!(answer_of("add."), Answer::Approved { words: None });
-    assert_eq!(answer_of("Don’t add"), Answer::Rejected { words: None });
-    assert_eq!(
-        answer_of("Only for this project"),
-        Answer::Rejected {
-            words: Some("Only for this project".into())
-        }
-    );
-    assert_eq!(answer_of(crate::inputs::NO_ANSWER), Answer::Unanswered);
 }

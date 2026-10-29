@@ -26,14 +26,12 @@ use serde_json::Value;
 
 use super::{Asked, Server, Servers, local_file, normal};
 use crate::agent_added::{self, Scope, ServerRecord};
+use crate::approvals::{Answer, Approval, Approvals, EnvName, ServerApproval};
 use crate::remote::{Feed, Level};
 use crate::ui::Output;
 
 /// The longest name an agent may give a server.
 const MAX_NAME: usize = 40;
-
-/// The line in the warning style on the card.
-pub const WARNING: &str = "It runs with your permissions, outside the command guard.";
 
 /// Where a session's lines about servers go: the terminal and the feed.
 #[derive(Clone)]
@@ -55,181 +53,25 @@ impl Notices {
     }
 }
 
-/// What the user approves, as the card shows it.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct ServerCard {
-    /// Its name, such as `github`.
-    pub name: String,
-    pub scope: Scope,
-    /// The command line it runs, as written.
-    pub command: String,
-    /// The environment variables it gets from the user's environment, by
-    /// name, and whether each is set. Their values are never shown.
-    pub env: Vec<(String, bool)>,
-    /// Workers can use it.
-    pub workers: bool,
-    /// Git ignores the project's file it is kept in.
-    pub ignored: bool,
-    /// Sessions open at the same time would share one copy, with what the
-    /// agent says it checked.
-    pub shared: Option<String>,
-    /// When an agent added the server of the same name it replaces, such as
-    /// "26 Oct".
-    pub replaces: Option<String>,
-    /// The agent's reason, for the user.
-    pub why: String,
-}
-
-impl ServerCard {
-    /// "Add the MCP server github for this project?"
-    pub fn title(&self) -> String {
-        format!(
-            "Add the MCP server {} for {}?",
-            self.name,
-            match self.scope {
-                Scope::Project => "this project",
-                Scope::User => "every project",
-            }
-        )
-    }
-
-    /// The card's lines after its title, the agent's reasons last.
-    pub fn lines(&self) -> Vec<String> {
-        let mut lines = vec![format!("Runs `{}`.", self.command)];
-        if !self.env.is_empty() {
-            let names: Vec<&str> = self.env.iter().map(|(name, _)| name.as_str()).collect();
-            let unset: Vec<&str> = self
-                .env
-                .iter()
-                .filter(|(_, set)| !set)
-                .map(|(name, _)| name.as_str())
-                .collect();
-            let mut line = format!("Gets {} from your environment.", crate::and_list(&names));
-            match unset.as_slice() {
-                [] => {}
-                [one] => line.push_str(&format!(" {one} isn't set.")),
-                many => line.push_str(&format!(" {} aren't set.", crate::and_list(many))),
-            }
-            lines.push(line);
-        }
-        lines.push(
-            if self.workers {
-                "Workers can use it too."
-            } else {
-                "Only the main agent can use it."
-            }
-            .into(),
-        );
-        lines.push(
-            match (self.scope, self.ignored) {
-                (Scope::Project, true) => {
-                    "Kept in this project's .arko/mcp.json, which git ignores."
-                }
-                (Scope::Project, false) => "Kept in this project's .arko/mcp.json.",
-                (Scope::User, _) => "Kept in Arko's mcp.json.",
-            }
-            .into(),
-        );
-        if self.shared.is_some() {
-            lines.push("Sessions open at the same time share one copy.".into());
-        }
-        if let Some(date) = &self.replaces {
-            lines.push(format!(
-                "It replaces the server {} an agent added on {date}.",
-                self.name
-            ));
-        }
-        lines.push(WARNING.into());
-        if !self.why.trim().is_empty() {
-            lines.push(format!("Why. {}", self.why.trim()));
-        }
-        lines
-    }
-}
-
-/// What the user decided about a card.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Answer {
-    /// Add it. `words` are what they wrote with it, for the agent.
-    Approved { words: Option<String> },
-    /// Don't, with what they wrote.
-    Rejected { words: Option<String> },
-    /// No answer came (the turn stopped).
-    Unanswered,
-}
-
-/// Puts a card to the user.
+/// Puts a server's card in the approval tray. (A seam for the tests, which
+/// answer it themselves.)
 #[async_trait]
 pub trait Ask: Send + Sync {
     /// Whether anyone can answer.
     fn can_answer(&self) -> bool;
-    /// Asks about `card` for the call of `context`, and waits for the
+    /// Asks about `server` for the call of `context`, and waits for the
     /// answer.
-    async fn ask(&self, context: &TaskContext<'_>, card: ServerCard) -> Answer;
+    async fn ask(&self, context: &TaskContext<'_>, server: ServerApproval) -> Answer;
 }
 
-/// The choices of the question that asks.
-const ADD: &str = "Add";
-const DONT_ADD: &str = "Don't add";
-
-/// The main agent's questions ask, as a question with the choices Add and
-/// Don't add.
 #[async_trait]
-impl Ask for crate::inputs::Asker {
+impl Ask for Approvals {
     fn can_answer(&self) -> bool {
-        self.can_ask()
+        Approvals::can_answer(self)
     }
 
-    async fn ask(&self, context: &TaskContext<'_>, card: ServerCard) -> Answer {
-        let Some(questions) = &self.questions else {
-            return Answer::Unanswered;
-        };
-        let mut text = card.title();
-        for line in card.lines() {
-            text.push(' ');
-            text.push_str(&line);
-        }
-        let (answer, answered) = tokio::sync::oneshot::channel();
-        let question = crate::inputs::Question {
-            run: context.task_id,
-            asked: vec![arko_agents::questions::AskedQuestion {
-                id: crate::questions::PLAIN_ID.to_string(),
-                question: arko_agents::questions::Question {
-                    question: text,
-                    choices: vec![ADD.into(), DONT_ADD.into()],
-                    ..Default::default()
-                },
-            }],
-            answer: Some(crate::inputs::Answering::Text(answer)),
-            approval: None,
-            call: context.call_id.clone(),
-        };
-        if questions.send(question).is_err() {
-            return Answer::Unanswered;
-        }
-        match answered.await {
-            Ok(words) => answer_of(&words),
-            Err(_) => Answer::Unanswered,
-        }
-    }
-}
-
-/// The decision a question's answer makes: Add picked or typed alone adds,
-/// Don't add alone doesn't, and other words don't either and go to the
-/// agent.
-fn answer_of(words: &str) -> Answer {
-    let words = words.trim();
-    let bare = words.trim_end_matches(['.', '!']).trim().replace('’', "'");
-    if bare.is_empty() || words == crate::inputs::NO_ANSWER {
-        Answer::Unanswered
-    } else if bare.eq_ignore_ascii_case(ADD) {
-        Answer::Approved { words: None }
-    } else if bare.eq_ignore_ascii_case(DONT_ADD) {
-        Answer::Rejected { words: None }
-    } else {
-        Answer::Rejected {
-            words: Some(words.to_string()),
-        }
+    async fn ask(&self, context: &TaskContext<'_>, server: ServerApproval) -> Answer {
+        self.request(context, Approval::McpServer(server)).await
     }
 }
 
@@ -432,36 +274,41 @@ impl Changes {
         Ok(replaced)
     }
 
-    /// The card for `request`, kept in `target`.
+    /// The card for `request`.
     fn card(
         &self,
         request: &AddServer,
         scope: Scope,
         replaced: Option<&ServerRecord>,
-    ) -> ServerCard {
+    ) -> ServerApproval {
         let ignored = scope == Scope::Project
             && if crate::arko_dir::dir(&self.workspace).is_dir() {
                 crate::arko_dir::has_own_ignore(&self.workspace)
             } else {
                 crate::profiles::Preferences::load(&self.root).keep_out_of_git
             };
-        ServerCard {
+        ServerApproval {
             name: request.name.trim().to_string(),
-            scope,
+            scope: match scope {
+                Scope::Project => crate::approvals::Scope::Project,
+                Scope::User => crate::approvals::Scope::User,
+            },
             command: std::iter::once(request.command.trim().to_string())
                 .chain(request.args.iter().cloned())
                 .collect::<Vec<_>>()
                 .join(" "),
             env: env_names(&request.env)
                 .into_iter()
-                .map(|name| {
-                    let set = super::environment(&name).is_some_and(|value| !value.is_empty());
-                    (name, set)
+                .map(|name| EnvName {
+                    set: super::environment(&name).is_some_and(|value| !value.is_empty()),
+                    name,
                 })
                 .collect(),
             workers: request.workers,
             ignored,
-            shared: request.shared.then(|| request.why.trim().to_string()),
+            // The agent says what it checked in its reason, which the card
+            // shows under Why.
+            shared: request.shared.then(String::new),
             replaces: replaced.map(day),
             why: request.why.trim().to_string(),
         }
@@ -586,7 +433,7 @@ impl McpChanges for Changes {
             }
             let card = self.card(&request, scope, replaced.as_ref());
             match self.ask.ask(context, card).await {
-                Answer::Approved { words: said } => words = said,
+                Answer::Approved { words: said, .. } => words = said,
                 Answer::Unanswered => {
                     return Ok(format!("The user didn't answer, so {name} wasn't added."));
                 }
@@ -673,7 +520,7 @@ impl McpChanges for Changes {
         }
         if let Some(words) = words {
             result.push_str(&format!(
-                " The user approved it and wrote “{}”.",
+                " The user approved it and wrote “{}”. Act on what they wrote.",
                 words.trim()
             ));
         }
