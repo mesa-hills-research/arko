@@ -63,6 +63,7 @@ mod keys;
 pub mod logging;
 mod logins;
 mod mcp;
+mod mcp_command;
 mod message;
 #[cfg(any(test, feature = "testing"))]
 mod mock_model;

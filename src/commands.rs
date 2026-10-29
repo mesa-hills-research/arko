@@ -141,7 +141,13 @@ pub const COMMANDS: &[Command] = &[
         aliases: &[],
         runs: Runs::Session,
     },
-    Command::session("/mcp", "the MCP servers and their tools"),
+    Command {
+        name: "/mcp",
+        args: "[NAME|remove NAME]",
+        about: "the MCP servers and their tools, one server whole, or remove a server an agent added",
+        aliases: &[],
+        runs: Runs::Session,
+    },
     Command {
         name: "/skills",
         args: "[NAME|remove NAME]",

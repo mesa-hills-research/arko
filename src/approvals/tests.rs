@@ -195,7 +195,7 @@ fn a_server_reads_as_its_card() {
     for line in [
         "Workers can use it too.",
         "Kept in Arko's mcp.json.",
-        "Open sessions share one copy of it.",
+        "Sessions open at the same time share one copy.",
         "It replaces the server github an agent added on 26 Oct.",
         "Why shared",
         "It keeps no state between calls.",

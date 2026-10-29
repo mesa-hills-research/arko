@@ -493,8 +493,9 @@ pub struct ServerApproval {
     /// Git ignores the project's file it is kept in.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub ignored: bool,
-    /// Open sessions would share one copy of it, and why the agent says
-    /// that is safe.
+    /// Sessions open at the same time would share one copy of it, and why
+    /// the agent says that is safe (empty when its reason, under Why, says
+    /// it).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shared: Option<String>,
     /// When an agent added the server of the same name it replaces, such as
@@ -902,7 +903,7 @@ impl Approval {
                 if server.shared.is_some() {
                     text(
                         &mut lines,
-                        "Open sessions share one copy of it.".to_string(),
+                        "Sessions open at the same time share one copy.".to_string(),
                     );
                 }
                 lines.push(Detail::new(
