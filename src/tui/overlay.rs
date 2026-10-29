@@ -875,9 +875,9 @@ fn settings(frame: &mut Frame, app: &App, area: Rect, selected: usize) {
                     usize::from(!app.profile_prefs.repo_root),
                 ),
                 if app.profile_prefs.repo_root {
-                    "In a subfolder of a git repo, the .agents/profiles in the repo root is read too."
+                    "In a subfolder of a git repo, the profiles in the repo root's .arko folder are read too."
                 } else {
-                    "Only the project's own .agents/profiles is read."
+                    "Only the profiles in the project's own .arko folder are read."
                 }
                 .to_string(),
             ),

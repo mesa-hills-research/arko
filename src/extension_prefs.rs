@@ -186,8 +186,9 @@ impl Switch {
         }
     }
 
-    /// Saves the switch.
-    fn set(self, root: &Path, on: bool) -> Result<(), String> {
+    /// Saves the switch. The git switch also adds or removes Arko's
+    /// `.gitignore` in the project `workspace`'s `.arko` folder.
+    fn set(self, root: &Path, workspace: &Path, on: bool) -> Result<(), String> {
         match self {
             Switch::AskMcp => update(root, |prefs| prefs.ask_before_adding_mcp = on).map(|_| ()),
             Switch::ReviewSkills => {
@@ -196,7 +197,7 @@ impl Switch {
             Switch::KeepOutOfGit => {
                 let mut prefs = crate::profiles::Preferences::load(root);
                 prefs.keep_out_of_git = on;
-                prefs.save(root)
+                prefs.save_in(root, workspace)
             }
         }
     }
@@ -245,7 +246,7 @@ impl Harness {
         if switch.of(&switches) == on {
             return Ok(format!("{} is {} already.", switch.name(), state(on)));
         }
-        switch.set(&self.root, on)?;
+        switch.set(&self.root, &self.settings.workspace, on)?;
         let mut text = format!("{} is now {}.", switch.name(), state(on));
         if switch == Switch::AskMcp && !on {
             text.push(' ');
@@ -372,6 +373,54 @@ mod tests {
         );
     }
 
+    /// The help names the switches and the command, and no longer the old
+    /// label or the old profile folders as the only place.
+    #[cfg(feature = "tui")]
+    #[test]
+    fn the_help_names_the_switches() {
+        let help = <crate::cli::Args as clap::CommandFactory>::command()
+            .get_after_help()
+            .map(|help| help.to_string())
+            .unwrap_or_default();
+        assert!(help.contains("Approvals\nAgents ask you before they add an MCP server"));
+        for word in ["/extensions", "ask-mcp", "review-skills", "keep-out-of-git"] {
+            assert!(help.contains(word), "{word}");
+        }
+        for old in [
+            "new profile folders",
+            "in .agents/profiles in the project",
+            "Arko makes that folder with a .gitignore",
+        ] {
+            assert!(!help.contains(old), "{old}");
+        }
+        assert!(help.contains("in .arko/profiles (or the older .agents/profiles) in the project"));
+        assert!(
+            help.contains("whether agents' project files stay out of git"),
+            "the settings and the page"
+        );
+        // The command is one the menus offer, with its words.
+        let command = crate::commands::find("/extensions ask-mcp on").unwrap();
+        assert_eq!(command.name, "/extensions");
+        assert!(
+            command
+                .about
+                .contains("keep their project files out of git")
+        );
+        let settings = crate::commands::find("/settings").unwrap();
+        assert!(
+            settings
+                .about
+                .contains("whether agents' project files stay out of git")
+        );
+        let reading = crate::remote::Reading::default();
+        let words =
+            |before: &[&str]| crate::commands::dynamic_choices(&reading, "/extensions", before);
+        assert_eq!(words(&[]), ["ask-mcp", "review-skills", "keep-out-of-git"]);
+        for switch in Switch::ALL {
+            assert_eq!(words(&[switch.word()]), ["on", "off"]);
+        }
+    }
+
     mod command {
         use super::super::*;
         use crate::harness::tests::harness;
@@ -400,6 +449,10 @@ mod tests {
             let temp = tempfile::tempdir().unwrap();
             let (mut harness, _inputs, _sender) = harness(temp.path(), LLMClient::new(), false);
             let root = harness.root.clone();
+            let ignore = crate::arko_dir::ensure(&harness.settings.workspace, &root)
+                .unwrap()
+                .join(".gitignore");
+            assert!(ignore.is_file());
             assert!(harness.live_command("/extensions", Source::Terminal));
             assert_eq!(
                 last_said(&harness),
@@ -436,10 +489,14 @@ mod tests {
                 }
             );
             assert!(!crate::profiles::Preferences::load(&root).keep_out_of_git);
+            // Off took Arko's `.gitignore` out of the project's `.arko` folder.
+            assert!(!ignore.exists());
             let live = crate::remote::Meter::read(harness.gauges.as_ref()).settings;
             assert!(!live.ask_before_adding_mcp);
             assert!(live.review_project_skills);
             assert!(!live.keep_agents_files_out_of_git);
+            assert!(harness.live_command("/extensions keep-out-of-git on", Source::Terminal));
+            assert!(ignore.is_file(), "on writes it again");
             assert!(harness.live_command("/extensions ask-mcp on", Source::Terminal));
             assert_eq!(
                 last_said(&harness),

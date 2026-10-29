@@ -74,6 +74,8 @@ struct DockPress {
 pub struct Info {
     /// The working directory's name.
     pub workspace: String,
+    /// The working directory, where the project's `.arko` folder is.
+    pub workspace_dir: Option<PathBuf>,
     /// The handover size the session started with, until the status says.
     pub handover_at: usize,
     /// The session's folder: the web page's key is there.
@@ -2062,14 +2064,20 @@ impl App {
                     } else {
                         now.repo_root = !now.repo_root;
                     }
-                    match self
-                        .info
-                        .root
-                        .as_deref()
-                        .map_or(Ok(()), |root| now.save(root))
-                    {
-                        Ok(()) => self.profile_prefs = now,
-                        Err(error) => self.say(error),
+                    if let Some(root) = self.info.root.as_deref() {
+                        // The keep-out-of-git choice also reaches the project's
+                        // `.arko/.gitignore`.
+                        let saved = match self.info.workspace_dir.as_deref() {
+                            Some(workspace) => now.save_in(root, workspace),
+                            None => now.save(root),
+                        };
+                        // (A `.gitignore` that couldn't change still saved the choice.)
+                        self.profile_prefs = crate::profiles::Preferences::load(root);
+                        if let Err(error) = saved {
+                            self.say(error);
+                        }
+                    } else {
+                        self.profile_prefs = now;
                     }
                 }
                 SettingsRow::AskBeforeMcp => {
@@ -3996,6 +4004,43 @@ pub(super) mod tests {
             }
         );
         assert!(sent(&mut app).is_empty(), "nothing goes to the session");
+    }
+
+    /// The git row also takes Arko's `.gitignore` out of the project's `.arko`
+    /// folder when it goes off, and writes it back when it goes on.
+    #[test]
+    fn the_git_row_changes_the_projects_gitignore() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("arko");
+        let workspace = temp.path().join("work");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let ignore = crate::arko_dir::ensure(&workspace, &root)
+            .unwrap()
+            .join(".gitignore");
+        assert!(ignore.is_file(), "made with the folder");
+        let mut app = App::new(
+            Snapshot::default(),
+            Editor::new(History::load(None)),
+            Info {
+                root: Some(root),
+                workspace_dir: Some(workspace),
+                ..Info::default()
+            },
+            Catalog::load(None),
+            Depth::Rgb,
+        );
+        let row = app
+            .settings_rows()
+            .iter()
+            .position(|row| *row == SettingsRow::KeepProfilesOutOfGit)
+            .unwrap();
+        app.overlay = Some(Overlay::Settings { row, picker: None });
+        press(&mut app, KeyCode::Right, KeyModifiers::NONE);
+        assert!(!app.profile_prefs.keep_out_of_git);
+        assert!(!ignore.exists(), "off removes it");
+        press(&mut app, KeyCode::Left, KeyModifiers::NONE);
+        assert!(app.profile_prefs.keep_out_of_git);
+        assert!(ignore.is_file(), "on writes it again");
     }
 
     /// The approval rows send `/extensions`. Turning asking about MCP servers
