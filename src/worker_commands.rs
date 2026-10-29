@@ -649,6 +649,9 @@ impl Harness {
         if profile.nested {
             text.push_str(" A worker started with it can start workers of its own.");
         }
+        for limit in profile.limits() {
+            text.push_str(&format!(" {limit}"));
+        }
         if profile.made_by_agent() {
             text.push_str(" The main agent made it.");
         }

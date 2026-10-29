@@ -752,6 +752,9 @@ pub(crate) fn worker_setup(
         tools_added: Vec::new(),
         profile: None,
         effort: None,
+        skills: None,
+        mcp: None,
+        left_out: None,
     })
 }
 

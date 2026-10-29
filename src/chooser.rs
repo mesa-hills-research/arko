@@ -20,20 +20,27 @@
 //! setup, so it is not fast unless its profile says so, because fast mode
 //! costs more.
 //!
-//! The start hook ([`crate::crew`]) calls [`choose`] for each start and
+//! The call's `skills` and `mcp` (or the profile's) narrow what the worker
+//! has to the names its starter can give, as [`narrowing`] says.
+//!
+//! The start hook ([`crate::crew`]) calls [`choose_in`] for each start and
 //! records the result with the run, so the profile's file is read once.
 
 use std::collections::BTreeMap;
 
+use arko_agents::mcp::{MCP_TOOL_NAME, ServerFacts};
 use arko_ai::Model;
 use arko_workflows::subagents::StartRequest;
 use serde_json::Value;
 
+mod narrowing;
+pub use narrowing::{Available, check_profile_names};
+
 use crate::agents::{self, Effort, ExtraRules, ModelChoice, ModelSettings};
 use crate::billing::WorkerBilling;
 use crate::crew::{
-    CACHE_PARAM, EFFORT_PARAM, MAX_OWN_WORKERS, MODEL_PARAM, NESTED_PARAM, NESTED_TOOL_NAMES,
-    PROFILE_PARAM, Refuse, WorkerSetup,
+    CACHE_PARAM, EFFORT_PARAM, MAX_OWN_WORKERS, MCP_PARAM, MODEL_PARAM, NESTED_PARAM,
+    NESTED_TOOL_NAMES, PROFILE_PARAM, Refuse, SKILLS_PARAM, WorkerSetup,
 };
 use crate::profiles::{self, Cache, Found};
 use crate::providers;
@@ -67,6 +74,9 @@ pub struct Basis {
     /// start hook holds each start to them ([`crate::billing::gate`]).
     pub billing: WorkerBilling,
     pub api_budget: Option<f64>,
+    /// The skills and MCP servers the session's agents have, which a start
+    /// can narrow a worker's to.
+    pub available: Available,
 }
 
 /// The profile a start names. The built-in `default` is the session's worker
@@ -97,6 +107,9 @@ struct Call {
     effort: Option<String>,
     cache: Option<String>,
     nested: Option<bool>,
+    /// The names of the skills and MCP servers asked for (none: left out).
+    skills: Option<Vec<String>>,
+    mcp: Option<Vec<String>>,
 }
 
 impl Call {
@@ -110,7 +123,19 @@ impl Call {
                 Some(_) => Err(format!("{name} must be text")),
             }
         };
+        // Names as text, or as a list when the model sends one.
+        let names = |name: &str| -> Result<Option<Vec<String>>, String> {
+            let text = match parameters.get(name) {
+                None | Some(Value::Null) => return Ok(None),
+                Some(Value::String(value)) => value.clone(),
+                Some(list @ Value::Array(_)) => list.to_string(),
+                Some(_) => return Err(format!("{name} must be text")),
+            };
+            crate::crew::names_asked(&text).map_err(|why| format!("{name} {why}"))
+        };
         Ok(Self {
+            skills: names(SKILLS_PARAM)?,
+            mcp: names(MCP_PARAM)?,
             profile: text(PROFILE_PARAM)?,
             model: text(MODEL_PARAM)?,
             effort: text(EFFORT_PARAM)?,
@@ -132,18 +157,22 @@ pub fn choose(
     request: &StartRequest,
     refuse: Option<&Refuse>,
 ) -> Result<WorkerSetup, String> {
-    choose_in(basis, request, refuse, Family::MAIN)
+    choose_in(basis, request, refuse, Family::MAIN, None, &[])
 }
 
 /// The setup of the worker `request` starts at `family`, or why it can't
-/// start.
+/// start. `starter` is the setup recorded for the worker that starts it, none
+/// for the main agent and for a worker with no record. `servers` are the
+/// session's MCP servers now.
 pub fn choose_in(
     basis: &Basis,
     request: &StartRequest,
     refuse: Option<&Refuse>,
     family: Family,
+    starter: Option<&WorkerSetup>,
+    servers: &[ServerFacts],
 ) -> Result<WorkerSetup, String> {
-    let chosen = choose_at(basis, request, refuse, family);
+    let chosen = choose_at(basis, request, refuse, family, starter, servers);
     if family.depth > 1 {
         return chosen.map_err(|why| for_a_worker(&why));
     }
@@ -186,6 +215,8 @@ fn choose_at(
     request: &StartRequest,
     refuse: Option<&Refuse>,
     family: Family,
+    starter: Option<&WorkerSetup>,
+    servers: &[ServerFacts],
 ) -> Result<WorkerSetup, String> {
     let call = Call::of(&request.parameters)?;
     // A worker starts workers only as deep as the user allows, and no more
@@ -337,6 +368,16 @@ fn choose_at(
     setup.context_added = (!context.is_empty()).then(|| context.join("\n\n"));
     setup.profile = profile_name.map(str::to_string);
     setup.effort = (!takes_none(&model)).then_some(effort);
+    // The skills and servers it gets come last, so a model or a billing
+    // refusal is said before names are.
+    let narrowed = narrowing::narrow(basis, &call, profile, starter, family.depth > 1, servers)?;
+    setup.skills = narrowed.skills;
+    setup.mcp = narrowed.mcp;
+    setup.left_out = narrowed.left_out;
+    // The bridge tool is offered to a worker that reaches a server now.
+    if narrowing::reaches_a_server(&setup.mcp, servers) {
+        setup.tools_added.push(MCP_TOOL_NAME.to_string());
+    }
     Ok(setup)
 }
 
