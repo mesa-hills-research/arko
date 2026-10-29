@@ -22,7 +22,8 @@ fn configure(harness: &mut Harness, home: &Path) {
         harness.gauges.clone(),
         None,
         folders.clone(),
-        details::McpFacts::of(&mcp::Running::default(), &[], &harness.root),
+        mcp::Servers::default(),
+        Vec::new(),
     ));
     harness.skill_folders = folders;
     let setup = providers::Setup::new(None);
