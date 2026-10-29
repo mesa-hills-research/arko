@@ -317,6 +317,23 @@ fn state_word(state: WorkerState) -> &'static str {
     }
 }
 
+/// How many skills a narrowed worker has: `no skills`, `1 skill` or `3 skills`.
+fn skills_words(skills: Option<&[String]>) -> Option<String> {
+    skills.map(|skills| match skills.len() {
+        0 => "no skills".to_string(),
+        count => plural(count as u32, "skill", "skills"),
+    })
+}
+
+/// How many MCP servers a narrowed worker reaches: `no MCP`, `1 MCP server`
+/// or `3 MCP servers`.
+fn servers_words(mcp: Option<&[String]>) -> Option<String> {
+    mcp.map(|mcp| match mcp.len() {
+        0 => "no MCP".to_string(),
+        count => plural(count as u32, "MCP server", "MCP servers"),
+    })
+}
+
 /// A worker's summary in words: its title, the meta line ("18 calls ·
 /// 2m14s · running · under r1 · gpt-6.1-sol, high · profile judge ·
 /// $0.12") and what it did last. `viewing` is the worker whose own view
@@ -356,6 +373,9 @@ pub fn worker_words(
     if let Some(profile) = &summary.profile {
         parts.push(format!("profile {profile}"));
     }
+    // Only a narrowed set is named. A worker with its starter's says nothing.
+    parts.extend(skills_words(summary.skills.as_deref()));
+    parts.extend(servers_words(summary.mcp.as_deref()));
     for words in [
         cost_words(summary.cost_billed, summary.cost_list),
         family_cost_words(summary),
@@ -822,6 +842,35 @@ mod tests {
         assert_eq!(
             meta(Some("gpt-6-luna"), Some("low"), None),
             "3 calls · running · low effort"
+        );
+    }
+
+    /// Only a narrowed set is named. A worker that has what its starter has
+    /// reads as it did.
+    #[test]
+    fn a_worker_names_its_skills_and_servers_only_when_they_are_narrowed() {
+        let usual = ModelsData::default();
+        let names = |names: &[&str]| Some(names.iter().map(|name| name.to_string()).collect());
+        let meta = |skills: Option<Vec<String>>, mcp: Option<Vec<String>>| {
+            let mut summary = worker("r5");
+            summary.tool_calls = 3;
+            summary.profile = Some("impl-light".into());
+            summary.skills = skills;
+            summary.mcp = mcp;
+            worker_words(&summary, 0.0, None, &usual).1
+        };
+        assert_eq!(meta(None, None), "3 calls · running · profile impl-light");
+        assert_eq!(
+            meta(names(&["ponytail", "release-notes"]), Some(Vec::new())),
+            "3 calls · running · profile impl-light · 2 skills · no MCP"
+        );
+        assert_eq!(
+            meta(Some(Vec::new()), names(&["github"])),
+            "3 calls · running · profile impl-light · no skills · 1 MCP server"
+        );
+        assert_eq!(
+            meta(names(&["ponytail"]), names(&["github", "sentry", "figma"])),
+            "3 calls · running · profile impl-light · 1 skill · 3 MCP servers"
         );
     }
 

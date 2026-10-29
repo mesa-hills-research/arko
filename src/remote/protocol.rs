@@ -357,6 +357,9 @@ pub struct ApprovalData {
     pub description: String,
     #[serde(default)]
     pub instructions: String,
+    /// What workers with the profile are limited to, as sentences.
+    #[serde(default)]
+    pub limits: Vec<String>,
 }
 
 /// More text for an item (`append`).
@@ -393,6 +396,11 @@ pub struct WorkerData {
     pub model: Option<String>,
     pub effort: Option<String>,
     pub profile: Option<String>,
+    /// The skills and MCP servers it is narrowed to, when it is.
+    #[serde(default)]
+    pub skills: Option<Vec<String>>,
+    #[serde(default)]
+    pub mcp: Option<Vec<String>>,
     pub parent: Option<String>,
     #[serde(default)]
     pub depth: u32,
