@@ -1359,7 +1359,6 @@ impl Crew {
     /// servers workers may reach now, so one added later counts. It is
     /// the same after the session resumes.
     // (The MCP bridge's access check calls it.)
-    #[allow(dead_code)]
     pub fn mcp_servers_of(&self, run: Uuid) -> Option<Vec<String>> {
         let recorded = self.models.lock().unwrap().runs.get(&run)?.mcp.clone();
         let servers = self.mcp_servers();

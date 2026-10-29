@@ -400,3 +400,142 @@ async fn a_resumed_conversation_keeps_its_direct_tools() {
         quit(seam, ended).await;
     }
 }
+
+/// The tools each worker's first request offers, by its handle, in a
+/// session whose servers `config` sets up (none without it). The main agent
+/// starts r1 with no `mcp`, and r2 with `mcp: none`.
+async fn workers_offered(
+    temp: &std::path::Path,
+    config: Option<serde_json::Value>,
+) -> std::collections::HashMap<String, Vec<String>> {
+    std::fs::create_dir_all(temp).unwrap();
+    let script = temp.join("ping.py");
+    std::fs::write(&script, PING_STUB).unwrap();
+    let files: Vec<PathBuf> = config
+        .map(|mut config| {
+            for entry in config["mcpServers"].as_object_mut().unwrap().values_mut() {
+                entry["command"] = crate::mcp::tests::python().into();
+                entry["args"] = serde_json::json!([script]);
+            }
+            let file = temp.join("mcp.json");
+            std::fs::write(&file, config.to_string()).unwrap();
+            file
+        })
+        .into_iter()
+        .collect();
+    let workers: Arc<Mutex<std::collections::HashMap<String, Vec<String>>>> = Arc::default();
+    let server = ModelServer::start(Arc::new({
+        let workers = workers.clone();
+        move |_, body: String| {
+            let worker = ["r1", "r2"]
+                .into_iter()
+                .find(|handle| body.contains(&format!("You are agent run {handle}")));
+            if let Some(handle) = worker {
+                workers
+                    .lock()
+                    .unwrap()
+                    .entry(handle.to_string())
+                    .or_insert_with(|| offered(&body));
+            }
+            Box::pin(async move {
+                if worker.is_some() {
+                    complete("w", "Done.")
+                } else if body.contains("call_m1") {
+                    reply("m2", "Started them.")
+                } else {
+                    crate::mock_model::tool_calls(
+                        "m1",
+                        &[
+                            (
+                                crate::crew::START_AGENT,
+                                serde_json::json!({"agent": crate::agents::WORKER, "task": "Look."}),
+                            ),
+                            (
+                                crate::crew::START_AGENT,
+                                serde_json::json!({"agent": crate::agents::WORKER, "task": "Look.", "mcp": "none"}),
+                            ),
+                        ],
+                    )
+                }
+            })
+        }
+    }))
+    .await;
+    let (root, project) = (temp.join("arko"), temp.join("project"));
+    std::fs::create_dir_all(&project).unwrap();
+    let running = spawn(
+        Options {
+            root: Some(root),
+            workspace: Some(project),
+            mcp_config: files,
+            model: Some("luna".into()),
+            openai_auth: Some(OpenAiAuth::ApiKey),
+            cache_1h: Some(false),
+            text_replies: Some(true),
+            worker_billing: Some(crate::billing::WorkerBilling::Api),
+            client: Some(GivenClient(Arc::new(server.client()))),
+            ..Options::default()
+        },
+        Arc::new(NoPrompter),
+    );
+    let seam = tokio::time::timeout(Duration::from_secs(30), running.opened)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    seam.input
+        .send(Input::Message(app_message("Start the workers.")))
+        .unwrap();
+    // Both workers report, and the main agent hears of it.
+    let finished = |seam: &Seam| {
+        seam.feed
+            .subscribe()
+            .0
+            .workers
+            .iter()
+            .filter(|worker| worker.state == crate::remote::WorkerState::Finished)
+            .count()
+    };
+    tokio::time::timeout(Duration::from_secs(30), async {
+        while workers.lock().unwrap().len() < 2 || finished(&seam) < 2 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
+    idle(&seam).await;
+    quit(seam, running.ended).await;
+    let offered = workers.lock().unwrap().clone();
+    offered
+}
+
+/// A worker is offered `mcp` only when its set holds a server at its
+/// start: one that workers may reach, and that its start doesn't leave out.
+#[tokio::test]
+async fn a_worker_gets_mcp_only_with_a_server_to_reach() {
+    let has_mcp = |tools: &Vec<String>| tools.iter().any(|tool| tool == "mcp");
+    let temp = tempfile::tempdir().unwrap();
+    let with = workers_offered(
+        &temp.path().join("with"),
+        Some(serde_json::json!({"mcpServers": {"ping": {}}})),
+    )
+    .await;
+    assert!(has_mcp(&with["r1"]), "{:?}", with["r1"]);
+    assert!(!has_mcp(&with["r2"]), "{:?}", with["r2"]);
+    let none = workers_offered(&temp.path().join("none"), None).await;
+    assert!(!has_mcp(&none["r1"]) && !has_mcp(&none["r2"]), "{none:?}");
+    let lead_only = workers_offered(
+        &temp.path().join("lead"),
+        Some(serde_json::json!({"mcpServers": {"ping": {"workers": false}}})),
+    )
+    .await;
+    assert!(!has_mcp(&lead_only["r1"]), "{lead_only:?}");
+    for offered in [&with, &none, &lead_only] {
+        assert!(
+            offered
+                .values()
+                .flatten()
+                .all(|tool| !tool.starts_with("mcp__"))
+        );
+    }
+}

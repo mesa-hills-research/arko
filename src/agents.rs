@@ -327,7 +327,9 @@ pub struct AgentSettings<'a> {
     /// instructions name. The main agent reaches them, and any added later,
     /// through `mcp`, which it has in every session.
     pub mcp_servers: &'a [String],
-    /// Workers may reach a server, so the registered worker has `mcp`.
+    /// Workers may reach a server, so the workers' instructions say how. A
+    /// worker gets `mcp` at its start when its set holds a server (see
+    /// `crew::WorkerSetup::tools_added`).
     pub mcp_for_workers: bool,
     /// The skill folders, read at the start of each run.
     pub skill_folders: &'a [std::path::PathBuf],
@@ -774,9 +776,6 @@ pub fn worker_config(settings: &AgentSettings) -> Result<AgentConfig, String> {
     .instructions(instructions)
     .tool_config(tool_config({
         let mut tools = shared_tool_names(settings);
-        if settings.mcp_for_workers {
-            tools.push(crate::mcp::MCP_TOOL_NAME.into());
-        }
         tools.extend(crew::WORKER_TOOL_NAMES.iter().map(|name| name.to_string()));
         tools
     }))
@@ -884,7 +883,7 @@ fn tool_instructions(settings: &AgentSettings, worker: bool) -> String {
     if worker && settings.mcp_for_workers {
         text.push_str(
             "\n# MCP servers\n\
-             The `mcp` tool reaches the MCP servers you may use, programs that give you more tools. List them with action servers and a server's tools with action tools, then call the one you need. They act outside the command guard, so take the same care with what they change.\n",
+             If you have the `mcp` tool, it reaches the MCP servers you were given, programs that give you more tools. List them with action servers and a server's tools with action tools, then call the one you need. They act outside the command guard, so take the same care with what they change.\n",
         );
     } else if !worker && !settings.mcp_servers.is_empty() {
         text.push_str(&format!(
@@ -1654,6 +1653,7 @@ mod tests {
         };
         let main = main_config(&plain).unwrap();
         let worker = worker_config(&plain).unwrap();
+        // (A worker gets it at its start, from the start hook.)
         assert!(has(&main, "mcp") && !has(&worker, "mcp"));
         for config in [main, worker] {
             assert!(config.skills_config.is_none());
@@ -1676,9 +1676,10 @@ mod tests {
         ));
         let worker = worker_config(&with).unwrap();
         assert!(worker.instructions.contains(
-            "The `mcp` tool reaches the MCP servers you may use, programs that give you more tools. List them with action servers"
+            "If you have the `mcp` tool, it reaches the MCP servers you were given, programs that give you more tools. List them with action servers"
         ));
         assert!(!worker.instructions.contains("action add"));
+        assert!(has(&main, "mcp") && !has(&worker, "mcp"));
         for config in [main, worker] {
             assert!(
                 !config
@@ -1687,7 +1688,7 @@ mod tests {
                     .iter()
                     .any(|name| name.starts_with("mcp__"))
             );
-            for tool in ["shell", "mcp", "index_search", "index_create"] {
+            for tool in ["shell", "index_search", "index_create"] {
                 assert!(has(&config, tool), "{tool}");
             }
             let skills = config.skills_config.as_ref().unwrap();

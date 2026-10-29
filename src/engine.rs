@@ -981,6 +981,10 @@ impl Engine {
             notices: Some(mcp_notices),
             servers: mcp_servers,
         };
+        // New workers get `mcp` when their set holds one of its servers.
+        if let Some(crew) = &crew {
+            crew.set_mcp_hub(mcp.servers.hub.clone());
+        }
         let mut harness = Harness {
             ask_about_workers: false,
             input_source: options.source,

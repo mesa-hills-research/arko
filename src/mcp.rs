@@ -1245,17 +1245,12 @@ impl Access {
 }
 
 impl McpAccess for Access {
+    /// The run's own set as the crew recorded it, or every server for a run
+    /// with no record (the main agent's).
     fn servers_for(&self, ctx: &TaskContext<'_>) -> Option<Vec<String>> {
         let crew = self.crew.as_ref()?.upgrade()?;
-        mcp_servers_of(&crew, ctx.task_id)
+        crew.mcp_servers_of(ctx.task_id)
     }
-}
-
-/// The servers the worker run `run` may reach, or `None` for every one.
-// Until the crew records each worker's servers, every run reaches every
-// server (the worker bridge still leaves out those marked `workers: false`).
-fn mcp_servers_of(_crew: &crate::crew::Crew, _run: uuid::Uuid) -> Option<Vec<String>> {
-    None
 }
 
 /// Stands in for a tool a saved conversation offers that this session
