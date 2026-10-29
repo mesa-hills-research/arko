@@ -68,7 +68,8 @@ fn words_view(text: &str) -> impl IntoView + use<> {
 
 /// Sends the answer to `requests`: when `approve`, those checked are
 /// approved and the others rejected, else all are rejected. The message
-/// box's words go with it, and the box empties once Arko has them.
+/// box's words go with it, and the box empties once Arko has them, unless
+/// the user wrote something else there meanwhile.
 fn answer(requests: Vec<ApprovalRequest>, approve: bool, rows: Rows) {
     let area = message_box();
     let words = area.as_ref().map(|area| area.value()).unwrap_or_default();
@@ -92,6 +93,8 @@ fn answer(requests: Vec<ApprovalRequest>, approve: bool, rows: Rows) {
         if post("/api/approvals", body).await
             && answers.words.is_some()
             && let Some(area) = area
+            // (A draft begun while the answer was on its way stays.)
+            && area.value() == words
         {
             area.set_value("");
             // The box fits itself again and forgets its draft.
