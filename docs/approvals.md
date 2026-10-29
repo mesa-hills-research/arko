@@ -1,8 +1,10 @@
 # Approvals
 
-Some of what the main agent does waits for your OK first. Today that is saving a
+Some of what the main agent does waits for your OK first. Today that is adding an MCP server,
+saving a [skill](skills.md#skills-the-agent-saves) for every project or from a download, saving a
 [worker profile](worker-profiles.md) in a folder git tracks or for every project, and starting a
 worker on a model billed per token under [worker billing](worker-profiles.md#worker-billing) `ask`.
+`/extensions` lets servers be added without asking, or has every skill save ask.
 Each such request waits in the approval tray above the message box, apart from the agent's
 [questions](questions.md), until you approve or reject it. Requests that come while others wait join
 them, so the saves of one response, for example, are answered at once.
