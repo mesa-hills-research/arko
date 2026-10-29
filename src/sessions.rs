@@ -355,14 +355,7 @@ pub(crate) fn conversation_of(
         let mut items =
             remote::all_items(&task.conversation.messages, settings.text_replies, &images);
         // Without the session's record of its questions, a card shows them
-        // as text, and a profile's approval card isn't known.
-        items.retain(|item| {
-            !item
-                .questions
-                .iter()
-                .flatten()
-                .any(|question| question.approval.is_some())
-        });
+        // as text.
         for item in &mut items {
             item.questions = None;
         }

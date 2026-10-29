@@ -406,6 +406,11 @@ impl remote::Meter for Gauges {
                 .as_ref()
                 .map(remote::Feed::open_questions)
                 .unwrap_or_default(),
+            approvals: self
+                .feed
+                .as_ref()
+                .map(remote::Feed::approvals)
+                .unwrap_or_default(),
             page: lock(&self.page).clone(),
             title: lock(&self.title).clone(),
             context_window: stats.context_window,

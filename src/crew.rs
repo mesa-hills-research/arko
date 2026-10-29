@@ -135,21 +135,25 @@ impl Spending {
         }
     }
 
-    /// Asks the user to allow the worker `request` starts on `model`, with
-    /// the day's spend and the budget it reached (`over`), and waits for
-    /// the answer. The wait ends without one when the turn stops or the
-    /// workflow does.
+    /// Asks the user to allow the worker `request` starts on `model` in the
+    /// approval tray, with the day's spend (`spent`, when the budget's check
+    /// read it) and the budget it reached (`over`), and waits for the
+    /// answer. The wait ends without one when the turn stops or the workflow
+    /// does. Words the user wrote beside an approval reach the main agent
+    /// as a note.
     fn ask(
         &self,
         request: &StartRequest,
         model: &arko_ai::Model,
+        spent: Option<f64>,
         over: Option<(f64, f64)>,
         workflow: &Weak<Workflow>,
     ) -> Result<billing::Decision, String> {
-        let questions = self
+        let approvals = self
             .asker
             .as_ref()
-            .and_then(|asker| asker.questions.clone())
+            .map(|asker| asker.approvals.clone())
+            .filter(crate::approvals::Approvals::can_answer)
             .ok_or_else(|| billing::cant_ask(model))?;
         // (The start hook can't wait asynchronously, so it waits on a thread
         // the runtime can do without.)
@@ -161,25 +165,15 @@ impl Spending {
             }
             _ => return Err(billing::cant_ask(model)),
         };
-        let (text, choices) = billing::question(model, &request.task, over);
-        let (answer, answered) = tokio::sync::oneshot::channel();
-        let question = crate::inputs::Question {
-            run: request.caller_run_id,
-            asked: vec![arko_agents::questions::AskedQuestion {
-                id: crate::questions::PLAIN_ID.to_string(),
-                question: arko_agents::questions::Question {
-                    question: text,
-                    choices,
-                    ..Default::default()
-                },
-            }],
-            answer: Some(crate::inputs::Answering::Text(answer)),
-            approval: None,
-            call: None,
-        };
-        if questions.send(question).is_err() {
-            return Err(billing::cant_ask(model));
-        }
+        let spent = spent.unwrap_or_else(|| self.spend.today(workflow.upgrade().as_deref(), true));
+        let approval = billing::approval(model, &request.task, Some(spent), over);
+        let mut waiter = approvals
+            .ask(
+                request.caller_run_id,
+                None,
+                crate::approvals::Approval::WorkerBilling(approval),
+            )
+            .ok_or_else(|| billing::cant_ask(model))?;
         let feed = self.feed.clone();
         let stopped = move || {
             feed.as_ref().is_some_and(remote::Feed::turn_is_stopping)
@@ -187,7 +181,7 @@ impl Spending {
                     .upgrade()
                     .is_some_and(|workflow| workflow.is_cancelled())
         };
-        let words = tokio::task::block_in_place(|| {
+        let answer = tokio::task::block_in_place(|| {
             runtime.block_on(async {
                 let stops = async {
                     while !stopped() {
@@ -195,15 +189,26 @@ impl Spending {
                     }
                 };
                 tokio::select! {
-                    words = answered => words.ok(),
-                    () = stops => None,
+                    answer = waiter.receiver() => answer.unwrap_or(crate::approvals::Answer::Unanswered),
+                    () = stops => crate::approvals::Answer::Unanswered,
                 }
             })
         });
-        let name = crate::models::display_name(&crate::providers::model_name(model));
-        Ok(words.map_or(billing::Decision::Unanswered, |words| {
-            billing::decision(&words, &name)
-        }))
+        drop(waiter);
+        if let crate::approvals::Answer::Approved {
+            words: Some(words), ..
+        } = &answer
+            && let Some(workflow) = workflow.upgrade()
+        {
+            let note = arko_workflows::notes::Note::new(billing::allowed_with(model, words))
+                .source(arko_workflows::notes::NoteSource::Host)
+                .to([crate::agents::MAIN])
+                .for_run(request.caller_run_id);
+            if let Err(error) = workflow.post_note(note) {
+                log::warn!("could not pass the user's words on to the main agent: {error}");
+            }
+        }
+        Ok(billing::Decision::of(&answer))
     }
 }
 
@@ -722,14 +727,16 @@ fn pay_for(
     match gate {
         billing::Gate::Go => Ok(()),
         billing::Gate::Refuse(why) => Err(why),
-        billing::Gate::Ask { over } => match spending.ask(request, model, over, workflow)? {
-            billing::Decision::Allow => Ok(()),
-            billing::Decision::AllowForSession => {
-                spending.allowed.add(model);
-                Ok(())
+        billing::Gate::Ask { over } => {
+            match spending.ask(request, model, spent.get(), over, workflow)? {
+                billing::Decision::Allow => Ok(()),
+                billing::Decision::AllowForSession => {
+                    spending.allowed.add(model);
+                    Ok(())
+                }
+                other => Err(billing::refusal(&other, model)),
             }
-            other => Err(billing::refusal(&other, model)),
-        },
+        }
     }
 }
 
@@ -3090,22 +3097,16 @@ mod tests {
 
     /// A crew over `session_dir` whose new workers run luna on the ChatGPT
     /// login under `billing` and `budget`, sharing the day's spend in
-    /// `root`, with someone to ask (`can_ask`): its questions come to the
-    /// receiver. Its feed has what the user is told.
+    /// `root`, with someone to ask (`can_ask`). Its feed has the approval
+    /// tray and what the user is told.
     fn billed_crew(
         session_dir: &Path,
         root: &Path,
         billing: billing::WorkerBilling,
         budget: Option<f64>,
         can_ask: bool,
-    ) -> (
-        Arc<Crew>,
-        AgentConfig,
-        mpsc::UnboundedReceiver<crate::inputs::Question>,
-        remote::Feed,
-    ) {
+    ) -> (Arc<Crew>, AgentConfig, remote::Feed) {
         std::fs::create_dir_all(session_dir).unwrap();
-        let (sender, questions) = mpsc::unbounded_channel();
         let feed = remote::Feed::new(MAIN);
         let (crew, _) = Crew::new(Setup {
             session_id: session_dir.display().to_string(),
@@ -3118,8 +3119,9 @@ mod tests {
             feed: Some(feed.clone()),
             refuse: None,
             asker: Some(Arc::new(crate::inputs::Asker {
-                questions: can_ask.then_some(sender),
+                questions: None,
                 feed: None,
+                approvals: crate::approvals::Approvals::new(Some(feed.clone()), can_ask, None),
             })),
             root: Some(root.into()),
         });
@@ -3147,7 +3149,7 @@ mod tests {
             }),
         });
         crew.models.lock().unwrap().attached = true;
-        (crew, registered, questions, feed)
+        (crew, registered, feed)
     }
 
     /// Starts a worker on `model` through `crew`'s start hook, on a thread of
@@ -3163,28 +3165,39 @@ mod tests {
         tokio::spawn(async move { hook.prepare(&request, &mut config) })
     }
 
-    /// The next question of the user's, in time.
-    async fn asked(
-        questions: &mut mpsc::UnboundedReceiver<crate::inputs::Question>,
-    ) -> crate::inputs::Question {
-        tokio::time::timeout(Duration::from_secs(10), questions.recv())
-            .await
-            .expect("asked in time")
-            .expect("a question")
+    /// The first request in the approval tray of `feed`, in time.
+    async fn asked(feed: &remote::Feed) -> crate::approvals::ApprovalRequest {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                if let Some(request) = feed.approvals().into_iter().next() {
+                    return request;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("asked in time")
     }
 
-    /// The question's text and choices.
-    fn words_of(question: &crate::inputs::Question) -> (String, Vec<String>) {
-        let asked = &question.asked[0].question;
-        (asked.question.clone(), asked.choices.clone())
-    }
-
-    /// Answers `question` with `words`, as the answer panel does.
-    fn answer(question: crate::inputs::Question, words: &str) {
-        match question.answer {
-            Some(crate::inputs::Answering::Text(answer)) => answer.send(words.into()).unwrap(),
-            _ => panic!("a wait for the answer's words"),
-        }
+    /// Answers `request` in the tray of `feed`, as the tray's buttons do:
+    /// `approve` with its option on (`option`), and the message box's
+    /// `words`.
+    fn answer(
+        feed: &remote::Feed,
+        request: &crate::approvals::ApprovalRequest,
+        approve: bool,
+        option: bool,
+        words: Option<&str>,
+    ) {
+        let answered = feed.answer_approvals(&crate::approvals::ApprovalAnswers {
+            choices: vec![crate::approvals::ApprovalChoice {
+                id: request.id.clone(),
+                approve,
+                option,
+            }],
+            words: words.map(str::to_string),
+        });
+        assert_eq!(answered.len(), 1, "it waited");
     }
 
     /// The texts the feed shows.
@@ -3203,54 +3216,63 @@ mod tests {
     }
 
     /// Under Ask before API, a worker on a model billed per token waits for
-    /// the user's answer on a card that names the model and its price.
-    /// Allow starts it, and the next one asks again. Allow for the session
-    /// starts it and the next ones without asking, also once the session is
-    /// opened again. Deny, words of the user's own and a stopped turn refuse
-    /// it, in words the agent can act on. A plan's model never asks.
+    /// the user's approval in the tray, named with its model and its price.
+    /// Approve starts it, and the next one asks again. Approve with the
+    /// option on (Allow … for this session) starts it and the next ones
+    /// without asking, also once the session is opened again. Reject, with
+    /// or without words of the user's own, and a stopped turn refuse it, in
+    /// words the agent can act on. A plan's model never asks.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_worker_billed_per_token_starts_once_the_user_allows_it() {
         let temp = tempfile::tempdir().unwrap();
         let (session, root) = (temp.path().join("session"), temp.path().join("arko"));
-        let (crew, base, mut questions, feed) =
+        let (crew, base, feed) =
             billed_crew(&session, &root, billing::WorkerBilling::Ask, None, true);
 
         let starting = start_on(&crew, &base, "opus");
-        let question = asked(&mut questions).await;
-        let (text, choices) = words_of(&question);
-        assert!(
-            text.starts_with("Start a worker on Opus 5.5, billed per token? It costs $"),
-            "{text}"
-        );
-        assert!(text.ends_with(" The task is “Check it”."), "{text}");
+        let request = asked(&feed).await;
+        let approval = &request.approval;
         assert_eq!(
-            choices,
-            ["Allow", "Allow Opus 5.5 for this session", "Deny"]
+            approval.title(),
+            "Start a worker on Opus 5.5, billed per token?"
         );
-        assert!(question.plain() && question.approval.is_none());
-        answer(question, "Allow");
+        let details: Vec<String> = approval
+            .details()
+            .into_iter()
+            .map(|detail| detail.text)
+            .collect();
+        assert!(details[0].starts_with("It costs $"), "{details:?}");
+        assert_eq!(details[1], "Today’s API spend is $0.");
+        assert_eq!(details[2], "The task is “Check it”.");
+        assert_eq!(
+            approval.option().as_deref(),
+            Some("Allow Opus 5.5 for this session")
+        );
+        answer(&feed, &request, true, false, None);
         assert_eq!(starting.await.unwrap(), Ok(()));
+        assert!(feed.approvals().is_empty());
 
-        // Once only: the next start asks again, and Deny refuses it.
+        // Once only: the next start asks again, and Reject refuses it.
         let starting = start_on(&crew, &base, "opus");
-        answer(asked(&mut questions).await, "Deny");
+        answer(&feed, &asked(&feed).await, false, false, None);
         assert_eq!(
             starting.await.unwrap(),
             Err("The user denied a worker on Opus 5.5, which is billed per token, so it didn't start. Start it on a plan model, which worker_options lists, or ask the user what they want.".into())
         );
 
-        // Words of the user's own go back to the agent.
+        // The words in the message box go back to the agent.
         let starting = start_on(&crew, &base, "opus");
-        answer(asked(&mut questions).await, "Use sonnet");
+        answer(&feed, &asked(&feed).await, false, false, Some("Use sonnet"));
         let why = starting.await.unwrap().unwrap_err();
         assert!(
             why.contains("and wrote “Use sonnet”. Act on what they wrote."),
             "{why}"
         );
 
-        // A turn stopped while the card waits ends the wait.
+        // A turn stopped while the request waits ends the wait, and the
+        // request leaves the tray.
         let starting = start_on(&crew, &base, "opus");
-        let waiting = asked(&mut questions).await;
+        asked(&feed).await;
         feed.turn_stopping("Stopping the turn…");
         let why = tokio::time::timeout(Duration::from_secs(10), starting)
             .await
@@ -3258,29 +3280,26 @@ mod tests {
             .unwrap()
             .unwrap_err();
         assert!(why.starts_with("No answer came"), "{why}");
-        drop(waiting);
+        assert!(feed.approvals().is_empty());
         feed.turn_started();
 
         // Allowed for the session: it starts, and so do the next ones, with
-        // no question, also in the session opened again.
+        // no request, also in the session opened again.
         let starting = start_on(&crew, &base, "opus");
-        answer(
-            asked(&mut questions).await,
-            "Allow Opus 5.5 for this session",
-        );
+        answer(&feed, &asked(&feed).await, true, true, None);
         assert_eq!(starting.await.unwrap(), Ok(()));
         assert_eq!(start_on(&crew, &base, "opus").await.unwrap(), Ok(()));
-        let (again, base, mut more, _) =
+        let (again, base, more) =
             billed_crew(&session, &root, billing::WorkerBilling::Ask, None, true);
         assert_eq!(start_on(&again, &base, "opus").await.unwrap(), Ok(()));
         // Another model billed per token asks, and a plan's never does.
         let starting = start_on(&again, &base, "sonnet");
-        answer(asked(&mut more).await, "Allow");
+        answer(&more, &asked(&more).await, true, false, None);
         assert_eq!(starting.await.unwrap(), Ok(()));
         for plan in ["cc:sonnet", "sol"] {
             assert_eq!(start_on(&again, &base, plan).await.unwrap(), Ok(()));
         }
-        assert!(questions.try_recv().is_err() && more.try_recv().is_err());
+        assert!(feed.approvals().is_empty() && more.approvals().is_empty());
     }
 
     /// Plans only refuses a worker billed per token and names the plan
@@ -3290,7 +3309,7 @@ mod tests {
     async fn each_setting_refuses_asks_or_starts_a_worker_billed_per_token() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("arko");
-        let (plans, base, mut asked_plans, _) = billed_crew(
+        let (plans, base, asked_plans) = billed_crew(
             &temp.path().join("plans"),
             &root,
             billing::WorkerBilling::Plans,
@@ -3304,7 +3323,7 @@ mod tests {
         assert_eq!(start_on(&plans, &base, "cc:haiku").await.unwrap(), Ok(()));
         // The session's own worker model, luna, is on the ChatGPT plan here.
         assert_eq!(start_on(&plans, &base, "luna").await.unwrap(), Ok(()));
-        let (api, base, mut asked_api, _) = billed_crew(
+        let (api, base, asked_api) = billed_crew(
             &temp.path().join("api"),
             &root,
             billing::WorkerBilling::Api,
@@ -3312,8 +3331,8 @@ mod tests {
             true,
         );
         assert_eq!(start_on(&api, &base, "opus").await.unwrap(), Ok(()));
-        assert!(asked_plans.try_recv().is_err() && asked_api.try_recv().is_err());
-        let (alone, base, _, _) = billed_crew(
+        assert!(asked_plans.approvals().is_empty() && asked_api.approvals().is_empty());
+        let (alone, base, _) = billed_crew(
             &temp.path().join("alone"),
             &root,
             billing::WorkerBilling::Ask,
@@ -3372,7 +3391,7 @@ mod tests {
             .to_string(),
         )
         .unwrap();
-        let (api, base, _, feed) = billed_crew(
+        let (api, base, feed) = billed_crew(
             &temp.path().join("api"),
             &root,
             billing::WorkerBilling::Api,
@@ -3396,7 +3415,7 @@ mod tests {
             notices(&feed)
         );
 
-        let (ask, base, mut questions, _) = billed_crew(
+        let (ask, base, tray) = billed_crew(
             &temp.path().join("ask"),
             &root,
             billing::WorkerBilling::Ask,
@@ -3407,13 +3426,15 @@ mod tests {
             .allowed
             .add(&crate::providers::resolve_model("opus").unwrap());
         let starting = start_on(&ask, &base, "opus");
-        let question = asked(&mut questions).await;
-        let (text, _) = words_of(&question);
+        let request = asked(&tray).await;
         assert!(
-            text.contains(" Today’s API spend of $30 has reached your daily budget of $20. "),
-            "{text}"
+            request.approval.details().iter().any(|detail| detail.look
+                == crate::approvals::Look::Warning
+                && detail.text == "Today’s API spend of $30 has reached your daily budget of $20."),
+            "{:?}",
+            request.approval.details()
         );
-        answer(question, "Allow");
+        answer(&tray, &request, true, false, None);
         assert_eq!(starting.await.unwrap(), Ok(()));
         // Raised past the spend, the saved OK holds again.
         let mut new = ask.new_workers().unwrap();
@@ -3423,6 +3444,6 @@ mod tests {
         });
         ask.set_new_workers(new);
         assert_eq!(start_on(&ask, &base, "opus").await.unwrap(), Ok(()));
-        assert!(questions.try_recv().is_err());
+        assert!(tray.approvals().is_empty());
     }
 }

@@ -20,10 +20,8 @@
 //! a note, which starts a turn when it is idle, as a worker's report does.
 //! The agent settles or withdraws a question itself with `close_questions`.
 //!
-//! Arko asks too, for the agent, before it saves a worker profile for the
-//! project or for every project. That question is an approval
-//! ([`AgentQuestion::approval`]), with the choices [`SAVE`] and
-//! [`DONT_SAVE`].
+//! What a tool asks the user to approve waits in the approval tray instead
+//! ([`crate::approvals`]).
 
 use std::path::PathBuf;
 
@@ -81,8 +79,7 @@ pub struct AgentQuestion {
     pub default: Option<String>,
     #[serde(flatten)]
     pub state: QuestionState,
-    /// The agent waits for the answer (it didn't pass `wait: false`, or
-    /// it waits for an approval).
+    /// The agent waits for the answer (it didn't pass `wait: false`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub waits: bool,
     /// The feed item of the ask it came in, its question card (0 when the
@@ -93,56 +90,10 @@ pub struct AgentQuestion {
     /// or `None` when the ask has one question.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub number: Option<u32>,
-    /// What the user is asked to approve, when Arko asks it for the agent.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub approval: Option<Approval>,
-}
-
-/// A worker profile the agent wants to save, which the user approves with
-/// [`SAVE`] or not with [`DONT_SAVE`]. Words of their own go back to the
-/// agent as changes to make, and it asks again with the changed profile.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[non_exhaustive]
-pub struct Approval {
-    /// The profile's name, such as `3d-judge`.
-    pub name: String,
-    /// The model it runs on, as the profile names it, or "the session's
-    /// worker model".
-    pub model: String,
-    /// Its reasoning effort, such as `high`, unless the model's own.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub effort: Option<String>,
-    /// Where it is kept: "this project" or "every project".
-    pub scope: String,
-    /// What it is for, in one line.
-    pub description: String,
-    /// Its standing instructions (empty without any).
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub instructions: String,
-    /// What workers with it are limited to, such as "Workers with it get
-    /// only the skills ponytail and release-notes." (empty when they get
-    /// their starter's).
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub limits: Vec<String>,
-}
-
-impl Approval {
-    /// What it asks: "Save the worker profile 3d-judge for every project?"
-    pub fn title(&self) -> String {
-        format!("Save the worker profile {} for {}?", self.name, self.scope)
-    }
-
-    /// "Runs on sol at high effort."
-    pub fn runs_on(&self) -> String {
-        match &self.effort {
-            Some(effort) => format!("Runs on {} at {effort} effort.", self.model),
-            None => format!("Runs on {}.", self.model),
-        }
-    }
 }
 
 // The words every front end shows, in the protocol the web page compiles too.
-pub use crate::remote::protocol::{CHOOSE_ANY, DONT_SAVE, SAVE};
+pub use crate::remote::protocol::CHOOSE_ANY;
 
 impl AgentQuestion {
     pub(crate) fn of(asked: &AskedQuestion, waits: bool, item: u64) -> Self {
@@ -156,7 +107,6 @@ impl AgentQuestion {
             waits,
             item,
             number: None,
-            approval: None,
         }
     }
 
@@ -190,13 +140,9 @@ impl AgentQuestion {
     }
 
     /// The question as the user reads it in a line, with its number in its
-    /// ask ("2. Which branch?") when it has one. An approval says what it
-    /// approves.
+    /// ask ("2. Which branch?") when it has one.
     pub fn numbered(&self) -> String {
-        let question = match &self.approval {
-            Some(approval) => approval.title(),
-            None => self.question.trim().to_string(),
-        };
+        let question = self.question.trim().to_string();
         match self.number {
             Some(number) => format!("{number}. {question}"),
             None => question,
@@ -208,13 +154,6 @@ impl AgentQuestion {
 /// asked 2 questions"), which stays as the heading of their record.
 pub fn card_line(questions: &[AgentQuestion]) -> String {
     let count = questions.len().max(1);
-    if !questions.is_empty() && questions.iter().all(|question| question.approval.is_some()) {
-        return if count == 1 {
-            "Arko asked to save a worker profile".to_string()
-        } else {
-            format!("Arko asked to save {count} worker profiles")
-        };
-    }
     if count == 1 {
         "Arko asked a question".to_string()
     } else {
@@ -222,60 +161,9 @@ pub fn card_line(questions: &[AgentQuestion]) -> String {
     }
 }
 
-/// What the user decided about an approval, as the tool that asked reads
-/// it. Typed words are never [`Save`](Self::Save) by themselves, except
-/// "save" typed alone with nothing picked (for front ends that only send
-/// text).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum ApprovalAnswer {
-    /// Save it as it is.
-    Save,
-    /// Don't save it.
-    DontSave,
-    /// Don't save it, and change it as the user's words say.
-    Edit(String),
-    /// No answer came (the turn stopped).
-    Unanswered,
-}
-
-/// The decision a user's answer to an approval makes. Only [`SAVE`] picked
-/// alone, or "save" typed alone with nothing picked, saves. Words beside a
-/// pick (or "You decide") ask for changes, whatever they say, so a
-/// contradiction such as Don't save with "Save" typed saves nothing.
-pub(crate) fn approval_reply(answer: &Answer) -> ApprovalAnswer {
-    let text = answer.text.as_deref().map(str::trim).unwrap_or_default();
-    let picked = !answer.choices.is_empty() || answer.you_decide;
-    match (text.is_empty(), picked) {
-        (false, false) => approval_words(text),
-        (false, true) => ApprovalAnswer::Edit(text.to_string()),
-        (true, _)
-            if !answer.you_decide
-                && answer.choices.len() == 1
-                && answer.choices[0].trim().eq_ignore_ascii_case(SAVE) =>
-        {
-            ApprovalAnswer::Save
-        }
-        (true, _) => ApprovalAnswer::DontSave,
-    }
-}
-
-/// [`approval_reply`] of words the user typed alone: a choice typed alone
-/// picks it, and anything else asks for changes.
-pub(crate) fn approval_words(text: &str) -> ApprovalAnswer {
-    let choice = text
-        .trim()
-        .trim_end_matches(['.', '!'])
-        .replace('’', "'")
-        .to_lowercase();
-    match choice.as_str() {
-        "save" => ApprovalAnswer::Save,
-        "don't save" | "dont save" => ApprovalAnswer::DontSave,
-        _ => ApprovalAnswer::Edit(text.trim().to_string()),
-    }
-}
-
-/// The id a question Arko asks for the agent (an approval) is asked under.
-/// Arko gives each its own id, `x` and eight hex digits.
+/// The id a question Arko asks for the agent (one its runtime asks without
+/// ids) is asked under. Arko gives each its own id, `x` and eight hex
+/// digits.
 pub(crate) const PLAIN_ID: &str = "x";
 
 /// Whether `id` is one the agent's `ask_user` gave (`q3`), not one of
@@ -357,9 +245,9 @@ fn room_for(note: &str, words: usize) -> Option<usize> {
 }
 
 /// Why the answers `answers` to the open questions `open` can't be sent, as
-/// the user reads it, or `None` when they can. The note that would carry
-/// them, or an approval's words, are too long. Checked before anything is
-/// settled, so the questions stay open and the answers can be shortened.
+/// the user reads it, or `None` when they can: the note that would carry
+/// them is too long. Checked before anything is settled, so the questions
+/// stay open and the answers can be shortened.
 pub fn answers_refusal(open: &[AgentQuestion], answers: &Answers) -> Option<String> {
     // As they are taken: the first filled in for each question.
     let mut given: Vec<QuestionAnswer> = Vec::new();
@@ -373,18 +261,13 @@ pub fn answers_refusal(open: &[AgentQuestion], answers: &Answers) -> Option<Stri
         .cloned()
         .partition(|question| given.iter().any(|given| given.id == question.id));
     let words = |given: &QuestionAnswer| given.answer.words(None).len();
-    let room = settled
-        .iter()
-        .filter(|question| question.approval.is_some())
-        .filter_map(|question| given.iter().find(|given| given.id == question.id))
-        .find_map(|given| room_for(&given.answer.words(None), words(given)))
-        .or_else(|| {
-            let (_, note) = answers_note(&settled, &rest, &given)?;
-            let taken = given
-                .iter()
-                .filter(|given| settled.iter().any(|question| question.id == given.id));
-            room_for(&note, taken.map(words).sum())
-        })?;
+    let room = {
+        let (_, note) = answers_note(&settled, &rest, &given)?;
+        let taken = given
+            .iter()
+            .filter(|given| settled.iter().any(|question| question.id == given.id));
+        room_for(&note, taken.map(words).sum())
+    }?;
     Some(if given.len() == 1 {
         format!("Your answer is too long to send. Shorten it to {room} KB.")
     } else {
@@ -400,12 +283,7 @@ pub fn reply_refusal(open: &[AgentQuestion], ids: &[String], text: &str) -> Opti
         .iter()
         .cloned()
         .partition(|question| ids.contains(&question.id));
-    let note = match message_note(&settled, &rest, text) {
-        Some((_, note)) => note,
-        // An approval takes the words whole.
-        None if settled.iter().any(|question| question.approval.is_some()) => text.to_string(),
-        None => return None,
-    };
+    let (_, note) = message_note(&settled, &rest, text)?;
     let room = room_for(&note, text.trim().len())?;
     Some(format!(
         "Your message is too long to send as an answer. Shorten it to {room} KB."
@@ -420,10 +298,6 @@ struct Entry {
     run: Uuid,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     card: Option<Uuid>,
-    /// The model's id of the call an approval was asked for (its profile's
-    /// save), as the conversation records it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    call: Option<String>,
     #[serde(flatten)]
     question: AgentQuestion,
 }
@@ -527,10 +401,11 @@ impl Book {
                 }
             }
         }
-        // An approval open in the file waited in a process that is gone:
-        // its tool, run again, asks anew.
+        // A question Arko asked open in the file (an approval of an earlier
+        // version's, a question without ids) waited in a process that is
+        // gone: its tool, run again, asks anew.
         for entry in &mut self.entries {
-            if entry.question.approval.is_some() && entry.question.state.is_open() {
+            if !is_agent_id(&entry.question.id) && entry.question.state.is_open() {
                 entry.question.state = QuestionState::Closed { why: None };
                 entry.question.waits = false;
             }
@@ -616,7 +491,7 @@ impl Book {
             .filter(|asked| !self.knows(run, &asked.id))
             .map(|asked| AgentQuestion::of(asked, false, 0))
             .collect();
-        self.ask(run, new, None, None);
+        self.ask(run, new, None);
     }
 
     /// Run `run`'s questions among `ids` that have no card yet.
@@ -647,13 +522,7 @@ impl Book {
     /// asked again (a waiting ask, after a resume, or one registered before
     /// its card) keeps its state and gets the card. One the agent closed
     /// before it got here is closed.
-    pub(crate) fn ask(
-        &mut self,
-        run: Uuid,
-        questions: Vec<AgentQuestion>,
-        card: Option<Uuid>,
-        call: Option<String>,
-    ) {
+    pub(crate) fn ask(&mut self, run: Uuid, questions: Vec<AgentQuestion>, card: Option<Uuid>) {
         for question in questions {
             let id = question.id.clone();
             self.last = self.last.max(number_of(&id));
@@ -666,7 +535,6 @@ impl Book {
                     entry.question.item = question.item;
                     entry.question.waits = question.waits && entry.question.state.is_open();
                     entry.card = card.or(entry.card);
-                    entry.call = call.clone().or(entry.call.take());
                 }
                 None => {
                     let mut question = question;
@@ -681,41 +549,11 @@ impl Book {
                     self.entries.push(Entry {
                         run,
                         card,
-                        call: call.clone(),
                         question,
                     });
                 }
             }
         }
-    }
-
-    /// The approvals of the current conversation's card that the save
-    /// `call` asked (by the model's id of the call), which the restored card
-    /// `item` shows now. None for a save no one was asked about, or whose
-    /// card an earlier save of the same card shows already.
-    pub(crate) fn restore_approval(&mut self, call: &str, item: u64) -> Vec<AgentQuestion> {
-        let run = self.run;
-        let Some(card) = self
-            .entries
-            .iter()
-            .find(|entry| {
-                Some(entry.run) == run
-                    && entry.question.approval.is_some()
-                    && entry.call.as_deref() == Some(call)
-                    && entry.question.item == 0
-            })
-            .and_then(|entry| entry.card)
-        else {
-            return Vec::new();
-        };
-        let mut found = Vec::new();
-        for entry in &mut self.entries {
-            if entry.card == Some(card) {
-                entry.question.item = item;
-                found.push(entry.question.clone());
-            }
-        }
-        found
     }
 
     /// Numbers the questions of card `item` (1, 2, 3), or none when it has
@@ -979,7 +817,6 @@ mod tests {
             run,
             vec![on_card("q1", "A?", 7), on_card("q2", "B?", 7)],
             None,
-            None,
         );
         book.number_card(7);
         let (settled, items) = book.settle(None, &["q1".into(), "q9".into()], |_| {
@@ -1062,22 +899,32 @@ mod tests {
         assert_eq!(old.reserve(1), 8);
     }
 
-    /// An approval open in the file waited in a process that is gone: it is
-    /// closed as the session opens.
+    /// A question Arko asked open in the file waited in a process that is
+    /// gone: it is closed as the session opens. An approval an earlier
+    /// version kept in the book is read as such a question.
     #[test]
-    fn an_open_approval_is_closed_on_reading() {
+    fn a_question_arko_asked_is_closed_on_reading() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(FILE);
         let run = Uuid::new_v4();
         let mut book = Book::default();
         book.keep_in(path.clone());
-        let mut approval = on_card(&plain_id(), "Save it?", 4);
-        approval.approval = Some(Approval {
-            name: "reviewer".into(),
-            ..Approval::default()
-        });
-        book.ask(run, vec![approval, on_card("q1", "A?", 5)], None, None);
+        book.ask(
+            run,
+            vec![
+                on_card(&plain_id(), "Which file?", 4),
+                on_card("q1", "A?", 5),
+            ],
+            None,
+        );
         book.save();
+        let mut text: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        text["questions"][0]["approval"] = serde_json::json!({
+            "name": "reviewer", "model": "sol", "scope": "every project", "description": "Reviews"
+        });
+        text["questions"][0]["call"] = "toolu_1".into();
+        std::fs::write(&path, text.to_string()).unwrap();
         let mut again = Book::default();
         again.keep_in(path);
         again.set_run(Some(run));
@@ -1102,7 +949,6 @@ mod tests {
         book.ask(
             run,
             vec![on_card("q1", "A?", 3), on_card("q2", "B?", 3)],
-            None,
             None,
         );
         assert_eq!(
@@ -1131,7 +977,6 @@ mod tests {
             book.ask(
                 run,
                 ids.iter().map(|id| on_card(id, "?", 1)).collect::<Vec<_>>(),
-                None,
                 None,
             );
             book.settle(None, &ids, |_| QuestionState::Dismissed);
@@ -1169,7 +1014,7 @@ mod tests {
                 })
                 .collect();
             let ids: Vec<String> = questions.iter().map(|q| q.id.clone()).collect();
-            book.ask(run, questions, Some(Uuid::new_v4()), None);
+            book.ask(run, questions, Some(Uuid::new_v4()));
             book.settle(Some(run), &ids[..400], |_| QuestionState::Answered {
                 answer: "Keep them".into(),
             });
@@ -1244,12 +1089,9 @@ mod tests {
         );
     }
 
-    /// Only "Save", picked or typed alone, saves an approved profile. Other
-    /// words ask for changes.
     /// Answers are refused exactly when the note that would carry them is
     /// over the note's limit, counted in UTF-8 bytes with the question's
-    /// excerpt and the labels. An approval's words are held to the same
-    /// limit, and a message that answers questions too.
+    /// excerpt and the labels, and a message that answers questions too.
     #[test]
     fn answers_are_refused_only_over_the_notes_limit() {
         let open = [on_card("q1", "Which file?", 1), on_card("q2", "Why?", 1)];
@@ -1281,74 +1123,12 @@ mod tests {
         );
         // Only what is open counts.
         assert_eq!(answers_refusal(&open[1..], &one(&text)), None);
-        let mut approval = on_card("x1234abcd", "Save it?", 2);
-        approval.approval = Some(Approval::default());
-        let words = Answers {
-            answers: vec![QuestionAnswer::new(
-                "x1234abcd",
-                Answer {
-                    choices: vec![DONT_SAVE.into()],
-                    text: Some("y".repeat(MAX_ANSWER_NOTE_BYTES)),
-                    ..Answer::default()
-                },
-            )],
-        };
-        assert!(answers_refusal(std::slice::from_ref(&approval), &words).is_some());
         let long = "z".repeat(MAX_ANSWER_NOTE_BYTES + 1);
-        for (open, room) in [(&open[..], 15), (std::slice::from_ref(&approval), 16)] {
-            let ids: Vec<String> = open.iter().map(|question| question.id.clone()).collect();
-            assert_eq!(
-                reply_refusal(open, &ids, &long),
-                Some(format!(
-                    "Your message is too long to send as an answer. Shorten it to {room} KB."
-                ))
-            );
-            assert_eq!(reply_refusal(open, &ids, "Short."), None);
-        }
-    }
-
-    #[test]
-    fn only_save_approves() {
-        let picked = |choices: &[&str], text: Option<&str>, you_decide: bool| {
-            approval_reply(&Answer {
-                choices: choices.iter().map(|choice| choice.to_string()).collect(),
-                text: text.map(str::to_string),
-                you_decide,
-            })
-        };
-        // (choices, text, you decide) and what the tool reads: only
-        // "Save" alone saves, and words beside a pick go back as changes.
-        use ApprovalAnswer::{DontSave, Edit, Save};
-        let edit = |text: &str| Edit(text.to_string());
-        for (choices, text, you_decide, read) in [
-            (&[SAVE][..], None, false, Save),
-            (&[SAVE][..], Some("  "), false, Save),
-            (&[DONT_SAVE][..], None, false, DontSave),
-            (&[SAVE, DONT_SAVE][..], None, false, DontSave),
-            (&[SAVE][..], None, true, DontSave),
-            (&[][..], None, true, DontSave),
-            (&[][..], Some("save."), false, Save),
-            (&[][..], Some("SAVE"), false, Save),
-            (&[][..], Some("Don’t save"), false, DontSave),
-            (&[][..], Some("yes"), false, edit("yes")),
-            (
-                &[SAVE][..],
-                Some("yes, but high effort"),
-                false,
-                edit("yes, but high effort"),
-            ),
-            (&[DONT_SAVE][..], Some("save"), false, edit("save")),
-            (&[DONT_SAVE][..], Some("Save"), false, edit("Save")),
-            (&[DONT_SAVE][..], Some("SAVE"), false, edit("SAVE")),
-            (&[DONT_SAVE][..], Some("Save"), true, edit("Save")),
-            (&[][..], Some("Save"), true, edit("Save")),
-            (&[SAVE][..], Some("Save"), false, edit("Save")),
-        ] {
-            assert_eq!(
-                picked(choices, text, you_decide),
-                read,
-                "{choices:?} {text:?} {you_decide}"
-            );
-        }
+        let ids: Vec<String> = open.iter().map(|question| question.id.clone()).collect();
+        assert_eq!(
+            reply_refusal(&open, &ids, &long).as_deref(),
+            Some("Your message is too long to send as an answer. Shorten it to 15 KB.")
+        );
+        assert_eq!(reply_refusal(&open, &ids, "Short."), None);
     }
 }

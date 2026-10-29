@@ -1452,11 +1452,11 @@ pub fn approval_text(profile: &Profile, place: Place) -> String {
     text.trim_end().to_string()
 }
 
-/// What an approval card shows of the main agent's save of `profile` in
-/// `place`, which is its name, model, effort, scope, description and
-/// instructions.
-pub fn approval(profile: &Profile, place: Place) -> crate::questions::Approval {
-    crate::questions::Approval {
+/// What the approval tray shows of the main agent's save of `profile` in
+/// `place`, which is its name, model, effort, scope, description, what it
+/// narrows for its workers ([`Profile::limits`]) and instructions.
+pub fn approval(profile: &Profile, place: Place) -> crate::approvals::ProfileApproval {
+    crate::approvals::ProfileApproval {
         name: profile.name.clone(),
         model: profile
             .model
@@ -1465,8 +1465,8 @@ pub fn approval(profile: &Profile, place: Place) -> crate::questions::Approval {
         effort: profile.effort.map(|effort| effort.to_string()),
         scope: place.reach().to_string(),
         description: one_line(&profile.description),
-        instructions: profile.instructions.trim().to_string(),
         limits: profile.limits(),
+        instructions: profile.instructions.trim().to_string(),
     }
 }
 
