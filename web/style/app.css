@@ -26,6 +26,15 @@
   --shadow: 0 8px 28px rgba(0, 0, 0, 0.16), 0 1px 3px rgba(0, 0, 0, 0.08);
 }
 
+/* A shape near the corner of a rounded parent stays concentric with it when
+   its radius is the parent's minus the gap between their edges. A parent sets
+   --outer (its radius) and --inset (its padding plus its border), and its
+   children use --r-inner. It is set on the parents because a custom property
+   with var() in it resolves where it is declared. */
+:is(.menu, .select-pop, .slash, dialog.viewer, .field) {
+  --r-inner: max(0px, calc(var(--outer) - var(--inset)));
+}
+
 /* Laptops, desktops and landscape tablets: a column that grows with the
    window, up to about 120 characters of text. */
 @media (min-width: 960px) {
@@ -140,15 +149,18 @@ kbd {
 .select-value { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .select-scrim { position: fixed; inset: 0; z-index: 20; }
 .select-pop {
+  --pad: 6px;
+  --outer: var(--r-xl);
+  --inset: calc(var(--pad) + 1px);
   position: absolute;
   right: 0;
   z-index: 21;
   display: flex;
   flex-direction: column;
   width: min(360px, 100vw - 2 * var(--gutter));
-  padding: 6px;
+  padding: var(--pad);
   border: 1px solid var(--line);
-  border-radius: var(--r-xl);
+  border-radius: var(--outer);
   background: var(--popover);
   color: var(--popover-text);
   box-shadow: var(--shadow);
@@ -159,7 +171,7 @@ kbd {
   margin-bottom: 6px;
   padding: 6px 10px;
   border: 1px solid var(--input-line);
-  border-radius: var(--r-md);
+  border-radius: var(--r-inner);
   outline: 0;
   background: var(--surface);
   color: var(--text);
@@ -167,7 +179,7 @@ kbd {
 }
 .select-filter:focus { border-color: var(--ring); }
 .select-list { flex: 1 1 auto; min-height: 0; max-height: 320px; margin: 0; padding: 0; overflow-y: auto; overscroll-behavior: contain; outline: 0; list-style: none; }
-.select-list [role="option"] { display: flex; align-items: center; gap: 8px; min-height: 40px; padding: 8px 10px; border-radius: var(--r-lg); cursor: pointer; }
+.select-list [role="option"] { display: flex; align-items: center; gap: 8px; min-height: 40px; padding: 8px 10px; border-radius: var(--r-inner); cursor: pointer; }
 .select-list [role="option"].active { background: var(--secondary-hover); }
 .select-list [role="option"][aria-selected="true"] { background: var(--tint); }
 .select-check { display: inline-grid; flex: none; place-items: center; width: 16px; color: var(--link); }
@@ -239,14 +251,17 @@ kbd {
 .scrim { position: fixed; inset: 0; z-index: 10; }
 
 .menu {
+  --pad: 4px;
+  --outer: var(--r-lg);
+  --inset: calc(var(--pad) + 1px);
   position: absolute;
   top: calc(100% + 4px);
   right: 0;
   z-index: 20;
   width: min(300px, 100vw - 2 * var(--gutter));
-  padding: 4px;
+  padding: var(--pad);
   border: 1px solid var(--line);
-  border-radius: var(--r-lg);
+  border-radius: var(--outer);
   background: var(--popover);
   color: var(--popover-text);
   box-shadow: var(--shadow);
@@ -259,7 +274,7 @@ kbd {
   min-height: 32px;
   padding: 6px 10px;
   border: 0;
-  border-radius: var(--r-md);
+  border-radius: var(--r-inner);
   background: none;
   text-align: left;
 }
@@ -582,12 +597,14 @@ details.more > summary { width: max-content; padding: 4px 0; color: var(--link);
    pill, with the send button beside it, a 40 px circle. Both stay round in
    every theme, so they match. */
 .field {
+  --outer: 20px;
+  --inset: 1px;
   display: flex;
   flex: 1;
   align-items: flex-end;
   min-width: 0;
   border: 1px solid var(--input-line);
-  border-radius: 20px;
+  border-radius: var(--outer);
   background: var(--surface);
 }
 .field:focus-within { border-color: var(--ring); }
@@ -604,7 +621,7 @@ details.more > summary { width: max-content; padding: 4px 0; color: var(--link);
   margin: 0;
   padding: 7px 14px;
   border: 0;
-  border-radius: inherit;
+  border-radius: var(--r-inner);
   outline: 0;
   background: transparent;
   resize: none;
@@ -624,6 +641,9 @@ details.more > summary { width: max-content; padding: 4px 0; color: var(--link);
 
 /* The command menu opens above the box. */
 .slash {
+  --pad: 6px;
+  --outer: var(--r-xl);
+  --inset: calc(var(--pad) + 1px);
   position: absolute;
   right: 0;
   bottom: calc(100% + 6px);
@@ -632,9 +652,9 @@ details.more > summary { width: max-content; padding: 4px 0; color: var(--link);
   display: flex;
   flex-direction: column;
   max-height: min(50dvh, 340px);
-  padding: 6px;
+  padding: var(--pad);
   border: 1px solid var(--line);
-  border-radius: var(--r-xl);
+  border-radius: var(--outer);
   background: var(--popover);
   color: var(--popover-text);
   box-shadow: var(--shadow);
@@ -650,7 +670,7 @@ details.more > summary { width: max-content; padding: 4px 0; color: var(--link);
   column-gap: 10px;
   min-height: 40px;
   padding: 8px 10px;
-  border-radius: var(--r-lg);
+  border-radius: var(--r-inner);
   cursor: pointer;
 }
 @media (hover: hover) {
@@ -986,11 +1006,14 @@ button.thumb:not(:disabled) { cursor: zoom-in; }
 }
 
 dialog.viewer {
+  --pad: 8px;
+  --outer: var(--r-xl);
+  --inset: calc(var(--pad) + 1px);
   max-width: calc(100vw - 2 * var(--gutter));
   max-height: calc(100dvh - 32px);
-  padding: 0 8px 8px;
+  padding: 0 var(--pad) var(--pad);
   border: 1px solid var(--line);
-  border-radius: var(--r-xl);
+  border-radius: var(--outer);
   background: var(--popover);
   color: var(--popover-text);
   box-shadow: var(--shadow);
@@ -1005,7 +1028,7 @@ dialog.viewer::backdrop { background: rgba(0, 0, 0, 0.6); }
   max-width: 100%;
   max-height: calc(100dvh - 32px - 50px);
   margin: 0 auto;
-  border-radius: var(--r-md);
+  border-radius: var(--r-inner);
   object-fit: contain;
 }
 

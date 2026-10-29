@@ -95,7 +95,9 @@ Headings in a reply stay small. Markdown's levels 1 and 2 show at body size in b
 
 A theme with radius 0 (Windows) squares every tier, `full` included, but for the web page's message
 field and its send button, which stay round so they match. Nested shapes are concentric, so an
-inner radius is the outer one minus the gap. The terminal keeps square corners.
+inner radius is the outer one minus the gap. On the page, a rounded parent sets `--outer` (its
+radius) and `--inset` (its padding plus border), and its children take `--r-inner`. The terminal
+keeps square corners.
 
 Borders are 1 px hairlines in `--line`. A region's boundary belongs to one side only.
 
