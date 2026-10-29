@@ -755,6 +755,11 @@ pub(crate) fn worker_setup(
         skills: None,
         mcp: None,
         left_out: None,
+        model_names: Some(
+            resolve_model(&worker.model)
+                .map(|model| skills::model_names(&model))
+                .unwrap_or_default(),
+        ),
     })
 }
 

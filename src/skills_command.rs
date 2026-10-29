@@ -47,7 +47,9 @@ impl Harness {
             session: self.session.id.clone(),
             title: Arc::new(move || {
                 let title = gauges.title.lock().unwrap().clone();
-                (!title.is_empty()).then_some(title)
+                // (Not the placeholder of a session with no name yet.)
+                let named = !["", "New session", "New chat"].contains(&title.as_str());
+                named.then_some(title)
             }),
             model_names: main_config
                 .skills_config

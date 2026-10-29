@@ -395,6 +395,11 @@ pub(crate) fn unoffered_with(
     }
     if skills {
         parts.push("skills".to_string());
+    } else if missing
+        .iter()
+        .any(|name| skill_install::TOOL_NAMES.contains(name))
+    {
+        parts.push("saving skills (add_skill)".to_string());
     }
     let named = |name: &str| {
         index::TOOL_NAMES.contains(&name)
@@ -407,6 +412,7 @@ pub(crate) fn unoffered_with(
             || name == CLOSE_QUESTIONS_TOOL_NAME
             || name == message::MESSAGE_USER
             || kept_notes::TOOL_NAMES.contains(&name)
+            || skill_install::TOOL_NAMES.contains(&name)
     };
     let others = missing.iter().filter(|name| !named(name)).count();
     if others > 0 {
@@ -5057,6 +5063,12 @@ pub(crate) mod tests {
     mod built_in_skills {
         use super::*;
         include!("builtin_skill_tests.rs");
+    }
+
+    /// The end-to-end tests of the skills agents save, in their own file.
+    mod agent_skills {
+        use super::*;
+        include!("skill_tests.rs");
     }
 
     /// Text replies' end-to-end tests, in their own file.
