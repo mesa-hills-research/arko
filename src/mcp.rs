@@ -97,9 +97,21 @@ impl Server {
     /// The server for the hub, with `description` for the bridge's
     /// `servers` action (an agent's reason for adding it).
     fn config(&self, description: Option<String>) -> McpServerConfig {
+        // The `${VAR}`s its file writes, with their values, which the log
+        // shows as `${VAR}` should the server print them.
+        let expanded: BTreeMap<&str, String> = std::iter::once(self.shown.as_str())
+            .chain(self.written_env.values().map(String::as_str))
+            .flat_map(variables)
+            .filter_map(|name| {
+                environment(name)
+                    .filter(|value| !value.is_empty())
+                    .map(|value| (name, value))
+            })
+            .collect();
         let mut config = McpServerConfig::new(self.name.clone(), self.command.clone())
             .with_args(self.args.clone())
-            .with_env(self.env.clone());
+            .with_env(self.env.clone())
+            .with_expanded(expanded);
         config.workers = self.workers;
         config.shared = self.shared;
         config.description = description;
@@ -360,6 +372,22 @@ fn expand(text: &str, lookup: &dyn Fn(&str) -> Option<String>) -> Result<String,
     }
     expanded.push_str(rest);
     Ok(expanded)
+}
+
+/// The names of the variables `text` takes as `${VAR}` or
+/// `${VAR:-default}`, as [`expand`] reads them.
+fn variables(text: &str) -> Vec<&str> {
+    let mut names = Vec::new();
+    let mut rest = text;
+    while let Some(start) = rest.find("${") {
+        let Some(length) = rest[start..].find('}') else {
+            break;
+        };
+        let inner = &rest[start + 2..start + length];
+        names.push(inner.split_once(":-").map_or(inner, |(name, _)| name));
+        rest = &rest[start + length + 1..];
+    }
+    names
 }
 
 pub(crate) fn environment(name: &str) -> Option<String> {
