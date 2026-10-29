@@ -784,3 +784,104 @@ async fn resumed_workers_keep_their_tools_and_their_limits() {
     idle(&seam).await;
     quit(seam, ended).await;
 }
+
+/// A conversation saved with a tool of a server's own keeps that tool's
+/// definition byte for byte when the server no longer starts. The session
+/// keeps the definitions it offered while the server ran, and the tool that
+/// stands in for it is offered with them. Its call says the server isn't
+/// running.
+#[tokio::test]
+async fn a_server_that_no_longer_starts_keeps_its_tools_definitions() {
+    let temp = tempfile::tempdir().unwrap();
+    let (root, project) = (temp.path().join("arko"), temp.path().join("project"));
+    std::fs::create_dir_all(&project).unwrap();
+    let script = temp.path().join("ping.py");
+    std::fs::write(&script, PING_STUB).unwrap();
+    let config = temp.path().join("mcp.json");
+    std::fs::write(
+        &config,
+        serde_json::json!({"mcpServers": {"stub": {
+            "command": crate::mcp::tests::python(),
+            "args": [script],
+        }}})
+        .to_string(),
+    )
+    .unwrap();
+    let ping = "mcp__stub__ping";
+    let bodies: Arc<Mutex<Vec<String>>> = Arc::default();
+    let server = ModelServer::start(Arc::new({
+        let bodies = bodies.clone();
+        move |_, body: String| {
+            bodies.lock().unwrap().push(body.clone());
+            Box::pin(async move {
+                if body.contains("Call ping.") && !body.contains("call_c\"") {
+                    tool_call("c", ping, serde_json::json!({}))
+                } else {
+                    reply("a", "Done.")
+                }
+            })
+        }
+    }))
+    .await;
+    let open = |session: SessionChoice, files: Vec<PathBuf>| {
+        let running = spawn(
+            Options {
+                root: Some(root.clone()),
+                session,
+                workspace: Some(project.clone()),
+                mcp_config: files,
+                model: Some("luna".into()),
+                openai_auth: Some(OpenAiAuth::ApiKey),
+                cache_1h: Some(false),
+                text_replies: Some(true),
+                client: Some(GivenClient(Arc::new(server.client()))),
+                ..Options::default()
+            },
+            Arc::new(NoPrompter),
+        );
+        async move {
+            let seam = tokio::time::timeout(Duration::from_secs(30), running.opened)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            (seam, running.ended)
+        }
+    };
+    let ask = |seam: &Seam, text: &str| {
+        let count = bodies.lock().unwrap().len();
+        seam.input.send(Input::Message(app_message(text))).unwrap();
+        let bodies = bodies.clone();
+        let feed = seam.feed.clone();
+        async move {
+            tokio::time::timeout(Duration::from_secs(30), async {
+                while bodies.lock().unwrap().len() <= count || feed.activity().working {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .unwrap();
+            bodies.lock().unwrap().last().unwrap().clone()
+        }
+    };
+    let (seam, ended) = open(SessionChoice::New, vec![config.clone()]).await;
+    let id = seam.session.id.clone();
+    ask(&seam, "First.").await;
+    quit(seam, ended).await;
+    to_direct_tools(&Session::open(&root, &id).unwrap().dir, ping);
+    // Resumed while the server runs: its tool as the server lists it.
+    let (seam, ended) = open(SessionChoice::Resume(id.clone()), vec![config.clone()]).await;
+    let running = cached_parts(&ask(&seam, "Again.").await).0;
+    assert!(running.contains("Answers pong."), "{running}");
+    quit(seam, ended).await;
+    // Resumed without it: the same tools, byte for byte.
+    let (seam, ended) = open(SessionChoice::Resume(id), Vec::new()).await;
+    assert_eq!(cached_parts(&ask(&seam, "Again.").await).0, running);
+    let called = ask(&seam, "Call ping.").await;
+    assert!(
+        called.contains("The MCP server stub isn't running."),
+        "{called}"
+    );
+    assert_eq!(cached_parts(&called).0, running);
+    quit(seam, ended).await;
+}

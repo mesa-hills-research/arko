@@ -1167,3 +1167,22 @@ async fn a_saved_profile_keeps_the_skills_and_servers_it_names() {
         "{text}"
     );
 }
+
+/// The tools' definitions without a session are theirs byte for byte, so a
+/// conversation saved with them keeps its tool list in a session without
+/// workers.
+#[tokio::test]
+async fn the_tools_definitions_are_known_without_a_session() {
+    let fixture = fixture(ModelChoice::Agent, true);
+    let json = |definition: ToolDefinition| serde_json::to_string(&definition).unwrap();
+    assert_eq!(
+        [&fixture.options, &fixture.save]
+            .into_iter()
+            .map(|tool| json(tool.definition()))
+            .collect::<Vec<_>>(),
+        super::definitions()
+            .into_iter()
+            .map(json)
+            .collect::<Vec<_>>()
+    );
+}

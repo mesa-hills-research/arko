@@ -844,17 +844,20 @@ impl Engine {
         let worker_config = agents::worker_config(&agent_settings)?;
         // Where the runs' command channels are kept, to ask for handovers.
         let runs = Arc::new(handover::Runs::default());
-        let mut tools = if bare {
-            Vec::new()
-        } else {
-            managers.tools(&shell, runs.clone())
-        };
-        // With -p, no one would hear the monitors' alerts, so the agents get
-        // none (the workflow offers each agent every tool it's given).
-        if one_shot {
-            tools.retain(|tool| {
-                !arko_agents::terminal::MonitorTool::NAMES.contains(&tool.name().as_str())
+        let mut tools = managers.tools(&shell, runs.clone());
+        // The tools a session doesn't give, whose definitions stand in for
+        // those a saved run was offered: a chat's (it has no tools), and the
+        // monitors with -p, since no one would hear their alerts (the
+        // workflow offers each agent every tool it's given).
+        let mut withheld = Vec::new();
+        if bare {
+            withheld = std::mem::take(&mut tools);
+        } else if one_shot {
+            let monitors;
+            (monitors, tools) = tools.into_iter().partition(|tool| {
+                arko_agents::terminal::MonitorTool::NAMES.contains(&tool.name().as_str())
             });
+            withheld = monitors;
         }
         if let Some(indexes) = &indexes {
             tools.extend(indexes.tools());
@@ -1005,6 +1008,7 @@ impl Engine {
             main_config,
             worker_config,
             tools,
+            withheld,
             root: root.clone(),
             mcp,
             skill_folders,
@@ -5305,6 +5309,69 @@ note("stop")
             "{}",
             bodies[1]
         );
+    }
+
+    /// A session with monitors, continued with -p, which gives none, goes on
+    /// with its conversation's tools as they were, byte for byte, the
+    /// monitors among them.
+    #[tokio::test]
+    async fn a_session_continued_with_p_keeps_its_monitors_definitions() {
+        let _alone = ALONE_TESTS.lock().await;
+        let temp = tempfile::tempdir().unwrap();
+        let bodies: Arc<Mutex<Vec<String>>> = Arc::default();
+        let server = ModelServer::start(Arc::new({
+            let bodies = bodies.clone();
+            move |_, body: String| {
+                bodies.lock().unwrap().push(body);
+                Box::pin(async { complete("a1", "Hello.") })
+            }
+        }))
+        .await;
+        let root = temp.path().join("arko");
+        let workspace = temp.path().join("work");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let luna = ModelSettings {
+            model: resolve_model("luna").unwrap().id,
+            effort: Effort::High,
+            fast: false,
+            cache_1h: false,
+            handover_at: None,
+        };
+        let session = Session::create(&root).unwrap();
+        session
+            .save_settings(&Settings::for_test(&workspace, &luna))
+            .unwrap();
+        for one_shot in [false, true] {
+            let options = Options {
+                root: Some(root.clone()),
+                session: SessionChoice::Resume(session.id.clone()),
+                one_shot,
+                interactive: false,
+                client: Some(GivenClient(Arc::new(server.client()))),
+                ..Options::default()
+            };
+            let (mut engine, seam) = match Engine::open(options, Arc::new(NoPrompter)).await {
+                Ok(open) => open,
+                Err(error) => panic!("{error}"),
+            };
+            engine.front_end(FrontEnd::default());
+            assert_eq!(
+                engine.run_prompt("Say hello.".into()).await,
+                RunEnd::Answered
+            );
+            engine.shutdown().await;
+            drop(seam);
+            // (Its tasks let the session go as they end.)
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+        let bodies = bodies.lock().unwrap().clone();
+        assert_eq!(bodies.len(), 2);
+        let tools = |body: &str| {
+            let body: serde_json::Value = serde_json::from_str(body).unwrap();
+            body["tools"].to_string()
+        };
+        assert!(tools(&bodies[0]).contains("\"monitor_start\""));
+        assert_eq!(tools(&bodies[1]), tools(&bodies[0]));
     }
 
     /// A session opens, answers a message and shuts down with no terminal:
