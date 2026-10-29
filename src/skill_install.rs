@@ -1187,7 +1187,7 @@ impl AddSkill {
         let reach = reach(plan.scope);
         match answer {
             Answer::Rejected { words: Some(words) } if !words.trim().is_empty() => {
-                (self.0.notice)(Level::Info, "Not saved. Arko asks again.");
+                (self.0.notice)(Level::Info, "Not saved.");
                 format!(
                     "The user didn't save the skill {} for {reach} and wrote \"{}\". If those words ask for changes to the skill, make them and call add_skill again, which shows them the changed skill. If they don't (a new request, or words about something else), they are a message to you, not changes. Respond to it, call add_skill again with the same skill, and end with a short reminder that it is still waiting for their decision.",
                     plan.name,

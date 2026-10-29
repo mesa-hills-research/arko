@@ -656,7 +656,7 @@ async fn a_profile_for_every_session_waits_for_the_users_save() {
     );
     assert!(profiles::read(&fixture.basis.roots, "3d-judge").is_err());
     // The user is told in the transcript that nothing was saved.
-    assert_eq!(shown(&fixture.feed), ["Not saved. Arko asks again."]);
+    assert_eq!(shown(&fixture.feed), ["Not saved."]);
 
     // Save saves it, in the user's place.
     let asking = {

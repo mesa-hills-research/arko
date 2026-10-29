@@ -922,7 +922,7 @@ async fn a_rejected_skill_leaves_nothing_in_the_skill_folders() {
 }
 
 /// Words the user writes with a rejection go to the agent as possible
-/// changes, and the transcript says Arko asks again. Words with an approval
+/// changes, and the transcript says it wasn't saved. Words with an approval
 /// go with the result.
 #[tokio::test]
 async fn the_users_words_reach_the_agent() {
@@ -943,7 +943,7 @@ async fn the_users_words_reach_the_agent() {
         result.starts_with("The user didn't save the skill notes for every project and wrote \"Call it release-steps.\". If those words ask for changes to the skill, make them and call add_skill again"),
         "{result}"
     );
-    assert_eq!(fixture.notices(), ["Not saved. Arko asks again."]);
+    assert_eq!(fixture.notices(), ["Not saved."]);
     fixture.nothing_saved();
 
     let fixture = fixture_approving_with("Keep it short.");
