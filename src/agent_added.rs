@@ -7,14 +7,13 @@
 //! marking it. Only what the record names can be removed by an agent, or by
 //! the user's remove command for what agents added.
 //!
-//! A skill is recorded by its folder's real path ([`real_path`]), and found
-//! by the real path of the folder asked about, so a folder reached through a
-//! link that leads elsewhere is never taken for the one an agent saved. A
-//! server is recorded by the real path of its file and the identity of the
-//! folder that holds it ([`FileId`]), as its add opened them, and found by
-//! the real path of the file asked about. Its removal checks the identity on
-//! the folder it opens, so a folder moved into the place isn't taken for it
-//! either.
+//! A skill is recorded by its folder's real path and the folder's identity
+//! on its device ([`FileId`]), and a server by the real path of its file and
+//! the identity of the folder that holds it, as the save or the add opened
+//! them. Each is found by the real path ([`real_path`]) of the folder or
+//! file asked about, so one reached through a link that leads elsewhere is
+//! never taken for what an agent added, and a removal checks the identity on
+//! what it opens, so a folder moved into the place isn't either.
 //!
 //! Each write takes a lock beside the record, as `mcp-approvals.json` does,
 //! so sessions open at the same time keep each other's entries. An entry
@@ -64,6 +63,9 @@ impl From<FileId> for (u64, u64) {
 pub struct SkillRecord {
     /// The skill's folder, by its real path.
     pub path: PathBuf,
+    /// The folder's identity, where the system has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<FileId>,
     pub scope: Scope,
     /// The session it was saved in, by ID.
     pub session: String,
@@ -244,10 +246,11 @@ pub fn added_skill<'a>(records: &'a [SkillRecord], path: &Path) -> Option<&'a Sk
     records.iter().find(|record| record.path == real)
 }
 
-/// Records a skill an agent saved, by its folder's real path, in place of an
-/// entry for the same folder.
-pub fn record_skill(root: &Path, mut record: SkillRecord) -> Result<(), String> {
-    record.path = real_path(&record.path);
+/// Records a skill an agent saved, in place of an entry for the same folder.
+/// Its path is the folder's real path as the save opened and checked it,
+/// kept as it is rather than resolved again, since a folder on the way may
+/// have been swapped for a link since.
+pub fn record_skill(root: &Path, record: SkillRecord) -> Result<(), String> {
     update(root, |kept| {
         kept.skills.retain(|skill| skill.path != record.path);
         kept.skills.push(record);

@@ -11,8 +11,8 @@ What agents save in a project goes in the project's `.arko` folder, so other too
 
 Arko reads what you put there yourself in the same way. A `.arko`, or a folder or `mcp.json` in
 it, that is a link is refused, so a save can't land outside the project. The agent removes a
-server only from the folder it added it to, so a `.arko` moved in from elsewhere keeps what it
-holds.
+skill or a server only from the very folder it saved it in, so a `.arko` moved in from elsewhere
+keeps what it holds.
 
 ## Keeping it out of git
 

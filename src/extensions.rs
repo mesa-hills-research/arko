@@ -699,6 +699,7 @@ mod tests {
             &root,
             SkillRecord {
                 path: saved.clone(),
+                id: None,
                 scope: Scope::User,
                 session: "s1".into(),
                 session_title: None,

@@ -1097,8 +1097,13 @@ impl AddSkill {
             }
             let _ = target.remove_all(&old);
         }
+        let (path, id) = match owned(&target, &plan.name) {
+            Ok(owned) => owned,
+            Err(why) => return Ok(Some(why)),
+        };
         let record = SkillRecord {
-            path: target.real().join(&plan.name),
+            path,
+            id,
             scope: plan.scope,
             session: context.session.clone(),
             session_title: (context.title)(),
@@ -1377,16 +1382,54 @@ pub fn remove_saved(root: &Path, path: &Path) -> Result<String, String> {
     };
     let folder = saved_in(root, &record)?;
     let saved = record.path.file_name().unwrap_or_default();
-    folder.remove_all(saved).map_err(|error| {
-        format!(
-            "Couldn't delete {} ({}).",
-            record.path.display(),
-            reason_of(&error)
-        )
+    // Only the very folder the agent saved, by its identity.
+    let id = record.id.map(<(u64, u64)>::from);
+    folder.remove_all_of(saved, id).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::InvalidData {
+            format!(
+                "Arko didn't delete {}, since it isn't the folder an agent saved there. Delete it by hand.",
+                record.path.display()
+            )
+        } else {
+            format!(
+                "Couldn't delete {} ({}).",
+                record.path.display(),
+                reason_of(&error)
+            )
+        }
     })?;
     // (A record left behind is dropped once its folder is gone.)
     let _ = agent_added::forget_skill(root, &record.path);
     Ok(format!("Removed the skill {name}."))
+}
+
+/// The real path and identity of the folder `name` in `target`, for the
+/// record of a save. The path is the one `target` had when it was opened,
+/// and it must still name the folder reached through `target`, so a folder
+/// on the way swapped for a link since then doesn't have the record claim
+/// what the link leads to.
+fn owned(target: &Folder, name: &str) -> Result<(PathBuf, Option<agent_added::FileId>), String> {
+    let path = target.real().join(name);
+    let id = target
+        .entry(name)
+        .ok()
+        .flatten()
+        .filter(|entry| entry.kind == Kind::Folder)
+        .and_then(|entry| entry.id);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let named = std::fs::symlink_metadata(&path)
+            .ok()
+            .map(|meta| (meta.dev(), meta.ino()));
+        if id.is_none() || named != id {
+            return Err(format!(
+                "{} no longer leads to the folder it saved in",
+                path.display()
+            ));
+        }
+    }
+    Ok((path, id.map(agent_added::FileId::from)))
 }
 
 /// The folder that holds the skill of `record`, opened as a save opens it,

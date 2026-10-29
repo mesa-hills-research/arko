@@ -1476,6 +1476,67 @@ async fn the_record_holds_the_real_path_and_a_removal_follows_no_link() {
     assert_eq!(files_in(&theirs), ["SKILL.md"]);
 }
 
+/// A save records its folder's real path as it opened it, with the
+/// folder's identity, and a removal by the record deletes only that very
+/// folder. When a folder on the way was swapped for a link after the save
+/// opened it, the path no longer leads to the folder it wrote in, so it
+/// claims nothing.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_record_claims_only_the_folder_the_save_wrote() {
+    use std::os::unix::fs::{MetadataExt, symlink};
+    let fixture = quiet();
+    let draft = write_skill(&fixture.drafts(), "notes", "", &[]);
+    fixture
+        .add(params("notes", &draft.display().to_string()))
+        .await
+        .unwrap();
+    let saved = fixture.project().join("notes");
+    let record = agent_added::skill_at(&fixture.root, &saved).unwrap();
+    let meta = std::fs::metadata(&saved).unwrap();
+    assert_eq!(record.path, saved.canonicalize().unwrap());
+    assert_eq!(
+        record.id,
+        Some(agent_added::FileId {
+            device: meta.dev(),
+            inode: meta.ino()
+        })
+    );
+
+    // A folder put in its place, with the same files, isn't the agent's.
+    let copy = saved.with_file_name("copy");
+    std::fs::create_dir(&copy).unwrap();
+    std::fs::copy(saved.join("SKILL.md"), copy.join("SKILL.md")).unwrap();
+    std::fs::remove_dir_all(&saved).unwrap();
+    std::fs::rename(&copy, &saved).unwrap();
+    let error = remove_saved(&fixture.root, &saved).unwrap_err();
+    assert!(
+        error.contains("isn't the folder an agent saved there"),
+        "{error}"
+    );
+    assert!(saved.join("SKILL.md").is_file());
+
+    // .arko swapped for a link to another project's after the save opened
+    // its folder.
+    let target = open_target(&fixture.context, Scope::Project, true)
+        .unwrap()
+        .unwrap();
+    target.make("other").unwrap();
+    let elsewhere = fixture.workspace.with_file_name("elsewhere");
+    let theirs = write_skill(&elsewhere.join(".arko/skills"), "other", "", &[]);
+    let arko = fixture.workspace.join(".arko");
+    std::fs::rename(&arko, fixture.workspace.join("moved")).unwrap();
+    symlink(elsewhere.join(".arko"), &arko).unwrap();
+    let error = owned(&target, "other").unwrap_err();
+    assert!(
+        error.ends_with("no longer leads to the folder it saved in"),
+        "{error}"
+    );
+    assert!(theirs.join("SKILL.md").is_file());
+    let records = std::fs::read_to_string(fixture.root.join(agent_added::FILE)).unwrap();
+    assert!(!records.contains("other"), "{records}");
+}
+
 /// `workers` goes into the front matter as `workers: false`, or comes out
 /// for true, whatever the line endings.
 #[test]
