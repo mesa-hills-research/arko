@@ -1275,7 +1275,8 @@ async fn a_folder_made_at_the_place_while_the_user_decides_is_kept() {
 
 /// The skill an agent saved, which a save would replace, that changes while
 /// the user decides (an edit, or a new folder in its place) stops the save
-/// and stays as it is, with its record. Asked again, the save replaces it.
+/// and stays as it is, with its record. Asked again, the save replaces an
+/// edited one, and refuses a new folder, which isn't the agent's.
 #[tokio::test]
 async fn an_agents_skill_changed_while_the_user_decides_is_kept() {
     let fixture = quiet();
@@ -1302,6 +1303,19 @@ async fn an_agents_skill_changed_while_the_user_decides_is_kept() {
         agent_added::skill_at(&fixture.root, &saved).unwrap().added,
         first.added
     );
+    let result = fixture.add(call()).await.unwrap();
+    assert!(
+        result.contains(" in place of the one saved before."),
+        "{result}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(saved.join("SKILL.md")).unwrap(),
+        skill_md("notes", "")
+    );
+    assert_eq!(
+        files_in(&fixture.user()),
+        ["notes/SKILL.md", "notes/new.md"]
+    );
     // A folder put in its place with the same files.
     #[cfg(unix)]
     {
@@ -1316,30 +1330,21 @@ async fn an_agents_skill_changed_while_the_user_decides_is_kept() {
                 std::fs::rename(&other, &saved).unwrap();
             }
         };
-        std::fs::write(saved.join("new.md"), "New.").unwrap();
         let error = fixture
             .add_asking(meanwhile(copy(saved.clone())), call())
             .await
             .unwrap_err();
         assert!(error.contains(" changed while the user decided"), "{error}");
+        let error = fixture.add(call()).await.unwrap_err();
+        assert!(
+            error.starts_with("The user has a skill named notes in "),
+            "{error}"
+        );
         assert_eq!(
             std::fs::read_to_string(saved.join("SKILL.md")).unwrap(),
-            "Edited."
+            skill_md("notes", "")
         );
     }
-    let result = fixture.add(call()).await.unwrap();
-    assert!(
-        result.contains(" in place of the one saved before."),
-        "{result}"
-    );
-    assert_eq!(
-        std::fs::read_to_string(saved.join("SKILL.md")).unwrap(),
-        skill_md("notes", "")
-    );
-    assert_eq!(
-        files_in(&fixture.user()),
-        ["notes/SKILL.md", "notes/new.md"]
-    );
 }
 
 /// Neither the project's .arko, its skills folder, Arko's skills folder nor
@@ -1510,10 +1515,7 @@ async fn a_record_claims_only_the_folder_the_save_wrote() {
     std::fs::remove_dir_all(&saved).unwrap();
     std::fs::rename(&copy, &saved).unwrap();
     let error = remove_saved(&fixture.root, &saved).unwrap_err();
-    assert!(
-        error.contains("isn't the folder an agent saved there"),
-        "{error}"
-    );
+    assert!(error.contains("wasn't added by an agent"), "{error}");
     assert!(saved.join("SKILL.md").is_file());
 
     // .arko swapped for a link to another project's after the save opened
@@ -1656,6 +1658,44 @@ fn a_swap_checks_what_it_put_aside_and_keeps_what_it_cant_put_back() {
     assert_eq!(stamp(&target, &old).unwrap(), before);
     std::fs::write(base.join(&old).join("SKILL.md"), "Edited.").unwrap();
     assert_ne!(stamp(&target, &old).unwrap(), before);
+}
+
+/// A folder put in place of a skill an agent saved, such as the user's own
+/// skill of that name, isn't the agent's, by the folder's identity. A save
+/// of that name is refused as the user's skill before anyone is asked, the
+/// list doesn't mark it as added by an agent, and remove_skill leaves it.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_folder_put_in_place_of_an_agents_skill_isnt_replaced() {
+    let fixture = quiet();
+    let draft = write_skill(&fixture.drafts(), "notes", "", &[]);
+    let source = draft.display().to_string();
+    fixture.add(params("notes", &source)).await.unwrap();
+    let saved = fixture.project().join("notes");
+    // (Made before the agent's goes, so it can't reuse its inode.)
+    let theirs = write_skill(
+        &fixture.workspace.join("mine"),
+        "notes",
+        "",
+        &[("mine.md", "Mine.")],
+    );
+    std::fs::remove_dir_all(&saved).unwrap();
+    std::fs::rename(&theirs, &saved).unwrap();
+    let error = fixture.add(params("notes", &source)).await.unwrap_err();
+    assert_eq!(
+        error,
+        format!(
+            "The user has a skill named notes in {}. Choose another name.",
+            saved.display()
+        )
+    );
+    assert_eq!(files_in(&saved), ["SKILL.md", "mine.md"]);
+    assert!(agent_added::skill_at(&fixture.root, &saved).is_none());
+    let records = agent_added::skills(&fixture.root);
+    assert!(agent_added::added_skill(&records, &saved).is_none());
+    assert!(fixture.remove("notes").await.is_err());
+    assert!(saved.join("mine.md").is_file());
+    assert!(fixture.cards().is_empty());
 }
 
 /// `workers` goes into the front matter as `workers: false`, or comes out
