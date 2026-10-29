@@ -744,6 +744,9 @@ pub(crate) fn worker_setup(
         tools_added: Vec::new(),
         profile: None,
         effort: None,
+        skills: None,
+        mcp: None,
+        left_out: None,
     })
 }
 
@@ -787,7 +790,9 @@ pub fn worker_config(settings: &AgentSettings) -> Result<AgentConfig, String> {
         settings.worker.handover_at.unwrap_or(settings.handover_at),
         settings.cc_compact,
     ));
-    if let Some(skills) = skills::config(settings.skill_folders, settings.builtin_skills) {
+    if let Some(mut skills) = skills::config(settings.skill_folders, settings.builtin_skills) {
+        // A worker has no skill marked `workers: false`.
+        skills.subagent = true;
         builder = builder.skills_config(skills);
     }
     if settings.worker.in_claude_code() {

@@ -743,6 +743,10 @@ impl Harness {
             rules_text: agents::extra_rules(&agent_settings),
             billing: settings.worker_billing,
             api_budget: settings.api_budget,
+            available: crate::chooser::Available {
+                skills: crate::skills::config(&self.skill_folders, &settings.builtin_skills),
+                workspace: settings.workspace.clone(),
+            },
         })
     }
 

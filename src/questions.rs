@@ -119,6 +119,11 @@ pub struct Approval {
     /// Its standing instructions (empty without any).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub instructions: String,
+    /// What workers with it are limited to, such as "Workers with it get
+    /// only the skills ponytail and release-notes." (empty when they get
+    /// their starter's).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub limits: Vec<String>,
 }
 
 impl Approval {
