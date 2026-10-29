@@ -200,15 +200,26 @@ impl Folder {
 
     /// The names of the entries in the folder, sorted.
     pub(crate) fn names(&self) -> io::Result<Vec<OsString>> {
+        self.names_up_to(usize::MAX)
+    }
+
+    /// The names of the entries in the folder, sorted, when it has at most
+    /// `most`. Reading stops at the one past that, which fails with
+    /// `FileTooLarge`, so a huge folder isn't read whole.
+    pub(crate) fn names_up_to(&self, most: usize) -> io::Result<Vec<OsString>> {
         #[cfg(unix)]
-        let mut names = sys::names(&self.fd)?;
+        let mut names = sys::names(&self.fd, most)?;
         #[cfg(not(unix))]
         let mut names = {
             self.checked(OsStr::new("."))?;
             std::fs::read_dir(&self.path)?
+                .take(most.saturating_add(1))
                 .map(|entry| entry.map(|entry| entry.file_name()))
                 .collect::<io::Result<Vec<_>>>()?
         };
+        if names.len() > most {
+            return Err(io::Error::from(io::ErrorKind::FileTooLarge));
+        }
         names.sort();
         Ok(names)
     }
@@ -571,8 +582,9 @@ mod sys {
         result(unsafe { libc::unlinkat(dir.as_raw_fd(), name.as_ptr(), flags) }).map(|_| ())
     }
 
-    /// The names in the folder, without `.` and `..`.
-    pub fn names(dir: &OwnedFd) -> io::Result<Vec<OsString>> {
+    /// The names in the folder, without `.` and `..`, reading at most one
+    /// past `most`.
+    pub fn names(dir: &OwnedFd, most: usize) -> io::Result<Vec<OsString>> {
         // A copy of the descriptor, which the listing owns and closes.
         // SAFETY: the descriptor is open.
         let copy = result(unsafe { libc::fcntl(dir.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 0) })?;
@@ -600,6 +612,9 @@ mod sys {
             let bytes = name.to_bytes();
             if bytes != b"." && bytes != b".." {
                 names.push(OsString::from_vec(bytes.to_vec()));
+                if names.len() > most {
+                    break;
+                }
             }
         }
         // SAFETY: `stream` is an open listing, closed once.
