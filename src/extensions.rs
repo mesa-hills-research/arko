@@ -313,28 +313,8 @@ pub fn remove_added(root: &Path, added: Added) -> Result<String, String> {
             )),
             Err(mcp::changes::NotRemoved::Failed(why)) => Err(why),
         },
-        Added::Skill { path } => remove_saved_skill(root, &path),
+        Added::Skill { path } => crate::skill_install::remove_saved(root, &path),
     }
-}
-
-/// Deletes the folder of a skill an agent saved, and drops its record.
-fn remove_saved_skill(root: &Path, path: &Path) -> Result<String, String> {
-    let name = path
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_else(|| path.display().to_string());
-    if crate::agent_added::skill_at(root, path).is_none() {
-        return Err(format!("{name} wasn't added by an agent."));
-    }
-    std::fs::remove_dir_all(path).map_err(|error| {
-        format!(
-            "Couldn't delete {} ({}).",
-            path.display(),
-            crate::profiles::reason_of(&error)
-        )
-    })?;
-    crate::agent_added::forget_skill(root, path)?;
-    Ok(format!("Removed the skill {name}."))
 }
 
 #[cfg(test)]
@@ -697,5 +677,59 @@ mod tests {
         assert_eq!(listed.skills[0].path, skills.join("flat.md"));
         // Only the MCP file that can't be read is a note.
         assert_eq!(listed.notes.len(), 1, "{:?}", listed.notes);
+    }
+
+    /// An app removes a skill an agent saved, folder and record, and
+    /// refuses one no agent saved.
+    #[test]
+    fn an_app_removes_a_skill_an_agent_saved_and_no_other() {
+        use crate::agent_added::{self, Scope, SkillRecord};
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("arko");
+        let skills = root.join("skills");
+        for name in ["saved", "mine"] {
+            std::fs::create_dir_all(skills.join(name)).unwrap();
+            std::fs::write(
+                skills.join(name).join("SKILL.md"),
+                format!("---\nname: {name}\ndescription: A skill.\n---\nSteps.\n"),
+            )
+            .unwrap();
+        }
+        let saved = skills.join("saved");
+        agent_added::record_skill(
+            &root,
+            SkillRecord {
+                path: saved.clone(),
+                scope: Scope::User,
+                session: "s1".into(),
+                session_title: None,
+                added: chrono::Utc::now(),
+                why: "Release steps.".into(),
+                source: None,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            remove_added(
+                &root,
+                Added::Skill {
+                    path: skills.join("mine")
+                }
+            ),
+            Err("mine wasn't added by an agent.".to_string())
+        );
+        assert!(skills.join("mine").is_dir());
+        assert_eq!(
+            remove_added(
+                &root,
+                Added::Skill {
+                    path: saved.clone()
+                }
+            ),
+            Ok("Removed the skill saved.".to_string())
+        );
+        assert!(!saved.exists());
+        assert!(agent_added::skill_at(&root, &saved).is_none());
     }
 }

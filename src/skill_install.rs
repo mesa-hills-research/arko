@@ -1223,8 +1223,13 @@ pub fn remove_saved(root: &Path, path: &Path) -> Result<String, String> {
     if agent_added::skill_at(root, path).is_none() {
         return Err(format!("{name} wasn't added by an agent."));
     }
-    std::fs::remove_dir_all(path)
-        .map_err(|error| format!("Couldn't delete {} ({error}).", path.display()))?;
+    std::fs::remove_dir_all(path).map_err(|error| {
+        format!(
+            "Couldn't delete {} ({}).",
+            path.display(),
+            crate::profiles::reason_of(&error)
+        )
+    })?;
     // (A record left behind is dropped once its folder is gone.)
     let _ = agent_added::forget_skill(root, path);
     Ok(format!("Removed the skill {name}."))
