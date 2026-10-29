@@ -412,6 +412,10 @@ pub struct ProfileApproval {
     /// as "Workers with it get only the skills ponytail and release-notes."
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub limits: Vec<String>,
+    /// The folder its file is saved in, as a phrase that follows "in", such
+    /// as "this project's .arko/profiles folder" (empty to leave it out).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub folder: String,
     /// Its standing instructions (empty without any).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub instructions: String,
@@ -776,6 +780,9 @@ impl Approval {
                 text(&mut lines, profile.description.trim().to_string());
                 for limit in &profile.limits {
                     text(&mut lines, limit.trim().to_string());
+                }
+                if !profile.folder.trim().is_empty() {
+                    text(&mut lines, format!("Saved in {}.", profile.folder.trim()));
                 }
                 let instructions = profile.instructions.trim_end();
                 if instructions.trim().is_empty() {

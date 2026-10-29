@@ -645,6 +645,7 @@ async fn a_profile_for_every_session_waits_for_the_users_save() {
         [
             "Runs on sol at high effort.",
             "Judges 3D results against a reference image",
+            "Saved in Arko's profiles folder.",
             "Instructions",
             "You judge 3D models."
         ]

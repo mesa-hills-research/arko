@@ -1397,64 +1397,10 @@ pub(crate) fn copy_session_profiles(from: &Path, to: &Path) -> std::io::Result<(
     Ok(())
 }
 
-/// "812 characters" or "812 characters (28 lines)".
-fn size_of(text: &str) -> String {
-    let characters = text.chars().count();
-    match text.lines().count() {
-        0 | 1 => format!("{characters} characters"),
-        lines => format!("{characters} characters ({lines} lines)"),
-    }
-}
-
-/// The question that asks the user to approve the main agent's save of
-/// `profile` in `place`. It reads the same in the terminal, on the web page
-/// and in an app, and carries the whole profile so the user judges its
-/// instructions as well as its model. [`approval`] has its parts for an
-/// approval card.
-pub fn approval_text(profile: &Profile, place: Place) -> String {
-    let wherever = match place {
-        Place::User => "in your Arko folder, for every project",
-        Place::Project => "in this project's .arko/profiles folder",
-        Place::Repository => "in the repository's .arko/profiles folder",
-        Place::Session => "for this session",
-    };
-    let mut text = format!(
-        "The main agent wants to save the worker profile {} {wherever}.\n\n{}\nRuns on {}",
-        profile.name,
-        one_line(&profile.description),
-        profile.runs_on()
-    );
-    if profile.fast {
-        text.push_str(" in fast mode");
-    }
-    if let Some(cache) = profile.cache {
-        text.push_str(&format!(" with a {} prompt cache", cache.as_str()));
-    }
-    text.push('.');
-    if profile.nested {
-        text.push_str(" A worker started with it can start workers of its own.");
-    }
-    for limit in profile.limits() {
-        text.push_str(&format!(" {limit}"));
-    }
-    text.push('\n');
-    let instructions = profile.instructions.trim();
-    if instructions.is_empty() {
-        text.push_str("\nIt has no instructions.\n");
-    } else {
-        // Right after the model, where a short view of the question still
-        // shows it, so the user knows how much there is to read.
-        text.push_str(&format!(
-            "Its instructions are {}.\n\nInstructions\n{instructions}\n",
-            size_of(instructions)
-        ));
-    }
-    text.trim_end().to_string()
-}
-
 /// What the approval tray shows of the main agent's save of `profile` in
 /// `place`, which is its name, model, effort, scope, description, what it
-/// narrows for its workers ([`Profile::limits`]) and instructions.
+/// narrows for its workers ([`Profile::limits`]), the folder it is saved in
+/// and its instructions.
 pub fn approval(profile: &Profile, place: Place) -> crate::approvals::ProfileApproval {
     crate::approvals::ProfileApproval {
         name: profile.name.clone(),
@@ -1466,7 +1412,20 @@ pub fn approval(profile: &Profile, place: Place) -> crate::approvals::ProfileApp
         scope: place.reach().to_string(),
         description: one_line(&profile.description),
         limits: profile.limits(),
+        folder: saved_in(place),
         instructions: profile.instructions.trim().to_string(),
+    }
+}
+
+/// Where a save in `place` writes, as a phrase that follows "in": "this
+/// project's .arko/profiles folder".
+fn saved_in(place: Place) -> String {
+    let [dir, folder] = PROJECT_FOLDER;
+    match place {
+        Place::Session => "this session's folder".to_string(),
+        Place::Project => format!("this project's {dir}/{folder} folder"),
+        Place::Repository => format!("the repository's {dir}/{folder} folder"),
+        Place::User => format!("Arko's {FOLDER} folder"),
     }
 }
 

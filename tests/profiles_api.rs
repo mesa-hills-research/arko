@@ -32,15 +32,18 @@ fn an_app_makes_lists_edits_and_deletes_profiles_without_a_session() {
     profiles::save(&roots, Place::User, &edited, Author::User).unwrap();
     assert!(profiles::read(&roots, "3d-judge").unwrap().profile.nested);
 
-    // The question the agent's save puts to the user, and its card.
-    let question = profiles::approval_text(&edited, Place::Project);
-    assert!(question.contains("3d-judge"));
+    // The request the agent's save puts to the user.
     let card = arko::approvals::Approval::Profile(profiles::approval(&edited, Place::Project));
     assert_eq!(
         card.title(),
         "Save the worker profile 3d-judge for this project?"
     );
     assert_eq!(card.details()[0].text, "Runs on sol at high effort.");
+    assert!(
+        card.details()
+            .iter()
+            .any(|detail| detail.text == "Saved in this project's .arko/profiles folder.")
+    );
 
     // The folders to open, nearest first. The project has two, the one a
     // save writes and then the older one that is still read.

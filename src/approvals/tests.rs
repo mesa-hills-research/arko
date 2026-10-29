@@ -215,6 +215,7 @@ fn a_profile_reads_as_its_card() {
         scope: "every project".into(),
         description: "Judges renders".into(),
         limits: vec!["Workers with it get only the skill ponytail.".into()],
+        folder: "Arko's profiles folder".into(),
         instructions: "Compare it with the reference.".into(),
     });
     assert_eq!(approval.summary(), "sol high");
@@ -227,6 +228,7 @@ fn a_profile_reads_as_its_card() {
                 Look::Text,
                 "Workers with it get only the skill ponytail.".to_string()
             ),
+            (Look::Text, "Saved in Arko's profiles folder.".to_string()),
             (Look::Heading, "Instructions".to_string()),
             (Look::Box, "Compare it with the reference.".to_string()),
         ]
@@ -268,6 +270,7 @@ fn requests_and_answers_cross_the_wire() {
             scope: "every project".into(),
             description: "Judges".into(),
             limits: vec!["Workers with it get only the skill ponytail.".into()],
+            folder: "Arko's profiles folder".into(),
             instructions: String::new(),
         }),
         Approval::Skill(skill()),

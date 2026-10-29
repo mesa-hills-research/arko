@@ -42,6 +42,7 @@ fn profile(instructions: &str) -> Approval {
         scope: "every project".into(),
         description: "Judges 3D results".into(),
         limits: vec!["Workers with it get only the skill ponytail.".into()],
+        folder: "Arko's profiles folder".into(),
         instructions: instructions.into(),
     })
 }

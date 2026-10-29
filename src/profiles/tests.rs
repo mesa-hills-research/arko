@@ -1,4 +1,5 @@
 use super::*;
+use crate::approvals::{Approval, Look};
 
 fn roots(temp: &Path) -> Roots {
     Roots::new(temp.join("arko"))
@@ -94,11 +95,9 @@ fn skills_and_servers_are_lists_in_the_front_matter() {
 }
 
 /// The approval carries what workers with the profile are limited to, in
-/// the request's data, in its details in the tray and in the question's
-/// text.
+/// the request's data and in its details in the tray.
 #[test]
 fn the_approval_says_what_workers_with_the_profile_get() {
-    use crate::approvals::{Approval, Look};
     let details = |profile: &Profile| -> Vec<(Look, String)> {
         Approval::Profile(approval(profile, Place::User))
             .details()
@@ -121,7 +120,8 @@ fn the_approval_says_what_workers_with_the_profile_get() {
         ]
     );
     assert_eq!(approval(&profile, Place::User).limits, profile.limits());
-    // The tray shows them after the description, before the instructions.
+    // The tray shows them after the description, before the folder and the
+    // instructions.
     let mut narrowed = plain.clone();
     narrowed.splice(
         2..2,
@@ -131,13 +131,12 @@ fn the_approval_says_what_workers_with_the_profile_get() {
             .map(|limit| (Look::Text, limit)),
     );
     assert_eq!(plain[1], (Look::Text, "Reads".to_string()));
-    assert_eq!(plain[2], (Look::Heading, "Instructions".to_string()));
-    assert_eq!(details(&profile), narrowed);
-    let text = approval_text(&profile, Place::User);
-    assert!(
-        text.contains("Runs on the session's worker model. Workers with it get only the skills ponytail and release-notes. Workers with it get no MCP servers.\n"),
-        "{text}"
+    assert_eq!(
+        plain[2],
+        (Look::Text, "Saved in Arko's profiles folder.".to_string())
     );
+    assert_eq!(plain[3], (Look::Heading, "Instructions".to_string()));
+    assert_eq!(details(&profile), narrowed);
     profile.skills = Some(vec!["ponytail".into()]);
     profile.mcp = None;
     assert_eq!(
@@ -632,32 +631,34 @@ fn two_writers_leave_a_whole_file() {
 }
 
 #[test]
-fn the_approval_question_shows_the_whole_profile() {
-    let mut profile = full();
-    profile.nested = false;
-    profile.fast = false;
-    profile.cache = None;
-    let question = approval_text(&profile, Place::User);
+fn the_approval_shows_the_whole_profile() {
+    let card = Approval::Profile(approval(&full(), Place::User));
     assert_eq!(
-        question,
-        "The main agent wants to save the worker profile 3d-judge in your Arko folder, for every project.\n\nJudges 3D results against a reference image\nRuns on sol at high effort.\nIts instructions are 66 characters (3 lines).\n\nInstructions\nYou judge 3D models.\n\nCompare the render with the reference image."
+        card.details()
+            .into_iter()
+            .map(|detail| (detail.look, detail.text))
+            .collect::<Vec<_>>(),
+        [
+            (Look::Text, "Runs on sol at high effort.".to_string()),
+            (
+                Look::Text,
+                "Judges 3D results against a reference image".to_string()
+            ),
+            (Look::Text, "Saved in Arko's profiles folder.".to_string()),
+            (Look::Heading, "Instructions".to_string()),
+            (
+                Look::Box,
+                "You judge 3D models.\n\nCompare the render with the reference image.".to_string()
+            ),
+        ]
     );
-    let project = approval_text(&profile, Place::Project);
+    let plain = Approval::Profile(approval(&Profile::new("quick", "Reads"), Place::User));
     assert!(
-        project
-            .contains("save the worker profile 3d-judge in this project's .arko/profiles folder.")
+        plain
+            .details()
+            .iter()
+            .any(|detail| detail.text == "It has no instructions.")
     );
-    let mut plain = Profile::new("quick", "Reads");
-    plain.nested = true;
-    plain.fast = true;
-    plain.cache = Some(Cache::FiveMinutes);
-    let text = approval_text(&plain, Place::User);
-    assert!(
-        text.contains("Runs on the session's worker model in fast mode with a 5m prompt cache."),
-        "{text}"
-    );
-    assert!(text.contains("A worker started with it can start workers of its own."));
-    assert!(text.contains("It has no instructions."));
 }
 
 #[test]
@@ -899,7 +900,12 @@ fn an_isolated_key_from_an_earlier_file_is_kept_and_means_nothing() {
         profile.extra,
         [("isolated".to_string(), "true".to_string())]
     );
-    assert!(!approval_text(&profile, Place::User).contains("worktree"));
+    let card = Approval::Profile(approval(&profile, Place::User));
+    assert!(
+        card.details()
+            .iter()
+            .all(|detail| !detail.text.contains("worktree"))
+    );
     assert!(profile.render().contains("isolated: true"));
     let again = Profile::parse("tree", &profile.render()).unwrap();
     assert_eq!(again, profile);
@@ -1547,17 +1553,26 @@ fn a_delete_reaches_the_older_folder() {
     assert!(delete(&Roots::new(temp.path()), Place::Project, "judge").is_err());
 }
 
-/// The approval card and the question name the new folder.
+/// The approval names the folder a save writes, so the terminal, the page
+/// and an app show it.
 #[test]
-fn the_approval_names_arko_profiles() {
-    let text = approval_text(&judge(), Place::Project);
-    assert!(
-        text.contains("in this project's .arko/profiles folder."),
-        "{text}"
-    );
-    let text = approval_text(&judge(), Place::Repository);
-    assert!(
-        text.contains("in the repository's .arko/profiles folder."),
-        "{text}"
-    );
+fn the_approval_names_the_folder_it_saves_in() {
+    for (place, line) in [
+        (
+            Place::Project,
+            "Saved in this project's .arko/profiles folder.",
+        ),
+        (
+            Place::Repository,
+            "Saved in the repository's .arko/profiles folder.",
+        ),
+        (Place::User, "Saved in Arko's profiles folder."),
+        (Place::Session, "Saved in this session's folder."),
+    ] {
+        let details = Approval::Profile(approval(&judge(), place)).details();
+        assert!(
+            details.iter().any(|detail| detail.text == line),
+            "{place:?}: {details:?}"
+        );
+    }
 }
