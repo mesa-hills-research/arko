@@ -60,15 +60,103 @@ pub const ALIASES: [(&str, &str); 11] = [
     ("flash", "gemini-3.8-flash"),
 ];
 
-/// Registry models and the exact slug each has on OpenRouter. A slug names
-/// its model only by equality, after one of [`OPENROUTER_ROUTING_SUFFIXES`]
-/// comes off, so a "-v2" variant or a fine-tune is none of these.
-pub const OPENROUTER_EQUIVALENTS: [(&str, &str); 4] = [
+/// Registry models and the exact slug each has on OpenRouter, one row for
+/// each model OpenRouter also serves, written by hand from OpenRouter's
+/// model list (checked on 2026-10-29). A slug names its model only by
+/// equality, after one of [`OPENROUTER_ROUTING_SUFFIXES`] comes off (see
+/// [`openrouter_equivalent`]), so a "-v2" variant, a fine-tune or another
+/// publisher's model is none of these. Nothing fills it from OpenRouter's
+/// list, since that would need the guessing the table is there to avoid.
+///
+/// An alias moved or added in [`ALIASES`] needs a row here, or its model in
+/// [`NOT_ON_OPENROUTER`], and a test fails until it has one. A live test
+/// (ignored by default) fails for a slug OpenRouter no longer lists.
+pub const OPENROUTER_EQUIVALENTS: &[(&str, &str)] = &[
+    // Claude
+    ("claude-opus-5-5", "anthropic/claude-opus-5.5"),
+    ("claude-opus-5", "anthropic/claude-opus-5"),
+    ("claude-opus-4-8", "anthropic/claude-opus-4.8"),
+    ("claude-opus-4-7", "anthropic/claude-opus-4.7"),
+    ("claude-opus-4-6", "anthropic/claude-opus-4.6"),
+    ("claude-opus-4-5-20251101", "anthropic/claude-opus-4.5"),
+    ("claude-opus-4-1-20250805", "anthropic/claude-opus-4.1"),
+    ("claude-fable-5-1", "anthropic/claude-fable-5.1"),
+    ("claude-fable-5", "anthropic/claude-fable-5"),
+    ("claude-sonnet-5-5", "anthropic/claude-sonnet-5.5"),
+    ("claude-sonnet-5", "anthropic/claude-sonnet-5"),
+    ("claude-sonnet-4-6", "anthropic/claude-sonnet-4.6"),
+    ("claude-sonnet-4-5-20250929", "anthropic/claude-sonnet-4.5"),
     ("claude-haiku-5-5", "anthropic/claude-haiku-5.5"),
     ("claude-haiku-4-5-20251001", "anthropic/claude-haiku-4.5"),
+    // OpenAI
+    ("gpt-6.1-sol", "openai/gpt-6.1-sol"),
+    ("gpt-6.1-terra", "openai/gpt-6.1-terra"),
+    ("gpt-6-sol", "openai/gpt-6-sol"),
+    ("gpt-6-astra", "openai/gpt-6-astra"),
     ("gpt-6-luna", "openai/gpt-6-luna"),
+    ("gpt-5.6-sol", "openai/gpt-5.6-sol"),
+    ("gpt-5.6-terra", "openai/gpt-5.6-terra"),
     ("gpt-5.6-luna", "openai/gpt-5.6-luna"),
+    ("gpt-5.5-2026-04-23", "openai/gpt-5.5"),
+    ("gpt-5.5-pro-2026-04-23", "openai/gpt-5.5-pro"),
+    ("gpt-5.4-2026-03-05", "openai/gpt-5.4"),
+    ("gpt-5.4-pro-2026-03-05", "openai/gpt-5.4-pro"),
+    ("gpt-5.4-mini-2026-03-17", "openai/gpt-5.4-mini"),
+    ("gpt-5.4-nano-2026-03-17", "openai/gpt-5.4-nano"),
+    ("gpt-5.3-codex", "openai/gpt-5.3-codex"),
+    ("gpt-5.2", "openai/gpt-5.2"),
+    ("gpt-5.2-pro", "openai/gpt-5.2-pro"),
+    ("gpt-5.1-2025-11-13", "openai/gpt-5.1"),
+    ("gpt-5-2025-08-07", "openai/gpt-5"),
+    ("gpt-5-pro-2025-10-06", "openai/gpt-5-pro"),
+    ("gpt-5-mini-2025-08-07", "openai/gpt-5-mini"),
+    ("gpt-5-nano-2025-08-07", "openai/gpt-5-nano"),
+    ("gpt-4.1-2025-04-14", "openai/gpt-4.1"),
+    ("gpt-4.1-mini-2025-04-14", "openai/gpt-4.1-mini"),
+    ("gpt-4.1-nano-2025-04-14", "openai/gpt-4.1-nano"),
+    ("o3-2025-04-16", "openai/o3"),
+    ("o3-pro-2025-06-10", "openai/o3-pro"),
+    // Gemini
+    ("gemini-3.1-pro-preview", "google/gemini-3.1-pro-preview"),
+    (
+        "gemini-3.1-pro-preview-customtools",
+        "google/gemini-3.1-pro-preview-customtools",
+    ),
+    ("gemini-3.8-flash", "google/gemini-3.8-flash"),
+    ("gemini-3.7-flash", "google/gemini-3.7-flash"),
+    ("gemini-3.6-flash", "google/gemini-3.6-flash"),
+    ("gemini-3.5-flash", "google/gemini-3.5-flash"),
+    ("gemini-3.5-flash-lite", "google/gemini-3.5-flash-lite"),
+    ("gemini-3.1-flash-lite", "google/gemini-3.1-flash-lite"),
+    (
+        "gemini-3.1-flash-lite-preview",
+        "google/gemini-3.1-flash-lite-preview",
+    ),
+    ("gemini-3-flash-preview", "google/gemini-3-flash-preview"),
+    ("gemini-2.5-pro", "google/gemini-2.5-pro"),
+    ("gemini-2.5-flash", "google/gemini-2.5-flash"),
+    ("gemini-2.5-flash-lite", "google/gemini-2.5-flash-lite"),
 ];
+
+/// The models [`ALIASES`] names that OpenRouter doesn't serve, so that every
+/// alias has a row in [`OPENROUTER_EQUIVALENTS`] or a place here.
+#[cfg_attr(not(test), allow(dead_code))]
+pub const NOT_ON_OPENROUTER: [&str; 1] = ["claude-mythos-5-1"];
+
+/// The registry ID of the model `slug` (without the `openrouter:` prefix)
+/// names on OpenRouter, by [`OPENROUTER_EQUIVALENTS`]. The slug must equal a
+/// row's exactly, after at most one of [`OPENROUTER_ROUTING_SUFFIXES`] comes
+/// off, since those pick a provider or a free tier for the same model.
+pub fn openrouter_equivalent(slug: &str) -> Option<&'static str> {
+    let slug = OPENROUTER_ROUTING_SUFFIXES
+        .iter()
+        .find_map(|suffix| slug.strip_suffix(suffix))
+        .unwrap_or(slug);
+    OPENROUTER_EQUIVALENTS
+        .iter()
+        .find(|(_, equivalent)| *equivalent == slug)
+        .map(|(id, _)| *id)
+}
 
 /// The suffixes of an OpenRouter slug that pick a provider or a free tier
 /// for the same model, `:floor` (the cheapest provider), `:nitro` (the
@@ -318,16 +406,7 @@ const SMALL_MODELS: [&str; 4] = [
 /// [`OPENROUTER_ROUTING_SUFFIXES`]. The ID or slug must match exactly.
 pub fn is_small(model: &Model) -> bool {
     let id = match model.provider {
-        Provider::OpenRouter => {
-            let slug = OPENROUTER_ROUTING_SUFFIXES
-                .iter()
-                .find_map(|suffix| model.id.strip_suffix(suffix))
-                .unwrap_or(&model.id);
-            OPENROUTER_EQUIVALENTS
-                .iter()
-                .find(|(_, equivalent)| *equivalent == slug)
-                .map(|(id, _)| *id)
-        }
+        Provider::OpenRouter => openrouter_equivalent(&model.id),
         _ => Some(model.id.as_str()),
     };
     id.is_some_and(|id| SMALL_MODELS.contains(&id))
@@ -3526,6 +3605,106 @@ mod tests {
             let model = resolve_model(&format!("openrouter:{slug}")).unwrap();
             assert!(!is_small(&model), "openrouter:{slug}");
         }
+    }
+
+    /// Every row pairs a registry model with a plain `org/name` slug, with no
+    /// whitespace and no `:` suffix, and no ID or slug is there twice. Every
+    /// aliased model has a row or is among those OpenRouter doesn't serve,
+    /// and not both, so moving an alias fails here until the table follows.
+    #[test]
+    fn every_alias_has_one_decision_and_every_row_is_plain() {
+        let mut ids = std::collections::HashSet::new();
+        let mut slugs = std::collections::HashSet::new();
+        for (id, slug) in OPENROUTER_EQUIVALENTS {
+            assert!(Model::find(id).is_some(), "{id} isn't a registry model");
+            let parts: Vec<&str> = slug.split('/').collect();
+            assert_eq!(parts.len(), 2, "{slug}");
+            assert!(parts.iter().all(|part| !part.is_empty()), "{slug}");
+            assert!(
+                !slug.contains(|c: char| c.is_whitespace() || ":@~".contains(c)),
+                "{slug}"
+            );
+            assert!(ids.insert(*id), "{id} has two rows");
+            assert!(slugs.insert(*slug), "{slug} has two rows");
+        }
+        for id in NOT_ON_OPENROUTER {
+            assert!(Model::find(id).is_some(), "{id} isn't a registry model");
+        }
+        for (alias, id) in ALIASES {
+            let tabled = ids.contains(id);
+            let not_served = NOT_ON_OPENROUTER.contains(&id);
+            assert!(
+                tabled != not_served,
+                "{alias} ({id}) needs a row or a place in NOT_ON_OPENROUTER, and not both"
+            );
+        }
+    }
+
+    /// A tabled slug, also with a routing suffix, is its model, and anything
+    /// that only looks like one is none: other versions and variants,
+    /// suffixes other than the routing ones, other publishers, fine-tunes
+    /// and other cases.
+    #[test]
+    fn only_a_tabled_slug_is_its_model() {
+        for (id, slug) in OPENROUTER_EQUIVALENTS {
+            assert_eq!(openrouter_equivalent(slug), Some(*id), "{slug}");
+            for suffix in OPENROUTER_ROUTING_SUFFIXES {
+                assert_eq!(
+                    openrouter_equivalent(&format!("{slug}{suffix}")),
+                    Some(*id),
+                    "{slug}{suffix}"
+                );
+            }
+            let (org, name) = slug.split_once('/').unwrap();
+            for lookalike in [
+                format!("{slug}-v2"),
+                format!("{slug}:batch"),
+                format!("{slug}:free:floor"),
+                format!("{slug}:FREE"),
+                format!("{slug}-v2:floor"),
+                format!("someorg/{name}"),
+                format!("{slug}-ft-acme"),
+                format!("~{slug}"),
+                slug.to_uppercase(),
+                format!("{org}/{name}x"),
+                name.to_string(),
+                id.to_string(),
+            ] {
+                assert_eq!(openrouter_equivalent(&lookalike), None, "{lookalike}");
+            }
+        }
+    }
+
+    /// Each slug in the table is one OpenRouter lists now. Run with the
+    /// other live tests (`--ignored`): it reads OpenRouter's model list,
+    /// which needs no key.
+    #[tokio::test]
+    #[ignore = "reads OpenRouter's model list"]
+    async fn openrouter_still_lists_every_tabled_slug() {
+        let body = arko_ai::http_client_builder()
+            .timeout(std::time::Duration::from_secs(60))
+            .build()
+            .unwrap()
+            .get("https://openrouter.ai/api/v1/models")
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        let listed: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let listed: std::collections::HashSet<&str> = listed["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|model| model["id"].as_str())
+            .collect();
+        let gone: Vec<&str> = OPENROUTER_EQUIVALENTS
+            .iter()
+            .map(|(_, slug)| *slug)
+            .filter(|slug| !listed.contains(slug))
+            .collect();
+        assert!(gone.is_empty(), "OpenRouter no longer lists {gone:?}");
     }
 
     /// The other models, by every route they have, are not small, and a

@@ -560,7 +560,7 @@ pub fn terminal_tool_names(monitors: bool) -> Vec<String> {
 
 /// The tools both agents have: the shell, the terminal and monitor tools,
 /// the file tools, the search index tools and the MCP servers' tools.
-/// (`load_skill` is added for each run when there are skills to load.)
+/// (The skills configuration adds `load_skill` for each run.)
 fn shared_tool_names(settings: &AgentSettings) -> Vec<String> {
     let mut tools = terminal_tool_names(settings.monitors);
     tools.extend(FILE_TOOL_NAMES.iter().map(|name| name.to_string()));
@@ -671,6 +671,17 @@ pub fn main_config(settings: &AgentSettings) -> Result<AgentConfig, String> {
     if settings.max_workers > 0 {
         tools.extend(crew::LEAD_TOOL_NAMES.iter().map(|name| name.to_string()));
     }
+    // The main agent saves and removes skills, offered from the start of
+    // every conversation with `load_skill`, so its tool list never changes.
+    let skills = skills::agent_config(
+        settings.skill_folders,
+        settings.builtin_skills,
+        &settings.main.model,
+        false,
+    );
+    if skills.is_some() {
+        tools.extend(crate::skill_install::TOOL_NAMES.map(String::from));
+    }
     let mut instructions = main_instructions(settings);
     instructions.push_str(&tool_instructions(settings, false));
     if settings.max_workers > 0 {
@@ -707,7 +718,7 @@ pub fn main_config(settings: &AgentSettings) -> Result<AgentConfig, String> {
                 .into(),
         );
     }
-    if let Some(skills) = skills::config(settings.skill_folders, settings.builtin_skills) {
+    if let Some(skills) = skills {
         builder = builder.skills_config(skills);
     }
     if settings.main.in_claude_code() {
@@ -744,6 +755,11 @@ pub(crate) fn worker_setup(
         skills: None,
         mcp: None,
         left_out: None,
+        model_names: Some(
+            resolve_model(&worker.model)
+                .map(|model| skills::model_names(&model))
+                .unwrap_or_default(),
+        ),
     })
 }
 
@@ -784,9 +800,12 @@ pub fn worker_config(settings: &AgentSettings) -> Result<AgentConfig, String> {
         settings.worker.handover_at.unwrap_or(settings.handover_at),
         settings.cc_compact,
     ));
-    if let Some(mut skills) = skills::config(settings.skill_folders, settings.builtin_skills) {
-        // A worker has no skill marked `workers: false`.
-        skills.subagent = true;
+    if let Some(skills) = skills::agent_config(
+        settings.skill_folders,
+        settings.builtin_skills,
+        &settings.worker.model,
+        true,
+    ) {
         builder = builder.skills_config(skills);
     }
     if settings.worker.in_claude_code() {
@@ -909,9 +928,11 @@ fn tool_instructions(settings: &AgentSettings, worker: bool) -> String {
         } else {
             ""
         };
+        // The main agent saves skills (`add_skill`).
+        let saving = if worker { "" } else { SAVING_SKILLS };
         text.push_str(&format!(
             "\n# Skills\n\
-             Skills are instructions for particular kinds of work{from}. When a skill's description fits your task, load it with `load_skill` before you start, and follow it.{files}\n"
+             Skills are instructions for particular kinds of work{from}. When a skill's description fits your task, load it with `load_skill` before you start, and follow it.{files}{saving}\n"
         ));
     }
     text
@@ -952,6 +973,9 @@ fn known_indexes(indexes: &[index::Known]) -> String {
 /// What the main agent is told of choosing a worker's model (see
 /// `worker_options`).
 const CHOOSING: &str = "A worker runs on the session's worker model unless you choose otherwise. Choose with `profile` (a named setup the user or you saved) or with `model` and `effort`. Match the model to the job. A small one reads and searches well, a strong one does hard reasoning, and a model from another maker gives a second opinion or a comparison. `worker_options` lists the profiles and the models usable now with their prices. A stronger model costs more, so pick the weakest one that does the job. Set `cache` to `1h` for a worker you will send more work to after it reports, and to `5m` for a one-off.";
+
+/// What the main agent is told of saving skills, in its Skills section.
+pub(crate) const SAVING_SKILLS: &str = "\n\nSave a skill with `add_skill` when instructions would help later conversations or workers, such as this project's release steps or a workaround for a tool. Give models an exact id for a workaround tied to one release, and a short name or pattern for advice that should carry over to the family's next release.";
 
 /// What it is told of saving a profile.
 const SAVING: &str = "When several workers share a setup, save it once with `save_worker_profile` and start them by its name.";

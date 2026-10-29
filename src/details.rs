@@ -417,6 +417,13 @@ pub struct SkillFacts {
     pub replaces_builtin: Option<PathBuf>,
     /// Where it is, its folder or its file (none for a built-in skill).
     pub path: Option<PathBuf>,
+    /// The models whose agents list it, as its front matter writes them
+    /// (empty for every model).
+    pub models: Vec<String>,
+    /// Workers get it (else only the main agent).
+    pub workers: bool,
+    /// When, why and from where an agent saved it, if an agent did.
+    pub added: Option<crate::agent_added::SkillRecord>,
 }
 
 /// What `/skills` says.
@@ -558,6 +565,7 @@ impl Details {
         let builtin = self.builtin_skills();
         let scanned = skills::scan(&self.skill_folders, &builtin, &workspace);
         let loaded = || scanned.iter().filter(|skill| skill.skipped.is_none());
+        let added = crate::agent_added::skills(&self.root);
         let facts = |skill: &arko_agents::skill::SkillScan| SkillFacts {
             name: skill.name.clone(),
             description: skill.description.clone(),
@@ -571,6 +579,12 @@ impl Details {
                     .any(|other| other.embedded && other.name == skill.name))
             .then(|| skill.path.clone()),
             path: (!skill.embedded).then(|| skill.path.clone()),
+            models: skill.models.clone(),
+            workers: skill.workers,
+            added: added
+                .iter()
+                .find(|record| !skill.embedded && record.path == skill.path)
+                .cloned(),
         };
         let mut skills: Vec<SkillFacts> = loaded()
             .filter(|skill| !skill.auto_load)

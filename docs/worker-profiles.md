@@ -278,10 +278,10 @@ whether the agent's save asks you first. `Preferences::save_in` also adds or rem
 saved, with a model Arko knows and an effort it takes. `profiles::folders` gives the folders for an
 "open the folder" button, the project's `.arko/profiles` and then its older `.agents/profiles`, and
 `Found::reach` names the older one for a profile read from it. `profiles::approval` is the request
-the agent's save puts in the approval tray. `arko::workers` has the names, commands and sentences of
-the workers' settings, and `ModelChoice::label` and `about` and `WorkerBilling::label` and `about`
-the words for each value, so an app labels and sets them as the terminal and the web page do.
-`arko::models::billing` gives the label a picker shows beside a model billed per token.
+the agent's save puts in the approval tray. `arko::workers` has the names, commands and sentences
+of the workers' settings, and `ModelChoice::label` and `about` and `WorkerBilling::label` and
+`about` the words for each value, so an app labels and sets them as the terminal and the web page
+do. `arko::models::billing` gives the label a picker shows beside a model billed per token.
 
 A worker's summary (`WorkerSummary`) names the worker that started it in `parent`, its `depth`
 (1 for the main agent's workers), whether it may start workers of its own in `nested`, and what it

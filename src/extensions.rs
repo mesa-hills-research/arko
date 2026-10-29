@@ -47,6 +47,15 @@ pub struct SkillEntry {
     pub skipped: Option<String>,
     /// It is one of Arko's built-in skills.
     pub builtin: bool,
+    /// When, why and from where an agent saved it, for this project or
+    /// every project, if an agent did. Only such a skill can be removed
+    /// without deleting it by hand.
+    pub added: Option<crate::agent_added::SkillRecord>,
+    /// Workers get it (its front matter has no `workers: false`).
+    pub workers: bool,
+    /// The models whose agents list it, as its front matter writes them
+    /// (empty for every model).
+    pub models: Vec<String>,
 }
 
 /// A config file that could not be read.
@@ -172,9 +181,14 @@ pub fn list_with(
     }
     let folders = skills::folders_for(workspace, root);
     let (builtin, refused) = builtin_choice(builtin_skills, builtin_skills_off);
+    let added = crate::agent_added::skills(root);
     extensions.skills = skills::scan(&folders, &builtin, workspace.unwrap_or(root))
         .into_iter()
         .map(|skill| SkillEntry {
+            added: added
+                .iter()
+                .find(|record| !skill.embedded && record.path == skill.path)
+                .cloned(),
             path: skill.path,
             name: skill.name,
             description: skill.description,
@@ -183,6 +197,8 @@ pub fn list_with(
                 .skipped
                 .or_else(|| refused.clone().filter(|_| skill.embedded)),
             builtin: skill.embedded,
+            workers: skill.workers,
+            models: skill.models,
         })
         .collect();
     extensions

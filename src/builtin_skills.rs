@@ -230,10 +230,20 @@ impl Harness {
             self.settings = settings;
             self.save_session();
             self.publish_models();
-            let skills = crate::skills::config(&self.skill_folders, &self.settings.builtin_skills);
-            let workers = (self.settings.max_workers > 0).then_some(WORKER);
-            for agent in [MAIN].into_iter().chain(workers) {
-                if let Err(error) = self.workflow().set_agent_skills(agent, skills.clone()) {
+            // Each agent's own, for the skills of its model.
+            let skills = |model: &str, worker: bool| {
+                crate::skills::agent_config(
+                    &self.skill_folders,
+                    &self.settings.builtin_skills,
+                    model,
+                    worker,
+                )
+            };
+            let main = (MAIN, skills(&self.settings.main.model, false));
+            let workers = (self.settings.max_workers > 0)
+                .then(|| (WORKER, skills(&self.settings.worker.model, true)));
+            for (agent, skills) in [main].into_iter().chain(workers) {
+                if let Err(error) = self.workflow().set_agent_skills(agent, skills) {
                     log::warn!("could not give the {agent} agent its new skills: {error}");
                 }
             }

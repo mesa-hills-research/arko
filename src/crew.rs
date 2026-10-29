@@ -328,6 +328,13 @@ pub struct WorkerSetup {
     /// sentence for the start result and the lists.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub left_out: Option<String>,
+    /// The names the run's model goes by, which skills' `models` are
+    /// matched against for its skill list (see
+    /// [`skills::model_names`](crate::skills::model_names)). None for a run
+    /// recorded before they were kept, which keeps the names its
+    /// configuration has.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_names: Option<Vec<String>>,
 }
 
 impl WorkerSetup {
@@ -344,6 +351,7 @@ impl WorkerSetup {
             skills: None,
             mcp: None,
             left_out: None,
+            model_names: None,
         }
     }
 
@@ -375,6 +383,14 @@ impl WorkerSetup {
         // configuration of another run was saved with.
         if let Some(skills) = &mut config.skills_config {
             skills.only = self.skills.clone();
+            // Its skill list is for its own model.
+            if let Some(names) = &self.model_names {
+                skills.model_names = names.clone();
+            }
+            // A worker given no skills has nothing to load, now or later.
+            if self.skills.as_ref().is_some_and(Vec::is_empty) {
+                skills.offer_when_empty = false;
+            }
         }
         // The start tools are the run's own: none a configuration of
         // another run had, and the ones this run's setup adds.
@@ -2498,6 +2514,82 @@ mod tests {
         );
     }
 
+    /// A worker on another model than the session's worker model lists the
+    /// skills for its own model, and gets the same names again when it
+    /// resumes. A run recorded before the names were kept keeps those of
+    /// its configuration, so it resumes as it was saved.
+    #[test]
+    fn a_worker_lists_the_skills_of_its_own_model() {
+        let temp = tempfile::tempdir().unwrap();
+        let (session, root) = (temp.path().join("session"), temp.path().join("arko"));
+        std::fs::create_dir_all(&session).unwrap();
+        let skills = temp.path().join("skills");
+        let (crew, registered) = crew_with_skills(&session, &root, &skills);
+        std::fs::create_dir_all(skills.join("quirks")).unwrap();
+        std::fs::write(
+            skills.join("quirks/SKILL.md"),
+            "---\nname: quirks\ndescription: Haiku's quirks.\nmodels: haiku\n---\n\nMind them.\n",
+        )
+        .unwrap();
+        let on_haiku = start("r1", &[("model", "haiku")]);
+        let on_luna = start("r2", &[]);
+        let haiku = prepared(&crew, &on_haiku, &registered);
+        let luna = prepared(&crew, &on_luna, &registered);
+        assert_eq!(
+            haiku["skills_config"]["model_names"],
+            serde_json::json!(["claude-haiku-5-5", "haiku"])
+        );
+        assert_eq!(
+            luna["skills_config"]["model_names"],
+            serde_json::json!(["gpt-6-luna", "luna"])
+        );
+        let listed = |config: &serde_json::Value| -> Vec<String> {
+            let config: AgentConfig = serde_json::from_value(config.clone()).unwrap();
+            arko_agents::SkillManager::load(config.skills_config.as_ref().unwrap(), &root)
+                .unwrap()
+                .prompt_context()
+                .on_demand_skills
+                .iter()
+                .map(|skill| skill.name.clone())
+                .collect()
+        };
+        assert!(listed(&haiku).contains(&"quirks".to_string()));
+        assert!(!listed(&luna).contains(&"quirks".to_string()));
+        // load_skill is there for a skill saved later, except for a worker
+        // given none.
+        assert_eq!(luna["skills_config"]["offer_when_empty"], true);
+        let none = prepared(&crew, &start("r3", &[("skills", "none")]), &registered);
+        assert_eq!(
+            none["skills_config"]["offer_when_empty"],
+            serde_json::Value::Null
+        );
+        // Each gets its own again, also from the other's saved
+        // configuration.
+        let saved: AgentConfig = serde_json::from_value(haiku.clone()).unwrap();
+        assert_eq!(prepared(&crew, &on_luna, &saved), luna);
+        assert_eq!(prepared(&crew, &on_haiku, &registered), haiku);
+
+        // A record without the names keeps the configuration's.
+        let old = std::fs::read_to_string(session.join(WORKER_MODELS_FILE)).unwrap();
+        let mut old: serde_json::Value = serde_json::from_str(&old).unwrap();
+        for setup in old.as_object_mut().unwrap().values_mut() {
+            setup.as_object_mut().unwrap().remove("model_names");
+        }
+        std::fs::write(session.join(WORKER_MODELS_FILE), old.to_string()).unwrap();
+        let (older, registered) = crew_with_skills(&session, &root, &skills);
+        let mut saved_before = registered.clone();
+        saved_before.skills_config.as_mut().unwrap().model_names = Vec::new();
+        let resumed = prepared(&older, &on_haiku, &saved_before);
+        assert_eq!(
+            resumed["skills_config"]["model_names"],
+            serde_json::Value::Null
+        );
+        assert_eq!(
+            prepared(&older, &on_haiku, &registered)["skills_config"]["model_names"],
+            serde_json::json!(["gpt-6-luna", "luna"])
+        );
+    }
+
     /// The MCP tool is in a worker's configuration only when its setup adds
     /// it, which it does for a worker that reaches a server when it starts.
     /// A configuration another run was saved with doesn't leak it, and a run
@@ -2733,8 +2825,9 @@ mod tests {
         expected.handover = on_sol.handover.clone();
         assert_eq!(applied, serde_json::to_value(&expected).unwrap());
         assert_eq!(crew.config().start_context.unwrap()(&request), None);
-        // A record written now has the old fields and the effort, which an
-        // older Arko ignores, when nothing else is added.
+        // A record written now has the old fields, and the effort and the
+        // model's names, which an older Arko ignores, when nothing else is
+        // added.
         let mut fresh = start("r2", &[]);
         fresh.run_id = Uuid::new_v4();
         prepared(&crew, &fresh, &registered);
@@ -2747,7 +2840,7 @@ mod tests {
             .unwrap()
             .keys()
             .collect();
-        assert_eq!(keys, ["effort", "handover", "llm_config"]);
+        assert_eq!(keys, ["effort", "handover", "llm_config", "model_names"]);
     }
 
     /// The project's instructions come first in a worker's first message,

@@ -116,9 +116,18 @@ fn a_start_with_no_choice_runs_the_session_s_worker_model_as_registered() {
         let agent_settings = AgentSettings::for_test(&worker, &worker);
         let registered = agents::worker_config(&agent_settings).unwrap();
         let mut chosen = pick(&basis, &[]).unwrap();
-        // (It also keeps the effort, for the lists.)
+        // (It also keeps the effort, for the lists, and its model's names,
+        // for its skill list.)
         assert_eq!(chosen.effort, Some(worker.effort), "{}", worker.model);
         chosen.effort = None;
+        let model = providers::resolve_model(&worker.model).unwrap();
+        assert_eq!(
+            chosen.model_names,
+            Some(crate::skills::model_names(&model)),
+            "{}",
+            worker.model
+        );
+        chosen.model_names = None;
         assert_eq!(
             json(&chosen),
             json(&WorkerSetup::of(&registered)),
@@ -128,6 +137,7 @@ fn a_start_with_no_choice_runs_the_session_s_worker_model_as_registered() {
         // Naming `default`, or the session's own model, is the same.
         let mut named = pick(&basis, &[("profile", "default")]).unwrap();
         named.effort = None;
+        named.model_names = None;
         assert_eq!(json(&named), json(&chosen));
         assert_eq!(chosen.context_added, None);
         assert_eq!(chosen.profile, None);
