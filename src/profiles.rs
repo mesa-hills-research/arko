@@ -1154,6 +1154,10 @@ pub struct Saved {
     /// A nearer place has a profile of the same name, which this one stays
     /// behind.
     pub hidden_by: Option<Place>,
+    /// The older copy in the place's `.agents/profiles` that the save left
+    /// as it was, since that folder is reached through a link or the file
+    /// changed since it was read.
+    pub left: Option<PathBuf>,
 }
 
 /// Saves `profile` in `place`, as `author` writes it. The profile is
@@ -1193,14 +1197,17 @@ pub fn save(
         Author::Agent => Some(MADE_BY_AGENT.to_string()),
         Author::User => None,
     };
-    // The same profile in the older folder of the place.
-    let older: Vec<PathBuf> = roots
+    // The same profile in the older folder of the place, with the identity
+    // of the file read.
+    let older = roots
         .older_folder(place)
-        .into_iter()
         .filter(|folder| has_entry(folder, &Profile::file_name(&profile.name)))
         .map(|folder| folder.join(Profile::file_name(&profile.name)))
         .filter(|older| older.is_file())
-        .collect();
+        .map(|older| {
+            let id = crate::agent_added::file_id(&older);
+            (older, id)
+        });
     // The folder, opened with no link on the way from the project (neither
     // `.arko` nor its profiles folder may be one), Arko's folder or the
     // session's. The file is written through it, so a folder swapped for a
@@ -1216,7 +1223,7 @@ pub fn save(
     let there = opened
         .entry(&name)
         .map_err(|error| format!("Couldn't read {} ({})", file.display(), reason_of(&error)))?;
-    let replaced = there.is_some() || !older.is_empty();
+    let replaced = there.is_some() || older.is_some();
     let text = written.render();
     let write = if author == Author::Agent && !replaced {
         // The check above and this write are two steps. Someone who wrote
@@ -1233,19 +1240,23 @@ pub fn save(
         opened.write_whole(&name, text.as_bytes())
     };
     write.map_err(|error| format!("Couldn't write {} ({})", file.display(), reason_of(&error)))?;
-    for old in older {
-        // (A link that makes the two folders one has the old file be the new.)
-        if same_file(&old, &file) {
-            continue;
+    let mut left = None;
+    // (A link that makes the two folders one has the old file be the new.)
+    if let Some((old, id)) = older
+        && !same_file(&old, &file)
+    {
+        match remove_older(roots, place, &name, id) {
+            Ok(true) => {}
+            Ok(false) => left = Some(old),
+            Err(error) => {
+                return Err(format!(
+                    "Saved {}, but couldn't delete the older {} ({}). Delete it so the profile isn't listed twice.",
+                    file.display(),
+                    old.display(),
+                    reason_of(&error)
+                ));
+            }
         }
-        std::fs::remove_file(&old).map_err(|error| {
-            format!(
-                "Saved {}, but couldn't delete the older {} ({}). Delete it so the profile isn't listed twice.",
-                file.display(),
-                old.display(),
-                reason_of(&error)
-            )
-        })?;
     }
     let hidden_by = Place::ALL
         .into_iter()
@@ -1260,7 +1271,41 @@ pub fn save(
         file,
         replaced,
         hidden_by,
+        left,
     })
+}
+
+/// Deletes the older copy `name` of a profile from the place's
+/// `.agents/profiles`, through that folder opened with no link on the way
+/// from the project, while it is still the file read (`id`). Says whether
+/// it is gone. A folder reached through a link, which may be another
+/// place's such as Arko's own profiles, is only read, and a file that
+/// changed is left too.
+fn remove_older(
+    roots: &Roots,
+    place: Place,
+    name: &str,
+    id: Option<crate::agent_added::FileId>,
+) -> std::io::Result<bool> {
+    let Some(dir) = roots.project_dir(place) else {
+        return Ok(false);
+    };
+    let folder = match crate::arko_dir::open_in(&dir, &OLDER_PROJECT_FOLDER, false) {
+        Ok(Some(folder)) => folder,
+        Ok(None) => return Ok(true),
+        Err(_) => return Ok(false),
+    };
+    match folder.entry(name)? {
+        None => Ok(true),
+        Some(entry)
+            if entry.kind == crate::arko_dir::folder::Kind::File
+                && entry.id.map(crate::agent_added::FileId::from) == id =>
+        {
+            folder.remove_file(name)?;
+            Ok(true)
+        }
+        Some(_) => Ok(false),
+    }
 }
 
 /// Whether an agent may save a profile called `name`: not when a profile of

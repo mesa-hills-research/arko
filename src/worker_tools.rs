@@ -622,6 +622,16 @@ impl Tool for SaveWorkerProfile {
         if place != Place::Session {
             notice = format!("{notice} It is in {}.", saved.file.display());
         }
+        // (An older copy left stays listed after the new one.)
+        let left = saved.left.as_ref().map(|old| {
+            format!(
+                " Arko left the older copy in {}, since it reaches that folder through a link or the file changed.",
+                old.display()
+            )
+        });
+        if let Some(left) = &left {
+            notice.push_str(left);
+        }
         self.0.crew.notice(Level::Info, &notice);
         let kept = match place {
             Place::Session => "for this session".to_string(),
@@ -638,6 +648,9 @@ impl Tool for SaveWorkerProfile {
                 " A profile of the same name for {} comes first, so start_agent takes that one instead.",
                 nearer.reach()
             ));
+        }
+        if let Some(left) = &left {
+            result.push_str(left);
         }
         let model = providers::resolve_model(
             profile
