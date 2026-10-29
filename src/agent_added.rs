@@ -58,6 +58,33 @@ impl From<FileId> for (u64, u64) {
     }
 }
 
+/// The identity of the file or folder at `path`, without following a link
+/// at its end, where the system has one.
+pub fn file_id(path: &Path) -> Option<FileId> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        std::fs::symlink_metadata(path)
+            .ok()
+            .map(|meta| FileId::from((meta.dev(), meta.ino())))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        None
+    }
+}
+
+impl SkillRecord {
+    /// Whether it is the record of the skill in the folder `path`: the
+    /// folder's real path is its path, and the folder is the one the agent
+    /// saved, by its identity (a record without one goes by the path). A
+    /// folder put in its place, such as the user's skill of that name, isn't.
+    pub fn is_at(&self, path: &Path) -> bool {
+        self.path == real_path(path) && self.id.is_none_or(|id| file_id(path) == Some(id))
+    }
+}
+
 /// A skill an agent saved.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SkillRecord {
@@ -82,9 +109,17 @@ pub struct SkillRecord {
 }
 
 impl ServerRecord {
-    /// Whether its entry is in the file at `file`, by the file's real path.
+    /// Whether its entry is in the file at `file`: the file's real path is
+    /// its file, and the folder that really holds it is the one the add
+    /// wrote in, by its identity (a record without one goes by the path). A
+    /// folder moved into the place, such as another project's `.arko`,
+    /// isn't.
     pub fn is_in(&self, file: &Path) -> bool {
-        self.file == real_path(file)
+        let real = real_path(file);
+        self.file == real
+            && self
+                .folder
+                .is_none_or(|id| real.parent().and_then(file_id) == Some(id))
     }
 }
 
@@ -235,15 +270,13 @@ pub fn skills(root: &Path) -> Vec<SkillRecord> {
 
 /// The record of the skill in the folder `path`, if an agent saved it.
 pub fn skill_at(root: &Path, path: &Path) -> Option<SkillRecord> {
-    let real = real_path(path);
-    skills(root).into_iter().find(|skill| skill.path == real)
+    skills(root).into_iter().find(|skill| skill.is_at(path))
 }
 
 /// The one of `records` for the skill in the folder `path`, for a list of
 /// skills.
 pub fn added_skill<'a>(records: &'a [SkillRecord], path: &Path) -> Option<&'a SkillRecord> {
-    let real = real_path(path);
-    records.iter().find(|record| record.path == real)
+    records.iter().find(|record| record.is_at(path))
 }
 
 /// Records a skill an agent saved, in place of an entry for the same folder.
@@ -276,13 +309,12 @@ pub fn servers(root: &Path) -> Vec<ServerRecord> {
     current(root).servers
 }
 
-/// The record of the server `name` in `file`, if an agent added it there,
-/// by the file's real path.
+/// The record of the server `name` in `file`, if an agent added it there
+/// ([`ServerRecord::is_in`]).
 pub fn server_in(root: &Path, file: &Path, name: &str) -> Option<ServerRecord> {
-    let real = real_path(file);
     servers(root)
         .into_iter()
-        .find(|server| server.file == real && server.name == name)
+        .find(|server| server.name == name && server.is_in(file))
 }
 
 /// Records a server an agent added, in place of an entry for the same name

@@ -309,7 +309,8 @@ fn stamp(folder: &Folder, name: &str) -> std::io::Result<Stamp> {
         if depth > STAMP_DEPTH {
             return Err(too_big());
         }
-        for name in folder.names()? {
+        // (Only as many names as the budget has left are read.)
+        for name in folder.names_up_to(STAMP_ENTRIES - reading.entries)? {
             let Some(entry) = folder.entry(&name)? else {
                 continue;
             };

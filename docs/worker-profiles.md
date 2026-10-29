@@ -63,7 +63,8 @@ Earlier versions saved the project's and the repository's profiles in `.agents/p
 tools read too. Arko still reads that folder, after the `.arko/profiles` of the same place, and
 `/profiles` names it next to the profiles it holds. Saves go to `.arko/profiles` only, and Arko
 never moves a file there by itself. Saving a profile that lives in `.agents/profiles` writes the new
-file in `.arko/profiles` and deletes the old one, so the name isn't listed twice.
+file in `.arko/profiles` and deletes the old one, so the name isn't listed twice. An `.agents/profiles`
+reached through a link is only read, so its copy stays, and the agent is told.
 
 Arko keeps the project's `.arko` folder out of git by default. See [the .arko folder](arko-folder.md).
 A `.arko` or `.arko/profiles` that is a link is refused, so a save can't land outside the project.

@@ -1629,3 +1629,60 @@ fn a_save_replaces_a_link_at_its_file() {
         assert!(file.is_file(), "{place:?}");
     }
 }
+
+/// A project whose `.agents/profiles` is a link, here to Arko's own profiles
+/// where an agent made `x`, is only read. An agent's save of `x` for the
+/// project writes `.arko/profiles/x.md` and leaves the profile for every
+/// project where it is, and says it left the older copy.
+#[cfg(unix)]
+#[test]
+fn an_older_folder_that_is_a_link_is_left_alone() {
+    let temp = tempfile::tempdir().unwrap();
+    let roots = roots(temp.path());
+    let work = temp.path().join("work");
+    std::fs::create_dir_all(work.join(".agents")).unwrap();
+    let global = roots.folder(Place::User).unwrap();
+    save(
+        &roots,
+        Place::User,
+        &Profile::new("x", "Global"),
+        Author::Agent,
+    )
+    .unwrap();
+    std::os::unix::fs::symlink(&global, work.join(".agents").join("profiles")).unwrap();
+    let saved = save(
+        &roots,
+        Place::Project,
+        &Profile::new("x", "Project"),
+        Author::Agent,
+    )
+    .unwrap();
+    assert!(saved.file.is_file());
+    assert!(saved.replaced);
+    assert_eq!(saved.left, Some(work.join(".agents/profiles/x.md")));
+    assert!(
+        std::fs::read_to_string(global.join("x.md"))
+            .unwrap()
+            .contains("Global")
+    );
+}
+
+/// The older copy is deleted only while it is the file read. One put in its
+/// place since stays.
+#[cfg(unix)]
+#[test]
+fn an_older_copy_that_changed_since_it_was_read_stays() {
+    let temp = tempfile::tempdir().unwrap();
+    let roots = roots(temp.path());
+    let older = temp.path().join("work/.agents/profiles");
+    std::fs::create_dir_all(&older).unwrap();
+    std::fs::write(older.join("x.md"), described("Read")).unwrap();
+    let id = crate::agent_added::file_id(&older.join("x.md"));
+    std::fs::write(older.join("y.md"), described("Theirs")).unwrap();
+    std::fs::rename(older.join("y.md"), older.join("x.md")).unwrap();
+    assert!(!remove_older(&roots, Place::Project, "x.md", id).unwrap());
+    assert!(older.join("x.md").is_file());
+    let id = crate::agent_added::file_id(&older.join("x.md"));
+    assert!(remove_older(&roots, Place::Project, "x.md", id).unwrap());
+    assert!(!older.join("x.md").exists());
+}

@@ -879,3 +879,48 @@ async fn an_add_never_writes_through_a_link() {
     assert_eq!(std::fs::read_to_string(&user_file).unwrap(), empty);
     assert!(agent_added::servers(&setup.root).is_empty());
 }
+
+/// Another project's .arko moved in where an agent added a server isn't the
+/// folder the add wrote in, by its identity, so the user's server of that
+/// name there isn't the agent's. An add of that name is refused as taken,
+/// before anyone is asked, and the file stays as it is.
+#[cfg(unix)]
+#[tokio::test]
+async fn an_add_never_replaces_a_server_in_a_folder_moved_in() {
+    let temp = tempfile::tempdir().unwrap();
+    let ask = Fake::new(approve());
+    let setup = setup(temp.path(), ask.clone(), Vec::new());
+    let request = || {
+        let mut request = AddServer::new("x", "arko-no-such-mcp-server");
+        request.why = "A reason.".into();
+        request
+    };
+    setup
+        .changes
+        .add(&context(temp.path()), request())
+        .await
+        .unwrap();
+    let arko = crate::arko_dir::dir(&setup.workspace);
+    let local = arko.join(crate::mcp::LOCAL_FILE);
+    let users = r#"{"mcpServers": {"x": {"command": "users-own"}}}"#;
+    let other = temp.path().join("other").join(crate::arko_dir::DIR);
+    std::fs::create_dir_all(&other).unwrap();
+    std::fs::write(other.join(crate::mcp::LOCAL_FILE), users).unwrap();
+    std::fs::rename(&arko, setup.workspace.join("moved")).unwrap();
+    std::fs::rename(&other, &arko).unwrap();
+    assert!(agent_added::server_in(&setup.root, &local, "x").is_none());
+    let error = setup
+        .changes
+        .add(&context(temp.path()), request())
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error,
+        format!(
+            "{} sets up a server named x already. Choose another name.",
+            normal(&local).display()
+        )
+    );
+    assert_eq!(std::fs::read_to_string(&local).unwrap(), users);
+    assert_eq!(ask.cards().len(), 1);
+}

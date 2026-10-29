@@ -315,3 +315,24 @@ fn a_folder_reads_only_regular_files() {
     assert!(folder.read("pipe").is_err());
     assert!(folder.open_file("pipe").is_err());
 }
+
+/// Listing a folder within a budget fails as soon as it finds one entry past
+/// it, and lists a folder within it whole and sorted.
+#[test]
+fn a_folder_lists_its_names_within_a_budget() {
+    let temp = tempfile::tempdir().unwrap();
+    for n in (0..50).rev() {
+        std::fs::write(temp.path().join(format!("f{n:02}")), "").unwrap();
+    }
+    let folder = Folder::base(temp.path()).unwrap();
+    let error = folder.names_up_to(10).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::FileTooLarge);
+    assert_eq!(
+        folder.names_up_to(49).unwrap_err().kind(),
+        ErrorKind::FileTooLarge
+    );
+    let names = folder.names_up_to(50).unwrap();
+    assert_eq!(names.len(), 50);
+    assert_eq!(names[0], "f00");
+    assert_eq!(names[49], "f49");
+}
