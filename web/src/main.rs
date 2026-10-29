@@ -5,6 +5,7 @@
 #![allow(clippy::type_complexity)]
 
 mod app;
+mod approvals;
 mod chrome;
 mod composer;
 mod copy;

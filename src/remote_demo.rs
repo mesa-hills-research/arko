@@ -29,7 +29,7 @@ use crate::ui::Input;
 /// "demo:slow" (a 30 s command), "demo:ask" (a
 /// question), "demo:wait" (a question the agent waits for, which the next
 /// message answers), "demo:questions" (three numbered questions with choices),
-/// "demo:approval" (a worker profile to approve), "demo:image" (a file read
+/// "demo:approval" (two worker profiles to approve), "demo:image" (a file read
 /// that shows a large image), "demo:table" (a reply with a narrow table, a
 /// wide one and one with long cells), "demo:long" (3,500 calls, to reach the
 /// history's limit; "demo:long 500", 500), anything else (a short turn).
@@ -80,7 +80,7 @@ struct Script {
 #[tokio::test]
 #[ignore]
 async fn remote_page_demo() {
-    use crate::mock_model::{ModelServer, complete, tool_call};
+    use crate::mock_model::{ModelServer, complete, tool_call, tool_calls};
     use crate::shell::SHELL_TOOL_NAME;
     use arko_agents::AgentEvent;
     use arko_agents::builtins::READ_FILE_TOOL_NAME;
@@ -303,15 +303,29 @@ async fn remote_page_demo() {
             }
             if let Some(step) = after("demo:approval") {
                 return match step {
-                    0 => tool_call(
+                    0 => tool_calls(
                         "p0",
-                        crew::SAVE_WORKER_PROFILE,
-                        serde_json::json!({
-                            "name": "3d-judge",
-                            "description": "Judges 3D results against a reference image",
-                            "instructions": "You judge 3D models against a reference image.\n\n1. Render the model from the reference's camera.\n2. Compare silhouettes, proportions and materials.\n3. Score each from 0 to 10, with one line on why.\n4. Name the three changes that would help most.",
-                            "scope": "user",
-                        }),
+                        &[
+                            (
+                                crew::SAVE_WORKER_PROFILE,
+                                serde_json::json!({
+                                    "name": "3d-judge",
+                                    "description": "Judges 3D results against a reference image",
+                                    "instructions": "You judge 3D models against a reference image.\n\n1. Render the model from the reference's camera.\n2. Compare silhouettes, proportions and materials.\n3. Score each from 0 to 10, with one line on why.\n4. Name the three changes that would help most.",
+                                    "scope": "user",
+                                }),
+                            ),
+                            (
+                                crew::SAVE_WORKER_PROFILE,
+                                serde_json::json!({
+                                    "name": "reviewer",
+                                    "description": "Reviews a change before it merges",
+                                    "model": "sol",
+                                    "effort": "xhigh",
+                                    "scope": "user",
+                                }),
+                            ),
+                        ],
                     ),
                     _ => {
                         done();

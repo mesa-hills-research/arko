@@ -417,6 +417,17 @@ pub fn state_of(
     let Some(status) = status else {
         return ("connecting", "Connecting".into());
     };
+    if !status.approvals.is_empty() {
+        return (
+            "asking",
+            if viewing.is_some() {
+                "Main needs approval"
+            } else {
+                "Needs approval"
+            }
+            .into(),
+        );
+    }
     if status.question.is_some() {
         return (
             "asking",
@@ -999,5 +1010,24 @@ mod tests {
             "r1 working"
         );
         assert_eq!(state_of(None, &Connection::Offline, None).1, "Offline");
+        // A request in the approval tray, before a question.
+        status.question = Some(crate::protocol::Question {
+            id: 4,
+            text: "Tabs?".into(),
+        });
+        assert_eq!(state_of(Some(&status), &live, None).1, "Asks you");
+        status.approvals = vec![crate::protocol::ApprovalRequest {
+            id: "a1".into(),
+            batch: 1,
+            approval: crate::protocol::Approval::WorkerBilling(Default::default()),
+        }];
+        assert_eq!(
+            state_of(Some(&status), &live, None),
+            ("asking", "Needs approval".to_string())
+        );
+        assert_eq!(
+            state_of(Some(&status), &live, Some(("r1", Some(&summary)))).1,
+            "Main needs approval"
+        );
     }
 }
