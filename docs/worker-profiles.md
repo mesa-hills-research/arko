@@ -44,8 +44,8 @@ chooses that for each worker with `isolated` in `start_agent`. A key Arko doesn'
 | Place | Folder | Who uses it |
 |---|---|---|
 | This session | `profiles` in the session's folder | This session |
-| This project | `.agents/profiles` in the working directory | Every session in the working directory |
-| This repository | `.agents/profiles` in the root of the git repository | Every session in the repository |
+| This project | `.arko/profiles` in the working directory | Every session in the working directory |
+| This repository | `.arko/profiles` in the root of the git repository | Every session in the repository |
 | Every project | `profiles` in Arko's folder | You, in every project |
 
 When a name is in more than one place, the nearest wins, in the order above. Arko reads the files
@@ -57,15 +57,22 @@ The main agent saves a profile for the project unless it says `session` or `user
 stay with the workspace and a new session there finds them. A worker in a worktree of its own
 uses the profiles of the session's working directory, as a worktree has the committed files only.
 
-When Arko makes the project's `.agents/profiles` folder, it writes a `.gitignore` in it with a
-comment and `*`. Git then ignores the folder and that file, and your repository's own `.gitignore`
-stays as it is. Delete the file to share the profiles with your team. Arko writes it only when it
-makes the folder, so it doesn't come back.
+Earlier versions saved the project's and the repository's profiles in `.agents/profiles`, which other
+tools read too. Arko still reads that folder, after the `.arko/profiles` of the same place, and
+`/profiles` names it next to the profiles it holds. Saves go to `.arko/profiles` only, and Arko
+never moves a file there by itself. Saving a profile that lives in `.agents/profiles` writes the new
+file in `.arko/profiles` and deletes the old one, so the name isn't listed twice.
 
-In a subfolder of a git repository, Arko also reads the repository root's `.agents/profiles`, after
-the working directory's own. The "Keep out of git" and "Repo root" rows under "Worker profiles" in
-`/settings` turn off the file above and this lookup. Both are on by default and kept for every
-project in `profiles.json` in Arko's folder.
+When Arko makes the project's `.arko` folder, it writes a `.gitignore` in it with a comment and `*`.
+Git then ignores the folder and that file, and your repository's own `.gitignore` stays as it is.
+Delete the file to share what Arko writes there with your team. Arko writes it only when it makes
+the folder, so it doesn't come back.
+
+In a subfolder of a git repository, Arko also reads the repository root's `.arko/profiles` and
+`.agents/profiles`, after the working directory's own. In `/settings`, "Keep agents' project files out
+of git" under "Project files" turns off the file above, and "Repo root" under "Worker profiles"
+turns off this lookup. Both are on by default and kept for every project in `profiles.json` in
+Arko's folder.
 
 ## How a worker's setup is chosen
 
@@ -97,7 +104,7 @@ for, or replies when they are about something else, and asks again. The agent ca
 profile you made.
 
 The question guards what Arko writes for the agent. The agent's own file tools and shell can write
-a file in the project's `.agents/profiles` folder as they can write any file in the project, and
+a file in the project's `.arko/profiles` folder as they can write any file in the project, and
 in your Arko folder once you turn outside access on. So treat a project's profiles as you treat its
 `AGENTS.md`, as text the project's authors and the agent can change.
 
@@ -237,14 +244,17 @@ profiles::delete(&roots, Place::User, "3d-judge")?;
 ```
 
 `profiles::Preferences` loads and saves the profile settings, and `profiles::needs_approval` tells
-whether the agent's save asks you first. `Profile::check` tells whether a profile can be saved,
-with a model Arko knows and an effort it takes. `profiles::folders` gives the folders for an "open
-the folder" button, and `profiles::approval_text` and `profiles::is_approval` are the question the
-agent's save puts to the user and the rule for its answer. `arko::workers` has the names,
-commands and sentences of the workers' settings, and `ModelChoice::label` and `about` and
-`WorkerBilling::label` and `about` the words for each value, so an app labels and sets them as the
-terminal and the web page do. `arko::models::billing` gives the label a picker shows beside a model
-billed per token.
+whether the agent's save asks you first. `Preferences::save_in` also adds or removes Arko's
+`.gitignore` in a project's `.arko` folder when the keep-out-of-git choice changes
+(`arko::arko_dir::apply_setting` does that alone). `Profile::check` tells whether a profile can be
+saved, with a model Arko knows and an effort it takes. `profiles::folders` gives the folders for an
+"open the folder" button, the project's `.arko/profiles` and then its older `.agents/profiles`, and
+`Found::reach` names the older one for a profile read from it. `profiles::approval_text` and
+`profiles::is_approval` are the question the agent's save puts to the user and the rule for its
+answer. `arko::workers` has the names, commands and sentences of the workers' settings, and
+`ModelChoice::label` and `about` and `WorkerBilling::label` and `about` the words for each value, so
+an app labels and sets them as the terminal and the web page do. `arko::models::billing` gives the
+label a picker shows beside a model billed per token.
 
 A worker's summary (`WorkerSummary`) names the worker that started it in `parent`, its `depth`
 (1 for the main agent's workers), whether it may start workers of its own in `nested`, and what it

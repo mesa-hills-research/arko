@@ -15,12 +15,19 @@
 //! The profile's name is its file's name without `.md`. A profile lives in
 //! one of four places, and the nearest one wins when a name is in more
 //! than one. The session's own folder (`profiles` in the session's folder)
-//! beats the project's (`.agents/profiles` in the working directory), the
-//! project's beats the repository's (`.agents/profiles` in the root of the
+//! beats the project's (`.arko/profiles` in the working directory), the
+//! project's beats the repository's (`.arko/profiles` in the root of the
 //! git repository the working directory is in, when that is another folder),
 //! and the repository's beats the user's (`profiles` in Arko's folder).
-//! [`Preferences`] turns the repository's folder off, and keeps a project
-//! folder that Arko creates out of git.
+//! [`Preferences`] turns the repository's folder off, and keeps the
+//! project's `.arko` folder, when Arko makes it, out of git
+//! ([`arko_dir`](crate::arko_dir)).
+//!
+//! A save writes `.arko/profiles` only. The project and the repository root
+//! are also read in `.agents/profiles`, which earlier versions wrote and
+//! other tools read, after the `.arko/profiles` of the same place. Arko
+//! never moves a file there. A save that replaces a profile in it writes the
+//! new file in `.arko/profiles` and deletes the old one.
 //!
 //! This module reads and writes the files without a session, as
 //! [`extensions`](crate::extensions) and [`accounts`](crate::accounts) do
@@ -77,16 +84,14 @@ pub const RESERVED: [&str; 5] = ["default", "main", "worker", "lead", "all"];
 pub const MADE_BY_AGENT: &str = "agent";
 
 /// The folder in the project (the working directory) and in a repository's
-/// root that holds profiles.
-const PROJECT_FOLDER: [&str; 2] = [".agents", "profiles"];
+/// root that profiles are saved in.
+const PROJECT_FOLDER: [&str; 2] = [crate::arko_dir::DIR, "profiles"];
+/// The folder in the project and in a repository's root that earlier versions
+/// saved profiles in. It is still read.
+const OLDER_PROJECT_FOLDER: [&str; 2] = [".agents", "profiles"];
 /// The folder in Arko's folder and in a session's folder.
 const FOLDER: &str = "profiles";
 const EXTENSION: &str = "md";
-/// The file that keeps a project's profiles folder out of git: it ignores
-/// everything in the folder, itself included.
-const IGNORE_FILE: &str = ".gitignore";
-const IGNORE_TEXT: &str =
-    "# Arko keeps worker profiles out of git. Delete this file to share them.\n*\n";
 
 /// Where a profile lives. The places are listed nearest first, and the
 /// nearest wins when a name is in more than one. They sort in that order.
@@ -95,11 +100,12 @@ const IGNORE_TEXT: &str =
 pub enum Place {
     /// The session's own folder. An agent saves here without asking.
     Session,
-    /// The project's `.agents/profiles`, kept with the workspace.
+    /// The project's `.arko/profiles`, kept with the workspace, and its
+    /// older `.agents/profiles`.
     Project,
-    /// The `.agents/profiles` in the root of the git repository the project
-    /// is in, when the project is a subfolder of it. The commands and the
-    /// agent's tool read it and don't save to it.
+    /// The `.arko/profiles` and the older `.agents/profiles` in the root of
+    /// the git repository the project is in, when the project is a subfolder
+    /// of it. The commands and the agent's tool read it and don't save to it.
     Repository,
     /// `profiles` in Arko's folder, for every project.
     User,
@@ -653,11 +659,12 @@ const PREFERENCES_FILE: &str = "profiles.json";
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Preferences {
-    /// "Keep new profile folders out of git". When [`save`] makes a
-    /// project's profiles folder, it writes a `.gitignore` in it, so git
-    /// ignores the folder and the file.
+    /// "Keep agents' project files out of git". When Arko makes a project's
+    /// `.arko` folder, it writes a `.gitignore` in it, so git ignores the
+    /// folder and the file ([`arko_dir`](crate::arko_dir)). The field keeps
+    /// its name from when the choice covered the profiles folder only.
     pub keep_out_of_git: bool,
-    /// Also look in the `.agents/profiles` of the repository's root, when
+    /// Also look in the profiles folders of the repository's root, when
     /// the project is in a subfolder of a git repository.
     pub repo_root: bool,
 }
@@ -680,13 +687,29 @@ impl Preferences {
             .unwrap_or_default()
     }
 
-    /// Saves them in Arko's folder `root`.
+    /// Saves them in Arko's folder `root`. A project's `.arko/.gitignore`
+    /// stays as it is, so use [`save_in`](Self::save_in) where there is a
+    /// project.
     pub fn save(&self, root: &Path) -> Result<(), String> {
         let file = root.join(PREFERENCES_FILE);
         let text = serde_json::to_string_pretty(self).map_err(|error| error.to_string())?;
         std::fs::create_dir_all(root)
             .and_then(|()| crate::session::write_whole(&file, (text + "\n").as_bytes()))
             .map_err(|error| format!("Couldn't write {} ({})", file.display(), reason_of(&error)))
+    }
+
+    /// Saves them in Arko's folder `root`, and when
+    /// [`keep_out_of_git`](Self::keep_out_of_git) changed, adds or removes
+    /// Arko's `.gitignore` in the project `workspace`'s `.arko` folder
+    /// ([`arko_dir::apply_setting`](crate::arko_dir::apply_setting)). The
+    /// preferences are saved also when that fails and this returns its error.
+    pub fn save_in(&self, root: &Path, workspace: &Path) -> Result<(), String> {
+        let before = Preferences::load(root).keep_out_of_git;
+        self.save(root)?;
+        if before != self.keep_out_of_git {
+            crate::arko_dir::apply_setting(workspace, self.keep_out_of_git)?;
+        }
+        Ok(())
     }
 }
 
@@ -722,35 +745,71 @@ impl Roots {
         self
     }
 
-    /// The folder that holds the profiles of `place`, whether it exists or
-    /// not. `None` when there is no session or project, and for the
-    /// repository when the project is not in a subfolder of a git
-    /// repository or [`Preferences::repo_root`] is off.
+    /// The folder that holds the profiles of `place`, and the one a save
+    /// writes, whether it exists or not. For the project and the repository
+    /// it is `.arko/profiles`, and [`folders`] has the older
+    /// `.agents/profiles` too. `None` when there is no session or project,
+    /// and for the repository when the project is not in a subfolder of a
+    /// git repository or [`Preferences::repo_root`] is off.
     pub fn folder(&self, place: Place) -> Option<PathBuf> {
-        let project_folder = |dir: &Path| dir.join(PROJECT_FOLDER[0]).join(PROJECT_FOLDER[1]);
         match place {
             Place::Session => self.session.as_ref().map(|dir| dir.join(FOLDER)),
-            Place::Project => self.workspace.as_deref().map(project_folder),
+            Place::Project | Place::Repository => self
+                .project_dir(place)
+                .map(|dir| dir.join(PROJECT_FOLDER[0]).join(PROJECT_FOLDER[1])),
+            Place::User => Some(self.root.join(FOLDER)),
+        }
+    }
+
+    /// The folder of `place` that earlier versions saved in, which is still
+    /// read, after [`folder`](Self::folder).
+    fn older_folder(&self, place: Place) -> Option<PathBuf> {
+        self.project_dir(place).map(|dir| {
+            dir.join(OLDER_PROJECT_FOLDER[0])
+                .join(OLDER_PROJECT_FOLDER[1])
+        })
+    }
+
+    /// Every folder profiles of `place` are read from, the one a save writes
+    /// first.
+    fn read_folders(&self, place: Place) -> Vec<PathBuf> {
+        self.folder(place)
+            .into_iter()
+            .chain(self.older_folder(place))
+            .collect()
+    }
+
+    /// The directory that holds the `.arko` of a project place: the working
+    /// directory, or the root of the repository it is in.
+    fn project_dir(&self, place: Place) -> Option<PathBuf> {
+        let workspace = self.workspace.as_deref()?;
+        match place {
+            Place::Project => Some(workspace.to_path_buf()),
             Place::Repository => {
                 // The root has a `.git` folder, or a `.git` file in a worktree.
-                let workspace = self.workspace.as_deref()?;
                 let top = workspace
                     .ancestors()
                     .find(|dir| dir.join(".git").exists())?;
                 (top != workspace && Preferences::load(&self.root).repo_root)
-                    .then(|| project_folder(top))
+                    .then(|| top.to_path_buf())
             }
-            Place::User => Some(self.root.join(FOLDER)),
+            Place::Session | Place::User => None,
         }
     }
 }
 
 /// Every folder profiles are read from, nearest first, for "open the
-/// folder" and for text that names them.
+/// folder" and for text that names them. The project and the repository have
+/// two, `.arko/profiles` first and then the older `.agents/profiles`.
 pub fn folders(roots: &Roots) -> Vec<(Place, PathBuf)> {
     Place::ALL
         .into_iter()
-        .filter_map(|place| roots.folder(place).map(|folder| (place, folder)))
+        .flat_map(|place| {
+            roots
+                .read_folders(place)
+                .into_iter()
+                .map(move |folder| (place, folder))
+        })
         .collect()
 }
 
@@ -767,6 +826,41 @@ pub struct Found {
     pub note: Option<String>,
 }
 
+impl Found {
+    /// The file is in the older `.agents/profiles` of its place, not in
+    /// `.arko/profiles`.
+    pub fn in_older_folder(&self) -> bool {
+        in_older_folder(self.place, &self.file)
+    }
+
+    /// [`Place::reach`], with the folder named when it is the older one:
+    /// `this project (.agents/profiles)`.
+    pub fn reach(&self) -> String {
+        reach_of(self.place, &self.file)
+    }
+}
+
+/// Whether `file`, a profile of `place`, is in the older `.agents/profiles`.
+fn in_older_folder(place: Place, file: &Path) -> bool {
+    matches!(place, Place::Project | Place::Repository)
+        && file.parent().is_some_and(|folder| {
+            folder.ends_with(Path::new(OLDER_PROJECT_FOLDER[0]).join(OLDER_PROJECT_FOLDER[1]))
+        })
+}
+
+fn reach_of(place: Place, file: &Path) -> String {
+    if in_older_folder(place, file) {
+        format!(
+            "{} ({}/{})",
+            place.reach(),
+            OLDER_PROJECT_FOLDER[0],
+            OLDER_PROJECT_FOLDER[1]
+        )
+    } else {
+        place.reach().to_string()
+    }
+}
+
 /// A profile file that couldn't be read.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
@@ -777,6 +871,13 @@ pub struct Unreadable {
     pub name: String,
     /// What is wrong, suitable for display.
     pub reason: String,
+}
+
+impl Unreadable {
+    /// [`Found::reach`] for a file that couldn't be read.
+    pub fn reach(&self) -> String {
+        reach_of(self.place, &self.file)
+    }
 }
 
 /// The profiles of all places.
@@ -833,10 +934,9 @@ impl std::error::Error for ReadError {}
 pub fn list(roots: &Roots) -> Profiles {
     let mut profiles = Profiles::default();
     let mut folders_seen: Vec<PathBuf> = Vec::new();
-    for place in Place::ALL {
-        let Some(folder) = roots.folder(place) else {
-            continue;
-        };
+    // (A place's folders are read `.arko/profiles` first, so a name in both
+    // is the first's and the other is hidden.)
+    for (place, folder) in folders(roots) {
         // The same folder reached twice (a project in Arko's folder, say)
         // is read once, in its nearest place.
         if let Ok(real) = std::fs::canonicalize(&folder) {
@@ -897,10 +997,7 @@ pub fn list(roots: &Roots) -> Profiles {
 pub fn read(roots: &Roots, name: &str) -> Result<Found, ReadError> {
     check_file_name(name).map_err(ReadError::BadName)?;
     let mut problem: Option<Unreadable> = None;
-    for place in Place::ALL {
-        let Some(folder) = roots.folder(place) else {
-            continue;
-        };
+    for (place, folder) in folders(roots) {
         let file = folder.join(Profile::file_name(name));
         if !file.is_file() || !has_entry(&folder, &Profile::file_name(name)) {
             continue;
@@ -978,7 +1075,7 @@ fn read_file(place: Place, file: &Path, name: &str) -> Result<Found, Unreadable>
 }
 
 /// An I/O error as a short phrase.
-fn reason_of(error: &std::io::Error) -> String {
+pub(crate) fn reason_of(error: &std::io::Error) -> String {
     match error.kind() {
         std::io::ErrorKind::PermissionDenied => "permission denied".to_string(),
         std::io::ErrorKind::NotFound => "not found".to_string(),
@@ -1017,10 +1114,12 @@ pub struct Saved {
 /// profile that isn't (one the user made, in any place), and a user's save
 /// takes the mark off, as the profile is the user's now.
 ///
-/// When this makes the project's profiles folder, and
-/// [`Preferences::keep_out_of_git`] is on, the folder gets a `.gitignore`
-/// that ignores it. It is written only when the folder is made, so a user who
-/// deletes it isn't given it again.
+/// The project and the repository get the file in `.arko/profiles`. A
+/// profile of the same name in the older `.agents/profiles` of that place is
+/// replaced by it, so the old file is deleted and the name isn't listed
+/// twice. [`arko_dir::ensure`](crate::arko_dir::ensure) makes the `.arko`
+/// folder, with its `.gitignore` while [`Preferences::keep_out_of_git`] is
+/// on.
 pub fn save(
     roots: &Roots,
     place: Place,
@@ -1043,26 +1142,20 @@ pub fn save(
         Author::Agent => Some(MADE_BY_AGENT.to_string()),
         Author::User => None,
     };
-    let replaced = file.is_file();
-    let made = !folder.exists();
+    // The same profile in the older folder of the place.
+    let older: Vec<PathBuf> = roots
+        .older_folder(place)
+        .into_iter()
+        .filter(|folder| has_entry(folder, &Profile::file_name(&profile.name)))
+        .map(|folder| folder.join(Profile::file_name(&profile.name)))
+        .filter(|older| older.is_file())
+        .collect();
+    let replaced = file.is_file() || !older.is_empty();
+    if let Some(dir) = roots.project_dir(place) {
+        crate::arko_dir::ensure(&dir, &roots.root)?;
+    }
     std::fs::create_dir_all(&folder)
         .map_err(|error| format!("Couldn't make {} ({})", folder.display(), reason_of(&error)))?;
-    // Only a folder made here gets the file, so one the user deleted is
-    // not written again.
-    if made && place == Place::Project && Preferences::load(&roots.root).keep_out_of_git {
-        let ignore = folder.join(IGNORE_FILE);
-        // (A save that made the folder a moment before has written it.)
-        match crate::session::write_new(&ignore, IGNORE_TEXT.as_bytes()) {
-            Err(error) if error.kind() != std::io::ErrorKind::AlreadyExists => {
-                return Err(format!(
-                    "Couldn't write {} ({})",
-                    ignore.display(),
-                    reason_of(&error)
-                ));
-            }
-            _ => {}
-        }
-    }
     let text = written.render();
     let write = if author == Author::Agent && !replaced {
         // The check above and this write are two steps. Someone who wrote
@@ -1079,13 +1172,28 @@ pub fn save(
         crate::session::write_whole(&file, text.as_bytes())
     };
     write.map_err(|error| format!("Couldn't write {} ({})", file.display(), reason_of(&error)))?;
+    for old in older {
+        // (A link that makes the two folders one has the old file be the new.)
+        if same_file(&old, &file) {
+            continue;
+        }
+        std::fs::remove_file(&old).map_err(|error| {
+            format!(
+                "Saved {}, but couldn't delete the older {} ({}). Delete it so the profile isn't listed twice.",
+                file.display(),
+                old.display(),
+                reason_of(&error)
+            )
+        })?;
+    }
     let hidden_by = Place::ALL
         .into_iter()
         .take_while(|nearer| *nearer < place)
         .find(|nearer| {
             roots
-                .folder(*nearer)
-                .is_some_and(|folder| folder.join(Profile::file_name(&profile.name)).is_file())
+                .read_folders(*nearer)
+                .iter()
+                .any(|folder| folder.join(Profile::file_name(&profile.name)).is_file())
         });
     Ok(Saved {
         file,
@@ -1100,10 +1208,7 @@ pub fn save(
 /// profile an agent made, in any place, may be replaced. [`save`] checks this
 /// itself, and a tool that asks the user first checks it before asking.
 pub fn check_agent_save(roots: &Roots, name: &str) -> Result<(), String> {
-    for place in Place::ALL {
-        let Some(folder) = roots.folder(place) else {
-            continue;
-        };
+    for (place, folder) in folders(roots) {
         let existing = folder.join(Profile::file_name(name));
         if !existing.is_file() || !has_entry(&folder, &Profile::file_name(name)) {
             continue;
@@ -1129,7 +1234,7 @@ pub fn check_agent_save(roots: &Roots, name: &str) -> Result<(), String> {
 /// Whether the user is asked before an agent saves the profile `name` in
 /// `place`. Never for the session. For the project not when git ignores the
 /// profiles folder (inside a git work tree, as `git check-ignore` says, or
-/// a folder [`save`] is about to make with its own `.gitignore`), and
+/// a `.arko` folder [`save`] is about to make with its own `.gitignore`), and
 /// outside a git repository the user is asked, as for the other places. A
 /// folder that a link leads out of the project is asked about too.
 pub fn needs_approval(roots: &Roots, place: Place, name: &str) -> bool {
@@ -1151,14 +1256,14 @@ pub fn needs_approval(roots: &Roots, place: Place, name: &str) -> bool {
     }
 }
 
-/// Whether git ignores the profile `name` in the project's `folder`, which
-/// is in the `workspace`.
+/// Whether git ignores the profile `name` in the project's `folder`
+/// (`.arko/profiles`), which is in the `workspace`.
 fn is_ignored(workspace: &Path, folder: &Path, name: &str, keep_out_of_git: bool) -> bool {
     // The folder may not be made yet.
     let Some(existing) = folder.ancestors().find(|dir| dir.is_dir()) else {
         return false;
     };
-    // `.agents` may be a link to another place, which is not ignored by
+    // `.arko` may be a link to another place, which is not ignored by
     // the project's repository, so the user is asked.
     let inside = existing
         .canonicalize()
@@ -1171,7 +1276,13 @@ fn is_ignored(workspace: &Path, folder: &Path, name: &str, keep_out_of_git: bool
     {
         return false;
     }
-    if !folder.exists() && keep_out_of_git {
+    // With the setting off a save takes Arko's own `.gitignore` out first, so
+    // git is to track what it writes.
+    if !keep_out_of_git && crate::arko_dir::has_own_ignore(workspace) {
+        return false;
+    }
+    // A save makes `.arko` with its own `.gitignore`.
+    if !crate::arko_dir::dir(workspace).exists() && keep_out_of_git {
         return true;
     }
     let file = folder.join(Profile::file_name(name));
@@ -1182,19 +1293,36 @@ fn is_ignored(workspace: &Path, folder: &Path, name: &str, keep_out_of_git: bool
     .is_some()
 }
 
-/// Deletes the profile `name` from `place`. Returns the file it removed.
+/// Whether `a` and `b` are one file, reached by two paths.
+fn same_file(a: &Path, b: &Path) -> bool {
+    matches!((a.canonicalize(), b.canonicalize()), (Ok(a), Ok(b)) if a == b)
+}
+
+/// Deletes the profile `name` from `place`, the one [`read`] finds there
+/// (`.arko/profiles` before the older `.agents/profiles`). Returns the file it
+/// removed.
 pub fn delete(roots: &Roots, place: Place, name: &str) -> Result<PathBuf, String> {
     check_file_name(name)?;
-    let folder = roots
-        .folder(place)
-        .ok_or_else(|| format!("There is no {} to delete a profile from.", place.name()))?;
-    let file = folder.join(Profile::file_name(name));
-    if !file.is_file() || !has_entry(&folder, &Profile::file_name(name)) {
+    let folders = roots.read_folders(place);
+    if folders.is_empty() {
+        return Err(format!(
+            "There is no {} to delete a profile from.",
+            place.name()
+        ));
+    }
+    let Some(file) = folders
+        .iter()
+        .find(|folder| {
+            folder.join(Profile::file_name(name)).is_file()
+                && has_entry(folder, &Profile::file_name(name))
+        })
+        .map(|folder| folder.join(Profile::file_name(name)))
+    else {
         return Err(format!(
             "There is no profile `{name}` for {}.",
             place.reach()
         ));
-    }
+    };
     std::fs::remove_file(&file)
         .map_err(|error| format!("Couldn't delete {} ({})", file.display(), reason_of(&error)))?;
     Ok(file)
@@ -1236,8 +1364,8 @@ fn size_of(text: &str) -> String {
 pub fn approval_text(profile: &Profile, place: Place) -> String {
     let wherever = match place {
         Place::User => "in your Arko folder, for every project",
-        Place::Project => "in this project's .agents/profiles folder",
-        Place::Repository => "in the repository's .agents/profiles folder",
+        Place::Project => "in this project's .arko/profiles folder",
+        Place::Repository => "in the repository's .arko/profiles folder",
         Place::Session => "for this session",
     };
     let mut text = format!(

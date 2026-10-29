@@ -43,12 +43,16 @@ fn an_app_makes_lists_edits_and_deletes_profiles_without_a_session() {
     assert_eq!(card.runs_on(), "Runs on sol at high effort.");
     assert_eq!(arko::questions::SAVE, "Save");
 
-    // The folders to open, nearest first.
-    let places: Vec<Place> = profiles::folders(&roots)
-        .into_iter()
-        .map(|(place, _)| place)
-        .collect();
-    assert_eq!(places, [Place::Session, Place::Project, Place::User]);
+    // The folders to open, nearest first. The project has two, the one a
+    // save writes and then the older one that is still read.
+    let folders = profiles::folders(&roots);
+    let places: Vec<Place> = folders.iter().map(|(place, _)| *place).collect();
+    assert_eq!(
+        places,
+        [Place::Session, Place::Project, Place::Project, Place::User]
+    );
+    assert!(folders[1].1.ends_with(".arko/profiles"));
+    assert!(folders[2].1.ends_with(".agents/profiles"));
 
     profiles::delete(&roots, Place::User, "3d-judge").unwrap();
     // The enums can grow, so an app matches them with a wildcard arm.
@@ -82,4 +86,47 @@ fn an_app_names_and_sets_the_worker_settings_with_the_librarys_words() {
     ] {
         assert!(arko::commands::find(&command).is_some(), "{command}");
     }
+}
+
+#[test]
+fn an_app_keeps_a_projects_arko_folder_in_step_with_the_switch() {
+    use arko::arko_dir;
+    let temp = tempfile::tempdir().unwrap();
+    let (root, project) = (temp.path().join("arko"), temp.path().join("project"));
+    let roots = Roots::new(&root).workspace(&project);
+
+    // A project save makes `.arko` with its `.gitignore`, and an older profile
+    // reads from `.agents` and reports its folder.
+    let older = project.join(".agents").join("profiles");
+    std::fs::create_dir_all(&older).unwrap();
+    std::fs::write(older.join("old.md"), "---\ndescription: Older\n---\n").unwrap();
+    let found = profiles::read(&roots, "old").unwrap();
+    assert!(found.in_older_folder());
+    assert_eq!(found.reach(), "this project (.agents/profiles)");
+    let saved = profiles::save(
+        &roots,
+        Place::Project,
+        &Profile::new("new", "Newer"),
+        Author::User,
+    )
+    .unwrap();
+    assert!(saved.file.ends_with(".arko/profiles/new.md"));
+    let ignore = project.join(arko_dir::DIR).join(arko_dir::IGNORE_FILE);
+    assert!(ignore.is_file());
+    assert_eq!(arko_dir::dir(&project), project.join(".arko"));
+
+    // The preferences' save with a project follows the switch.
+    let mut prefs = profiles::Preferences::load(&root);
+    prefs.keep_out_of_git = false;
+    prefs.save_in(&root, &project).unwrap();
+    assert!(!ignore.exists());
+    prefs.keep_out_of_git = true;
+    prefs.save_in(&root, &project).unwrap();
+    assert!(ignore.is_file());
+    arko_dir::apply_setting(&project, false).unwrap();
+    assert!(!ignore.exists());
+    assert_eq!(
+        arko_dir::ensure(&project, &root).unwrap(),
+        project.join(".arko")
+    );
 }
