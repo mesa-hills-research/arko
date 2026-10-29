@@ -7,8 +7,11 @@ always in their instructions instead.
 
 Arko reads skills from the project's `.agents/skills`, `.claude/skills`, `.skills` and
 `.arko/skills`, from `skills` in Arko's folder, and from `~/.agents/skills` and `~/.claude/skills`.
-When two skills share a name, the first one read keeps it and the other loads as `name-2`. `/skills` lists them with their
-descriptions and folders, and `/skills NAME` shows one with its files.
+When two skills share a name, the first one read keeps it and the other loads as `name-2`. `/skills`
+lists them with their descriptions and folders, and `/skills NAME` shows one with its files.
+
+A worker has the skills of the agent that started it, or fewer when that agent says so. See
+[Skills and MCP servers for a worker](worker-profiles.md#skills-and-mcp-servers-for-a-worker).
 
 ## Skills for some models
 
@@ -26,30 +29,32 @@ Code. A plain name reaches a model on OpenRouter only through Arko's table of th
 gives the models Arko knows, so `haiku` lists the skill for `openrouter:anthropic/claude-haiku-5.5`
 and not for another publisher's lookalike. For any other slug, write the pattern against it, such as
 `openrouter:openai/gpt-6*`. `/skills` shows the models after a skill's folder ("for haiku"), and
-"main agent only" for `workers: false`. Plain Claude Code ignores both fields.
+"main agent only" for `workers: false`. Claude Code itself ignores both fields in a folder it
+shares with Arko.
 
 ## Skills the agent saves
 
-The main agent saves a skill with `add_skill`, from a folder it wrote, a Markdown file, a `.zip` or
-`.skill` bundle, or an https URL of one. A skill for the project goes in its `.arko/skills`, which git
-ignores while "Keep agents' project files out of git" is on (see [extensions](extensions.md)). A
-skill for every project goes in `skills` in Arko's folder.
+The main agent saves a skill with `add_skill`, from a folder or Markdown file it wrote outside the
+skill folders, a `.zip` or `.skill` bundle, or an https URL of one. A skill for the project goes in its `.arko/skills`, which
+git ignores unless you say otherwise (see [the .arko folder](arko-folder.md)). A skill for every
+project goes in `skills` in Arko's folder.
 
 | Save | Asks you |
 |---|---|
 | For every project | Always |
 | From a URL | Always |
-| For the project | Only with Review project skills on |
+| For the project | Only with `review-skills` on (see [Approvals](approvals.md#what-asks-first)) |
 
-The approval tray shows the skill's text and files, where it came from and who gets it. Arko checks
-the skill before it asks, and refuses one with a name another skill has, `auto_load`, a link, more
-than 200 files or more than 1 MB. Nothing is written before you approve. The agent's `load_skill`
-finds the skill at once, and its skill list shows it from the next conversation. Workers started
-after the save get it unless it says `workers: false`.
+The [approval tray](approvals.md) shows the skill's text and files, where it came from and who gets
+it. Arko checks the skill before it asks and refuses one with `auto_load`, a link, more than 200
+files or more than 1 MB, or the name of a skill you made. A skill the agent saved before under that
+name is replaced, and the request says so. Nothing is written before you approve. The agent's
+`load_skill` finds the skill at once, and its skill list shows it from the next conversation.
+Workers started after the save get it unless it says `workers: false`.
 
 Arko records each save in `agent-added.json` in its folder, so `/skills` marks the skill "added by
 the agent" with the day, and `/skills NAME` says why and from where. The agent's `remove_skill` and
-your `/skills remove NAME` remove only such a skill. Delete your own skills by hand.
+your `/skills remove NAME` remove only such a skill, without asking. Delete your own skills by hand.
 
 ## Built-in skills
 
@@ -99,7 +104,7 @@ settings leave them, and `arko::extensions::list_with` as the app's `builtin_ski
 `builtin_skills_off` leave them. Each has `builtin` set and an empty `path`. The live settings
 (`remote::LiveSettings`) hold the choice in `builtin_skills` and `builtin_skill_list`.
 
-Each `SkillEntry` and `SkillFacts` also has `models`, `workers` and `added`, the record of an
-agent's save (`arko::agent_added::SkillRecord`, with the day, the session, the reason and the
-source) or `None` for a skill no agent saved. `arko::extensions::remove_added` removes a skill an
-agent saved, without a session.
+Each `SkillFacts` also has `models`, `workers` and `added`, the record of an agent's save
+(`arko::agent_added::SkillRecord`, with the day, the session, the reason and the source) or `None`
+for a skill no agent saved. [Listing extensions](extensions.md) has the same on `SkillEntry`, and
+`remove_added` removes a skill an agent saved without a session.

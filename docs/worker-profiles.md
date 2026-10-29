@@ -65,16 +65,12 @@ tools read too. Arko still reads that folder, after the `.arko/profiles` of the 
 never moves a file there by itself. Saving a profile that lives in `.agents/profiles` writes the new
 file in `.arko/profiles` and deletes the old one, so the name isn't listed twice.
 
-When Arko makes the project's `.arko` folder, it writes a `.gitignore` in it with a comment and `*`.
-Git then ignores the folder and that file, and your repository's own `.gitignore` stays as it is.
-Delete the file to share what Arko writes there with your team. Arko writes it only when it makes
-the folder, so it doesn't come back.
+Arko keeps the project's `.arko` folder out of git by default. See [the .arko folder](arko-folder.md).
 
 In a subfolder of a git repository, Arko also reads the repository root's `.arko/profiles` and
-`.agents/profiles`, after the working directory's own. In `/settings`, "Keep agents' project files out
-of git" under "Project files" turns off the file above, and "Repo root" under "Worker profiles"
-turns off this lookup. Both are on by default and kept for every project in `profiles.json` in
-Arko's folder.
+`.agents/profiles`, after the working directory's own. "Repo root" under "Worker profiles" in
+`/settings` turns off this lookup. It is on by default and kept for every project in
+`profiles.json` in Arko's folder.
 
 ## How a worker's setup is chosen
 
@@ -100,10 +96,10 @@ a plan. `save_worker_profile` saves a setup under a name. A profile for the sess
 approval, and neither does one for a project folder that git ignores (`git check-ignore` says),
 which is the folder Arko makes by default. Before Arko saves one in a folder git tracks, in a
 project outside a git repository, or for every project, it waits for your OK in the
-[approval tray](approvals.md), which shows the whole profile. Reject with words in the message box
-sends them back to the agent, and the transcript says nothing was saved. The agent makes the changes
-they ask for, or replies when they are about something else, and asks again. The agent can't
-replace a profile you made.
+[approval tray](approvals.md), which shows the whole profile and the folder it goes in. Reject with
+words in the message box sends them back to the agent, and the transcript says nothing was saved.
+The agent makes the changes they ask for, or replies when they are about something else, and asks
+again. The agent can't replace a profile you made.
 
 The approval guards what Arko writes for the agent. The agent's own file tools and shell can write
 a file in the project's `.arko/profiles` folder as they can write any file in the project, and
@@ -186,9 +182,10 @@ start says it too.
 
 ## Skills and MCP servers for a worker
 
-A worker has the skills and MCP servers of the agent that started it, except the ones marked
-`workers: false`, which stay with the main agent. `start_agent` takes `skills` and `mcp` to give a
-worker fewer. Each is names separated by commas, a JSON array of names or `none`.
+A worker has the skills and MCP servers of the agent that started it, except a skill whose front
+matter says `workers: false` and a server whose entry says `"workers": false`, which stay with the
+main agent (see [skills](skills.md) and [MCP servers](mcp.md)). `start_agent` takes `skills` and
+`mcp` to give a worker fewer. Each is names separated by commas, a JSON array of names or `none`.
 
 ```
 skills: ponytail, release-notes

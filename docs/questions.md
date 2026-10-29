@@ -6,8 +6,8 @@ decide". The agent passes `wait: false` only for work no answer could change, su
 investigating. While a question is open, it must not use its default to write or delete files,
 spend money, start workers, or follow a preference, design or scope.
 
-What waits for your OK, such as a worker profile the agent saves for every project, goes to the
-[approval tray](approvals.md) instead.
+What waits for your OK, such as an MCP server to add, a skill or worker profile to save, or a
+worker billed per token, goes to the [approval tray](approvals.md) instead.
 
 ## Answering in the full-screen view
 

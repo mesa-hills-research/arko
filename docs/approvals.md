@@ -1,19 +1,42 @@
 # Approvals
 
-Some of what the main agent does waits for your OK first. Today that is adding an MCP server,
-saving a [skill](skills.md#skills-the-agent-saves) for every project or from a download, saving a
-[worker profile](worker-profiles.md) in a folder git tracks or for every project, and starting a
-worker on a model billed per token under [worker billing](worker-profiles.md#worker-billing) `ask`.
-`/extensions` lets servers be added without asking, or has every skill save ask.
-Each such request waits in the approval tray above the message box, apart from the agent's
-[questions](questions.md), until you approve or reject it. Requests that come while others wait join
-them, so the saves of one response, for example, are answered at once.
+Some of what the main agent does waits for your OK first. Each request waits in the approval tray
+above the message box, apart from the agent's [questions](questions.md), until you approve or
+reject it. Requests that come while others wait join them, so the saves of one response, for
+example, are answered at once.
+
+## What asks first
+
+| Request | When it asks |
+|---|---|
+| Adding an [MCP server](mcp.md#servers-the-agent-adds) | Always, unless you turn off `ask-mcp` |
+| Saving a [skill](skills.md#skills-the-agent-saves) | For every project and from a download, always. For the project, only with `review-skills` on |
+| Saving a [worker profile](worker-profiles.md#what-the-main-agent-can-do) | For every project, or in a project folder that git doesn't ignore |
+| Starting a worker on a model billed per token | Under [worker billing](worker-profiles.md#worker-billing) `ask`, the default |
+
+`/extensions` shows three switches, and `/extensions ask-mcp off` changes one. They are also in
+`/settings` and on the web page.
+
+| Switch | Default | Effect |
+|---|---|---|
+| `ask-mcp` | On | Off lets agents add MCP servers without asking. A server runs a program with your permissions, outside the command guard, so `/settings` and the web page ask before they turn it off |
+| `review-skills` | Off | On has agents ask before they save a skill in the project too |
+| `keep-out-of-git` | On | Keeps what agents save in the project's `.arko` folder out of git. See [the .arko folder](arko-folder.md) |
+
+The switches are kept in Arko's folder, and a running session follows a change at the agent's next
+add.
+
+## What a request shows
 
 Each request is a row with its kind (profile, skill, server or worker), its name, where it applies
-and a short summary. A row opens to its details. A profile shows its model, what it is for, the
-skills and MCP servers it limits its workers to, and its instructions. A worker billed per token
-shows the model's price, what your sessions were billed per token today and the worker's task, with
-the option "Allow MODEL for this session", which Approve covers when you turn it on.
+and a short summary. A row opens to its details.
+
+| Kind | Details |
+|---|---|
+| Profile | Its model, what it is for, the skills and MCP servers it limits its workers to, the folder it is saved in, and its instructions |
+| Skill | Its description, where it came from, who gets it, its scripts, its files with `SKILL.md` in a box, and the agent's reason |
+| Server | Its command, the variables it needs and which aren't set, whether workers get it, where it is kept, whether sessions share one copy, and the agent's reason |
+| Worker | The model's price, what your sessions were billed per token today and the worker's task, with the option "Allow MODEL for this session", which Approve covers when you turn it on |
 
 With several requests each row has a box, and all start checked. Approve approves the rows checked and
 rejects the others in the same answer ("Approve 2, reject 1"), and Reject all rejects them all.
@@ -53,11 +76,11 @@ Words after the numbers, or after `/reject`, go to the agent with the answer.
 
 ## What the agent reads
 
-Each request's tool call reads its own answer. A profile approved is saved, rejected isn't, and
-your words come with either. A rejection with words asks the agent to change the profile as they
-say and save it again, which asks you again. A worker rejected doesn't start, and the agent reads
-why with your words. A request whose turn stops leaves the tray, and when no one can answer (`-p`,
-or Arko without a terminal) the agent is told so and nothing is saved or started.
+Each request's tool call reads its own answer. An approved request goes ahead and a rejected one
+doesn't, and your words come with either. A rejection with words asks the agent to change the
+profile, skill or server as they say and ask again. A worker rejected doesn't start, and the agent
+reads why with your words. A request whose turn stops leaves the tray. When no one can answer (`-p`,
+or Arko without a terminal), the agent is told so and nothing is saved, added or started.
 
 The tray isn't kept with the session. A tool that runs again after a resume asks again.
 
