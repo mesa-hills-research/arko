@@ -632,17 +632,29 @@ fn two_writers_leave_a_whole_file() {
 
 #[test]
 fn the_approval_shows_the_whole_profile() {
-    let card = Approval::Profile(approval(&full(), Place::User));
-    assert_eq!(
-        card.details()
+    let lines = |profile: &Profile| -> Vec<(Look, String)> {
+        Approval::Profile(approval(profile, Place::User))
+            .details()
             .into_iter()
             .map(|detail| (detail.look, detail.text))
-            .collect::<Vec<_>>(),
+            .collect()
+    };
+    // Its model, fast mode and cache, what it is for, that its workers can
+    // start workers, the folder, then its instructions.
+    assert_eq!(
+        lines(&full()),
         [
-            (Look::Text, "Runs on sol at high effort.".to_string()),
+            (
+                Look::Text,
+                "Runs on sol at high effort in fast mode with a 1h prompt cache.".to_string()
+            ),
             (
                 Look::Text,
                 "Judges 3D results against a reference image".to_string()
+            ),
+            (
+                Look::Text,
+                "A worker started with it can start workers of its own.".to_string()
             ),
             (Look::Text, "Saved in Arko's profiles folder.".to_string()),
             (Look::Heading, "Instructions".to_string()),
@@ -652,10 +664,28 @@ fn the_approval_shows_the_whole_profile() {
             ),
         ]
     );
-    let plain = Approval::Profile(approval(&Profile::new("quick", "Reads"), Place::User));
+    let mut plain = full();
+    plain.fast = false;
+    plain.cache = None;
+    plain.nested = false;
+    plain.effort = None;
+    plain.model = None;
+    let lines = lines(&plain);
+    assert_eq!(
+        lines[0],
+        (
+            Look::Text,
+            "Runs on the session's worker model.".to_string()
+        )
+    );
     assert!(
-        plain
-            .details()
+        lines
+            .iter()
+            .all(|(_, text)| !text.contains("start workers"))
+    );
+    let bare = Approval::Profile(approval(&Profile::new("quick", "Reads"), Place::User));
+    assert!(
+        bare.details()
             .iter()
             .any(|detail| detail.text == "It has no instructions.")
     );

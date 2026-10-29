@@ -38,7 +38,15 @@ fn an_app_makes_lists_edits_and_deletes_profiles_without_a_session() {
         card.title(),
         "Save the worker profile 3d-judge for this project?"
     );
-    assert_eq!(card.details()[0].text, "Runs on sol at high effort.");
+    assert_eq!(
+        card.details()[0].text,
+        "Runs on sol at high effort with a 1h prompt cache."
+    );
+    assert!(
+        card.details()
+            .iter()
+            .any(|detail| detail.text == "A worker started with it can start workers of its own.")
+    );
     assert!(
         card.details()
             .iter()

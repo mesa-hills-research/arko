@@ -33,7 +33,7 @@ and a short summary. A row opens to its details.
 
 | Kind | Details |
 |---|---|
-| Profile | Its model, what it is for, the skills and MCP servers it limits its workers to, the folder it is saved in, and its instructions |
+| Profile | Its model with its effort, fast mode and prompt cache, what it is for, whether its workers can start workers, the skills and MCP servers it limits its workers to, the folder it is saved in, and its instructions |
 | Skill | Its description, where it came from, who gets it, its scripts, its files with `SKILL.md` in a box, and the agent's reason |
 | Server | Its command, the variables it needs and which aren't set, whether workers get it, where it is kept, whether sessions share one copy, and the agent's reason |
 | Worker | The model's price, what your sessions were billed per token today and the worker's task, with the option "Allow MODEL for this session", which Approve covers when you turn it on |

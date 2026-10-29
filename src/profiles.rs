@@ -1398,9 +1398,9 @@ pub(crate) fn copy_session_profiles(from: &Path, to: &Path) -> std::io::Result<(
 }
 
 /// What the approval tray shows of the main agent's save of `profile` in
-/// `place`, which is its name, model, effort, scope, description, what it
-/// narrows for its workers ([`Profile::limits`]), the folder it is saved in
-/// and its instructions.
+/// `place`, which is its name, model, effort, fast mode, prompt cache, scope,
+/// description, whether its workers can start workers, what it narrows for
+/// them ([`Profile::limits`]), the folder it is saved in and its instructions.
 pub fn approval(profile: &Profile, place: Place) -> crate::approvals::ProfileApproval {
     crate::approvals::ProfileApproval {
         name: profile.name.clone(),
@@ -1409,6 +1409,9 @@ pub fn approval(profile: &Profile, place: Place) -> crate::approvals::ProfileApp
             .clone()
             .unwrap_or_else(|| "the session's worker model".into()),
         effort: profile.effort.map(|effort| effort.to_string()),
+        fast: profile.fast,
+        cache: profile.cache.map(|cache| cache.as_str().to_string()),
+        nested: profile.nested,
         scope: place.reach().to_string(),
         description: one_line(&profile.description),
         limits: profile.limits(),

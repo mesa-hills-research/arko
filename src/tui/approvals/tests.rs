@@ -44,6 +44,7 @@ fn profile(instructions: &str) -> Approval {
         limits: vec!["Workers with it get only the skill ponytail.".into()],
         folder: "Arko's profiles folder".into(),
         instructions: instructions.into(),
+        ..ProfileApproval::default()
     })
 }
 

@@ -404,6 +404,16 @@ pub struct ProfileApproval {
     /// Its reasoning effort, such as `high`, unless the model's own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<String>,
+    /// Its workers run in fast mode.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub fast: bool,
+    /// The prompt cache its workers ask for, as the file writes it ("5m" or
+    /// "1h"), unless the model's own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache: Option<String>,
+    /// A worker started with it can start workers of its own.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub nested: bool,
     /// Where it is kept: "this project" or "every project".
     pub scope: String,
     /// What it is for, in one line.
@@ -770,14 +780,25 @@ impl Approval {
         let mut lines = Vec::new();
         match self {
             Approval::Profile(profile) => {
-                text(
-                    &mut lines,
-                    match &profile.effort {
-                        Some(effort) => format!("Runs on {} at {effort} effort.", profile.model),
-                        None => format!("Runs on {}.", profile.model),
-                    },
-                );
+                let mut runs = match &profile.effort {
+                    Some(effort) => format!("Runs on {} at {effort} effort", profile.model),
+                    None => format!("Runs on {}", profile.model),
+                };
+                if profile.fast {
+                    runs.push_str(" in fast mode");
+                }
+                if let Some(cache) = &profile.cache {
+                    runs.push_str(&format!(" with a {cache} prompt cache"));
+                }
+                runs.push('.');
+                text(&mut lines, runs);
                 text(&mut lines, profile.description.trim().to_string());
+                if profile.nested {
+                    text(
+                        &mut lines,
+                        "A worker started with it can start workers of its own.".to_string(),
+                    );
+                }
                 for limit in &profile.limits {
                     text(&mut lines, limit.trim().to_string());
                 }

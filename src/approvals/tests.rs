@@ -217,6 +217,7 @@ fn a_profile_reads_as_its_card() {
         limits: vec!["Workers with it get only the skill ponytail.".into()],
         folder: "Arko's profiles folder".into(),
         instructions: "Compare it with the reference.".into(),
+        ..ProfileApproval::default()
     });
     assert_eq!(approval.summary(), "sol high");
     assert_eq!(
@@ -231,6 +232,36 @@ fn a_profile_reads_as_its_card() {
             (Look::Text, "Saved in Arko's profiles folder.".to_string()),
             (Look::Heading, "Instructions".to_string()),
             (Look::Box, "Compare it with the reference.".to_string()),
+        ]
+    );
+}
+
+/// Its model line says fast mode and the prompt cache when the profile sets
+/// them, and a line says its workers can start workers.
+#[test]
+fn a_profile_says_its_mode_cache_and_nesting() {
+    let approval = Approval::Profile(ProfileApproval {
+        name: "judge".into(),
+        model: "sol".into(),
+        fast: true,
+        cache: Some("5m".into()),
+        nested: true,
+        scope: "this project".into(),
+        description: "Judges renders".into(),
+        ..ProfileApproval::default()
+    });
+    assert_eq!(
+        lines(&approval)[..3],
+        [
+            (
+                Look::Text,
+                "Runs on sol in fast mode with a 5m prompt cache.".to_string()
+            ),
+            (Look::Text, "Judges renders".to_string()),
+            (
+                Look::Text,
+                "A worker started with it can start workers of its own.".to_string()
+            ),
         ]
     );
 }
@@ -272,6 +303,9 @@ fn requests_and_answers_cross_the_wire() {
             limits: vec!["Workers with it get only the skill ponytail.".into()],
             folder: "Arko's profiles folder".into(),
             instructions: String::new(),
+            fast: true,
+            cache: Some("5m".into()),
+            nested: true,
         }),
         Approval::Skill(skill()),
         Approval::McpServer(server()),
