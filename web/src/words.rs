@@ -170,7 +170,7 @@ pub const ASK_MCP_ABOUT: &str =
     "Agents ask before they add a server, for this project or every project.";
 pub const ASK_MCP_OFF: &str = "Agents will add MCP servers without asking. A server runs a program the agent chose, with your permissions and outside the command guard.";
 pub const REVIEW_SKILLS_NAME: &str = "Review project skills";
-pub const REVIEW_SKILLS_ABOUT: &str = "Agents ask before they save a skill in the project too. Skills for every project and downloaded skills always ask.";
+pub const REVIEW_SKILLS_ABOUT: &str = "Agents ask before they save a skill in the project too. Skills for every project and downloaded skills always ask. A skill folder an agent writes with its file tools or the shell loads as before, without asking.";
 pub const KEEP_OUT_OF_GIT_NAME: &str = "Keep agents' project files out of git";
 pub const KEEP_OUT_OF_GIT_ABOUT: &str = "Skills, MCP servers and worker profiles that agents save in the project's .arko folder stay out of git. Off removes Arko's .gitignore from that folder.";
 

@@ -20,7 +20,7 @@ example, are answered at once.
 | Switch | Default | Effect |
 |---|---|---|
 | `ask-mcp` | On | Off lets agents add MCP servers without asking. A server runs a program with your permissions, outside the command guard, so `/settings` and the web page ask before they turn it off |
-| `review-skills` | Off | On has agents ask before they save a skill in the project too |
+| `review-skills` | Off | On has agents ask before they save a skill in the project too. A skill folder an agent writes with its file tools or the shell loads as before, without asking |
 | `keep-out-of-git` | On | Keeps what agents save in the project's `.arko` folder out of git. See [the .arko folder](arko-folder.md) |
 
 The switches are kept in Arko's folder, and a running session follows a change at the agent's next

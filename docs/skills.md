@@ -45,6 +45,9 @@ its `.arko/skills`, which git ignores unless you say otherwise (see
 | From a URL | Always |
 | For the project | Only with `review-skills` on (see [Approvals](approvals.md#what-asks-first)) |
 
+`review-skills` covers the saves made with `add_skill`, while a skill folder an agent writes into the
+project with its file tools or the shell loads like any other project file, as before.
+
 The [approval tray](approvals.md) shows the skill's text and files, where it came from and who gets
 it. Arko checks the skill before it asks and refuses one with `auto_load`, a link, more than 200
 files or more than 1 MB, or the name of a skill you made. A skill the agent saved before under that
