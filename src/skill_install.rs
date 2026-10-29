@@ -3,16 +3,18 @@
 //! `skills`), and `remove_skill` removes one an agent saved.
 //!
 //! A skill comes from a folder with a `SKILL.md`, a Markdown file, a `.zip`
-//! or `.skill` bundle, or an https URL of one of the files. Arko reads it
-//! where it is, or into memory, by the code that loads skills, and checks it
-//! before anyone is asked: its front matter, its name (one no other skill
-//! has), its size, links and files. Nothing reaches a skill folder before the
-//! user approves, except a folder the agent wrote at the project's target
-//! itself, which is used in place (and deleted when the user turns it
-//! down). A skill for every project, and a downloaded skill, always ask. A
-//! project skill asks when the user turned on Review project skills. Files
-//! are written without the executable bit, and nothing in a skill runs when
-//! it is saved.
+//! or `.skill` bundle, or an https URL of one of the files. A source in a
+//! folder skills are read from is refused, since agents would load it
+//! before anyone approved it, so an agent writes its draft somewhere else,
+//! such as a scratch folder. Arko reads the source into memory once, by the
+//! code that loads skills, and checks it before anyone is asked: its front
+//! matter, its name (one no other skill has), its size, links and files.
+//! That copy is what the card shows and what is saved, so a change to the
+//! source after it was read isn't saved, and nothing reaches a skill folder
+//! before the user approves. A skill for every project, and a downloaded
+//! skill, always ask. A project skill asks when the user turned on Review
+//! project skills. Files are written without the executable bit, and nothing
+//! in a skill runs when it is saved.
 //!
 //! The user approves a save in the session's approval tray, whose card
 //! shows the skill's text and files.
@@ -211,6 +213,25 @@ fn target(context: &Context, scope: Scope) -> PathBuf {
     }
 }
 
+/// `path` with the links on the way resolved, as far as it exists.
+fn real_path(path: &Path) -> PathBuf {
+    let normal = normal(path);
+    let mut rest = Vec::new();
+    let mut at = normal.as_path();
+    loop {
+        if let Ok(real) = std::fs::canonicalize(at) {
+            return rest.iter().rev().fold(real, |path, part| path.join(part));
+        }
+        match (at.parent(), at.file_name()) {
+            (Some(parent), Some(name)) => {
+                rest.push(name.to_os_string());
+                at = parent;
+            }
+            _ => return normal,
+        }
+    }
+}
+
 /// `path` absolute, without `.` and `..`, as records hold paths.
 fn normal(path: &Path) -> PathBuf {
     arko_agents::utils::normalize_path(&std::path::absolute(path).unwrap_or(path.to_path_buf()))
@@ -296,8 +317,6 @@ fn pattern_problem(entry: &str) -> bool {
 
 /// Where a skill to save comes from.
 enum Origin {
-    /// The folder the agent wrote at the target, used in place.
-    InPlace,
     /// A folder or a file the agent gave.
     Copied(PathBuf),
     Downloaded {
@@ -306,13 +325,13 @@ enum Origin {
     },
 }
 
-/// A skill read from its source, before anything is written.
+/// A skill read from its source, before anything is written. It is the
+/// snapshot the card shows and a save writes, held in memory, so nothing
+/// can change it once read.
 struct Draft {
     /// Its files by their paths in the skill (`/` between folders), with
-    /// `SKILL.md` among them as given.
+    /// `SKILL.md` among them as given. A bundle's are those it unpacks to.
     files: Vec<(String, Vec<u8>)>,
-    /// A bundle's bytes, unpacked once the save is approved.
-    bundle: Option<Vec<u8>>,
     origin: Origin,
 }
 
@@ -550,11 +569,7 @@ fn read_bundle_draft(bytes: Vec<u8>, origin: Origin) -> Result<Draft, String> {
     arko_agents::skill::read_bundle(&bytes)
         .map_err(|error| format!("The bundle doesn't load ({error})."))?;
     let files = bundle_files(&bytes)?;
-    Ok(Draft {
-        files,
-        bundle: Some(bytes),
-        origin,
-    })
+    Ok(Draft { files, origin })
 }
 
 /// A Markdown skill's text, as `SKILL.md`.
@@ -570,7 +585,6 @@ fn markdown_draft(bytes: Vec<u8>, origin: Origin) -> Result<Draft, String> {
     }
     Ok(Draft {
         files: vec![("SKILL.md".to_string(), bytes)],
-        bundle: None,
         origin,
     })
 }
@@ -588,15 +602,26 @@ struct Plan {
     replaces: Option<SkillRecord>,
     why: String,
     /// What the agent gave as the source, for the record.
-    source: Option<String>,
+    source: String,
 }
 
 #[derive(Debug)]
 struct AddSkill(Arc<Context>);
 
 impl AddSkill {
-    /// Reads the skill at `source` into a draft for the skill folder `dest`.
-    async fn read(&self, source: &str, scope: Scope, dest: &Path) -> Result<Draft, String> {
+    /// The folder skills are read from that holds `path`, if one does. A
+    /// draft there would load before anyone approved it.
+    fn skill_folder_holding(&self, path: &Path) -> Option<PathBuf> {
+        let context = &self.0;
+        let real = real_path(path);
+        skills::every_folder(&context.workspace, &context.root, context.home.as_deref())
+            .into_iter()
+            .map(|folder| normal(&folder))
+            .find(|folder| path.starts_with(folder) || real.starts_with(real_path(folder)))
+    }
+
+    /// Reads the skill at `source` into a draft.
+    async fn read(&self, source: &str) -> Result<Draft, String> {
         let context = &self.0;
         if is_url(source) {
             let url = reqwest::Url::parse(source)
@@ -638,29 +663,21 @@ impl AddSkill {
                 path.display()
             ));
         }
+        if let Some(folder) = self.skill_folder_holding(&path) {
+            return Err(format!(
+                "{} is in the skill folder {}. Write the skill somewhere else, such as a scratch folder in the project, and add it from there.",
+                path.display(),
+                folder.display()
+            ));
+        }
         if kind.is_dir() {
-            let in_place = path == dest
-                || std::fs::canonicalize(&path)
-                    .is_ok_and(|real| std::fs::canonicalize(dest).is_ok_and(|dest| dest == real));
-            if in_place && scope == Scope::User {
-                return Err(
-                    "Write the skill somewhere else, such as a scratch folder, and give that folder. Arko copies a skill for every project into its folder once the user approves it."
-                        .into(),
-                );
-            }
             // (Links and sizes first, so the loader reads nothing they refuse.)
             let files = read_folder(&path)?;
             arko_agents::skill::read_candidate(&path)
                 .map_err(|error| format!("The skill doesn't load ({error})."))?;
-            let origin = if in_place {
-                Origin::InPlace
-            } else {
-                Origin::Copied(path)
-            };
             return Ok(Draft {
                 files,
-                bundle: None,
-                origin,
+                origin: Origin::Copied(path),
             });
         }
         let lower = path.to_string_lossy().to_lowercase();
@@ -696,14 +713,7 @@ impl AddSkill {
 
     /// Why the skill `name` can't be saved in `dest` for `scope`, or the
     /// record of the agent's skill it replaces.
-    fn place(
-        &self,
-        name: &str,
-        scope: Scope,
-        dest: &Path,
-        origin: &Origin,
-    ) -> Result<Option<SkillRecord>, String> {
-        let in_place = matches!(origin, Origin::InPlace);
+    fn place(&self, name: &str, scope: Scope, dest: &Path) -> Result<Option<SkillRecord>, String> {
         let context = &self.0;
         if crate::builtin_skills::find(name).is_some() {
             return Err(format!(
@@ -735,22 +745,8 @@ impl AddSkill {
                     continue;
                 }
                 let path = normal(&skill.path);
-                if path == dest {
-                    if replaces.is_some() || in_place {
-                        continue;
-                    }
-                    return Err(format!(
-                        "The user has a skill named {name} in {}. Choose another name.",
-                        path.display()
-                    ));
-                }
-                if let Origin::Copied(source) = origin
-                    && *source == path
-                {
-                    return Err(format!(
-                        "{} is in a skill folder, so it is a skill already. Write the skill in another folder, such as a scratch folder, and give that folder.",
-                        path.display()
-                    ));
+                if path == dest && replaces.is_some() {
+                    continue;
                 }
                 if path == other_dir && agent_added::skill_at(&context.root, &path).is_some() {
                     return Err(format!(
@@ -765,7 +761,7 @@ impl AddSkill {
                 ));
             }
         }
-        if replaces.is_none() && !in_place && dest.symlink_metadata().is_ok() {
+        if replaces.is_none() && dest.symlink_metadata().is_ok() {
             return Err(format!(
                 "{} is there already. Choose another name.",
                 dest.display()
@@ -805,7 +801,7 @@ impl AddSkill {
             }
         }
         let dest = skill_dir(context, scope, name);
-        let draft = self.read(source, scope, &dest).await.map_err(refused)?;
+        let draft = self.read(source).await.map_err(refused)?;
         let given = draft
             .skill_md()
             .ok_or_else(|| refused("The skill has no SKILL.md."))?
@@ -848,14 +844,11 @@ impl AddSkill {
                 "models has {entry}, and an entry may have only letters, digits and . - _ / : * ?"
             )));
         }
-        let replaces = self
-            .place(name, scope, &dest, &draft.origin)
-            .map_err(refused)?;
+        let replaces = self.place(name, scope, &dest).map_err(refused)?;
         // (A path as the user reads it.)
         let given = match &draft.origin {
-            Origin::InPlace => None,
-            Origin::Copied(path) => Some(with_tilde(path, context.home.as_deref())),
-            Origin::Downloaded { url, .. } => Some(url.clone()),
+            Origin::Copied(path) => with_tilde(path, context.home.as_deref()),
+            Origin::Downloaded { url, .. } => url.clone(),
         };
         Ok(Plan {
             name: name.to_string(),
@@ -905,7 +898,6 @@ impl AddSkill {
             },
             description: plan.parsed.description.clone(),
             source: match &plan.draft.origin {
-                Origin::InPlace => SkillSource::Agent,
                 Origin::Copied(path) => SkillSource::Copied {
                     path: with_tilde(path, home.as_deref()),
                 },
@@ -937,56 +929,40 @@ impl AddSkill {
         };
         std::fs::create_dir_all(&parent)
             .map_err(|error| format!("Couldn't make {} ({error}).", parent.display()))?;
-        if matches!(plan.draft.origin, Origin::InPlace) {
-            if plan.draft.skill_md() != Some(plan.skill_md.as_str()) {
-                let file = plan.dest.join("SKILL.md");
-                crate::session::write_whole(&file, plan.skill_md.as_bytes())
-                    .map_err(|error| format!("Couldn't write {} ({error}).", file.display()))?;
-            }
-        } else {
-            // Another save may have taken the folder while the user read the
-            // card.
-            let recorded = agent_added::skill_at(&context.root, &plan.dest);
-            if plan.dest.symlink_metadata().is_ok()
-                && recorded.as_ref().map(|record| record.added)
-                    != plan.replaces.as_ref().map(|record| record.added)
-            {
-                return Err(format!(
-                    "{} changed while the user decided. Call add_skill again.",
-                    plan.dest.display()
-                ));
-            }
-            let staging = parent.join(format!(".{}.saving-{}", plan.name, uuid::Uuid::new_v4()));
-            let written = self
-                .stage(plan, &staging)
-                .and_then(|()| put(&staging, &plan.dest));
-            if let Err(error) = written {
-                let _ = std::fs::remove_dir_all(&staging);
-                return Err(error);
-            }
+        // Another save may have taken the folder while the user read the
+        // card.
+        let recorded = agent_added::skill_at(&context.root, &plan.dest);
+        if plan.dest.symlink_metadata().is_ok()
+            && recorded.as_ref().map(|record| record.added)
+                != plan.replaces.as_ref().map(|record| record.added)
+        {
+            return Err(format!(
+                "{} changed while the user decided. Call add_skill again.",
+                plan.dest.display()
+            ));
+        }
+        let staging = parent.join(format!(".{}.saving-{}", plan.name, uuid::Uuid::new_v4()));
+        let written = self
+            .stage(plan, &staging)
+            .and_then(|()| put(&staging, &plan.dest));
+        if let Err(error) = written {
+            let _ = std::fs::remove_dir_all(&staging);
+            return Err(error);
         }
         Ok(())
     }
 
-    /// Writes the files of `plan` to the new folder `staging`.
+    /// Writes the files of `plan` to the new folder `staging`, as the card
+    /// showed them.
     fn stage(&self, plan: &Plan, staging: &Path) -> Result<(), String> {
-        match &plan.draft.bundle {
-            Some(bundle) => {
-                arko_agents::skill::unpack_bundle(bundle, staging)
-                    .map_err(|error| format!("Couldn't unpack the bundle ({error})."))?;
+        for (path, bytes) in &plan.draft.files {
+            let file = staging.join(path);
+            if let Some(folder) = file.parent() {
+                std::fs::create_dir_all(folder)
+                    .map_err(|error| format!("Couldn't make {} ({error}).", folder.display()))?;
             }
-            None => {
-                for (path, bytes) in &plan.draft.files {
-                    let file = staging.join(path);
-                    if let Some(folder) = file.parent() {
-                        std::fs::create_dir_all(folder).map_err(|error| {
-                            format!("Couldn't make {} ({error}).", folder.display())
-                        })?;
-                    }
-                    std::fs::write(&file, bytes)
-                        .map_err(|error| format!("Couldn't write {} ({error}).", file.display()))?;
-                }
-            }
+            std::fs::write(&file, bytes)
+                .map_err(|error| format!("Couldn't write {} ({error}).", file.display()))?;
         }
         let file = staging.join("SKILL.md");
         std::fs::write(&file, plan.skill_md.as_bytes())
@@ -1036,7 +1012,7 @@ impl AddSkill {
             session_title: (context.title)(),
             added: chrono::Utc::now(),
             why: plan.why.clone(),
-            source: plan.source.clone(),
+            source: Some(plan.source.clone()),
         };
         if let Err(error) = agent_added::record_skill(&context.root, record) {
             result.push_str(&format!(
@@ -1052,12 +1028,11 @@ impl AddSkill {
         result
     }
 
-    /// What the agent reads when the skill wasn't saved. A draft the agent
-    /// wrote in place is deleted, since nothing unapproved stays in a
-    /// skill folder.
+    /// What the agent reads when the skill wasn't saved. Nothing was
+    /// written, so nothing is deleted.
     fn not_saved(&self, plan: &Plan, answer: &Answer) -> String {
         let reach = reach(plan.scope);
-        let mut result = match answer {
+        match answer {
             Answer::Rejected { words: Some(words) } if !words.trim().is_empty() => {
                 (self.0.notice)(Level::Info, "Not saved. Arko asks again.");
                 format!(
@@ -1074,20 +1049,7 @@ impl AddSkill {
                 "The user didn't answer, so the skill {} wasn't saved.",
                 plan.name
             ),
-        };
-        if matches!(plan.draft.origin, Origin::InPlace) {
-            match std::fs::remove_dir_all(&plan.dest) {
-                Ok(()) => result.push_str(&format!(
-                    " Arko deleted your draft in {}, so write it again before you call add_skill again.",
-                    plan.dest.display()
-                )),
-                Err(error) => result.push_str(&format!(
-                    " Arko couldn't delete your draft in {} ({error}). Delete it with the shell.",
-                    plan.dest.display()
-                )),
-            }
         }
-        result
     }
 }
 
@@ -1141,7 +1103,7 @@ impl Tool for AddSkill {
                 ),
                 text_parameter(
                     "source",
-                    "A folder you wrote with a SKILL.md, a Markdown file, or an https URL of a .md file or a .zip or .skill bundle.",
+                    "A folder with a SKILL.md or a Markdown file you wrote outside the skill folders, such as in a scratch folder, or an https URL of a .md file or a .zip or .skill bundle.",
                     true,
                 ),
                 text_parameter(
@@ -1191,15 +1153,9 @@ impl Tool for AddSkill {
         if asks {
             if !self.0.approver.can_answer() {
                 // (A user-scope or downloaded save was refused before.)
-                let mut why = "No one can approve a skill in this session, and the user reviews the skills agents save. Tell the user what it would hold.".to_string();
-                if matches!(plan.draft.origin, Origin::InPlace) {
-                    let _ = std::fs::remove_dir_all(&plan.dest);
-                    why.push_str(&format!(
-                        " Arko deleted your draft in {}.",
-                        plan.dest.display()
-                    ));
-                }
-                return Err(refused(why));
+                return Err(refused(
+                    "No one can approve a skill in this session, and the user reviews the skills agents save. Tell the user what it would hold.",
+                ));
             }
             match self.0.approver.request(context, self.card(&plan)).await {
                 Answer::Approved { words: said, .. } => words = said,

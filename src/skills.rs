@@ -68,6 +68,20 @@ pub(crate) fn home() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
+/// Every folder skills are read from, whether it exists or not, the
+/// project's first, as [`folders_in`] lists them.
+pub(crate) fn every_folder(workspace: &Path, root: &Path, home: Option<&Path>) -> Vec<PathBuf> {
+    PROJECT_FOLDERS
+        .iter()
+        .map(|folder| workspace.join(folder))
+        .chain([project_folder(workspace), user_folder(root)])
+        .chain(
+            home.into_iter()
+                .flat_map(|home| HOME_FOLDERS.iter().map(|folder| home.join(folder))),
+        )
+        .collect()
+}
+
 /// [`folders`] with the home directory `home`.
 pub(crate) fn folders_in(
     workspace: Option<&Path>,

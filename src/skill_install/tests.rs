@@ -105,6 +105,54 @@ fn fixture(can: bool, answer: Answer, downloads: Vec<(&str, Vec<u8>)>) -> Fixtur
     }
 }
 
+/// Does something while the user decides, then answers.
+struct Meanwhile {
+    during: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    answer: Answer,
+    cards: Mutex<Vec<SkillApproval>>,
+}
+
+#[async_trait]
+impl Approver for Meanwhile {
+    fn can_answer(&self) -> bool {
+        true
+    }
+
+    async fn request(&self, _: &TaskContext<'_>, card: SkillApproval) -> Answer {
+        self.cards.lock().unwrap().push(card);
+        if let Some(during) = self.during.lock().unwrap().take() {
+            during();
+        }
+        self.answer.clone()
+    }
+}
+
+/// Approves, after doing `during`.
+fn meanwhile(during: impl FnOnce() + Send + 'static) -> Arc<Meanwhile> {
+    Arc::new(Meanwhile {
+        during: Mutex::new(Some(Box::new(during))),
+        answer: Answer::Approved {
+            words: None,
+            option: false,
+        },
+        cards: Mutex::default(),
+    })
+}
+
+/// Never answers.
+struct Never;
+
+#[async_trait]
+impl Approver for Never {
+    fn can_answer(&self) -> bool {
+        true
+    }
+
+    async fn request(&self, _: &TaskContext<'_>, _: SkillApproval) -> Answer {
+        std::future::pending().await
+    }
+}
+
 /// No one asks, and nothing is downloaded.
 fn quiet() -> Fixture {
     fixture(
@@ -153,8 +201,37 @@ impl Fixture {
     }
 
     async fn add(&self, params: Value) -> Result<String, String> {
+        Self::add_in(self.context.clone(), params).await
+    }
+
+    /// The tools in the project `workspace`, asking `approver`.
+    fn context_with(&self, workspace: &Path, approver: Arc<dyn Approver>) -> Arc<Context> {
+        Arc::new(Context {
+            root: self.root.clone(),
+            workspace: workspace.to_path_buf(),
+            home: Some(self.home.clone()),
+            session: "s1".into(),
+            title: Arc::new(|| None),
+            model_names: self.context.model_names.clone(),
+            approver,
+            fetch: self.fetch.clone(),
+            notice: self.context.notice.clone(),
+            writing: Default::default(),
+        })
+    }
+
+    /// `add_skill`, asking `approver`.
+    async fn add_asking(
+        &self,
+        approver: Arc<dyn Approver>,
+        params: Value,
+    ) -> Result<String, String> {
+        Self::add_in(self.context_with(&self.workspace, approver), params).await
+    }
+
+    async fn add_in(context: Arc<Context>, params: Value) -> Result<String, String> {
         let params: HashMap<String, Value> = serde_json::from_value(params).unwrap();
-        AddSkill(self.context.clone())
+        AddSkill(context)
             .execute(&Self::call(), params)
             .await
             .map_err(|error| match error {
@@ -316,33 +393,84 @@ async fn a_folder_is_copied_into_the_projects_arko_folder_and_recorded() {
     assert!(fixture.cards().is_empty());
 }
 
-/// A folder the agent wrote at the target itself is used in place, and
-/// `workers: false` goes into its front matter.
+/// A source in any folder skills are read from is refused before anyone is
+/// asked, since agents would load it before the user approved it. The
+/// agent is told to write it elsewhere, and nothing there is touched or
+/// recorded, also for a skill the user has in the project's .arko/skills,
+/// which a save can't claim, and for a folder reached through a link.
 #[tokio::test]
-async fn a_folder_at_the_target_is_used_in_place() {
+async fn a_source_in_a_skill_folder_is_refused() {
     let fixture = quiet();
-    let draft = write_skill(&fixture.project(), "notes", "", &[("a.md", "A")]);
-    let result = fixture
-        .add(with(
-            params("notes", ".arko/skills/notes"),
-            "workers",
-            json!(false),
-        ))
+    let folders = [
+        fixture.workspace.join(".agents/skills"),
+        fixture.workspace.join(".claude/skills"),
+        fixture.workspace.join(".skills"),
+        fixture.project(),
+        fixture.user(),
+        fixture.home.join(".agents/skills"),
+        fixture.home.join(".claude/skills"),
+    ];
+    for review in [false, true] {
+        if review {
+            fixture.review_project_skills();
+        }
+        for folder in &folders {
+            let draft = write_skill(folder, "notes", "", &[("a.md", "A")]);
+            std::fs::write(folder.join("notes.md"), skill_md("notes", "")).unwrap();
+            for source in [draft.clone(), folder.join("notes.md")] {
+                for scope in ["project", "user"] {
+                    let error = fixture
+                        .add(with(
+                            params("notes", &source.display().to_string()),
+                            "scope",
+                            json!(scope),
+                        ))
+                        .await
+                        .unwrap_err();
+                    assert_eq!(
+                        error,
+                        format!(
+                            "{} is in the skill folder {}. Write the skill somewhere else, such as a scratch folder in the project, and add it from there.",
+                            source.display(),
+                            folder.display()
+                        )
+                    );
+                }
+            }
+            assert_eq!(files_in(&draft), ["SKILL.md", "a.md"]);
+            assert_eq!(
+                std::fs::read_to_string(draft.join("SKILL.md")).unwrap(),
+                skill_md("notes", "")
+            );
+            std::fs::remove_dir_all(&draft).unwrap();
+            std::fs::remove_file(folder.join("notes.md")).unwrap();
+        }
+    }
+    // The user's own skill in .arko/skills, given by a relative path.
+    let theirs = write_skill(&fixture.project(), "checklist", "", &[]);
+    let error = fixture
+        .add(params("checklist", ".arko/skills/checklist"))
         .await
-        .unwrap();
-    assert!(result.ends_with(" Workers don't get it."), "{result}");
-    assert_eq!(files_in(&draft), ["SKILL.md", "a.md"]);
-    assert_eq!(
-        std::fs::read_to_string(draft.join("SKILL.md")).unwrap(),
-        skill_md("notes", "workers: false\n")
-    );
-    let record = agent_added::skill_at(&fixture.root, &draft).unwrap();
-    assert_eq!(record.source, None);
-    // Only one skill folder is there, with no staging left beside it.
-    assert_eq!(
-        files_in(&fixture.project()),
-        ["notes/SKILL.md", "notes/a.md"]
-    );
+        .unwrap_err();
+    assert!(error.contains(" is in the skill folder "), "{error}");
+    assert!(theirs.join("SKILL.md").is_file());
+    std::fs::remove_dir_all(&theirs).unwrap();
+    // A folder that a link leads into a skill folder.
+    #[cfg(unix)]
+    {
+        write_skill(&fixture.project(), "linked", "", &[]);
+        std::os::unix::fs::symlink(fixture.project(), fixture.workspace.join("scratch")).unwrap();
+        let error = fixture
+            .add(params("linked", "scratch/linked"))
+            .await
+            .unwrap_err();
+        assert!(error.contains(" is in the skill folder "), "{error}");
+        assert!(fixture.project().join("linked/SKILL.md").is_file());
+        std::fs::remove_dir_all(fixture.project().join("linked")).unwrap();
+    }
+    fixture.nothing_saved();
+    assert!(fixture.cards().is_empty());
+    assert!(fixture.notices().is_empty());
 }
 
 /// A Markdown file becomes the skill's SKILL.md.
@@ -547,7 +675,7 @@ async fn a_skill_that_fails_a_check_is_refused_and_nothing_is_written() {
         ),
         (
             params("shared", ".claude/skills/shared"),
-            "/.claude/skills/shared is in a skill folder, so it is a skill already. Write the skill in another folder, such as a scratch folder, and give that folder.",
+            "/.claude/skills/shared is in the skill folder ",
         ),
         (
             params("many", &draft("many", "", &many)),
@@ -756,8 +884,7 @@ async fn with_no_one_to_ask_only_a_project_skill_without_review_is_saved() {
 }
 
 /// A skill the user turns down, from a bundle, a URL or a folder, leaves
-/// nothing in either skill folder. A draft the agent wrote in place is
-/// deleted, and the agent is told.
+/// nothing in either skill folder, and its source as it was.
 #[tokio::test]
 async fn a_rejected_skill_leaves_nothing_in_the_skill_folders() {
     let skill = skill_md("notes", "");
@@ -789,21 +916,8 @@ async fn a_rejected_skill_leaves_nothing_in_the_skill_folders() {
         }
     }
     assert_eq!(fixture.cards().len(), 6);
-
-    let draft = write_skill(&fixture.project(), "notes", "", &[]);
-    let result = fixture
-        .add(params("notes", ".arko/skills/notes"))
-        .await
-        .unwrap();
-    assert!(
-        result.ends_with(&format!(
-            " Arko deleted your draft in {}, so write it again before you call add_skill again.",
-            draft.display()
-        )),
-        "{result}"
-    );
-    assert!(!draft.exists());
-    fixture.nothing_saved();
+    assert!(folder.join("SKILL.md").is_file());
+    assert!(fixture.drafts().join("notes.zip").is_file());
     assert!(fixture.notices().is_empty());
 }
 
@@ -1005,6 +1119,102 @@ async fn remove_skill_removes_only_what_an_agent_saved() {
         fixture.remove("ponytail").await.unwrap_err(),
         "ponytail is built into Arko. The user leaves it out with /builtin-skills ponytail off."
     );
+}
+
+/// What a save writes is the copy read before the card was shown, so an
+/// edit to the source while the user decides isn't saved, from a folder, a
+/// Markdown file or a bundle.
+#[tokio::test]
+async fn an_edit_to_the_source_while_the_user_decides_isnt_saved() {
+    let fixture = quiet();
+    let drafts = fixture.drafts();
+    let skill = skill_md("notes", "");
+    let evil = skill_md("notes", "auto_load: true\n");
+    for (source, files) in [
+        ("drafts/notes", vec!["SKILL.md", "a.md"]),
+        ("drafts/notes.md", vec!["SKILL.md"]),
+        ("drafts/notes.zip", vec!["SKILL.md", "a.md"]),
+    ] {
+        let _ = std::fs::remove_dir_all(&drafts);
+        write_skill(&drafts, "notes", "", &[("a.md", "A")]);
+        std::fs::write(drafts.join("notes.md"), &skill).unwrap();
+        std::fs::write(
+            drafts.join("notes.zip"),
+            zip_of(&[("SKILL.md", skill.as_bytes()), ("a.md", &b"A"[..])]),
+        )
+        .unwrap();
+        let approver = meanwhile({
+            let (drafts, evil) = (drafts.clone(), evil.clone());
+            move || {
+                std::fs::write(drafts.join("notes/SKILL.md"), &evil).unwrap();
+                std::fs::write(drafts.join("notes/a.md"), "Changed.").unwrap();
+                std::fs::write(drafts.join("notes/run.sh"), "echo run").unwrap();
+                std::fs::write(drafts.join("notes.md"), &evil).unwrap();
+                std::fs::write(
+                    drafts.join("notes.zip"),
+                    zip_of(&[("SKILL.md", evil.as_bytes()), ("run.sh", &b"echo"[..])]),
+                )
+                .unwrap();
+            }
+        });
+        fixture
+            .add_asking(
+                approver.clone(),
+                with(params("notes", source), "scope", json!("user")),
+            )
+            .await
+            .unwrap();
+        let saved = fixture.user().join("notes");
+        assert_eq!(files_in(&saved), files, "{source}");
+        assert_eq!(
+            std::fs::read_to_string(saved.join("SKILL.md")).unwrap(),
+            skill
+        );
+        if files.len() > 1 {
+            assert_eq!(std::fs::read_to_string(saved.join("a.md")).unwrap(), "A");
+        }
+        let card = approver.cards.lock().unwrap()[0].clone();
+        assert_eq!(card.files[0].text.as_deref(), Some(skill.as_str()));
+        assert_eq!(card.files.len(), files.len());
+        remove_saved(&fixture.root, &saved).unwrap();
+    }
+}
+
+/// A save given up, because the user didn't answer or the call was dropped
+/// while they decided, leaves nothing behind (no skill, no record and no
+/// hidden folder), and the source as it was.
+#[tokio::test]
+async fn a_save_given_up_leaves_nothing() {
+    let fixture = fixture(true, Answer::Unanswered, Vec::new());
+    fixture.review_project_skills();
+    let folder = write_skill(&fixture.drafts(), "notes", "", &[("a.md", "A")]);
+    let skill = skill_md("notes", "");
+    std::fs::write(
+        fixture.drafts().join("notes.zip"),
+        zip_of(&[("SKILL.md", skill.as_bytes())]),
+    )
+    .unwrap();
+    for source in ["drafts/notes", "drafts/notes.zip"] {
+        for scope in ["project", "user"] {
+            let call = with(params("notes", source), "scope", json!(scope));
+            let result = fixture.add(call.clone()).await.unwrap();
+            assert_eq!(
+                result,
+                "The user didn't answer, so the skill notes wasn't saved."
+            );
+            fixture.nothing_saved();
+            let dropped = tokio::time::timeout(
+                Duration::from_millis(100),
+                fixture.add_asking(Arc::new(Never), call),
+            )
+            .await;
+            assert!(dropped.is_err(), "{source}");
+            fixture.nothing_saved();
+        }
+    }
+    assert_eq!(files_in(&folder), ["SKILL.md", "a.md"]);
+    assert!(fixture.drafts().join("notes.zip").is_file());
+    assert!(fixture.notices().is_empty());
 }
 
 /// `workers` goes into the front matter as `workers: false`, or comes out

@@ -30,10 +30,10 @@ and not for another publisher's lookalike. For any other slug, write the pattern
 
 ## Skills the agent saves
 
-The main agent saves a skill with `add_skill`, from a folder it wrote, a Markdown file, a `.zip` or
-`.skill` bundle, or an https URL of one. A skill for the project goes in its `.arko/skills`, which git
-ignores while "Keep agents' project files out of git" is on (see [extensions](extensions.md)). A
-skill for every project goes in `skills` in Arko's folder.
+The main agent saves a skill with `add_skill`, from a folder or Markdown file it wrote outside the
+skill folders, a `.zip` or `.skill` bundle, or an https URL of one. A skill for the project goes in
+its `.arko/skills`, which git ignores while "Keep agents' project files out of git" is on (see
+[extensions](extensions.md)). A skill for every project goes in `skills` in Arko's folder.
 
 | Save | Asks you |
 |---|---|
@@ -43,9 +43,10 @@ skill for every project goes in `skills` in Arko's folder.
 
 The approval tray shows the skill's text and files, where it came from and who gets it. Arko checks
 the skill before it asks, and refuses one with a name another skill has, `auto_load`, a link, more
-than 200 files or more than 1 MB. Nothing is written before you approve. The agent's `load_skill`
-finds the skill at once, and its skill list shows it from the next conversation. Workers started
-after the save get it unless it says `workers: false`.
+than 200 files or more than 1 MB. Nothing is written before you approve, and what's saved is the copy
+the tray showed, even if the source changes meanwhile. The agent's `load_skill` finds the skill at
+once, and its skill list shows it from the next conversation. Workers started after the save get it
+unless it says `workers: false`.
 
 Arko records each save in `agent-added.json` in its folder, so `/skills` marks the skill "added by
 the agent" with the day, and `/skills NAME` says why and from where. The agent's `remove_skill` and
