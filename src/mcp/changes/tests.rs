@@ -4,11 +4,15 @@ use super::*;
 use crate::approvals::Look;
 use crate::mcp::tests::{python, stub_server};
 
+/// What happens while the user decides.
+type During = Box<dyn FnOnce() + Send>;
+
 /// Answers each card with `answer` and keeps the cards.
 struct Fake {
     can: bool,
     answer: Mutex<Answer>,
     cards: Mutex<Vec<ServerApproval>>,
+    during: Mutex<Option<During>>,
 }
 
 impl Fake {
@@ -17,11 +21,17 @@ impl Fake {
             can: true,
             answer: Mutex::new(answer),
             cards: Mutex::default(),
+            during: Mutex::default(),
         })
     }
 
     fn cards(&self) -> Vec<ServerApproval> {
         self.cards.lock().unwrap().clone()
+    }
+
+    /// Does `change` while the user decides about the next card.
+    fn meanwhile(&self, change: impl FnOnce() + Send + 'static) {
+        *self.during.lock().unwrap() = Some(Box::new(change));
     }
 }
 
@@ -33,7 +43,18 @@ impl Ask for Fake {
 
     async fn ask(&self, _: &TaskContext<'_>, card: ServerApproval) -> Answer {
         self.cards.lock().unwrap().push(card);
+        let during = self.during.lock().unwrap().take();
+        if let Some(change) = during {
+            change();
+        }
         self.answer.lock().unwrap().clone()
+    }
+}
+
+fn approve() -> Answer {
+    Answer::Approved {
+        words: None,
+        option: false,
     }
 }
 
@@ -254,6 +275,7 @@ async fn the_setting_off_skips_the_card_and_records_the_approval() {
         can: false,
         answer: Mutex::new(Answer::Unanswered),
         cards: Mutex::default(),
+        during: Mutex::default(),
     });
     let setup = setup(temp.path(), ask.clone(), Vec::new());
     crate::extension_prefs::update(&setup.root, |prefs| prefs.ask_before_adding_mcp = false)
@@ -379,6 +401,7 @@ fn setup_nobody(temp: &Path) -> Setup {
         can: false,
         answer: Mutex::new(Answer::Unanswered),
         cards: Mutex::default(),
+        during: Mutex::default(),
     });
     setup(&temp.join("nobody"), ask, Vec::new())
 }
@@ -506,4 +529,90 @@ async fn remove_takes_out_only_what_an_agent_added() {
     assert!(
         notices(&setup.feed).contains(&"The main agent removed the MCP server added.".to_string())
     );
+}
+
+/// What an add found of its server's name before the user was asked is
+/// checked again as it writes. A user's entry of the same name in its file,
+/// the name set up in a file read before it, and an edit of the agent's own
+/// entry, each made while the user decides, are kept as they are, nothing
+/// is written or recorded, and the agent is told to call add again.
+#[tokio::test]
+async fn what_changes_while_the_user_decides_is_kept() {
+    let temp = tempfile::tempdir().unwrap();
+    let ask = Fake::new(approve());
+    let setup = setup(temp.path(), ask.clone(), Vec::new());
+    let local = local_file(&setup.workspace);
+    // The user sets up a server of the same name in .arko/mcp.json.
+    let users = r#"{"mcpServers": {"stub": {"command": "users-own"}}}"#;
+    {
+        let local = local.clone();
+        ask.meanwhile(move || {
+            std::fs::create_dir_all(local.parent().unwrap()).unwrap();
+            std::fs::write(&local, users).unwrap();
+        });
+    }
+    let refused = setup
+        .changes
+        .add(&context(temp.path()), stub_request(&setup, "stub", &[]))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        refused,
+        format!(
+            "A server named stub was set up in {} while the user decided, so Arko wrote nothing. Choose another name, and call add again.",
+            normal(&local).display()
+        )
+    );
+    assert_eq!(std::fs::read_to_string(&local).unwrap(), users);
+    // The project's .mcp.json, read before Arko's mcp.json, gains the name of
+    // a server for every project.
+    {
+        let project = setup.workspace.join(crate::mcp::PROJECT_FILE);
+        ask.meanwhile(move || {
+            std::fs::write(project, r#"{"mcpServers": {"other": {"command": "npx"}}}"#).unwrap();
+        });
+    }
+    let mut request = stub_request(&setup, "other", &[]);
+    request.scope = McpScope::User;
+    let refused = setup
+        .changes
+        .add(&context(temp.path()), request)
+        .await
+        .unwrap_err();
+    assert!(
+        refused.contains("/.mcp.json while the user decided, so Arko wrote nothing."),
+        "{refused}"
+    );
+    assert!(!setup.root.join(crate::mcp::USER_FILE).exists());
+    // The user edits the agent's own server while it asks to replace it.
+    setup
+        .changes
+        .add(&context(temp.path()), stub_request(&setup, "mine", &[]))
+        .await
+        .unwrap();
+    let first = agent_added::server_in(&setup.root, &normal(&local), "mine").unwrap();
+    {
+        let local = local.clone();
+        ask.meanwhile(move || {
+            let mut written = json(&local);
+            written["mcpServers"]["mine"]["command"] = "edited".into();
+            std::fs::write(&local, written.to_string()).unwrap();
+        });
+    }
+    let mut again = stub_request(&setup, "mine", &[]);
+    again.why = "Another reason.".into();
+    let refused = setup
+        .changes
+        .add(&context(temp.path()), again)
+        .await
+        .unwrap_err();
+    assert!(
+        refused.starts_with("mine changed in ") && refused.contains("Call add again"),
+        "{refused}"
+    );
+    assert_eq!(json(&local)["mcpServers"]["mine"]["command"], "edited");
+    assert_eq!(agent_added::servers(&setup.root), [first]);
+    assert!(setup.changes.servers.hub.config("stub").is_none());
+    assert!(setup.changes.servers.hub.config("other").is_none());
+    setup.changes.servers.shutdown().await;
 }

@@ -203,6 +203,18 @@ pub(crate) fn sets_up(file: &Path, name: &str) -> bool {
     names_in(file).is_some_and(|names| names.iter().any(|known| known == name))
 }
 
+/// The entry for the server `name` in the file at `file`, as written, if it
+/// has one.
+pub(crate) fn entry_in(file: &Path, name: &str) -> Option<Value> {
+    let text = std::fs::read_to_string(file).ok()?;
+    let value: Value = serde_json::from_str(&text).ok()?;
+    entries(value.get("mcpServers")?)
+        .ok()?
+        .into_iter()
+        .find(|(known, _)| known.as_deref() == Some(name))
+        .map(|(_, entry)| entry.clone())
+}
+
 /// The names of the servers the file at `file` has entries for, or `None`
 /// when it can't be read.
 fn names_in(file: &Path) -> Option<Vec<String>> {

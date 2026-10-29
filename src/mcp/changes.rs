@@ -12,7 +12,10 @@
 //! Arko's environment when the server starts and no value is ever written,
 //! shown or returned. The project file is remembered as approved, so the
 //! next session starts it without asking, the record of what agents added
-//! gets the server, and the hub starts it.
+//! gets the server, and the hub starts it as the user approved it. The name's
+//! checks are made again as the entry is written, and a change made while
+//! the user decided (an entry of that name, or a change to the agent's own)
+//! writes nothing.
 //!
 //! A remove works only on a server the record says an agent added.
 
@@ -104,6 +107,23 @@ pub struct Changes {
     pub session: String,
     /// The session's name now.
     pub title: Arc<dyn Fn() -> Option<String> + Send + Sync>,
+}
+
+/// What an add found of its server's name in the file it writes, before the
+/// user was asked, which must still be so when it writes.
+#[derive(Debug, PartialEq)]
+struct Found {
+    /// The name's entry there, as written.
+    entry: Option<Value>,
+    /// The record of the agent's server the add replaces.
+    replaced: Option<ServerRecord>,
+}
+
+/// Where a name an add can't take is set up.
+enum Taken {
+    File(PathBuf),
+    /// The session has a server of that name, from elsewhere.
+    Session,
 }
 
 /// Why a server can't be taken out.
@@ -220,9 +240,9 @@ impl Changes {
         files
     }
 
-    /// The checks before anyone is asked: the record of the server an add
-    /// replaces, if any, or why it can't be added.
-    fn check(&self, request: &AddServer, target: &Path) -> Result<Option<ServerRecord>, String> {
+    /// The checks before anyone is asked: what the add found of the name in
+    /// its file (an agent's server it replaces), or why it can't be added.
+    fn check(&self, request: &AddServer, target: &Path) -> Result<Found, String> {
         let name = request.name.trim();
         if let Some(problem) = name_problem(name) {
             return Err(problem);
@@ -254,24 +274,59 @@ impl Changes {
                     .into(),
             );
         }
+        self.found(name, target).map_err(|taken| match taken {
+            Taken::File(file) => format!(
+                "{} sets up a server named {name} already. Choose another name.",
+                file.display()
+            ),
+            Taken::Session => {
+                format!("This session has a server named {name} already. Choose another name.")
+            }
+        })
+    }
+
+    /// What the name `name` is in `target` now: free, or an agent's server
+    /// there that an add replaces. Taken when another file sets it up (or
+    /// `target` does, and no agent added it), or the session has a server of
+    /// that name from elsewhere.
+    fn found(&self, name: &str, target: &Path) -> Result<Found, Taken> {
         let replaced = agent_added::server_in(&self.root, target, name);
         for file in self.files() {
             if file.as_path() == target && replaced.is_some() {
                 continue;
             }
             if super::sets_up(&file, name) {
-                return Err(format!(
-                    "{} sets up a server named {name} already. Choose another name.",
-                    file.display()
-                ));
+                return Err(Taken::File(file));
             }
         }
         if replaced.is_none() && self.servers.hub.config(name).is_some() {
-            return Err(format!(
-                "This session has a server named {name} already. Choose another name."
-            ));
+            return Err(Taken::Session);
         }
-        Ok(replaced)
+        Ok(Found {
+            entry: super::entry_in(target, name),
+            replaced,
+        })
+    }
+
+    /// Checks again, with the approvals' lock held, that what the add
+    /// found before the user was asked (`before`) is still so, or says what
+    /// changed while they decided.
+    fn unchanged(&self, name: &str, target: &Path, before: &Found) -> Result<(), String> {
+        let wrote_nothing = "while the user decided, so Arko wrote nothing";
+        match self.found(name, target) {
+            Ok(now) if now == *before => Ok(()),
+            Ok(_) => Err(format!(
+                "{name} changed in {} {wrote_nothing}. Call add again, which asks them about it as it is now.",
+                target.display()
+            )),
+            Err(Taken::File(file)) => Err(format!(
+                "A server named {name} was set up in {} {wrote_nothing}. Choose another name, and call add again.",
+                file.display()
+            )),
+            Err(Taken::Session) => Err(format!(
+                "This session got a server named {name} {wrote_nothing}. Choose another name, and call add again."
+            )),
+        }
     }
 
     /// The card for `request`.
@@ -314,39 +369,24 @@ impl Changes {
         }
     }
 
-    /// Writes the entry of `request` in `target`, and remembers a project's
-    /// file as approved when it was before (or had no servers). Says whether
-    /// it did.
-    fn write(&self, request: &AddServer, scope: Scope) -> Result<(PathBuf, bool), String> {
-        let name = request.name.trim();
-        let mut entry = serde_json::Map::new();
-        entry.insert("command".into(), Value::from(request.command.trim()));
-        if !request.args.is_empty() {
-            entry.insert("args".into(), Value::from(request.args.clone()));
-        }
-        let env = env_names(&request.env);
-        if !env.is_empty() {
-            entry.insert(
-                "env".into(),
-                Value::Object(
-                    env.iter()
-                        .map(|name| (name.clone(), Value::from(format!("${{{name}}}"))))
-                        .collect(),
-                ),
-            );
-        }
-        if !request.workers {
-            entry.insert("workers".into(), Value::Bool(false));
-        }
-        if request.shared {
-            entry.insert("shared".into(), Value::Bool(true));
-        }
+    /// Writes `entry` as the server `name` in the file of `scope`, once it
+    /// checked that what the add found there (`found`) didn't change while
+    /// the user decided, and remembers a project's file as approved when it
+    /// was before (or had no servers). Says where, and whether it did.
+    fn write(
+        &self,
+        name: &str,
+        entry: Value,
+        scope: Scope,
+        found: &Found,
+    ) -> Result<(PathBuf, bool), String> {
         let _lock = super::approval_lock(&self.root)?;
+        self.unchanged(name, &normal(&self.target(scope)), found)?;
         match scope {
             Scope::Project => {
                 let file =
                     crate::arko_dir::ensure(&self.workspace, &self.root)?.join(super::LOCAL_FILE);
-                let (before, after) = super::write_entry(&file, name, Value::Object(entry))?;
+                let (before, after) = super::write_entry(&file, name, entry)?;
                 let approvals = super::read_approvals(&self.root)?;
                 let empty = super::entries(&before).map_or(true, |entries| entries.is_empty());
                 let approved = empty
@@ -372,35 +412,55 @@ impl Changes {
                     )
                 })?;
                 let file = self.root.join(super::USER_FILE);
-                super::write_entry(&file, name, Value::Object(entry))?;
+                super::write_entry(&file, name, entry)?;
                 Ok((normal(&file), true))
             }
         }
-    }
-
-    /// The server as the hub starts it, read back from its entry in `file`.
-    fn written(&self, file: &Path, name: &str) -> Result<Server, String> {
-        let parsed = super::parse_file(file, &super::environment)?;
-        if let Some(server) = parsed
-            .servers
-            .into_iter()
-            .find(|server| server.name == name)
-        {
-            return Ok(server);
-        }
-        let why = parsed
-            .left_out
-            .into_iter()
-            .find(|(left, ..)| left == name)
-            .map(|(.., why)| why)
-            .unwrap_or_else(|| "it isn't in the file".into());
-        Err(why)
     }
 
     fn notice(&self, text: &str) {
         if let Some(notices) = &self.notices {
             notices.info(text);
         }
+    }
+}
+
+/// The entry `request` writes in its file, in Claude Code's form, each
+/// variable as `${NAME}`.
+fn entry_of(request: &AddServer) -> Value {
+    let mut entry = serde_json::Map::new();
+    entry.insert("command".into(), Value::from(request.command.trim()));
+    if !request.args.is_empty() {
+        entry.insert("args".into(), Value::from(request.args.clone()));
+    }
+    let env = env_names(&request.env);
+    if !env.is_empty() {
+        entry.insert(
+            "env".into(),
+            Value::Object(
+                env.iter()
+                    .map(|name| (name.clone(), Value::from(format!("${{{name}}}"))))
+                    .collect(),
+            ),
+        );
+    }
+    if !request.workers {
+        entry.insert("workers".into(), Value::Bool(false));
+    }
+    if request.shared {
+        entry.insert("shared".into(), Value::Bool(true));
+    }
+    Value::Object(entry)
+}
+
+/// The server the user approved, as the hub starts it: its `entry` read as
+/// a file's entry is, with its variables' values taken now. (The file it
+/// was written to may change before then.)
+fn approved_server(name: &str, entry: &Value, file: &Path) -> Result<Server, String> {
+    match super::server(name, entry, file, &super::environment) {
+        Ok(Some(server)) => Ok(server),
+        Ok(None) => Err("it is disabled".into()),
+        Err(why) => Err(format!("it {why}")),
     }
 }
 
@@ -423,7 +483,7 @@ impl McpChanges for Changes {
             _ => Scope::Project,
         };
         let target = normal(&self.target(scope));
-        let replaced = self.check(&request, &target)?;
+        let found = self.check(&request, &target)?;
         let name = request.name.trim().to_string();
         let asks = crate::extension_prefs::load(&self.root).ask_before_adding_mcp;
         let mut words = None;
@@ -431,7 +491,7 @@ impl McpChanges for Changes {
             if !self.ask.can_answer() {
                 return Err("No one can approve an MCP server in this session.".into());
             }
-            let card = self.card(&request, scope, replaced.as_ref());
+            let card = self.card(&request, scope, found.replaced.as_ref());
             match self.ask.ask(context, card).await {
                 Answer::Approved { words: said, .. } => words = said,
                 Answer::Unanswered => {
@@ -454,7 +514,8 @@ impl McpChanges for Changes {
                 }
             }
         }
-        let (file, approved) = self.write(&request, scope)?;
+        let entry = entry_of(&request);
+        let (file, approved) = self.write(&name, entry.clone(), scope, &found)?;
         agent_added::record_server(
             &self.root,
             ServerRecord {
@@ -466,7 +527,7 @@ impl McpChanges for Changes {
                 why: request.why.trim().to_string(),
             },
         )?;
-        let started = match self.written(&file, &name) {
+        let started = match approved_server(&name, &entry, &file) {
             Ok(server) => self
                 .servers
                 .add(server, Some(request.why.trim().to_string()))
