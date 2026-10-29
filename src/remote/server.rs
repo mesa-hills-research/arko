@@ -409,6 +409,7 @@ impl Server {
             meter,
             info,
             closed: closed.clone(),
+            pings: watch::Sender::new(0),
         });
         let router = router(app);
         let mut shutdown = closed;
@@ -572,6 +573,7 @@ fn router(app: Arc<App>) -> Router {
         )
         .route("/api/session", get(session_check).post(session_open))
         .route("/api/events", get(events))
+        .route("/api/ping", axum::routing::post(ping))
         .route("/api/message", axum::routing::post(message))
         .route("/api/answer", axum::routing::post(answer))
         .route(
@@ -683,6 +685,9 @@ struct App {
     info: Info,
     /// Set when the server stops: the streams end.
     closed: watch::Receiver<bool>,
+    /// Counts the pings (`POST /api/ping`), each of which every stream
+    /// sends on.
+    pings: watch::Sender<u64>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -979,9 +984,9 @@ async fn session_open(
 /// item), `append` (more text for an item), `change` (an item, changed: a
 /// call's outcome), `worker` (a worker's summary), `job` (a background
 /// job's summary), `code` (the code blocks a streaming text finished,
-/// highlighted) and `status` events. An item's Markdown comes with its
-/// finished code blocks highlighted. A stream that falls behind starts over
-/// with a `reset`.
+/// highlighted), `status` and `ping` (an answer to `POST /api/ping`)
+/// events. An item's Markdown comes with its finished code blocks
+/// highlighted. A stream that falls behind starts over with a `reset`.
 async fn events(
     State(app): State<Arc<App>>,
     ConnectInfo(peer): Peer,
@@ -998,6 +1003,7 @@ async fn events(
         session,
         closed: app.closed.clone(),
         updates: app.feed.subscribe().1,
+        pings: app.pings.subscribe(),
         app,
         pending: VecDeque::new(),
         status: String::new(),
@@ -1021,6 +1027,7 @@ struct Stream {
     session: Option<String>,
     updates: broadcast::Receiver<Update>,
     closed: watch::Receiver<bool>,
+    pings: watch::Receiver<u64>,
     pending: VecDeque<Event>,
     /// The status last sent.
     status: String,
@@ -1245,6 +1252,11 @@ impl Stream {
                     Err(broadcast::error::RecvError::Lagged(_)) => self.reset(),
                     Err(broadcast::error::RecvError::Closed) => self.ending = true,
                 },
+                Ok(()) = self.pings.changed() => {
+                    let count = *self.pings.borrow();
+                    self.pending
+                        .push_back(Event::default().event("ping").data(count.to_string()));
+                }
                 // (The tick also wakes a quiet stream to see whether its
                 // session ended.)
                 _ = self.tick.tick() => self.send_status(),
@@ -1648,6 +1660,20 @@ async fn choices(
     axum::Json(serde_json::json!({ "choices": words, "notes": notes })).into_response()
 }
 
+/// `POST /api/ping`: every stream sends a `ping`, so a page back from sleep
+/// learns whether its stream still comes through.
+async fn ping(
+    State(app): State<Arc<App>>,
+    ConnectInfo(peer): Peer,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(refusal) = app.authorize(&headers, peer.ip()) {
+        return refusal.into_response();
+    }
+    app.pings.send_modify(|count| *count += 1);
+    StatusCode::NO_CONTENT.into_response()
+}
+
 /// `POST /api/stop`: stops the turn, as Ctrl-C does.
 async fn stop(
     State(app): State<Arc<App>>,
@@ -1860,6 +1886,7 @@ mod tests {
             meter: Arc::new(Still),
             info: Info::default(),
             closed,
+            pings: watch::Sender::new(0),
         }
     }
 
@@ -3121,6 +3148,84 @@ mod tests {
         let mut buffer = String::new();
         let events = read_until(&mut later, &mut buffer, |name, _| name == "reset").await;
         assert_eq!(events.last().unwrap().1["jobs"][0]["id"], job.to_string());
+    }
+
+    /// A page away while a call ended and the next began, whose stream went
+    /// quiet, connects again and gets both as they are now. A ping, which a
+    /// page back from sleep sends, comes out of every stream, after what
+    /// waited in it. It needs a session.
+    #[tokio::test]
+    async fn a_page_back_from_sleep_gets_what_changed_and_its_ping() {
+        use super::super::protocol::{CallStatus, ResetData};
+        use arko_agents::AgentEvent;
+        use arko_workflows::WorkflowEvent;
+        let feed = Feed::new("main");
+        let event = |event: AgentEvent| WorkflowEvent {
+            timestamp: chrono::Utc::now(),
+            workflow_run_id: uuid::Uuid::nil(),
+            agent_name: "main".into(),
+            agent_run_id: uuid::Uuid::nil(),
+            event,
+        };
+        let call = |id, tool: &str| {
+            event(AgentEvent::ToolCallFormatted {
+                tool_call_id: id,
+                tool_name: tool.into(),
+                parameters: Default::default(),
+            })
+        };
+        feed.turn_started();
+        let wait = uuid::Uuid::new_v4();
+        feed.event(&call(wait, "wait_for_agents"), None);
+        let served = serve(&feed);
+        let cookie = served.login().await;
+        let mut asleep = served.get("/api/events", Some(&cookie)).await;
+        let mut buffer = String::new();
+        let events = read_until(&mut asleep, &mut buffer, |name, _| name == "reset").await;
+        let reset: ResetData = serde_json::from_value(events.last().unwrap().1.clone()).unwrap();
+        let [waiting] = &reset.items[..] else {
+            panic!("{:?}", reset.items)
+        };
+        assert_eq!(waiting.status, Some(CallStatus::Running));
+
+        // Away, the page reads nothing while the wait ends and a command
+        // starts.
+        feed.event(
+            &event(AgentEvent::ToolResult {
+                tool_call_id: wait,
+                tool_name: "wait_for_agents".into(),
+                output: "r1 finished.".into(),
+            }),
+            None,
+        );
+        feed.event(&call(uuid::Uuid::new_v4(), "shell"), None);
+        let mut awake = served.get("/api/events", Some(&cookie)).await;
+        let mut awake_buffer = String::new();
+        let events = read_until(&mut awake, &mut awake_buffer, |name, _| name == "reset").await;
+        let reset: ResetData = serde_json::from_value(events.last().unwrap().1.clone()).unwrap();
+        let [waited, shell] = &reset.items[..] else {
+            panic!("{:?}", reset.items)
+        };
+        assert_eq!(
+            (waited.id, waited.status),
+            (waiting.id, Some(CallStatus::Ok))
+        );
+        assert_eq!(shell.status, Some(CallStatus::Running));
+
+        assert_eq!(
+            served.post("/api/ping", None, "").await.status(),
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            served.post("/api/ping", Some(&cookie), "").await.status(),
+            StatusCode::NO_CONTENT
+        );
+        let events = read_until(&mut awake, &mut awake_buffer, |name, _| name == "ping").await;
+        assert_eq!(events.len(), 1);
+        let events = read_until(&mut asleep, &mut buffer, |name, _| name == "ping").await;
+        let names: Vec<&str> = events.iter().map(|(name, _)| name.as_str()).collect();
+        assert_eq!(names, ["change", "item", "ping"]);
+        assert_eq!(events[0].1["status"], "ok");
     }
 
     /// The status carries each worker's context and the size it hands over
