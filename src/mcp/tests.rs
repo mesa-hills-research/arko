@@ -324,12 +324,11 @@ async fn a_server_starts_and_its_tools_are_called_and_one_that_fails_is_reported
         servers.tool_names("stub server").unwrap(),
         ["echo", "write.note"]
     );
-    match servers.state("missing") {
-        Some(McpState::Failed(reason)) => {
-            assert!(reason.contains("arko-no-such-mcp-server"), "{reason}")
-        }
-        other => panic!("{other:?}"),
-    }
+    // Why, in words that hold neither its command nor what it printed.
+    assert_eq!(
+        servers.state("missing"),
+        Some(McpState::Failed("its program wasn't found".into()))
+    );
     assert_eq!(
         servers.summary().unwrap(),
         "MCP servers stub server (2 tools), missing (failed)"

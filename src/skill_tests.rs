@@ -168,12 +168,12 @@ fn a_session_saved_before_skill_saves_is_told_it_lacks_them() {
         .retain(|name| !skill_install::TOOL_NAMES.contains(&name.as_str()));
     let saved = SavedSetup {
         name: WORKFLOW_NAME.into(),
-        mcp_tools: Default::default(),
+        optional_tools: Default::default(),
         configs: [(MAIN.to_string(), old)].into(),
     };
     assert_eq!(
         unoffered(&saved, &[(MAIN, &fresh)]).unwrap(),
-        "This session started without saving skills (add_skill), so its agents don't get them. A new session does."
+        "This session's saved conversations and workers started without saving skills (add_skill), so they don't get them, even after a handover. New conversations (/new) and new workers do."
     );
     // Workers never save skills, and their Skills section says nothing of
     // it.

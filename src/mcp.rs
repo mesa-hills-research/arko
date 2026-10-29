@@ -4,9 +4,10 @@
 //! (once the user approves them) and in `mcp.json` in Arko's folder. The
 //! agents reach them through one tool, `mcp` ([`McpBridgeTool`]), whose
 //! definition stays the same while servers start, stop, come and go, so the
-//! prompt cache holds. A conversation saved when each MCP tool was a tool of
-//! its own (`mcp__<server>__<tool>`) keeps those, called through the same
-//! hub. Each open agent session runs its own copy of each server and stops
+//! prompt cache holds. A conversation (or worker) saved when each MCP tool
+//! was a tool of its own (`mcp__<server>__<tool>`) keeps those, called
+//! through the same hub, which checks that its run may reach the server as
+//! `mcp` does. Each open agent session runs its own copy of each server and stops
 //! it when the session closes, except a server marked `"shared": true`,
 //! which sessions open at the same time share. Chat sessions run none.
 //!
@@ -1266,11 +1267,11 @@ impl McpAccess for Access {
 }
 
 /// Stands in for a tool a saved conversation offers that this session
-/// doesn't run. A conversation kept with its own configuration still offers
-/// the tools it was saved with, and can't resume unless each is registered,
-/// for those runs only (`resume_only_agent_tool`). A chat starts no servers,
-/// and in an agent's session a server may be gone from the files or fail to
-/// start.
+/// doesn't run. A saved conversation (or worker) keeps its own
+/// configuration, so it still offers the tools it was saved with, and can't
+/// resume unless each is registered, for those runs only
+/// (`resume_only_agent_tool`). A chat starts no servers, and in an agent's
+/// session a server may be gone from the files or fail to start.
 #[derive(Debug)]
 pub struct UnstartedTool {
     name: String,
@@ -1296,6 +1297,17 @@ impl UnstartedTool {
             name: MCP_TOOL_NAME.into(),
             said: crate::details::CHAT_MCP_NOTE.into(),
             definition: Some(Bridge::definition_of(role)),
+        }
+    }
+
+    /// For a tool of Arko's own that this session doesn't have (the shell
+    /// and terminal tools in a chat, the monitors with -p, the search index's
+    /// without an index, the worker profile tools without workers).
+    pub fn unavailable(name: String) -> Self {
+        Self {
+            name,
+            said: "This tool isn't available in this session.".into(),
+            definition: None,
         }
     }
 

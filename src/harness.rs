@@ -188,9 +188,25 @@ pub(crate) struct SavedSetup {
     pub(crate) name: String,
     /// The configuration of each agent's latest run.
     pub(crate) configs: std::collections::HashMap<String, arko_agents::AgentConfig>,
-    /// The MCP tools any run of the main agent offered, which a session that
-    /// keeps its runs' configurations registers for those that don't run.
-    pub(crate) mcp_tools: std::collections::BTreeSet<String>,
+    /// The tools any run of the main agent or the workers offered that Arko
+    /// has in some sessions only ([`optional_tool`]). Each saved run keeps
+    /// its tools, so a resume registers stand-ins for those the session
+    /// doesn't have.
+    pub(crate) optional_tools: std::collections::BTreeSet<String>,
+}
+
+/// Whether Arko gives the tool `name` in some sessions only: an MCP server's
+/// tool of its own, the shell and terminal tools (and the monitors, which
+/// -p leaves out), the search index's, and the worker profile tools (none
+/// without workers).
+fn optional_tool(name: &str) -> bool {
+    mcp::split_tool_name(name).is_some()
+        || agents::terminal_tool_names(true)
+            .iter()
+            .any(|tool| tool == name)
+        || index::TOOL_NAMES.contains(&name)
+        || name == crew::WORKER_OPTIONS
+        || name == crew::SAVE_WORKER_PROFILE
 }
 
 /// The parts of a checkpoint [`saved_setup`] reads. The rest of a long
@@ -217,21 +233,19 @@ pub(crate) fn saved_setup(checkpoint: &Path, run_dir: &Path) -> Result<SavedSetu
     let state: CheckpointSetup =
         serde_json::from_str(&text).map_err(|error| unreadable(error.to_string()))?;
     let mut configs = std::collections::HashMap::new();
-    let mut mcp_tools = std::collections::BTreeSet::new();
+    let mut optional_tools = std::collections::BTreeSet::new();
     let mut offered = |config: &arko_agents::AgentConfig| {
-        mcp_tools.extend(
+        optional_tools.extend(
             config
                 .tool_config
                 .available_tool_names
                 .iter()
-                .filter(|name| mcp::split_tool_name(name).is_some())
+                .filter(|name| optional_tool(name))
                 .cloned(),
         );
     };
     for result in state.agent_results {
-        if result.agent_name == MAIN {
-            offered(&result.info().agent_config);
-        }
+        offered(&result.info().agent_config);
         configs.insert(
             result.agent_name.clone(),
             result.info().agent_config.clone(),
@@ -239,7 +253,7 @@ pub(crate) fn saved_setup(checkpoint: &Path, run_dir: &Path) -> Result<SavedSetu
     }
     // (Every run's tools, as a resume checks them all.)
     for run in &state.agent_runs {
-        if let Some(info) = run.info.as_ref().filter(|_| run.agent_name == MAIN) {
+        if let Some(info) = &run.info {
             offered(&info.agent_config);
         }
     }
@@ -273,13 +287,13 @@ pub(crate) fn saved_setup(checkpoint: &Path, run_dir: &Path) -> Result<SavedSetu
             })?;
         configs.insert(agent, task.agent_config);
     }
-    if let Some(latest) = configs.get(MAIN) {
+    for latest in configs.values() {
         offered(latest);
     }
     Ok(SavedSetup {
         name: state.workflow_name,
         configs,
-        mcp_tools,
+        optional_tools,
     })
 }
 
@@ -293,10 +307,11 @@ pub(crate) fn unoffered(
     unoffered_with(saved, fresh, true)
 }
 
-/// What a resumed session's agents aren't offered, as they started without
-/// it: the tools Arko has now that their saved tool lists leave out, and
-/// skills. A resumed conversation keeps the configuration it was saved
-/// with. `nested_known` is whether the session was made by an Arko whose
+/// What a resumed session's saved runs aren't offered, as they started
+/// without it: the tools Arko has now that their saved tool lists leave out,
+/// and skills. A saved conversation or worker keeps the configuration it was
+/// saved with, also when it hands over, and new ones take the session's now.
+/// `nested_known` is whether the session was made by an Arko whose
 /// `start_agent` takes `nested` ([`Settings::nested_start`]).
 pub(crate) fn unoffered_with(
     saved: &SavedSetup,
@@ -436,7 +451,7 @@ pub(crate) fn unoffered_with(
         return None;
     }
     Some(format!(
-        "This session started without {}, so its agents don't get them. A new session does.",
+        "This session's saved conversations and workers started without {}, so they don't get them, even after a handover. New conversations (/new) and new workers do.",
         and_list(&parts)
     ))
 }
@@ -675,26 +690,18 @@ impl Harness {
             Some(checkpoint) => Some(saved_setup(checkpoint, &self.session.run_dir())?),
             None => None,
         };
-        // A resume needs the configurations the checkpoint was saved with.
-        let config = |agent: &str, fresh: &arko_agents::AgentConfig| {
-            saved
-                .as_ref()
-                .and_then(|saved| saved.configs.get(agent))
-                .unwrap_or(fresh)
-                .clone()
-        };
-        // A chat, and a session that switched between Chat and Agent, give
-        // the main agent's configuration now to its new conversations, while
-        // each saved one resumes with its own (until its next message, which
-        // goes on in the session's mode: `reconfigure`).
-        let keep = self.keeps_run_configs();
+        // New conversations, handed-over ones aside, and new workers get the
+        // agents' configurations now, while each saved run (a conversation,
+        // a worker) resumes with its own, its tools and prompt as they were
+        // (`keep_saved_configs`). In a session that switched between Chat
+        // and Agent, a saved conversation of the other mode takes the
+        // session's on its next message (`reconfigure`).
         if let Some(saved) = &saved {
             // (A conversation of the other mode takes the session's on its
             // next message: nothing to say of it.)
-            let main_resumes = !keep
-                || saved.configs.get(MAIN).is_some_and(|config| {
-                    config.tool_config.chat == (self.settings.mode == Mode::Chat)
-                });
+            let main_resumes = saved.configs.get(MAIN).is_some_and(|config| {
+                config.tool_config.chat == (self.settings.mode == Mode::Chat)
+            });
             let mut fresh = vec![(WORKER, &self.worker_config)];
             if main_resumes && self.settings.mode == Mode::Agent {
                 fresh.insert(0, (MAIN, &self.main_config));
@@ -702,11 +709,16 @@ impl Harness {
             self.unoffered = unoffered_with(saved, &fresh, self.settings.nested_start);
         }
         let name = saved.as_ref().map_or(WORKFLOW_NAME, |saved| &saved.name);
-        let main_config = if keep {
-            self.main_config.clone()
-        } else {
-            config(MAIN, &self.main_config)
-        };
+        let main_config = self.main_config.clone();
+        // The configuration of the conversation the session goes on in: the
+        // saved one's, unless its next message reconfigures it (one of the
+        // other mode), or there is none.
+        let going_on = saved
+            .as_ref()
+            .and_then(|saved| saved.configs.get(MAIN))
+            .filter(|config| config.tool_config.chat == (self.settings.mode == Mode::Chat))
+            .unwrap_or(&main_config)
+            .clone();
         let mut builder = Workflow::builder()
             .name(name)
             .workspace(&self.settings.workspace)
@@ -720,15 +732,13 @@ impl Harness {
                     .keep_last_checkpoints(3),
             )
             .disable_messaging()
-            .cancel_grace_period(Duration::from_secs(10));
-        if keep {
-            builder = builder.keep_saved_configs([MAIN]);
-        }
+            .cancel_grace_period(Duration::from_secs(10))
+            .keep_saved_configs([MAIN]);
         // What the user types while the agent works reaches it as a note,
         // and it answers where they read it. (Without a terminal, lines
         // wait for their own turn and no note comes.)
         if !self.queue_lines
-            && let Some(hint) = agents::operator_note_hint(&main_config)
+            && let Some(hint) = agents::operator_note_hint(&going_on)
         {
             builder = builder.notes_reply_hint(MAIN, hint);
         }
@@ -739,83 +749,47 @@ impl Harness {
         // configuration lists it (every new one), and a tool for each tool
         // of a running server, for the conversations saved with those, which
         // keep their tool list and their prompt cache. Neither is offered to
-        // a conversation that doesn't list it.
+        // a conversation that doesn't list it. A server's own tool checks
+        // that its run may reach the server, as `mcp` does.
         let access: Arc<dyn arko_agents::mcp::McpAccess> =
             Arc::new(mcp::Access::new(self.crew.as_ref()));
         builder = builder.resume_only_agent_tool(MAIN, self.mcp.lead_tool(access.clone()));
-        let direct = self.mcp.servers.hub.direct_tools();
-        for tool in &direct {
-            builder = builder.resume_only_agent_tool(MAIN, tool.clone());
+        let direct = self.mcp.servers.hub.direct_tools(access.clone());
+        let mut registered: std::collections::HashSet<String> =
+            self.tools.iter().map(|tool| tool.name()).collect();
+        for tool in direct {
+            registered.insert(tool.name());
+            builder = builder.resume_only_agent_tool(MAIN, tool);
         }
-        // The conversations kept with their own configuration still offer the
-        // tools of servers that don't run (a chat starts none, and a server
-        // may be gone from the files or fail to start), and a resume needs
-        // each registered. Only those runs are offered the stand-ins.
-        if keep && let Some(saved) = &saved {
-            let running: Vec<String> = direct.iter().map(|tool| tool.name()).collect();
-            for name in saved
-                .mcp_tools
-                .iter()
-                .filter(|name| !running.contains(name))
-            {
-                let name = name.clone();
-                let stand_in = if self.settings.mode == Mode::Chat {
-                    mcp::UnstartedTool::in_chat(name)
-                } else {
-                    mcp::UnstartedTool::not_running(name)
-                };
-                builder = builder.resume_only_agent_tool(MAIN, Arc::new(stand_in));
-            }
-        }
-        // Registering a tool offers it, so a session saved before a main
-        // agent with text replies had `message_user` (its saved
-        // configuration lists none) doesn't register it. One that keeps its
-        // runs' configurations does, for the next conversation to have it.
-        if keep
-            || main_config
+        // The main agent's new conversations are offered a tool their
+        // configuration lists, and a saved conversation one it was saved
+        // with (one saved before the main agent had `message_user`, kept
+        // notes or `add_skill` has none of them).
+        let offers = |tool: &Arc<dyn Tool>| {
+            main_config
                 .tool_config
                 .available_tool_names
-                .iter()
-                .any(|name| name == message::MESSAGE_USER)
-        {
-            builder = builder.agent_tool(MAIN, Arc::new(message::MessageUser));
-        }
-        // (A session saved before kept notes has no tools for them.)
-        if keep
-            || main_config
-                .tool_config
-                .available_tool_names
-                .iter()
-                .any(|name| name == kept_notes::KEEP_NOTE)
-        {
-            builder = builder
-                .agent_tool(
-                    MAIN,
-                    Arc::new(kept_notes::KeepNote {
-                        notes: self.kept.clone(),
-                        crew: self.crew.clone(),
-                    }),
-                )
-                .agent_tool(
-                    MAIN,
-                    Arc::new(kept_notes::ForgetNote {
-                        notes: self.kept.clone(),
-                        crew: self.crew.clone(),
-                    }),
-                );
-        }
-        // The main agent saves and removes skills, in a conversation that
-        // offers the tools (one saved before them doesn't).
-        if keep
-            || main_config
-                .tool_config
-                .available_tool_names
-                .iter()
-                .any(|name| name == skill_install::ADD_SKILL)
-        {
-            for tool in skill_install::tools(self.skill_context(&main_config)) {
-                builder = builder.agent_tool(MAIN, tool);
-            }
+                .contains(&tool.name())
+        };
+        let mut own: Vec<Arc<dyn Tool>> = vec![
+            Arc::new(message::MessageUser),
+            Arc::new(kept_notes::KeepNote {
+                notes: self.kept.clone(),
+                crew: self.crew.clone(),
+            }),
+            Arc::new(kept_notes::ForgetNote {
+                notes: self.kept.clone(),
+                crew: self.crew.clone(),
+            }),
+        ];
+        // The main agent saves and removes skills.
+        own.extend(skill_install::tools(self.skill_context(&main_config)));
+        for tool in own {
+            builder = if offers(&tool) {
+                builder.agent_tool(MAIN, tool)
+            } else {
+                builder.resume_only_agent_tool(MAIN, tool)
+            };
         }
         builder = builder.user_input_handler(self.asker.clone());
         let legacy = self.settings.max_workers > 0
@@ -845,14 +819,17 @@ impl Harness {
         }
         if self.settings.max_workers > 0 {
             builder = builder
-                .agent(WORKER, config(WORKER, &self.worker_config))
+                .agent(WORKER, self.worker_config.clone())
+                .keep_saved_configs([WORKER])
                 // The workers' size the user set, for every worker run.
                 .agent_handover_threshold(WORKER, self.handover.workers_threshold());
             for tool in &self.tools {
                 builder = builder.agent_tool(WORKER, tool.clone());
             }
-            builder = builder.resume_only_agent_tool(WORKER, self.mcp.worker_tool(access));
-            for tool in direct {
+            builder = builder.resume_only_agent_tool(WORKER, self.mcp.worker_tool(access.clone()));
+            // A worker's call of a server's own tool also needs a server
+            // workers may reach.
+            for tool in self.mcp.servers.hub.worker_direct_tools(access) {
                 builder = builder.resume_only_agent_tool(WORKER, tool);
             }
             if legacy {
@@ -896,6 +873,38 @@ impl Harness {
                     }),
                 );
         }
+        // A saved run resumes with each tool it offers. Those this session
+        // doesn't have (a server that doesn't run, and a chat runs none, the
+        // search index's or the monitors without them, the worker profile
+        // tools without workers) get stand-ins that say so, for those runs.
+        if let Some(saved) = &saved {
+            if self.crew.is_some() {
+                registered
+                    .extend([crew::WORKER_OPTIONS, crew::SAVE_WORKER_PROFILE].map(String::from));
+            }
+            let agents: &[&str] = if self.settings.max_workers > 0 {
+                &[MAIN, WORKER]
+            } else {
+                &[MAIN]
+            };
+            for name in saved
+                .optional_tools
+                .iter()
+                .filter(|name| !registered.contains(*name))
+            {
+                for agent in agents {
+                    let name = name.clone();
+                    let stand_in = if mcp::split_tool_name(&name).is_none() {
+                        mcp::UnstartedTool::unavailable(name)
+                    } else if self.settings.mode == Mode::Chat {
+                        mcp::UnstartedTool::in_chat(name)
+                    } else {
+                        mcp::UnstartedTool::not_running(name)
+                    };
+                    builder = builder.resume_only_agent_tool(*agent, Arc::new(stand_in));
+                }
+            }
+        }
         // After the crew's hook: a call it refuses doesn't act.
         builder = builder.hook(HookPoint::PreToolExecution, self.outside.hook());
         // The images the tools return, for the transcript.
@@ -919,11 +928,17 @@ impl Harness {
             }
         }
         let workflow = Arc::new(builder.build().map_err(|error| error.to_string())?);
-        let mut configs = vec![main_config];
+        let mut configs = vec![going_on, main_config];
         if self.settings.max_workers > 0 {
-            configs.push(config(WORKER, &self.worker_config));
+            configs.push(self.worker_config.clone());
         }
-        self.outside.attach(&workflow, &configs);
+        // (The saved runs' too, which keep theirs.)
+        self.outside.attach(
+            &workflow,
+            configs
+                .iter()
+                .chain(saved.iter().flat_map(|saved| saved.configs.values())),
+        );
         self.handover
             .watch(&workflow, &configs[0], self.settings.openai_auth);
         self.kept.follow(&workflow);
@@ -2407,10 +2422,12 @@ impl Harness {
         Ok(())
     }
 
-    /// Whether the main agent's saved conversations each resume with their
-    /// own configuration, and new ones take the session's now: a chat's
-    /// (whose instructions change between conversations), and a session's
-    /// that switched between Chat and Agent.
+    /// Whether a saved conversation of the main agent may be of the other
+    /// mode, so that its next message goes on with the session's
+    /// configuration (`continue_options`): in a chat, and in a session that
+    /// switched between Chat and Agent or was branched from one. (Every saved
+    /// conversation resumes with its own configuration, and new ones take
+    /// the session's now.)
     pub(crate) fn keeps_run_configs(&self) -> bool {
         self.settings.mode == Mode::Chat
             || self.settings.switched_mode
@@ -5482,12 +5499,12 @@ pub(crate) mod tests {
             .push(RUN_WORKFLOW_AGENT_TOOL_NAME.into());
         let saved = SavedSetup {
             name: WORKFLOW_NAME.into(),
-            mcp_tools: Default::default(),
+            optional_tools: Default::default(),
             configs: [(MAIN.to_string(), old)].into(),
         };
         assert_eq!(
             unoffered(&saved, &[(MAIN, &main), (WORKER, &worker)]).unwrap(),
-            "This session started without workers that run in parallel, the file tools, questions to you (ask_user), and answers to you while it works (message_user), so its agents don't get them. A new session does."
+            "This session's saved conversations and workers started without workers that run in parallel, the file tools, questions to you (ask_user), and answers to you while it works (message_user), so they don't get them, even after a handover. New conversations (/new) and new workers do."
         );
     }
 
@@ -5509,12 +5526,12 @@ pub(crate) mod tests {
             .retain(|name| !MonitorTool::NAMES.contains(&name.as_str()));
         let saved = SavedSetup {
             name: WORKFLOW_NAME.into(),
-            mcp_tools: Default::default(),
+            optional_tools: Default::default(),
             configs: [(MAIN.to_string(), old)].into(),
         };
         assert_eq!(
             unoffered(&saved, &[(MAIN, &main)]).unwrap(),
-            "This session started without monitors (monitor_start), so its agents don't get them. A new session does."
+            "This session's saved conversations and workers started without monitors (monitor_start), so they don't get them, even after a handover. New conversations (/new) and new workers do."
         );
     }
 
@@ -5535,7 +5552,7 @@ pub(crate) mod tests {
         let (cc, opus) = (model("cc:haiku"), model("opus"));
         let saved = |settings: &AgentSettings| SavedSetup {
             name: WORKFLOW_NAME.into(),
-            mcp_tools: Default::default(),
+            optional_tools: Default::default(),
             configs: [(MAIN.to_string(), agents::main_config(settings).unwrap())].into(),
         };
         let now = AgentSettings::for_test(&cc, &cc);
@@ -5543,7 +5560,7 @@ pub(crate) mod tests {
         let lacks = unoffered_with(&saved(&now), &[(MAIN, &main)], false);
         assert_eq!(
             lacks.unwrap(),
-            "This session started without workers that start workers of their own (nested), so its agents don't get them. A new session does."
+            "This session's saved conversations and workers started without workers that start workers of their own (nested), so they don't get them, even after a handover. New conversations (/new) and new workers do."
         );
         // A session made since has it.
         assert_eq!(unoffered_with(&saved(&now), &[(MAIN, &main)], true), None);
@@ -5606,12 +5623,12 @@ pub(crate) mod tests {
             .retain(|name| name != crew::WORKER_OPTIONS && name != crew::SAVE_WORKER_PROFILE);
         let saved = SavedSetup {
             name: WORKFLOW_NAME.into(),
-            mcp_tools: Default::default(),
+            optional_tools: Default::default(),
             configs: [(MAIN.to_string(), old.clone())].into(),
         };
         assert_eq!(
             unoffered(&saved, &[(MAIN, &main)]).unwrap(),
-            "This session started without the worker profile tools (worker_options and save_worker_profile), so its agents don't get them. A new session does."
+            "This session's saved conversations and workers started without the worker profile tools (worker_options and save_worker_profile), so they don't get them, even after a handover. New conversations (/new) and new workers do."
         );
         // Without workers at all, that is what it says instead.
         old.tool_config
@@ -5619,12 +5636,12 @@ pub(crate) mod tests {
             .retain(|name| !crew::LEAD_TOOL_NAMES.contains(&name.as_str()));
         let saved = SavedSetup {
             name: WORKFLOW_NAME.into(),
-            mcp_tools: Default::default(),
+            optional_tools: Default::default(),
             configs: [(MAIN.to_string(), old)].into(),
         };
         assert_eq!(
             unoffered(&saved, &[(MAIN, &main)]).unwrap(),
-            "This session started without workers that run in parallel, so its agents don't get them. A new session does."
+            "This session's saved conversations and workers started without workers that run in parallel, so they don't get them, even after a handover. New conversations (/new) and new workers do."
         );
     }
 
@@ -6011,7 +6028,7 @@ pub(crate) mod tests {
             change(&mut worker);
             SavedSetup {
                 name: WORKFLOW_NAME.into(),
-                mcp_tools: Default::default(),
+                optional_tools: Default::default(),
                 configs: [(MAIN.to_string(), main), (WORKER.to_string(), worker)].into(),
             }
         };
@@ -6033,7 +6050,7 @@ pub(crate) mod tests {
         };
         assert_eq!(
             fresh(&saved, &with).unwrap(),
-            "This session started without the search index tools and skills, so its agents don't get them. A new session does."
+            "This session's saved conversations and workers started without the search index tools and skills, so they don't get them, even after a handover. New conversations (/new) and new workers do."
         );
         // Saved before `mcp`: with a tool for each MCP tool, nothing is said
         // of it, and without, it is.
@@ -6056,7 +6073,7 @@ pub(crate) mod tests {
         });
         assert_eq!(
             fresh(&before, &plain).unwrap(),
-            "This session started without MCP servers (mcp), so its agents don't get them. A new session does."
+            "This session's saved conversations and workers started without MCP servers (mcp), so they don't get them, even after a handover. New conversations (/new) and new workers do."
         );
     }
 

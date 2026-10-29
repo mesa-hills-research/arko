@@ -804,6 +804,13 @@ async fn a_tree_that_was_running_resumes_with_the_setups_it_started_with() {
     let server = script.serve().await;
     let temp = tempfile::tempdir().unwrap();
     let (mut harness, mut inputs, _sender) = open_session(temp.path(), &server);
+    // The shell and terminal tools, as a session has them before and after
+    // it resumes.
+    let shell = crate::shell::Shell::detect(crate::shell::WindowsShell::Cmd);
+    let managers = Managers::open(&harness.session, &shell).unwrap();
+    harness.tools = managers.tools(&shell, harness.handover.runs());
+    harness.open(false).unwrap();
+    harness.start_new_workers();
     let folder = harness.session.dir.join("profiles");
     std::fs::create_dir_all(&folder).unwrap();
     let file = folder.join("coordinator.md");

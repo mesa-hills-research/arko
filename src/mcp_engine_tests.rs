@@ -46,32 +46,52 @@ fn cached_parts(body: &str) -> (String, String) {
     (body["tools"].to_string(), body["instructions"].to_string())
 }
 
-/// Rewrites the session in `dir` as an Arko from before `mcp` saved it:
-/// each configuration that offers `mcp` offers `direct` (a tool of a
-/// server's own) in its place.
+/// Rewrites the session in `dir` as an Arko from before `mcp` and
+/// `add_skill` saved it: each configuration that offers `mcp` offers
+/// `direct` (a tool of a server's own) in its place, and none offers the
+/// tools that save skills.
 fn to_direct_tools(dir: &std::path::Path, direct: &str) {
-    fn visit(value: &mut serde_json::Value, direct: &str) -> bool {
+    let mut replaced = 0;
+    rewrite(dir, &mut |key, value| {
+        let (true, serde_json::Value::Array(names)) = (key == "available_tool_names", value) else {
+            return false;
+        };
+        let before = names.clone();
+        names.retain(|name| {
+            !crate::skill_install::TOOL_NAMES.contains(&name.as_str().unwrap_or_default())
+        });
+        for name in names.iter_mut() {
+            if name == "mcp" {
+                *name = direct.into();
+                replaced += 1;
+            }
+        }
+        *names != before
+    });
+    assert!(replaced > 0, "nothing in {} offers mcp", dir.display());
+}
+
+/// Changes each JSON file in `dir` with `change`, which is given each field
+/// of each object, by key, and says whether it changed it. Says how many
+/// files changed.
+fn rewrite(
+    dir: &std::path::Path,
+    change: &mut dyn FnMut(&str, &mut serde_json::Value) -> bool,
+) -> usize {
+    fn visit(
+        value: &mut serde_json::Value,
+        change: &mut dyn FnMut(&str, &mut serde_json::Value) -> bool,
+    ) -> bool {
         let mut changed = false;
         match value {
             serde_json::Value::Object(map) => {
                 for (key, value) in map.iter_mut() {
-                    if key == "available_tool_names"
-                        && let serde_json::Value::Array(names) = value
-                    {
-                        for name in names.iter_mut() {
-                            if name == "mcp" {
-                                *name = direct.into();
-                                changed = true;
-                            }
-                        }
-                    } else {
-                        changed |= visit(value, direct);
-                    }
+                    changed |= change(key, value) | visit(value, change);
                 }
             }
             serde_json::Value::Array(items) => {
                 for item in items {
-                    changed |= visit(item, direct);
+                    changed |= visit(item, change);
                 }
             }
             _ => {}
@@ -89,12 +109,12 @@ fn to_direct_tools(dir: &std::path::Path, direct: &str) {
         let Ok(mut value) = serde_json::from_str::<serde_json::Value>(&text) else {
             continue;
         };
-        if visit(&mut value, direct) {
+        if visit(&mut value, change) {
             std::fs::write(&entry, value.to_string()).unwrap();
             changed += 1;
         }
     }
-    assert!(changed > 0, "nothing in {} offers mcp", dir.display());
+    changed
 }
 
 /// Every file under `dir`.
@@ -298,11 +318,12 @@ async fn two_sessions_share_a_shared_server_and_closing_one_keeps_it() {
     assert_eq!(events("start"), 1);
 }
 
-/// A conversation saved with a tool for each MCP tool, as an Arko before
-/// `mcp` saved it, resumes with those tools, called through the hub, and
-/// the session says nothing is missing. A new session's conversation gets
-/// `mcp` alone, and so does a new conversation of a session that keeps each
-/// conversation's configuration (a branch).
+/// A conversation saved with a tool for each MCP tool and without
+/// `add_skill`, as an Arko before `mcp` saved it, resumes with its tools and
+/// instructions byte for byte, its calls going through the hub, and the
+/// session says nothing of MCP is missing. A new session's conversation gets
+/// `mcp` alone, and so does the next conversation (`/new`) of the resumed
+/// session and of a branch of it, with `add_skill`.
 #[tokio::test]
 async fn a_resumed_conversation_keeps_its_direct_tools() {
     let temp = tempfile::tempdir().unwrap();
@@ -386,17 +407,33 @@ async fn a_resumed_conversation_keeps_its_direct_tools() {
     to_direct_tools(&Session::open(&root, &id).unwrap().dir, ping);
     let branched = crate::sessions::branch(&root, &id).unwrap();
 
-    for session in [id, branched] {
+    for session in [id.clone(), branched] {
         let (seam, ended) = open(SessionChoice::Resume(session.clone())).await;
-        assert_eq!(seam.details.mcp().unoffered, None, "{session}");
+        // (A branch's conversation is saved once it opens.)
+        let note = seam.details.mcp().unoffered.unwrap_or_default();
+        assert!(!note.contains("MCP"), "{session}: {note}");
+        if session == id {
+            assert!(note.contains("saving skills (add_skill)"), "{note}");
+        }
         let again = ask(&seam, "Again.").await;
         let tools = offered(&again);
         assert!(tools.contains(&ping.to_string()), "{tools:?}");
         assert!(!tools.contains(&"mcp".to_string()), "{tools:?}");
+        assert!(!tools.contains(&"add_skill".to_string()), "{tools:?}");
         // Its call goes through the hub.
         let called = ask(&seam, "Call ping.").await;
         assert!(called.contains("pong"), "{called}");
-        assert_eq!(cached_parts(&called).0, cached_parts(&again).0);
+        assert_eq!(cached_parts(&called), cached_parts(&again));
+        // The next conversation reaches the server through `mcp`, and saves
+        // skills.
+        seam.input
+            .send(Input::Message(app_message("/new")))
+            .unwrap();
+        let fresh = offered(&ask(&seam, "Fresh.").await);
+        for tool in ["mcp", "add_skill", "remove_skill"] {
+            assert!(fresh.contains(&tool.to_string()), "{session}: {fresh:?}");
+        }
+        assert!(!fresh.contains(&ping.to_string()), "{fresh:?}");
         quit(seam, ended).await;
     }
 }
@@ -537,4 +574,213 @@ async fn a_worker_gets_mcp_only_with_a_server_to_reach() {
                 .all(|tool| !tool.starts_with("mcp__"))
         );
     }
+}
+
+/// A session saved before `mcp`, whose worker r1 was given only the server
+/// `other`, resumes with r1's tools as they were. r1 goes on, and its call of
+/// `stub`'s own tool is refused, since `stub` isn't one of its servers. Nor
+/// can it load a skill kept to the main agent, although its configuration
+/// was saved without saying it is a worker's. A new worker gets the
+/// session's configuration now, with `mcp` and no tool of a server's own,
+/// and can't load that skill either.
+#[tokio::test]
+async fn resumed_workers_keep_their_tools_and_their_limits() {
+    let temp = tempfile::tempdir().unwrap();
+    let (root, project) = (temp.path().join("arko"), temp.path().join("project"));
+    std::fs::create_dir_all(&project).unwrap();
+    let script = temp.path().join("ping.py");
+    std::fs::write(&script, PING_STUB).unwrap();
+    let config = temp.path().join("mcp.json");
+    let entry = serde_json::json!({"command": crate::mcp::tests::python(), "args": [script]});
+    std::fs::write(
+        &config,
+        serde_json::json!({"mcpServers": {"stub": entry, "other": entry}}).to_string(),
+    )
+    .unwrap();
+    // A skill kept to the main agent, and one for every agent.
+    for (name, extra) in [("secret", "workers: false\n"), ("open", "")] {
+        let dir = root.join("skills").join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("SKILL.md"),
+            format!("---\nname: {name}\ndescription: The {name} skill.\n{extra}---\n\nDo {name} things.\n"),
+        )
+        .unwrap();
+    }
+    let (ping, load) = ("mcp__stub__ping", arko_agents::LOAD_SKILL_TOOL_NAME);
+    let bodies: Arc<Mutex<Vec<String>>> = Arc::default();
+    let server = ModelServer::start(Arc::new({
+        let bodies = bodies.clone();
+        move |_, body: String| {
+            bodies.lock().unwrap().push(body.clone());
+            let secret = serde_json::json!({"name": "secret"});
+            Box::pin(async move {
+                if body.contains("You are agent run r1") {
+                    if body.contains("call_w2_1") {
+                        complete("w3", "Checked.")
+                    } else if body.contains("Check again.") {
+                        crate::mock_model::tool_calls(
+                            "w2",
+                            &[(ping, serde_json::json!({})), (load, secret)],
+                        )
+                    } else {
+                        complete("w1", "Counted.")
+                    }
+                } else if body.contains("You are agent run r2") {
+                    if body.contains("call_n1") {
+                        complete("n2", "Looked.")
+                    } else {
+                        tool_call("n1", load, secret)
+                    }
+                } else if body.contains("call_m3_1") {
+                    reply("m4", "Asked them.")
+                } else if body.contains("Go on.") {
+                    crate::mock_model::tool_calls(
+                        "m3",
+                        &[
+                            (
+                                crate::crew::MESSAGE_AGENT,
+                                serde_json::json!({"to": "r1", "message": "Check again."}),
+                            ),
+                            (
+                                crate::crew::START_AGENT,
+                                serde_json::json!({"agent": crate::agents::WORKER, "task": "Look."}),
+                            ),
+                        ],
+                    )
+                } else if body.contains("call_m1") {
+                    reply("m2", "Started it.")
+                } else {
+                    tool_call(
+                        "m1",
+                        crate::crew::START_AGENT,
+                        serde_json::json!({"agent": crate::agents::WORKER, "task": "Count.", "mcp": "other"}),
+                    )
+                }
+            })
+        }
+    }))
+    .await;
+    let open = |session: SessionChoice| {
+        let running = spawn(
+            Options {
+                root: Some(root.clone()),
+                session,
+                workspace: Some(project.clone()),
+                mcp_config: vec![config.clone()],
+                model: Some("luna".into()),
+                openai_auth: Some(OpenAiAuth::ApiKey),
+                cache_1h: Some(false),
+                text_replies: Some(true),
+                worker_billing: Some(crate::billing::WorkerBilling::Api),
+                client: Some(GivenClient(Arc::new(server.client()))),
+                ..Options::default()
+            },
+            Arc::new(NoPrompter),
+        );
+        async move {
+            let seam = tokio::time::timeout(Duration::from_secs(30), running.opened)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            (seam, running.ended)
+        }
+    };
+    // The body of the request of `run` with `text`, once there is one.
+    let request = |run: &str, text: &str| {
+        let (bodies, run, text) = (bodies.clone(), format!("You are agent run {run}"), text.to_string());
+        async move {
+            tokio::time::timeout(Duration::from_secs(30), async {
+                loop {
+                    let found = bodies
+                        .lock()
+                        .unwrap()
+                        .iter()
+                        .find(|body| body.contains(&run) && body.contains(&text))
+                        .cloned();
+                    if let Some(found) = found {
+                        return found;
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .unwrap()
+        }
+    };
+    let finished = |seam: &Seam, count: usize| {
+        let seam_feed = seam.feed.clone();
+        async move {
+            tokio::time::timeout(Duration::from_secs(30), async {
+                while seam_feed
+                    .subscribe()
+                    .0
+                    .workers
+                    .iter()
+                    .filter(|worker| worker.state == crate::remote::WorkerState::Finished)
+                    .count()
+                    < count
+                {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .unwrap();
+        }
+    };
+    let (seam, ended) = open(SessionChoice::New).await;
+    let id = seam.session.id.clone();
+    seam.input
+        .send(Input::Message(app_message("Start a worker.")))
+        .unwrap();
+    let first = request("r1", "Count.").await;
+    assert!(offered(&first).contains(&"mcp".to_string()), "{:?}", offered(&first));
+    finished(&seam, 1).await;
+    idle(&seam).await;
+    quit(seam, ended).await;
+    // As an Arko from before `mcp`, and before a worker's skills config said
+    // it is a worker's.
+    let dir = Session::open(&root, &id).unwrap().dir;
+    to_direct_tools(&dir, ping);
+    let changed = rewrite(&dir, &mut |key, value| {
+        let worker = key == "subagent" && *value == serde_json::Value::Bool(true);
+        if worker {
+            *value = false.into();
+        }
+        worker
+    });
+    assert!(changed > 0);
+
+    let (seam, ended) = open(SessionChoice::Resume(id)).await;
+    seam.input.send(Input::Message(app_message("Go on."))).unwrap();
+    let checked = request("r1", "call_w2_1").await;
+    let tools = offered(&checked);
+    assert!(tools.contains(&ping.to_string()) && !tools.contains(&"mcp".to_string()), "{tools:?}");
+    assert!(checked.contains("stub isn't one of your MCP servers."), "{checked}");
+    assert!(checked.contains("Skill 'secret' not found"), "{checked}");
+    let fresh = request("r2", "Look.").await;
+    let tools = offered(&fresh);
+    assert!(tools.contains(&"mcp".to_string()), "{tools:?}");
+    assert!(!tools.iter().any(|tool| tool.starts_with("mcp__")), "{tools:?}");
+    let looked = request("r2", "call_n1").await;
+    assert!(
+        looked.contains("Skill 'secret' not found") && looked.contains("- open"),
+        "{looked}"
+    );
+    // Both reports reach the main agent.
+    tokio::time::timeout(Duration::from_secs(30), async {
+        let reached = |text: &str| {
+            bodies.lock().unwrap().iter().any(|body| {
+                !body.contains("You are agent run") && body.contains(text)
+            })
+        };
+        while !reached("Checked.") || !reached("Looked.") {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
+    idle(&seam).await;
+    quit(seam, ended).await;
 }
