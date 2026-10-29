@@ -1,21 +1,6 @@
 use std::time::Duration;
 
 use super::*;
-use crate::questions::ApprovalAnswer;
-
-/// Gives an approval its answer, as the user's decision.
-trait Decide {
-    fn decide(self, answer: ApprovalAnswer);
-}
-
-impl Decide for crate::inputs::Answering {
-    fn decide(self, answer: ApprovalAnswer) {
-        match self {
-            crate::inputs::Answering::Approval(sender) => sender.send(answer).unwrap(),
-            crate::inputs::Answering::Text(_) => panic!("not an approval"),
-        }
-    }
-}
 use crate::agents::{ExtraRules, ModelSettings, resolve_model};
 use crate::crew::{NewWorkers, Setup, WorkerSetup};
 use crate::profiles::Roots;
@@ -49,6 +34,7 @@ fn basis(temp: &std::path::Path, choice: ModelChoice) -> Basis {
         rules_text: None,
         billing: crate::billing::WorkerBilling::Api,
         api_budget: None,
+        available: Default::default(),
     }
 }
 
@@ -319,8 +305,40 @@ struct Fixture {
     basis: Arc<Basis>,
     crew: Arc<Crew>,
     feed: remote::Feed,
-    questions: Option<tokio::sync::mpsc::UnboundedReceiver<crate::inputs::Question>>,
     _temp: tempfile::TempDir,
+}
+
+impl Fixture {
+    /// The first request in the approval tray, in time.
+    async fn asked(&self) -> crate::approvals::ApprovalRequest {
+        within(async {
+            loop {
+                if let Some(request) = self.feed.approvals().into_iter().next() {
+                    return request;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+    }
+
+    /// Answers the first request in the tray as the tray's buttons do:
+    /// `approve`, with the message box's `words`. Returns what it asked.
+    async fn decide(&self, approve: bool, words: Option<&str>) -> crate::approvals::Approval {
+        let request = self.asked().await;
+        let answered = self
+            .feed
+            .answer_approvals(&crate::approvals::ApprovalAnswers {
+                choices: vec![crate::approvals::ApprovalChoice {
+                    id: request.id.clone(),
+                    approve,
+                    option: false,
+                }],
+                words: words.map(str::to_string),
+            });
+        assert_eq!(answered.len(), 1);
+        request.approval
+    }
 }
 
 fn fixture(choice: ModelChoice, can_ask: bool) -> Fixture {
@@ -357,10 +375,10 @@ fn fixture(choice: ModelChoice, can_ask: bool) -> Fixture {
         None,
         None,
     );
-    let (sender, questions) = tokio::sync::mpsc::unbounded_channel();
     let asker = Arc::new(Asker {
-        questions: can_ask.then_some(sender),
+        questions: None,
         feed: None,
+        approvals: crate::approvals::Approvals::new(Some(feed.clone()), can_ask, None),
     });
     let mut tools = tools(
         crew.clone(),
@@ -376,7 +394,6 @@ fn fixture(choice: ModelChoice, can_ask: bool) -> Fixture {
         basis,
         crew,
         feed,
-        questions: can_ask.then_some(questions),
         _temp: temp,
     }
 }
@@ -439,6 +456,8 @@ fn the_tools_are_defined_for_the_main_agent() {
             ("model", false),
             ("effort", false),
             ("instructions", false),
+            ("skills", false),
+            ("mcp", false),
             ("scope", false),
         ]
     );
@@ -530,8 +549,7 @@ async fn a_profile_for_the_session_is_saved_without_asking() {
 /// while git ignores the profiles folder, and is when git tracks it.
 #[tokio::test]
 async fn a_profile_with_no_scope_is_kept_with_the_project_and_asks_when_git_tracks_it() {
-    let mut fixture = fixture(ModelChoice::Agent, true);
-    let mut questions = fixture.questions.take().unwrap();
+    let fixture = fixture(ModelChoice::Agent, true);
     let folder = fixture.basis.roots.folder(Place::Project).unwrap();
     let work = folder.parent().unwrap().parent().unwrap();
     std::fs::create_dir_all(work).unwrap();
@@ -557,13 +575,13 @@ async fn a_profile_with_no_scope_is_kept_with_the_project_and_asks_when_git_trac
         result,
         "Saved the worker profile reviewer for this project. start_agent takes it by name."
     );
-    assert!(questions.try_recv().is_err(), "no question");
-    assert!(folder.join(".gitignore").is_file());
+    assert!(fixture.feed.approvals().is_empty(), "no approval");
+    assert!(work.join(".arko").join(".gitignore").is_file());
     let found = profiles::read(&fixture.basis.roots, "reviewer").unwrap();
     assert_eq!(found.place, Place::Project);
 
     // Without the .gitignore git tracks the folder, so the user is asked.
-    std::fs::remove_file(folder.join(".gitignore")).unwrap();
+    std::fs::remove_file(work.join(".arko").join(".gitignore")).unwrap();
     let asking = {
         let save = fixture.save.clone();
         tokio::spawn(async move {
@@ -574,20 +592,17 @@ async fn a_profile_with_no_scope_is_kept_with_the_project_and_asks_when_git_trac
             .await
         })
     };
-    let question = within(questions.recv()).await.unwrap();
-    assert!(
-        question
-            .text()
-            .contains("worker profile audit in this project's")
+    let asked = fixture.decide(true, None).await;
+    assert_eq!(
+        asked.title(),
+        "Save the worker profile audit for this project?"
     );
-    question.answer.unwrap().decide(ApprovalAnswer::Save);
     assert!(within(asking).await.unwrap().is_ok());
 }
 
 #[tokio::test]
 async fn a_profile_for_every_session_waits_for_the_users_save() {
-    let mut fixture = fixture(ModelChoice::Agent, true);
-    let mut questions = fixture.questions.take().unwrap();
+    let fixture = fixture(ModelChoice::Agent, true);
     let parameters = [
         ("name", "3d-judge".into()),
         (
@@ -605,37 +620,43 @@ async fn a_profile_for_every_session_waits_for_the_users_save() {
         let parameters = parameters.clone();
         tokio::spawn(async move { call(&save, &parameters).await })
     };
-    let question = within(questions.recv()).await.unwrap();
-    assert!(
-        question.text().starts_with(
-            "The main agent wants to save the worker profile 3d-judge in your Arko folder, for every project.\n\nJudges 3D results against a reference image\nRuns on sol at high effort."
-        ),
-        "{}",
-        question.text()
-    );
-    // Its card shows what it approves, with Save and Don't save.
-    let card = question.approval.clone().unwrap();
+    // Its row and details show what it approves.
+    let card = fixture
+        .decide(false, Some("yes, but use medium effort"))
+        .await;
     assert_eq!(
         card.title(),
         "Save the worker profile 3d-judge for every project?"
     );
-    assert_eq!(card.runs_on(), "Runs on sol at high effort.");
     assert_eq!(
-        card.description,
-        "Judges 3D results against a reference image"
+        (card.kind_word(), card.name(), card.scope(), card.summary()),
+        (
+            "Profile",
+            "3d-judge",
+            "every project",
+            "sol high".to_string()
+        )
     );
-    assert_eq!(question.asked[0].question.choices, ["Save", "Don't save"]);
-    question
-        .answer
-        .unwrap()
-        .decide(ApprovalAnswer::Edit("yes, but use medium effort".into()));
+    assert_eq!(
+        card.details()
+            .into_iter()
+            .map(|detail| detail.text)
+            .collect::<Vec<_>>(),
+        [
+            "Runs on sol at high effort.",
+            "Judges 3D results against a reference image",
+            "Saved in Arko's profiles folder.",
+            "Instructions",
+            "You judge 3D models."
+        ]
+    );
     assert_eq!(
         within(asking).await.unwrap().unwrap(),
         "The user didn't save 3d-judge for every project and wrote \"yes, but use medium effort\". If those words ask for changes to the profile, make them and call save_worker_profile again, which shows them the changed profile. If they don't (a new request, or words about something else), they are a message to you, not changes. Respond to it, call save_worker_profile again with the same profile, and end with a short reminder that it is still waiting for their decision."
     );
     assert!(profiles::read(&fixture.basis.roots, "3d-judge").is_err());
     // The user is told in the transcript that nothing was saved.
-    assert_eq!(shown(&fixture.feed), ["Not saved. Arko asks again."]);
+    assert_eq!(shown(&fixture.feed), ["Not saved."]);
 
     // Save saves it, in the user's place.
     let asking = {
@@ -643,15 +664,17 @@ async fn a_profile_for_every_session_waits_for_the_users_save() {
         let parameters = parameters.clone();
         tokio::spawn(async move { call(&save, &parameters).await })
     };
-    within(questions.recv())
-        .await
-        .unwrap()
-        .answer
-        .unwrap()
-        .decide(ApprovalAnswer::Save);
+    fixture.decide(true, Some("Keep it strict.")).await;
     let result = within(asking).await.unwrap().unwrap();
     assert!(
         result.starts_with("Saved the worker profile 3d-judge in the user's Arko folder, for every project. start_agent takes it by name."),
+        "{result}"
+    );
+    // The words in the message box go with the approval.
+    assert!(
+        result.ends_with(
+            " The user approved it and wrote \"Keep it strict.\". Act on what they wrote."
+        ),
         "{result}"
     );
     let found = profiles::read(&fixture.basis.roots, "3d-judge").unwrap();
@@ -680,13 +703,8 @@ async fn a_profile_for_every_session_waits_for_the_users_save() {
             .await
         })
     };
-    let question = within(questions.recv()).await.unwrap();
-    assert!(
-        question
-            .text()
-            .contains("in this project's .agents/profiles folder")
-    );
-    question.answer.unwrap().decide(ApprovalAnswer::Save);
+    let asked = fixture.decide(true, None).await;
+    assert_eq!(asked.scope(), "this project");
     assert!(
         asking
             .await
@@ -702,8 +720,7 @@ async fn a_profile_for_every_session_waits_for_the_users_save() {
 
 #[tokio::test]
 async fn an_empty_answer_or_no_one_to_ask_saves_nothing() {
-    let mut fixture = fixture(ModelChoice::Agent, true);
-    let mut questions = fixture.questions.take().unwrap();
+    let fixture = fixture(ModelChoice::Agent, true);
     let asking = {
         let save = fixture.save.clone();
         tokio::spawn(async move {
@@ -718,12 +735,7 @@ async fn an_empty_answer_or_no_one_to_ask_saves_nothing() {
             .await
         })
     };
-    within(questions.recv())
-        .await
-        .unwrap()
-        .answer
-        .unwrap()
-        .decide(ApprovalAnswer::DontSave);
+    fixture.decide(false, None).await;
     assert_eq!(
         within(asking).await.unwrap().unwrap(),
         "The user chose not to save audit for every project, so don't ask again unless they want it. You may save it for this session with scope session."
@@ -774,8 +786,7 @@ async fn refusal(tool: &Arc<dyn Tool>, pairs: Vec<(&str, Value)>) -> String {
 
 #[tokio::test]
 async fn a_profile_that_cant_work_is_refused_before_the_user_is_asked() {
-    let mut fixture = fixture(ModelChoice::Agent, true);
-    let mut questions = fixture.questions.take().unwrap();
+    let fixture = fixture(ModelChoice::Agent, true);
     assert_eq!(
         refusal(
             &fixture.save,
@@ -857,7 +868,10 @@ async fn a_profile_that_cant_work_is_refused_before_the_user_is_asked() {
             .unwrap_err()
     };
     assert_eq!(missing_name, "Give the profile a name.");
-    assert!(questions.try_recv().is_err(), "the user was asked nothing");
+    assert!(
+        fixture.feed.approvals().is_empty(),
+        "the user was asked nothing"
+    );
 }
 
 #[tokio::test]
@@ -949,8 +963,7 @@ async fn a_profile_on_a_model_the_session_cant_reach_is_saved_with_a_warning() {
 
 #[tokio::test]
 async fn a_saved_profile_hidden_by_a_nearer_one_says_so() {
-    let mut fixture = fixture(ModelChoice::Agent, true);
-    let mut questions = fixture.questions.take().unwrap();
+    let fixture = fixture(ModelChoice::Agent, true);
     write(
         &fixture.basis,
         Place::Session,
@@ -971,12 +984,7 @@ async fn a_saved_profile_hidden_by_a_nearer_one_says_so() {
             .await
         })
     };
-    within(questions.recv())
-        .await
-        .unwrap()
-        .answer
-        .unwrap()
-        .decide(ApprovalAnswer::Save);
+    fixture.decide(true, None).await;
     let result = within(asking).await.unwrap().unwrap();
     assert!(
         result.contains(
@@ -1078,4 +1086,103 @@ async fn an_effort_the_session_s_model_does_not_take_is_refused_for_a_profile_wi
     )
     .await;
     assert!(saved.is_ok(), "{saved:?}");
+}
+
+/// `save_worker_profile` takes `skills` and `mcp`, held to what the main
+/// agent can give a worker, and the profile keeps them.
+#[tokio::test]
+async fn a_saved_profile_keeps_the_skills_and_servers_it_names() {
+    let fixture = fixture(ModelChoice::Agent, true);
+    let skills = fixture._temp.path().join("skills");
+    for name in ["ponytail", "release-notes"] {
+        let dir = skills.join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("SKILL.md"),
+            format!("---\nname: {name}\ndescription: The {name} skill.\n---\n\nDo {name}.\n"),
+        )
+        .unwrap();
+    }
+    let mut new = fixture.crew.new_workers().unwrap();
+    new.basis = Arc::new(Basis {
+        available: crate::chooser::Available {
+            skills: Some(arko_agents::skill::SkillsConfig {
+                global_sources: vec![arko_agents::skill::SkillSource {
+                    path: skills.display().to_string(),
+                    include: None,
+                    exclude: None,
+                    optional: false,
+                }],
+                ..Default::default()
+            }),
+            workspace: fixture._temp.path().into(),
+        },
+        ..(*new.basis).clone()
+    });
+    fixture.crew.set_new_workers(new);
+    fixture.crew.set_mcp_hub(arko_agents::McpHub::new(vec![
+        arko_agents::McpServerConfig::new("github", "true"),
+    ]));
+    let save = |name: &str, skills: &str, mcp: &str| {
+        let pairs = vec![
+            ("name", Value::from(name)),
+            ("description", Value::from("Reads")),
+            ("scope", Value::from("session")),
+            ("skills", Value::from(skills)),
+            ("mcp", Value::from(mcp)),
+        ];
+        let save = fixture.save.clone();
+        async move { call(&save, &pairs).await }
+    };
+    let saved = save("narrow", "ponytail, release-notes", "none").await;
+    assert!(saved.is_ok(), "{saved:?}");
+    let saved = profiles::read(&fixture.basis.roots, "narrow")
+        .unwrap()
+        .profile;
+    assert_eq!(
+        saved.skills,
+        Some(vec!["ponytail".to_string(), "release-notes".to_string()])
+    );
+    assert_eq!(saved.mcp, Some(Vec::new()));
+    // Names the main agent can't give, and text that isn't a list, are
+    // refused before anyone is asked.
+    assert_eq!(
+        save("typo", "ponytale", "github").await.unwrap_err(),
+        "A worker can't get the skill `ponytale`. You can give ponytail and release-notes."
+    );
+    assert_eq!(
+        save("typo", "ponytail", "figma").await.unwrap_err(),
+        "A worker can't get the MCP server `figma`. You can give github."
+    );
+    assert_eq!(
+        save("typo", ",", "none").await.unwrap_err(),
+        "skills isn't names separated by commas, a JSON array or none"
+    );
+    assert!(profiles::read(&fixture.basis.roots, "typo").is_err());
+    // The list of options says what the profile narrows.
+    let basis = fixture.crew.new_workers().unwrap().basis;
+    let text = options_text(&basis, Show::Profiles, &needs, &plans());
+    assert!(
+        text.contains("\n- narrow (session, made by you) · the worker model, only the skills ponytail and release-notes, no MCP servers · Reads"),
+        "{text}"
+    );
+}
+
+/// The tools' definitions without a session are theirs byte for byte, so a
+/// conversation saved with them keeps its tool list in a session without
+/// workers.
+#[tokio::test]
+async fn the_tools_definitions_are_known_without_a_session() {
+    let fixture = fixture(ModelChoice::Agent, true);
+    let json = |definition: ToolDefinition| serde_json::to_string(&definition).unwrap();
+    assert_eq!(
+        [&fixture.options, &fixture.save]
+            .into_iter()
+            .map(|tool| json(tool.definition()))
+            .collect::<Vec<_>>(),
+        super::definitions()
+            .into_iter()
+            .map(json)
+            .collect::<Vec<_>>()
+    );
 }

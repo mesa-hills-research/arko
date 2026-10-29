@@ -421,8 +421,40 @@ pub fn retry_now(page: Page) {
     spawn_local(start(page, None));
 }
 
-pub fn streaming_now() -> bool {
-    STREAM.with(|stream| stream.borrow().is_some())
+/// How long the stream has to answer a ping (ms).
+const PING_WAIT: i32 = 3000;
+
+thread_local! {
+    /// When the stream last gave an event, in this device's time (ms).
+    static HEARD_AT: std::cell::Cell<f64> = const { std::cell::Cell::new(0.0) };
+}
+
+/// Checks that the stream still comes through, as a phone back from sleep
+/// or another app may hold one that died without a word. Arko answers a
+/// ping on every stream, and without an answer in time the page connects
+/// again, which starts it over from Arko's history as it is now.
+pub fn check_stream(page: Page) {
+    let Some(checked) = stream_source() else {
+        return retry_now(page);
+    };
+    let asked = js_sys::Date::now();
+    spawn_local(async {
+        let _ = request("POST", "/api/ping", None).await;
+    });
+    let check = Closure::once_into_js(move || {
+        let quiet = HEARD_AT.with(|heard| heard.get()) < asked;
+        if quiet && stream_source() == Some(checked) {
+            close_stream();
+            page.connection.set(Connection::Connecting);
+            retry_now(page);
+        }
+    });
+    let _ = window()
+        .set_timeout_with_callback_and_timeout_and_arguments_0(check.unchecked_ref(), PING_WAIT);
+}
+
+fn stream_source() -> Option<EventSource> {
+    STREAM.with(|stream| stream.borrow().as_ref().map(|(source, _)| source.clone()))
 }
 
 fn connect(page: Page) {
@@ -434,6 +466,7 @@ fn connect(page: Page) {
     let mut on = |name: &str, handle: fn(Page, &str) -> Result<(), String>| {
         let event = name.to_string();
         let handler = Closure::<dyn FnMut(MessageEvent)>::new(move |message: MessageEvent| {
+            HEARD_AT.with(|heard| heard.set(js_sys::Date::now()));
             let Some(data) = message.data().as_string() else {
                 return;
             };
@@ -457,6 +490,7 @@ fn connect(page: Page) {
     on("job", on_job);
     on("status", on_status);
     on("code", on_code);
+    on("ping", |_, _| Ok(()));
     let error = Closure::<dyn FnMut(MessageEvent)>::new(move |_| {
         close_stream();
         // The stream may have ended with the session: ask before retrying.
@@ -519,10 +553,13 @@ fn on_reset(page: Page, data: &str) -> Result<(), String> {
     // the transcript.
     let mut bad = 0;
     let mut items: Vec<ItemData> = Vec::with_capacity(raw.items.len());
+    let mut new_code = HashSet::new();
     for value in raw.items {
         match serde_json::from_str::<ItemData>(value.get()) {
             Ok(mut item) => {
-                crate::markdown::remember(&std::mem::take(&mut item.code));
+                if crate::markdown::remember(&std::mem::take(&mut item.code)) {
+                    new_code.insert(item.id);
+                }
                 items.push(item);
             }
             Err(_) => bad += 1,
@@ -544,8 +581,7 @@ fn on_reset(page: Page, data: &str) -> Result<(), String> {
     };
     mark("arko-parsed");
     let now = js_sys::Date::now();
-    let cells: HashMap<u64, Cell> = items.iter().map(|item| (item.id, new_cell(item))).collect();
-    CELLS.with(|all| *all.borrow_mut() = cells);
+    reset_cells(&items, &new_code);
     STORE.with(|store| store.borrow_mut().reset(items, workers, jobs, now));
     RETRY.with(|retry| *retry.borrow_mut() = (1000.0, 0, 0));
     page.skew.set(None);
@@ -569,6 +605,42 @@ fn on_reset(page: Page, data: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// The cells of a `reset`'s items. The transcript keys its rows by item, so
+/// a row drawn before the reset keeps the cell it was drawn with: an item
+/// the page had takes the server's version in that cell, and only a new one
+/// gets a cell. `new_code` holds the items whose code blocks' spans came new.
+fn reset_cells(items: &[ItemData], new_code: &HashSet<u64>) {
+    let mut kept = CELLS.with(|cells| std::mem::take(&mut *cells.borrow_mut()));
+    let cells = items
+        .iter()
+        .map(|item| {
+            let cell = match kept.remove(&item.id) {
+                Some(cell) => {
+                    refresh(cell, item.clone(), new_code.contains(&item.id));
+                    cell
+                }
+                None => new_cell(item),
+            };
+            (item.id, cell)
+        })
+        .collect();
+    CELLS.with(|all| *all.borrow_mut() = cells);
+}
+
+/// Gives a cell the item as Arko has it now, setting only what changed, and
+/// paints its code blocks again when their spans came (`code`).
+fn refresh(cell: Cell, item: ItemData, code: bool) {
+    if cell.text.with_untracked(|text| *text != item.text) {
+        cell.text.set(item.text.clone());
+    }
+    if cell.data.with_untracked(|data| *data != item) {
+        cell.data.set(item);
+    }
+    if code {
+        cell.code.update(|code| *code += 1);
+    }
+}
+
 fn on_item_event(page: Page, data: &str) -> Result<(), String> {
     let mut item: ItemData = parse(data)?;
     let code = std::mem::take(&mut item.code);
@@ -582,11 +654,7 @@ fn on_item_event(page: Page, data: &str) -> Result<(), String> {
     let known = cell(item.id);
     match known {
         Some(cell) => {
-            cell.text.set(item.text.clone());
-            cell.data.set(item.clone());
-            if !code.is_empty() {
-                cell.code.update(|code| *code += 1);
-            }
+            refresh(cell, item.clone(), !code.is_empty());
             STORE.with(|store| store.borrow_mut().change(item.clone(), now));
         }
         None => {
@@ -649,13 +717,7 @@ fn on_change(page: Page, data: &str) -> Result<(), String> {
         return Ok(());
     }
     if let Some(cell) = cell(item.id) {
-        if cell.text.get_untracked() != item.text {
-            cell.text.set(item.text.clone());
-        }
-        cell.data.set(item);
-        if !code.is_empty() {
-            cell.code.update(|code| *code += 1);
-        }
+        refresh(cell, item, !code.is_empty());
     }
     // A call's status moves a Messages count.
     if page.view.get_untracked() == View::Messages {
@@ -711,5 +773,48 @@ fn on_status(page: Page, data: &str) -> Result<(), String> {
 pub fn mark(name: &str) {
     if let Some(performance) = window().performance() {
         let _ = performance.mark(name);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::protocol::CallStatus;
+    use crate::store::MAIN;
+    use crate::store::tests::item;
+
+    /// A page away while a call ended and the next began gets both in the
+    /// `reset` it connects again with, and the row it drew for the call
+    /// before then shows the call ended.
+    #[test]
+    fn a_reset_brings_the_rows_drawn_before_it_to_the_servers_items() {
+        let none = HashSet::new();
+        let mut wait = item(5, Kind::Call, MAIN, "wait_for_agents");
+        wait.status = Some(CallStatus::Running);
+        let mut text = item(4, Kind::Text, MAIN, "Waiting");
+        reset_cells(&[text.clone(), wait.clone()], &none);
+        // The rows keep the cells they were drawn with.
+        let drawn_wait = cell(5).unwrap();
+        let drawn_text = cell(4).unwrap();
+
+        wait.status = Some(CallStatus::Ok);
+        wait.outcome = Some("r1 finished".into());
+        text.text.push_str(" for the worker.");
+        let mut shell = item(6, Kind::Call, MAIN, "cargo build");
+        shell.status = Some(CallStatus::Running);
+        let text_code = HashSet::from([4]);
+        reset_cells(&[text.clone(), wait.clone(), shell.clone()], &text_code);
+        assert_eq!(drawn_wait.data.get_untracked(), wait);
+        assert_eq!(drawn_text.text.get_untracked(), text.text);
+        assert_eq!(drawn_text.data.get_untracked(), text);
+        assert_eq!(cell(6).unwrap().data.get_untracked(), shell);
+        // Only the text whose code blocks' spans came new paints them again.
+        assert_eq!(drawn_text.code.get_untracked(), 1);
+        assert_eq!(drawn_wait.code.get_untracked(), 0);
+
+        // An item the history no longer has loses its cell.
+        reset_cells(std::slice::from_ref(&shell), &none);
+        assert!(cell(5).is_none() && cell(4).is_none());
+        assert_eq!(cell(6).unwrap().data.get_untracked(), shell);
     }
 }

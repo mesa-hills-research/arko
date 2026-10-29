@@ -7,8 +7,8 @@
 //! usage), so the agent reads them from a tool and not from its instructions,
 //! which keeps them out of the prompt cache's prefix. A profile saved for
 //! the session needs no approval, and neither does one for a project folder
-//! that git ignores. One saved anywhere else is put to the user as a question
-//! first, as `ask_user` is.
+//! that git ignores. One saved anywhere else waits for the user's approval
+//! in the approval tray first ([`crate::approvals`]).
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
@@ -24,7 +24,7 @@ use serde_json::Value;
 use crate::agents::{Effort, ModelChoice};
 use crate::billing::WorkerBilling;
 use crate::chooser::Basis;
-use crate::crew::{Crew, SAVE_WORKER_PROFILE, WORKER_OPTIONS};
+use crate::crew::{Crew, MCP_PARAM, SAVE_WORKER_PROFILE, SKILLS_PARAM, WORKER_OPTIONS};
 use crate::inputs::Asker;
 use crate::keys::Keys;
 use crate::profiles::{self, Author, Place, Profile};
@@ -103,19 +103,7 @@ struct WorkerOptions(Arc<Context>);
 #[async_trait]
 impl Tool for WorkerOptions {
     fn definition(&self) -> ToolDefinition {
-        ToolDefinition {
-            name: WORKER_OPTIONS.into(),
-            description: "Lists the worker profiles and the models usable now, with their efforts, prices and handover sizes.".into(),
-            output_based_example: None,
-            parameters: vec![text_parameter(
-                "show",
-                "profiles, models or all (default all).",
-                false,
-            )],
-            parallel_safe: true,
-            tool_type_details: ToolTypeDetails::DeveloperDefined,
-            raw_json_schema_override: None,
-        }
+        worker_options_definition()
     }
 
     fn recovery_mode(&self) -> ToolRecovery {
@@ -234,6 +222,11 @@ fn profiles_text(basis: &Basis, needs: &dyn Fn(&Model) -> Option<String>) -> Str
         // A worker started with it starts workers unless the call says not.
         if profile.nested {
             details.push_str(", can start workers");
+        }
+        for phrase in
+            crate::crew::narrowing_phrases(profile.skills.as_deref(), profile.mcp.as_deref())
+        {
+            details.push_str(&format!(", {phrase}"));
         }
         let place = if profile.made_by_agent() {
             format!("{}, made by you", found.place.name())
@@ -462,6 +455,15 @@ impl SaveWorkerProfile {
         if let Some(effort) = text("effort")? {
             profile.effort = Some(providers::parse_effort(&effort).map_err(refused)?);
         }
+        for (key, names) in [
+            (SKILLS_PARAM, &mut profile.skills),
+            (MCP_PARAM, &mut profile.mcp),
+        ] {
+            if let Some(asked) = text(key)? {
+                *names = crate::crew::names_asked(&asked)
+                    .map_err(|why| refused(format!("{key} {why}")))?;
+            }
+        }
         profile.check().map_err(|why| {
             // A model Arko doesn't know is told where the right ones are.
             let unknown = profile
@@ -492,47 +494,7 @@ fn needs_warning(needs: &str) -> String {
 #[async_trait]
 impl Tool for SaveWorkerProfile {
     fn definition(&self) -> ToolDefinition {
-        ToolDefinition {
-            name: SAVE_WORKER_PROFILE.into(),
-            description: "Saves a worker profile that start_agent takes by name. It is kept with the project for later sessions, unless scope says session (this session only) or user (every project). The user is asked first, except for a session profile and a project profile in a folder git ignores.".into(),
-            output_based_example: None,
-            parameters: vec![
-                text_parameter(
-                    "name",
-                    "Lowercase letters, digits and hyphens, up to 32 characters, such as 3d-judge.",
-                    true,
-                ),
-                text_parameter(
-                    "description",
-                    "One line, up to 120 characters, saying what the profile is for.",
-                    true,
-                ),
-                text_parameter(
-                    "model",
-                    "A model as start_agent takes it. Without one, the session's worker model.",
-                    false,
-                ),
-                text_parameter(
-                    "effort",
-                    "low, medium, high, xhigh or max, as the model takes it.",
-                    false,
-                ),
-                text_parameter(
-                    "instructions",
-                    "Standing instructions for every worker with this profile, up to 4000 characters. The task goes in start_agent's task.",
-                    false,
-                ),
-                text_parameter(
-                    "scope",
-                    "project (the default, kept with the project), session (this session only) or user (every project).",
-                    false,
-                ),
-            ],
-            // Several saves of one response ask the user in one card.
-            parallel_safe: true,
-            tool_type_details: ToolTypeDetails::DeveloperDefined,
-            raw_json_schema_override: None,
-        }
+        save_worker_profile_definition()
     }
 
     /// The call waits for the user's answer, which no time limit cuts short.
@@ -567,6 +529,8 @@ impl Tool for SaveWorkerProfile {
         // Checked before the user is asked, so they are never asked about a
         // profile that can't work.
         let profile = Self::profile_of(&params)?;
+        crate::chooser::check_profile_names(&basis, &profile, &self.0.crew.mcp_servers())
+            .map_err(refused)?;
         let place = match optional_text(&params, "scope")? {
             None => Place::Project,
             Some(scope) => Place::parse(scope).ok_or_else(|| {
@@ -606,43 +570,39 @@ impl Tool for SaveWorkerProfile {
             )));
         }
         profiles::check_agent_save(&basis.roots, &profile.name).map_err(refused)?;
+        // What the user wrote beside their approval, for the agent.
+        let mut approved_with = None;
         if profiles::needs_approval(&basis.roots, place, &profile.name) {
-            if !self.0.asker.can_ask() {
+            let approvals = &self.0.asker.approvals;
+            if !approvals.can_answer() {
                 return Err(refused(
                     "No one can approve it in this session. Save it for the session, or tell the user the setup you want.",
                 ));
             }
-            use crate::questions::ApprovalAnswer;
-            let answer = self
-                .0
-                .asker
-                .approve(
-                    context.task_id,
-                    context.call_id.clone(),
-                    profiles::approval_text(&profile, place),
-                    profiles::approval(&profile, place),
+            use crate::approvals::{Answer, Approval};
+            let answer = approvals
+                .request(
+                    context,
+                    Approval::Profile(profiles::approval(&profile, place)),
                 )
                 .await;
             match answer {
-                ApprovalAnswer::Save => {}
-                ApprovalAnswer::Unanswered => {
+                Answer::Approved { words, .. } => approved_with = words,
+                Answer::Unanswered => {
                     return Ok(format!(
                         "The user didn't answer, so {} wasn't saved.",
                         profile.name
                     ));
                 }
-                ApprovalAnswer::DontSave => {
+                Answer::Rejected { words: None } => {
                     return Ok(format!(
                         "The user chose not to save {} for {}, so don't ask again unless they want it. You may save it for this session with scope session.",
                         profile.name,
                         place.reach()
                     ));
                 }
-                ApprovalAnswer::Edit(said) => {
-                    // What they wrote is only the agent's to read.
-                    self.0
-                        .crew
-                        .notice(Level::Info, "Not saved. Arko asks again.");
+                Answer::Rejected { words: Some(said) } => {
+                    self.0.crew.notice(Level::Info, "Not saved.");
                     return Ok(format!(
                         "The user didn't save {} for {} and wrote \"{}\". If those words ask for changes to the profile, make them and call save_worker_profile again, which shows them the changed profile. If they don't (a new request, or words about something else), they are a message to you, not changes. Respond to it, call save_worker_profile again with the same profile, and end with a short reminder that it is still waiting for their decision.",
                         profile.name,
@@ -662,6 +622,16 @@ impl Tool for SaveWorkerProfile {
         if place != Place::Session {
             notice = format!("{notice} It is in {}.", saved.file.display());
         }
+        // (An older copy left stays listed after the new one.)
+        let left = saved.left.as_ref().map(|old| {
+            format!(
+                " Arko left the older copy in {}, since it reaches that folder through a link or the file changed.",
+                old.display()
+            )
+        });
+        if let Some(left) = &left {
+            notice.push_str(left);
+        }
         self.0.crew.notice(Level::Info, &notice);
         let kept = match place {
             Place::Session => "for this session".to_string(),
@@ -679,6 +649,9 @@ impl Tool for SaveWorkerProfile {
                 nearer.reach()
             ));
         }
+        if let Some(left) = &left {
+            result.push_str(left);
+        }
         let model = providers::resolve_model(
             profile
                 .model
@@ -688,7 +661,94 @@ impl Tool for SaveWorkerProfile {
         if let Some(needs) = model.ok().and_then(|model| self.0.keys.needs(&model)) {
             result.push_str(&needs_warning(&needs));
         }
+        if let Some(words) = approved_with {
+            result.push_str(&format!(
+                " The user approved it and wrote \"{}\". Act on what they wrote.",
+                words.trim()
+            ));
+        }
         Ok(result)
+    }
+}
+
+/// The definitions of the tools, which don't depend on the session: what a
+/// conversation saved with them was offered, for a session without workers.
+pub fn definitions() -> Vec<ToolDefinition> {
+    vec![
+        worker_options_definition(),
+        save_worker_profile_definition(),
+    ]
+}
+
+/// The definition of `WorkerOptions`'s tool.
+fn worker_options_definition() -> ToolDefinition {
+    ToolDefinition {
+        name: WORKER_OPTIONS.into(),
+        description: "Lists the worker profiles and the models usable now, with their efforts, prices and handover sizes.".into(),
+        output_based_example: None,
+        parameters: vec![text_parameter(
+            "show",
+            "profiles, models or all (default all).",
+            false,
+        )],
+        parallel_safe: true,
+        tool_type_details: ToolTypeDetails::DeveloperDefined,
+        raw_json_schema_override: None,
+    }
+}
+
+/// The definition of `SaveWorkerProfile`'s tool.
+fn save_worker_profile_definition() -> ToolDefinition {
+    ToolDefinition {
+        name: SAVE_WORKER_PROFILE.into(),
+        description: "Saves a worker profile that start_agent takes by name. It is kept with the project for later sessions, unless scope says session (this session only) or user (every project). The user is asked first, except for a session profile and a project profile in a folder git ignores.".into(),
+        output_based_example: None,
+        parameters: vec![
+            text_parameter(
+                "name",
+                "Lowercase letters, digits and hyphens, up to 32 characters, such as 3d-judge.",
+                true,
+            ),
+            text_parameter(
+                "description",
+                "One line, up to 120 characters, saying what the profile is for.",
+                true,
+            ),
+            text_parameter(
+                "model",
+                "A model as start_agent takes it. Without one, the session's worker model.",
+                false,
+            ),
+            text_parameter(
+                "effort",
+                "low, medium, high, xhigh or max, as the model takes it.",
+                false,
+            ),
+            text_parameter(
+                "instructions",
+                "Standing instructions for every worker with this profile, up to 4000 characters. The task goes in start_agent's task.",
+                false,
+            ),
+            text_parameter(
+                SKILLS_PARAM,
+                "Skill names separated by commas, from your own. Workers with this profile get only these, as far as the agent that starts them has them, and none gives them no skills. Left out, they get their starter's.",
+                false,
+            ),
+            text_parameter(
+                MCP_PARAM,
+                "MCP server names separated by commas, from your own. Workers with this profile reach only these, as far as the agent that starts them has them, and none gives them no servers. Left out, they get their starter's.",
+                false,
+            ),
+            text_parameter(
+                "scope",
+                "project (the default, kept with the project), session (this session only) or user (every project).",
+                false,
+            ),
+        ],
+        // Several saves of one response ask the user in one card.
+        parallel_safe: true,
+        tool_type_details: ToolTypeDetails::DeveloperDefined,
+        raw_json_schema_override: None,
     }
 }
 

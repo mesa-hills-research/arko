@@ -102,6 +102,9 @@ pub enum Action {
     /// Dismisses questions ("Not now"), as
     /// [`Input::DismissQuestions`](crate::Input::DismissQuestions) says.
     DismissQuestions(Vec<String>),
+    /// Answers the approval tray's requests, as
+    /// [`Input::AnswerApprovals`](crate::Input::AnswerApprovals) says.
+    AnswerApprovals(crate::approvals::ApprovalAnswers),
     /// Stops the turn, as Ctrl-C does.
     Stop,
     /// Moves the running call `item` (a call item [`Reading::movable`]
@@ -164,6 +167,9 @@ pub struct Reading {
     /// The main agent's questions of the current conversation that wait
     /// for the user, in the order asked. See [`crate::questions`].
     pub questions: Vec<crate::questions::AgentQuestion>,
+    /// The requests in the approval tray, which wait for the user, in the
+    /// order they came. See [`crate::approvals`].
+    pub approvals: Vec<crate::approvals::ApprovalRequest>,
     /// The session's conversations with the main agent, newest first, for
     /// the full-screen view's `/resume` picker. (The page lists them with
     /// `/resume`.)
@@ -400,7 +406,7 @@ pub struct Models {
 }
 
 /// The session's settings that can change while it runs.
-#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct LiveSettings {
     /// The agents may work outside the workspace.
     pub outside: bool,
@@ -462,6 +468,45 @@ pub struct LiveSettings {
     /// Each built-in skill, and whether it is left out by name (apart from
     /// `builtin_skills`).
     pub builtin_skill_list: Vec<BuiltinSkillSetting>,
+    /// Agents ask before they add an MCP server (`/extensions ask-mcp`).
+    pub ask_before_adding_mcp: bool,
+    /// Agents ask before they save a skill in the project too
+    /// (`/extensions review-skills`).
+    pub review_project_skills: bool,
+    /// The files agents save in the project's `.arko` folder stay out of
+    /// git (`/extensions keep-out-of-git`).
+    pub keep_agents_files_out_of_git: bool,
+}
+
+impl Default for LiveSettings {
+    /// The settings of a session that hasn't reported yet. The two switches
+    /// that guard what agents add are on, as they are by default.
+    fn default() -> Self {
+        Self {
+            outside: false,
+            handover_at: 0,
+            workers_handover_at: 0,
+            text_replies: false,
+            cc_compact: false,
+            extra_rules: Default::default(),
+            project_instructions: Default::default(),
+            worker_project_instructions: false,
+            background_after: 0,
+            monitor_wakes: Default::default(),
+            monitor_wakes_within: None,
+            worker_models: Default::default(),
+            worker_billing: Default::default(),
+            api_budget: None,
+            worker_depth: 0,
+            worker_retry_cap: None,
+            message_copies: false,
+            builtin_skills: false,
+            builtin_skill_list: Vec::new(),
+            ask_before_adding_mcp: true,
+            review_project_skills: false,
+            keep_agents_files_out_of_git: true,
+        }
+    }
 }
 
 /// A built-in skill and whether `/builtin-skills` leaves it out by name.

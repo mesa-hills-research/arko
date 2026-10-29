@@ -1949,6 +1949,32 @@ fn indexes_of_other_directories_are_found_by_any_path_in_them() {
     fixture.shutdown(&indexes);
 }
 
+/// The tools' definitions without the indexes are theirs byte for byte, so a
+/// conversation saved with them keeps its tool list in a session without
+/// indexes.
+#[test]
+fn the_tools_definitions_are_known_without_the_indexes() {
+    let fixture = Fixture::new();
+    let indexes = {
+        let _guard = fixture.runtime.enter();
+        Indexes::open(&fixture.data(), &fixture.base, None, true).unwrap()
+    };
+    let json =
+        |definition: arko_agents::ToolDefinition| serde_json::to_string(&definition).unwrap();
+    assert_eq!(
+        indexes
+            .tools()
+            .into_iter()
+            .map(|tool| json(tool.definition()))
+            .collect::<Vec<_>>(),
+        super::tool_definitions()
+            .into_iter()
+            .map(json)
+            .collect::<Vec<_>>()
+    );
+    fixture.shutdown(&indexes);
+}
+
 /// index_create and index_manage can move to the background, since a build
 /// or an embedding run the call waits for takes long. The others can't.
 #[test]

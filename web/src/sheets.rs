@@ -468,6 +468,7 @@ fn SettingsBody() -> impl IntoView {
     let info = move || page.status.with(|status| status.info.clone());
     let theme = RwSignal::new(local_get(THEME).unwrap_or_default());
     let outside_confirm = RwSignal::new(false);
+    let ask_mcp_confirm = RwSignal::new(false);
     let handover_confirm = RwSignal::new(false);
     let whose = RwSignal::new(String::new());
     let links = RwSignal::new(None::<Vec<LinkData>>);
@@ -617,6 +618,51 @@ fn SettingsBody() -> impl IntoView {
                 <Note key="skills" />
             </section>
         </Show>
+
+        <section class="group">
+            <h3>"Approvals"</h3>
+            <Switch name=words::ASK_MCP_NAME key="ask-mcp"
+                about=words::ASK_MCP_ABOUT
+                on=Signal::derive(move || s().ask_before_adding_mcp != Some(false))
+                toggle=move |on| {
+                    if on {
+                        settings.command("/extensions ask-mcp on".into(), "approvals",
+                            Some(Box::new(|s| s.ask_before_adding_mcp != Some(false))), Some(("ask-mcp", "true".into())));
+                    } else {
+                        // Turning it off lets agents run programs unasked, so it asks first.
+                        ask_mcp_confirm.set(true);
+                    }
+                } />
+            <Show when=move || ask_mcp_confirm.get()>
+                <div class="confirm">
+                    <p>{words::ASK_MCP_OFF}</p>
+                    <div class="confirm-buttons">
+                        <button type="button" class="btn" on:click=move |_| ask_mcp_confirm.set(false)>"Cancel"</button>
+                        <button type="button" class="btn primary" on:click=move |_| {
+                            ask_mcp_confirm.set(false);
+                            settings.command("/extensions ask-mcp off".into(), "approvals",
+                                Some(Box::new(|s| s.ask_before_adding_mcp == Some(false))), Some(("ask-mcp", "false".into())));
+                        }>"Turn off"</button>
+                    </div>
+                </div>
+            </Show>
+            <Switch name=words::REVIEW_SKILLS_NAME key="review-skills"
+                about=words::REVIEW_SKILLS_ABOUT
+                on=Signal::derive(move || s().review_project_skills)
+                toggle=move |on| settings.command(format!("/extensions review-skills {}", if on { "on" } else { "off" }), "approvals",
+                    Some(Box::new(move |s| s.review_project_skills == on)), Some(("review-skills", on.to_string()))) />
+            <Note key="approvals" />
+        </section>
+
+        <section class="group">
+            <h3>"Project files"</h3>
+            <Switch name=words::KEEP_OUT_OF_GIT_NAME key="keep-out-of-git"
+                about=words::KEEP_OUT_OF_GIT_ABOUT
+                on=Signal::derive(move || s().keep_agents_files_out_of_git != Some(false))
+                toggle=move |on| settings.command(format!("/extensions keep-out-of-git {}", if on { "on" } else { "off" }), "project-files",
+                    Some(Box::new(move |s| (s.keep_agents_files_out_of_git != Some(false)) == on)), Some(("keep-out-of-git", on.to_string()))) />
+            <Note key="project-files" />
+        </section>
 
         <Show when=has_workers>
             <section class="group">

@@ -721,7 +721,6 @@ details.more > summary { width: max-content; padding: 4px 0; color: var(--link);
 .answers-ask { display: flex; align-items: baseline; gap: 6px; font-size: 15px; }
 .answers-number { flex: none; min-width: 16px; color: var(--muted); }
 .answers-words { display: flex; flex: 1; flex-direction: column; min-width: 0; overflow-wrap: anywhere; }
-.answers-runs { color: var(--muted); }
 .answers-any { color: var(--muted); font-size: 13px; white-space: nowrap; }
 .answers-chips { display: flex; flex-wrap: wrap; gap: 4px; }
 .answers-chips .btn { min-height: 28px; }
@@ -742,12 +741,71 @@ details.more > summary { width: max-content; padding: 4px 0; color: var(--link);
   font: 16px/24px var(--sans);
 }
 .answers-other:focus { border-color: var(--ring); }
-.answers-instructions { display: flex; flex-direction: column; gap: 4px; }
-.answers-label { color: var(--muted); font-size: 12px; }
-.answers-instructions-box { max-height: 10rem; padding: 8px; overflow-y: auto; border-radius: var(--r-md); background: var(--code); font-size: 14px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .answers-foot { display: flex; flex: none; justify-content: flex-end; gap: 8px; }
 @media (pointer: coarse) {
   .chip, .answers-chips .btn { min-height: 40px; }
+}
+
+/* The approval tray right above the message box: a row for each request
+   that waits for the user's approval, which opens to its details, and the
+   buttons that answer them all. Its edge in the accent colour sets it apart
+   from the answer panel. */
+.tray {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 60dvh;
+  margin-bottom: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--r-lg);
+  background: var(--popover);
+  color: var(--popover-text);
+  box-shadow: var(--shadow);
+}
+.tray-title { flex: none; margin: 0; font-size: 14px; font-weight: 600; }
+.tray-list { display: flex; flex: 1 1 auto; flex-direction: column; gap: 2px; min-height: 0; margin: 0; padding: 0; overflow-y: auto; overscroll-behavior: contain; list-style: none; }
+.tray-line { display: flex; align-items: center; gap: 6px; }
+.tray-check { flex: none; width: 18px; height: 18px; margin: 0; accent-color: var(--accent); }
+.tray-summary {
+  display: flex;
+  flex: 1;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  min-height: 32px;
+  padding: 4px 6px;
+  border: 0;
+  border-radius: var(--r-md);
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-size: 14px;
+  text-align: left;
+  cursor: pointer;
+}
+@media (hover: hover) {
+  .tray-summary:hover { background: var(--secondary-hover); }
+}
+.tray-kind { flex: none; min-width: 3.5rem; color: var(--muted); }
+.tray-name { flex: none; font-weight: 600; }
+.tray-scope { flex: none; color: var(--muted); }
+.tray-text { flex: 1; min-width: 0; overflow: hidden; color: var(--muted); text-overflow: ellipsis; white-space: nowrap; }
+.tray-chevron { display: flex; flex: none; align-self: center; color: var(--muted); }
+.tray-details { display: flex; flex-direction: column; gap: 6px; margin: 2px 0 8px 30px; font-size: 14px; overflow-wrap: anywhere; }
+.tray-details p { margin: 0; }
+.tray-question { font-weight: 600; }
+.tray-heading { margin: 4px 0 0; color: var(--muted); font-size: 12px; font-weight: 400; }
+.tray-warning { color: var(--warn); }
+.tray-box { max-height: 10rem; padding: 8px; overflow-y: auto; border-radius: var(--r-md); background: var(--code); font-family: var(--mono); font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.tray-files { display: flex; flex-wrap: wrap; gap: 4px; }
+.tray-option { display: flex; align-items: center; gap: 6px; }
+.tray-option input { width: 18px; height: 18px; margin: 0; accent-color: var(--accent); }
+.tray-foot { display: flex; flex: none; justify-content: flex-end; gap: 8px; }
+@media (pointer: coarse) {
+  .tray-summary, .tray-foot .btn { min-height: 40px; }
+  .tray-check, .tray-option input { width: 22px; height: 22px; }
 }
 
 /* The chip above the message box for the questions not in the panel. */
@@ -905,19 +963,19 @@ dialog.sheet::backdrop { background: rgba(0, 0, 0, 0.36); }
    boxy. Apple's overlay scrollbars stay as they are (the page marks Apple
    systems with .apple), and Firefox takes the standard properties. */
 
-html:not(.apple) :is(.log, .field textarea, pre, .md .table, .sheet-body, .slash-list, .select-list, .answers-list, .answers-instructions-box)::-webkit-scrollbar { width: 10px; height: 10px; }
-html:not(.apple) :is(.log, .field textarea, pre, .md .table, .sheet-body, .slash-list, .select-list, .answers-list, .answers-instructions-box)::-webkit-scrollbar-track { margin: 4px; background: transparent; }
-html:not(.apple) :is(.log, .field textarea, pre, .md .table, .sheet-body, .slash-list, .select-list, .answers-list, .answers-instructions-box)::-webkit-scrollbar-thumb {
+html:not(.apple) :is(.log, .field textarea, pre, .md .table, .sheet-body, .slash-list, .select-list, .answers-list, .tray-list, .tray-box)::-webkit-scrollbar { width: 10px; height: 10px; }
+html:not(.apple) :is(.log, .field textarea, pre, .md .table, .sheet-body, .slash-list, .select-list, .answers-list, .tray-list, .tray-box)::-webkit-scrollbar-track { margin: 4px; background: transparent; }
+html:not(.apple) :is(.log, .field textarea, pre, .md .table, .sheet-body, .slash-list, .select-list, .answers-list, .tray-list, .tray-box)::-webkit-scrollbar-thumb {
   min-height: 24px;
   border: 3px solid transparent;
   border-radius: 999px;
   background: var(--thumb) padding-box;
 }
-html:not(.apple) :is(.log, .field textarea, pre, .md .table, .sheet-body, .slash-list, .select-list, .answers-list, .answers-instructions-box)::-webkit-scrollbar-thumb:hover { background: var(--thumb-hover) padding-box; }
+html:not(.apple) :is(.log, .field textarea, pre, .md .table, .sheet-body, .slash-list, .select-list, .answers-list, .tray-list, .tray-box)::-webkit-scrollbar-thumb:hover { background: var(--thumb-hover) padding-box; }
 html:not(.apple) ::-webkit-scrollbar-corner { background: transparent; }
 
 @supports not selector(::-webkit-scrollbar) {
-  .log, .field textarea, pre, .md .table, .sheet-body, .slash-list, .select-list, .answers-list, .answers-instructions-box {
+  .log, .field textarea, pre, .md .table, .sheet-body, .slash-list, .select-list, .answers-list, .tray-list, .tray-box {
     scrollbar-width: thin;
     scrollbar-color: var(--thumb) transparent;
   }

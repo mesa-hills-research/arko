@@ -12,22 +12,29 @@ models, and on your Claude plan through an installed Claude Code.
 - Saved sessions you can continue or resume, with handovers to a fresh conversation as the
   context fills
 - [Questions](docs/questions.md) from the agent, answered in a panel or in a message when you're ready
+- An [approval tray](docs/approvals.md) for what the agent needs your OK for, such as an MCP server,
+  a skill or a worker profile, answered all at once
 - Search indexes of code and docs (`arko index`), kept current while Arko runs
 - A web page for following a session and taking part from a browser, such as a phone's
   (`--remote`)
 - Any model on OpenRouter, from a list you can filter, with [routing settings](docs/openrouter.md)
   for zero data retention, a region and the providers that serve it
 - A model and effort for each worker, which the agent chooses or takes from
-  [worker profiles](docs/worker-profiles.md) you write
+  [worker profiles](docs/worker-profiles.md) you write, and the skills and MCP servers each
+  worker gets ([docs](docs/worker-profiles.md#skills-and-mcp-servers-for-a-worker))
 - Workers that start workers of their own, down to a depth you set
   ([docs](docs/worker-profiles.md#workers-that-start-workers))
 - Workers on your Claude and ChatGPT plans first, with your OK before one is billed per token,
   and an optional daily API budget ([docs](docs/worker-profiles.md#worker-billing))
 - [Notes](docs/kept-notes.md) the main agent keeps for itself and its workers, which come back
   after a handover or a compaction, or when a conversation is resumed
-- MCP servers in Claude Code's `.mcp.json` format, and [skills](docs/skills.md) from
-  `.agents/skills` or `.claude/skills`, with three built in (two for writing, and ponytail for
-  coding tasks and running workers)
+- [MCP servers](docs/mcp.md) in Claude Code's `.mcp.json` format, reached through one tool so the
+  prompt cache holds, which the agent can add with your OK
+- [Skills](docs/skills.md) from `.agents/skills` or `.claude/skills`, for some models or for the
+  main agent only, which the agent can save with your OK, and three built in (two for writing, and
+  ponytail for coding tasks and running workers)
+- What the agent saves in a project goes in a [`.arko` folder](docs/arko-folder.md) that git
+  ignores by default
 - Themes for the full-screen view, and your own in GPUI Kit's format
 - A library for apps with front ends of their own
 
@@ -84,7 +91,8 @@ arko-tui = { version = "0.13.0", default-features = false, features = ["remote"]
 
 `cargo doc --open` builds the API docs. See
 [listing extensions and managing project approvals](docs/extensions.md),
-[worker profiles](docs/worker-profiles.md) and [skills](docs/skills.md) for settings pages.
+[approvals](docs/approvals.md), [worker profiles](docs/worker-profiles.md) and
+[skills](docs/skills.md) for settings pages.
 
 ## Tests
 

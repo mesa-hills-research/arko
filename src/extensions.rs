@@ -8,7 +8,7 @@ use crate::builtin_skills::BuiltinSkills;
 use crate::{mcp, skills};
 
 /// An MCP server a session would start, or would leave out and why.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct McpServerEntry {
     /// Its name ("server 3" for an entry without one).
     pub name: String,
@@ -23,6 +23,15 @@ pub struct McpServerEntry {
     /// servers that wait for the user's answer or that the user chose not
     /// to start.
     pub skipped: Option<String>,
+    /// When, in which session and why an agent added it, if one did. Only
+    /// a server an agent added can be removed with [`remove_added`].
+    pub added: Option<crate::agent_added::ServerRecord>,
+    /// Workers may use it (Arko's `workers` field, true unless the entry
+    /// says false).
+    pub workers: bool,
+    /// Sessions open at the same time share one copy of it (Arko's `shared`
+    /// field).
+    pub shared: bool,
 }
 
 /// A skill the agents get, or a skill file or folder they don't get and
@@ -47,6 +56,15 @@ pub struct SkillEntry {
     pub skipped: Option<String>,
     /// It is one of Arko's built-in skills.
     pub builtin: bool,
+    /// When, why and from where an agent saved it, for this project or
+    /// every project, if an agent did. Only such a skill can be removed
+    /// without deleting it by hand.
+    pub added: Option<crate::agent_added::SkillRecord>,
+    /// Workers get it (its front matter has no `workers: false`).
+    pub workers: bool,
+    /// The models whose agents list it, as its front matter writes them
+    /// (empty for every model).
+    pub models: Vec<String>,
 }
 
 /// A config file that could not be read.
@@ -62,7 +80,8 @@ pub struct ExtensionNote {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Extensions {
     /// The MCP servers, in the order a session reads their files (the files
-    /// given, the project's `.mcp.json`, Arko's `mcp.json`).
+    /// given, the project's `.arko/mcp.json` and `.mcp.json`, Arko's
+    /// `mcp.json`).
     pub servers: Vec<McpServerEntry>,
     /// The skills, in the order the agents get them. The skill folders come
     /// in the order `arko --help` gives them, and each folder's skills in
@@ -105,8 +124,10 @@ pub fn list_with(
     };
     let workspace = workspace.map(normal);
     let workspace = workspace.as_deref();
+    let local = workspace.map(mcp::local_file);
     let project = workspace.map(|workspace| workspace.join(mcp::PROJECT_FILE));
     let user = normal(&root.join(mcp::USER_FILE));
+    let added = crate::agent_added::servers(root);
     let mut files: Vec<PathBuf> = Vec::new();
     for file in mcp_config.iter().map(|file| normal(file)) {
         if !files.contains(&file) {
@@ -114,7 +135,12 @@ pub fn list_with(
         }
     }
     let given = files.len();
-    for file in project.iter().cloned().chain(std::iter::once(user)) {
+    for file in local
+        .iter()
+        .chain(project.iter())
+        .cloned()
+        .chain(std::iter::once(user))
+    {
         if file.is_file() && !files.contains(&normal(&file)) {
             files.push(file);
         }
@@ -131,17 +157,28 @@ pub fn list_with(
             }
         };
         // A project's servers start once the user agrees.
-        let held = workspace
-            .filter(|_| index >= given && Some(file) == project.as_ref())
-            .and_then(
-                |workspace| match mcp::remembered(root, workspace, &parsed) {
-                    Some(true) => None,
-                    Some(false) => Some("the user chose not to start the project's servers".into()),
-                    None => Some(
-                        "a session asks the user before it starts the project's servers".into(),
-                    ),
-                },
-            );
+        let answer = workspace.filter(|_| index >= given).and_then(|workspace| {
+            if Some(file) == project.as_ref() {
+                Some(mcp::remembered(root, workspace, &parsed))
+            } else if Some(file) == local.as_ref() {
+                Some(mcp::remembered_local(root, workspace, &parsed))
+            } else {
+                None
+            }
+        });
+        let held = match answer {
+            None | Some(Some(true)) => None,
+            Some(Some(false)) => Some("the user chose not to start the project's servers".into()),
+            Some(None) => {
+                Some("a session asks the user before it starts the project's servers".into())
+            }
+        };
+        let added_here = |name: &str| {
+            added
+                .iter()
+                .find(|record| record.name == name && record.is_in(file))
+                .cloned()
+        };
         for server in &parsed.servers {
             let taken = extensions
                 .servers
@@ -159,6 +196,9 @@ pub fn list_with(
                 command: server.shown.clone(),
                 file: file.clone(),
                 skipped,
+                added: added_here(&server.name),
+                workers: server.workers,
+                shared: server.shared,
             });
         }
         for (name, command, why) in &parsed.left_out {
@@ -167,14 +207,21 @@ pub fn list_with(
                 command: command.clone(),
                 file: file.clone(),
                 skipped: Some(why.clone()),
+                added: added_here(name),
+                workers: true,
+                shared: false,
             });
         }
     }
     let folders = skills::folders_for(workspace, root);
     let (builtin, refused) = builtin_choice(builtin_skills, builtin_skills_off);
+    let added = crate::agent_added::skills(root);
     extensions.skills = skills::scan(&folders, &builtin, workspace.unwrap_or(root))
         .into_iter()
         .map(|skill| SkillEntry {
+            added: (!skill.embedded)
+                .then(|| crate::agent_added::added_skill(&added, &skill.path).cloned())
+                .flatten(),
             path: skill.path,
             name: skill.name,
             description: skill.description,
@@ -183,6 +230,8 @@ pub fn list_with(
                 .skipped
                 .or_else(|| refused.clone().filter(|_| skill.embedded)),
             builtin: skill.embedded,
+            workers: skill.workers,
+            models: skill.models,
         })
         .collect();
     extensions
@@ -222,6 +271,49 @@ pub fn project_mcp_approval(root: &Path, workspace: &Path) -> Result<Option<bool
 /// Call this off a UI thread.
 pub fn forget_project_mcp_approval(root: &Path, workspace: &Path) -> Result<bool, String> {
     mcp::forget_project_approval(root, workspace)
+}
+
+/// The answer remembered for the project's current `.arko/mcp.json`
+/// servers, where agents add the project's servers, as
+/// [`project_mcp_approval`] gives it for `.mcp.json`. A server an agent adds
+/// there is remembered as approved.
+pub fn local_mcp_approval(root: &Path, workspace: &Path) -> Result<Option<bool>, String> {
+    mcp::local_approval(root, workspace)
+}
+
+/// Forgets the answer remembered for the project's `.arko/mcp.json`, as
+/// [`forget_project_mcp_approval`] does for `.mcp.json`.
+pub fn forget_local_mcp_approval(root: &Path, workspace: &Path) -> Result<bool, String> {
+    mcp::forget_local_approval(root, workspace)
+}
+
+/// Something an agent added, which [`remove_added`] removes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Added {
+    /// A skill an agent saved, by its folder.
+    Skill { path: PathBuf },
+    /// An MCP server an agent added, by the file its entry is in and its
+    /// name.
+    Server { file: PathBuf, name: String },
+}
+
+/// Removes what an agent added, without a session: a skill's folder, or a
+/// server's entry in its file, and its line in the record of what agents
+/// added. Something an agent didn't add is refused. Sessions open now keep a
+/// removed server running until they close. The text says what happened,
+/// or why it didn't. Call it off a UI thread.
+pub fn remove_added(root: &Path, added: Added) -> Result<String, String> {
+    match added {
+        Added::Server { file, name } => match mcp::changes::take_out(root, &file, &name) {
+            Ok(()) => Ok(format!("Removed the MCP server {name}.")),
+            Err(mcp::changes::NotRemoved::NotAdded(file)) => Err(format!(
+                "{name} wasn't added by an agent. Edit {} to remove it.",
+                file.display()
+            )),
+            Err(mcp::changes::NotRemoved::Failed(why)) => Err(why),
+        },
+        Added::Skill { path } => crate::skill_install::remove_saved(root, &path),
+    }
 }
 
 #[cfg(test)]
@@ -335,11 +427,11 @@ mod tests {
         for answer in [true, false] {
             mcp::plan(&root, &workspace, &[], false)
                 .unwrap()
-                .decide(Some(answer))
+                .decide(&[Some(answer)])
                 .unwrap();
             mcp::plan(&root, &other, &[], false)
                 .unwrap()
-                .decide(Some(true))
+                .decide(&[Some(true)])
                 .unwrap();
             assert_eq!(project_mcp_approval(&root, &workspace), Ok(Some(answer)));
             assert_eq!(
@@ -354,13 +446,14 @@ mod tests {
             assert!(
                 mcp::plan(&root, &workspace, &[], false)
                     .unwrap()
-                    .approval
-                    .is_some()
+                    .approvals
+                    .len()
+                    == 1
             );
         }
         mcp::plan(&root, &workspace, &[], false)
             .unwrap()
-            .decide(Some(true))
+            .decide(&[Some(true)])
             .unwrap();
         std::fs::write(
             workspace.join(mcp::PROJECT_FILE),
@@ -400,7 +493,7 @@ mod tests {
             if index % 2 == 0 {
                 mcp::plan(&root, project, &[], false)
                     .unwrap()
-                    .decide(Some(true))
+                    .decide(&[Some(true)])
                     .unwrap();
             }
         }
@@ -416,7 +509,7 @@ mod tests {
                     } else {
                         mcp::plan(root, project, &[], false)
                             .unwrap()
-                            .decide(Some(false))
+                            .decide(&[Some(false)])
                             .unwrap();
                     }
                 });
@@ -583,5 +676,63 @@ mod tests {
         assert_eq!(listed.skills[0].path, skills.join("flat.md"));
         // Only the MCP file that can't be read is a note.
         assert_eq!(listed.notes.len(), 1, "{:?}", listed.notes);
+    }
+
+    /// An app removes a skill an agent saved, folder and record, and
+    /// refuses one no agent saved.
+    #[test]
+    fn an_app_removes_a_skill_an_agent_saved_and_no_other() {
+        use crate::agent_added::{self, Scope, SkillRecord};
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("arko");
+        let skills = root.join("skills");
+        for name in ["saved", "mine"] {
+            std::fs::create_dir_all(skills.join(name)).unwrap();
+            std::fs::write(
+                skills.join(name).join("SKILL.md"),
+                format!("---\nname: {name}\ndescription: A skill.\n---\nSteps.\n"),
+            )
+            .unwrap();
+        }
+        let saved = skills.join("saved");
+        agent_added::record_skill(
+            &root,
+            SkillRecord {
+                path: saved.clone(),
+                id: None,
+                scope: Scope::User,
+                session: "s1".into(),
+                session_title: None,
+                added: chrono::Utc::now(),
+                why: "Release steps.".into(),
+                source: None,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            remove_added(
+                &root,
+                Added::Skill {
+                    path: skills.join("mine")
+                }
+            ),
+            Err(format!(
+                "mine wasn't added by an agent. Delete {} to remove it.",
+                skills.join("mine").display()
+            ))
+        );
+        assert!(skills.join("mine").is_dir());
+        assert_eq!(
+            remove_added(
+                &root,
+                Added::Skill {
+                    path: saved.clone()
+                }
+            ),
+            Ok("Removed the skill saved.".to_string())
+        );
+        assert!(!saved.exists());
+        assert!(agent_added::skill_at(&root, &saved).is_none());
     }
 }

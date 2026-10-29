@@ -5,7 +5,7 @@
 // resumed. (Included in `main`'s tests, whose helpers they use.) How a
 // setup is chosen, case by case, is tested in `chooser`.
 
-use crate::mock_model::{ModelServer, complete, tool_call};
+use crate::mock_model::{ModelServer, complete, tool_call, tool_calls};
 
 /// The requests the model server got: (the agent that sent it, its model,
 /// its effort, its body).
@@ -109,6 +109,20 @@ fn lead(body: &str, step: &str) -> String {
         }
         "Start by saving a profile." => return saving(Some("session")),
         "Start by saving a profile for everyone." => return saving(Some("user")),
+        "Start by saving three profiles." => {
+            let save = |name: &str| {
+                (
+                    crew::SAVE_WORKER_PROFILE,
+                    serde_json::json!({
+                        "name": name,
+                        "description": "Reviews",
+                        "model": "sol",
+                        "scope": "user",
+                    }),
+                )
+            };
+            return tool_calls(step, &[save("one"), save("two"), save("three")]);
+        }
         _ => {}
     }
     let mut parameters = serde_json::json!({"agent": WORKER, "task": user});
@@ -196,6 +210,53 @@ fn worker_with(seen: &Seen, task: &str) -> Option<(String, String, String)> {
         .map(|(_, model, effort, body)| (model.clone(), effort.clone(), user_texts(body)[0].clone()))
 }
 
+/// The tool results the main agent read last, from its latest request, in
+/// the order of their calls.
+fn last_results(seen: &Seen, count: usize) -> Vec<String> {
+    let seen = seen.lock().unwrap();
+    let (_, _, _, body) = seen.iter().rev().find(|(who, ..)| who == "main").unwrap();
+    let body: serde_json::Value = serde_json::from_str(body).unwrap();
+    let outputs: Vec<String> = body["input"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|item| item["type"] == "function_call_output")
+        .map(|item| item["output"].as_str().unwrap_or_default().to_string())
+        .collect();
+    outputs[outputs.len().saturating_sub(count)..].to_vec()
+}
+
+/// Sends the approval tray's answer through the session's input, as a front
+/// end does: those of the requests waiting whose place is in `approved` are
+/// approved (with their option on when `option`), the others rejected, with
+/// the message box's `words`.
+fn send_tray_answer(
+    input: &mpsc::UnboundedSender<Input>,
+    requests: &[crate::approvals::ApprovalRequest],
+    approved: &[usize],
+    option: bool,
+    words: &str,
+) {
+    let answers = crate::approvals::ApprovalAnswers::of(
+        requests,
+        |id| approved.iter().any(|at| requests[*at].id == id),
+        |_| option,
+        words,
+    );
+    input.send(Input::AnswerApprovals(answers)).unwrap();
+}
+
+/// Waits until `requests` have left the tray. (Not until the tray is empty,
+/// since the next turn's request can come before the poll sees it empty.)
+async fn until_answered(feed: &crate::remote::Feed, requests: &[crate::approvals::ApprovalRequest]) {
+    until(|| {
+        feed.approvals()
+            .iter()
+            .all(|waiting| requests.iter().all(|asked| asked.id != waiting.id))
+    })
+    .await;
+}
+
 /// The tool result the main agent read last, from its latest request.
 fn last_result(seen: &Seen) -> String {
     let seen = seen.lock().unwrap();
@@ -243,7 +304,7 @@ async fn a_worker_runs_the_model_effort_and_profile_the_main_agent_chose() {
     let temp = tempfile::tempdir().unwrap();
     let (mut harness, mut inputs, _sender, _server, seen) = setup(temp.path()).await;
     let workspace = harness.settings.workspace.clone();
-    let folder = workspace.join(".agents").join("profiles");
+    let folder = workspace.join(".arko").join("profiles");
     std::fs::create_dir_all(&folder).unwrap();
     std::fs::write(
         folder.join("judge.md"),
@@ -512,83 +573,45 @@ async fn the_main_agent_lists_the_options_saves_a_profile_and_starts_a_worker_wi
     harness.crew.as_ref().unwrap().shutdown().await;
 }
 
-/// A profile for every session reaches the user as an approval, which they
-/// answer as the agent's `ask_user` questions. Words of their own ask the
-/// agent for changes and save nothing, as does "save" typed beside Don't
-/// save picked, and Save saves the file in Arko's folder.
+/// A profile for every session waits in the approval tray until the user
+/// answers through the session's input, as a front end sends it. Reject
+/// with words in the message box asks the agent for changes and saves
+/// nothing, Reject alone saves nothing either, and Approve saves the file in
+/// Arko's folder.
 #[tokio::test]
-async fn a_profile_for_every_session_is_put_to_the_user_as_a_question() {
+async fn a_profile_for_every_session_waits_in_the_approval_tray() {
     let temp = tempfile::tempdir().unwrap();
     let (mut harness, mut inputs, input, _server, seen) = setup(temp.path()).await;
     let feed = harness.feed.clone();
     // (The input stays open while the turns end: a closed one quits.)
     let sender = input.clone();
     let answers = tokio::spawn(async move {
-        // From the panel: (choices, typed words, you decide), each a
-        // contradiction. Then typed answers.
-        let panel = |choices: &[&str], text: &str, you_decide: bool| {
-            Err((
-                choices.iter().map(|choice| choice.to_string()).collect::<Vec<_>>(),
-                text.to_string(),
-                you_decide,
-            ))
-        };
-        for reply in [
-            panel(&[crate::questions::DONT_SAVE], "save", false),
-            panel(&[crate::questions::DONT_SAVE], "SAVE", false),
-            panel(&[], "Save", true),
-            panel(&[crate::questions::SAVE], "Save", false),
-            Ok("no, use medium effort"),
-            Ok("Save"),
-        ] {
-            until(|| feed.activity().question.is_some()).await;
-            let question = feed.activity().question.unwrap();
-            assert!(
-                question.text.starts_with(
-                    "The main agent wants to save the worker profile 3d-judge in your Arko folder, for every project.\n\nJudges 3D results against a reference image\nRuns on sol at high effort."
-                ),
-                "{}",
-                question.text
+        for (approve, words) in [(false, "no, use medium effort"), (false, ""), (true, "")] {
+            until(|| !feed.approvals().is_empty()).await;
+            let requests = feed.approvals();
+            let approval = &requests[0].approval;
+            assert_eq!(
+                approval.title(),
+                "Save the worker profile 3d-judge for every project?"
             );
-            assert!(question.text.contains("Instructions\nYou judge 3D models."));
-            match reply {
-                Ok(reply) => sender
-                    .send(Input::Answer {
-                        question: question.id,
-                        text: reply.into(),
-                    })
-                    .unwrap(),
-                Err((choices, text, you_decide)) => sender
-                    .send(Input::AnswerQuestions(crate::questions::Answers {
-                        answers: vec![crate::questions::QuestionAnswer::new(
-                            feed.open_questions()[0].id.clone(),
-                            crate::questions::Answer {
-                                choices,
-                                text: Some(text),
-                                you_decide,
-                            },
-                        )],
-                    }))
-                    .unwrap(),
-            }
-            // (The next question may be up before this one is seen gone.)
-            until(|| feed.activity().question.map(|asked| asked.id) != Some(question.id)).await;
+            assert_eq!(approval.summary(), "sol high");
+            let approved: &[usize] = if approve { &[0] } else { &[] };
+            send_tray_answer(&sender, &requests, approved, false, words);
+            until_answered(&feed, &requests).await;
         }
     });
     let saved = harness.root.join("profiles").join("3d-judge.md");
-    // Words beside a pick are changes to make, whatever they say.
-    for words in ["save", "SAVE", "Save", "Save"] {
-        start_worker(&mut harness, &mut inputs, "Start by saving a profile for everyone.").await;
-        assert_eq!(
-            last_result(&seen),
-            format!("The user didn't save 3d-judge for every project and wrote \"{words}\". If those words ask for changes to the profile, make them and call save_worker_profile again, which shows them the changed profile. If they don't (a new request, or words about something else), they are a message to you, not changes. Respond to it, call save_worker_profile again with the same profile, and end with a short reminder that it is still waiting for their decision.")
-        );
-        assert!(!saved.exists());
-    }
     start_worker(&mut harness, &mut inputs, "Start by saving a profile for everyone.").await;
     assert_eq!(
         last_result(&seen),
         "The user didn't save 3d-judge for every project and wrote \"no, use medium effort\". If those words ask for changes to the profile, make them and call save_worker_profile again, which shows them the changed profile. If they don't (a new request, or words about something else), they are a message to you, not changes. Respond to it, call save_worker_profile again with the same profile, and end with a short reminder that it is still waiting for their decision."
+    );
+    assert!(!saved.exists());
+    assert!(has(&harness.feed, "user", "no, use medium effort", "answer"));
+    start_worker(&mut harness, &mut inputs, "Start by saving a profile for everyone.").await;
+    assert_eq!(
+        last_result(&seen),
+        "The user chose not to save 3d-judge for every project, so don't ask again unless they want it. You may save it for this session with scope session."
     );
     assert!(!saved.exists());
     start_worker(&mut harness, &mut inputs, "Start by saving a profile for everyone.").await;
@@ -605,12 +628,71 @@ async fn a_profile_for_every_session_is_put_to_the_user_as_a_question() {
     harness.crew.as_ref().unwrap().shutdown().await;
 }
 
+/// Three saves in one response wait in one tray, and one answer settles
+/// them: the first and the third approved, the second rejected, each call
+/// reading its own answer with the words the message box held.
+#[tokio::test]
+async fn three_saves_in_one_response_share_the_tray() {
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, input, _server, seen) = setup(temp.path()).await;
+    let feed = harness.feed.clone();
+    let sender = input.clone();
+    let answers = tokio::spawn(async move {
+        until(|| feed.approvals().len() == 3).await;
+        let requests = feed.approvals();
+        assert!(
+            requests
+                .iter()
+                .all(|request| request.batch == requests[0].batch)
+        );
+        assert_eq!(
+            requests
+                .iter()
+                .map(|request| request.approval.name().to_string())
+                .collect::<Vec<_>>(),
+            ["one", "two", "three"]
+        );
+        send_tray_answer(&sender, &requests, &[0, 2], false, "Check the names.");
+    });
+    start_worker(&mut harness, &mut inputs, "Start by saving three profiles.").await;
+    let results = last_results(&seen, 3);
+    for (at, name) in [(0, "one"), (2, "three")] {
+        assert!(
+            results[at].starts_with(&format!(
+                "Saved the worker profile {name} in the user's Arko folder, for every project."
+            )),
+            "{results:?}"
+        );
+        assert!(
+            results[at].ends_with(
+                " The user approved it and wrote \"Check the names.\". Act on what they wrote."
+            ),
+            "{results:?}"
+        );
+    }
+    assert!(
+        results[1].starts_with(
+            "The user didn't save two for every project and wrote \"Check the names.\"."
+        ),
+        "{results:?}"
+    );
+    let folder = harness.root.join("profiles");
+    assert!(folder.join("one.md").is_file() && folder.join("three.md").is_file());
+    assert!(!folder.join("two.md").exists());
+    tokio::time::timeout(Duration::from_secs(20), answers)
+        .await
+        .expect("the answers were given in time")
+        .unwrap();
+    harness.crew.as_ref().unwrap().shutdown().await;
+}
+
 /// Under Ask before API, a worker on a model billed per token (OpenAI's on
-/// an API key here) waits for the user's answer on a card in the answer
-/// panel. Deny leaves it unstarted, and the agent reads why. Allow starts
-/// it.
+/// an API key here) waits in the approval tray. Reject leaves it
+/// unstarted, and the agent reads why. Approve with the option on (Allow …
+/// for this session) starts it, and the next worker on that model starts
+/// without asking.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_worker_billed_per_token_starts_once_the_user_allows_it_on_the_card() {
+async fn a_worker_billed_per_token_starts_once_the_user_allows_it_in_the_tray() {
     let temp = tempfile::tempdir().unwrap();
     let (mut harness, mut inputs, input, _server, seen) = setup(temp.path()).await;
     harness.settings.openai_auth = Some(providers::OpenAiAuth::ApiKey);
@@ -621,29 +703,21 @@ async fn a_worker_billed_per_token_starts_once_the_user_allows_it_on_the_card() 
     // (The input stays open while the turns end: a closed one quits.)
     let sender = input.clone();
     let answers = tokio::spawn(async move {
-        for choice in ["Deny", "Allow"] {
-            until(|| feed.activity().question.is_some()).await;
-            let question = feed.activity().question.unwrap();
-            assert!(
-                question
-                    .text
-                    .starts_with("Start a worker on GPT-6 Astra, billed per token? It costs $"),
-                "{}",
-                question.text
+        for approve in [false, true] {
+            until(|| !feed.approvals().is_empty()).await;
+            let requests = feed.approvals();
+            let approval = &requests[0].approval;
+            assert_eq!(
+                approval.title(),
+                "Start a worker on GPT-6 Astra, billed per token?"
             );
-            sender
-                .send(Input::AnswerQuestions(crate::questions::Answers {
-                    answers: vec![crate::questions::QuestionAnswer::new(
-                        feed.open_questions()[0].id.clone(),
-                        crate::questions::Answer {
-                            choices: vec![choice.to_string()],
-                            text: None,
-                            you_decide: false,
-                        },
-                    )],
-                }))
-                .unwrap();
-            until(|| feed.activity().question.map(|asked| asked.id) != Some(question.id)).await;
+            assert_eq!(
+                approval.option().as_deref(),
+                Some("Allow GPT-6 Astra for this session")
+            );
+            let approved: &[usize] = if approve { &[0] } else { &[] };
+            send_tray_answer(&sender, &requests, approved, true, "");
+            until_answered(&feed, &requests).await;
         }
     });
     start_worker(&mut harness, &mut inputs, "Start on a model.").await;
@@ -662,6 +736,22 @@ async fn a_worker_billed_per_token_starts_once_the_user_allows_it_on_the_card() 
         .await
         .expect("the answers were given in time")
         .unwrap();
+    // Allowed for the session: the next one starts without asking.
+    let before = seen
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(who, ..)| who != "main")
+        .count();
+    start_worker(&mut harness, &mut inputs, "Start on a model.").await;
+    assert!(harness.feed.approvals().is_empty());
+    let after = seen
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(who, ..)| who != "main")
+        .count();
+    assert!(after > before, "a worker started");
     harness.crew.as_ref().unwrap().shutdown().await;
 }
 
@@ -1021,8 +1111,8 @@ async fn profiles_lists_shows_adds_and_removes() {
         "Until you do, the main agent reads \"Describe what this profile is for\" as its description."
     ));
 
-    // The project's and the session's, a hidden one and one that can't be
-    // read.
+    // The project's (in the older folder, which /profiles names) and the
+    // session's, a hidden one and one that can't be read.
     let project = harness.settings.workspace.join(".agents").join("profiles");
     std::fs::create_dir_all(&project).unwrap();
     std::fs::write(project.join("reviewer.md"), "---\ndescription: The project's reviewer\nmodel: opus\neffort: high\n---\n").unwrap();
@@ -1047,18 +1137,20 @@ async fn profiles_lists_shows_adds_and_removes() {
   reviewer  sol                this session
       Reviews a diff (made by the main agent)
 Hidden by a nearer profile of the same name
-  reviewer                     this project
+  reviewer                     this project (.agents/profiles)
 Can't be read
-  notes                        this project
+  notes                        this project (.agents/profiles)
       line 2 isn't `key: value`
 /profiles NAME shows one. The files are in
   this session
     {}
   this project
     {}
+    {}
   every project
     {}",
         session.display(),
+        harness.settings.workspace.join(".arko").join("profiles").display(),
         project.display(),
         harness.root.join("profiles").display()
     );
@@ -1090,6 +1182,21 @@ Can't be read
             session.join("reviewer.md").display()
         )
     );
+    // What a profile limits workers to is told, and nothing when it limits none.
+    std::fs::write(
+        session.join("narrow.md"),
+        "---\ndescription: Reads\nskills: ponytail\nmcp: none\n---\n",
+    )
+    .unwrap();
+    assert!(harness.live_command("/profiles narrow", Source::Terminal));
+    assert!(
+        last_said(&harness.feed).contains(
+            "Runs on the session's worker model. Workers with it get only the skill ponytail. Workers with it get no MCP servers.\n"
+        ),
+        "{}",
+        last_said(&harness.feed)
+    );
+    std::fs::remove_file(session.join("narrow.md")).unwrap();
     assert!(harness.live_command("/profiles default", Source::Terminal));
     assert!(last_said(&harness.feed).starts_with("default · the session's worker model\nIt runs gpt-6-luna"));
     assert!(harness.live_command("/profiles nobody", Source::Terminal));

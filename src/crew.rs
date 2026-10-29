@@ -65,6 +65,10 @@ pub const CACHE_PARAM: &str = "cache";
 pub const PROFILE_PARAM: &str = "profile";
 pub const MODEL_PARAM: &str = "model";
 pub const EFFORT_PARAM: &str = "effort";
+/// `start_agent`'s parameters for narrowing the worker's skills and MCP
+/// servers to a list of names.
+pub const SKILLS_PARAM: &str = "skills";
+pub const MCP_PARAM: &str = "mcp";
 pub const LEGACY_TOOL_NAMES: &[&str] = &[
     "start_worker",
     "message_worker",
@@ -131,21 +135,25 @@ impl Spending {
         }
     }
 
-    /// Asks the user to allow the worker `request` starts on `model`, with
-    /// the day's spend and the budget it reached (`over`), and waits for
-    /// the answer. The wait ends without one when the turn stops or the
-    /// workflow does.
+    /// Asks the user to allow the worker `request` starts on `model` in the
+    /// approval tray, with the day's spend (`spent`, when the budget's check
+    /// read it) and the budget it reached (`over`), and waits for the
+    /// answer. The wait ends without one when the turn stops or the workflow
+    /// does. Words the user wrote beside an approval reach the main agent
+    /// as a note.
     fn ask(
         &self,
         request: &StartRequest,
         model: &arko_ai::Model,
+        spent: Option<f64>,
         over: Option<(f64, f64)>,
         workflow: &Weak<Workflow>,
     ) -> Result<billing::Decision, String> {
-        let questions = self
+        let approvals = self
             .asker
             .as_ref()
-            .and_then(|asker| asker.questions.clone())
+            .map(|asker| asker.approvals.clone())
+            .filter(crate::approvals::Approvals::can_answer)
             .ok_or_else(|| billing::cant_ask(model))?;
         // (The start hook can't wait asynchronously, so it waits on a thread
         // the runtime can do without.)
@@ -157,25 +165,15 @@ impl Spending {
             }
             _ => return Err(billing::cant_ask(model)),
         };
-        let (text, choices) = billing::question(model, &request.task, over);
-        let (answer, answered) = tokio::sync::oneshot::channel();
-        let question = crate::inputs::Question {
-            run: request.caller_run_id,
-            asked: vec![arko_agents::questions::AskedQuestion {
-                id: crate::questions::PLAIN_ID.to_string(),
-                question: arko_agents::questions::Question {
-                    question: text,
-                    choices,
-                    ..Default::default()
-                },
-            }],
-            answer: Some(crate::inputs::Answering::Text(answer)),
-            approval: None,
-            call: None,
-        };
-        if questions.send(question).is_err() {
-            return Err(billing::cant_ask(model));
-        }
+        let spent = spent.unwrap_or_else(|| self.spend.today(workflow.upgrade().as_deref(), true));
+        let approval = billing::approval(model, &request.task, Some(spent), over);
+        let mut waiter = approvals
+            .ask(
+                request.caller_run_id,
+                None,
+                crate::approvals::Approval::WorkerBilling(approval),
+            )
+            .ok_or_else(|| billing::cant_ask(model))?;
         let feed = self.feed.clone();
         let stopped = move || {
             feed.as_ref().is_some_and(remote::Feed::turn_is_stopping)
@@ -183,7 +181,7 @@ impl Spending {
                     .upgrade()
                     .is_some_and(|workflow| workflow.is_cancelled())
         };
-        let words = tokio::task::block_in_place(|| {
+        let answer = tokio::task::block_in_place(|| {
             runtime.block_on(async {
                 let stops = async {
                     while !stopped() {
@@ -191,15 +189,26 @@ impl Spending {
                     }
                 };
                 tokio::select! {
-                    words = answered => words.ok(),
-                    () = stops => None,
+                    answer = waiter.receiver() => answer.unwrap_or(crate::approvals::Answer::Unanswered),
+                    () = stops => crate::approvals::Answer::Unanswered,
                 }
             })
         });
-        let name = crate::models::display_name(&crate::providers::model_name(model));
-        Ok(words.map_or(billing::Decision::Unanswered, |words| {
-            billing::decision(&words, &name)
-        }))
+        drop(waiter);
+        if let crate::approvals::Answer::Approved {
+            words: Some(words), ..
+        } = &answer
+            && let Some(workflow) = workflow.upgrade()
+        {
+            let note = arko_workflows::notes::Note::new(billing::allowed_with(model, words))
+                .source(arko_workflows::notes::NoteSource::Host)
+                .to([crate::agents::MAIN])
+                .for_run(request.caller_run_id);
+            if let Err(error) = workflow.post_note(note) {
+                log::warn!("could not pass the user's words on to the main agent: {error}");
+            }
+        }
+        Ok(billing::Decision::of(&answer))
     }
 }
 
@@ -248,6 +257,12 @@ pub struct WorkerFacts {
     pub effort: Option<String>,
     /// The profile it started with, if any.
     pub profile: Option<String>,
+    /// The skills it has, when that is a list and not everything its
+    /// starter has.
+    pub skills: Option<Vec<String>>,
+    /// The MCP servers it reaches, when that is a list and not everything
+    /// its starter has.
+    pub mcp: Option<Vec<String>>,
     /// The worker that started it, when a worker did and not the main agent.
     pub parent: Option<String>,
     /// How far it is from the main agent, 1 for the main agent's workers.
@@ -300,6 +315,26 @@ pub struct WorkerSetup {
     /// model that doesn't reason, and for a run recorded before it was kept).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<crate::agents::Effort>,
+    /// The skills the run has, by name. None is all those its starter has
+    /// that aren't for the main agent alone (also for a run recorded before
+    /// skills were narrowed), and a list is only those.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skills: Option<Vec<String>>,
+    /// The MCP servers the run reaches, by name, in the same way as
+    /// `skills`. [`Crew::mcp_servers_of`] gives it to the MCP bridge.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp: Option<Vec<String>>,
+    /// The names its profile asked for that its starter couldn't give, as a
+    /// sentence for the start result and the lists.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub left_out: Option<String>,
+    /// The names the run's model goes by, which skills' `models` are
+    /// matched against for its skill list (see
+    /// [`skills::model_names`](crate::skills::model_names)). None for a run
+    /// recorded before they were kept, which keeps the names its
+    /// configuration has.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_names: Option<Vec<String>>,
 }
 
 impl WorkerSetup {
@@ -313,6 +348,10 @@ impl WorkerSetup {
             tools_added: Vec::new(),
             profile: None,
             effort: None,
+            skills: None,
+            mcp: None,
+            left_out: None,
+            model_names: None,
         }
     }
 
@@ -340,10 +379,30 @@ impl WorkerSetup {
         config.llm_config = self.llm_config.clone();
         config.claude_code = self.claude_code.clone();
         config.handover = self.handover.clone();
+        // The skills are the run's own too, also over a list that a
+        // configuration of another run was saved with. A worker never has
+        // the skills kept to the main agent, also from a configuration saved
+        // before that was said in it.
+        if let Some(skills) = &mut config.skills_config {
+            skills.subagent = true;
+            skills.only = self.skills.clone();
+            // Its skill list is for its own model.
+            if let Some(names) = &self.model_names {
+                skills.model_names = names.clone();
+            }
+            // A worker given no skills has nothing to load, now or later.
+            if self.skills.as_ref().is_some_and(Vec::is_empty) {
+                skills.offer_when_empty = false;
+            }
+        }
         // The start tools are the run's own: none a configuration of
         // another run had, and the ones this run's setup adds.
+        // The same goes for the MCP tool, which only a worker that reaches a
+        // server is offered.
         let tools = &mut config.tool_config.available_tool_names;
-        tools.retain(|name| !NESTED_TOOL_NAMES.contains(&name.as_str()));
+        tools.retain(|name| {
+            !NESTED_TOOL_NAMES.contains(&name.as_str()) && name != arko_agents::mcp::MCP_TOOL_NAME
+        });
         for name in &self.tools_added {
             if !tools.contains(name) {
                 tools.push(name.clone());
@@ -428,6 +487,96 @@ pub(crate) fn long_cache_asked(text: &str) -> Result<bool, String> {
     }
 }
 
+/// The longest skill or MCP server name a list takes, in characters.
+const MAX_NAME_LENGTH: usize = 100;
+
+/// Why `name` can't be in a list of skills or MCP servers, when it can't.
+pub(crate) fn name_problem(name: &str) -> Option<&'static str> {
+    if name.trim().is_empty() {
+        Some("has an empty name")
+    } else if name.chars().count() > MAX_NAME_LENGTH {
+        Some("has a name over 100 characters")
+    } else if name.contains(',') || name.chars().any(char::is_control) {
+        Some("has a name with a comma or a control character")
+    } else {
+        None
+    }
+}
+
+/// The names that `start_agent`'s `skills` or `mcp`, or a profile's, give:
+/// text with the names separated by commas, a JSON array of them, or `none`
+/// for no names at all. `None` for blank text, which gives nothing. A name
+/// given twice counts once. The error says what is wrong, to follow the
+/// parameter's name.
+pub(crate) fn names_asked(text: &str) -> Result<Option<Vec<String>>, &'static str> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Ok(None);
+    }
+    if text.eq_ignore_ascii_case("none") {
+        return Ok(Some(Vec::new()));
+    }
+    let json = text.starts_with('[');
+    let listed: Vec<String> = if json {
+        serde_json::from_str(text).map_err(|_| NAMES_FORM)?
+    } else {
+        text.split(',').map(str::to_string).collect()
+    };
+    let mut names: Vec<String> = Vec::new();
+    for name in listed {
+        let name = name.trim();
+        // (A comma at the end or two in a row leave no name between them.)
+        if name.is_empty() && !json {
+            continue;
+        }
+        if let Some(problem) = name_problem(name) {
+            return Err(problem);
+        }
+        if !names.iter().any(|known| known == name) {
+            names.push(name.to_string());
+        }
+    }
+    if names.is_empty() && !json {
+        return Err(NAMES_FORM);
+    }
+    Ok(Some(names))
+}
+
+/// What a list of names can be, for the error of one that is none of them.
+const NAMES_FORM: &str = "isn't names separated by commas, a JSON array or none";
+
+/// The names `names` as a sentence's list, cut after a dozen.
+pub(crate) fn names_words(names: &[String]) -> String {
+    const SHOWN: usize = 12;
+    if names.len() <= SHOWN {
+        return crate::and_list(names);
+    }
+    format!(
+        "{}, and {} more",
+        names[..SHOWN].join(", "),
+        names.len() - SHOWN
+    )
+}
+
+/// What a narrowed set of `noun`s (`skill`, `MCP server`) is as a phrase:
+/// `only the skills ponytail and release-notes`, or `no MCP servers`.
+pub(crate) fn only_words(noun: &str, names: &[String]) -> String {
+    match names {
+        [] => format!("no {noun}s"),
+        [one] => format!("only the {noun} {one}"),
+        many => format!("only the {noun}s {}", names_words(many)),
+    }
+}
+
+/// The phrases that say a worker's narrowed sets, one for each set that is
+/// narrowed. A set that is everything its starter has says nothing.
+pub(crate) fn narrowing_phrases(skills: Option<&[String]>, mcp: Option<&[String]>) -> Vec<String> {
+    [(skills, "skill"), (mcp, "MCP server")]
+        .into_iter()
+        .filter_map(|(names, noun)| names.map(|names| only_words(noun, names)))
+        .collect()
+}
+
 /// The prompt cache a worker run asks for in `start_agent`'s `cache`, else
 /// `default_long`, on `config`. Models without a long cache ignore it.
 fn apply_cache(
@@ -467,6 +616,7 @@ fn prepare(
         refuse,
         default_long,
         spending,
+        hub,
         ..
     } = hook;
     let (feed, refuse, default_long) = (feed.as_ref(), refuse.as_ref(), *default_long);
@@ -512,7 +662,24 @@ fn prepare(
                 }
                 found
             };
-            let setup = chooser::choose_in(&new.basis, request, refuse, family).and_then(|setup| {
+            // What its starter has, which the worker's skills and servers
+            // are chosen from (the main agent has no record: everything).
+            let starter = models
+                .lock()
+                .unwrap()
+                .runs
+                .get(&request.caller_run_id)
+                .cloned();
+            let servers = servers_of(hub);
+            let setup = chooser::choose_in(
+                &new.basis,
+                request,
+                refuse,
+                family,
+                starter.as_ref(),
+                &servers,
+            )
+            .and_then(|setup| {
                 let weak = workflow.lock().unwrap().clone();
                 pay_for(&setup, &new.basis, request, family, refuse, spending, &weak)?;
                 Ok(setup)
@@ -579,14 +746,16 @@ fn pay_for(
     match gate {
         billing::Gate::Go => Ok(()),
         billing::Gate::Refuse(why) => Err(why),
-        billing::Gate::Ask { over } => match spending.ask(request, model, over, workflow)? {
-            billing::Decision::Allow => Ok(()),
-            billing::Decision::AllowForSession => {
-                spending.allowed.add(model);
-                Ok(())
+        billing::Gate::Ask { over } => {
+            match spending.ask(request, model, spent.get(), over, workflow)? {
+                billing::Decision::Allow => Ok(()),
+                billing::Decision::AllowForSession => {
+                    spending.allowed.add(model);
+                    Ok(())
+                }
+                other => Err(billing::refusal(&other, model)),
             }
-            other => Err(billing::refusal(&other, model)),
-        },
+        }
     }
 }
 
@@ -753,6 +922,17 @@ struct StartHook {
     /// How the session reaches OpenAI models, which says whether one is
     /// billed per token.
     openai_auth: Option<crate::providers::OpenAiAuth>,
+    /// The session's MCP servers, once it has them (see [`Crew::set_mcp_hub`]).
+    hub: HubSlot,
+}
+
+/// Where the crew and its start hook share the session's MCP hub.
+type HubSlot = Arc<Mutex<Option<Arc<arko_agents::McpHub>>>>;
+
+/// The servers of the hub in `slot` now (none without a hub).
+fn servers_of(slot: &HubSlot) -> Vec<arko_agents::mcp::ServerFacts> {
+    let hub = slot.lock().unwrap().clone();
+    hub.map(|hub| hub.servers()).unwrap_or_default()
 }
 
 impl SubagentHook for StartHook {
@@ -773,11 +953,18 @@ impl SubagentHook for StartHook {
             setup.effort.map(|effort| effort.to_string()).as_deref(),
             setup.profile.as_deref(),
         );
+        let narrowed = narrowing_phrases(setup.skills.as_deref(), setup.mcp.as_deref());
+        if !narrowed.is_empty() {
+            text.push_str(&format!(", with {}", narrowed.join(" and ")));
+        }
         if crate::providers::plan_of(model, self.openai_auth).is_none() {
             text.push_str(&format!(
                 ", billed per token ({})",
                 billing::api_label(model)
             ));
+        }
+        if let Some(left_out) = &setup.left_out {
+            text.push_str(&format!(". {left_out}"));
         }
         Some(text)
     }
@@ -827,8 +1014,8 @@ fn first_message_context(
 }
 
 /// The parameters of the host's own that `start_agent` takes: the prompt
-/// cache, the worker's profile, model and effort, and whether it may start
-/// workers of its own.
+/// cache, the worker's profile, model and effort, the skills and MCP servers
+/// it gets, and whether it may start workers of its own.
 fn start_parameters() -> Vec<ToolParameterDefinition> {
     let text = |name: &str, description: &str| ToolParameterDefinition {
         name: name.into(),
@@ -855,6 +1042,14 @@ fn start_parameters() -> Vec<ToolParameterDefinition> {
         text(
             EFFORT_PARAM,
             "low, medium, high, xhigh or max, as the model takes it. Overrides the profile's.",
+        ),
+        text(
+            SKILLS_PARAM,
+            "Skill names separated by commas, from your own. The worker gets only these, and none gives it no skills. Left out, it gets yours except those marked for the main agent alone.",
+        ),
+        text(
+            MCP_PARAM,
+            "MCP server names separated by commas, from your own. The worker reaches only these, and none gives it no servers. Left out, it gets yours except those marked for the main agent alone.",
         ),
         ToolParameterDefinition {
             name: NESTED_PARAM.into(),
@@ -906,6 +1101,10 @@ fn describe_lines(worker: &WorkerFacts) -> String {
             "\n  {}",
             runs_words(model, worker.effort.as_deref(), worker.profile.as_deref())
         ));
+    }
+    // The skills and servers it was narrowed to.
+    for phrase in narrowing_phrases(worker.skills.as_deref(), worker.mcp.as_deref()) {
+        line.push_str(&format!("\n  {phrase}"));
     }
     // What it has cost, once it has cost something.
     if let Some((billed, list)) = worker.cost.filter(|(_, list)| *list >= 0.005) {
@@ -967,6 +1166,8 @@ pub struct Crew {
     retry_cap: Mutex<Option<u32>>,
     /// What workers billed per token may spend.
     spending: Arc<Spending>,
+    /// The session's MCP servers, which a worker's set is chosen from.
+    hub: HubSlot,
     wake: mpsc::UnboundedSender<()>,
     events: Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
@@ -987,6 +1188,7 @@ impl Crew {
                 project: Arc::default(),
                 kept: KeptNotes::new(&setup.session_dir),
                 spending,
+                hub: Arc::default(),
                 setup,
                 workflow: Arc::default(),
                 lead: Mutex::new(None),
@@ -1027,6 +1229,7 @@ impl Crew {
                 default_long,
                 spending: self.spending.clone(),
                 openai_auth: self.setup.openai_auth,
+                hub: self.hub.clone(),
             }))
             // Asked as each worker starts: a run keeps its first message.
             .start_context(Arc::new(move |request: &StartRequest| {
@@ -1159,6 +1362,43 @@ impl Crew {
     /// The model worker run `run` started on, when Arko recorded it.
     pub fn run_model(&self, run: Uuid) -> Option<WorkerSetup> {
         self.models.lock().unwrap().runs.get(&run).cloned()
+    }
+
+    /// Gives the crew the session's MCP servers, which a start names a
+    /// worker's from. Without them no worker has any, and none is offered
+    /// the MCP tool.
+    // (The session's engine calls it once the MCP bridge is wired in.)
+    #[allow(dead_code)]
+    pub fn set_mcp_hub(&self, hub: Arc<arko_agents::McpHub>) {
+        *self.hub.lock().unwrap() = Some(hub);
+    }
+
+    /// The session's MCP servers now.
+    pub(crate) fn mcp_servers(&self) -> Vec<arko_agents::mcp::ServerFacts> {
+        servers_of(&self.hub)
+    }
+
+    /// The MCP servers the run `run` reaches, by name. `None` is all of them,
+    /// for the main agent, whose runs have no record. A worker's is always a
+    /// list: the one it started with, without any server the hub marks
+    /// `workers: false`, or, for a worker that has what its starter has, the
+    /// servers workers may reach now, so one added later counts. It is
+    /// the same after the session resumes.
+    // (The MCP bridge's access check calls it.)
+    pub fn mcp_servers_of(&self, run: Uuid) -> Option<Vec<String>> {
+        let recorded = self.models.lock().unwrap().runs.get(&run)?.mcp.clone();
+        let servers = self.mcp_servers();
+        Some(match recorded {
+            Some(list) => list
+                .into_iter()
+                .filter(|name| servers.iter().all(|s| s.name != *name || s.workers))
+                .collect(),
+            None => servers
+                .iter()
+                .filter(|server| server.workers)
+                .map(|server| server.name.clone())
+                .collect(),
+        })
     }
 
     /// The models the session's worker runs started on, as Arko recorded
@@ -1370,6 +1610,8 @@ impl Crew {
             .and_then(|setup| setup.effort)
             .map(|effort| effort.to_string());
         info.nested = setup.as_ref().is_some_and(WorkerSetup::nests);
+        info.skills = setup.as_ref().and_then(|setup| setup.skills.clone());
+        info.mcp = setup.as_ref().and_then(|setup| setup.mcp.clone());
         info.profile = setup.and_then(|setup| setup.profile);
         info.depth = run.depth;
         info.costs = costs;
@@ -1571,6 +1813,8 @@ impl Crew {
                         .and_then(|started| started.effort)
                         .map(|effort| effort.to_string()),
                     profile: started.as_ref().and_then(|started| started.profile.clone()),
+                    skills: started.as_ref().and_then(|started| started.skills.clone()),
+                    mcp: started.as_ref().and_then(|started| started.mcp.clone()),
                     parent: started_by(&runs, run.run_id),
                     depth: run.depth,
                     cost: summary
@@ -1871,6 +2115,7 @@ mod tests {
                 rules_text: None,
                 billing: crate::billing::WorkerBilling::Api,
                 api_budget: None,
+                available: Default::default(),
             }),
         });
         crew.models.lock().unwrap().attached = true;
@@ -2123,6 +2368,426 @@ mod tests {
         );
     }
 
+    /// A skills folder with the skills alpha, beta and gamma and one for the
+    /// main agent alone, and a crew whose workers run with them and with
+    /// the MCP servers github and sentry. Returns the crew and the
+    /// registered worker's configuration.
+    fn crew_with_skills(session: &Path, root: &Path, folder: &Path) -> (Arc<Crew>, AgentConfig) {
+        for (name, extra) in [
+            ("alpha", ""),
+            ("beta", ""),
+            ("gamma", ""),
+            ("private", "workers: false\n"),
+        ] {
+            let dir = folder.join(name);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(
+                dir.join("SKILL.md"),
+                format!(
+                    "---\nname: {name}\ndescription: The {name} skill.\n{extra}---\n\nDo {name}.\n"
+                ),
+            )
+            .unwrap();
+        }
+        let (crew, _) = crew_for(session, root, &luna());
+        let folders = [folder.to_path_buf()];
+        let worker = luna();
+        let settings = crate::agents::AgentSettings {
+            skill_folders: &folders,
+            ..crate::agents::AgentSettings::for_test(&worker, &worker)
+        };
+        let registered = crate::agents::worker_config(&settings).unwrap();
+        let mut new = crew.new_workers().unwrap();
+        new.basis = Arc::new(chooser::Basis {
+            available: chooser::Available {
+                skills: crate::skills::config(&folders, settings.builtin_skills),
+                workspace: root.into(),
+            },
+            worker_depth: 3,
+            ..(*new.basis).clone()
+        });
+        crew.set_new_workers(new);
+        crew.set_mcp_hub(servers_hub());
+        (crew, registered)
+    }
+
+    /// A hub with the servers github and sentry, and one for the main agent
+    /// alone, none of them started.
+    fn servers_hub() -> Arc<arko_agents::McpHub> {
+        let server = |name: &str, workers: bool| {
+            let mut config = arko_agents::McpServerConfig::new(name, "true");
+            config.workers = workers;
+            config
+        };
+        arko_agents::McpHub::new(vec![
+            server("github", true),
+            server("sentry", true),
+            server("internal", false),
+        ])
+    }
+
+    /// The skills a configuration lets its run load, as the framework
+    /// would filter them.
+    fn skill_filter(config: &serde_json::Value) -> (bool, serde_json::Value) {
+        let skills = &config["skills_config"];
+        (
+            skills["subagent"].as_bool().unwrap_or(false),
+            skills["only"].clone(),
+        )
+    }
+
+    /// A worker's skills and servers are worked out once, as it starts, and
+    /// recorded. The run then gets the same ones every time it is resumed
+    /// or continued, from the registered configuration and from another
+    /// run's saved one, and after Arko restarts.
+    #[test]
+    fn a_recorded_run_gets_the_same_skills_and_servers_after_a_resume() {
+        let temp = tempfile::tempdir().unwrap();
+        let (session, root) = (temp.path().join("session"), temp.path().join("arko"));
+        std::fs::create_dir_all(&session).unwrap();
+        let skills = temp.path().join("skills");
+        let (crew, registered) = crew_with_skills(&session, &root, &skills);
+        let narrow = start("r1", &[("skills", "alpha, beta"), ("mcp", "github")]);
+        let free = start("r2", &[]);
+        let before = prepared(&crew, &narrow, &registered);
+        let free_before = prepared(&crew, &free, &registered);
+        // A worker never has the skills for the main agent alone, and a list
+        // holds only what was asked.
+        assert_eq!(
+            skill_filter(&before),
+            (true, serde_json::json!(["alpha", "beta"]))
+        );
+        assert_eq!(skill_filter(&free_before), (true, serde_json::Value::Null));
+        assert_eq!(
+            crew.mcp_servers_of(narrow.run_id),
+            Some(vec!["github".to_string()])
+        );
+        // A worker with everything has the servers workers may reach, and
+        // not the one for the main agent alone.
+        assert_eq!(
+            crew.mcp_servers_of(free.run_id),
+            Some(vec!["github".to_string(), "sentry".to_string()])
+        );
+        // The main agent has no record, so all of its servers.
+        assert_eq!(crew.mcp_servers_of(narrow.caller_run_id), None);
+
+        // Another run's saved configuration, with a list of its own: each
+        // run gets its own again.
+        let saved: AgentConfig = serde_json::from_value(before.clone()).unwrap();
+        assert_eq!(prepared(&crew, &narrow, &saved), before);
+        assert_eq!(prepared(&crew, &free, &saved), free_before);
+        let saved: AgentConfig = serde_json::from_value(free_before.clone()).unwrap();
+        assert_eq!(prepared(&crew, &narrow, &saved), before);
+        assert_eq!(prepared(&crew, &free, &saved), free_before);
+
+        // A skill saved or deleted since, and the user's changes to the
+        // folders, change nothing for the run.
+        std::fs::remove_dir_all(skills.join("alpha")).unwrap();
+        assert_eq!(prepared(&crew, &narrow, &registered), before);
+
+        // Arko restarts, before and after the workflow is attached.
+        let (again, registered) = crew_with_skills(&session, &root, &skills);
+        again.models.lock().unwrap().attached = false;
+        assert_eq!(prepared(&again, &narrow, &registered), before);
+        again.models.lock().unwrap().attached = true;
+        assert_eq!(prepared(&again, &narrow, &registered), before);
+        assert_eq!(
+            again.mcp_servers_of(narrow.run_id),
+            Some(vec!["github".to_string()])
+        );
+
+        // A record from before skills were narrowed has everything.
+        let old = std::fs::read_to_string(session.join(WORKER_MODELS_FILE)).unwrap();
+        let mut old: serde_json::Value = serde_json::from_str(&old).unwrap();
+        for setup in old.as_object_mut().unwrap().values_mut() {
+            let setup = setup.as_object_mut().unwrap();
+            setup.remove("skills");
+            setup.remove("mcp");
+        }
+        std::fs::write(session.join(WORKER_MODELS_FILE), old.to_string()).unwrap();
+        let (older, registered) = crew_with_skills(&session, &root, &skills);
+        assert_eq!(
+            skill_filter(&prepared(&older, &narrow, &registered)),
+            (true, serde_json::Value::Null)
+        );
+        assert_eq!(
+            older.mcp_servers_of(narrow.run_id),
+            Some(vec!["github".to_string(), "sentry".to_string()])
+        );
+    }
+
+    /// A worker on another model than the session's worker model lists the
+    /// skills for its own model, and gets the same names again when it
+    /// resumes. A run recorded before the names were kept keeps those of
+    /// its configuration, so it resumes as it was saved.
+    #[test]
+    fn a_worker_lists_the_skills_of_its_own_model() {
+        let temp = tempfile::tempdir().unwrap();
+        let (session, root) = (temp.path().join("session"), temp.path().join("arko"));
+        std::fs::create_dir_all(&session).unwrap();
+        let skills = temp.path().join("skills");
+        let (crew, registered) = crew_with_skills(&session, &root, &skills);
+        std::fs::create_dir_all(skills.join("quirks")).unwrap();
+        std::fs::write(
+            skills.join("quirks/SKILL.md"),
+            "---\nname: quirks\ndescription: Haiku's quirks.\nmodels: haiku\n---\n\nMind them.\n",
+        )
+        .unwrap();
+        let on_haiku = start("r1", &[("model", "haiku")]);
+        let on_luna = start("r2", &[]);
+        let haiku = prepared(&crew, &on_haiku, &registered);
+        let luna = prepared(&crew, &on_luna, &registered);
+        assert_eq!(
+            haiku["skills_config"]["model_names"],
+            serde_json::json!(["claude-haiku-5-5", "haiku"])
+        );
+        assert_eq!(
+            luna["skills_config"]["model_names"],
+            serde_json::json!(["gpt-6-luna", "luna"])
+        );
+        let listed = |config: &serde_json::Value| -> Vec<String> {
+            let config: AgentConfig = serde_json::from_value(config.clone()).unwrap();
+            arko_agents::SkillManager::load(config.skills_config.as_ref().unwrap(), &root)
+                .unwrap()
+                .prompt_context()
+                .on_demand_skills
+                .iter()
+                .map(|skill| skill.name.clone())
+                .collect()
+        };
+        assert!(listed(&haiku).contains(&"quirks".to_string()));
+        assert!(!listed(&luna).contains(&"quirks".to_string()));
+        // load_skill is there for a skill saved later, except for a worker
+        // given none.
+        assert_eq!(luna["skills_config"]["offer_when_empty"], true);
+        let none = prepared(&crew, &start("r3", &[("skills", "none")]), &registered);
+        assert_eq!(
+            none["skills_config"]["offer_when_empty"],
+            serde_json::Value::Null
+        );
+        // Each gets its own again, also from the other's saved
+        // configuration.
+        let saved: AgentConfig = serde_json::from_value(haiku.clone()).unwrap();
+        assert_eq!(prepared(&crew, &on_luna, &saved), luna);
+        assert_eq!(prepared(&crew, &on_haiku, &registered), haiku);
+
+        // A record without the names keeps the configuration's.
+        let old = std::fs::read_to_string(session.join(WORKER_MODELS_FILE)).unwrap();
+        let mut old: serde_json::Value = serde_json::from_str(&old).unwrap();
+        for setup in old.as_object_mut().unwrap().values_mut() {
+            setup.as_object_mut().unwrap().remove("model_names");
+        }
+        std::fs::write(session.join(WORKER_MODELS_FILE), old.to_string()).unwrap();
+        let (older, registered) = crew_with_skills(&session, &root, &skills);
+        let mut saved_before = registered.clone();
+        saved_before.skills_config.as_mut().unwrap().model_names = Vec::new();
+        let resumed = prepared(&older, &on_haiku, &saved_before);
+        assert_eq!(
+            resumed["skills_config"]["model_names"],
+            serde_json::Value::Null
+        );
+        assert_eq!(
+            prepared(&older, &on_haiku, &registered)["skills_config"]["model_names"],
+            serde_json::json!(["gpt-6-luna", "luna"])
+        );
+    }
+
+    /// The MCP tool is in a worker's configuration only when its setup adds
+    /// it, which it does for a worker that reaches a server when it starts.
+    /// A configuration another run was saved with doesn't leak it, and a run
+    /// gets the same again when it resumes.
+    #[test]
+    fn a_worker_is_offered_the_mcp_tool_only_when_its_setup_adds_it() {
+        let temp = tempfile::tempdir().unwrap();
+        let (session, root) = (temp.path().join("session"), temp.path().join("arko"));
+        std::fs::create_dir_all(&session).unwrap();
+        let (crew, registered) = crew_with_skills(&session, &root, &temp.path().join("skills"));
+        let mut carrying = registered.clone();
+        carrying
+            .tool_config
+            .available_tool_names
+            .push(arko_agents::mcp::MCP_TOOL_NAME.to_string());
+        let offered = |config: &serde_json::Value| {
+            config["tool_config"]["available_tool_names"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|name| name == arko_agents::mcp::MCP_TOOL_NAME)
+        };
+        let (all, some, none, only_main) = (
+            start("r1", &[]),
+            start("r2", &[("mcp", "sentry")]),
+            start("r3", &[("mcp", "none")]),
+            start("r4", &[("mcp", "[]")]),
+        );
+        for (request, expected) in [
+            (&all, true),
+            (&some, true),
+            (&none, false),
+            (&only_main, false),
+        ] {
+            let first = prepared(&crew, request, &registered);
+            assert_eq!(offered(&first), expected, "{}", request.handle);
+            // The same from a configuration that carries the tool, and
+            // when the run is prepared again.
+            assert_eq!(
+                prepared(&crew, request, &carrying),
+                first,
+                "{}",
+                request.handle
+            );
+            assert_eq!(prepared(&crew, request, &registered), first);
+        }
+        // Without a hub no worker reaches a server.
+        let (bare, base) = crew_for(&session.join("bare"), &root, &luna());
+        std::fs::create_dir_all(session.join("bare")).unwrap();
+        let mut base_with_tool = base.clone();
+        base_with_tool
+            .tool_config
+            .available_tool_names
+            .push("mcp".into());
+        assert!(!offered(&prepared(
+            &bare,
+            &start("r1", &[]),
+            &base_with_tool
+        )));
+        assert_eq!(bare.mcp_servers_of(all.run_id), None);
+    }
+
+    /// The start hook takes a worker's starter from its record, so a
+    /// worker started by a worker gets from its starter's set, also after
+    /// the starter's setup is read back from the file.
+    #[test]
+    fn a_worker_started_by_a_worker_gets_from_its_starters_record() {
+        let temp = tempfile::tempdir().unwrap();
+        let (session, root) = (temp.path().join("session"), temp.path().join("arko"));
+        std::fs::create_dir_all(&session).unwrap();
+        let (crew, registered) = crew_with_skills(&session, &root, &temp.path().join("skills"));
+        let r1 = start("r1", &[("skills", "alpha, beta"), ("mcp", "github")]);
+        prepared(&crew, &r1, &registered);
+        let under = |handle: &str, starter: &StartRequest, parameters: &[(&str, &str)]| {
+            let mut request = start(handle, parameters);
+            request.caller_run_id = starter.run_id;
+            let hook = crew.config().hook.unwrap();
+            let mut config = registered.clone();
+            hook.prepare(&request, &mut config).map(|()| request)
+        };
+        // It inherits its starter's list, narrows it, and can't widen it.
+        let r2 = under("r2", &r1, &[]).unwrap();
+        assert_eq!(
+            crew.run_model(r2.run_id).unwrap().skills,
+            Some(vec!["alpha".to_string(), "beta".to_string()])
+        );
+        assert_eq!(
+            crew.mcp_servers_of(r2.run_id),
+            Some(vec!["github".to_string()])
+        );
+        let r3 = under("r3", &r2, &[("skills", "beta")]).unwrap();
+        assert_eq!(
+            crew.run_model(r3.run_id).unwrap().skills,
+            Some(vec!["beta".to_string()])
+        );
+        let refused = under("r4", &r3, &[("skills", "alpha")]).unwrap_err();
+        assert!(refused.ends_with("You can give beta."), "{refused}");
+        let refused = under("r4", &r1, &[("mcp", "sentry")]).unwrap_err();
+        assert!(refused.ends_with("You can give github."), "{refused}");
+        // A refused start leaves no record.
+        assert!(
+            crew.run_model(
+                under("r5", &r1, &[("skills", "gamma")]).map_or(Uuid::nil(), |r| r.run_id)
+            )
+            .is_none()
+        );
+    }
+
+    /// What a start result and `list_agents` say of a worker's skills and
+    /// servers: nothing when it has its starter's, else the narrowed sets
+    /// and the names its profile asked for that it couldn't get.
+    #[test]
+    fn the_lists_say_the_narrowed_skills_and_servers() {
+        let temp = tempfile::tempdir().unwrap();
+        let (session, root) = (temp.path().join("session"), temp.path().join("arko"));
+        std::fs::create_dir_all(&session).unwrap();
+        judge(
+            &root,
+            "---\ndescription: Judges\nskills: beta, ghost\nmcp: none\n---\nJudge it.\n",
+        );
+        let (crew, registered) = crew_with_skills(&session, &root, &temp.path().join("skills"));
+        let hook = crew.config().hook.unwrap();
+        let record_of = |request: &StartRequest| {
+            let mut record = record(&request.handle, request.caller_run_id);
+            record.run_id = request.run_id;
+            record
+        };
+        let said = |parameters: &[(&str, &str)]| {
+            let request = start("r1", parameters);
+            prepared(&crew, &request, &registered);
+            hook.describe(&record_of(&request)).unwrap()
+        };
+        assert_eq!(said(&[]), "runs gpt-6-luna at high effort");
+        assert_eq!(
+            said(&[("skills", "alpha, beta")]),
+            "runs gpt-6-luna at high effort, with only the skills alpha and beta"
+        );
+        assert_eq!(
+            said(&[("skills", "none"), ("mcp", "github")]),
+            "runs gpt-6-luna at high effort, with no skills and only the MCP server github"
+        );
+        assert_eq!(
+            said(&[("mcp", "github, sentry")]),
+            "runs gpt-6-luna at high effort, with only the MCP servers github and sentry"
+        );
+        assert_eq!(
+            said(&[("profile", "judge")]),
+            "runs gpt-6-luna at high effort, profile judge, with only the skill beta and no MCP servers. The profile also names the skill `ghost`, which this worker can't get."
+        );
+    }
+
+    /// `/workers` puts each narrowed set on a line of its own, after what
+    /// the worker runs.
+    #[test]
+    fn workers_lines_say_the_narrowed_skills_and_servers() {
+        let mut worker = WorkerFacts {
+            id: "r2".into(),
+            state: "running".into(),
+            task: "Judge the render".into(),
+            model: Some("gpt-6.1-sol".into()),
+            effort: Some("high".into()),
+            profile: Some("3d-judge".into()),
+            skills: None,
+            mcp: None,
+            parent: None,
+            depth: 1,
+            cost: None,
+            family_cost: None,
+            other_model: None,
+            cache_lifetime: None,
+            worktree: None,
+            report: None,
+        };
+        let plain = describe_worker(&worker);
+        assert_eq!(
+            plain,
+            "r2  running  Judge the render\n  runs gpt-6.1-sol at high effort, profile 3d-judge"
+        );
+        worker.skills = Some(vec!["ponytail".into(), "release-notes".into()]);
+        worker.mcp = Some(Vec::new());
+        assert_eq!(
+            describe_worker(&worker),
+            format!("{plain}\n  only the skills ponytail and release-notes\n  no MCP servers")
+        );
+        worker.skills = Some(vec!["ponytail".into()]);
+        worker.mcp = Some(vec!["github".into(), "sentry".into(), "figma".into()]);
+        worker.depth = 2;
+        assert!(
+            describe_worker(&worker).ends_with(
+                "\n    only the skill ponytail\n    only the MCP servers github, sentry, and figma"
+            ),
+            "{}",
+            describe_worker(&worker)
+        );
+    }
+
     /// A record from before profiles (a model, Claude Code's settings and
     /// the handover size, nothing more) loads and gives the run the same
     /// configuration as then.
@@ -2162,8 +2827,9 @@ mod tests {
         expected.handover = on_sol.handover.clone();
         assert_eq!(applied, serde_json::to_value(&expected).unwrap());
         assert_eq!(crew.config().start_context.unwrap()(&request), None);
-        // A record written now has the old fields and the effort, which an
-        // older Arko ignores, when nothing else is added.
+        // A record written now has the old fields, and the effort and the
+        // model's names, which an older Arko ignores, when nothing else is
+        // added.
         let mut fresh = start("r2", &[]);
         fresh.run_id = Uuid::new_v4();
         prepared(&crew, &fresh, &registered);
@@ -2176,7 +2842,7 @@ mod tests {
             .unwrap()
             .keys()
             .collect();
-        assert_eq!(keys, ["effort", "handover", "llm_config"]);
+        assert_eq!(keys, ["effort", "handover", "llm_config", "model_names"]);
     }
 
     /// The project's instructions come first in a worker's first message,
@@ -2211,7 +2877,12 @@ mod tests {
     #[test]
     fn start_agent_takes_a_profile_a_model_an_effort_and_nested() {
         let names: Vec<String> = start_parameters().into_iter().map(|p| p.name).collect();
-        assert_eq!(names, ["cache", "profile", "model", "effort", "nested"]);
+        assert_eq!(
+            names,
+            [
+                "cache", "profile", "model", "effort", "skills", "mcp", "nested"
+            ]
+        );
         assert!(
             start_parameters()
                 .iter()
@@ -2225,9 +2896,14 @@ mod tests {
             .iter()
             .map(|parameter| parameter.name.as_str())
             .collect();
-        assert_eq!(offered, ["cache", "profile", "model", "effort", "nested"]);
+        assert_eq!(
+            offered,
+            [
+                "cache", "profile", "model", "effort", "skills", "mcp", "nested"
+            ]
+        );
         // It is a flag, not text.
-        let nested = &config.start_parameters[4];
+        let nested = &config.start_parameters[6];
         assert_eq!(nested.param_type, ToolParameterType::Bool);
         assert_eq!(config.max_depth, 4);
     }
@@ -2243,6 +2919,8 @@ mod tests {
             model: Some("gpt-6.1-sol".into()),
             effort: Some("high".into()),
             profile: Some("3d-judge".into()),
+            skills: None,
+            mcp: None,
             parent: None,
             depth: 1,
             cost: Some((0.1234, 0.1234)),
@@ -2423,6 +3101,8 @@ mod tests {
             model: None,
             effort: None,
             profile: None,
+            skills: None,
+            mcp: None,
             parent: parent.map(str::to_string),
             depth: 1,
             cost: None,
@@ -2512,22 +3192,16 @@ mod tests {
 
     /// A crew over `session_dir` whose new workers run luna on the ChatGPT
     /// login under `billing` and `budget`, sharing the day's spend in
-    /// `root`, with someone to ask (`can_ask`): its questions come to the
-    /// receiver. Its feed has what the user is told.
+    /// `root`, with someone to ask (`can_ask`). Its feed has the approval
+    /// tray and what the user is told.
     fn billed_crew(
         session_dir: &Path,
         root: &Path,
         billing: billing::WorkerBilling,
         budget: Option<f64>,
         can_ask: bool,
-    ) -> (
-        Arc<Crew>,
-        AgentConfig,
-        mpsc::UnboundedReceiver<crate::inputs::Question>,
-        remote::Feed,
-    ) {
+    ) -> (Arc<Crew>, AgentConfig, remote::Feed) {
         std::fs::create_dir_all(session_dir).unwrap();
-        let (sender, questions) = mpsc::unbounded_channel();
         let feed = remote::Feed::new(MAIN);
         let (crew, _) = Crew::new(Setup {
             session_id: session_dir.display().to_string(),
@@ -2540,8 +3214,9 @@ mod tests {
             feed: Some(feed.clone()),
             refuse: None,
             asker: Some(Arc::new(crate::inputs::Asker {
-                questions: can_ask.then_some(sender),
+                questions: None,
                 feed: None,
+                approvals: crate::approvals::Approvals::new(Some(feed.clone()), can_ask, None),
             })),
             root: Some(root.into()),
         });
@@ -2565,10 +3240,11 @@ mod tests {
                 rules_text: None,
                 billing,
                 api_budget: budget,
+                available: Default::default(),
             }),
         });
         crew.models.lock().unwrap().attached = true;
-        (crew, registered, questions, feed)
+        (crew, registered, feed)
     }
 
     /// Starts a worker on `model` through `crew`'s start hook, on a thread of
@@ -2584,28 +3260,39 @@ mod tests {
         tokio::spawn(async move { hook.prepare(&request, &mut config) })
     }
 
-    /// The next question of the user's, in time.
-    async fn asked(
-        questions: &mut mpsc::UnboundedReceiver<crate::inputs::Question>,
-    ) -> crate::inputs::Question {
-        tokio::time::timeout(Duration::from_secs(10), questions.recv())
-            .await
-            .expect("asked in time")
-            .expect("a question")
+    /// The first request in the approval tray of `feed`, in time.
+    async fn asked(feed: &remote::Feed) -> crate::approvals::ApprovalRequest {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                if let Some(request) = feed.approvals().into_iter().next() {
+                    return request;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("asked in time")
     }
 
-    /// The question's text and choices.
-    fn words_of(question: &crate::inputs::Question) -> (String, Vec<String>) {
-        let asked = &question.asked[0].question;
-        (asked.question.clone(), asked.choices.clone())
-    }
-
-    /// Answers `question` with `words`, as the answer panel does.
-    fn answer(question: crate::inputs::Question, words: &str) {
-        match question.answer {
-            Some(crate::inputs::Answering::Text(answer)) => answer.send(words.into()).unwrap(),
-            _ => panic!("a wait for the answer's words"),
-        }
+    /// Answers `request` in the tray of `feed`, as the tray's buttons do:
+    /// `approve` with its option on (`option`), and the message box's
+    /// `words`.
+    fn answer(
+        feed: &remote::Feed,
+        request: &crate::approvals::ApprovalRequest,
+        approve: bool,
+        option: bool,
+        words: Option<&str>,
+    ) {
+        let answered = feed.answer_approvals(&crate::approvals::ApprovalAnswers {
+            choices: vec![crate::approvals::ApprovalChoice {
+                id: request.id.clone(),
+                approve,
+                option,
+            }],
+            words: words.map(str::to_string),
+        });
+        assert_eq!(answered.len(), 1, "it waited");
     }
 
     /// The texts the feed shows.
@@ -2624,54 +3311,63 @@ mod tests {
     }
 
     /// Under Ask before API, a worker on a model billed per token waits for
-    /// the user's answer on a card that names the model and its price.
-    /// Allow starts it, and the next one asks again. Allow for the session
-    /// starts it and the next ones without asking, also once the session is
-    /// opened again. Deny, words of the user's own and a stopped turn refuse
-    /// it, in words the agent can act on. A plan's model never asks.
+    /// the user's approval in the tray, named with its model and its price.
+    /// Approve starts it, and the next one asks again. Approve with the
+    /// option on (Allow … for this session) starts it and the next ones
+    /// without asking, also once the session is opened again. Reject, with
+    /// or without words of the user's own, and a stopped turn refuse it, in
+    /// words the agent can act on. A plan's model never asks.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_worker_billed_per_token_starts_once_the_user_allows_it() {
         let temp = tempfile::tempdir().unwrap();
         let (session, root) = (temp.path().join("session"), temp.path().join("arko"));
-        let (crew, base, mut questions, feed) =
+        let (crew, base, feed) =
             billed_crew(&session, &root, billing::WorkerBilling::Ask, None, true);
 
         let starting = start_on(&crew, &base, "opus");
-        let question = asked(&mut questions).await;
-        let (text, choices) = words_of(&question);
-        assert!(
-            text.starts_with("Start a worker on Opus 5.5, billed per token? It costs $"),
-            "{text}"
-        );
-        assert!(text.ends_with(" The task is “Check it”."), "{text}");
+        let request = asked(&feed).await;
+        let approval = &request.approval;
         assert_eq!(
-            choices,
-            ["Allow", "Allow Opus 5.5 for this session", "Deny"]
+            approval.title(),
+            "Start a worker on Opus 5.5, billed per token?"
         );
-        assert!(question.plain() && question.approval.is_none());
-        answer(question, "Allow");
+        let details: Vec<String> = approval
+            .details()
+            .into_iter()
+            .map(|detail| detail.text)
+            .collect();
+        assert!(details[0].starts_with("It costs $"), "{details:?}");
+        assert_eq!(details[1], "Today’s API spend is $0.");
+        assert_eq!(details[2], "The task is “Check it”.");
+        assert_eq!(
+            approval.option().as_deref(),
+            Some("Allow Opus 5.5 for this session")
+        );
+        answer(&feed, &request, true, false, None);
         assert_eq!(starting.await.unwrap(), Ok(()));
+        assert!(feed.approvals().is_empty());
 
-        // Once only: the next start asks again, and Deny refuses it.
+        // Once only: the next start asks again, and Reject refuses it.
         let starting = start_on(&crew, &base, "opus");
-        answer(asked(&mut questions).await, "Deny");
+        answer(&feed, &asked(&feed).await, false, false, None);
         assert_eq!(
             starting.await.unwrap(),
             Err("The user denied a worker on Opus 5.5, which is billed per token, so it didn't start. Start it on a plan model, which worker_options lists, or ask the user what they want.".into())
         );
 
-        // Words of the user's own go back to the agent.
+        // The words in the message box go back to the agent.
         let starting = start_on(&crew, &base, "opus");
-        answer(asked(&mut questions).await, "Use sonnet");
+        answer(&feed, &asked(&feed).await, false, false, Some("Use sonnet"));
         let why = starting.await.unwrap().unwrap_err();
         assert!(
             why.contains("and wrote “Use sonnet”. Act on what they wrote."),
             "{why}"
         );
 
-        // A turn stopped while the card waits ends the wait.
+        // A turn stopped while the request waits ends the wait, and the
+        // request leaves the tray.
         let starting = start_on(&crew, &base, "opus");
-        let waiting = asked(&mut questions).await;
+        asked(&feed).await;
         feed.turn_stopping("Stopping the turn…");
         let why = tokio::time::timeout(Duration::from_secs(10), starting)
             .await
@@ -2679,29 +3375,26 @@ mod tests {
             .unwrap()
             .unwrap_err();
         assert!(why.starts_with("No answer came"), "{why}");
-        drop(waiting);
+        assert!(feed.approvals().is_empty());
         feed.turn_started();
 
         // Allowed for the session: it starts, and so do the next ones, with
-        // no question, also in the session opened again.
+        // no request, also in the session opened again.
         let starting = start_on(&crew, &base, "opus");
-        answer(
-            asked(&mut questions).await,
-            "Allow Opus 5.5 for this session",
-        );
+        answer(&feed, &asked(&feed).await, true, true, None);
         assert_eq!(starting.await.unwrap(), Ok(()));
         assert_eq!(start_on(&crew, &base, "opus").await.unwrap(), Ok(()));
-        let (again, base, mut more, _) =
+        let (again, base, more) =
             billed_crew(&session, &root, billing::WorkerBilling::Ask, None, true);
         assert_eq!(start_on(&again, &base, "opus").await.unwrap(), Ok(()));
         // Another model billed per token asks, and a plan's never does.
         let starting = start_on(&again, &base, "sonnet");
-        answer(asked(&mut more).await, "Allow");
+        answer(&more, &asked(&more).await, true, false, None);
         assert_eq!(starting.await.unwrap(), Ok(()));
         for plan in ["cc:sonnet", "sol"] {
             assert_eq!(start_on(&again, &base, plan).await.unwrap(), Ok(()));
         }
-        assert!(questions.try_recv().is_err() && more.try_recv().is_err());
+        assert!(feed.approvals().is_empty() && more.approvals().is_empty());
     }
 
     /// Plans only refuses a worker billed per token and names the plan
@@ -2711,7 +3404,7 @@ mod tests {
     async fn each_setting_refuses_asks_or_starts_a_worker_billed_per_token() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("arko");
-        let (plans, base, mut asked_plans, _) = billed_crew(
+        let (plans, base, asked_plans) = billed_crew(
             &temp.path().join("plans"),
             &root,
             billing::WorkerBilling::Plans,
@@ -2725,7 +3418,7 @@ mod tests {
         assert_eq!(start_on(&plans, &base, "cc:haiku").await.unwrap(), Ok(()));
         // The session's own worker model, luna, is on the ChatGPT plan here.
         assert_eq!(start_on(&plans, &base, "luna").await.unwrap(), Ok(()));
-        let (api, base, mut asked_api, _) = billed_crew(
+        let (api, base, asked_api) = billed_crew(
             &temp.path().join("api"),
             &root,
             billing::WorkerBilling::Api,
@@ -2733,8 +3426,8 @@ mod tests {
             true,
         );
         assert_eq!(start_on(&api, &base, "opus").await.unwrap(), Ok(()));
-        assert!(asked_plans.try_recv().is_err() && asked_api.try_recv().is_err());
-        let (alone, base, _, _) = billed_crew(
+        assert!(asked_plans.approvals().is_empty() && asked_api.approvals().is_empty());
+        let (alone, base, _) = billed_crew(
             &temp.path().join("alone"),
             &root,
             billing::WorkerBilling::Ask,
@@ -2793,7 +3486,7 @@ mod tests {
             .to_string(),
         )
         .unwrap();
-        let (api, base, _, feed) = billed_crew(
+        let (api, base, feed) = billed_crew(
             &temp.path().join("api"),
             &root,
             billing::WorkerBilling::Api,
@@ -2817,7 +3510,7 @@ mod tests {
             notices(&feed)
         );
 
-        let (ask, base, mut questions, _) = billed_crew(
+        let (ask, base, tray) = billed_crew(
             &temp.path().join("ask"),
             &root,
             billing::WorkerBilling::Ask,
@@ -2828,13 +3521,15 @@ mod tests {
             .allowed
             .add(&crate::providers::resolve_model("opus").unwrap());
         let starting = start_on(&ask, &base, "opus");
-        let question = asked(&mut questions).await;
-        let (text, _) = words_of(&question);
+        let request = asked(&tray).await;
         assert!(
-            text.contains(" Today’s API spend of $30 has reached your daily budget of $20. "),
-            "{text}"
+            request.approval.details().iter().any(|detail| detail.look
+                == crate::approvals::Look::Warning
+                && detail.text == "Today’s API spend of $30 has reached your daily budget of $20."),
+            "{:?}",
+            request.approval.details()
         );
-        answer(question, "Allow");
+        answer(&tray, &request, true, false, None);
         assert_eq!(starting.await.unwrap(), Ok(()));
         // Raised past the spend, the saved OK holds again.
         let mut new = ask.new_workers().unwrap();
@@ -2844,6 +3539,6 @@ mod tests {
         });
         ask.set_new_workers(new);
         assert_eq!(start_on(&ask, &base, "opus").await.unwrap(), Ok(()));
-        assert!(questions.try_recv().is_err());
+        assert!(tray.approvals().is_empty());
     }
 }

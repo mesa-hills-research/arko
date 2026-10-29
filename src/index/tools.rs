@@ -51,6 +51,18 @@ pub enum Detail {
     Full,
 }
 
+/// The definitions of the tools, which don't depend on the indexes: what a
+/// conversation saved with them was offered, for a session that has no
+/// indexes.
+pub fn definitions() -> Vec<ToolDefinition> {
+    vec![
+        search_definition(),
+        status_definition(),
+        create_definition(),
+        manage_definition(),
+    ]
+}
+
 impl Indexes {
     /// The agent's tools, sharing this instance.
     pub fn tools(self: &Arc<Self>) -> Vec<Arc<dyn Tool>> {
@@ -829,55 +841,7 @@ struct SearchTool {
 #[async_trait]
 impl Tool for SearchTool {
     fn definition(&self) -> ToolDefinition {
-        definition(
-            "index_search",
-            SEARCH_DESCRIPTION,
-            vec![
-                param(
-                    "query",
-                    "What to find, in words (a behaviour, a concept, a question) or identifiers.",
-                    ToolParameterType::String,
-                    true,
-                ),
-                param(
-                    "index",
-                    "An index name, or a directory or file inside an index (absolute or relative; e.g. ../other-repo). Default: the indexes covering path_prefix, else the current directory.",
-                    ToolParameterType::String,
-                    false,
-                ),
-                param(
-                    "mode",
-                    "Pick it from what you're looking for. `semantic` when you don't know the symbols or strings and describe the behaviour in your own words (\"where is the session saved to disk\"). `hybrid` for where an exact name is defined (`ARKO_HOME`), an exact string such as an error message, or a name together with words about it (\"Session::save error handling\"). `lexical` is rarely needed because rg does the same, but the docs and Markdown files of a code index are found by words, so use it for those. An index without embeddings always searches by words.",
-                    ToolParameterType::String,
-                    true,
-                ),
-                param(
-                    "limit",
-                    "Results, 1-50 (default 10).",
-                    ToolParameterType::Integer,
-                    false,
-                ),
-                param(
-                    "path_prefix",
-                    "Only results under this directory or file (absolute, or relative to the current directory; any indexed directory, also outside the current one).",
-                    ToolParameterType::String,
-                    false,
-                ),
-                param(
-                    "detail",
-                    "full (default): the top results' whole definitions with line numbers; brief: locations and 3-line snippets only.",
-                    ToolParameterType::String,
-                    false,
-                ),
-                param(
-                    "language",
-                    "Only chunks in this language, such as python or rust. Leave it out unless the project mixes languages and you want one of them.",
-                    ToolParameterType::String,
-                    false,
-                ),
-            ],
-            true,
-        )
+        search_definition()
     }
 
     fn recovery_mode(&self) -> ToolRecovery {
@@ -910,17 +874,7 @@ struct StatusTool {
 #[async_trait]
 impl Tool for StatusTool {
     fn definition(&self) -> ToolDefinition {
-        definition(
-            "index_status",
-            STATUS_DESCRIPTION,
-            vec![param(
-                "index",
-                "An index name, or a directory or file inside an index (default: all indexes).",
-                ToolParameterType::String,
-                false,
-            )],
-            true,
-        )
+        status_definition()
     }
 
     fn recovery_mode(&self) -> ToolRecovery {
@@ -948,67 +902,7 @@ struct CreateTool {
 #[async_trait]
 impl Tool for CreateTool {
     fn definition(&self) -> ToolDefinition {
-        definition(
-            "index_create",
-            CREATE_DESCRIPTION,
-            vec![
-                param(
-                    "path",
-                    "The directory to index, absolute or relative: any directory, also outside the current one, e.g. ../other-repo (default: the current directory).",
-                    ToolParameterType::String,
-                    false,
-                ),
-                param(
-                    "kind",
-                    "code, docs, or auto (default: by the files).",
-                    ToolParameterType::String,
-                    false,
-                ),
-                param(
-                    "name",
-                    "A name for the index (default: the directory's name).",
-                    ToolParameterType::String,
-                    false,
-                ),
-                param(
-                    "include",
-                    "Only files matching these gitignore-style patterns, comma-separated (e.g. \"src/,*.md\").",
-                    ToolParameterType::String,
-                    false,
-                ),
-                param(
-                    "exclude",
-                    "Leave out files matching these gitignore-style patterns, comma-separated (e.g. \"vendor/,*.generated.ts\"); lock files and minified assets are always left out.",
-                    ToolParameterType::String,
-                    false,
-                ),
-                param(
-                    "monitor",
-                    "Keep the index current as files change (default true).",
-                    ToolParameterType::Bool,
-                    false,
-                ),
-                param(
-                    "embed",
-                    "Embed for semantic search (default true when a Voyage key is set).",
-                    ToolParameterType::Bool,
-                    false,
-                ),
-                param(
-                    "max_embed_tokens",
-                    "Token cap of each embedding run (default 5000000).",
-                    ToolParameterType::Integer,
-                    false,
-                ),
-                param(
-                    "wait",
-                    "Wait for the embedding before returning (default false: background).",
-                    ToolParameterType::Bool,
-                    false,
-                ),
-            ],
-            false,
-        )
+        create_definition()
     }
 
     async fn execute(
@@ -1042,37 +936,7 @@ struct ManageTool {
 #[async_trait]
 impl Tool for ManageTool {
     fn definition(&self) -> ToolDefinition {
-        definition(
-            "index_manage",
-            MANAGE_DESCRIPTION,
-            vec![
-                param(
-                    "index",
-                    "The index name, or a directory or file inside it (default: the one covering the current directory). remove takes the name or the index's root only.",
-                    ToolParameterType::String,
-                    false,
-                ),
-                param(
-                    "action",
-                    "rebuild, embed, estimate, monitor_on, monitor_off or remove.",
-                    ToolParameterType::String,
-                    true,
-                ),
-                param(
-                    "max_tokens",
-                    "embed: the run's token cap (default: the index's, 5000000).",
-                    ToolParameterType::Integer,
-                    false,
-                ),
-                param(
-                    "wait",
-                    "embed: wait for the run to finish (default false).",
-                    ToolParameterType::Bool,
-                    false,
-                ),
-            ],
-            false,
-        )
+        manage_definition()
     }
 
     async fn execute(
@@ -1114,4 +978,172 @@ impl Tool for ManageTool {
     fn background_mode(&self) -> arko_agents::ToolBackground {
         arko_agents::ToolBackground::Detach
     }
+}
+
+/// The definition of `SearchTool`'s tool.
+fn search_definition() -> ToolDefinition {
+    definition(
+        "index_search",
+        SEARCH_DESCRIPTION,
+        vec![
+            param(
+                "query",
+                "What to find, in words (a behaviour, a concept, a question) or identifiers.",
+                ToolParameterType::String,
+                true,
+            ),
+            param(
+                "index",
+                "An index name, or a directory or file inside an index (absolute or relative; e.g. ../other-repo). Default: the indexes covering path_prefix, else the current directory.",
+                ToolParameterType::String,
+                false,
+            ),
+            param(
+                "mode",
+                "Pick it from what you're looking for. `semantic` when you don't know the symbols or strings and describe the behaviour in your own words (\"where is the session saved to disk\"). `hybrid` for where an exact name is defined (`ARKO_HOME`), an exact string such as an error message, or a name together with words about it (\"Session::save error handling\"). `lexical` is rarely needed because rg does the same, but the docs and Markdown files of a code index are found by words, so use it for those. An index without embeddings always searches by words.",
+                ToolParameterType::String,
+                true,
+            ),
+            param(
+                "limit",
+                "Results, 1-50 (default 10).",
+                ToolParameterType::Integer,
+                false,
+            ),
+            param(
+                "path_prefix",
+                "Only results under this directory or file (absolute, or relative to the current directory; any indexed directory, also outside the current one).",
+                ToolParameterType::String,
+                false,
+            ),
+            param(
+                "detail",
+                "full (default): the top results' whole definitions with line numbers; brief: locations and 3-line snippets only.",
+                ToolParameterType::String,
+                false,
+            ),
+            param(
+                "language",
+                "Only chunks in this language, such as python or rust. Leave it out unless the project mixes languages and you want one of them.",
+                ToolParameterType::String,
+                false,
+            ),
+        ],
+        true,
+    )
+}
+
+/// The definition of `StatusTool`'s tool.
+fn status_definition() -> ToolDefinition {
+    definition(
+        "index_status",
+        STATUS_DESCRIPTION,
+        vec![param(
+            "index",
+            "An index name, or a directory or file inside an index (default: all indexes).",
+            ToolParameterType::String,
+            false,
+        )],
+        true,
+    )
+}
+
+/// The definition of `CreateTool`'s tool.
+fn create_definition() -> ToolDefinition {
+    definition(
+        "index_create",
+        CREATE_DESCRIPTION,
+        vec![
+            param(
+                "path",
+                "The directory to index, absolute or relative: any directory, also outside the current one, e.g. ../other-repo (default: the current directory).",
+                ToolParameterType::String,
+                false,
+            ),
+            param(
+                "kind",
+                "code, docs, or auto (default: by the files).",
+                ToolParameterType::String,
+                false,
+            ),
+            param(
+                "name",
+                "A name for the index (default: the directory's name).",
+                ToolParameterType::String,
+                false,
+            ),
+            param(
+                "include",
+                "Only files matching these gitignore-style patterns, comma-separated (e.g. \"src/,*.md\").",
+                ToolParameterType::String,
+                false,
+            ),
+            param(
+                "exclude",
+                "Leave out files matching these gitignore-style patterns, comma-separated (e.g. \"vendor/,*.generated.ts\"); lock files and minified assets are always left out.",
+                ToolParameterType::String,
+                false,
+            ),
+            param(
+                "monitor",
+                "Keep the index current as files change (default true).",
+                ToolParameterType::Bool,
+                false,
+            ),
+            param(
+                "embed",
+                "Embed for semantic search (default true when a Voyage key is set).",
+                ToolParameterType::Bool,
+                false,
+            ),
+            param(
+                "max_embed_tokens",
+                "Token cap of each embedding run (default 5000000).",
+                ToolParameterType::Integer,
+                false,
+            ),
+            param(
+                "wait",
+                "Wait for the embedding before returning (default false: background).",
+                ToolParameterType::Bool,
+                false,
+            ),
+        ],
+        false,
+    )
+}
+
+/// The definition of `ManageTool`'s tool.
+fn manage_definition() -> ToolDefinition {
+    definition(
+        "index_manage",
+        MANAGE_DESCRIPTION,
+        vec![
+            param(
+                "index",
+                "The index name, or a directory or file inside it (default: the one covering the current directory). remove takes the name or the index's root only.",
+                ToolParameterType::String,
+                false,
+            ),
+            param(
+                "action",
+                "rebuild, embed, estimate, monitor_on, monitor_off or remove.",
+                ToolParameterType::String,
+                true,
+            ),
+            param(
+                "max_tokens",
+                "embed: the run's token cap (default: the index's, 5000000).",
+                ToolParameterType::Integer,
+                false,
+            ),
+            param(
+                "wait",
+                "embed: wait for the run to finish (default false).",
+                ToolParameterType::Bool,
+                false,
+            ),
+        ],
+        false,
+    )
 }

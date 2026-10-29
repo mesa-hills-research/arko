@@ -29,7 +29,7 @@ use crate::status::Gauges;
 use crate::ui::{Control, Input, Output, Stats};
 use crate::{
     agents, commands, conversations, crew, details, glyphs, handover, index, kept_notes, keys, mcp,
-    message, outside, project, providers, remote, shell, skills, ui, worker_tools,
+    message, outside, project, providers, remote, shell, skill_install, skills, ui, worker_tools,
 };
 use crate::{and_list, lock};
 
@@ -188,9 +188,25 @@ pub(crate) struct SavedSetup {
     pub(crate) name: String,
     /// The configuration of each agent's latest run.
     pub(crate) configs: std::collections::HashMap<String, arko_agents::AgentConfig>,
-    /// The MCP tools any run of the main agent offered, which a session that
-    /// keeps its runs' configurations registers for those that don't run.
-    pub(crate) mcp_tools: std::collections::BTreeSet<String>,
+    /// The tools any run of the main agent or the workers offered that Arko
+    /// has in some sessions only ([`optional_tool`]). Each saved run keeps
+    /// its tools, so a resume registers stand-ins for those the session
+    /// doesn't have.
+    pub(crate) optional_tools: std::collections::BTreeSet<String>,
+}
+
+/// Whether Arko gives the tool `name` in some sessions only: an MCP server's
+/// tool of its own, the shell and terminal tools (and the monitors, which
+/// -p leaves out), the search index's, and the worker profile tools (none
+/// without workers).
+fn optional_tool(name: &str) -> bool {
+    mcp::split_tool_name(name).is_some()
+        || agents::terminal_tool_names(true)
+            .iter()
+            .any(|tool| tool == name)
+        || index::TOOL_NAMES.contains(&name)
+        || name == crew::WORKER_OPTIONS
+        || name == crew::SAVE_WORKER_PROFILE
 }
 
 /// The parts of a checkpoint [`saved_setup`] reads. The rest of a long
@@ -217,21 +233,19 @@ pub(crate) fn saved_setup(checkpoint: &Path, run_dir: &Path) -> Result<SavedSetu
     let state: CheckpointSetup =
         serde_json::from_str(&text).map_err(|error| unreadable(error.to_string()))?;
     let mut configs = std::collections::HashMap::new();
-    let mut mcp_tools = std::collections::BTreeSet::new();
+    let mut optional_tools = std::collections::BTreeSet::new();
     let mut offered = |config: &arko_agents::AgentConfig| {
-        mcp_tools.extend(
+        optional_tools.extend(
             config
                 .tool_config
                 .available_tool_names
                 .iter()
-                .filter(|name| mcp::split_tool_name(name).is_some())
+                .filter(|name| optional_tool(name))
                 .cloned(),
         );
     };
     for result in state.agent_results {
-        if result.agent_name == MAIN {
-            offered(&result.info().agent_config);
-        }
+        offered(&result.info().agent_config);
         configs.insert(
             result.agent_name.clone(),
             result.info().agent_config.clone(),
@@ -239,7 +253,7 @@ pub(crate) fn saved_setup(checkpoint: &Path, run_dir: &Path) -> Result<SavedSetu
     }
     // (Every run's tools, as a resume checks them all.)
     for run in &state.agent_runs {
-        if let Some(info) = run.info.as_ref().filter(|_| run.agent_name == MAIN) {
+        if let Some(info) = &run.info {
             offered(&info.agent_config);
         }
     }
@@ -273,13 +287,13 @@ pub(crate) fn saved_setup(checkpoint: &Path, run_dir: &Path) -> Result<SavedSetu
             })?;
         configs.insert(agent, task.agent_config);
     }
-    if let Some(latest) = configs.get(MAIN) {
+    for latest in configs.values() {
         offered(latest);
     }
     Ok(SavedSetup {
         name: state.workflow_name,
         configs,
-        mcp_tools,
+        optional_tools,
     })
 }
 
@@ -293,10 +307,11 @@ pub(crate) fn unoffered(
     unoffered_with(saved, fresh, true)
 }
 
-/// What a resumed session's agents aren't offered, as they started without
-/// it: the tools Arko has now that their saved tool lists leave out, and
-/// skills. A resumed conversation keeps the configuration it was saved
-/// with. `nested_known` is whether the session was made by an Arko whose
+/// What a resumed session's saved runs aren't offered, as they started
+/// without it: the tools Arko has now that their saved tool lists leave out,
+/// and skills. A saved conversation or worker keeps the configuration it was
+/// saved with, also when it hands over, and new ones take the session's now.
+/// `nested_known` is whether the session was made by an Arko whose
 /// `start_agent` takes `nested` ([`Settings::nested_start`]).
 pub(crate) fn unoffered_with(
     saved: &SavedSetup,
@@ -314,9 +329,16 @@ pub(crate) fn unoffered_with(
             // One saved before edit_file edits files with apply_diff.
             let edits_with_apply_diff = name == EDIT_FILE_TOOL_NAME
                 && offered.iter().any(|name| name == APPLY_DIFF_TOOL_NAME);
+            // One saved with a tool for each MCP tool reaches the servers
+            // through those.
+            let reaches_servers = name == mcp::MCP_TOOL_NAME
+                && offered
+                    .iter()
+                    .any(|name| mcp::split_tool_name(name).is_some());
             if !offered.contains(name)
                 && !missing.contains(&name.as_str())
                 && !edits_with_apply_diff
+                && !reaches_servers
             {
                 missing.push(name);
             }
@@ -380,6 +402,9 @@ pub(crate) fn unoffered_with(
     if missing.iter().any(|name| MonitorTool::NAMES.contains(name)) {
         parts.push("monitors (monitor_start)".to_string());
     }
+    if missing.contains(&mcp::MCP_TOOL_NAME) {
+        parts.push("MCP servers (mcp)".to_string());
+    }
     let mut servers: Vec<&str> = Vec::new();
     for (server, _) in missing.iter().filter_map(|name| mcp::split_tool_name(name)) {
         if !servers.contains(&server) {
@@ -395,10 +420,16 @@ pub(crate) fn unoffered_with(
     }
     if skills {
         parts.push("skills".to_string());
+    } else if missing
+        .iter()
+        .any(|name| skill_install::TOOL_NAMES.contains(name))
+    {
+        parts.push("saving skills (add_skill)".to_string());
     }
     let named = |name: &str| {
         index::TOOL_NAMES.contains(&name)
             || mcp::split_tool_name(name).is_some()
+            || name == mcp::MCP_TOOL_NAME
             || crew::LEAD_TOOL_NAMES.contains(&name)
             || crew::WORKER_TOOL_NAMES.contains(&name)
             || agents::FILE_TOOL_NAMES.contains(&name)
@@ -407,6 +438,7 @@ pub(crate) fn unoffered_with(
             || name == CLOSE_QUESTIONS_TOOL_NAME
             || name == message::MESSAGE_USER
             || kept_notes::TOOL_NAMES.contains(&name)
+            || skill_install::TOOL_NAMES.contains(&name)
     };
     let others = missing.iter().filter(|name| !named(name)).count();
     if others > 0 {
@@ -419,7 +451,7 @@ pub(crate) fn unoffered_with(
         return None;
     }
     Some(format!(
-        "This session started without {}, so its agents don't get them. A new session does.",
+        "This session's saved conversations and workers started without {}, so they don't get them, even after a handover. New conversations (/new) and new workers do.",
         and_list(&parts)
     ))
 }
@@ -512,10 +544,15 @@ pub(crate) struct Harness {
     pub(crate) main_config: arko_agents::AgentConfig,
     pub(crate) worker_config: arko_agents::AgentConfig,
     pub(crate) tools: Vec<Arc<dyn Tool>>,
+    /// Tools Arko has that this session doesn't give (a chat's, the
+    /// monitors with -p): a saved run offered one gets a stand-in with its
+    /// definition.
+    pub(crate) withheld: Vec<Arc<dyn Tool>>,
     /// Arko's folder.
     pub(crate) root: PathBuf,
     /// The MCP servers started, and what was left out and why.
-    pub(crate) mcp: mcp::Running,
+    /// The MCP servers, and how the main agent adds and removes them.
+    pub(crate) mcp: mcp::Session,
     /// The skill folders that exist.
     pub(crate) skill_folders: Vec<PathBuf>,
     /// The search indexes; `None` when they couldn't be opened.
@@ -657,26 +694,18 @@ impl Harness {
             Some(checkpoint) => Some(saved_setup(checkpoint, &self.session.run_dir())?),
             None => None,
         };
-        // A resume needs the configurations the checkpoint was saved with.
-        let config = |agent: &str, fresh: &arko_agents::AgentConfig| {
-            saved
-                .as_ref()
-                .and_then(|saved| saved.configs.get(agent))
-                .unwrap_or(fresh)
-                .clone()
-        };
-        // A chat, and a session that switched between Chat and Agent, give
-        // the main agent's configuration now to its new conversations, while
-        // each saved one resumes with its own (until its next message, which
-        // goes on in the session's mode: `reconfigure`).
-        let keep = self.keeps_run_configs();
+        // New conversations, handed-over ones aside, and new workers get the
+        // agents' configurations now, while each saved run (a conversation,
+        // a worker) resumes with its own, its tools and prompt as they were
+        // (`keep_saved_configs`). In a session that switched between Chat
+        // and Agent, a saved conversation of the other mode takes the
+        // session's on its next message (`reconfigure`).
         if let Some(saved) = &saved {
             // (A conversation of the other mode takes the session's on its
             // next message: nothing to say of it.)
-            let main_resumes = !keep
-                || saved.configs.get(MAIN).is_some_and(|config| {
-                    config.tool_config.chat == (self.settings.mode == Mode::Chat)
-                });
+            let main_resumes = saved.configs.get(MAIN).is_some_and(|config| {
+                config.tool_config.chat == (self.settings.mode == Mode::Chat)
+            });
             let mut fresh = vec![(WORKER, &self.worker_config)];
             if main_resumes && self.settings.mode == Mode::Agent {
                 fresh.insert(0, (MAIN, &self.main_config));
@@ -684,11 +713,16 @@ impl Harness {
             self.unoffered = unoffered_with(saved, &fresh, self.settings.nested_start);
         }
         let name = saved.as_ref().map_or(WORKFLOW_NAME, |saved| &saved.name);
-        let main_config = if keep {
-            self.main_config.clone()
-        } else {
-            config(MAIN, &self.main_config)
-        };
+        let main_config = self.main_config.clone();
+        // The configuration of the conversation the session goes on in: the
+        // saved one's, unless its next message reconfigures it (one of the
+        // other mode), or there is none.
+        let going_on = saved
+            .as_ref()
+            .and_then(|saved| saved.configs.get(MAIN))
+            .filter(|config| config.tool_config.chat == (self.settings.mode == Mode::Chat))
+            .unwrap_or(&main_config)
+            .clone();
         let mut builder = Workflow::builder()
             .name(name)
             .workspace(&self.settings.workspace)
@@ -702,77 +736,75 @@ impl Harness {
                     .keep_last_checkpoints(3),
             )
             .disable_messaging()
-            .cancel_grace_period(Duration::from_secs(10));
-        if keep {
-            builder = builder.keep_saved_configs([MAIN]);
-        }
+            .cancel_grace_period(Duration::from_secs(10))
+            .keep_saved_configs([MAIN]);
         // What the user types while the agent works reaches it as a note,
         // and it answers where they read it. (Without a terminal, lines
         // wait for their own turn and no note comes.)
         if !self.queue_lines
-            && let Some(hint) = agents::operator_note_hint(&main_config)
+            && let Some(hint) = agents::operator_note_hint(&going_on)
         {
             builder = builder.notes_reply_hint(MAIN, hint);
         }
         for tool in &self.tools {
             builder = builder.agent_tool(MAIN, tool.clone());
         }
-        // The conversations kept with their own configuration still offer the
-        // tools of servers that don't run (a chat starts none, and a server
-        // may be gone from the files or fail to start), and a resume needs
-        // each registered. Only those runs are offered the stand-ins.
-        if keep && let Some(saved) = &saved {
-            let running = self.mcp.tool_names();
-            for name in saved
-                .mcp_tools
+        // The MCP servers: `mcp`, offered to the conversations whose
+        // configuration lists it (every new one), and a tool for each tool
+        // of a running server, for the conversations saved with those, which
+        // keep their tool list and their prompt cache. Neither is offered to
+        // a conversation that doesn't list it. A server's own tool checks
+        // that its run may reach the server, as `mcp` does.
+        let access: Arc<dyn arko_agents::mcp::McpAccess> =
+            Arc::new(mcp::Access::new(self.crew.as_ref()));
+        builder = builder.resume_only_agent_tool(MAIN, self.mcp.lead_tool(access.clone()));
+        let direct = self.mcp.servers.hub.direct_tools(access.clone());
+        let mut registered: std::collections::HashSet<String> =
+            self.tools.iter().map(|tool| tool.name()).collect();
+        // The definitions of those a saved run offers are kept with the
+        // session, for a later session in which their server doesn't run.
+        if let Some(saved) = &saved {
+            let offered = direct
                 .iter()
-                .filter(|name| !running.contains(name))
-            {
-                let name = name.clone();
-                let stand_in = if self.settings.mode == Mode::Chat {
-                    mcp::UnstartedTool::in_chat(name)
-                } else {
-                    mcp::UnstartedTool::not_running(name)
-                };
-                builder = builder.resume_only_agent_tool(MAIN, Arc::new(stand_in));
+                .filter(|tool| saved.optional_tools.contains(&tool.name()))
+                .map(|tool| tool.definition());
+            if let Err(error) = mcp::keep_offered_definitions(&self.session.dir, offered) {
+                log::warn!("{error}");
             }
         }
-        // Registering a tool offers it, so a session saved before a main
-        // agent with text replies had `message_user` (its saved
-        // configuration lists none) doesn't register it. One that keeps its
-        // runs' configurations does, for the next conversation to have it.
-        if keep
-            || main_config
-                .tool_config
-                .available_tool_names
-                .iter()
-                .any(|name| name == message::MESSAGE_USER)
-        {
-            builder = builder.agent_tool(MAIN, Arc::new(message::MessageUser));
+        for tool in direct {
+            registered.insert(tool.name());
+            builder = builder.resume_only_agent_tool(MAIN, tool);
         }
-        // (A session saved before kept notes has no tools for them.)
-        if keep
-            || main_config
+        // The main agent's new conversations are offered a tool their
+        // configuration lists, and a saved conversation one it was saved
+        // with (one saved before the main agent had `message_user`, kept
+        // notes or `add_skill` has none of them).
+        let offers = |tool: &Arc<dyn Tool>| {
+            main_config
                 .tool_config
                 .available_tool_names
-                .iter()
-                .any(|name| name == kept_notes::KEEP_NOTE)
-        {
-            builder = builder
-                .agent_tool(
-                    MAIN,
-                    Arc::new(kept_notes::KeepNote {
-                        notes: self.kept.clone(),
-                        crew: self.crew.clone(),
-                    }),
-                )
-                .agent_tool(
-                    MAIN,
-                    Arc::new(kept_notes::ForgetNote {
-                        notes: self.kept.clone(),
-                        crew: self.crew.clone(),
-                    }),
-                );
+                .contains(&tool.name())
+        };
+        let mut own: Vec<Arc<dyn Tool>> = vec![
+            Arc::new(message::MessageUser),
+            Arc::new(kept_notes::KeepNote {
+                notes: self.kept.clone(),
+                crew: self.crew.clone(),
+            }),
+            Arc::new(kept_notes::ForgetNote {
+                notes: self.kept.clone(),
+                crew: self.crew.clone(),
+            }),
+        ];
+        // The main agent saves and removes skills.
+        own.extend(skill_install::tools(self.skill_context(&main_config)));
+        for tool in own {
+            builder = if offers(&tool) {
+                builder.agent_tool(MAIN, tool)
+            } else {
+                builder.resume_only_agent_tool(MAIN, tool)
+            };
         }
         builder = builder.user_input_handler(self.asker.clone());
         let legacy = self.settings.max_workers > 0
@@ -802,11 +834,18 @@ impl Harness {
         }
         if self.settings.max_workers > 0 {
             builder = builder
-                .agent(WORKER, config(WORKER, &self.worker_config))
+                .agent(WORKER, self.worker_config.clone())
+                .keep_saved_configs([WORKER])
                 // The workers' size the user set, for every worker run.
                 .agent_handover_threshold(WORKER, self.handover.workers_threshold());
             for tool in &self.tools {
                 builder = builder.agent_tool(WORKER, tool.clone());
+            }
+            builder = builder.resume_only_agent_tool(WORKER, self.mcp.worker_tool(access.clone()));
+            // A worker's call of a server's own tool also needs a server
+            // workers may reach.
+            for tool in self.mcp.servers.hub.worker_direct_tools(access) {
+                builder = builder.resume_only_agent_tool(WORKER, tool);
             }
             if legacy {
                 for name in crew::LEGACY_TOOL_NAMES {
@@ -849,6 +888,51 @@ impl Harness {
                     }),
                 );
         }
+        // A saved run resumes with each tool it offers. Those this session
+        // doesn't have (a server that doesn't run, and a chat runs none, the
+        // search index's or the monitors without them, the worker profile
+        // tools without workers) get stand-ins that say so, for those runs.
+        // Each is offered with the definition the run had, so its tool list
+        // stays the same: Arko's own tools' as Arko has them, and a server's
+        // as the session kept it. (A session last opened by an Arko that
+        // didn't keep them has none for a server's tools.)
+        if let Some(saved) = &saved {
+            if self.crew.is_some() {
+                registered
+                    .extend([crew::WORKER_OPTIONS, crew::SAVE_WORKER_PROFILE].map(String::from));
+            }
+            let mut definitions = mcp::offered_definitions(&self.session.dir);
+            definitions.extend(
+                self.withheld
+                    .iter()
+                    .map(|tool| tool.definition())
+                    .chain(index::tool_definitions())
+                    .chain(worker_tools::definitions())
+                    .map(|definition| (definition.name.clone(), definition)),
+            );
+            let agents: &[&str] = if self.settings.max_workers > 0 {
+                &[MAIN, WORKER]
+            } else {
+                &[MAIN]
+            };
+            for name in saved
+                .optional_tools
+                .iter()
+                .filter(|name| !registered.contains(*name))
+            {
+                for agent in agents {
+                    let stand_in = if mcp::split_tool_name(name).is_none() {
+                        mcp::UnstartedTool::unavailable(name.clone())
+                    } else if self.settings.mode == Mode::Chat {
+                        mcp::UnstartedTool::in_chat(name.clone())
+                    } else {
+                        mcp::UnstartedTool::not_running(name.clone())
+                    };
+                    let stand_in = stand_in.offered_as(definitions.get(name).cloned());
+                    builder = builder.resume_only_agent_tool(*agent, Arc::new(stand_in));
+                }
+            }
+        }
         // After the crew's hook: a call it refuses doesn't act.
         builder = builder.hook(HookPoint::PreToolExecution, self.outside.hook());
         // The images the tools return, for the transcript.
@@ -872,11 +956,17 @@ impl Harness {
             }
         }
         let workflow = Arc::new(builder.build().map_err(|error| error.to_string())?);
-        let mut configs = vec![main_config];
+        let mut configs = vec![going_on, main_config];
         if self.settings.max_workers > 0 {
-            configs.push(config(WORKER, &self.worker_config));
+            configs.push(self.worker_config.clone());
         }
-        self.outside.attach(&workflow, &configs);
+        // (The saved runs' too, which keep theirs.)
+        self.outside.attach(
+            &workflow,
+            configs
+                .iter()
+                .chain(saved.iter().flat_map(|saved| saved.configs.values())),
+        );
         self.handover
             .watch(&workflow, &configs[0], self.settings.openai_auth);
         self.kept.follow(&workflow);
@@ -974,7 +1064,7 @@ impl Harness {
     /// session started).
     pub(crate) fn header(&self, model_note: Option<String>) -> ui::Banner {
         let mut tools = Vec::new();
-        tools.extend(self.mcp.summary());
+        tools.extend(self.mcp.servers.summary());
         let mut notes: Vec<(String, Option<Level>)> = Vec::new();
         let count = self.own_skills();
         if count > 0 {
@@ -1043,7 +1133,7 @@ impl Harness {
                 .unwrap_or_default()
         )));
         let mut extras = Vec::new();
-        extras.extend(self.mcp.summary());
+        extras.extend(self.mcp.servers.summary());
         let count = self.own_skills();
         if count > 0 {
             extras.push(format!(
@@ -1333,6 +1423,14 @@ impl Harness {
                     {
                         break;
                     }
+                    continue;
+                }
+                Event::Input(Some(Input::AnswerApprovals(answers))) => {
+                    self.answer_approvals(answers, Some(self.input_source));
+                    continue;
+                }
+                Event::Remote(Action::AnswerApprovals(answers)) => {
+                    self.answer_approvals(answers, Some(Source::Web));
                     continue;
                 }
                 Event::Remote(Action::Message(text)) => {
@@ -1763,6 +1861,8 @@ impl Harness {
         };
         *lock(&self.gauges.page) = Some(page.clone());
         self.gauges.touch();
+        // The user can answer approvals there.
+        self.asker.approvals.set_page_served(true);
         page
     }
 
@@ -1772,6 +1872,7 @@ impl Harness {
         if let Some(server) = self.remote.take() {
             lock(&self.gauges.page).take();
             self.gauges.touch();
+            self.asker.approvals.set_page_served(false);
             server.stop().await;
         }
     }
@@ -1931,9 +2032,13 @@ impl Harness {
             "/worker-depth" => self.worker_depth_command(argument, source),
             "/worker-retry-cap" => self.worker_retry_cap_command(argument, source),
             "/message-copies" => self.message_copies_command(argument, source),
+            "/extensions" => self.extensions_command(argument, source),
             "/profiles" => self.profiles_command(argument),
             "/jobs" => self.jobs_command(argument),
             "/notes" => self.notes_command(argument),
+            "/mcp" => self.mcp_command(argument),
+            "/approve" => self.approve_command(true, argument),
+            "/reject" => self.approve_command(false, argument),
             _ => self.handover_at_command(argument, source),
         }
         // (A setting it changed shows in the status and the details.)
@@ -2348,10 +2453,12 @@ impl Harness {
         Ok(())
     }
 
-    /// Whether the main agent's saved conversations each resume with their
-    /// own configuration, and new ones take the session's now: a chat's
-    /// (whose instructions change between conversations), and a session's
-    /// that switched between Chat and Agent.
+    /// Whether a saved conversation of the main agent may be of the other
+    /// mode, so that its next message goes on with the session's
+    /// configuration (`continue_options`): in a chat, and in a session that
+    /// switched between Chat and Agent or was branched from one. (Every saved
+    /// conversation resumes with its own configuration, and new ones take
+    /// the session's now.)
     pub(crate) fn keeps_run_configs(&self) -> bool {
         self.settings.mode == Mode::Chat
             || self.settings.switched_mode
@@ -3296,6 +3403,9 @@ impl Harness {
             }
             "/mcp" => self.list_mcp(),
             "/skills" => self.list_skills(),
+            skills if skills.split_whitespace().next() == Some("/skills") => {
+                self.skills_command(skills["/skills".len()..].trim());
+            }
             "/session" => {
                 self.publish_details();
                 let facts = self.details.session();
@@ -3375,42 +3485,6 @@ impl Harness {
         }
     }
 
-    /// `/mcp`: each server with its tools, or why it didn't start.
-    pub(crate) fn list_mcp(&self) {
-        let out = &self.output;
-        let facts = self.details.mcp();
-        // (A chat's note says why it has none.)
-        if facts.servers.is_empty() && self.settings.mode != Mode::Chat {
-            out.line(&format!(
-                "No MCP servers. Arko starts those set up in {}, in the project's {} (once you approve them) and in --mcp-config files.",
-                facts.user_file.display(),
-                mcp::PROJECT_FILE
-            ));
-        }
-        for server in &facts.servers {
-            out.line(&format!(
-                "{}  {}",
-                out.bold(&server.name),
-                out.dim(&format!(
-                    "{} · {}",
-                    ui::cut(&server.shown, 100),
-                    server.file.display()
-                ))
-            ));
-            match &server.tools {
-                Ok(tools) if tools.is_empty() => out.line(&out.dim("  no tools")),
-                Ok(tools) => out.line(&format!("  {}", tools.join(", "))),
-                Err(error) => out.line(&out.error(&format!("  didn't start ({error})"))),
-            }
-        }
-        for note in &facts.notes {
-            out.line(&out.dim(note));
-        }
-        if let Some(note) = &facts.unoffered {
-            out.line(&out.warn(note));
-        }
-    }
-
     /// `/skills`: a line for each skill, with its description and where it
     /// comes from.
     pub(crate) fn list_skills(&self) {
@@ -3443,11 +3517,15 @@ impl Harness {
             .skills
             .iter()
             .map(|skill| {
-                let always = if skill.always { ", always loaded" } else { "" };
+                let always = format!(
+                    "{}{}",
+                    if skill.always { ", always loaded" } else { "" },
+                    crate::skills_command::place_notes(skill)
+                );
                 let place = match &skill.path {
                     Some(path) => shorten_path(
                         &with_tilde(path, home.as_deref()),
-                        place_room.saturating_sub(always.len()),
+                        place_room.saturating_sub(always.width()),
                     ),
                     None => "built in".to_string(),
                 };
@@ -3461,7 +3539,7 @@ impl Harness {
         rows.sort();
         if rows.is_empty() {
             out.line(&format!(
-                "No skills. Arko reads them (folders with a SKILL.md) from the project's .agents/skills, .claude/skills and .skills, from {}, and from ~/.agents/skills and ~/.claude/skills.",
+                "No skills. Arko reads them (folders with a SKILL.md) from the project's .agents/skills, .claude/skills, .skills and .arko/skills, from {}, and from ~/.agents/skills and ~/.claude/skills.",
                 skills.own_folder.display()
             ));
         }
@@ -3704,6 +3782,14 @@ impl Harness {
                         Event::Input(Some(Input::DismissQuestions(ids)))
                         | Event::Remote(Action::DismissQuestions(ids)) => {
                             self.dismiss_questions(ids);
+                            continue;
+                        }
+                        Event::Input(Some(Input::AnswerApprovals(answers))) => {
+                            self.answer_approvals(answers, Some(self.input_source));
+                            continue;
+                        }
+                        Event::Remote(Action::AnswerApprovals(answers)) => {
+                            self.answer_approvals(answers, Some(Source::Web));
                             continue;
                         }
                         Event::Remote(
@@ -4469,13 +4555,15 @@ impl Harness {
                     | Action::Answer { .. }
                     | Action::Reply { .. }
                     | Action::AnswerQuestions(_)
-                    | Action::DismissQuestions(_),
+                    | Action::DismissQuestions(_)
+                    | Action::AnswerApprovals(_),
                 )
                 | Event::Input(Some(
                     Input::Message(_)
                     | Input::Answer { .. }
                     | Input::AnswerQuestions(_)
-                    | Input::DismissQuestions(_),
+                    | Input::DismissQuestions(_)
+                    | Input::AnswerApprovals(_),
                 )) => {
                     self.feed.notice(
                         Level::Warn,
@@ -4853,8 +4941,9 @@ pub(crate) fn publish_title_from_disk(session: &Session, gauges: &Gauges) {
 
 /// The commands that change a setting while the session runs, which take
 /// an argument: `/outside`, `/model`, `/handover`, `/handover-at`, `/keys`.
-/// And `/message`, which works while the agent works too.
-pub(crate) const LIVE_COMMANDS: [&str; 25] = [
+/// And `/message`, `/approve` and `/reject`, which work while the agent
+/// works too.
+pub(crate) const LIVE_COMMANDS: [&str; 29] = [
     "/outside",
     "/model",
     "/handover",
@@ -4876,9 +4965,13 @@ pub(crate) const LIVE_COMMANDS: [&str; 25] = [
     "/worker-depth",
     "/worker-retry-cap",
     "/message-copies",
+    "/extensions",
     "/profiles",
     "/jobs",
     "/notes",
+    "/mcp",
+    "/approve",
+    "/reject",
     "/message",
 ];
 
@@ -5035,6 +5128,12 @@ pub(crate) mod tests {
     mod built_in_skills {
         use super::*;
         include!("builtin_skill_tests.rs");
+    }
+
+    /// The end-to-end tests of the skills agents save, in their own file.
+    mod agent_skills {
+        use super::*;
+        include!("skill_tests.rs");
     }
 
     /// Text replies' end-to-end tests, in their own file.
@@ -5431,12 +5530,12 @@ pub(crate) mod tests {
             .push(RUN_WORKFLOW_AGENT_TOOL_NAME.into());
         let saved = SavedSetup {
             name: WORKFLOW_NAME.into(),
-            mcp_tools: Default::default(),
+            optional_tools: Default::default(),
             configs: [(MAIN.to_string(), old)].into(),
         };
         assert_eq!(
             unoffered(&saved, &[(MAIN, &main), (WORKER, &worker)]).unwrap(),
-            "This session started without workers that run in parallel, the file tools, questions to you (ask_user), and answers to you while it works (message_user), so its agents don't get them. A new session does."
+            "This session's saved conversations and workers started without workers that run in parallel, the file tools, questions to you (ask_user), and answers to you while it works (message_user), so they don't get them, even after a handover. New conversations (/new) and new workers do."
         );
     }
 
@@ -5458,12 +5557,12 @@ pub(crate) mod tests {
             .retain(|name| !MonitorTool::NAMES.contains(&name.as_str()));
         let saved = SavedSetup {
             name: WORKFLOW_NAME.into(),
-            mcp_tools: Default::default(),
+            optional_tools: Default::default(),
             configs: [(MAIN.to_string(), old)].into(),
         };
         assert_eq!(
             unoffered(&saved, &[(MAIN, &main)]).unwrap(),
-            "This session started without monitors (monitor_start), so its agents don't get them. A new session does."
+            "This session's saved conversations and workers started without monitors (monitor_start), so they don't get them, even after a handover. New conversations (/new) and new workers do."
         );
     }
 
@@ -5484,7 +5583,7 @@ pub(crate) mod tests {
         let (cc, opus) = (model("cc:haiku"), model("opus"));
         let saved = |settings: &AgentSettings| SavedSetup {
             name: WORKFLOW_NAME.into(),
-            mcp_tools: Default::default(),
+            optional_tools: Default::default(),
             configs: [(MAIN.to_string(), agents::main_config(settings).unwrap())].into(),
         };
         let now = AgentSettings::for_test(&cc, &cc);
@@ -5492,7 +5591,7 @@ pub(crate) mod tests {
         let lacks = unoffered_with(&saved(&now), &[(MAIN, &main)], false);
         assert_eq!(
             lacks.unwrap(),
-            "This session started without workers that start workers of their own (nested), so its agents don't get them. A new session does."
+            "This session's saved conversations and workers started without workers that start workers of their own (nested), so they don't get them, even after a handover. New conversations (/new) and new workers do."
         );
         // A session made since has it.
         assert_eq!(unoffered_with(&saved(&now), &[(MAIN, &main)], true), None);
@@ -5555,12 +5654,12 @@ pub(crate) mod tests {
             .retain(|name| name != crew::WORKER_OPTIONS && name != crew::SAVE_WORKER_PROFILE);
         let saved = SavedSetup {
             name: WORKFLOW_NAME.into(),
-            mcp_tools: Default::default(),
+            optional_tools: Default::default(),
             configs: [(MAIN.to_string(), old.clone())].into(),
         };
         assert_eq!(
             unoffered(&saved, &[(MAIN, &main)]).unwrap(),
-            "This session started without the worker profile tools (worker_options and save_worker_profile), so its agents don't get them. A new session does."
+            "This session's saved conversations and workers started without the worker profile tools (worker_options and save_worker_profile), so they don't get them, even after a handover. New conversations (/new) and new workers do."
         );
         // Without workers at all, that is what it says instead.
         old.tool_config
@@ -5568,12 +5667,12 @@ pub(crate) mod tests {
             .retain(|name| !crew::LEAD_TOOL_NAMES.contains(&name.as_str()));
         let saved = SavedSetup {
             name: WORKFLOW_NAME.into(),
-            mcp_tools: Default::default(),
+            optional_tools: Default::default(),
             configs: [(MAIN.to_string(), old)].into(),
         };
         assert_eq!(
             unoffered(&saved, &[(MAIN, &main)]).unwrap(),
-            "This session started without workers that run in parallel, so its agents don't get them. A new session does."
+            "This session's saved conversations and workers started without workers that run in parallel, so they don't get them, even after a handover. New conversations (/new) and new workers do."
         );
     }
 
@@ -5870,6 +5969,7 @@ pub(crate) mod tests {
         let alone = Asker {
             questions: None,
             feed: None,
+            approvals: crate::approvals::Approvals::none(),
         };
         assert_eq!(alone.respond(request("Which?")).await.unwrap(), CANT_ASK);
         assert_eq!(
@@ -5882,6 +5982,7 @@ pub(crate) mod tests {
         let asker = Arc::new(Asker {
             questions: Some(sender),
             feed: Some(feed.clone()),
+            approvals: crate::approvals::Approvals::none(),
         });
         let asking = tokio::spawn({
             let asker = asker.clone();
@@ -5921,7 +6022,7 @@ pub(crate) mod tests {
         assert_eq!(asker.asked(later.clone()).await.unwrap(), None);
         let question = questions.recv().await.unwrap();
         assert!(question.answer.is_none() && !question.plain());
-        feed.ask(later.agent_run_id, &question.asked, false, None, None);
+        feed.ask(later.agent_run_id, &question.asked, false);
         assert_eq!(
             asker.open_questions(later.agent_run_id),
             Some(later.asked.clone())
@@ -5937,8 +6038,10 @@ pub(crate) mod tests {
         assert_eq!(asker.respond(request("Hello?")).await.unwrap(), CANT_ASK);
     }
 
-    /// A session started before an MCP server, the search indexes or
-    /// skills were there is told that its agents don't get them.
+    /// A session started before the search indexes, skills or the `mcp`
+    /// tool were there is told that its agents don't get them. One saved
+    /// with a tool for each MCP tool reaches the servers through those, so
+    /// it isn't told of `mcp`.
     #[test]
     fn a_resumed_session_says_which_tools_its_agents_lack() {
         let opus = ModelSettings {
@@ -5949,39 +6052,59 @@ pub(crate) mod tests {
             handover_at: None,
         };
         let plain = AgentSettings::for_test(&opus, &opus);
-        let saved = SavedSetup {
-            name: WORKFLOW_NAME.into(),
-            mcp_tools: Default::default(),
-            configs: [
-                (MAIN.to_string(), agents::main_config(&plain).unwrap()),
-                (WORKER.to_string(), agents::worker_config(&plain).unwrap()),
-            ]
-            .into(),
+        let saved_with = |change: &dyn Fn(&mut arko_agents::AgentConfig)| {
+            let mut main = agents::main_config(&plain).unwrap();
+            let mut worker = agents::worker_config(&plain).unwrap();
+            change(&mut main);
+            change(&mut worker);
+            SavedSetup {
+                name: WORKFLOW_NAME.into(),
+                optional_tools: Default::default(),
+                configs: [(MAIN.to_string(), main), (WORKER.to_string(), worker)].into(),
+            }
         };
-        let fresh = |settings: &AgentSettings| {
+        let saved = saved_with(&|_| {});
+        let fresh = |saved: &SavedSetup, settings: &AgentSettings| {
             let main = agents::main_config(settings).unwrap();
             let worker = agents::worker_config(settings).unwrap();
-            unoffered(&saved, &[(MAIN, &main), (WORKER, &worker)])
+            unoffered(saved, &[(MAIN, &main), (WORKER, &worker)])
         };
-        assert_eq!(fresh(&plain), None);
-        let tools = [
-            "mcp__github__create_issue".to_string(),
-            "mcp__db__query".to_string(),
-        ];
+        assert_eq!(fresh(&saved, &plain), None);
         let servers = ["github".to_string(), "db".to_string()];
         let folders = [PathBuf::from("/work/.claude/skills")];
-        let note = fresh(&AgentSettings {
-            mcp_tools: &tools,
+        let with = AgentSettings {
             mcp_servers: &servers,
             skill_folders: &folders,
             index_tools: index::TOOL_NAMES,
             indexes: &[],
-            ..plain
-        })
-        .unwrap();
+            ..AgentSettings::for_test(&opus, &opus)
+        };
         assert_eq!(
-            note,
-            "This session started without the search index tools, the tools of the MCP servers github and db, and skills, so its agents don't get them. A new session does."
+            fresh(&saved, &with).unwrap(),
+            "This session's saved conversations and workers started without the search index tools and skills, so they don't get them, even after a handover. New conversations (/new) and new workers do."
+        );
+        // Saved before `mcp`: with a tool for each MCP tool, nothing is said
+        // of it, and without, it is.
+        let direct = saved_with(&|config| {
+            let tools = &mut config.tool_config.available_tool_names;
+            tools.retain(|name| name != "mcp");
+            tools.push("mcp__github__create_issue".into());
+        });
+        let workers_too = AgentSettings {
+            mcp_servers: &servers,
+            mcp_for_workers: true,
+            ..AgentSettings::for_test(&opus, &opus)
+        };
+        assert_eq!(fresh(&direct, &workers_too), None);
+        let before = saved_with(&|config| {
+            config
+                .tool_config
+                .available_tool_names
+                .retain(|name| name != "mcp");
+        });
+        assert_eq!(
+            fresh(&before, &plain).unwrap(),
+            "This session's saved conversations and workers started without MCP servers (mcp), so they don't get them, even after a handover. New conversations (/new) and new workers do."
         );
     }
 
@@ -6034,6 +6157,11 @@ pub(crate) mod tests {
         let asker = Arc::new(Asker {
             feed: Some(feed.clone()),
             questions: interactive.then_some(questions_sender),
+            approvals: crate::approvals::Approvals::new(
+                Some(feed.clone()),
+                interactive,
+                Some(output.clone()),
+            ),
         });
         let (crew, woken) = Crew::new(crew::Setup {
             session_id: session.id.clone(),
@@ -6083,6 +6211,7 @@ pub(crate) mod tests {
             worker_retry_cap: Default::default(),
             message_copies: Default::default(),
             builtin_skills: Default::default(),
+            extensions: Default::default(),
             project: Default::default(),
             background: background.clone(),
             feed: Some(feed.clone()),
@@ -6098,7 +6227,8 @@ pub(crate) mod tests {
             gauges.clone(),
             None,
             Vec::new(),
-            details::McpFacts::of(&mcp::Running::default(), &[], &root),
+            mcp::Servers::default(),
+            Vec::new(),
         ));
         let mut harness = Harness {
             ask_about_workers: false,
@@ -6115,8 +6245,9 @@ pub(crate) mod tests {
             main_config,
             worker_config,
             tools: Vec::new(),
+            withheld: Vec::new(),
             root,
-            mcp: mcp::Running::default(),
+            mcp: Default::default(),
             skill_folders: Vec::new(),
             indexes: None,
             unoffered: None,
@@ -7592,34 +7723,44 @@ pub(crate) mod tests {
             run,
             asked: one_question(id, text),
             answer: None,
-            approval: None,
-            call: None,
         });
     }
 
-    /// An approval of a worker profile named `name` the agent waits for in
-    /// conversation `run`, and where its answer comes.
-    fn ask_approval(
-        harness: &mut Harness,
-        run: uuid::Uuid,
-        name: &str,
-    ) -> tokio::sync::oneshot::Receiver<crate::questions::ApprovalAnswer> {
-        let (answer, answered) = tokio::sync::oneshot::channel();
+    /// A request in the approval tray to save a worker profile named
+    /// `name`, which conversation `run` waits for, and where its answer
+    /// comes.
+    fn ask_approval(harness: &Harness, run: uuid::Uuid, name: &str) -> crate::approvals::Waiter {
         let profile = crate::profiles::Profile::new(name, "Reviews");
-        harness.question_asked(Question {
-            run,
-            asked: one_question(
-                crate::questions::PLAIN_ID,
-                &crate::profiles::approval_text(&profile, crate::profiles::Place::User),
-            ),
-            answer: Some(crate::inputs::Answering::Approval(answer)),
-            approval: Some(crate::profiles::approval(
-                &profile,
-                crate::profiles::Place::User,
-            )),
-            call: None,
-        });
-        answered
+        crate::approvals::Approvals::new(Some(harness.feed.clone()), true, None)
+            .ask(
+                run,
+                None,
+                crate::approvals::Approval::Profile(crate::profiles::approval(
+                    &profile,
+                    crate::profiles::Place::User,
+                )),
+            )
+            .unwrap()
+    }
+
+    /// The tray's answer that approves those of the requests waiting whose
+    /// place is in `approved` and rejects the others, with `words`.
+    fn tray_answer(
+        harness: &Harness,
+        approved: &[usize],
+        words: &str,
+    ) -> crate::approvals::ApprovalAnswers {
+        let requests = harness.feed.approvals();
+        crate::approvals::ApprovalAnswers::of(
+            &requests,
+            |id| {
+                approved
+                    .iter()
+                    .any(|at| requests.get(*at).is_some_and(|request| request.id == id))
+            },
+            |_| false,
+            words,
+        )
     }
 
     /// Asked without waiting, the questions don't stop the turn. Answers
@@ -7873,46 +8014,167 @@ pub(crate) mod tests {
         drop(answering.await.unwrap());
     }
 
-    /// A submission that answers an open question and an approval the
-    /// agent waits for gives the approval its own answer, in either order,
-    /// and the other answer still reaches the agent as a note. Only Save
-    /// saves.
+    /// The approval tray and the agent's questions are answered apart. An
+    /// answer from the panel leaves the tray's request waiting, and the
+    /// tray's answer leaves the question open. A message sent while a
+    /// request waits is an ordinary message, which answers neither.
     #[tokio::test]
-    async fn an_approval_takes_its_own_answer_beside_other_questions() {
-        for (approve, reversed) in [(false, false), (false, true), (true, false), (true, true)] {
-            let temp = tempfile::tempdir().unwrap();
-            let (mut harness, _inputs, _sender) = harness(temp.path(), LLMClient::new(), true);
-            let run = uuid::Uuid::new_v4();
-            ask_later(&mut harness, run, "q1", "Push now?");
-            let mut answered = ask_approval(&mut harness, run, "reviewer");
-            let approval = harness
-                .feed
-                .open_questions()
-                .into_iter()
-                .find(|question| question.approval.is_some())
-                .unwrap();
-            let (choice, other) = if approve {
-                (crate::questions::SAVE, "No")
-            } else {
-                (crate::questions::DONT_SAVE, "Yes")
-            };
-            let mut given = vec![text_answer("q1", other), chose(&approval.id, choice)];
-            if reversed {
-                given.reverse();
+    async fn approvals_and_questions_are_answered_apart() {
+        use crate::approvals::Answer;
+        let temp = tempfile::tempdir().unwrap();
+        let (mut harness, _inputs, _sender) = harness(temp.path(), LLMClient::new(), true);
+        let run = uuid::Uuid::new_v4();
+        ask_later(&mut harness, run, "q1", "Push now?");
+        let mut waiter = ask_approval(&harness, run, "reviewer");
+        assert_eq!(harness.feed.open_questions().len(), 1, "not a question");
+        let note = harness
+            .answer_questions(answers(vec![text_answer("q1", "No")]))
+            .unwrap();
+        assert_eq!(note, "The user answered q1.\nq1 Push now? No");
+        assert!(waiter.receiver().try_recv().is_err());
+        ask_later(&mut harness, run, "q2", "Which branch?");
+        assert_eq!(
+            harness.reply_text("Hold on.", &[]),
+            Some(crate::asking::Reply {
+                text: "Hold on.\n\n(Still open: q2.)".into(),
+                kept: false
+            })
+        );
+        assert!(waiter.receiver().try_recv().is_err());
+        harness.answer_approvals(tray_answer(&harness, &[0], ""), Some(Source::Terminal));
+        assert_eq!(
+            waiter.receiver().try_recv().unwrap(),
+            Answer::Approved {
+                words: None,
+                option: false
             }
-            let note = harness.answer_questions(answers(given)).unwrap();
-            assert_eq!(
-                answered.try_recv().unwrap(),
-                if approve {
-                    crate::questions::ApprovalAnswer::Save
-                } else {
-                    crate::questions::ApprovalAnswer::DontSave
+        );
+        assert!(harness.feed.approvals().is_empty());
+        assert_eq!(harness.feed.open_questions().len(), 1, "q2 stays open");
+        assert!(harness.waiting.is_empty());
+    }
+
+    /// Requests that come together share the tray, and one answer settles
+    /// them all: those selected are approved and the others rejected, each
+    /// with the words the message box held, which the transcript shows as
+    /// the user's answer. Words too long to send settle nothing, and an
+    /// answer to requests no longer waiting is dropped.
+    #[tokio::test]
+    async fn a_batch_of_approvals_is_answered_at_once() {
+        use crate::approvals::Answer;
+        let temp = tempfile::tempdir().unwrap();
+        let (mut harness, _inputs, _sender) = harness(temp.path(), LLMClient::new(), true);
+        let run = uuid::Uuid::new_v4();
+        let mut waiters: Vec<_> = ["reviewer", "tester", "judge"]
+            .into_iter()
+            .map(|name| ask_approval(&harness, run, name))
+            .collect();
+        let requests = harness.feed.approvals();
+        assert_eq!(requests.len(), 3);
+        assert!(
+            requests
+                .iter()
+                .all(|request| request.batch == requests[0].batch)
+        );
+        let long = "y".repeat(crate::approvals::MAX_APPROVAL_WORDS + 1);
+        harness.answer_approvals(
+            tray_answer(&harness, &[0, 2], &long),
+            Some(Source::Terminal),
+        );
+        assert_eq!(harness.feed.approvals().len(), 3, "nothing settled");
+        assert!(has(
+            &harness.feed,
+            "notice",
+            "Your words are too long to send. Shorten them to 16 KB.",
+            ""
+        ));
+        harness.answer_approvals(
+            tray_answer(&harness, &[0, 2], " Keep them small. "),
+            Some(Source::Web),
+        );
+        let words = Some("Keep them small.".to_string());
+        let answers: Vec<Answer> = waiters
+            .iter_mut()
+            .map(|waiter| waiter.receiver().try_recv().unwrap())
+            .collect();
+        assert_eq!(
+            answers,
+            [
+                Answer::Approved {
+                    words: words.clone(),
+                    option: false
                 },
-                "approve {approve}, reversed {reversed}"
-            );
-            assert_eq!(note, format!("The user answered q1.\nq1 Push now? {other}"));
-            assert!(harness.waiting.is_empty());
-        }
+                Answer::Rejected {
+                    words: words.clone()
+                },
+                Answer::Approved {
+                    words,
+                    option: false
+                },
+            ]
+        );
+        assert!(harness.feed.approvals().is_empty());
+        assert!(has(&harness.feed, "user", "Keep them small.", "answer"));
+        let stale = crate::approvals::ApprovalAnswers::of(&requests, |_| true, |_| false, "");
+        harness.answer_approvals(stale, Some(Source::Terminal));
+        assert!(has(
+            &harness.feed,
+            "notice",
+            "Those approvals are no longer open.",
+            ""
+        ));
+    }
+
+    /// `/approve` and `/reject` answer the tray at the line prompt.
+    /// `/approve 2 WORDS` approves the second request with the words after
+    /// the numbers and rejects the rest, `2+` turns its option on, and
+    /// `/reject WORDS` rejects them all.
+    #[tokio::test]
+    async fn the_line_prompt_answers_the_tray_with_commands() {
+        use crate::approvals::{Answer, Approval, Approvals, BillingApproval};
+        let temp = tempfile::tempdir().unwrap();
+        let (mut harness, _inputs, _sender) = harness(temp.path(), LLMClient::new(), true);
+        let run = uuid::Uuid::new_v4();
+        assert!(harness.live_command("/reject", Source::Terminal));
+        assert!(has(&harness.feed, "notice", "No approvals wait.", ""));
+        let mut profile = ask_approval(&harness, run, "reviewer");
+        let mut billing = Approvals::new(Some(harness.feed.clone()), true, None)
+            .ask(
+                run,
+                None,
+                Approval::WorkerBilling(BillingApproval {
+                    model: "Opus 5.5".into(),
+                    ..BillingApproval::default()
+                }),
+            )
+            .unwrap();
+        assert!(harness.live_command("/approve 3", Source::Terminal));
+        assert!(has(
+            &harness.feed,
+            "notice",
+            "There's no approval 3. The tray holds 2.",
+            ""
+        ));
+        assert!(harness.live_command("/approve 2+ only this once", Source::Terminal));
+        assert_eq!(
+            profile.receiver().try_recv().unwrap(),
+            Answer::Rejected {
+                words: Some("only this once".into())
+            }
+        );
+        assert_eq!(
+            billing.receiver().try_recv().unwrap(),
+            Answer::Approved {
+                words: Some("only this once".into()),
+                option: true
+            }
+        );
+        let mut again = ask_approval(&harness, run, "tester");
+        assert!(harness.live_command("/reject", Source::Terminal));
+        assert_eq!(
+            again.receiver().try_recv().unwrap(),
+            Answer::Rejected { words: None }
+        );
     }
 
     /// A question without ids (a host's own `ask_user`, or a wait saved by
@@ -7929,8 +8191,6 @@ pub(crate) mod tests {
                 run,
                 asked: one_question(crate::questions::PLAIN_ID, "Which file?"),
                 answer: Some(crate::inputs::Answering::Text(answer)),
-                approval: None,
-                call: None,
             });
             let id = harness.feed.open_questions()[0].id.clone();
             assert!(!crate::questions::is_agent_id(&id));
@@ -7946,43 +8206,6 @@ pub(crate) mod tests {
             assert_eq!(answered.try_recv().unwrap(), "main.rs");
             assert!(harness.waiting.is_empty());
         }
-    }
-
-    /// Approvals the agent asks for together show in one card, a choice
-    /// each, and each takes its own answer: Save saves, and words of the
-    /// user's ask for changes.
-    #[tokio::test]
-    async fn approvals_asked_together_are_answered_each() {
-        let temp = tempfile::tempdir().unwrap();
-        let (mut harness, _inputs, _sender) = harness(temp.path(), LLMClient::new(), true);
-        let run = uuid::Uuid::new_v4();
-        let mut first = ask_approval(&mut harness, run, "reviewer");
-        let mut second = ask_approval(&mut harness, run, "tester");
-        let open = harness.feed.open_questions();
-        assert_eq!(open.len(), 2);
-        assert_eq!(open[0].item, open[1].item, "one card");
-        assert_eq!(
-            harness.feed.main_item(open[0].item).unwrap().text,
-            "Arko asked to save 2 worker profiles"
-        );
-        assert!(
-            harness
-                .answer_questions(answers(vec![
-                    chose(&open[0].id, crate::questions::SAVE),
-                    text_answer(&open[1].id, "Use high effort"),
-                ]),)
-                .is_none(),
-            "nothing for the agent beside the approvals"
-        );
-        assert_eq!(
-            first.try_recv().unwrap(),
-            crate::questions::ApprovalAnswer::Save
-        );
-        assert_eq!(
-            second.try_recv().unwrap(),
-            crate::questions::ApprovalAnswer::Edit("Use high effort".into())
-        );
-        assert!(harness.waiting.is_empty());
     }
 
     /// The agent's closing of a question its ask hadn't brought to the
@@ -8069,7 +8292,6 @@ pub(crate) mod tests {
         let run = uuid::Uuid::new_v4();
         ask_later(&mut harness, run, "q1", "Tabs?");
         let card = harness.feed.open_questions()[0].item;
-        let mut answered = ask_approval(&mut harness, run, "reviewer");
         assert!(harness.dismiss_questions(vec!["q1".into()]).is_some());
         assert_eq!(
             harness
@@ -8078,15 +8300,7 @@ pub(crate) mod tests {
                 .as_deref(),
             Some("Yes.")
         );
-        assert!(answered.try_recv().is_err(), "the approval still waits");
-        assert_eq!(harness.waiting.len(), 1);
         assert_eq!(harness.card_answered(card), None);
-        // A message without questions attached is the approval's answer.
-        assert_eq!(harness.reply_text("save", &[]), None);
-        assert_eq!(
-            answered.try_recv().unwrap(),
-            crate::questions::ApprovalAnswer::Save
-        );
     }
 
     /// The questions shown are the current conversation's, and an answer
@@ -8229,8 +8443,6 @@ pub(crate) mod tests {
             run,
             asked: one_question("q1", "Tabs?"),
             answer: Some(crate::inputs::Answering::Text(answer)),
-            approval: None,
-            call: None,
         });
         assert_eq!(
             answered.try_recv().unwrap(),
@@ -8294,8 +8506,6 @@ pub(crate) mod tests {
             run,
             asked: one_question("q1", "Tabs or spaces?"),
             answer: Some(crate::inputs::Answering::Text(answer)),
-            approval: None,
-            call: None,
         });
         assert_eq!(question_cards(&harness), 1, "the wait keeps the ask's card");
         assert!(
@@ -8554,8 +8764,6 @@ pub(crate) mod tests {
             run,
             asked: one_question("q3", &format!("Which {} file?", "long ".repeat(4000))),
             answer: Some(crate::inputs::Answering::Text(answer)),
-            approval: None,
-            call: None,
         });
         assert!(
             harness
@@ -8603,8 +8811,6 @@ pub(crate) mod tests {
             run,
             asked: one_question("q1", "Which file?"),
             answer: Some(crate::inputs::Answering::Text(answer)),
-            approval: None,
-            call: None,
         });
         assert_eq!(
             answered.try_recv().unwrap(),
@@ -8670,8 +8876,6 @@ pub(crate) mod tests {
                 run,
                 asked,
                 answer: Some(crate::inputs::Answering::Text(answer)),
-                approval: None,
-                call: None,
             });
             answered
         };
@@ -8761,16 +8965,12 @@ pub(crate) mod tests {
         .unwrap();
         assert!(matches!(end, TurnEnd::Answered));
         let run = harness.conversations.current_run().unwrap();
-        harness.feed.ask(
-            run,
-            &one_question("q1", "Tabs or spaces?"),
-            false,
-            None,
-            None,
-        );
         harness
             .feed
-            .ask(run, &one_question("q2", "Push now?"), false, None, None);
+            .ask(run, &one_question("q1", "Tabs or spaces?"), false);
+        harness
+            .feed
+            .ask(run, &one_question("q2", "Push now?"), false);
         let feed = harness.feed.clone();
         let typing = tokio::spawn(async move {
             while !feed.activity().working {
@@ -8878,42 +9078,30 @@ pub(crate) mod tests {
         assert_eq!(harness.feed.reserve_question_numbers(1), 3);
     }
 
-    /// An approval left open when Arko stopped waited in a process that is
-    /// gone: the session closes it as it opens, so only the approval the
-    /// tool asks again can be answered.
+    /// A request whose tool stops waiting (its turn stopped) leaves the
+    /// tray, and a session that opens again has none: its tool, run again,
+    /// asks anew.
     #[tokio::test]
-    async fn an_approval_left_open_by_a_stop_is_closed_on_reopening() {
+    async fn a_request_leaves_the_tray_when_its_tool_stops_waiting() {
         let temp = tempfile::tempdir().unwrap();
         let kept = temp.path().join(crate::questions::FILE);
         let run = uuid::Uuid::new_v4();
         {
-            let (mut harness, _inputs, _sender) =
+            let (harness, _inputs, _sender) =
                 harness(&temp.path().join("one"), LLMClient::new(), true);
             harness.feed.keep_questions(kept.clone());
-            let _waiting = ask_approval(&mut harness, run, "reviewer");
-            assert_eq!(harness.feed.open_questions().len(), 1);
+            let waiting = ask_approval(&harness, run, "reviewer");
+            assert_eq!(harness.feed.approvals().len(), 1);
+            assert!(harness.feed.open_questions().is_empty(), "not a question");
+            drop(waiting);
+            assert!(harness.feed.approvals().is_empty());
+            let _left = ask_approval(&harness, run, "tester");
         }
-        let (mut harness, _inputs, _sender) =
-            harness(&temp.path().join("two"), LLMClient::new(), true);
+        let (harness, _inputs, _sender) = harness(&temp.path().join("two"), LLMClient::new(), true);
         harness.feed.keep_questions(kept);
         harness.feed.questions_run(Some(run));
-        assert!(harness.feed.open_questions().is_empty());
-        assert_eq!(
-            harness.feed.questions()[0].state,
-            crate::questions::QuestionState::Closed { why: None }
-        );
-        let mut answered = ask_approval(&mut harness, run, "reviewer");
-        let open = harness.feed.open_questions();
-        assert_eq!(open.len(), 1);
-        assert!(
-            harness
-                .answer_questions(answers(vec![chose(&open[0].id, crate::questions::SAVE)]),)
-                .is_none()
-        );
-        assert_eq!(
-            answered.try_recv().unwrap(),
-            crate::questions::ApprovalAnswer::Save
-        );
+        assert!(harness.feed.approvals().is_empty());
+        assert!(harness.feed.questions().is_empty());
     }
 
     /// Question ids go on across the session's conversations: a new

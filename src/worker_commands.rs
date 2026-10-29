@@ -524,7 +524,7 @@ impl Harness {
             Row {
                 name: profile.name.clone(),
                 runs: crate::worker_tools::runs_text(profile.model.as_deref(), profile.effort),
-                place: found.place.reach().to_string(),
+                place: found.reach(),
                 about,
             }
         }));
@@ -535,7 +535,7 @@ impl Harness {
             .map(|problem| Row {
                 name: ui::cut(&problem.name, profiles::MAX_NAME),
                 runs: String::new(),
-                place: problem.place.reach().to_string(),
+                place: problem.reach(),
                 about: problem.reason.clone(),
             })
             .collect();
@@ -546,7 +546,7 @@ impl Harness {
             .map(|found| Row {
                 name: found.profile.name.clone(),
                 runs: String::new(),
-                place: found.place.reach().to_string(),
+                place: found.reach(),
                 about: String::new(),
             })
             .collect();
@@ -605,8 +605,13 @@ impl Harness {
         }
         // (A path on its own line, since it is longer than a screen can be.)
         text.push_str("\n/profiles NAME shows one. The files are in");
+        let mut last = None;
         for (place, folder) in profiles::folders(&roots) {
-            text.push_str(&format!("\n  {}\n    {}", place.reach(), folder.display()));
+            if last != Some(place) {
+                text.push_str(&format!("\n  {}", place.reach()));
+                last = Some(place);
+            }
+            text.push_str(&format!("\n    {}", folder.display()));
         }
         text
     }
@@ -629,7 +634,7 @@ impl Harness {
         let mut text = format!(
             "{} · for {}\n{}\n{}\nRuns on {}",
             profile.name,
-            found.place.reach(),
+            found.reach(),
             found.file.display(),
             profile.description,
             profile.runs_on()
@@ -643,6 +648,9 @@ impl Harness {
         text.push('.');
         if profile.nested {
             text.push_str(" A worker started with it can start workers of its own.");
+        }
+        for limit in profile.limits() {
+            text.push_str(&format!(" {limit}"));
         }
         if profile.made_by_agent() {
             text.push_str(" The main agent made it.");

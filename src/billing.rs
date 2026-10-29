@@ -6,10 +6,10 @@
 //! start hook ([`crate::crew`]) holds each start to it with [`gate`].
 //!
 //! Under [`WorkerBilling::Ask`], the default, a start on a model billed per
-//! token asks the user first, as Arko asks its own questions (a card with
-//! [`ALLOW`], "Allow … for this session" and [`DENY`]), and the worker
-//! starts only once they allow it. An OK for the session is kept in the
-//! session's folder ([`Allowed`]), so that model isn't asked about again.
+//! token asks the user first in the approval tray ([`approval`]), and the
+//! worker starts only once they approve it. Its option allows the model for
+//! the session, which is kept in the session's folder ([`Allowed`]), so that
+//! model isn't asked about again.
 //!
 //! The budget counts what was billed since local midnight, across the
 //! sessions of an Arko folder: each session keeps its own day's spend, from
@@ -165,29 +165,13 @@ pub fn parse_budget(text: &str) -> Result<Option<f64>, String> {
 
 /// An amount of dollars as people write it: `$20`, `$7.50`, `$0.25`.
 pub fn money(amount: f64) -> String {
-    let cents = (amount * 100.0).round();
-    if cents % 100.0 == 0.0 {
-        format!("${:.0}", cents / 100.0)
-    } else {
-        format!("${:.2}", cents / 100.0)
-    }
+    crate::remote::protocol::money(amount)
 }
 
 /// A price per million tokens in dollars, as people write it: `5`,
 /// `1.25`, `0.10`, `0.075`.
 fn per_million(amount: f64) -> String {
-    if amount.fract() == 0.0 {
-        return format!("{amount:.0}");
-    }
-    let mut text = format!("{amount:.4}");
-    while text.ends_with('0')
-        && text
-            .split_once('.')
-            .is_some_and(|(_, cents)| cents.len() > 2)
-    {
-        text.pop();
-    }
-    text
+    crate::remote::protocol::per_million(amount)
 }
 
 /// `model`'s price per million input and output tokens, when Arko knows it.
@@ -293,56 +277,24 @@ pub(crate) fn gate(
     }
 }
 
-/// The choice that allows one worker, and the one that refuses it.
-pub(crate) const ALLOW: &str = "Allow";
-pub(crate) const DENY: &str = "Deny";
-
-/// The choice that allows the model `name` (its display name) for the
-/// session.
-pub(crate) fn allow_for_session(name: &str) -> String {
-    format!("Allow {name} for this session")
-}
-
-/// The question that asks the user to allow a worker on `model` for `task`,
-/// with the day's spend and the budget it reached (`over`), and its choices.
-pub(crate) fn question(
+/// The request that asks the user to allow a worker on `model` for `task`,
+/// with the day's API spend (`spent`, when known) and the budget it reached
+/// (`over`). Its option allows the model for the session.
+pub(crate) fn approval(
     model: &Model,
     task: &str,
+    spent: Option<f64>,
     over: Option<(f64, f64)>,
-) -> (String, Vec<String>) {
-    let name = crate::models::display_name(&providers::model_name(model));
-    let mut text = format!("Start a worker on {name}, billed per token?");
-    if let Some((input, output)) = prices(model) {
-        text.push_str(&format!(
-            " It costs ${} per million input tokens and ${} per million output tokens.",
-            per_million(input),
-            per_million(output)
-        ));
+) -> crate::approvals::BillingApproval {
+    let prices = prices(model);
+    crate::approvals::BillingApproval {
+        model: crate::models::display_name(&providers::model_name(model)),
+        input_price: prices.map(|(input, _)| input),
+        output_price: prices.map(|(_, output)| output),
+        spent: over.map(|(spent, _)| spent).or(spent),
+        budget: over.map(|(_, budget)| budget),
+        task: crate::ui::cut(task.trim(), 120),
     }
-    if let Some((spent, budget)) = over {
-        text.push_str(&format!(
-            " Today’s API spend of {} has reached your daily budget of {}.",
-            money(spent),
-            money(budget)
-        ));
-    }
-    let task = crate::ui::cut(task.trim(), 120);
-    if !task.is_empty() {
-        let end = if task.ends_with(['.', '!', '?', '…']) {
-            ""
-        } else {
-            "."
-        };
-        text.push_str(&format!(" The task is “{task}”{end}"));
-    }
-    (
-        text,
-        vec![
-            ALLOW.to_string(),
-            allow_for_session(&name),
-            DENY.to_string(),
-        ],
-    )
 }
 
 /// What the user decided about a worker billed per token.
@@ -354,33 +306,20 @@ pub(crate) enum Decision {
     AllowForSession,
     /// It doesn't start, with what the user wrote, if anything.
     Deny(Option<String>),
-    /// "You decide": the agent is left to choose, which means a plan model.
-    LeftToAgent,
-    /// "Not now".
-    Dismissed,
     /// No answer came (the turn stopped), or no one can answer.
     Unanswered,
 }
 
-/// The decision the user's answer `words` makes about a worker on the model
-/// `name` (its display name), as the answer panel, a message or "Not now"
-/// gives it. Only a choice picked alone (or typed alone) allows, so words
-/// beside it go back to the agent instead.
-pub(crate) fn decision(words: &str, name: &str) -> Decision {
-    let words = words.trim();
-    let bare = words.trim_end_matches(['.', '!']).trim();
-    if bare.is_empty() {
-        Decision::Dismissed
-    } else if bare.eq_ignore_ascii_case(ALLOW) {
-        Decision::Allow
-    } else if bare.eq_ignore_ascii_case(&allow_for_session(name)) {
-        Decision::AllowForSession
-    } else if bare.eq_ignore_ascii_case(DENY) {
-        Decision::Deny(None)
-    } else if bare == "You decide" || bare.starts_with("You decide (") {
-        Decision::LeftToAgent
-    } else {
-        Decision::Deny(Some(words.to_string()))
+impl Decision {
+    /// The decision the user's answer in the approval tray makes.
+    pub(crate) fn of(answer: &crate::approvals::Answer) -> Self {
+        use crate::approvals::Answer;
+        match answer {
+            Answer::Approved { option: true, .. } => Decision::AllowForSession,
+            Answer::Approved { .. } => Decision::Allow,
+            Answer::Rejected { words } => Decision::Deny(words.clone()),
+            Answer::Unanswered => Decision::Unanswered,
+        }
     }
 }
 
@@ -397,16 +336,20 @@ pub(crate) fn refusal(decision: &Decision, model: &Model) -> String {
         Decision::Deny(Some(words)) => format!(
             "The user didn't allow a worker on {name}, which is billed per token, and wrote “{words}”. Act on what they wrote. A worker on a model billed per token asks them again."
         ),
-        Decision::LeftToAgent => format!(
-            "The user left the choice to you, so the worker didn't start on {name}, which is billed per token. {plan}."
-        ),
-        Decision::Dismissed => format!(
-            "The user dismissed the question, so the worker didn't start on {name}, which is billed per token. {plan}, or ask the user."
-        ),
         Decision::Unanswered => format!(
             "No answer came, so the worker didn't start on {name}, which is billed per token."
         ),
     }
+}
+
+/// What the main agent reads when the user allowed a worker on `model` with
+/// words of their own.
+pub(crate) fn allowed_with(model: &Model, words: &str) -> String {
+    format!(
+        "The user allowed the worker on {}, which is billed per token, and wrote “{}”.",
+        crate::models::display_name(&providers::model_name(model)),
+        words.trim()
+    )
 }
 
 /// What the agent reads when no one can allow a worker billed per token.

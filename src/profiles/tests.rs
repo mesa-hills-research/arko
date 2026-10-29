@@ -1,4 +1,5 @@
 use super::*;
+use crate::approvals::{Approval, Look};
 
 fn roots(temp: &Path) -> Roots {
     Roots::new(temp.join("arko"))
@@ -8,6 +9,15 @@ fn roots(temp: &Path) -> Roots {
 
 fn write(roots: &Roots, place: Place, name: &str, text: &str) -> PathBuf {
     let folder = roots.folder(place).unwrap();
+    std::fs::create_dir_all(&folder).unwrap();
+    let file = folder.join(format!("{name}.md"));
+    std::fs::write(&file, text).unwrap();
+    file
+}
+
+/// Writes a profile in the older `.agents/profiles` of `place`.
+fn write_older(roots: &Roots, place: Place, name: &str, text: &str) -> PathBuf {
+    let folder = roots.older_folder(place).unwrap();
     std::fs::create_dir_all(&folder).unwrap();
     let file = folder.join(format!("{name}.md"));
     std::fs::write(&file, text).unwrap();
@@ -41,6 +51,98 @@ fn every_key_survives_a_round_trip() {
     let small = Profile::new("quick", "Reads files");
     assert_eq!(small.render(), "---\ndescription: Reads files\n---\n");
     assert_eq!(Profile::parse("quick", &small.render()).unwrap(), small);
+}
+
+/// `skills` and `mcp` are lists in the front matter: names separated by
+/// commas, or `none`. A line with nothing in it leaves the set to the
+/// starter, and a bad one is said.
+#[test]
+fn skills_and_servers_are_lists_in_the_front_matter() {
+    let mut profile = Profile::new("narrow", "Reads");
+    profile.skills = Some(vec!["ponytail".into(), "release-notes".into()]);
+    profile.mcp = Some(Vec::new());
+    let text = profile.render();
+    assert_eq!(
+        text,
+        "---\ndescription: Reads\nskills: ponytail, release-notes\nmcp: none\n---\n"
+    );
+    assert_eq!(Profile::parse("narrow", &text).unwrap(), profile);
+    assert_eq!(profile.check(), Ok(()));
+    // The other forms read the same, and a repeated name counts once.
+    let json = "---\ndescription: Reads\nskills: [\"ponytail\", \"release-notes\", \"ponytail\"]\nmcp: None\n---\n";
+    assert_eq!(Profile::parse("narrow", json).unwrap(), profile);
+    // Left out or blank is the starter's.
+    let blank = Profile::parse("narrow", "---\ndescription: Reads\nskills:\n---\n").unwrap();
+    assert_eq!((blank.skills, blank.mcp), (None, None));
+    assert_eq!(
+        Profile::parse("narrow", "---\ndescription: Reads\nskills: ,\n---\n").unwrap_err(),
+        "`skills` isn't names separated by commas, a JSON array or none"
+    );
+    assert_eq!(
+        Profile::parse("narrow", "---\ndescription: Reads\nmcp: [1]\n---\n").unwrap_err(),
+        "`mcp` isn't names separated by commas, a JSON array or none"
+    );
+    assert_eq!(
+        Profile::parse("narrow", "---\ndescription: Reads\nmcp: a\nmcp: b\n---\n").unwrap_err(),
+        "`mcp` is given twice"
+    );
+    // A name a list can't hold isn't saved.
+    profile.skills = Some(vec!["a,b".into()]);
+    assert_eq!(
+        profile.check().unwrap_err(),
+        "The skills list has a name with a comma or a control character."
+    );
+}
+
+/// The approval carries what workers with the profile are limited to, in
+/// the request's data and in its details in the tray.
+#[test]
+fn the_approval_says_what_workers_with_the_profile_get() {
+    let details = |profile: &Profile| -> Vec<(Look, String)> {
+        Approval::Profile(approval(profile, Place::User))
+            .details()
+            .into_iter()
+            .map(|detail| (detail.look, detail.text))
+            .collect()
+    };
+    let mut profile = Profile::new("narrow", "Reads");
+    profile.instructions = "Read only.".into();
+    assert!(profile.limits().is_empty());
+    assert!(approval(&profile, Place::User).limits.is_empty());
+    let plain = details(&profile);
+    profile.skills = Some(vec!["ponytail".into(), "release-notes".into()]);
+    profile.mcp = Some(Vec::new());
+    assert_eq!(
+        profile.limits(),
+        [
+            "Workers with it get only the skills ponytail and release-notes.",
+            "Workers with it get no MCP servers."
+        ]
+    );
+    assert_eq!(approval(&profile, Place::User).limits, profile.limits());
+    // The tray shows them after the description, before the folder and the
+    // instructions.
+    let mut narrowed = plain.clone();
+    narrowed.splice(
+        2..2,
+        profile
+            .limits()
+            .into_iter()
+            .map(|limit| (Look::Text, limit)),
+    );
+    assert_eq!(plain[1], (Look::Text, "Reads".to_string()));
+    assert_eq!(
+        plain[2],
+        (Look::Text, "Saved in Arko's profiles folder.".to_string())
+    );
+    assert_eq!(plain[3], (Look::Heading, "Instructions".to_string()));
+    assert_eq!(details(&profile), narrowed);
+    profile.skills = Some(vec!["ponytail".into()]);
+    profile.mcp = None;
+    assert_eq!(
+        profile.limits(),
+        ["Workers with it get only the skill ponytail."]
+    );
 }
 
 #[test]
@@ -222,18 +324,18 @@ fn the_nearest_place_wins_and_the_others_are_listed_as_hidden() {
         folders(&user_only),
         [(Place::User, temp.path().join("arko").join("profiles"))]
     );
+    // The project has two folders, the one a save writes first.
     assert_eq!(
         folders(&roots)
             .iter()
             .map(|(place, _)| *place)
             .collect::<Vec<_>>(),
-        [Place::Session, Place::Project, Place::User]
+        [Place::Session, Place::Project, Place::Project, Place::User]
     );
-    assert!(
-        folders(&roots)[1]
-            .1
-            .ends_with(Path::new(".agents").join("profiles"))
-    );
+    let listed = folders(&roots);
+    assert!(listed[1].1.ends_with(Path::new(".arko").join("profiles")));
+    assert!(listed[2].1.ends_with(Path::new(".agents").join("profiles")));
+    assert_eq!(Some(listed[1].1.clone()), roots.folder(Place::Project));
 }
 
 #[test]
@@ -529,33 +631,64 @@ fn two_writers_leave_a_whole_file() {
 }
 
 #[test]
-fn the_approval_question_shows_the_whole_profile() {
-    let mut profile = full();
-    profile.nested = false;
-    profile.fast = false;
-    profile.cache = None;
-    let question = approval_text(&profile, Place::User);
+fn the_approval_shows_the_whole_profile() {
+    let lines = |profile: &Profile| -> Vec<(Look, String)> {
+        Approval::Profile(approval(profile, Place::User))
+            .details()
+            .into_iter()
+            .map(|detail| (detail.look, detail.text))
+            .collect()
+    };
+    // Its model, fast mode and cache, what it is for, that its workers can
+    // start workers, the folder, then its instructions.
     assert_eq!(
-        question,
-        "The main agent wants to save the worker profile 3d-judge in your Arko folder, for every project.\n\nJudges 3D results against a reference image\nRuns on sol at high effort.\nIts instructions are 66 characters (3 lines).\n\nInstructions\nYou judge 3D models.\n\nCompare the render with the reference image."
+        lines(&full()),
+        [
+            (
+                Look::Text,
+                "Runs on sol at high effort in fast mode with a 1h prompt cache.".to_string()
+            ),
+            (
+                Look::Text,
+                "Judges 3D results against a reference image".to_string()
+            ),
+            (
+                Look::Text,
+                "A worker started with it can start workers of its own.".to_string()
+            ),
+            (Look::Text, "Saved in Arko's profiles folder.".to_string()),
+            (Look::Heading, "Instructions".to_string()),
+            (
+                Look::Box,
+                "You judge 3D models.\n\nCompare the render with the reference image.".to_string()
+            ),
+        ]
     );
-    let project = approval_text(&profile, Place::Project);
-    assert!(
-        project.contains(
-            "save the worker profile 3d-judge in this project's .agents/profiles folder."
+    let mut plain = full();
+    plain.fast = false;
+    plain.cache = None;
+    plain.nested = false;
+    plain.effort = None;
+    plain.model = None;
+    let lines = lines(&plain);
+    assert_eq!(
+        lines[0],
+        (
+            Look::Text,
+            "Runs on the session's worker model.".to_string()
         )
     );
-    let mut plain = Profile::new("quick", "Reads");
-    plain.nested = true;
-    plain.fast = true;
-    plain.cache = Some(Cache::FiveMinutes);
-    let text = approval_text(&plain, Place::User);
     assert!(
-        text.contains("Runs on the session's worker model in fast mode with a 5m prompt cache."),
-        "{text}"
+        lines
+            .iter()
+            .all(|(_, text)| !text.contains("start workers"))
     );
-    assert!(text.contains("A worker started with it can start workers of its own."));
-    assert!(text.contains("It has no instructions."));
+    let bare = Approval::Profile(approval(&Profile::new("quick", "Reads"), Place::User));
+    assert!(
+        bare.details()
+            .iter()
+            .any(|detail| detail.text == "It has no instructions.")
+    );
 }
 
 #[test]
@@ -797,7 +930,12 @@ fn an_isolated_key_from_an_earlier_file_is_kept_and_means_nothing() {
         profile.extra,
         [("isolated".to_string(), "true".to_string())]
     );
-    assert!(!approval_text(&profile, Place::User).contains("worktree"));
+    let card = Approval::Profile(approval(&profile, Place::User));
+    assert!(
+        card.details()
+            .iter()
+            .all(|detail| !detail.text.contains("worktree"))
+    );
     assert!(profile.render().contains("isolated: true"));
     let again = Profile::parse("tree", &profile.render()).unwrap();
     assert_eq!(again, profile);
@@ -863,7 +1001,10 @@ fn an_agents_first_write_never_replaces_a_file_that_appeared_meanwhile() {
     // The file is there when the write comes, as if made after the check.
     let file = folder.join("judge.md");
     std::fs::write(&file, "---\ndescription: The user's own\n---\n").unwrap();
-    let error = crate::session::write_new(&file, b"agent").unwrap_err();
+    let error = crate::arko_dir::Folder::base(&folder)
+        .unwrap()
+        .create_whole("judge.md", b"agent")
+        .unwrap_err();
     assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
     // Saved through the library, the agent is refused outright.
     let mut profile = Profile::new("judge", "Judges");
@@ -893,9 +1034,10 @@ fn judge() -> Profile {
     Profile::new("judge", "Judges renders")
 }
 
-/// A project folder that a save makes gets a `.gitignore` that ignores the
-/// folder and the file itself. A folder that was there, and one whose file
-/// the user deleted, don't get one, and the setting turns it off.
+/// A save that makes the project's `.arko` folder gets its `.gitignore`,
+/// which ignores the folder and the file itself. A folder that was there, and
+/// one whose file the user deleted, don't get one, and the setting turns it
+/// off.
 #[test]
 fn a_project_folder_a_save_makes_gets_a_gitignore_once() {
     let temp = tempfile::tempdir().unwrap();
@@ -903,11 +1045,12 @@ fn a_project_folder_a_save_makes_gets_a_gitignore_once() {
     let folder = roots.folder(Place::Project).unwrap();
     git_init(&temp.path().join("work"));
     save(&roots, Place::Project, &judge(), Author::Agent).unwrap();
-    let ignore = folder.join(".gitignore");
+    let ignore = temp.path().join("work").join(".arko").join(".gitignore");
     assert_eq!(
         std::fs::read_to_string(&ignore).unwrap(),
-        "# Arko keeps worker profiles out of git. Delete this file to share them.\n*\n"
+        crate::arko_dir::IGNORE_TEXT
     );
+    assert!(!folder.join(".gitignore").exists(), "none in profiles");
     // Git sees neither the profile nor the file.
     let status = crate::sessions::git(
         &temp.path().join("work"),
@@ -939,7 +1082,7 @@ fn a_project_folder_a_save_makes_gets_a_gitignore_once() {
         ..Preferences::default()
     };
     off.save(&temp.path().join("arko")).unwrap();
-    std::fs::remove_dir_all(temp.path().join("work").join(".agents")).unwrap();
+    std::fs::remove_dir_all(temp.path().join("work").join(".arko")).unwrap();
     save(&roots, Place::Project, &judge(), Author::User).unwrap();
     assert!(!ignore.exists());
     assert_eq!(Preferences::load(&temp.path().join("arko")), off);
@@ -972,12 +1115,12 @@ fn a_project_folder_git_ignores_needs_no_approval() {
     );
 
     // Without the file the folder is git's to track.
-    let folder = roots.folder(Place::Project).unwrap();
-    std::fs::remove_file(folder.join(".gitignore")).unwrap();
+    let arko = work.join(".arko");
+    std::fs::remove_file(arko.join(".gitignore")).unwrap();
     assert!(needs_approval(&roots, Place::Project, "judge"), "tracked");
 
     // With the setting off a folder to be made is tracked too.
-    std::fs::remove_dir_all(&folder).unwrap();
+    std::fs::remove_dir_all(&arko).unwrap();
     assert!(!needs_approval(&roots, Place::Project, "judge"));
     Preferences {
         keep_out_of_git: false,
@@ -991,25 +1134,31 @@ fn a_project_folder_git_ignores_needs_no_approval() {
     );
 }
 
-/// A `.agents` that links to another place is not the project's folder, so the
-/// save asks even when that place is a git work tree.
+/// A `.arko` that links to another place is not the project's folder, so the
+/// save asks even when that place is a git work tree. A link that stays in
+/// the project asks too, since the folder wasn't made by a save and has no
+/// `.gitignore` of Arko's.
 #[cfg(unix)]
 #[test]
-fn a_linked_agents_folder_that_leaves_the_project_still_asks() {
+fn a_linked_arko_folder_still_asks() {
     let temp = tempfile::tempdir().unwrap();
     let roots = roots(temp.path());
     let work = temp.path().join("work");
     let other = temp.path().join("other");
     git_init(&work);
     git_init(&other);
-    let agents = work.join(".agents");
-    // A link to a folder inside the project is the project's own.
+    let arko = work.join(".arko");
     std::fs::create_dir(work.join("inner")).unwrap();
-    std::os::unix::fs::symlink(work.join("inner"), &agents).unwrap();
-    assert!(!needs_approval(&roots, Place::Project, "judge"), "inside");
-    std::fs::remove_file(&agents).unwrap();
-    std::os::unix::fs::symlink(&other, &agents).unwrap();
+    std::os::unix::fs::symlink(work.join("inner"), &arko).unwrap();
+    assert!(needs_approval(&roots, Place::Project, "judge"), "inside");
+    std::fs::remove_file(&arko).unwrap();
+    std::os::unix::fs::symlink(&other, &arko).unwrap();
     assert!(needs_approval(&roots, Place::Project, "judge"), "outside");
+    // A link in the older folder's place changes nothing for a save, which
+    // writes `.arko` and is judged by it.
+    std::fs::remove_file(&arko).unwrap();
+    std::os::unix::fs::symlink(&other, work.join(".agents")).unwrap();
+    assert!(!needs_approval(&roots, Place::Project, "judge"), "older");
 }
 
 /// In a subfolder of a git repository the repository root's profiles are
@@ -1026,7 +1175,7 @@ fn a_subfolder_reads_the_repository_roots_profiles_unless_turned_off() {
     let roots = Roots::new(&arko).workspace(&sub);
     assert_eq!(
         roots.folder(Place::Repository),
-        Some(top.join(".agents").join("profiles"))
+        Some(top.join(".arko").join("profiles"))
     );
     let make = |place, description: &str| {
         write(
@@ -1080,4 +1229,460 @@ fn a_subfolder_reads_the_repository_roots_profiles_unless_turned_off() {
     assert_eq!(roots.folder(Place::Repository), None);
     std::fs::remove_file(roots.folder(Place::Project).unwrap().join("reviewer.md")).unwrap();
     assert_eq!(read(&roots, "reviewer").unwrap().place, Place::User);
+}
+
+fn described(description: &str) -> String {
+    format!("---\ndescription: {description}\n---\nBody.\n")
+}
+
+/// A profile in the older `.agents/profiles` is still read in the project and
+/// at the repository root, behind the `.arko/profiles` of the same place,
+/// which wins a name both have. Reading moves nothing.
+#[test]
+fn the_older_folder_is_still_read_and_arko_profiles_win() {
+    let temp = tempfile::tempdir().unwrap();
+    let roots = roots(temp.path());
+    let old = write_older(&roots, Place::Project, "kept", &described("In the older"));
+    write_older(&roots, Place::Project, "both", &described("Older both"));
+    write(&roots, Place::Project, "both", &described("Newer both"));
+    // A file in `.arko/profiles` that can't be read hides no other.
+    write_older(&roots, Place::Project, "broken", &described("Older broken"));
+    write(&roots, Place::Project, "broken", "no front matter\n");
+
+    let listed = list(&roots);
+    let active: Vec<_> = listed
+        .active
+        .iter()
+        .map(|found| (found.profile.name.as_str(), found.in_older_folder()))
+        .collect();
+    assert_eq!(
+        active,
+        [("both", false), ("broken", true), ("kept", true)],
+        "{listed:?}"
+    );
+    assert_eq!(
+        listed.get("both").unwrap().profile.description,
+        "Newer both"
+    );
+    // The one it hides is listed, with its folder.
+    assert_eq!(listed.hidden.len(), 1);
+    assert_eq!(listed.hidden[0].profile.description, "Older both");
+    assert_eq!(listed.hidden[0].reach(), "this project (.agents/profiles)");
+    assert_eq!(listed.unreadable.len(), 1);
+    assert_eq!(listed.unreadable[0].reach(), "this project");
+
+    let kept = read(&roots, "kept").unwrap();
+    assert_eq!(
+        (kept.place, kept.file.as_path()),
+        (Place::Project, old.as_path())
+    );
+    assert_eq!(kept.reach(), "this project (.agents/profiles)");
+    let both = read(&roots, "both").unwrap();
+    assert_eq!(both.reach(), "this project");
+    assert!(!both.in_older_folder());
+    assert_eq!(
+        read(&roots, "broken").unwrap().profile.description,
+        "Older broken"
+    );
+
+    // A user's profile, in any place, is not in the older folder.
+    write(&roots, Place::User, "mine", &described("Mine"));
+    assert_eq!(read(&roots, "mine").unwrap().reach(), "every project");
+    // Nothing was moved or made.
+    assert!(old.is_file());
+    assert!(
+        !temp
+            .path()
+            .join("work")
+            .join(".arko")
+            .join(".gitignore")
+            .exists()
+    );
+}
+
+/// An unreadable file in the older folder says so in its place.
+#[test]
+fn an_unreadable_file_in_the_older_folder_names_it() {
+    let temp = tempfile::tempdir().unwrap();
+    let roots = roots(temp.path());
+    write_older(&roots, Place::Project, "odd", "no front matter\n");
+    let listed = list(&roots);
+    assert_eq!(
+        listed.unreadable[0].reach(),
+        "this project (.agents/profiles)"
+    );
+}
+
+/// The repository root's two folders are read like the project's.
+#[test]
+fn both_folders_are_read_at_the_repository_root() {
+    let temp = tempfile::tempdir().unwrap();
+    let top = temp.path().join("repo");
+    let sub = top.join("packages").join("app");
+    std::fs::create_dir_all(&sub).unwrap();
+    git_init(&top);
+    let roots = Roots::new(temp.path().join("arko")).workspace(&sub);
+    write_older(
+        &roots,
+        Place::Repository,
+        "shared",
+        &described("Shared, older"),
+    );
+    write_older(
+        &roots,
+        Place::Repository,
+        "twice",
+        &described("Twice, older"),
+    );
+    write(
+        &roots,
+        Place::Repository,
+        "twice",
+        &described("Twice, newer"),
+    );
+    assert_eq!(
+        folders(&roots)
+            .iter()
+            .map(|(place, folder)| (*place, folder.clone()))
+            .collect::<Vec<_>>(),
+        [
+            (Place::Project, sub.join(".arko").join("profiles")),
+            (Place::Project, sub.join(".agents").join("profiles")),
+            (Place::Repository, top.join(".arko").join("profiles")),
+            (Place::Repository, top.join(".agents").join("profiles")),
+            (Place::User, temp.path().join("arko").join("profiles")),
+        ]
+    );
+    let shared = read(&roots, "shared").unwrap();
+    assert_eq!(shared.place, Place::Repository);
+    assert_eq!(shared.reach(), "this repository (.agents/profiles)");
+    assert_eq!(
+        read(&roots, "twice").unwrap().profile.description,
+        "Twice, newer"
+    );
+    // The project's own `.arko/profiles` is still nearer than the root's.
+    write(
+        &roots,
+        Place::Project,
+        "twice",
+        &described("Twice, the project's"),
+    );
+    assert_eq!(read(&roots, "twice").unwrap().place, Place::Project);
+}
+
+/// A save writes `.arko/profiles` and nothing under `.agents`, for the
+/// project and for the repository root.
+#[test]
+fn a_save_writes_arko_profiles_only() {
+    let temp = tempfile::tempdir().unwrap();
+    let top = temp.path().join("repo");
+    let sub = top.join("packages").join("app");
+    std::fs::create_dir_all(&sub).unwrap();
+    git_init(&top);
+    let roots = Roots::new(temp.path().join("arko")).workspace(&sub);
+    for (place, base) in [(Place::Project, &sub), (Place::Repository, &top)] {
+        let saved = save(&roots, place, &judge(), Author::Agent).unwrap();
+        assert_eq!(
+            saved.file,
+            base.join(".arko").join("profiles").join("judge.md")
+        );
+        assert!(!saved.replaced);
+        assert!(saved.file.is_file());
+        assert!(!base.join(".agents").exists(), "{place:?}");
+        assert!(base.join(".arko").join(".gitignore").is_file(), "{place:?}");
+    }
+    // A user's save the same.
+    let saved = save(
+        &roots,
+        Place::Project,
+        &Profile::new("two", "Two"),
+        Author::User,
+    )
+    .unwrap();
+    assert!(saved.file.starts_with(sub.join(".arko")));
+    assert!(!sub.join(".agents").exists());
+}
+
+/// Replacing a profile that lives in the older folder of the same place
+/// writes the new file in `.arko/profiles` and deletes the old, so the name
+/// isn't listed twice. The older folder of another place stays.
+#[test]
+fn replacing_a_profile_from_the_older_folder_deletes_the_old_file() {
+    let temp = tempfile::tempdir().unwrap();
+    let top = temp.path().join("repo");
+    let sub = top.join("packages").join("app");
+    std::fs::create_dir_all(&sub).unwrap();
+    git_init(&top);
+    let roots = Roots::new(temp.path().join("arko")).workspace(&sub);
+    let old = write_older(&roots, Place::Project, "judge", &described("Older judge"));
+    let other = write_older(&roots, Place::Project, "other", &described("Another"));
+    let at_root = write_older(
+        &roots,
+        Place::Repository,
+        "judge",
+        &described("Root's judge"),
+    );
+
+    let mut profile = judge();
+    profile.model = Some("sol".into());
+    let saved = save(&roots, Place::Project, &profile, Author::User).unwrap();
+    assert!(saved.replaced);
+    assert_eq!(
+        saved.file,
+        sub.join(".arko").join("profiles").join("judge.md")
+    );
+    assert!(!old.exists(), "the old file is deleted");
+    assert!(other.is_file() && at_root.is_file(), "the others stay");
+    let listed = list(&roots);
+    let judges: Vec<_> = listed
+        .active
+        .iter()
+        .chain(&listed.hidden)
+        .filter(|found| found.profile.name == "judge")
+        .map(|found| (found.place, found.in_older_folder()))
+        .collect();
+    assert_eq!(
+        judges,
+        [(Place::Project, false), (Place::Repository, true)],
+        "{listed:?}"
+    );
+    // A second save replaces the new file, with nothing to delete.
+    let again = save(&roots, Place::Project, &profile, Author::User).unwrap();
+    assert!(again.replaced);
+
+    // The same goes for the repository root.
+    save(&roots, Place::Repository, &judge(), Author::User).unwrap();
+    assert!(!at_root.exists());
+    assert!(
+        top.join(".arko")
+            .join("profiles")
+            .join("judge.md")
+            .is_file()
+    );
+}
+
+/// An agent replaces a profile it made in the older folder, and the old file
+/// goes. It can't replace the user's, in either folder, and the user's file
+/// stays.
+#[test]
+fn an_agent_cant_replace_a_users_profile_in_either_folder() {
+    let temp = tempfile::tempdir().unwrap();
+    let roots = roots(temp.path());
+    let theirs = write_older(&roots, Place::Project, "judge", &described("The user's"));
+    let why = save(&roots, Place::Project, &judge(), Author::Agent).unwrap_err();
+    assert!(why.contains("made by the user"), "{why}");
+    assert!(check_agent_save(&roots, "judge").is_err());
+    assert!(theirs.is_file());
+    assert!(!roots.folder(Place::Project).unwrap().exists());
+    std::fs::remove_file(&theirs).unwrap();
+
+    let theirs = write(
+        &roots,
+        Place::Project,
+        "judge",
+        &described("The user's, new"),
+    );
+    let why = save(&roots, Place::Project, &judge(), Author::Agent).unwrap_err();
+    assert!(why.contains("made by the user"), "{why}");
+    assert!(
+        std::fs::read_to_string(&theirs)
+            .unwrap()
+            .contains("The user's, new")
+    );
+    std::fs::remove_file(&theirs).unwrap();
+
+    // A file that can't be read in the older folder isn't replaced either.
+    let broken = write_older(&roots, Place::Project, "judge", "no front matter\n");
+    let why = save(&roots, Place::Project, &judge(), Author::Agent).unwrap_err();
+    assert!(why.contains("can't be read"), "{why}");
+    assert!(broken.is_file());
+    std::fs::remove_file(&broken).unwrap();
+
+    // The agent's own, in the older folder, is replaced and moves.
+    let mine = write_older(
+        &roots,
+        Place::Project,
+        "judge",
+        "---\ndescription: The agent's\nmade_by: agent\n---\n",
+    );
+    let saved = save(&roots, Place::Project, &judge(), Author::Agent).unwrap();
+    assert!(saved.replaced);
+    assert!(!mine.exists());
+    assert!(
+        saved
+            .file
+            .starts_with(roots.folder(Place::Project).unwrap())
+    );
+    assert!(read(&roots, "judge").unwrap().profile.made_by_agent());
+}
+
+/// When a link makes `.agents/profiles` the same folder as `.arko/profiles`,
+/// a save keeps its file.
+#[cfg(unix)]
+#[test]
+fn a_link_between_the_two_folders_keeps_the_saved_file() {
+    let temp = tempfile::tempdir().unwrap();
+    let roots = roots(temp.path());
+    let work = temp.path().join("work");
+    let new = roots.folder(Place::Project).unwrap();
+    std::fs::create_dir_all(&new).unwrap();
+    std::fs::create_dir_all(work.join(".agents")).unwrap();
+    std::os::unix::fs::symlink(&new, work.join(".agents").join("profiles")).unwrap();
+    write(&roots, Place::Project, "judge", &described("Judges"));
+    let saved = save(&roots, Place::Project, &judge(), Author::User).unwrap();
+    assert!(
+        saved.file.is_file(),
+        "the link didn't take the file with it"
+    );
+    assert_eq!(list(&roots).active.len(), 1);
+}
+
+/// An agent saves for the project without asking while `.arko` is ignored,
+/// also when the older folder has tracked profiles, and is asked with the
+/// setting off inside a git repository.
+#[test]
+fn the_approval_follows_arko_and_not_the_older_folder() {
+    let temp = tempfile::tempdir().unwrap();
+    let roots = roots(temp.path());
+    let work = temp.path().join("work");
+    git_init(&work);
+    write_older(&roots, Place::Project, "shared", &described("The team's"));
+    assert!(!needs_approval(&roots, Place::Project, "judge"));
+    save(&roots, Place::Project, &judge(), Author::Agent).unwrap();
+    assert!(!needs_approval(&roots, Place::Project, "judge"));
+    assert!(needs_approval(&roots, Place::Repository, "judge"));
+    Preferences {
+        keep_out_of_git: false,
+        ..Preferences::default()
+    }
+    .save(&temp.path().join("arko"))
+    .unwrap();
+    // A save takes Arko's own file out first, so it asks before the switch
+    // reaches this project, and after.
+    assert!(needs_approval(&roots, Place::Project, "judge"));
+    crate::arko_dir::apply_setting(&work, false).unwrap();
+    assert!(needs_approval(&roots, Place::Project, "judge"));
+    // A file the user edited stays, and git's answer about it stands.
+    std::fs::write(work.join(".arko").join(".gitignore"), "# Mine\n*\n").unwrap();
+    assert!(!needs_approval(&roots, Place::Project, "judge"));
+}
+
+/// A delete takes the file `read` finds, the newer one first, and one in the
+/// older folder when that is all there is.
+#[test]
+fn a_delete_reaches_the_older_folder() {
+    let temp = tempfile::tempdir().unwrap();
+    let roots = roots(temp.path());
+    let old = write_older(&roots, Place::Project, "judge", &described("Older"));
+    let new = write(&roots, Place::Project, "judge", &described("Newer"));
+    assert_eq!(delete(&roots, Place::Project, "judge").unwrap(), new);
+    assert_eq!(read(&roots, "judge").unwrap().file, old);
+    assert_eq!(delete(&roots, Place::Project, "judge").unwrap(), old);
+    assert!(
+        delete(&roots, Place::Project, "judge")
+            .unwrap_err()
+            .contains("There is no profile `judge`")
+    );
+    assert!(delete(&Roots::new(temp.path()), Place::Project, "judge").is_err());
+}
+
+/// The approval names the folder a save writes, so the terminal, the page
+/// and an app show it.
+#[test]
+fn the_approval_names_the_folder_it_saves_in() {
+    for (place, line) in [
+        (
+            Place::Project,
+            "Saved in this project's .arko/profiles folder.",
+        ),
+        (
+            Place::Repository,
+            "Saved in the repository's .arko/profiles folder.",
+        ),
+        (Place::User, "Saved in Arko's profiles folder."),
+        (Place::Session, "Saved in this session's folder."),
+    ] {
+        let details = Approval::Profile(approval(&judge(), place)).details();
+        assert!(
+            details.iter().any(|detail| detail.text == line),
+            "{place:?}: {details:?}"
+        );
+    }
+}
+
+/// A save writes its file through the folder it opened, so a link at the
+/// file, in any place, is replaced and nothing is written where it leads.
+#[cfg(unix)]
+#[test]
+fn a_save_replaces_a_link_at_its_file() {
+    let temp = tempfile::tempdir().unwrap();
+    let roots = roots(temp.path());
+    let outside = temp.path().join("outside.md");
+    for place in [Place::Project, Place::User, Place::Session] {
+        std::fs::write(&outside, "Mine.").unwrap();
+        let folder = roots.folder(place).unwrap();
+        std::fs::create_dir_all(&folder).unwrap();
+        std::os::unix::fs::symlink(&outside, folder.join("judge.md")).unwrap();
+        save(&roots, place, &judge(), Author::User).unwrap();
+        assert_eq!(std::fs::read_to_string(&outside).unwrap(), "Mine.");
+        let file = folder.join("judge.md").symlink_metadata().unwrap();
+        assert!(file.is_file(), "{place:?}");
+    }
+}
+
+/// A project whose `.agents/profiles` is a link, here to Arko's own profiles
+/// where an agent made `x`, is only read. An agent's save of `x` for the
+/// project writes `.arko/profiles/x.md` and leaves the profile for every
+/// project where it is, and says it left the older copy.
+#[cfg(unix)]
+#[test]
+fn an_older_folder_that_is_a_link_is_left_alone() {
+    let temp = tempfile::tempdir().unwrap();
+    let roots = roots(temp.path());
+    let work = temp.path().join("work");
+    std::fs::create_dir_all(work.join(".agents")).unwrap();
+    let global = roots.folder(Place::User).unwrap();
+    save(
+        &roots,
+        Place::User,
+        &Profile::new("x", "Global"),
+        Author::Agent,
+    )
+    .unwrap();
+    std::os::unix::fs::symlink(&global, work.join(".agents").join("profiles")).unwrap();
+    let saved = save(
+        &roots,
+        Place::Project,
+        &Profile::new("x", "Project"),
+        Author::Agent,
+    )
+    .unwrap();
+    assert!(saved.file.is_file());
+    assert!(saved.replaced);
+    assert_eq!(saved.left, Some(work.join(".agents/profiles/x.md")));
+    assert!(
+        std::fs::read_to_string(global.join("x.md"))
+            .unwrap()
+            .contains("Global")
+    );
+}
+
+/// The older copy is deleted only while it is the file read. One put in its
+/// place since stays.
+#[cfg(unix)]
+#[test]
+fn an_older_copy_that_changed_since_it_was_read_stays() {
+    let temp = tempfile::tempdir().unwrap();
+    let roots = roots(temp.path());
+    let older = temp.path().join("work/.agents/profiles");
+    std::fs::create_dir_all(&older).unwrap();
+    std::fs::write(older.join("x.md"), described("Read")).unwrap();
+    let id = crate::agent_added::file_id(&older.join("x.md"));
+    std::fs::write(older.join("y.md"), described("Theirs")).unwrap();
+    std::fs::rename(older.join("y.md"), older.join("x.md")).unwrap();
+    assert!(!remove_older(&roots, Place::Project, "x.md", id).unwrap());
+    assert!(older.join("x.md").is_file());
+    let id = crate::agent_added::file_id(&older.join("x.md"));
+    assert!(remove_older(&roots, Place::Project, "x.md", id).unwrap());
+    assert!(!older.join("x.md").exists());
 }

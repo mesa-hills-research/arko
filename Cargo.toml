@@ -2,7 +2,7 @@
 # The command and the library are both `arko`. The name `arko` on crates.io
 # belongs to another project.
 name = "arko-tui"
-version = "0.13.3"
+version = "0.14.0"
 edition = "2024"
 rust-version = "1.89"
 description = "A general-purpose agent for the terminal, with a shell, background jobs, file tools and workers that run in parallel"
@@ -52,8 +52,8 @@ testing = []
 # The framework, from crates.io. CONTRIBUTING.md shows how to build against
 # a local checkout of it.
 arko_ai = "0.2.3"
-arko_agents = "0.3.2"
-arko_workflows = "0.4.1"
+arko_agents = "0.4.0"
+arko_workflows = "0.5.0"
 arko_index = "0.3.0"
 
 async-trait = "0.1.79"
@@ -128,6 +128,8 @@ windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Syste
 
 [dev-dependencies]
 tempfile = "3"
+# Builds the skill bundles the tests of add_skill read, as arko_agents builds it.
+zip = { version = "9.1.3", default-features = false, features = ["deflate"] }
 
 # The symbol table is about 14 MB of the release binary. Without it, a
 # backtrace shows addresses instead of function names.

@@ -29,6 +29,8 @@ materials. Say what is wrong, in order of how much it matters.
 | `fast` | `true` for fast mode, where the model has it |
 | `cache` | `long` or `short` (`1h` and `5m` mean the same), the prompt cache of workers whose model has a long one. Long is an hour on Claude models and 12 hours on OpenAI GPT-5.6 and later with an API key. Short is 5 minutes on Claude and 30 minutes on OpenAI |
 | `nested` | `true` to let the worker start workers of its own, down to the session's worker depth. The call's `nested` wins, so `nested: false` leaves it out for one worker |
+| `skills` | Skill names separated by commas, or `none`. Workers with the profile get only these, as far as the agent that starts them has them. See [Skills and MCP servers for a worker](#skills-and-mcp-servers-for-a-worker) |
+| `mcp` | MCP server names, the same way |
 | `made_by` | `agent` when the main agent saved the profile |
 
 A name is lowercase letters, digits and hyphens, up to 32 characters, and starts with a letter
@@ -44,8 +46,8 @@ chooses that for each worker with `isolated` in `start_agent`. A key Arko doesn'
 | Place | Folder | Who uses it |
 |---|---|---|
 | This session | `profiles` in the session's folder | This session |
-| This project | `.agents/profiles` in the working directory | Every session in the working directory |
-| This repository | `.agents/profiles` in the root of the git repository | Every session in the repository |
+| This project | `.arko/profiles` in the working directory | Every session in the working directory |
+| This repository | `.arko/profiles` in the root of the git repository | Every session in the repository |
 | Every project | `profiles` in Arko's folder | You, in every project |
 
 When a name is in more than one place, the nearest wins, in the order above. Arko reads the files
@@ -57,15 +59,20 @@ The main agent saves a profile for the project unless it says `session` or `user
 stay with the workspace and a new session there finds them. A worker in a worktree of its own
 uses the profiles of the session's working directory, as a worktree has the committed files only.
 
-When Arko makes the project's `.agents/profiles` folder, it writes a `.gitignore` in it with a
-comment and `*`. Git then ignores the folder and that file, and your repository's own `.gitignore`
-stays as it is. Delete the file to share the profiles with your team. Arko writes it only when it
-makes the folder, so it doesn't come back.
+Earlier versions saved the project's and the repository's profiles in `.agents/profiles`, which other
+tools read too. Arko still reads that folder, after the `.arko/profiles` of the same place, and
+`/profiles` names it next to the profiles it holds. Saves go to `.arko/profiles` only, and Arko
+never moves a file there by itself. Saving a profile that lives in `.agents/profiles` writes the new
+file in `.arko/profiles` and deletes the old one, so the name isn't listed twice. An `.agents/profiles`
+reached through a link is only read, so its copy stays, and the agent is told.
 
-In a subfolder of a git repository, Arko also reads the repository root's `.agents/profiles`, after
-the working directory's own. The "Keep out of git" and "Repo root" rows under "Worker profiles" in
-`/settings` turn off the file above and this lookup. Both are on by default and kept for every
-project in `profiles.json` in Arko's folder.
+Arko keeps the project's `.arko` folder out of git by default. See [the .arko folder](arko-folder.md).
+A `.arko` or `.arko/profiles` that is a link is refused, so a save can't land outside the project.
+
+In a subfolder of a git repository, Arko also reads the repository root's `.arko/profiles` and
+`.agents/profiles`, after the working directory's own. "Repo root" under "Worker profiles" in
+`/settings` turns off this lookup. It is on by default and kept for every project in
+`profiles.json` in Arko's folder.
 
 ## How a worker's setup is chosen
 
@@ -90,14 +97,14 @@ each model's efforts, price, handover size and prompt cache, and the plan usage 
 a plan. `save_worker_profile` saves a setup under a name. A profile for the session needs no
 approval, and neither does one for a project folder that git ignores (`git check-ignore` says),
 which is the folder Arko makes by default. Before Arko saves one in a folder git tracks, in a
-project outside a git repository, or for every project, it puts you a question that
-shows the whole profile, with Save and Don't save. Only Save saves it. Words you type instead go
-back to the agent, and the transcript says nothing was saved. The agent makes the changes they ask
-for, or replies when they are about something else, and asks again. The agent can't replace a
-profile you made.
+project outside a git repository, or for every project, it waits for your OK in the
+[approval tray](approvals.md), which shows the whole profile and the folder it goes in. Reject with
+words in the message box sends them back to the agent, and the transcript says nothing was saved.
+The agent makes the changes they ask for, or replies when they are about something else, and asks
+again. The agent can't replace a profile you made.
 
-The question guards what Arko writes for the agent. The agent's own file tools and shell can write
-a file in the project's `.agents/profiles` folder as they can write any file in the project, and
+The approval guards what Arko writes for the agent. The agent's own file tools and shell can write
+a file in the project's `.arko/profiles` folder as they can write any file in the project, and
 in your Arko folder once you turn outside access on. So treat a project's profiles as you treat its
 `AGENTS.md`, as text the project's authors and the agent can change.
 
@@ -153,12 +160,12 @@ that name on the web page, and it applies to the next worker started.
 | Value | A worker on a model billed per token |
 |---|---|
 | `plans` | Is refused, and the main agent is told which plan models it can use |
-| `ask` (the default) | Starts once you allow it on a card that names the model and its price |
+| `ask` (the default) | Starts once you approve it in the [approval tray](approvals.md), which names the model and its price |
 | `api` | Starts without asking |
 
-On the card, Allow starts that worker, "Allow MODEL for this session" also allows that model's
-next workers in the session, and Deny refuses it. The main agent waits for your answer, and words
-you type instead reach it with the refusal. Only the main agent's starts can ask, so a worker's own
+Approve starts that worker, and with "Allow MODEL for this session" turned on in its details, that
+model's next workers in the session too. Reject refuses it. The main agent waits for your answer, and
+the words in the message box reach it with the answer. Only the main agent's starts can ask, so a worker's own
 start on a model billed per token is refused unless you allowed that model for the session. With
 `plans`, `/model worker` and the profiles the main agent saves take a plan's model only. The main
 agent's own model stays your choice, and its instructions tell it to prefer your plans' models for
@@ -174,6 +181,33 @@ the session. You're told once, and running workers go on.
 `worker_options`, the `/model` picker and the web page's `/model` choices show `API, $5/$25` (the
 price per million input and output tokens) beside a model billed per token, and the result of a
 start says it too.
+
+## Skills and MCP servers for a worker
+
+A worker has the skills and MCP servers of the agent that started it, except a skill whose front
+matter says `workers: false` and a server whose entry says `"workers": false`, which stay with the
+main agent (see [skills](skills.md) and [MCP servers](mcp.md)). `start_agent` takes `skills` and
+`mcp` to give a worker fewer. Each is names separated by commas, a JSON array of names or `none`.
+
+```
+skills: ponytail, release-notes
+mcp: none
+```
+
+- A worker started with names gets exactly those. Each must be one its starter has and can give,
+  or the start is refused with the names the starter can give.
+- A worker started with neither has what its starter has. A worker with a list passes the list on,
+  so a set carries through every depth and each level can only narrow it.
+- A profile's `skills` and `mcp` work the same way when the call leaves them out. A call's names win
+  over the profile's. A profile serves many starters, so its names are crossed with the starter's,
+  and the start result says which ones were left out.
+- `save_worker_profile` takes both and refuses names the main agent can't give a worker. The
+  profile's approval says what workers with it get.
+- A worker keeps its set when its session resumes. One with everything sees skills saved and servers
+  added later. One with a list sees only its list.
+
+The start result, `list_agents` and `/workers` name a set only when it is narrowed. A worker with
+no MCP servers isn't offered the `mcp` tool.
 
 ## Workers that start workers
 
@@ -237,14 +271,18 @@ profiles::delete(&roots, Place::User, "3d-judge")?;
 ```
 
 `profiles::Preferences` loads and saves the profile settings, and `profiles::needs_approval` tells
-whether the agent's save asks you first. `Profile::check` tells whether a profile can be saved,
-with a model Arko knows and an effort it takes. `profiles::folders` gives the folders for an "open
-the folder" button, and `profiles::approval_text` and `profiles::is_approval` are the question the
-agent's save puts to the user and the rule for its answer. `arko::workers` has the names,
-commands and sentences of the workers' settings, and `ModelChoice::label` and `about` and
-`WorkerBilling::label` and `about` the words for each value, so an app labels and sets them as the
-terminal and the web page do. `arko::models::billing` gives the label a picker shows beside a model
-billed per token.
+whether the agent's save asks you first. `Preferences::save_in` also adds or removes Arko's
+`.gitignore` in a project's `.arko` folder when the keep-out-of-git choice changes
+(`arko::arko_dir::apply_setting` does that alone). After saving it, or the switches of
+`arko::extension_prefs`, call `Details::refresh_settings` on each open session, so its web page
+shows the change with nothing in its transcript. `Profile::check` tells whether a profile can be
+saved, with a model Arko knows and an effort it takes. `profiles::folders` gives the folders for an
+"open the folder" button, the project's `.arko/profiles` and then its older `.agents/profiles`, and
+`Found::reach` names the older one for a profile read from it. `profiles::approval` is the request
+the agent's save puts in the approval tray. `arko::workers` has the names, commands and sentences
+of the workers' settings, and `ModelChoice::label` and `about` and `WorkerBilling::label` and
+`about` the words for each value, so an app labels and sets them as the terminal and the web page
+do. `arko::models::billing` gives the label a picker shows beside a model billed per token.
 
 A worker's summary (`WorkerSummary`) names the worker that started it in `parent`, its `depth`
 (1 for the main agent's workers), whether it may start workers of its own in `nested`, and what it

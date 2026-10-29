@@ -409,6 +409,7 @@ impl Server {
             meter,
             info,
             closed: closed.clone(),
+            pings: watch::Sender::new(0),
         });
         let router = router(app);
         let mut shutdown = closed;
@@ -572,6 +573,7 @@ fn router(app: Arc<App>) -> Router {
         )
         .route("/api/session", get(session_check).post(session_open))
         .route("/api/events", get(events))
+        .route("/api/ping", axum::routing::post(ping))
         .route("/api/message", axum::routing::post(message))
         .route("/api/answer", axum::routing::post(answer))
         .route(
@@ -582,6 +584,7 @@ fn router(app: Arc<App>) -> Router {
             "/api/questions/dismiss",
             axum::routing::post(dismiss_questions),
         )
+        .route("/api/approvals", axum::routing::post(answer_approvals))
         .route("/api/stop", axum::routing::post(stop))
         .route("/api/background", axum::routing::post(background))
         .route("/api/jobs/stop", axum::routing::post(stop_job))
@@ -682,6 +685,9 @@ struct App {
     info: Info,
     /// Set when the server stops: the streams end.
     closed: watch::Receiver<bool>,
+    /// Counts the pings (`POST /api/ping`), each of which every stream
+    /// sends on.
+    pings: watch::Sender<u64>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -978,9 +984,9 @@ async fn session_open(
 /// item), `append` (more text for an item), `change` (an item, changed: a
 /// call's outcome), `worker` (a worker's summary), `job` (a background
 /// job's summary), `code` (the code blocks a streaming text finished,
-/// highlighted) and `status` events. An item's Markdown comes with its
-/// finished code blocks highlighted. A stream that falls behind starts over
-/// with a `reset`.
+/// highlighted), `status` and `ping` (an answer to `POST /api/ping`)
+/// events. An item's Markdown comes with its finished code blocks
+/// highlighted. A stream that falls behind starts over with a `reset`.
 async fn events(
     State(app): State<Arc<App>>,
     ConnectInfo(peer): Peer,
@@ -997,6 +1003,7 @@ async fn events(
         session,
         closed: app.closed.clone(),
         updates: app.feed.subscribe().1,
+        pings: app.pings.subscribe(),
         app,
         pending: VecDeque::new(),
         status: String::new(),
@@ -1020,6 +1027,7 @@ struct Stream {
     session: Option<String>,
     updates: broadcast::Receiver<Update>,
     closed: watch::Receiver<bool>,
+    pings: watch::Receiver<u64>,
     pending: VecDeque<Event>,
     /// The status last sent.
     status: String,
@@ -1244,6 +1252,11 @@ impl Stream {
                     Err(broadcast::error::RecvError::Lagged(_)) => self.reset(),
                     Err(broadcast::error::RecvError::Closed) => self.ending = true,
                 },
+                Ok(()) = self.pings.changed() => {
+                    let count = *self.pings.borrow();
+                    self.pending
+                        .push_back(Event::default().event("ping").data(count.to_string()));
+                }
                 // (The tick also wakes a quiet stream to see whether its
                 // session ended.)
                 _ = self.tick.tick() => self.send_status(),
@@ -1470,6 +1483,53 @@ async fn dismiss_questions(
     app.act(Action::DismissQuestions(ids))
 }
 
+/// `POST /api/approvals` with `{"choices": [{"id": "a1", "approve": true,
+/// "option": true}, {"id": "a2", "approve": false}], "words": "..."}`: the
+/// answer to the approval tray's requests, naming every request the page
+/// shows, with the words its message box held. 409 when none of them waits
+/// any more, and 413, with what to shorten them to, when the words are too
+/// long to send.
+async fn answer_approvals(
+    State(app): State<Arc<App>>,
+    ConnectInfo(peer): Peer,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    if let Err(refusal) = app.authorize(&headers, peer.ip()) {
+        return refusal.into_response();
+    }
+    let Some(answers) = serde_json::from_slice::<crate::approvals::ApprovalAnswers>(&body)
+        .ok()
+        .filter(|answers| !answers.choices.is_empty())
+    else {
+        return (
+            StatusCode::BAD_REQUEST,
+            error_body("send {\"choices\": [{\"id\": \"a1\", \"approve\": true}], \"words\": ...}"),
+        )
+            .into_response();
+    };
+    let waiting = app.feed.approvals();
+    if !answers
+        .choices
+        .iter()
+        .any(|choice| waiting.iter().any(|request| request.id == choice.id))
+    {
+        return (
+            StatusCode::CONFLICT,
+            error_body("those approvals are no longer open"),
+        )
+            .into_response();
+    }
+    if let Some(refusal) = answers
+        .words
+        .as_deref()
+        .and_then(crate::approvals::approval_words_refusal)
+    {
+        return too_long(&refusal);
+    }
+    app.act(Action::AnswerApprovals(answers))
+}
+
 /// A link to the page for `GET /api/links`.
 #[derive(Serialize)]
 struct LinkOut {
@@ -1598,6 +1658,20 @@ async fn choices(
     .flatten()
     .unwrap_or_default();
     axum::Json(serde_json::json!({ "choices": words, "notes": notes })).into_response()
+}
+
+/// `POST /api/ping`: every stream sends a `ping`, so a page back from sleep
+/// learns whether its stream still comes through.
+async fn ping(
+    State(app): State<Arc<App>>,
+    ConnectInfo(peer): Peer,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(refusal) = app.authorize(&headers, peer.ip()) {
+        return refusal.into_response();
+    }
+    app.pings.send_modify(|count| *count += 1);
+    StatusCode::NO_CONTENT.into_response()
 }
 
 /// `POST /api/stop`: stops the turn, as Ctrl-C does.
@@ -1762,6 +1836,26 @@ mod tests {
         assert!(page_has(SETTING_NAME));
     }
 
+    /// The words of the settings for what agents add on the page are the
+    /// library's.
+    #[test]
+    fn the_pages_approval_settings_use_the_librarys_words() {
+        use crate::extension_prefs::*;
+        for text in [
+            ASK_MCP_NAME,
+            ASK_MCP_ABOUT,
+            ASK_MCP_OFF,
+            TURN_OFF,
+            CANCEL,
+            REVIEW_SKILLS_NAME,
+            REVIEW_SKILLS_ABOUT,
+            KEEP_OUT_OF_GIT_NAME,
+            KEEP_OUT_OF_GIT_ABOUT,
+        ] {
+            assert!(page_has(text), "{text}");
+        }
+    }
+
     /// A worker's meta line holds its model, profile and cost, which a phone
     /// would cut at the end if the line couldn't wrap.
     #[test]
@@ -1792,6 +1886,7 @@ mod tests {
             meter: Arc::new(Still),
             info: Info::default(),
             closed,
+            pings: watch::Sender::new(0),
         }
     }
 
@@ -2500,10 +2595,6 @@ mod tests {
             {"id": "q5", "question": "Branch?", "state": "closed", "why": "In the README", "item": 8, "number": 3},
             {"id": "q6", "question": "Rename?", "state": "answered_in_message", "item": 8, "number": 4},
             {"id": "q7", "question": "Release?", "state": "dismissed", "item": 8, "number": 5},
-            {"id": "x1a2b3c4d", "question": "Save it?", "choices": ["Save", "Don't save"], "state": "open",
-             "waits": true, "item": 8, "number": 6,
-             "approval": {"name": "3d-judge", "model": "sol", "effort": "high", "scope": "every project",
-                          "description": "Judges 3D results", "instructions": "You judge 3D models."}},
         ]))
         .unwrap();
         let mut card = Item::new(Kind::Question, crate::questions::card_line(&questions));
@@ -2511,7 +2602,7 @@ mod tests {
         card.questions = Some(questions);
         let read: ItemData = serde_json::from_value(serde_json::to_value(&card).unwrap()).unwrap();
         let questions = read.questions.unwrap();
-        assert_eq!(read.text, "Arko asked 6 questions");
+        assert_eq!(read.text, "Arko asked 5 questions");
         assert_eq!(
             (
                 questions[0].choices.len(),
@@ -2541,15 +2632,6 @@ mod tests {
                 ("answered_in_message", None, None, Some(4)),
                 ("dismissed", None, None, Some(5)),
             ]
-        );
-        let approval = questions[5].approval.as_ref().unwrap();
-        assert_eq!(
-            (
-                approval.name.as_str(),
-                approval.effort.as_deref(),
-                approval.instructions.as_str()
-            ),
-            ("3d-judge", Some("high"), "You judge 3D models.")
         );
 
         let feed = Feed::new("main");
@@ -2631,6 +2713,14 @@ mod tests {
                 {"id": "q3", "question": "Tabs or spaces?", "state": "open", "item": 9}
             ]))
             .unwrap(),
+            approvals: vec![crate::approvals::ApprovalRequest {
+                id: "a1".into(),
+                batch: 1,
+                approval: crate::approvals::Approval::Profile(crate::profiles::approval(
+                    &crate::profiles::Profile::new("judge", "Judges"),
+                    crate::profiles::Place::User,
+                )),
+            }],
             models: Models {
                 main: "gpt-6-sol".into(),
                 workers: "gpt-6-luna".into(),
@@ -2722,6 +2812,14 @@ mod tests {
                 status.movable
             ),
             (Some("5h 12%"), Some("r1  running"), vec![7])
+        );
+        assert_eq!(
+            status
+                .approvals
+                .iter()
+                .map(|request| request.approval.title())
+                .collect::<Vec<_>>(),
+            ["Save the worker profile judge for every project?"]
         );
         let settings = status.settings;
         assert!(settings.outside && settings.text_replies && settings.worker_project_instructions);
@@ -3052,6 +3150,84 @@ mod tests {
         assert_eq!(events.last().unwrap().1["jobs"][0]["id"], job.to_string());
     }
 
+    /// A page away while a call ended and the next began, whose stream went
+    /// quiet, connects again and gets both as they are now. A ping, which a
+    /// page back from sleep sends, comes out of every stream, after what
+    /// waited in it. It needs a session.
+    #[tokio::test]
+    async fn a_page_back_from_sleep_gets_what_changed_and_its_ping() {
+        use super::super::protocol::{CallStatus, ResetData};
+        use arko_agents::AgentEvent;
+        use arko_workflows::WorkflowEvent;
+        let feed = Feed::new("main");
+        let event = |event: AgentEvent| WorkflowEvent {
+            timestamp: chrono::Utc::now(),
+            workflow_run_id: uuid::Uuid::nil(),
+            agent_name: "main".into(),
+            agent_run_id: uuid::Uuid::nil(),
+            event,
+        };
+        let call = |id, tool: &str| {
+            event(AgentEvent::ToolCallFormatted {
+                tool_call_id: id,
+                tool_name: tool.into(),
+                parameters: Default::default(),
+            })
+        };
+        feed.turn_started();
+        let wait = uuid::Uuid::new_v4();
+        feed.event(&call(wait, "wait_for_agents"), None);
+        let served = serve(&feed);
+        let cookie = served.login().await;
+        let mut asleep = served.get("/api/events", Some(&cookie)).await;
+        let mut buffer = String::new();
+        let events = read_until(&mut asleep, &mut buffer, |name, _| name == "reset").await;
+        let reset: ResetData = serde_json::from_value(events.last().unwrap().1.clone()).unwrap();
+        let [waiting] = &reset.items[..] else {
+            panic!("{:?}", reset.items)
+        };
+        assert_eq!(waiting.status, Some(CallStatus::Running));
+
+        // Away, the page reads nothing while the wait ends and a command
+        // starts.
+        feed.event(
+            &event(AgentEvent::ToolResult {
+                tool_call_id: wait,
+                tool_name: "wait_for_agents".into(),
+                output: "r1 finished.".into(),
+            }),
+            None,
+        );
+        feed.event(&call(uuid::Uuid::new_v4(), "shell"), None);
+        let mut awake = served.get("/api/events", Some(&cookie)).await;
+        let mut awake_buffer = String::new();
+        let events = read_until(&mut awake, &mut awake_buffer, |name, _| name == "reset").await;
+        let reset: ResetData = serde_json::from_value(events.last().unwrap().1.clone()).unwrap();
+        let [waited, shell] = &reset.items[..] else {
+            panic!("{:?}", reset.items)
+        };
+        assert_eq!(
+            (waited.id, waited.status),
+            (waiting.id, Some(CallStatus::Ok))
+        );
+        assert_eq!(shell.status, Some(CallStatus::Running));
+
+        assert_eq!(
+            served.post("/api/ping", None, "").await.status(),
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            served.post("/api/ping", Some(&cookie), "").await.status(),
+            StatusCode::NO_CONTENT
+        );
+        let events = read_until(&mut awake, &mut awake_buffer, |name, _| name == "ping").await;
+        assert_eq!(events.len(), 1);
+        let events = read_until(&mut asleep, &mut buffer, |name, _| name == "ping").await;
+        let names: Vec<&str> = events.iter().map(|(name, _)| name.as_str()).collect();
+        assert_eq!(names, ["change", "item", "ping"]);
+        assert_eq!(events[0].1["status"], "ok");
+    }
+
     /// The status carries each worker's context and the size it hands over
     /// at, which the page's header shows in a worker's own view. A session
     /// without workers sends none.
@@ -3333,8 +3509,6 @@ mod tests {
                 },
             }],
             false,
-            None,
-            None,
         );
         let response = served
             .post(
@@ -3411,7 +3585,7 @@ mod tests {
                 ..Default::default()
             },
         };
-        feed.ask(run, &[asked("q1")], false, None, None);
+        feed.ask(run, &[asked("q1")], false);
         let response = served
             .post("/api/message", Some(&cookie), &message(&long))
             .await;
@@ -3420,7 +3594,7 @@ mod tests {
             served.actions.recv().await.unwrap(),
             Action::Message(long.clone())
         );
-        feed.ask(run, &[asked("q2")], true, None, None);
+        feed.ask(run, &[asked("q2")], true);
         let response = served
             .post("/api/message", Some(&cookie), &message(&long))
             .await;
@@ -3440,6 +3614,61 @@ mod tests {
             served.actions.recv().await.unwrap(),
             Action::Message("main".into())
         );
+    }
+
+    /// The approval tray's endpoint: an answer that names a request waiting
+    /// becomes its action. One that names none waiting gets a 409, words too
+    /// long a 413 that says how short to make them, and a body without
+    /// choices a 400.
+    #[tokio::test]
+    async fn the_tray_is_answered_through_its_endpoint() {
+        use crate::approvals::{Approval, ApprovalAnswers, ApprovalChoice};
+        let feed = Feed::new("main");
+        let mut served = serve(&feed);
+        let cookie = served.login().await;
+        let answer = r#"{"choices": [{"id": "a1", "approve": true, "option": true}, {"id": "a9", "approve": false}], "words": "Fine."}"#;
+        let response = served.post("/api/approvals", Some(&cookie), answer).await;
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let (_, _waiting) = feed.request_approval(
+            uuid::Uuid::new_v4(),
+            None,
+            Approval::Profile(crate::profiles::approval(
+                &crate::profiles::Profile::new("judge", "Judges"),
+                crate::profiles::Place::User,
+            )),
+        );
+        let response = served.post("/api/approvals", Some(&cookie), answer).await;
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        assert_eq!(
+            served.actions.recv().await.unwrap(),
+            Action::AnswerApprovals(ApprovalAnswers {
+                choices: vec![
+                    ApprovalChoice {
+                        id: "a1".into(),
+                        approve: true,
+                        option: true,
+                    },
+                    ApprovalChoice {
+                        id: "a9".into(),
+                        approve: false,
+                        option: false,
+                    },
+                ],
+                words: Some("Fine.".into()),
+            })
+        );
+        let long = serde_json::json!({
+            "choices": [{"id": "a1", "approve": true}],
+            "words": "y".repeat(crate::approvals::MAX_APPROVAL_WORDS + 1),
+        });
+        let response = served
+            .post("/api/approvals", Some(&cookie), &long.to_string())
+            .await;
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        let response = served
+            .post("/api/approvals", Some(&cookie), r#"{"choices": []}"#)
+            .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 
     /// The answer panel's endpoints: answers (per question a choice, text
@@ -3476,7 +3705,7 @@ mod tests {
                 ..Default::default()
             },
         };
-        feed.ask(run, &[asked("q1"), asked("q2")], false, None, None);
+        feed.ask(run, &[asked("q1"), asked("q2")], false);
         let response = served
             .post("/api/questions/answer", Some(&cookie), answer)
             .await;

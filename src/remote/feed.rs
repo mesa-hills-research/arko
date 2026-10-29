@@ -337,6 +337,13 @@ pub struct WorkerSummary {
     pub effort: Option<String>,
     /// The profile it started with, if any.
     pub profile: Option<String>,
+    /// The skills it is narrowed to, when it is (a worker that has what its
+    /// starter has says nothing).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub skills: Option<Vec<String>>,
+    /// The MCP servers it is narrowed to, in the same way.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mcp: Option<Vec<String>>,
     /// The worker that started it, such as `r1`. None for a worker the main
     /// agent started.
     pub parent: Option<String>,
@@ -380,6 +387,8 @@ impl WorkerSummary {
             model: None,
             effort: None,
             profile: None,
+            skills: None,
+            mcp: None,
             parent: None,
             depth: 1,
             nested: false,
@@ -528,6 +537,9 @@ pub struct WorkerInfo {
     pub effort: Option<String>,
     /// The profile it started with.
     pub profile: Option<String>,
+    /// The skills and MCP servers it is narrowed to, when it is.
+    pub skills: Option<Vec<String>>,
+    pub mcp: Option<Vec<String>>,
     /// How far it is from the main agent (0 is taken as 1).
     pub depth: u32,
     /// Whether it may start workers of its own.
@@ -964,9 +976,8 @@ struct State {
     activity: Activity,
     /// The main agent's questions.
     questions: crate::questions::Book,
-    /// The latest card of approvals (its item and the key the session keeps
-    /// it by), which approvals asked with them join.
-    approval_card: Option<(u64, Uuid)>,
+    /// The approval tray's requests.
+    approvals: crate::approvals::Queue,
     turn: Option<u64>,
     /// The user's message started the turn `turn`, which hasn't begun yet.
     turn_opened: bool,
@@ -2218,31 +2229,15 @@ impl Feed {
             item.at = at;
             // A card's questions as the session kept them.
             if let Some(questions) = item.questions.take() {
-                // A profile's save: the card of the approval it asked for
-                // (by the call's id, which the placeholder carries), unless
-                // no one was asked.
-                if let Some(call) = questions
-                    .first()
-                    .filter(|question| question.approval.is_some())
-                    .map(|question| question.id.clone())
-                {
-                    let kept = state.questions.restore_approval(&call, item.id);
-                    if kept.is_empty() {
-                        continue;
-                    }
+                let ids = questions
+                    .into_iter()
+                    .map(|question| question.id)
+                    .collect::<Vec<_>>();
+                // (Questions the session no longer keeps show as text.)
+                let kept = state.questions.restored(&ids, item.id);
+                if !kept.is_empty() {
                     item.text = crate::questions::card_line(&kept);
                     item.questions = Some(kept);
-                } else {
-                    let ids = questions
-                        .into_iter()
-                        .map(|question| question.id)
-                        .collect::<Vec<_>>();
-                    // (Questions the session no longer keeps show as text.)
-                    let kept = state.questions.restored(&ids, item.id);
-                    if !kept.is_empty() {
-                        item.text = crate::questions::card_line(&kept);
-                        item.questions = Some(kept);
-                    }
                 }
             }
             state.next_id = state.next_id.max(item.id);
@@ -2464,53 +2459,28 @@ impl Feed {
     }
 
     /// Run `run` of the main agent asks `asked` (`waits`: it waits for the
-    /// answer), or Arko asks the user to approve `approval` for it. Their
-    /// card goes in the transcript, and its item is returned. Questions
-    /// that share a card already keep it. An approval asked while the card
-    /// of another (with all its approvals open) is the latest joins that
-    /// card.
+    /// answer). Their card goes in the transcript, and its item is
+    /// returned. Questions that share a card already keep it.
     pub(crate) fn ask(
         &self,
         run: Uuid,
         asked: &[crate::questions::AskedQuestion],
         waits: bool,
-        approval: Option<crate::questions::Approval>,
-        call: Option<String>,
     ) -> u64 {
         let item = {
             let mut state = self.lock();
             if state.questions.run().is_none() {
                 state.questions.set_run(Some(run));
             }
-            let joins = state.approval_card.filter(|(card, _)| {
-                let questions = state.questions.of_item(*card);
-                approval.is_some()
-                    && state.main.items.back().is_some_and(|last| last.id == *card)
-                    && questions
-                        .first()
-                        .is_some_and(|first| state.questions.knows(run, &first.id))
-                    && questions
-                        .iter()
-                        .all(|question| question.approval.is_some() && question.state.is_open())
-            });
             let questions: Vec<_> = asked
                 .iter()
-                .map(|asked| {
-                    let mut question = crate::questions::AgentQuestion::of(asked, waits, 0);
-                    question.approval = approval.clone();
-                    question
-                })
+                .map(|asked| crate::questions::AgentQuestion::of(asked, waits, 0))
                 .collect();
             // Questions that have their card already (their ask's result
             // gave them one before the wait came) keep it.
-            let carded = approval
-                .is_none()
-                .then(|| state.card_shown(run, asked))
-                .flatten();
-            let (item, key) = match (joins, carded) {
-                (Some((item, key)), _) => (item, Some(key)),
-                (None, Some(item)) => (item, None),
-                (None, None) => (
+            let (item, key) = match state.card_shown(run, asked) {
+                Some(item) => (item, None),
+                None => (
                     self.push(
                         &mut state,
                         Item::new(Kind::Question, crate::questions::card_line(&questions)),
@@ -2528,15 +2498,9 @@ impl Feed {
                     })
                     .collect(),
                 key,
-                call,
             );
             state.questions.number_card(item);
             state.questions.save();
-            if approval.is_some()
-                && let Some(key) = key
-            {
-                state.approval_card = Some((item, key));
-            }
             self.refresh_card(&mut state, item);
             item
         };
@@ -2551,7 +2515,7 @@ impl Feed {
     #[doc(hidden)]
     pub fn ask_questions(&self, asked: &[crate::questions::AskedQuestion], waits: bool) -> u64 {
         let run = self.lock().questions.run().unwrap_or_else(Uuid::nil);
-        self.ask(run, asked, waits, None, None)
+        self.ask(run, asked, waits)
     }
 
     /// Sets the current conversation's question `id` to `state`, as an
@@ -2622,7 +2586,7 @@ impl Feed {
             .iter()
             .map(crate::questions::AgentQuestion::asked)
             .collect();
-        self.ask(run, &asked, false, None, None);
+        self.ask(run, &asked, false);
     }
 
     /// Whether the numbers given out are to be counted from the tasks (an
@@ -2666,7 +2630,7 @@ impl Feed {
             if missing.is_empty() {
                 return;
             }
-            state.questions.ask(run, missing, None, None);
+            state.questions.ask(run, missing, None);
             state.questions.save();
         }
         self.question_activity();
@@ -2780,16 +2744,58 @@ impl Feed {
                     text: open
                         .iter()
                         .filter(|question| question.item == waited.item)
-                        .map(|question| match question.approval {
-                            // The whole of what it approves.
-                            Some(_) => question.question.clone(),
-                            None => question.numbered(),
-                        })
+                        .map(crate::questions::AgentQuestion::numbered)
                         .collect::<Vec<_>>()
                         .join("\n"),
                 })
         };
         self.set_activity(|activity| activity.question = latest);
+    }
+
+    // ----- approvals -----
+
+    /// Puts `approval` in the approval tray for run `run` (its call `call`),
+    /// where it waits with the others: its id, and where its answer comes.
+    /// See [`crate::approvals`].
+    pub(crate) fn request_approval(
+        &self,
+        run: Uuid,
+        call: Option<String>,
+        approval: crate::approvals::Approval,
+    ) -> (
+        String,
+        tokio::sync::oneshot::Receiver<crate::approvals::Answer>,
+    ) {
+        let added = self.lock().approvals.add(approval);
+        log::debug!("approval {} asked for run {run} (call {call:?})", added.0);
+        self.send(Update::Activity);
+        added
+    }
+
+    /// The request `id` leaves the tray unanswered (its tool stopped
+    /// waiting).
+    pub(crate) fn withdraw_approval(&self, id: &str) {
+        if self.lock().approvals.withdraw(id) {
+            self.send(Update::Activity);
+        }
+    }
+
+    /// The requests in the approval tray, in the order they came.
+    pub fn approvals(&self) -> Vec<crate::approvals::ApprovalRequest> {
+        self.lock().approvals.requests()
+    }
+
+    /// Gives the requests `answers` names their answers. Returns those
+    /// answered, which leave the tray.
+    pub(crate) fn answer_approvals(
+        &self,
+        answers: &crate::approvals::ApprovalAnswers,
+    ) -> Vec<crate::approvals::ApprovalRequest> {
+        let answered = self.lock().approvals.answer(answers);
+        if !answered.is_empty() {
+            self.send(Update::Activity);
+        }
+        answered
     }
 
     // ----- workers -----
@@ -2984,6 +2990,8 @@ impl Feed {
         summary.model = info.model;
         summary.effort = info.effort;
         summary.profile = info.profile;
+        summary.skills = info.skills;
+        summary.mcp = info.mcp;
         summary.parent = parent;
         summary.depth = info.depth.max(1);
         summary.nested = info.nested;
@@ -5023,8 +5031,6 @@ mod tests {
             run,
             &[asked("q1", "Tabs or spaces?"), asked("q2", "Push now?")],
             true,
-            None,
-            None,
         );
         let since = feed.activity().since;
         assert_eq!(
@@ -5159,7 +5165,7 @@ mod tests {
             // The wait for q2 as the turn ends, or the asker hearing of an
             // ask that doesn't wait.
             let later = if wait { &both[1..] } else { &both[..] };
-            assert_eq!(feed.ask(run, later, wait, None, None), cards[0].id);
+            assert_eq!(feed.ask(run, later, wait), cards[0].id);
             let cards = question_cards(&feed);
             assert_eq!(cards.len(), 1, "{wait}");
             let questions = cards[0].questions.clone().unwrap();
@@ -5203,11 +5209,11 @@ mod tests {
         let first = Feed::new("main");
         first.keep_questions(path.clone());
         first.questions_run(Some(run));
-        first.ask(run, &[asked("q1", "Tabs or spaces?")], true, None, None);
+        first.ask(run, &[asked("q1", "Tabs or spaces?")], true);
         let again = Feed::new("main");
         again.keep_questions(path);
         again.questions_run(Some(run));
-        again.ask(run, &[asked("q1", "Tabs or spaces?")], true, None, None);
+        again.ask(run, &[asked("q1", "Tabs or spaces?")], true);
         let cards = question_cards(&again);
         assert_eq!(cards.len(), 1);
         assert_eq!(cards[0].questions.as_ref().unwrap()[0].id, "q1");
@@ -5265,7 +5271,7 @@ mod tests {
                     "Asked q1 and q2. Their answers reach you as a note. Until then, do only work that no answer could change.",
                 );
             } else {
-                first.ask(run, &both, false, None, None);
+                first.ask(run, &both, false);
             }
             assert_eq!(question_cards(&first).len(), 1);
             first.settle_questions(None, &["q1".into()], |_| QuestionState::Dismissed);
@@ -5322,44 +5328,49 @@ mod tests {
         }
     }
 
-    /// A resumed session's transcript shows the record of each approval
-    /// card right after the save that asked it, found by the call's id,
-    /// once, and nothing for the other saves of the same profile: one for
-    /// the session, which asked no one, and one that failed.
+    /// A session saved while approvals were questions in the answer panel
+    /// opens with them closed, since their tools waited in a process that
+    /// is gone, and its transcript shows the saves without their old cards.
     #[test]
-    fn a_resumed_session_shows_its_approval_records() {
-        use crate::profiles::{Place, Profile};
-        use crate::questions::QuestionState;
+    fn a_session_saved_with_approval_questions_opens_without_them() {
         use arko_ai::{Content, Message, ToolCall, ToolResult};
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(crate::questions::FILE);
         let run = Uuid::new_v4();
-        let first = Feed::new("main");
-        first.keep_questions(path.clone());
-        first.questions_run(Some(run));
-        let ask = |name: &str, call: &str| {
-            first.ask(
-                run,
-                &[asked(&crate::questions::plain_id(), "Save it?")],
-                true,
-                Some(crate::profiles::approval(
-                    &Profile::new(name, "Reviews"),
-                    Place::User,
-                )),
-                Some(call.to_string()),
-            )
-        };
-        let card = ask("reviewer", "b");
-        assert_eq!(ask("tester", "c"), card);
-        let ids: Vec<String> = first.open_questions().into_iter().map(|q| q.id).collect();
-        first.settle_questions(None, &ids[..1], |_| QuestionState::Answered {
-            answer: "Save".into(),
+        // As 0.13 wrote it: an approval answered, one open, and a
+        // question of the agent's.
+        let old = serde_json::json!({
+            "questions": [
+                {
+                    "run": run, "card": Uuid::new_v4(), "call": "b",
+                    "id": "x1a2b3c4d", "question": "The main agent wants to save the worker profile reviewer in your Arko folder, for every project.",
+                    "choices": ["Save", "Don't save"], "state": "answered", "answer": "Save",
+                    "item": 4,
+                    "approval": {"name": "reviewer", "model": "sol", "scope": "every project", "description": "Reviews"}
+                },
+                {
+                    "run": run, "card": Uuid::new_v4(), "call": "c",
+                    "id": "x5e6f7a8b", "question": "The main agent wants to save the worker profile tester in your Arko folder, for every project.",
+                    "choices": ["Save", "Don't save"], "state": "open", "waits": true, "item": 4,
+                    "approval": {"name": "tester", "model": "sol", "effort": "high", "scope": "every project", "description": "Tests"}
+                },
+                {"run": run, "id": "q1", "question": "Tabs?", "state": "open", "item": 5, "number": 1}
+            ],
+            "last": 1
         });
-        first.settle_questions(None, &ids[1..], |_| QuestionState::Dismissed);
-
+        std::fs::write(&path, old.to_string()).unwrap();
         let again = Feed::new("main");
         again.keep_questions(path);
         again.questions_run(Some(run));
+        assert_eq!(
+            again
+                .open_questions()
+                .iter()
+                .map(|question| question.id.as_str())
+                .collect::<Vec<_>>(),
+            ["q1"]
+        );
+        assert!(again.approvals().is_empty());
         let save = |id: &str, name: &str| {
             serde_json::from_value::<ToolCall>(serde_json::json!({
                 "id": id,
@@ -5368,104 +5379,98 @@ mod tests {
             }))
             .unwrap()
         };
-        let result = |id: &str, failed: bool| {
-            let mut result =
-                ToolResult::new(Some(id.into()), crate::crew::SAVE_WORKER_PROFILE, "Done.");
-            result.is_error = failed;
-            Content::ToolResult(result)
-        };
-        let saves = |calls: Vec<ToolCall>| {
-            let mut message = Message::new_assistant("");
-            message.tool_calls = calls;
-            message
-        };
+        let mut saves = Message::new_assistant("");
+        saves.tool_calls = vec![save("b", "reviewer"), save("c", "tester")];
+        let results = ["b", "c"].map(|id| {
+            Content::ToolResult(ToolResult::new(
+                Some(id.into()),
+                crate::crew::SAVE_WORKER_PROFILE,
+                "Done.",
+            ))
+        });
         again.restore(crate::remote::history(
             &[
                 Message::new_user("Start."),
-                // For the session: no one was asked.
-                saves(vec![save("a", "reviewer")]),
-                Message::new_user_with_contents(vec![result("a", false)]),
-                saves(vec![save("f", "reviewer")]),
-                Message::new_user_with_contents(vec![result("f", true)]),
-                saves(vec![save("b", "reviewer"), save("c", "tester")]),
-                Message::new_user_with_contents(vec![result("b", false), result("c", false)]),
+                saves,
+                Message::new_user_with_contents(results.to_vec()),
             ],
             false,
             &crate::images::Images::default(),
         ));
         let (snapshot, _) = again.subscribe();
         let kinds: Vec<Kind> = snapshot.items.iter().map(|item| item.kind).collect();
-        let at = kinds
-            .iter()
-            .position(|kind| *kind == Kind::Question)
-            .unwrap();
-        assert_eq!(
-            kinds.iter().filter(|kind| **kind == Kind::Question).count(),
-            1
-        );
-        // After the third save's call, b's.
-        assert_eq!(
-            kinds[..at]
-                .iter()
-                .filter(|kind| **kind == Kind::Call)
-                .count(),
-            3,
-            "{kinds:?}"
-        );
-        let card = &snapshot.items[at];
-        assert_eq!(card.text, "Arko asked to save 2 worker profiles");
-        let states: Vec<_> = card
-            .questions
-            .as_ref()
-            .unwrap()
-            .iter()
-            .map(|question| question.state.clone())
-            .collect();
-        assert_eq!(
-            states,
-            [
-                QuestionState::Answered {
-                    answer: "Save".into()
-                },
-                QuestionState::Dismissed
-            ]
-        );
+        assert!(!kinds.contains(&Kind::Question), "{kinds:?}");
+        assert_eq!(kinds.iter().filter(|kind| **kind == Kind::Call).count(), 2);
     }
 
-    /// Approvals asked together share one card, a choice each, numbered.
-    /// One asked after the card's approvals were answered gets its own.
+    /// Requests that come while others wait share their batch, and one
+    /// that comes to an empty tray starts the next. Each change of the tray
+    /// reaches the clients as a change of the activity, so their status
+    /// shows it. An answer settles the requests it names, and a request
+    /// whose tool stopped waiting leaves.
     #[test]
-    fn approvals_asked_together_share_a_card() {
-        use crate::profiles::{Place, Profile};
-        use crate::questions::QuestionState;
+    fn the_approval_tray_groups_requests_and_settles_them() {
+        use crate::approvals::{Answer, Approval, ApprovalAnswers, ApprovalChoice};
         let feed = Feed::new("main");
+        let (_, mut updates) = feed.subscribe();
         let run = Uuid::new_v4();
-        let approval = |name: &str| {
-            let profile = Profile::new(name, "Reviews");
-            (
-                vec![asked(&crate::questions::plain_id(), "Save it?")],
-                Some(crate::profiles::approval(&profile, Place::User)),
-            )
+        let profile = |name: &str| {
+            Approval::Profile(crate::profiles::approval(
+                &crate::profiles::Profile::new(name, "Reviews"),
+                crate::profiles::Place::User,
+            ))
         };
-        let (asked_a, a) = approval("one");
-        let (asked_b, b) = approval("two");
-        let card = feed.ask(run, &asked_a, true, a, None);
-        assert_eq!(feed.ask(run, &asked_b, true, b, None), card);
-        let item = feed.main_item(card).unwrap();
-        assert_eq!(item.text, "Arko asked to save 2 worker profiles");
-        let questions = item.questions.unwrap();
+        let (a, mut answer_a) = feed.request_approval(run, None, profile("one"));
+        let (b, mut answer_b) = feed.request_approval(run, None, profile("two"));
+        assert!(matches!(updates.try_recv(), Ok(Update::Activity)));
+        let requests = feed.approvals();
         assert_eq!(
-            questions.iter().map(|q| q.numbered()).collect::<Vec<_>>(),
-            [
-                "1. Save the worker profile one for every project?",
-                "2. Save the worker profile two for every project?"
-            ]
+            requests
+                .iter()
+                .map(|request| (request.id.as_str(), request.batch))
+                .collect::<Vec<_>>(),
+            [(a.as_str(), 1), (b.as_str(), 1)]
         );
-        feed.settle_questions(None, &[questions[0].id.clone()], |_| {
-            QuestionState::Dismissed
+        // Answering only the first leaves the second.
+        let answered = feed.answer_approvals(&ApprovalAnswers {
+            choices: vec![ApprovalChoice {
+                id: a.clone(),
+                approve: true,
+                option: true,
+            }],
+            words: Some("  ".into()),
         });
-        let (asked_c, c) = approval("three");
-        assert_ne!(feed.ask(run, &asked_c, true, c, None), card);
+        assert_eq!(answered.len(), 1);
+        assert_eq!(
+            answer_a.try_recv().unwrap(),
+            Answer::Approved {
+                words: None,
+                option: false
+            },
+            "a profile has no option"
+        );
+        assert!(answer_b.try_recv().is_err());
+        // One that comes while b waits joins its batch.
+        let (c, answer_c) = feed.request_approval(run, None, profile("three"));
+        assert_eq!(feed.approvals()[1].batch, 1);
+        drop(answer_c);
+        assert_eq!(feed.approvals().len(), 1, "c's tool stopped waiting");
+        feed.withdraw_approval(&c);
+        assert!(
+            feed.answer_approvals(&ApprovalAnswers {
+                choices: vec![ApprovalChoice {
+                    id: c,
+                    approve: true,
+                    option: false,
+                }],
+                words: None,
+            })
+            .is_empty()
+        );
+        feed.withdraw_approval(&b);
+        assert!(feed.approvals().is_empty());
+        let (_, _d) = feed.request_approval(run, None, profile("four"));
+        assert_eq!(feed.approvals()[0].batch, 2, "a new tray");
     }
 
     /// A worker gets a placeholder in the main transcript where it starts

@@ -230,6 +230,8 @@ pub mod tests {
             model: None,
             effort: None,
             profile: None,
+            skills: None,
+            mcp: None,
             parent: None,
             depth: 1,
             cost_billed: 0.0,

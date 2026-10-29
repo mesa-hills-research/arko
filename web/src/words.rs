@@ -163,6 +163,17 @@ pub fn builtin_skills_about(started: bool) -> String {
     text
 }
 
+/// The settings for what agents add (the library's `extension_prefs`
+/// words, which the server's tests find on the page).
+pub const ASK_MCP_NAME: &str = "Ask before adding MCP servers";
+pub const ASK_MCP_ABOUT: &str =
+    "Agents ask before they add a server, for this project or every project.";
+pub const ASK_MCP_OFF: &str = "Agents will add MCP servers without asking. A server runs a program the agent chose, with your permissions and outside the command guard.";
+pub const REVIEW_SKILLS_NAME: &str = "Review project skills";
+pub const REVIEW_SKILLS_ABOUT: &str = "Agents ask before they save a skill in the project too. Skills for every project and downloaded skills always ask. A skill folder an agent writes with its file tools or the shell loads as before, without asking.";
+pub const KEEP_OUT_OF_GIT_NAME: &str = "Keep agents' project files out of git";
+pub const KEEP_OUT_OF_GIT_ABOUT: &str = "Skills, MCP servers and worker profiles that agents save in the project's .arko folder stay out of git. Off removes Arko's .gitignore from that folder.";
+
 /// Who gets the extra rules for small models, as `/extra-rules` takes it.
 pub const RULES: [(&str, &str, &str); 3] = [
     (
@@ -317,6 +328,23 @@ fn state_word(state: WorkerState) -> &'static str {
     }
 }
 
+/// How many skills a narrowed worker has: `no skills`, `1 skill` or `3 skills`.
+fn skills_words(skills: Option<&[String]>) -> Option<String> {
+    skills.map(|skills| match skills.len() {
+        0 => "no skills".to_string(),
+        count => plural(count as u32, "skill", "skills"),
+    })
+}
+
+/// How many MCP servers a narrowed worker reaches: `no MCP`, `1 MCP server`
+/// or `3 MCP servers`.
+fn servers_words(mcp: Option<&[String]>) -> Option<String> {
+    mcp.map(|mcp| match mcp.len() {
+        0 => "no MCP".to_string(),
+        count => plural(count as u32, "MCP server", "MCP servers"),
+    })
+}
+
 /// A worker's summary in words: its title, the meta line ("18 calls ·
 /// 2m14s · running · under r1 · gpt-6.1-sol, high · profile judge ·
 /// $0.12") and what it did last. `viewing` is the worker whose own view
@@ -356,6 +384,9 @@ pub fn worker_words(
     if let Some(profile) = &summary.profile {
         parts.push(format!("profile {profile}"));
     }
+    // Only a narrowed set is named. A worker with its starter's says nothing.
+    parts.extend(skills_words(summary.skills.as_deref()));
+    parts.extend(servers_words(summary.mcp.as_deref()));
     for words in [
         cost_words(summary.cost_billed, summary.cost_list),
         family_cost_words(summary),
@@ -417,6 +448,17 @@ pub fn state_of(
     let Some(status) = status else {
         return ("connecting", "Connecting".into());
     };
+    if !status.approvals.is_empty() {
+        return (
+            "asking",
+            if viewing.is_some() {
+                "Main needs approval"
+            } else {
+                "Needs approval"
+            }
+            .into(),
+        );
+    }
     if status.question.is_some() {
         return (
             "asking",
@@ -825,6 +867,35 @@ mod tests {
         );
     }
 
+    /// Only a narrowed set is named. A worker that has what its starter has
+    /// reads as it did.
+    #[test]
+    fn a_worker_names_its_skills_and_servers_only_when_they_are_narrowed() {
+        let usual = ModelsData::default();
+        let names = |names: &[&str]| Some(names.iter().map(|name| name.to_string()).collect());
+        let meta = |skills: Option<Vec<String>>, mcp: Option<Vec<String>>| {
+            let mut summary = worker("r5");
+            summary.tool_calls = 3;
+            summary.profile = Some("impl-light".into());
+            summary.skills = skills;
+            summary.mcp = mcp;
+            worker_words(&summary, 0.0, None, &usual).1
+        };
+        assert_eq!(meta(None, None), "3 calls · running · profile impl-light");
+        assert_eq!(
+            meta(names(&["ponytail", "release-notes"]), Some(Vec::new())),
+            "3 calls · running · profile impl-light · 2 skills · no MCP"
+        );
+        assert_eq!(
+            meta(Some(Vec::new()), names(&["github"])),
+            "3 calls · running · profile impl-light · no skills · 1 MCP server"
+        );
+        assert_eq!(
+            meta(names(&["ponytail"]), names(&["github", "sentry", "figma"])),
+            "3 calls · running · profile impl-light · 1 skill · 3 MCP servers"
+        );
+    }
+
     #[test]
     fn a_worker_that_a_worker_started_says_what_the_family_cost() {
         let mut summary = worker("r1");
@@ -886,6 +957,22 @@ mod tests {
         assert_eq!(WORKER_BILLING.map(|(key, ..)| key), ["plans", "ask", "api"]);
         assert!(builtin_skills_about(true).contains("keeps its skills"));
         assert!(!builtin_skills_about(false).contains("keeps its skills"));
+    }
+
+    /// The settings for what agents add read as one plain sentence each.
+    #[test]
+    fn the_approval_settings_have_no_colon_or_semicolon() {
+        for text in [
+            ASK_MCP_NAME,
+            ASK_MCP_ABOUT,
+            ASK_MCP_OFF,
+            REVIEW_SKILLS_NAME,
+            REVIEW_SKILLS_ABOUT,
+            KEEP_OUT_OF_GIT_NAME,
+            KEEP_OUT_OF_GIT_ABOUT,
+        ] {
+            assert!(!text.contains([':', ';']), "{text}");
+        }
     }
 
     #[test]
@@ -999,5 +1086,24 @@ mod tests {
             "r1 working"
         );
         assert_eq!(state_of(None, &Connection::Offline, None).1, "Offline");
+        // A request in the approval tray, before a question.
+        status.question = Some(crate::protocol::Question {
+            id: 4,
+            text: "Tabs?".into(),
+        });
+        assert_eq!(state_of(Some(&status), &live, None).1, "Asks you");
+        status.approvals = vec![crate::protocol::ApprovalRequest {
+            id: "a1".into(),
+            batch: 1,
+            approval: crate::protocol::Approval::WorkerBilling(Default::default()),
+        }];
+        assert_eq!(
+            state_of(Some(&status), &live, None),
+            ("asking", "Needs approval".to_string())
+        );
+        assert_eq!(
+            state_of(Some(&status), &live, Some(("r1", Some(&summary)))).1,
+            "Main needs approval"
+        );
     }
 }

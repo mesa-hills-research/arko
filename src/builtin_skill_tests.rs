@@ -28,7 +28,8 @@ fn with_folders(harness: &mut Harness, folders: Vec<PathBuf>) {
         harness.gauges.clone(),
         None,
         folders.clone(),
-        details::McpFacts::of(&mcp::Running::default(), &[], &harness.root),
+        mcp::Servers::default(),
+        Vec::new(),
     ));
     harness.skill_folders = folders;
 }

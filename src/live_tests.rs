@@ -1203,6 +1203,26 @@ async fn remote_qr_draws_the_code_or_says_why_not() {
     harness.stop_remote().await;
 }
 
+/// Without a terminal, the web page is someone to answer approvals while
+/// it is served, and no longer once it is turned off.
+#[tokio::test]
+async fn the_web_page_answers_approvals_while_it_is_served() {
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, _inputs, _sender) = harness(temp.path(), LLMClient::new(), false);
+    let approvals = harness.asker.approvals.clone();
+    assert!(!approvals.can_answer());
+    harness
+        .start_remote(remote::Bind {
+            ip: std::net::Ipv4Addr::LOCALHOST.into(),
+            port: Some(0),
+        })
+        .await;
+    assert!(harness.remote.is_some());
+    assert!(approvals.can_answer());
+    harness.stop_remote().await;
+    assert!(!approvals.can_answer());
+}
+
 /// The page's sessions are kept in the session's folder, so a page started
 /// again lets a browser in without the key, and `/remote off` ends them.
 #[tokio::test]

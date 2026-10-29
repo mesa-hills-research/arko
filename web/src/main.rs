@@ -5,6 +5,7 @@
 #![allow(clippy::type_complexity)]
 
 mod app;
+mod approvals;
 mod chrome;
 mod composer;
 mod copy;
@@ -99,14 +100,15 @@ fn listen(page: Page) {
         let _ = window.add_event_listener_with_callback(name, closure.as_ref().unchecked_ref());
         closure.forget();
     };
-    // A phone back from sleep or another app reconnects at once.
+    // A phone back from sleep or another app checks its stream, and
+    // reconnects at once without one.
     let _ = document().add_event_listener_with_callback(
         "visibilitychange",
         {
             let closure = Closure::<dyn FnMut()>::new(move || {
                 let visible = document().visibility_state() == web_sys::VisibilityState::Visible;
-                if visible && !app::streaming_now() && page.locked.get_untracked().is_none() {
-                    app::retry_now(page);
+                if visible && page.locked.get_untracked().is_none() {
+                    app::check_stream(page);
                 }
             });
             let function = closure.as_ref().unchecked_ref::<js_sys::Function>().clone();
@@ -114,6 +116,18 @@ fn listen(page: Page) {
             function
         }
         .unchecked_ref(),
+    );
+    // So does a page the browser kept as it was, back with Back or Forward.
+    on(
+        "pageshow",
+        Box::new(move |event| {
+            let kept = event
+                .unchecked_ref::<web_sys::PageTransitionEvent>()
+                .persisted();
+            if kept && page.locked.get_untracked().is_none() {
+                app::check_stream(page);
+            }
+        }),
     );
     // A link that differs only after the # (a new key after Arko restarted)
     // doesn't load the page again: trade its key and connect again.

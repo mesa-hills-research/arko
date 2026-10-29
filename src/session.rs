@@ -476,28 +476,6 @@ pub(crate) fn write_whole(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     written
 }
 
-/// Writes `bytes` to `path` whole, as [`write_whole`] does, but only if
-/// nothing is at `path` yet. Of two writers at once, the second gets
-/// `AlreadyExists`, and the first one's file is not replaced. A file system
-/// without hard links gets [`write_whole`], which can replace.
-pub(crate) fn write_new(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    static COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let count = COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let name = path
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    let temporary = path.with_file_name(format!(".{name}.{}.{count}.new", std::process::id()));
-    std::fs::write(&temporary, bytes)?;
-    let linked = std::fs::hard_link(&temporary, path);
-    let _ = std::fs::remove_file(&temporary);
-    match linked {
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Err(error),
-        Err(_) => write_whole(path, bytes),
-        Ok(()) => Ok(()),
-    }
-}
-
 /// The checkpoint `latest-checkpoint` names in a workflow's run directory.
 pub fn latest_checkpoint_in(run: &Path) -> Option<PathBuf> {
     let name = std::fs::read_to_string(run.join("latest-checkpoint")).ok()?;
@@ -1173,23 +1151,6 @@ mod tests {
         let file = std::fs::File::create(run.join("checkpoint-1.json")).unwrap();
         file.set_modified(std::time::SystemTime::now() - ago)
             .unwrap();
-    }
-
-    #[test]
-    fn a_file_written_new_never_replaces_one() {
-        let temp = tempfile::tempdir().unwrap();
-        let file = temp.path().join("a.md");
-        write_new(&file, b"first").unwrap();
-        assert_eq!(std::fs::read(&file).unwrap(), b"first");
-        let second = write_new(&file, b"second").unwrap_err();
-        assert_eq!(second.kind(), std::io::ErrorKind::AlreadyExists);
-        assert_eq!(std::fs::read(&file).unwrap(), b"first");
-        // Nothing else is left in the folder.
-        let left: Vec<_> = std::fs::read_dir(temp.path())
-            .unwrap()
-            .map(|entry| entry.unwrap().file_name())
-            .collect();
-        assert_eq!(left, ["a.md"]);
     }
 
     #[test]

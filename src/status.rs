@@ -57,6 +57,8 @@ pub(crate) struct Gauges {
     /// Which built-in skills the agents get, as the harness last published
     /// it.
     pub(crate) builtin_skills: Mutex<crate::builtin_skills::BuiltinSkills>,
+    /// The switches for what agents add, as the harness last published them.
+    pub(crate) extensions: Mutex<crate::extension_prefs::Switches>,
     /// Which of the project's instruction files the agents get, and whether
     /// workers do, as the harness last published them.
     pub(crate) project: Mutex<(project::Files, bool)>,
@@ -271,6 +273,7 @@ impl remote::Meter for Gauges {
         let stats = lock(&self.stats).clone();
         let (project_instructions, worker_project_instructions) = *lock(&self.project);
         let builtin_skills = lock(&self.builtin_skills).clone();
+        let extensions = *lock(&self.extensions);
         let (worker_billing, api_budget) = *lock(&self.billing);
         // What new workers hand over at, on their model (as the workflow
         // has them until the crew is told).
@@ -364,6 +367,9 @@ impl remote::Meter for Gauges {
                         on: !builtin_skills.off.iter().any(|off| off == name),
                     })
                     .to_vec(),
+                ask_before_adding_mcp: extensions.ask_before_adding_mcp,
+                review_project_skills: extensions.review_project_skills,
+                keep_agents_files_out_of_git: extensions.keep_out_of_git,
                 project_instructions,
                 worker_project_instructions,
                 background_after: self.background.after().map_or(0, |after| after.as_secs()),
@@ -399,6 +405,11 @@ impl remote::Meter for Gauges {
                 .feed
                 .as_ref()
                 .map(remote::Feed::open_questions)
+                .unwrap_or_default(),
+            approvals: self
+                .feed
+                .as_ref()
+                .map(remote::Feed::approvals)
                 .unwrap_or_default(),
             page: lock(&self.page).clone(),
             title: lock(&self.title).clone(),

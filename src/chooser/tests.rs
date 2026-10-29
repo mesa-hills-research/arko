@@ -33,6 +33,7 @@ fn basis(temp: &std::path::Path, worker: ModelSettings) -> Basis {
         rules_text: Some("# Extra rules\n- Search with rg.\n".to_string()),
         billing: WorkerBilling::Api,
         api_budget: None,
+        available: Available::default(),
     }
 }
 
@@ -115,9 +116,18 @@ fn a_start_with_no_choice_runs_the_session_s_worker_model_as_registered() {
         let agent_settings = AgentSettings::for_test(&worker, &worker);
         let registered = agents::worker_config(&agent_settings).unwrap();
         let mut chosen = pick(&basis, &[]).unwrap();
-        // (It also keeps the effort, for the lists.)
+        // (It also keeps the effort, for the lists, and its model's names,
+        // for its skill list.)
         assert_eq!(chosen.effort, Some(worker.effort), "{}", worker.model);
         chosen.effort = None;
+        let model = providers::resolve_model(&worker.model).unwrap();
+        assert_eq!(
+            chosen.model_names,
+            Some(crate::skills::model_names(&model)),
+            "{}",
+            worker.model
+        );
+        chosen.model_names = None;
         assert_eq!(
             json(&chosen),
             json(&WorkerSetup::of(&registered)),
@@ -127,6 +137,7 @@ fn a_start_with_no_choice_runs_the_session_s_worker_model_as_registered() {
         // Naming `default`, or the session's own model, is the same.
         let mut named = pick(&basis, &[("profile", "default")]).unwrap();
         named.effort = None;
+        named.model_names = None;
         assert_eq!(json(&named), json(&chosen));
         assert_eq!(chosen.context_added, None);
         assert_eq!(chosen.profile, None);
@@ -617,7 +628,7 @@ fn at(depth: u32, live: usize) -> Family {
 fn nesting(basis: &Basis, family: Family, nested: bool) -> Result<WorkerSetup, String> {
     let mut call = request(&[]);
     call.parameters.insert("nested".into(), Value::Bool(nested));
-    choose_in(basis, &call, None, family)
+    choose_in(basis, &call, None, family, None, &[])
 }
 
 /// The start tools a setup gives a worker, and no others.
@@ -691,7 +702,7 @@ fn a_worker_that_nests_gets_the_start_tools_and_the_paragraph() {
     // The call beats the profile.
     let mut call = request(&[("profile", "nests")]);
     call.parameters.insert("nested".into(), Value::Bool(false));
-    let refused = choose_in(&basis, &call, None, Family::MAIN).unwrap();
+    let refused = choose_in(&basis, &call, None, Family::MAIN, None, &[]).unwrap();
     assert!(start_tools(&refused).is_empty());
     assert!(
         !refused
@@ -703,7 +714,7 @@ fn a_worker_that_nests_gets_the_start_tools_and_the_paragraph() {
     let big = basis_with_worker(&basis, settings("opus", Effort::High));
     let mut call = request(&[("model", "luna")]);
     call.parameters.insert("nested".into(), Value::Bool(true));
-    let context = choose_in(&big, &call, None, Family::MAIN)
+    let context = choose_in(&big, &call, None, Family::MAIN, None, &[])
         .unwrap()
         .context_added
         .unwrap();
@@ -749,7 +760,15 @@ fn the_depth_and_the_limit_are_held_at_each_start() {
     assert!(plain.tools_added.is_empty() && plain.context_added.is_none());
     // A profile that says `nested` is started without when it is at the last
     // level, and the start goes on.
-    let profiled = choose_in(&basis, &request(&[("profile", "nests")]), None, at(2, 0)).unwrap();
+    let profiled = choose_in(
+        &basis,
+        &request(&[("profile", "nests")]),
+        None,
+        at(2, 0),
+        None,
+        &[],
+    )
+    .unwrap();
     assert!(profiled.tools_added.is_empty() && profiled.context_added.is_none());
     // A worker at level 2 starting a level-3 worker is refused.
     assert_eq!(
@@ -806,10 +825,18 @@ fn a_nested_worker_is_not_sent_to_worker_options() {
         ))
     });
     let start = |parameters: &[(&str, &str)], refuse: Option<&Refuse>| {
-        choose_in(&basis, &request(parameters), refuse, at(2, 0)).unwrap_err()
+        choose_in(&basis, &request(parameters), refuse, at(2, 0), None, &[]).unwrap_err()
     };
     let main = |parameters: &[(&str, &str)], refuse: Option<&Refuse>| {
-        choose_in(&basis, &request(parameters), refuse, Family::MAIN).unwrap_err()
+        choose_in(
+            &basis,
+            &request(parameters),
+            refuse,
+            Family::MAIN,
+            None,
+            &[],
+        )
+        .unwrap_err()
     };
     type Case<'a> = (Vec<(&'a str, &'a str)>, Option<&'a Refuse>);
     let cases: Vec<Case> = vec![
@@ -835,7 +862,7 @@ fn a_nested_worker_is_not_sent_to_worker_options() {
     let asking = {
         let mut call = request(&[]);
         call.parameters.insert("nested".into(), Value::Bool(true));
-        choose_in(&basis, &call, None, at(3, 0)).unwrap_err()
+        choose_in(&basis, &call, None, at(3, 0), None, &[]).unwrap_err()
     };
     assert_eq!(
         asking,
@@ -857,7 +884,15 @@ fn a_nested_worker_is_not_sent_to_worker_options() {
         choice: ModelChoice::Profiles,
         ..basis.clone()
     };
-    let text = choose_in(&only, &request(&[("model", "sol")]), None, at(2, 0)).unwrap_err();
+    let text = choose_in(
+        &only,
+        &request(&[("model", "sol")]),
+        None,
+        at(2, 0),
+        None,
+        &[],
+    )
+    .unwrap_err();
     assert!(
         text.contains("/worker-models profiles") && !text.contains("worker_options"),
         "{text}"
@@ -895,7 +930,14 @@ fn no_worker_nests_when_every_worker_runs_the_session_s_model() {
         start_tools(&nesting(&profiles, Family::MAIN, true).unwrap()),
         NESTED_TOOL_NAMES
     );
-    let refused = choose_in(&profiles, &request(&[("model", "sol")]), None, at(2, 0));
+    let refused = choose_in(
+        &profiles,
+        &request(&[("model", "sol")]),
+        None,
+        at(2, 0),
+        None,
+        &[],
+    );
     assert!(refused.unwrap_err().contains("(/worker-models profiles)"));
 }
 
@@ -1009,4 +1051,463 @@ fn the_instructions_name_profiles_and_only_short_known_models() {
             ("unknown".to_string(), None),
         ]
     );
+}
+
+/// The basis of a session with the skills alpha, beta and gamma, one for the
+/// main agent alone (`private`), and the MCP servers github and sentry.
+fn with_skills(temp: &std::path::Path) -> Basis {
+    let folder = temp.join("skills");
+    for (name, extra) in [
+        ("alpha", ""),
+        ("beta", ""),
+        ("gamma", ""),
+        ("private", "workers: false\n"),
+    ] {
+        let dir = folder.join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("SKILL.md"),
+            format!(
+                "---\nname: {name}\ndescription: The {name} skill.\n{extra}---\n\nDo {name}.\n"
+            ),
+        )
+        .unwrap();
+    }
+    let mut basis = basis(temp, luna());
+    basis.worker_depth = 3;
+    basis.available = Available {
+        skills: Some(arko_agents::skill::SkillsConfig {
+            global_sources: vec![arko_agents::skill::SkillSource {
+                path: folder.display().to_string(),
+                include: None,
+                exclude: None,
+                optional: false,
+            }],
+            ..Default::default()
+        }),
+        workspace: temp.join("work"),
+    };
+    basis
+}
+
+/// The servers of a hub that has the given names, each with whether workers
+/// may reach it. (None of them started.)
+fn hub_servers(spec: &[(&str, bool)]) -> Vec<ServerFacts> {
+    let configs = spec
+        .iter()
+        .map(|(name, workers)| {
+            let mut config = arko_agents::McpServerConfig::new(*name, "true");
+            config.workers = *workers;
+            config
+        })
+        .collect();
+    arko_agents::McpHub::new(configs).servers()
+}
+
+/// The session's servers: github and sentry for workers, and one for the
+/// main agent alone.
+fn servers() -> Vec<ServerFacts> {
+    hub_servers(&[("github", true), ("sentry", true), ("internal", false)])
+}
+
+/// The setup of the worker that the main agent starts with `parameters`.
+fn narrow(basis: &Basis, parameters: &[(&str, &str)]) -> Result<WorkerSetup, String> {
+    choose_in(
+        basis,
+        &request(parameters),
+        None,
+        Family::MAIN,
+        None,
+        &servers(),
+    )
+}
+
+fn names(items: &[&str]) -> Vec<String> {
+    items.iter().map(|item| item.to_string()).collect()
+}
+
+/// The setup of a worker that `starter` starts at `depth` (1 is the main
+/// agent's worker, which `starter` is none for).
+fn start_under(
+    basis: &Basis,
+    starter: Option<&WorkerSetup>,
+    depth: u32,
+    parameters: &[(&str, &str)],
+) -> Result<WorkerSetup, String> {
+    choose_in(
+        basis,
+        &request(parameters),
+        None,
+        at(depth, 0),
+        starter,
+        &servers(),
+    )
+}
+
+/// Names come as text with commas, a JSON array of text or `none`, and a
+/// call may send the array as a list.
+#[test]
+fn skills_and_servers_take_commas_a_json_array_or_none() {
+    use crate::crew::names_asked;
+    for (text, expected) in [
+        ("alpha, beta", Some(names(&["alpha", "beta"]))),
+        (" alpha ,beta,, alpha,", Some(names(&["alpha", "beta"]))),
+        ("[\"alpha\", \"beta\"]", Some(names(&["alpha", "beta"]))),
+        ("none", Some(Vec::new())),
+        ("None", Some(Vec::new())),
+        ("[]", Some(Vec::new())),
+        ("", None),
+        ("  ", None),
+    ] {
+        assert_eq!(names_asked(text), Ok(expected), "{text:?}");
+    }
+    for text in [
+        ",",
+        "[alpha]",
+        "[1]",
+        "[\"a\", \"\"]",
+        "a\u{7}b",
+        "[\"a,b\"]",
+    ] {
+        assert!(names_asked(text).is_err(), "{text:?}");
+    }
+    assert!(names_asked(&"x".repeat(101)).is_err());
+
+    let temp = tempfile::tempdir().unwrap();
+    let basis = with_skills(temp.path());
+    let both = narrow(&basis, &[("skills", "alpha, beta"), ("mcp", "none")]).unwrap();
+    assert_eq!(both.skills, Some(names(&["alpha", "beta"])));
+    assert_eq!(both.mcp, Some(Vec::new()));
+    let array = narrow(
+        &basis,
+        &[("skills", "[\"gamma\"]"), ("mcp", "[\"github\"]")],
+    )
+    .unwrap();
+    assert_eq!(array.skills, Some(names(&["gamma"])));
+    assert_eq!(array.mcp, Some(names(&["github"])));
+    // A list in the call itself.
+    let mut call = request(&[]);
+    call.parameters
+        .insert("skills".into(), serde_json::json!(["beta", "alpha"]));
+    let listed = choose_in(&basis, &call, None, Family::MAIN, None, &servers()).unwrap();
+    assert_eq!(listed.skills, Some(names(&["beta", "alpha"])));
+    // Text that is none of these says which parameter.
+    assert_eq!(
+        narrow(&basis, &[("skills", ",")]).unwrap_err(),
+        "skills isn't names separated by commas, a JSON array or none"
+    );
+    call.parameters.insert("mcp".into(), Value::Bool(true));
+    assert_eq!(
+        choose_in(&basis, &call, None, Family::MAIN, None, &servers()).unwrap_err(),
+        "mcp must be text"
+    );
+    // Neither given: everything its starter has.
+    let plain = narrow(&basis, &[]).unwrap();
+    assert_eq!(
+        (plain.skills, plain.mcp, plain.left_out),
+        (None, None, None)
+    );
+}
+
+/// A name the starter doesn't have refuses the start and names what the
+/// starter can give. The main agent's skills leave out the one for itself.
+#[test]
+fn a_worker_gets_only_names_its_starter_has() {
+    let temp = tempfile::tempdir().unwrap();
+    let basis = with_skills(temp.path());
+    assert_eq!(
+        narrow(&basis, &[("skills", "alpha, nope")]).unwrap_err(),
+        "A worker can't get the skill `nope`. You can give alpha, beta, and gamma."
+    );
+    assert_eq!(
+        narrow(&basis, &[("skills", "nope, none-either")]).unwrap_err(),
+        "A worker can't get the skills `nope` and `none-either`. You can give alpha, beta, and gamma."
+    );
+    assert_eq!(
+        narrow(&basis, &[("mcp", "github, figma")]).unwrap_err(),
+        "A worker can't get the MCP server `figma`. You can give github and sentry."
+    );
+    // A server for the main agent alone is told apart from one that isn't
+    // there.
+    assert_eq!(
+        narrow(&basis, &[("mcp", "internal")]).unwrap_err(),
+        "A worker can't get the MCP server `internal`. `internal` is marked for the main agent alone. You can give github and sentry."
+    );
+    // A worker's start names what that worker has.
+    let narrowed = narrow(&basis, &[("skills", "alpha, beta"), ("mcp", "github")]).unwrap();
+    assert_eq!(
+        start_under(&basis, Some(&narrowed), 2, &[("skills", "gamma")]).unwrap_err(),
+        "A worker can't get the skill `gamma`. You can give alpha and beta."
+    );
+    assert_eq!(
+        start_under(&basis, Some(&narrowed), 2, &[("mcp", "sentry")]).unwrap_err(),
+        "A worker can't get the MCP server `sentry`. You can give github."
+    );
+    // One with none has none to give.
+    let bare = narrow(&basis, &[("skills", "none"), ("mcp", "none")]).unwrap();
+    assert_eq!(
+        start_under(&basis, Some(&bare), 2, &[("skills", "alpha")]).unwrap_err(),
+        "A worker can't get the skill `alpha`. You have no skills to give."
+    );
+    assert_eq!(
+        start_under(&basis, Some(&bare), 2, &[("mcp", "github")]).unwrap_err(),
+        "A worker can't get the MCP server `github`. You have no MCP servers to give."
+    );
+    // Without skill folders or servers, nothing can be named.
+    let empty = Basis {
+        available: Available::default(),
+        ..basis.clone()
+    };
+    assert_eq!(
+        narrow(&empty, &[("skills", "alpha")]).unwrap_err(),
+        "A worker can't get the skill `alpha`. You have no skills to give."
+    );
+    assert_eq!(
+        choose_in(
+            &basis,
+            &request(&[("mcp", "github")]),
+            None,
+            Family::MAIN,
+            None,
+            &[]
+        )
+        .unwrap_err(),
+        "A worker can't get the MCP server `github`. You have no MCP servers to give."
+    );
+}
+
+/// A skill marked `workers: false` can't go to a worker. The main agent
+/// can't name it, and a worker doesn't see it at all.
+#[test]
+fn a_skill_for_the_main_agent_alone_is_refused() {
+    let temp = tempfile::tempdir().unwrap();
+    let basis = with_skills(temp.path());
+    assert_eq!(
+        narrow(&basis, &[("skills", "alpha, private")]).unwrap_err(),
+        "A worker can't get the skill `private`. `private` is marked for the main agent alone. You can give alpha, beta, and gamma."
+    );
+    // A worker with everything has none of those either.
+    let everything = narrow(&basis, &[]).unwrap();
+    assert_eq!(everything.skills, None);
+    assert_eq!(
+        start_under(&basis, Some(&everything), 2, &[("skills", "private")]).unwrap_err(),
+        "A worker can't get the skill `private`. You can give alpha, beta, and gamma."
+    );
+    // A profile that names it is crossed, and the start says so.
+    save(&basis, Place::User, {
+        let mut profile = profile("mixed", None, None);
+        profile.skills = Some(names(&["alpha", "private"]));
+        profile
+    });
+    let crossed = narrow(&basis, &[("profile", "mixed")]).unwrap();
+    assert_eq!(crossed.skills, Some(names(&["alpha"])));
+    assert_eq!(
+        crossed.left_out.as_deref(),
+        Some("The profile also names the skill `private`, which this worker can't get.")
+    );
+}
+
+/// A set carries through every depth: a worker without names has its
+/// starter's, a list is passed on, and each level can only narrow it.
+#[test]
+fn a_set_carries_through_three_levels() {
+    let temp = tempfile::tempdir().unwrap();
+    let basis = Basis {
+        worker_depth: 4,
+        ..with_skills(temp.path())
+    };
+    // The main agent's worker r1 gets a list, and r2 and r3 below it
+    // inherit it.
+    let r1 = narrow(&basis, &[("skills", "alpha, beta"), ("mcp", "github")]).unwrap();
+    let r2 = start_under(&basis, Some(&r1), 2, &[]).unwrap();
+    assert_eq!(r2.skills, Some(names(&["alpha", "beta"])));
+    assert_eq!(r2.mcp, Some(names(&["github"])));
+    let r3 = start_under(&basis, Some(&r2), 3, &[]).unwrap();
+    assert_eq!(r3.skills, Some(names(&["alpha", "beta"])));
+    assert_eq!(r3.mcp, Some(names(&["github"])));
+    // A level narrows, and the next one can't widen it again.
+    let narrower =
+        start_under(&basis, Some(&r2), 3, &[("skills", "beta"), ("mcp", "none")]).unwrap();
+    assert_eq!(narrower.skills, Some(names(&["beta"])));
+    assert_eq!(narrower.mcp, Some(Vec::new()));
+    assert!(
+        start_under(&basis, Some(&narrower), 4, &[("skills", "alpha")])
+            .unwrap_err()
+            .ends_with("You can give beta.")
+    );
+    // A starter with everything passes on everything, and the sets of the
+    // workers under it stay what each was started with.
+    let free = narrow(&basis, &[]).unwrap();
+    let under_free = start_under(&basis, Some(&free), 2, &[]).unwrap();
+    assert_eq!((under_free.skills, under_free.mcp), (None, None));
+    let named = start_under(&basis, Some(&free), 2, &[("skills", "gamma")]).unwrap();
+    assert_eq!(named.skills, Some(names(&["gamma"])));
+    assert_eq!(
+        start_under(&basis, Some(&named), 3, &[]).unwrap().skills,
+        Some(names(&["gamma"]))
+    );
+}
+
+/// A profile's names are crossed with the starter's set. The call's names
+/// win over the profile's, and the start says which names were left out.
+#[test]
+fn a_profiles_names_are_crossed_with_the_starters_set() {
+    let temp = tempfile::tempdir().unwrap();
+    let basis = with_skills(temp.path());
+    let mut limited = profile("limited", None, None);
+    limited.skills = Some(names(&["alpha", "gamma", "ghost"]));
+    limited.mcp = Some(names(&["github", "figma"]));
+    save(&basis, Place::User, limited);
+    let mut skills_only = profile("skills-only", None, None);
+    skills_only.skills = Some(Vec::new());
+    save(&basis, Place::User, skills_only);
+
+    let main = narrow(&basis, &[("profile", "limited")]).unwrap();
+    assert_eq!(main.skills, Some(names(&["alpha", "gamma"])));
+    assert_eq!(main.mcp, Some(names(&["github"])));
+    assert_eq!(
+        main.left_out.as_deref(),
+        Some(
+            "The profile also names the skill `ghost`, which this worker can't get. The profile also names the MCP server `figma`, which this worker can't get."
+        )
+    );
+
+    // A starter with fewer skills leaves out more.
+    let starter = narrow(&basis, &[("skills", "alpha, beta"), ("mcp", "sentry")]).unwrap();
+    let under = start_under(&basis, Some(&starter), 2, &[("profile", "limited")]).unwrap();
+    assert_eq!(under.skills, Some(names(&["alpha"])));
+    assert_eq!(under.mcp, Some(Vec::new()));
+    assert_eq!(
+        under.left_out.as_deref(),
+        Some(
+            "The profile also names the skills `gamma` and `ghost`, which this worker can't get. The profile also names the MCP servers `github` and `figma`, which this worker can't get."
+        )
+    );
+
+    // The call wins, and is held to the starter's set as ever.
+    let called = narrow(&basis, &[("profile", "limited"), ("skills", "beta")]).unwrap();
+    assert_eq!(called.skills, Some(names(&["beta"])));
+    assert_eq!(called.mcp, Some(names(&["github"])));
+    assert_eq!(
+        called.left_out.as_deref(),
+        Some("The profile also names the MCP server `figma`, which this worker can't get.")
+    );
+    let none = narrow(&basis, &[("profile", "limited"), ("skills", "none")]).unwrap();
+    assert_eq!(none.skills, Some(Vec::new()));
+    assert!(narrow(&basis, &[("profile", "limited"), ("mcp", "figma")]).is_err());
+
+    // A profile with an empty list gives none, and one that leaves a set
+    // out passes on the starter's.
+    let bare = narrow(&basis, &[("profile", "skills-only")]).unwrap();
+    assert_eq!(
+        (bare.skills, bare.mcp, bare.left_out),
+        (Some(Vec::new()), None, None)
+    );
+    let inherits = start_under(&basis, Some(&starter), 2, &[("profile", "skills-only")]).unwrap();
+    assert_eq!(inherits.mcp, Some(names(&["sentry"])));
+}
+
+/// A skill saved after the session started is there for the next start.
+#[test]
+fn skills_saved_since_the_session_started_can_be_named() {
+    let temp = tempfile::tempdir().unwrap();
+    let basis = with_skills(temp.path());
+    assert!(narrow(&basis, &[("skills", "delta")]).is_err());
+    let dir = temp.path().join("skills/delta");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("SKILL.md"),
+        "---\nname: delta\ndescription: The delta skill.\n---\n\nDo delta.\n",
+    )
+    .unwrap();
+    assert_eq!(
+        narrow(&basis, &[("skills", "delta")]).unwrap().skills,
+        Some(names(&["delta"]))
+    );
+}
+
+/// A refusal reads the same for a worker, and at most a dozen names show.
+#[test]
+fn the_names_a_refusal_lists_are_cut() {
+    let temp = tempfile::tempdir().unwrap();
+    let basis = with_skills(temp.path());
+    let many: Vec<String> = (1..=15).map(|n| format!("server{n}")).collect();
+    let many: Vec<(&str, bool)> = many.iter().map(|name| (name.as_str(), true)).collect();
+    let text = choose_in(
+        &basis,
+        &request(&[("mcp", "nope")]),
+        None,
+        Family::MAIN,
+        None,
+        &hub_servers(&many),
+    )
+    .unwrap_err();
+    assert!(
+        text.ends_with("You can give server1, server2, server3, server4, server5, server6, server7, server8, server9, server10, server11, server12, and 3 more."),
+        "{text}"
+    );
+}
+
+/// Names a profile saves are the main agent's to give now.
+#[test]
+fn a_profile_names_are_checked_against_the_main_agents_set() {
+    let temp = tempfile::tempdir().unwrap();
+    let basis = with_skills(temp.path());
+    let mut good = profile("good", None, None);
+    good.skills = Some(names(&["alpha"]));
+    good.mcp = Some(Vec::new());
+    assert_eq!(check_profile_names(&basis, &good, &servers()), Ok(()));
+    good.skills = Some(names(&["alpha", "private"]));
+    assert!(
+        check_profile_names(&basis, &good, &servers())
+            .unwrap_err()
+            .contains("`private` is marked for the main agent alone.")
+    );
+    good.skills = None;
+    good.mcp = Some(names(&["figma"]));
+    assert_eq!(
+        check_profile_names(&basis, &good, &servers()).unwrap_err(),
+        "A worker can't get the MCP server `figma`. You can give github and sentry."
+    );
+    assert_eq!(
+        check_profile_names(&basis, &profile("plain", None, None), &servers()),
+        Ok(())
+    );
+}
+
+/// A worker is offered the MCP tool when its set holds a server workers may
+/// reach, and not when it holds none, whoever its starter is.
+#[test]
+fn a_worker_is_offered_the_mcp_tool_only_when_it_reaches_a_server() {
+    let temp = tempfile::tempdir().unwrap();
+    let basis = Basis {
+        worker_depth: 3,
+        ..with_skills(temp.path())
+    };
+    let offered = |setup: &WorkerSetup| setup.tools_added.iter().any(|tool| tool == "mcp");
+    assert!(offered(&narrow(&basis, &[]).unwrap()));
+    assert!(offered(&narrow(&basis, &[("mcp", "sentry")]).unwrap()));
+    assert!(!offered(&narrow(&basis, &[("mcp", "none")]).unwrap()));
+    // A profile that names only servers it can't get leaves none.
+    let mut gone = profile("gone", None, None);
+    gone.mcp = Some(names(&["figma"]));
+    save(&basis, Place::User, gone);
+    assert!(!offered(&narrow(&basis, &[("profile", "gone")]).unwrap()));
+    // Under a worker with none, a worker has none.
+    let bare = narrow(&basis, &[("mcp", "none")]).unwrap();
+    assert!(!offered(&start_under(&basis, Some(&bare), 2, &[]).unwrap()));
+    // With no servers at all, or only ones for the main agent, no worker has
+    // the tool, and it keeps the start tools it asked for.
+    let call = |servers: &[ServerFacts]| {
+        let mut nesting = request(&[]);
+        nesting
+            .parameters
+            .insert("nested".into(), Value::Bool(true));
+        choose_in(&basis, &nesting, None, Family::MAIN, None, servers).unwrap()
+    };
+    assert!(!offered(&call(&[])));
+    assert!(!offered(&call(&hub_servers(&[("internal", false)]))));
+    let nests = call(&servers());
+    assert!(offered(&nests));
+    assert!(nests.nests());
 }

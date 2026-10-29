@@ -12,6 +12,7 @@
 //! chat apps, pagers and readline.
 
 mod app;
+mod approvals;
 mod backend;
 mod cache;
 mod clipboard;
