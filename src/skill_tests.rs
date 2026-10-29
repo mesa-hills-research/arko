@@ -273,7 +273,8 @@ async fn skills_names_shows_and_removes_what_agents_saved() {
             "How this project writes notes.".into(),
             format!("{}, out of git", saved.display()),
             format!(
-                "Added by the agent on {today} {year}, from drafts/notes"
+                "Added by the agent on {today} {year}, from {}",
+                workspace.join("drafts/notes").display()
             ),
             "why      The release checklist changed.".into(),
             "workers  main agent only".into(),

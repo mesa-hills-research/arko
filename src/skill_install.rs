@@ -701,8 +701,9 @@ impl AddSkill {
         name: &str,
         scope: Scope,
         dest: &Path,
-        in_place: bool,
+        origin: &Origin,
     ) -> Result<Option<SkillRecord>, String> {
+        let in_place = matches!(origin, Origin::InPlace);
         let context = &self.0;
         if crate::builtin_skills::find(name).is_some() {
             return Err(format!(
@@ -740,6 +741,14 @@ impl AddSkill {
                     }
                     return Err(format!(
                         "The user has a skill named {name} in {}. Choose another name.",
+                        path.display()
+                    ));
+                }
+                if let Origin::Copied(source) = origin
+                    && *source == path
+                {
+                    return Err(format!(
+                        "{} is in a skill folder, so it is a skill already. Write the skill in another folder, such as a scratch folder, and give that folder.",
                         path.display()
                     ));
                 }
@@ -839,13 +848,20 @@ impl AddSkill {
                 "models has {entry}, and an entry may have only letters, digits and . - _ / : * ?"
             )));
         }
-        let in_place = matches!(draft.origin, Origin::InPlace);
-        let replaces = self.place(name, scope, &dest, in_place).map_err(refused)?;
+        let replaces = self
+            .place(name, scope, &dest, &draft.origin)
+            .map_err(refused)?;
+        // (A path as the user reads it.)
+        let given = match &draft.origin {
+            Origin::InPlace => None,
+            Origin::Copied(path) => Some(with_tilde(path, context.home.as_deref())),
+            Origin::Downloaded { url, .. } => Some(url.clone()),
+        };
         Ok(Plan {
             name: name.to_string(),
             scope,
             dest,
-            source: (!in_place).then(|| source.to_string()),
+            source: given,
             draft,
             skill_md,
             parsed,

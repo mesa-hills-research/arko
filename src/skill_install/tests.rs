@@ -546,6 +546,10 @@ async fn a_skill_that_fails_a_check_is_refused_and_nothing_is_written() {
             "The user has a skill named mine in",
         ),
         (
+            params("shared", ".claude/skills/shared"),
+            "/.claude/skills/shared is in a skill folder, so it is a skill already. Write the skill in another folder, such as a scratch folder, and give that folder.",
+        ),
+        (
             params("many", &draft("many", "", &many)),
             "The skill has more than 200 files, the most a saved skill may have.",
         ),
