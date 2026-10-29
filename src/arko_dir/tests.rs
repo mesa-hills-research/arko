@@ -295,3 +295,23 @@ fn a_folder_writes_and_deletes_without_following_links() {
     assert!(outside.join("kept").is_dir());
     assert!(folder.open("link", false).is_err());
 }
+
+/// Reading a name that is a pipe fails at once, rather than waiting for a
+/// writer.
+#[cfg(unix)]
+#[test]
+fn a_folder_reads_only_regular_files() {
+    let temp = tempfile::tempdir().unwrap();
+    let pipe = std::ffi::CString::new(
+        temp.path()
+            .join("pipe")
+            .into_os_string()
+            .into_encoded_bytes(),
+    )
+    .unwrap();
+    // SAFETY: a C string for a path, and a mode.
+    assert_eq!(unsafe { libc::mkfifo(pipe.as_ptr(), 0o600) }, 0);
+    let folder = Folder::base(temp.path()).unwrap();
+    assert!(folder.read("pipe").is_err());
+    assert!(folder.open_file("pipe").is_err());
+}
