@@ -246,6 +246,17 @@ fn send_tray_answer(
     input.send(Input::AnswerApprovals(answers)).unwrap();
 }
 
+/// Waits until `requests` have left the tray. (Not until the tray is empty,
+/// since the next turn's request can come before the poll sees it empty.)
+async fn until_answered(feed: &crate::remote::Feed, requests: &[crate::approvals::ApprovalRequest]) {
+    until(|| {
+        feed.approvals()
+            .iter()
+            .all(|waiting| requests.iter().all(|asked| asked.id != waiting.id))
+    })
+    .await;
+}
+
 /// The tool result the main agent read last, from its latest request.
 fn last_result(seen: &Seen) -> String {
     let seen = seen.lock().unwrap();
@@ -586,7 +597,7 @@ async fn a_profile_for_every_session_waits_in_the_approval_tray() {
             assert_eq!(approval.summary(), "sol high");
             let approved: &[usize] = if approve { &[0] } else { &[] };
             send_tray_answer(&sender, &requests, approved, false, words);
-            until(|| feed.approvals().is_empty()).await;
+            until_answered(&feed, &requests).await;
         }
     });
     let saved = harness.root.join("profiles").join("3d-judge.md");
@@ -706,7 +717,7 @@ async fn a_worker_billed_per_token_starts_once_the_user_allows_it_in_the_tray() 
             );
             let approved: &[usize] = if approve { &[0] } else { &[] };
             send_tray_answer(&sender, &requests, approved, true, "");
-            until(|| feed.approvals().is_empty()).await;
+            until_answered(&feed, &requests).await;
         }
     });
     start_worker(&mut harness, &mut inputs, "Start on a model.").await;
