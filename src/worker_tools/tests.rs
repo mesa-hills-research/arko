@@ -49,6 +49,7 @@ fn basis(temp: &std::path::Path, choice: ModelChoice) -> Basis {
         rules_text: None,
         billing: crate::billing::WorkerBilling::Api,
         api_budget: None,
+        available: Default::default(),
     }
 }
 
@@ -439,6 +440,8 @@ fn the_tools_are_defined_for_the_main_agent() {
             ("model", false),
             ("effort", false),
             ("instructions", false),
+            ("skills", false),
+            ("mcp", false),
             ("scope", false),
         ]
     );
@@ -1078,4 +1081,84 @@ async fn an_effort_the_session_s_model_does_not_take_is_refused_for_a_profile_wi
     )
     .await;
     assert!(saved.is_ok(), "{saved:?}");
+}
+
+/// `save_worker_profile` takes `skills` and `mcp`, held to what the main
+/// agent can give a worker, and the profile keeps them.
+#[tokio::test]
+async fn a_saved_profile_keeps_the_skills_and_servers_it_names() {
+    let fixture = fixture(ModelChoice::Agent, true);
+    let skills = fixture._temp.path().join("skills");
+    for name in ["ponytail", "release-notes"] {
+        let dir = skills.join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("SKILL.md"),
+            format!("---\nname: {name}\ndescription: The {name} skill.\n---\n\nDo {name}.\n"),
+        )
+        .unwrap();
+    }
+    let mut new = fixture.crew.new_workers().unwrap();
+    new.basis = Arc::new(Basis {
+        available: crate::chooser::Available {
+            skills: Some(arko_agents::skill::SkillsConfig {
+                global_sources: vec![arko_agents::skill::SkillSource {
+                    path: skills.display().to_string(),
+                    include: None,
+                    exclude: None,
+                    optional: false,
+                }],
+                ..Default::default()
+            }),
+            workspace: fixture._temp.path().into(),
+        },
+        ..(*new.basis).clone()
+    });
+    fixture.crew.set_new_workers(new);
+    fixture.crew.set_mcp_hub(arko_agents::McpHub::new(vec![
+        arko_agents::McpServerConfig::new("github", "true"),
+    ]));
+    let save = |name: &str, skills: &str, mcp: &str| {
+        let pairs = vec![
+            ("name", Value::from(name)),
+            ("description", Value::from("Reads")),
+            ("scope", Value::from("session")),
+            ("skills", Value::from(skills)),
+            ("mcp", Value::from(mcp)),
+        ];
+        let save = fixture.save.clone();
+        async move { call(&save, &pairs).await }
+    };
+    let saved = save("narrow", "ponytail, release-notes", "none").await;
+    assert!(saved.is_ok(), "{saved:?}");
+    let saved = profiles::read(&fixture.basis.roots, "narrow")
+        .unwrap()
+        .profile;
+    assert_eq!(
+        saved.skills,
+        Some(vec!["ponytail".to_string(), "release-notes".to_string()])
+    );
+    assert_eq!(saved.mcp, Some(Vec::new()));
+    // Names the main agent can't give, and text that isn't a list, are
+    // refused before anyone is asked.
+    assert_eq!(
+        save("typo", "ponytale", "github").await.unwrap_err(),
+        "A worker can't get the skill `ponytale`. You can give ponytail and release-notes."
+    );
+    assert_eq!(
+        save("typo", "ponytail", "figma").await.unwrap_err(),
+        "A worker can't get the MCP server `figma`. You can give github."
+    );
+    assert_eq!(
+        save("typo", ",", "none").await.unwrap_err(),
+        "skills isn't names separated by commas, a JSON array or none"
+    );
+    assert!(profiles::read(&fixture.basis.roots, "typo").is_err());
+    // The list of options says what the profile narrows.
+    let basis = fixture.crew.new_workers().unwrap().basis;
+    let text = options_text(&basis, Show::Profiles, &needs, &plans());
+    assert!(
+        text.contains("\n- narrow (session, made by you) · the worker model, only the skills ponytail and release-notes, no MCP servers · Reads"),
+        "{text}"
+    );
 }

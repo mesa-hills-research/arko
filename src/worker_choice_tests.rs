@@ -1090,6 +1090,21 @@ Can't be read
             session.join("reviewer.md").display()
         )
     );
+    // What a profile limits workers to is told, and nothing when it limits none.
+    std::fs::write(
+        session.join("narrow.md"),
+        "---\ndescription: Reads\nskills: ponytail\nmcp: none\n---\n",
+    )
+    .unwrap();
+    assert!(harness.live_command("/profiles narrow", Source::Terminal));
+    assert!(
+        last_said(&harness.feed).contains(
+            "Runs on the session's worker model. Workers with it get only the skill ponytail. Workers with it get no MCP servers.\n"
+        ),
+        "{}",
+        last_said(&harness.feed)
+    );
+    std::fs::remove_file(session.join("narrow.md")).unwrap();
     assert!(harness.live_command("/profiles default", Source::Terminal));
     assert!(last_said(&harness.feed).starts_with("default · the session's worker model\nIt runs gpt-6-luna"));
     assert!(harness.live_command("/profiles nobody", Source::Terminal));

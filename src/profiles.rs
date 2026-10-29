@@ -40,6 +40,8 @@
 //! | `fast` | `true` for fast mode where the model has it. Off by default |
 //! | `cache` | `5m` or `1h`, the prompt cache of Claude workers on an API key, on OpenRouter or in Claude Code |
 //! | `nested` | `true` lets the worker start workers of its own |
+//! | `skills` | Skill names separated by commas, or `none`. Workers with the profile get only these, as far as the agent starting them has them |
+//! | `mcp` | MCP server names, the same way |
 //! | `made_by` | `agent` when an agent wrote the profile |
 //!
 //! A name is lowercase letters, digits and hyphens, up to 32 characters,
@@ -204,6 +206,11 @@ pub struct Profile {
     pub cache: Option<Cache>,
     /// The worker may start workers of its own.
     pub nested: bool,
+    /// The skills a worker with the profile gets, by name. `None` is its
+    /// starter's, and an empty list none.
+    pub skills: Option<Vec<String>>,
+    /// The MCP servers a worker with the profile reaches, in the same way.
+    pub mcp: Option<Vec<String>>,
     /// Who wrote the file when it isn't the user: [`MADE_BY_AGENT`].
     pub made_by: Option<String>,
     /// The standing instructions, up to [`MAX_INSTRUCTIONS`] characters.
@@ -223,6 +230,8 @@ impl Profile {
             fast: false,
             cache: None,
             nested: false,
+            skills: None,
+            mcp: None,
             made_by: None,
             instructions: String::new(),
             extra: Vec::new(),
@@ -309,6 +318,8 @@ impl Profile {
                     }
                 }
                 "nested" => profile.nested = boolean("nested", &value)?,
+                "skills" => profile.skills = names("skills", &value)?,
+                "mcp" => profile.mcp = names("mcp", &value)?,
                 "made_by" => profile.made_by = Some(value).filter(|value| !value.is_empty()),
                 _ => profile.extra.push((key.to_string(), value)),
             }
@@ -375,6 +386,18 @@ impl Profile {
         if self.nested {
             put("nested", "true");
         }
+        for (key, names) in [("skills", &self.skills), ("mcp", &self.mcp)] {
+            if let Some(names) = names {
+                put(
+                    key,
+                    &if names.is_empty() {
+                        "none".to_string()
+                    } else {
+                        names.join(", ")
+                    },
+                );
+            }
+        }
         if let Some(made_by) = &self.made_by {
             put("made_by", made_by);
         }
@@ -433,10 +456,29 @@ impl Profile {
                 ));
             }
         }
+        for (what, names) in [("skills", &self.skills), ("mcp", &self.mcp)] {
+            if let Some(problem) = names
+                .iter()
+                .flatten()
+                .find_map(|name| crate::crew::name_problem(name))
+            {
+                return Err(format!("The {what} list {problem}."));
+            }
+        }
         if let Some(problem) = self.model_problem() {
             return Err(problem);
         }
         Ok(())
+    }
+
+    /// What workers with the profile are limited to, as sentences for its
+    /// approval card: "Workers with it get only the skills ponytail and
+    /// release-notes." Nothing for a set the profile leaves to the starter.
+    pub fn limits(&self) -> Vec<String> {
+        crate::crew::narrowing_phrases(self.skills.as_deref(), self.mcp.as_deref())
+            .into_iter()
+            .map(|phrase| format!("Workers with it get {phrase}."))
+            .collect()
     }
 
     /// What is wrong with the profile's model and effort, when something is.
@@ -478,15 +520,23 @@ impl Profile {
     }
 }
 
-const KNOWN_KEYS: [&str; 7] = [
+const KNOWN_KEYS: [&str; 9] = [
     "description",
     "model",
     "effort",
     "fast",
     "cache",
     "nested",
+    "skills",
+    "mcp",
     "made_by",
 ];
+
+/// The names a `skills` or `mcp` line gives, `None` for a line with nothing
+/// in it.
+fn names(key: &str, value: &str) -> Result<Option<Vec<String>>, String> {
+    crate::crew::names_asked(value).map_err(|why| format!("`{key}` {why}"))
+}
 
 fn boolean(key: &str, value: &str) -> Result<bool, String> {
     match value.to_ascii_lowercase().as_str() {
@@ -1256,6 +1306,9 @@ pub fn approval_text(profile: &Profile, place: Place) -> String {
     if profile.nested {
         text.push_str(" A worker started with it can start workers of its own.");
     }
+    for limit in profile.limits() {
+        text.push_str(&format!(" {limit}"));
+    }
     text.push('\n');
     let instructions = profile.instructions.trim();
     if instructions.is_empty() {
@@ -1285,6 +1338,7 @@ pub fn approval(profile: &Profile, place: Place) -> crate::questions::Approval {
         scope: place.reach().to_string(),
         description: one_line(&profile.description),
         instructions: profile.instructions.trim().to_string(),
+        limits: profile.limits(),
     }
 }
 

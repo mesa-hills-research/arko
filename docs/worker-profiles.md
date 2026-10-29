@@ -29,6 +29,8 @@ materials. Say what is wrong, in order of how much it matters.
 | `fast` | `true` for fast mode, where the model has it |
 | `cache` | `long` or `short` (`1h` and `5m` mean the same), the prompt cache of workers whose model has a long one. Long is an hour on Claude models and 12 hours on OpenAI GPT-5.6 and later with an API key. Short is 5 minutes on Claude and 30 minutes on OpenAI |
 | `nested` | `true` to let the worker start workers of its own, down to the session's worker depth. The call's `nested` wins, so `nested: false` leaves it out for one worker |
+| `skills` | Skill names separated by commas, or `none`. Workers with the profile get only these, as far as the agent that starts them has them. See [Skills and MCP servers for a worker](#skills-and-mcp-servers-for-a-worker) |
+| `mcp` | MCP server names, the same way |
 | `made_by` | `agent` when the main agent saved the profile |
 
 A name is lowercase letters, digits and hyphens, up to 32 characters, and starts with a letter
@@ -174,6 +176,32 @@ the session. You're told once, and running workers go on.
 `worker_options`, the `/model` picker and the web page's `/model` choices show `API, $5/$25` (the
 price per million input and output tokens) beside a model billed per token, and the result of a
 start says it too.
+
+## Skills and MCP servers for a worker
+
+A worker has the skills and MCP servers of the agent that started it, except the ones marked
+`workers: false`, which stay with the main agent. `start_agent` takes `skills` and `mcp` to give a
+worker fewer. Each is names separated by commas, a JSON array of names or `none`.
+
+```
+skills: ponytail, release-notes
+mcp: none
+```
+
+- A worker started with names gets exactly those. Each must be one its starter has and can give,
+  or the start is refused with the names the starter can give.
+- A worker started with neither has what its starter has. A worker with a list passes the list on,
+  so a set carries through every depth and each level can only narrow it.
+- A profile's `skills` and `mcp` work the same way when the call leaves them out. A call's names win
+  over the profile's. A profile serves many starters, so its names are crossed with the starter's,
+  and the start result says which ones were left out.
+- `save_worker_profile` takes both and refuses names the main agent can't give a worker. The
+  approval question says what workers with the profile get.
+- A worker keeps its set when its session resumes. One with everything sees skills saved and servers
+  added later. One with a list sees only its list.
+
+The start result, `list_agents` and `/workers` name a set only when it is narrowed. A worker with
+no MCP servers isn't offered the `mcp` tool.
 
 ## Workers that start workers
 
