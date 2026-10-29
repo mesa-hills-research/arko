@@ -28,6 +28,7 @@
 //! Arko with `default-features = false` and adds `remote` for the web page.
 
 mod agents;
+pub mod approvals;
 mod asking;
 mod billing;
 pub mod builtin_skills;

@@ -310,6 +310,12 @@ const ALT_Q: &str = "open the answer panel for the agent's questions. Option+Q n
 #[cfg(not(target_os = "macos"))]
 const ALT_Q: &str = "open the answer panel for the agent's questions";
 
+/// What Alt+A does.
+#[cfg(target_os = "macos")]
+const ALT_A: &str = "the approval tray, where Space selects, Enter approves the selection, R rejects all and V opens a row's details. Option+A needs Option to work as Alt. In the Terminal app, turn on Use Option as Meta key.";
+#[cfg(not(target_os = "macos"))]
+const ALT_A: &str = "the approval tray, where Space selects, Enter approves the selection, R rejects all and V opens a row's details";
+
 /// The keys, with why each is what it is in a word, and the commands.
 pub const KEYS: &[(&str, &str)] = &[
     (
@@ -355,6 +361,7 @@ pub const KEYS: &[(&str, &str)] = &[
         "the agent list, where Tab and Shift+Tab move through it and Enter shows a worker's own work",
     ),
     ("Alt+Q", ALT_Q),
+    ("Alt+A", ALT_A),
     (
         "Esc",
         "close, go back, or leave the answer panel to answer in a message",

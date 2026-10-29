@@ -285,6 +285,8 @@ pub struct App {
     /// The answer panel for the main agent's questions, and the questions
     /// attached to the message box.
     pub panel: super::questions::Panel,
+    /// The approval tray.
+    pub tray: super::approvals::Tray,
     pub menu: Menu,
     pub overlay: Option<Overlay>,
     /// A word in the status line for a moment: "Copied", ...
@@ -407,6 +409,7 @@ impl App {
             reading: Reading::default(),
             stopping: false,
             panel: Default::default(),
+            tray: Default::default(),
             menu: Menu::default(),
             overlay: None,
             hint: None,
@@ -468,10 +471,16 @@ impl App {
             };
         }
         let questions = reading.questions != self.reading.questions;
+        let approvals = reading.approvals != self.reading.approvals;
         self.reading = reading;
+        if approvals {
+            self.approvals_changed();
+        }
         if questions {
             self.questions_changed();
-            self.transcript.working = agent_works_since(&self.activity, self.agent_waits());
+        }
+        if questions || approvals {
+            self.transcript.working = agent_works_since(&self.activity, self.waits_for_user());
         }
     }
 
@@ -899,7 +908,7 @@ impl App {
             self.working_since = None;
             self.stopping = false;
         }
-        self.transcript.working = agent_works_since(&activity, self.agent_waits());
+        self.transcript.working = agent_works_since(&activity, self.waits_for_user());
         self.activity = activity;
         // (New questions ring when they come, see `questions_changed`.)
         !self.focused && finished
@@ -934,6 +943,16 @@ impl App {
         }
         if self.overlay.is_some() {
             self.overlay_key(key);
+            return;
+        }
+        // The approval tray takes the keys, and gives them back.
+        if let KeyCode::Char('a') = key.code
+            && alt
+            && !ctrl
+        {
+            return self.focus_tray();
+        }
+        if self.tray.focused && self.tray_key(key) {
             return;
         }
         // The panel has the keys before the command menu, whose place it
@@ -2838,7 +2857,6 @@ pub(super) mod tests {
                     waits: false,
                     item: 7,
                     number: Some(1),
-                    approval: None,
                 },
                 AgentQuestion {
                     id: "q2".into(),
@@ -2850,7 +2868,6 @@ pub(super) mod tests {
                     waits: false,
                     item: 7,
                     number: Some(2),
-                    approval: None,
                 },
             ],
             ..Reading::default()

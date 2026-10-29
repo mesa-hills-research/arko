@@ -77,8 +77,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         .buffer_mut()
         .set_line(area.x, rule_y, &rule(&theme, area.width), area.width);
 
-    // What docks above the status line's rule for a while.
+    // What docks above the status line's rule for a while: the approval
+    // tray, and above it the rest.
     let above = Rect::new(area.x, area.y, area.width, rule_y - area.y);
+    let tray = super::approvals::draw_tray(frame, app, above);
+    let above = Rect::new(above.x, above.y, above.width, above.height - tray);
     let previous = app.docked.take();
     // The panel, while it has the keys, before the command menu.
     let docked = if app.panel.open && !app.open_questions().is_empty() {
@@ -131,7 +134,7 @@ fn draw_input(
     let height = rect.height;
     let prompt = glyphs::render("› ").into_owned();
     let answering = app.agent_waits();
-    let prompt_style = if app.list_focus.is_some() || app.panel.open {
+    let prompt_style = if app.list_focus.is_some() || app.panel.open || app.tray.focused {
         theme.dim()
     } else if answering {
         theme.accent().add_modifier(Modifier::BOLD)
@@ -185,7 +188,7 @@ fn draw_input(
             );
         }
     }
-    if app.overlay.is_none() && app.list_focus.is_none() && !app.panel.open {
+    if app.overlay.is_none() && app.list_focus.is_none() && !app.panel.open && !app.tray.focused {
         let column = (cursor.1 as u16).min(width.saturating_sub(1));
         frame.set_cursor_position(Position {
             x: x + column,
@@ -474,13 +477,14 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
     let worker_state = watched
         .as_ref()
         .map(|watched| watched.state(theme, &dot, chrono::Utc::now().timestamp_millis()));
-    if app.agent_waits() {
+    if app.waits_for_user() {
         // (A worker's view leaves the main agent's question open, and the
         // box answers it.)
-        let asks = if watched.is_some() {
-            "main asks you"
-        } else {
-            "asks you"
+        let asks = match (watched.is_some(), app.approvals().is_empty()) {
+            (true, false) => "main needs approval",
+            (false, false) => "needs approval",
+            (true, true) => "main asks you",
+            (false, true) => "asks you",
         };
         left.push(Span::styled(format!("{dot} {asks}"), theme.accent()));
         if let Some(state) = worker_state.filter(|state| !state.is_empty()) {
@@ -2311,58 +2315,6 @@ mod tests {
         }
     }
 
-    /// The question to save a profile with long instructions is cut to fit
-    /// the dock, and what is left still says how much is cut.
-    /// An approval's card shows what it approves up front (the profile's
-    /// name, scope, model and description) with Save and Don't save, and
-    /// its instructions below them, the rest of a long one further down the
-    /// page.
-    #[test]
-    fn an_approval_card_shows_the_profile_up_front() {
-        use crate::profiles::{Place, Profile};
-        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-        let mut profile = Profile::new("judge", "Judges renders against a reference image");
-        profile.model = Some("sol".into());
-        profile.instructions = (1..=30)
-            .map(|line| format!("Check point {line} of the render."))
-            .collect::<Vec<_>>()
-            .join("\n");
-        let mut app = app();
-        let mut asked = waiting(&crate::profiles::approval_text(&profile, Place::User));
-        asked[0].id = "x0a1b2c3d".into();
-        asked[0].choices = vec!["Save".into(), "Don't save".into()];
-        asked[0].default = None;
-        asked[0].approval = Some(crate::profiles::approval(&profile, Place::User));
-        app.set_reading(crate::remote::Reading {
-            questions: asked,
-            ..Default::default()
-        });
-        for (width, height) in [(80, 24), (100, 24), (120, 30)] {
-            let rows = screen(&mut app, width, height).join("\n");
-            for shown in [
-                "Arko asks to save a worker profile",
-                "Save the worker profile judge for every project?",
-                "Runs on sol.",
-                "Judges renders against a reference image",
-                "1 Save",
-                "2 Don't save",
-                "Tell Arko what to change",
-                "Check point 1 of the render.",
-                "PgDn  more",
-            ] {
-                assert!(rows.contains(shown), "{width}x{height}: {shown}\n{rows}");
-            }
-            assert!(!rows.contains("You decide"), "{rows}");
-            assert!(!rows.contains("Check point 30 "), "{rows}");
-        }
-        for _ in 0..8 {
-            app.key(KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE));
-        }
-        let rows = screen(&mut app, 80, 24).join("\n");
-        assert!(rows.contains("Check point 30 of the render."), "{rows}");
-        assert!(rows.contains("PgUp  more"), "{rows}");
-    }
-
     /// A question card is one quiet line while its questions are open, and
     /// a click on it opens the answer panel on them.
     #[test]
@@ -2803,7 +2755,7 @@ mod tests {
         let mut app = app();
         app.overlay = Some(Overlay::Help { scroll: 0 });
         // The box wraps the lines, so read the words in order.
-        let text = screen(&mut app, 140, 120)
+        let text = screen(&mut app, 140, 140)
             .iter()
             .map(|row| row.trim_matches(|c: char| c == '│' || c.is_whitespace()))
             .collect::<Vec<_>>()

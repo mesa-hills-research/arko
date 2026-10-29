@@ -2079,10 +2079,7 @@ fn record_lines(
             .unwrap_or_default();
         let indent = 2 + text_width(&number);
         let room = inner.saturating_sub(indent).max(4);
-        let text = match &question.approval {
-            Some(approval) => approval.title(),
-            None => question.question.trim().to_string(),
-        };
+        let text = question.question.trim().to_string();
         let mut text = markdown::render(&text, theme.text(), theme, room);
         if text.is_empty() {
             text.push(Wrapped::line(Vec::new()));

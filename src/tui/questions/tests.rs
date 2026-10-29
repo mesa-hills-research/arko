@@ -12,7 +12,6 @@ fn question(id: &str, choices: &[&str]) -> AgentQuestion {
         waits: false,
         item: 7,
         number: None,
-        approval: None,
     }
 }
 
@@ -242,64 +241,6 @@ fn chat_dismiss_and_reopen_keep_their_keys() {
     app.key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL));
     assert!(app.take_effects().iter().any(|effect| matches!(effect,
         Effect::Input(Input::DismissQuestions(ids)) if ids.len() == 4)));
-}
-
-#[test]
-fn approvals_show_choices_and_scroll_instructions() {
-    let mut question = question("q1", &[crate::questions::SAVE, crate::questions::DONT_SAVE]);
-    question.default = None;
-    question.approval = Some(crate::questions::Approval {
-        name: "release-checker".into(),
-        model: "sol".into(),
-        scope: "every project".into(),
-        description: "Checks a release before publishing.".into(),
-        instructions: (1..=30)
-            .map(|n| format!("Check release item {n}."))
-            .collect::<Vec<_>>()
-            .join("\n"),
-        ..Default::default()
-    });
-    let mut app = super::super::app::tests::app();
-    app.set_reading(crate::remote::Reading {
-        questions: vec![question],
-        ..Default::default()
-    });
-    for row in [0, 2] {
-        app.panel.row = row;
-        let card = steps_card(&app, 75);
-        let text = card
-            .body
-            .iter()
-            .map(Line::to_string)
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert!(
-            text.contains("Tell Arko what to change") && !text.contains("Other"),
-            "{text}"
-        );
-        let placeholder = card
-            .body
-            .iter()
-            .flat_map(|line| &line.spans)
-            .find(|span| span.content == "Tell Arko what to change")
-            .unwrap();
-        assert_eq!(placeholder.style, app.theme.dim());
-    }
-    let (rows, _) = capture(&mut app, 80, 24);
-    assert!(
-        rows.contains("Save") && rows.contains("Don't save"),
-        "{rows}"
-    );
-    assert!(!rows.contains("You decide"), "{rows}");
-    for _ in 0..10 {
-        press(&mut app, KeyCode::PageDown);
-        capture(&mut app, 80, 24);
-    }
-    let (rows, _) = capture(&mut app, 80, 24);
-    assert!(rows.contains("Check release item 30."), "{rows}");
-    press(&mut app, KeyCode::Char('2'));
-    assert_eq!(app.panel.review, Some(1));
-    assert_eq!(app.panel.drafts["q1"].chosen, [1]);
 }
 
 #[test]

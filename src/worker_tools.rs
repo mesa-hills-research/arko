@@ -7,8 +7,8 @@
 //! usage), so the agent reads them from a tool and not from its instructions,
 //! which keeps them out of the prompt cache's prefix. A profile saved for
 //! the session needs no approval, and neither does one for a project folder
-//! that git ignores. One saved anywhere else is put to the user as a question
-//! first, as `ask_user` is.
+//! that git ignores. One saved anywhere else waits for the user's approval
+//! in the approval tray first ([`crate::approvals`]).
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
@@ -606,40 +606,38 @@ impl Tool for SaveWorkerProfile {
             )));
         }
         profiles::check_agent_save(&basis.roots, &profile.name).map_err(refused)?;
+        // What the user wrote beside their approval, for the agent.
+        let mut approved_with = None;
         if profiles::needs_approval(&basis.roots, place, &profile.name) {
-            if !self.0.asker.can_ask() {
+            let approvals = &self.0.asker.approvals;
+            if !approvals.can_answer() {
                 return Err(refused(
                     "No one can approve it in this session. Save it for the session, or tell the user the setup you want.",
                 ));
             }
-            use crate::questions::ApprovalAnswer;
-            let answer = self
-                .0
-                .asker
-                .approve(
-                    context.task_id,
-                    context.call_id.clone(),
-                    profiles::approval_text(&profile, place),
-                    profiles::approval(&profile, place),
+            use crate::approvals::{Answer, Approval};
+            let answer = approvals
+                .request(
+                    context,
+                    Approval::Profile(profiles::approval(&profile, place)),
                 )
                 .await;
             match answer {
-                ApprovalAnswer::Save => {}
-                ApprovalAnswer::Unanswered => {
+                Answer::Approved { words, .. } => approved_with = words,
+                Answer::Unanswered => {
                     return Ok(format!(
                         "The user didn't answer, so {} wasn't saved.",
                         profile.name
                     ));
                 }
-                ApprovalAnswer::DontSave => {
+                Answer::Rejected { words: None } => {
                     return Ok(format!(
                         "The user chose not to save {} for {}, so don't ask again unless they want it. You may save it for this session with scope session.",
                         profile.name,
                         place.reach()
                     ));
                 }
-                ApprovalAnswer::Edit(said) => {
-                    // What they wrote is only the agent's to read.
+                Answer::Rejected { words: Some(said) } => {
                     self.0
                         .crew
                         .notice(Level::Info, "Not saved. Arko asks again.");
@@ -687,6 +685,12 @@ impl Tool for SaveWorkerProfile {
         );
         if let Some(needs) = model.ok().and_then(|model| self.0.keys.needs(&model)) {
             result.push_str(&needs_warning(&needs));
+        }
+        if let Some(words) = approved_with {
+            result.push_str(&format!(
+                " The user approved it and wrote \"{}\". Act on what they wrote.",
+                words.trim()
+            ));
         }
         Ok(result)
     }

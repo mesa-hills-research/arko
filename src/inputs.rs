@@ -324,9 +324,8 @@ pub(crate) async fn wake(woken: &mut Option<mpsc::UnboundedReceiver<()>>) {
     std::future::pending::<()>().await;
 }
 
-/// Questions the main agent asks with `ask_user` (or an approval Arko asks
-/// for it, of a worker profile it saves), and, when it waits for the
-/// answer, where the answer goes.
+/// Questions the main agent asks with `ask_user`, and, when it waits for
+/// the answer, where the answer goes.
 pub(crate) struct Question {
     /// The run that asks: the main agent's conversation.
     pub(crate) run: uuid::Uuid,
@@ -335,11 +334,6 @@ pub(crate) struct Question {
     pub(crate) asked: Vec<arko_agents::questions::AskedQuestion>,
     /// Where the answer goes, when the agent waits for it.
     pub(crate) answer: Option<Answering>,
-    /// What Arko asks the user to approve.
-    pub(crate) approval: Option<crate::questions::Approval>,
-    /// The model's id of the call that asked (the save an approval is for),
-    /// as the conversation records it.
-    pub(crate) call: Option<String>,
 }
 
 /// Where the answer to questions the agent waits for goes.
@@ -347,8 +341,6 @@ pub(crate) enum Answering {
     /// The agent's wait (`ask_user` with `wait`, or a question without
     /// ids): the answer as text.
     Text(oneshot::Sender<String>),
-    /// An approval: what the user decided.
-    Approval(oneshot::Sender<crate::questions::ApprovalAnswer>),
 }
 
 impl Answering {
@@ -356,7 +348,6 @@ impl Answering {
     pub(crate) fn is_closed(&self) -> bool {
         match self {
             Self::Text(answer) => answer.is_closed(),
-            Self::Approval(answer) => answer.is_closed(),
         }
     }
 }
@@ -372,74 +363,31 @@ impl Question {
             .join("\n")
     }
 
-    /// Whether Arko asks it, not the agent: an approval, or a question of
-    /// a host's own `ask_user` without ids.
+    /// Whether Arko asks it, not the agent: a question of a host's own
+    /// `ask_user` without ids.
     pub(crate) fn plain(&self) -> bool {
-        self.approval.is_some()
-            || !self
-                .asked
-                .iter()
-                .all(|question| crate::questions::is_agent_id(&question.id))
+        !self
+            .asked
+            .iter()
+            .all(|question| crate::questions::is_agent_id(&question.id))
     }
 }
 
 /// Puts the main agent's `ask_user` questions to the user. The answers to
 /// those it waits for go back as the answer, and the others reach it later
 /// as notes. Without a terminal, the agent is told that no one can answer.
-/// It always answers: an error would fail the turn.
+/// It always answers: an error would fail the turn. It holds the session's
+/// approval tray too, which the tools that need the user's approval ask
+/// through.
 pub(crate) struct Asker {
     pub(crate) questions: Option<mpsc::UnboundedSender<Question>>,
     /// The feed, which says which questions are still open.
     pub(crate) feed: Option<crate::remote::Feed>,
+    /// The approval tray.
+    pub(crate) approvals: crate::approvals::Approvals,
 }
 
 impl Asker {
-    /// Whether anyone can answer a question (there is a terminal, or an
-    /// app).
-    pub(crate) fn can_ask(&self) -> bool {
-        self.questions.is_some()
-    }
-
-    /// Asks the user to approve `approval` for run `run` (the save `call`
-    /// asks it for), as `question` words it, and waits for what they
-    /// decide.
-    pub(crate) async fn approve(
-        &self,
-        run: uuid::Uuid,
-        call: Option<String>,
-        question: String,
-        approval: crate::questions::Approval,
-    ) -> crate::questions::ApprovalAnswer {
-        let Some(questions) = &self.questions else {
-            return crate::questions::ApprovalAnswer::Unanswered;
-        };
-        let asked = vec![arko_agents::questions::AskedQuestion {
-            id: crate::questions::PLAIN_ID.to_string(),
-            question: arko_agents::questions::Question {
-                question,
-                choices: vec![
-                    crate::questions::SAVE.into(),
-                    crate::questions::DONT_SAVE.into(),
-                ],
-                ..Default::default()
-            },
-        }];
-        let (answer, answered) = oneshot::channel();
-        let question = Question {
-            run,
-            asked,
-            answer: Some(Answering::Approval(answer)),
-            approval: Some(approval),
-            call,
-        };
-        if questions.send(question).is_err() {
-            return crate::questions::ApprovalAnswer::Unanswered;
-        }
-        answered
-            .await
-            .unwrap_or(crate::questions::ApprovalAnswer::Unanswered)
-    }
-
     /// Puts `asked` to the user and waits for the answer.
     async fn put(
         &self,
@@ -454,8 +402,6 @@ impl Asker {
             run,
             asked,
             answer: Some(Answering::Text(answer)),
-            approval: None,
-            call: None,
         };
         if questions.send(question).is_err() {
             return Ok(CANT_ASK.to_string());
@@ -486,8 +432,6 @@ impl UserInputHandler for Asker {
             run: request.agent_run_id,
             asked: asked_of(&request),
             answer: None,
-            approval: None,
-            call: None,
         };
         if questions.send(question).is_err() {
             return Ok(Some(CANT_ASK.to_string()));

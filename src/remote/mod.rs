@@ -102,6 +102,9 @@ pub enum Action {
     /// Dismisses questions ("Not now"), as
     /// [`Input::DismissQuestions`](crate::Input::DismissQuestions) says.
     DismissQuestions(Vec<String>),
+    /// Answers the approval tray's requests, as
+    /// [`Input::AnswerApprovals`](crate::Input::AnswerApprovals) says.
+    AnswerApprovals(crate::approvals::ApprovalAnswers),
     /// Stops the turn, as Ctrl-C does.
     Stop,
     /// Moves the running call `item` (a call item [`Reading::movable`]
@@ -164,6 +167,9 @@ pub struct Reading {
     /// The main agent's questions of the current conversation that wait
     /// for the user, in the order asked. See [`crate::questions`].
     pub questions: Vec<crate::questions::AgentQuestion>,
+    /// The requests in the approval tray, which wait for the user, in the
+    /// order they came. See [`crate::approvals`].
+    pub approvals: Vec<crate::approvals::ApprovalRequest>,
     /// The session's conversations with the main agent, newest first, for
     /// the full-screen view's `/resume` picker. (The page lists them with
     /// `/resume`.)

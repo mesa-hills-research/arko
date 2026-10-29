@@ -81,9 +81,15 @@ pub enum Input {
     /// dropped. See [`crate::questions`].
     AnswerQuestions(crate::questions::Answers),
     /// The user dismisses the main agent's questions `ids` ("Not now"). The
-    /// agent is told, and goes on with its defaults. An approval dismissed
-    /// isn't saved. Ids that aren't open are dropped.
+    /// agent is told, and goes on with its defaults. Ids that aren't open are
+    /// dropped.
     DismissQuestions(Vec<String>),
+    /// The user's answer to the requests in the approval tray
+    /// ([`Reading::approvals`](crate::remote::Reading::approvals)): each
+    /// approved or rejected, with the words the message box held, which go
+    /// to the agent with each answer. Requests it doesn't name stay, and
+    /// those no longer in the tray are dropped. See [`crate::approvals`].
+    AnswerApprovals(crate::approvals::ApprovalAnswers),
 }
 
 /// A message from an app, with what is attached to it.
