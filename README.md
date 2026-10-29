@@ -26,7 +26,8 @@ models, and on your Claude plan through an installed Claude Code.
   and an optional daily API budget ([docs](docs/worker-profiles.md#worker-billing))
 - [Notes](docs/kept-notes.md) the main agent keeps for itself and its workers, which come back
   after a handover or a compaction, or when a conversation is resumed
-- MCP servers in Claude Code's `.mcp.json` format, and [skills](docs/skills.md) from
+- MCP servers in Claude Code's `.mcp.json` format, reached through one tool so the prompt cache
+  holds, and added by the agent with your OK, and [skills](docs/skills.md) from
   `.agents/skills` or `.claude/skills`, with three built in (two for writing, and ponytail for
   coding tasks and running workers)
 - Themes for the full-screen view, and your own in GPUI Kit's format
