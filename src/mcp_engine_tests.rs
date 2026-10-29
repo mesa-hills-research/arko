@@ -505,8 +505,7 @@ async fn workers_offered(
     .unwrap();
     idle(&seam).await;
     quit(seam, running.ended).await;
-    let offered = workers.lock().unwrap().clone();
-    offered
+    workers.lock().unwrap().clone()
 }
 
 /// A worker is offered `mcp` only when its set holds a server at its
