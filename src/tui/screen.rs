@@ -2311,6 +2311,87 @@ mod tests {
         }
     }
 
+    /// The three rows for what agents add show their names whole, with their
+    /// choices lined up, and each says its line when chosen. The question
+    /// before asking goes off shows the warning and both buttons.
+    #[test]
+    fn the_approval_rows_and_the_question_show_their_words() {
+        use crate::extension_prefs::{
+            ASK_MCP_ABOUT, ASK_MCP_NAME, ASK_MCP_OFF, CANCEL, KEEP_OUT_OF_GIT_ABOUT,
+            KEEP_OUT_OF_GIT_NAME, REVIEW_SKILLS_ABOUT, REVIEW_SKILLS_NAME, TURN_OFF,
+        };
+        use crate::tui::overlay::{Overlay, SettingsRow};
+        // The words in order, as the boxes wrap them.
+        let flat = |rows: &[String]| {
+            rows.iter()
+                .map(|line| line.trim_matches(|c: char| c == '│' || c.is_whitespace()))
+                .collect::<Vec<_>>()
+                .join(" ")
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        let mut app = app();
+        app.reading.settings.ask_before_adding_mcp = true;
+        for (row, name, about) in [
+            (SettingsRow::AskBeforeMcp, ASK_MCP_NAME, ASK_MCP_ABOUT),
+            (
+                SettingsRow::ReviewProjectSkills,
+                REVIEW_SKILLS_NAME,
+                REVIEW_SKILLS_ABOUT,
+            ),
+            (
+                SettingsRow::KeepProfilesOutOfGit,
+                KEEP_OUT_OF_GIT_NAME,
+                KEEP_OUT_OF_GIT_ABOUT,
+            ),
+        ] {
+            let at = app
+                .settings_rows()
+                .iter()
+                .position(|other| *other == row)
+                .unwrap();
+            for width in [80, 100] {
+                app.overlay = Some(Overlay::Settings {
+                    row: at,
+                    picker: None,
+                });
+                let rows = screen(&mut app, width, 60);
+                assert!(
+                    rows.iter().any(|line| line.contains(&format!("▸ {name}"))),
+                    "{rows:#?}"
+                );
+                assert!(flat(&rows).contains(about), "{}", flat(&rows));
+                // The choices of the three rows start in one column.
+                let columns: Vec<usize> = rows
+                    .iter()
+                    .filter(|line| {
+                        [ASK_MCP_NAME, REVIEW_SKILLS_NAME, KEEP_OUT_OF_GIT_NAME]
+                            .iter()
+                            .any(|name| line.contains(name))
+                    })
+                    .map(|line| {
+                        let at = line.find(" on ").unwrap_or_else(|| panic!("{line}"));
+                        line[..at].chars().count()
+                    })
+                    .collect();
+                assert_eq!(columns.len(), 3, "{rows:#?}");
+                assert!(
+                    columns.iter().all(|c| *c == columns[0]),
+                    "{columns:?} {rows:#?}"
+                );
+            }
+        }
+        for width in [60, 80, 100] {
+            app.overlay = Some(Overlay::AskOff { row: 0, choice: 1 });
+            let rows = screen(&mut app, width, 24);
+            let text = flat(&rows);
+            assert!(text.contains(ASK_MCP_OFF), "{text}");
+            assert!(text.contains(&format!("{TURN_OFF} {CANCEL}")), "{text}");
+            assert!(text.contains(ASK_MCP_NAME), "{text}");
+        }
+    }
+
     /// The question to save a profile with long instructions is cut to fit
     /// the dock, and what is left still says how much is cut.
     /// An approval's card shows what it approves up front (the profile's
@@ -2803,7 +2884,7 @@ mod tests {
         let mut app = app();
         app.overlay = Some(Overlay::Help { scroll: 0 });
         // The box wraps the lines, so read the words in order.
-        let text = screen(&mut app, 140, 120)
+        let text = screen(&mut app, 140, 140)
             .iter()
             .map(|row| row.trim_matches(|c: char| c == '│' || c.is_whitespace()))
             .collect::<Vec<_>>()

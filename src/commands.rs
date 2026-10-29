@@ -111,7 +111,7 @@ pub const COMMANDS: &[Command] = &[
     Command::screen(
         "/settings",
         "",
-        "the view, theme, mouse, outside access, handover size, background jobs, monitor wakes, models for workers, worker depth, worker retry cap, message copies, worker profile folders, text replies, extra rules, Claude Code compaction, project instructions, built-in skills, web page, API keys and ChatGPT logins",
+        "the view, theme, mouse, outside access, handover size, background jobs, monitor wakes, models for workers, worker depth, worker retry cap, message copies, whether agents ask before adding MCP servers and saving project skills, whether their project files stay out of git, whether the repository root's profiles are read, text replies, extra rules, Claude Code compaction, project instructions, built-in skills, web page, API keys and ChatGPT logins",
     ),
     Command {
         name: "/model",
@@ -243,6 +243,13 @@ pub const COMMANDS: &[Command] = &[
         runs: Runs::Session,
     },
     Command {
+        name: "/extensions",
+        args: "[ask-mcp|review-skills|keep-out-of-git] [on|off]",
+        about: "whether agents ask before they add an MCP server, review the skills they save in the project, and keep their project files out of git",
+        aliases: &[],
+        runs: Runs::Session,
+    },
+    Command {
         name: "/text-replies",
         args: "on|off",
         about: "whether the main agent ends its turns with a plain reply (on) or by calling complete_task (off). It changes before the conversation starts",
@@ -346,6 +353,14 @@ const CHOICES: &[(&str, &[&str], &[&str])] = &[
     ("/api-budget", &[], &["off", "on"]),
     ("/worker-retry-cap", &[], &["off", "on"]),
     ("/message-copies", &[], ON_OFF),
+    (
+        "/extensions",
+        &[],
+        &["ask-mcp", "review-skills", "keep-out-of-git"],
+    ),
+    ("/extensions", &["ask-mcp"], ON_OFF),
+    ("/extensions", &["review-skills"], ON_OFF),
+    ("/extensions", &["keep-out-of-git"], ON_OFF),
     ("/profiles", &[], &["add", "remove"]),
     ("/jobs", &[], &["stop"]),
     ("/notes", &[], &["remove"]),

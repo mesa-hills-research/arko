@@ -899,6 +899,7 @@ impl Engine {
             worker_retry_cap: Default::default(),
             message_copies: Default::default(),
             builtin_skills: Default::default(),
+            extensions: Default::default(),
             project: Default::default(),
             background: managers.background.clone(),
             feed: Some(feed.clone()),
