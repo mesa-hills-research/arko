@@ -380,8 +380,11 @@ impl WorkerSetup {
         config.claude_code = self.claude_code.clone();
         config.handover = self.handover.clone();
         // The skills are the run's own too, also over a list that a
-        // configuration of another run was saved with.
+        // configuration of another run was saved with. A worker never has
+        // the skills kept to the main agent, also from a configuration saved
+        // before that was said in it.
         if let Some(skills) = &mut config.skills_config {
+            skills.subagent = true;
             skills.only = self.skills.clone();
             // Its skill list is for its own model.
             if let Some(names) = &self.model_names {

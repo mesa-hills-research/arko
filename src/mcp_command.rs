@@ -205,27 +205,30 @@ fn print(out: &Output, lines: Vec<(Look, String)>) {
 }
 
 impl Harness {
-    /// `/mcp`, `/mcp NAME` and `/mcp remove NAME`.
+    /// `/mcp`, `/mcp NAME` and `/mcp remove NAME`, answered where the
+    /// command was typed too (the web page).
     pub(crate) fn mcp_command(&mut self, argument: &str) {
         let argument = argument.trim();
-        if argument.is_empty() {
-            self.list_mcp();
-            return;
-        }
-        if let Some(name) = argument
-            .strip_prefix("remove ")
-            .map(str::trim)
-            .filter(|name| !name.is_empty())
-        {
-            let said = self.remove_mcp_server(name);
-            self.output.line(&said);
-            return;
-        }
-        let facts = self.details.mcp();
-        match facts.servers.iter().find(|server| server.name == argument) {
-            Some(server) => print(&self.output, server_lines(server)),
-            None => self.output.line(&no_server(argument, &facts)),
-        }
+        self.mirrored(|harness| {
+            if argument.is_empty() {
+                harness.list_mcp();
+                return;
+            }
+            if let Some(name) = argument
+                .strip_prefix("remove ")
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+            {
+                let said = harness.remove_mcp_server(name);
+                harness.output.line(&said);
+                return;
+            }
+            let facts = harness.details.mcp();
+            match facts.servers.iter().find(|server| server.name == argument) {
+                Some(server) => print(&harness.output, server_lines(server)),
+                None => harness.output.line(&no_server(argument, &facts)),
+            }
+        });
     }
 
     /// `/mcp`: each server with its tools, or why it didn't start.

@@ -4,9 +4,10 @@
 //! (once the user approves them) and in `mcp.json` in Arko's folder. The
 //! agents reach them through one tool, `mcp` ([`McpBridgeTool`]), whose
 //! definition stays the same while servers start, stop, come and go, so the
-//! prompt cache holds. A conversation saved when each MCP tool was a tool of
-//! its own (`mcp__<server>__<tool>`) keeps those, called through the same
-//! hub. Each open agent session runs its own copy of each server and stops
+//! prompt cache holds. A conversation (or worker) saved when each MCP tool
+//! was a tool of its own (`mcp__<server>__<tool>`) keeps those, called
+//! through the same hub, which checks that its run may reach the server as
+//! `mcp` does. Each open agent session runs its own copy of each server and stops
 //! it when the session closes, except a server marked `"shared": true`,
 //! which sessions open at the same time share. Chat sessions run none.
 //!
@@ -96,9 +97,21 @@ impl Server {
     /// The server for the hub, with `description` for the bridge's
     /// `servers` action (an agent's reason for adding it).
     fn config(&self, description: Option<String>) -> McpServerConfig {
+        // The `${VAR}`s its file writes, with their values, which the log
+        // shows as `${VAR}` should the server print them.
+        let expanded: BTreeMap<&str, String> = std::iter::once(self.shown.as_str())
+            .chain(self.written_env.values().map(String::as_str))
+            .flat_map(variables)
+            .filter_map(|name| {
+                environment(name)
+                    .filter(|value| !value.is_empty())
+                    .map(|value| (name, value))
+            })
+            .collect();
         let mut config = McpServerConfig::new(self.name.clone(), self.command.clone())
             .with_args(self.args.clone())
-            .with_env(self.env.clone());
+            .with_env(self.env.clone())
+            .with_expanded(expanded);
         config.workers = self.workers;
         config.shared = self.shared;
         config.description = description;
@@ -201,6 +214,18 @@ fn entries(raw: &Value) -> Result<Vec<(Option<String>, &Value)>, String> {
 /// or not), as written.
 pub(crate) fn sets_up(file: &Path, name: &str) -> bool {
     names_in(file).is_some_and(|names| names.iter().any(|known| known == name))
+}
+
+/// The entry for the server `name` in the file at `file`, as written, if it
+/// has one.
+pub(crate) fn entry_in(file: &Path, name: &str) -> Option<Value> {
+    let text = std::fs::read_to_string(file).ok()?;
+    let value: Value = serde_json::from_str(&text).ok()?;
+    entries(value.get("mcpServers")?)
+        .ok()?
+        .into_iter()
+        .find(|(known, _)| known.as_deref() == Some(name))
+        .map(|(_, entry)| entry.clone())
 }
 
 /// The names of the servers the file at `file` has entries for, or `None`
@@ -347,6 +372,22 @@ fn expand(text: &str, lookup: &dyn Fn(&str) -> Option<String>) -> Result<String,
     }
     expanded.push_str(rest);
     Ok(expanded)
+}
+
+/// The names of the variables `text` takes as `${VAR}` or
+/// `${VAR:-default}`, as [`expand`] reads them.
+fn variables(text: &str) -> Vec<&str> {
+    let mut names = Vec::new();
+    let mut rest = text;
+    while let Some(start) = rest.find("${") {
+        let Some(length) = rest[start..].find('}') else {
+            break;
+        };
+        let inner = &rest[start + 2..start + length];
+        names.push(inner.split_once(":-").map_or(inner, |(name, _)| name));
+        rest = &rest[start + length + 1..];
+    }
+    names
 }
 
 pub(crate) fn environment(name: &str) -> Option<String> {
@@ -1033,12 +1074,10 @@ impl Session {
     /// The main agent's `mcp`, as a registry takes it.
     pub fn lead_tool(&self, access: Arc<dyn McpAccess>) -> Arc<dyn Tool> {
         match &self.changes {
-            Some(changes) => Arc::new(Bridge::lead(
-                &self.servers,
-                access,
-                changes.clone(),
-                self.notices.clone(),
-            )),
+            Some(changes) => Arc::new(Bridge {
+                added: Some(changes.clone()),
+                ..Bridge::lead(&self.servers, access, changes.clone(), self.notices.clone())
+            }),
             None => Arc::new(UnstartedTool::bridge_in_chat(Role::Lead)),
         }
     }
@@ -1069,6 +1108,9 @@ pub struct Bridge {
     role: Role,
     servers: Servers,
     notices: Option<changes::Notices>,
+    /// The main agent's adds, whose servers that didn't start `servers`
+    /// lists too.
+    added: Option<Arc<changes::Changes>>,
 }
 
 impl std::fmt::Debug for Bridge {
@@ -1093,6 +1135,7 @@ impl Bridge {
             role: Role::Lead,
             servers: servers.clone(),
             notices,
+            added: None,
         }
     }
 
@@ -1103,6 +1146,7 @@ impl Bridge {
             role: Role::Worker,
             servers: servers.clone(),
             notices: None,
+            added: None,
         }
     }
 
@@ -1123,6 +1167,26 @@ impl Bridge {
             .and_then(Value::as_str)
             .map(str::trim)
             .unwrap_or_default()
+    }
+
+    /// `servers`'s list with the servers an agent added that didn't start
+    /// (they aren't the hub's), each with why.
+    fn with_not_started(&self, mut output: ToolOutput, added: &changes::Changes) -> ToolOutput {
+        let rows: Vec<String> = added
+            .not_started()
+            .into_iter()
+            .map(|(record, why)| format!("{}  not started, because {why}.", record.name))
+            .collect();
+        if rows.is_empty() {
+            return output;
+        }
+        let rows = rows.join("\n");
+        output.text = if self.servers.hub.servers().is_empty() {
+            rows
+        } else {
+            format!("{}\n{rows}", output.text.trim_end())
+        };
+        output
     }
 
     /// Says in the transcript that the main agent started or stopped a
@@ -1226,7 +1290,10 @@ impl Tool for Bridge {
         if self.role == Role::Lead {
             self.after(&action, server.as_deref(), &result);
         }
-        result
+        match (action.as_str(), result, &self.added) {
+            ("servers", Ok(output), Some(added)) => Ok(self.with_not_started(output, added)),
+            (_, result, _) => result,
+        }
     }
 }
 
@@ -1254,11 +1321,11 @@ impl McpAccess for Access {
 }
 
 /// Stands in for a tool a saved conversation offers that this session
-/// doesn't run. A conversation kept with its own configuration still offers
-/// the tools it was saved with, and can't resume unless each is registered,
-/// for those runs only (`resume_only_agent_tool`). A chat starts no servers,
-/// and in an agent's session a server may be gone from the files or fail to
-/// start.
+/// doesn't run. A saved conversation (or worker) keeps its own
+/// configuration, so it still offers the tools it was saved with, and can't
+/// resume unless each is registered, for those runs only
+/// (`resume_only_agent_tool`). A chat starts no servers, and in an agent's
+/// session a server may be gone from the files or fail to start.
 #[derive(Debug)]
 pub struct UnstartedTool {
     name: String,
@@ -1284,6 +1351,17 @@ impl UnstartedTool {
             name: MCP_TOOL_NAME.into(),
             said: crate::details::CHAT_MCP_NOTE.into(),
             definition: Some(Bridge::definition_of(role)),
+        }
+    }
+
+    /// For a tool of Arko's own that this session doesn't have (the shell
+    /// and terminal tools in a chat, the monitors with -p, the search index's
+    /// without an index, the worker profile tools without workers).
+    pub fn unavailable(name: String) -> Self {
+        Self {
+            name,
+            said: "This tool isn't available in this session.".into(),
+            definition: None,
         }
     }
 

@@ -4,11 +4,15 @@ use super::*;
 use crate::approvals::Look;
 use crate::mcp::tests::{python, stub_server};
 
+/// What happens while the user decides.
+type During = Box<dyn FnOnce() + Send>;
+
 /// Answers each card with `answer` and keeps the cards.
 struct Fake {
     can: bool,
     answer: Mutex<Answer>,
     cards: Mutex<Vec<ServerApproval>>,
+    during: Mutex<Option<During>>,
 }
 
 impl Fake {
@@ -17,11 +21,17 @@ impl Fake {
             can: true,
             answer: Mutex::new(answer),
             cards: Mutex::default(),
+            during: Mutex::default(),
         })
     }
 
     fn cards(&self) -> Vec<ServerApproval> {
         self.cards.lock().unwrap().clone()
+    }
+
+    /// Does `change` while the user decides about the next card.
+    fn meanwhile(&self, change: impl FnOnce() + Send + 'static) {
+        *self.during.lock().unwrap() = Some(Box::new(change));
     }
 }
 
@@ -33,7 +43,18 @@ impl Ask for Fake {
 
     async fn ask(&self, _: &TaskContext<'_>, card: ServerApproval) -> Answer {
         self.cards.lock().unwrap().push(card);
+        let during = self.during.lock().unwrap().take();
+        if let Some(change) = during {
+            change();
+        }
         self.answer.lock().unwrap().clone()
+    }
+}
+
+fn approve() -> Answer {
+    Answer::Approved {
+        words: None,
+        option: false,
     }
 }
 
@@ -254,6 +275,7 @@ async fn the_setting_off_skips_the_card_and_records_the_approval() {
         can: false,
         answer: Mutex::new(Answer::Unanswered),
         cards: Mutex::default(),
+        during: Mutex::default(),
     });
     let setup = setup(temp.path(), ask.clone(), Vec::new());
     crate::extension_prefs::update(&setup.root, |prefs| prefs.ask_before_adding_mcp = false)
@@ -379,12 +401,13 @@ fn setup_nobody(temp: &Path) -> Setup {
         can: false,
         answer: Mutex::new(Answer::Unanswered),
         cards: Mutex::default(),
+        during: Mutex::default(),
     });
     setup(&temp.join("nobody"), ask, Vec::new())
 }
 
 /// A card the user turns down writes nothing. Words with it go to the
-/// agent, and the transcript says Arko asks again.
+/// agent, and the transcript says it wasn't added.
 #[tokio::test]
 async fn a_card_turned_down_writes_nothing() {
     let temp = tempfile::tempdir().unwrap();
@@ -410,7 +433,7 @@ async fn a_card_turned_down_writes_nothing() {
         .await
         .unwrap();
     assert!(said.contains("wrote “Use uvx instead.”"), "{said}");
-    assert!(notices(&setup.feed).contains(&"Not added. Arko asks again.".to_string()));
+    assert!(notices(&setup.feed).contains(&"Not added.".to_string()));
     *ask.answer.lock().unwrap() = Answer::Unanswered;
     let said = setup
         .changes
@@ -505,5 +528,229 @@ async fn remove_takes_out_only_what_an_agent_added() {
     assert!(setup.changes.servers.hub.config("added").is_none());
     assert!(
         notices(&setup.feed).contains(&"The main agent removed the MCP server added.".to_string())
+    );
+}
+
+/// What an add found of its server's name before the user was asked is
+/// checked again as it writes. A user's entry of the same name in its file,
+/// the name set up in a file read before it, and an edit of the agent's own
+/// entry, each made while the user decides, are kept as they are, nothing
+/// is written or recorded, and the agent is told to call add again.
+#[tokio::test]
+async fn what_changes_while_the_user_decides_is_kept() {
+    let temp = tempfile::tempdir().unwrap();
+    let ask = Fake::new(approve());
+    let setup = setup(temp.path(), ask.clone(), Vec::new());
+    let local = local_file(&setup.workspace);
+    // The user sets up a server of the same name in .arko/mcp.json.
+    let users = r#"{"mcpServers": {"stub": {"command": "users-own"}}}"#;
+    {
+        let local = local.clone();
+        ask.meanwhile(move || {
+            std::fs::create_dir_all(local.parent().unwrap()).unwrap();
+            std::fs::write(&local, users).unwrap();
+        });
+    }
+    let refused = setup
+        .changes
+        .add(&context(temp.path()), stub_request(&setup, "stub", &[]))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        refused,
+        format!(
+            "A server named stub was set up in {} while the user decided, so Arko wrote nothing. Choose another name, and call add again.",
+            normal(&local).display()
+        )
+    );
+    assert_eq!(std::fs::read_to_string(&local).unwrap(), users);
+    // The project's .mcp.json, read before Arko's mcp.json, gains the name of
+    // a server for every project.
+    {
+        let project = setup.workspace.join(crate::mcp::PROJECT_FILE);
+        ask.meanwhile(move || {
+            std::fs::write(project, r#"{"mcpServers": {"other": {"command": "npx"}}}"#).unwrap();
+        });
+    }
+    let mut request = stub_request(&setup, "other", &[]);
+    request.scope = McpScope::User;
+    let refused = setup
+        .changes
+        .add(&context(temp.path()), request)
+        .await
+        .unwrap_err();
+    assert!(
+        refused.contains("/.mcp.json while the user decided, so Arko wrote nothing."),
+        "{refused}"
+    );
+    assert!(!setup.root.join(crate::mcp::USER_FILE).exists());
+    // The user edits the agent's own server while it asks to replace it.
+    setup
+        .changes
+        .add(&context(temp.path()), stub_request(&setup, "mine", &[]))
+        .await
+        .unwrap();
+    let first = agent_added::server_in(&setup.root, &normal(&local), "mine").unwrap();
+    {
+        let local = local.clone();
+        ask.meanwhile(move || {
+            let mut written = json(&local);
+            written["mcpServers"]["mine"]["command"] = "edited".into();
+            std::fs::write(&local, written.to_string()).unwrap();
+        });
+    }
+    let mut again = stub_request(&setup, "mine", &[]);
+    again.why = "Another reason.".into();
+    let refused = setup
+        .changes
+        .add(&context(temp.path()), again)
+        .await
+        .unwrap_err();
+    assert!(
+        refused.starts_with("mine changed in ") && refused.contains("Call add again"),
+        "{refused}"
+    );
+    assert_eq!(json(&local)["mcpServers"]["mine"]["command"], "edited");
+    assert_eq!(agent_added::servers(&setup.root), [first]);
+    assert!(setup.changes.servers.hub.config("stub").is_none());
+    assert!(setup.changes.servers.hub.config("other").is_none());
+    setup.changes.servers.shutdown().await;
+}
+
+/// An add whose record of what agents added can't be written writes no
+/// entry and remembers no approval, so nothing starts in the next session.
+#[tokio::test]
+async fn an_add_that_cant_be_recorded_writes_nothing() {
+    let temp = tempfile::tempdir().unwrap();
+    let ask = Fake::new(approve());
+    let setup = setup(temp.path(), ask, Vec::new());
+    // A folder where the record's file goes can't be read or written.
+    std::fs::create_dir_all(setup.root.join(agent_added::FILE)).unwrap();
+    let refused = setup
+        .changes
+        .add(&context(temp.path()), stub_request(&setup, "stub", &[]))
+        .await
+        .unwrap_err();
+    assert!(
+        refused.starts_with("Couldn't read ") && refused.ends_with(" Arko didn't add stub."),
+        "{refused}"
+    );
+    let local = local_file(&setup.workspace);
+    assert!(!crate::mcp::sets_up(&local, "stub"));
+    assert_eq!(
+        crate::mcp::local_approval(&setup.root, &setup.workspace),
+        Ok(None)
+    );
+    let plan = crate::mcp::plan(&setup.root, &setup.workspace, &[], true).unwrap();
+    assert!(plan.decide(&[]).unwrap().0.is_empty());
+    assert!(setup.changes.servers.hub.config("stub").is_none());
+}
+
+/// A step of an add that fails after the entry is written puts back the
+/// file and the record, and says so. When the file can't be put back, the
+/// entry keeps its record, so an agent's remove takes it out, and the
+/// result says what is left.
+#[test]
+fn a_failed_step_puts_back_what_the_add_changed() {
+    let temp = tempfile::tempdir().unwrap();
+    let setup = setup(temp.path(), Fake::new(approve()), Vec::new());
+    let file = setup.root.join(crate::mcp::USER_FILE);
+    let added = |name: &str| {
+        crate::mcp::write_entry(&file, name, serde_json::json!({"command": "npx"})).unwrap();
+        agent_added::record_server(
+            &setup.root,
+            ServerRecord {
+                file: normal(&file),
+                name: name.into(),
+                session: "s".into(),
+                session_title: None,
+                added: chrono::Utc::now(),
+                why: "A reason.".into(),
+            },
+        )
+        .unwrap();
+    };
+    std::fs::create_dir_all(&setup.root).unwrap();
+    let undo = |name: &'static str| Undo {
+        changes: &setup.changes,
+        name,
+        file: &file,
+        scope: Scope::User,
+        replaced: None,
+    };
+    // A file that wasn't there goes again, and so does the record.
+    added("first");
+    assert_eq!(
+        undo("first").all(
+            "couldn't save the approvals (permission denied)",
+            Some(None)
+        ),
+        "Couldn't save the approvals (permission denied). Arko didn't add first, and changed nothing."
+    );
+    assert!(!file.exists());
+    assert!(agent_added::servers(&setup.root).is_empty());
+    // A file that can't be put back keeps the entry and its record.
+    std::fs::write(&file, r#"{"mcpServers": {}}"#).unwrap();
+    let before = std::fs::read(&file).unwrap();
+    added("second");
+    std::fs::remove_file(&file).unwrap();
+    std::fs::create_dir(&file).unwrap();
+    let said = undo("second").all("Couldn't save the record.", Some(Some(&before)));
+    assert!(
+        said.starts_with(&format!(
+            "Couldn't save the record. Arko didn't add second, but couldn't put {} back as it was (",
+            file.display()
+        )) && said.ends_with(
+            "so the new entry is there. It's recorded as an agent's, so remove takes it out. The next session starts it unless it's removed."
+        ),
+        "{said}"
+    );
+}
+
+/// A server an agent added that didn't start, because a variable it uses
+/// isn't set, is in `servers`'s list with why, and remove takes it out of
+/// its file and the record.
+#[tokio::test]
+async fn a_server_that_didnt_start_is_listed_and_removed() {
+    let temp = tempfile::tempdir().unwrap();
+    let setup = setup(temp.path(), Fake::new(approve()), Vec::new());
+    let request = stub_request(&setup, "issues", &["ARKO_SURELY_UNSET_VARIABLE"]);
+    let Setup {
+        root,
+        workspace,
+        changes,
+        ..
+    } = setup;
+    let changes = Arc::new(changes);
+    changes.add(&context(temp.path()), request).await.unwrap();
+    let session = crate::mcp::Session {
+        servers: changes.servers.clone(),
+        changes: Some(changes.clone()),
+        notices: None,
+    };
+    let bridge = session.lead_tool(Arc::new(arko_agents::mcp::AllServers));
+    let servers = || {
+        let bridge = bridge.clone();
+        let temp = temp.path().to_path_buf();
+        async move {
+            let params =
+                std::collections::HashMap::from([("action".to_string(), "servers".into())]);
+            bridge.execute(&context(&temp), params).await.unwrap()
+        }
+    };
+    assert_eq!(
+        servers().await,
+        "issues  not started, because it uses ${ARKO_SURELY_UNSET_VARIABLE}, which isn't set. The next session starts it once that's fixed."
+    );
+    let removed = changes
+        .remove(&context(temp.path()), "issues", "Not needed.")
+        .await
+        .unwrap();
+    assert_eq!(removed, "Removed issues.");
+    assert!(!crate::mcp::sets_up(&local_file(&workspace), "issues"));
+    assert!(agent_added::servers(&root).is_empty());
+    assert_eq!(
+        servers().await,
+        "No MCP servers are set up. add sets one up once the user approves it."
     );
 }

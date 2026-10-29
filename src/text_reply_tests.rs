@@ -637,7 +637,7 @@ fn a_session_saved_before_text_replies_had_message_user_is_told_it_lacks_it() {
     let saved = |config: &arko_agents::AgentConfig| SavedSetup {
         name: WORKFLOW_NAME.into(),
         configs: [(MAIN.to_string(), config.clone())].into(),
-        mcp_tools: Default::default(),
+        optional_tools: Default::default(),
     };
     assert_eq!(unoffered(&saved(&replying), &[(MAIN, &calling)]), None);
     assert_eq!(unoffered(&saved(&calling), &[(MAIN, &replying)]), None);
@@ -646,7 +646,7 @@ fn a_session_saved_before_text_replies_had_message_user_is_told_it_lacks_it() {
     assert_eq!(
         unoffered(&saved(&before), &[(MAIN, &replying)]).as_deref(),
         Some(
-            "This session started without answers to you while it works (message_user), so its agents don't get them. A new session does."
+            "This session's saved conversations and workers started without answers to you while it works (message_user), so they don't get them, even after a handover. New conversations (/new) and new workers do."
         )
     );
 }

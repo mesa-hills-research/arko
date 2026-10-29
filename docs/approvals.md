@@ -80,7 +80,8 @@ Each request's tool call reads its own answer. An approved request goes ahead an
 doesn't, and your words come with either. A rejection with words asks the agent to change the
 profile, skill or server as they say and ask again. A worker rejected doesn't start, and the agent
 reads why with your words. A request whose turn stops leaves the tray. When no one can answer (`-p`,
-or Arko without a terminal), the agent is told so and nothing is saved, added or started.
+or Arko without a terminal, while the web page isn't served), the agent is told so and nothing is
+saved, added or started.
 
 The tray isn't kept with the session. A tool that runs again after a resume asks again.
 

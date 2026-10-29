@@ -73,6 +73,31 @@ fn variables_expand_and_text_without_them_stays() {
     assert_eq!(expand("open ${TOKEN", &lookup).unwrap(), "open ${TOKEN");
 }
 
+/// The hub is told which `${VAR}`s a server's command line and environment
+/// took, with their values, so its log hides them. A variable that isn't
+/// set, and so took its default, isn't one.
+#[test]
+fn the_hub_is_told_the_values_a_server_took() {
+    assert_eq!(variables("run ${A} --flag=${B:-x} ${C"), ["A", "B"]);
+    let path = std::env::var("PATH").unwrap();
+    let server = Server {
+        name: "github".into(),
+        command: "npx".into(),
+        args: vec![path.clone()],
+        env: BTreeMap::from([("TOKEN".into(), "x".into())]),
+        written_env: BTreeMap::from([("TOKEN".into(), "${ARKO_SURELY_UNSET_VARIABLE:-x}".into())]),
+        shown: "npx ${PATH}".into(),
+        file: PathBuf::new(),
+        workers: true,
+        shared: false,
+    };
+    let config = server.config(None);
+    assert_eq!(
+        config.expanded,
+        std::collections::HashMap::from([("PATH".to_string(), path)])
+    );
+}
+
 #[test]
 fn tool_names_are_ones_the_providers_take() {
     assert_eq!(
@@ -324,12 +349,11 @@ async fn a_server_starts_and_its_tools_are_called_and_one_that_fails_is_reported
         servers.tool_names("stub server").unwrap(),
         ["echo", "write.note"]
     );
-    match servers.state("missing") {
-        Some(McpState::Failed(reason)) => {
-            assert!(reason.contains("arko-no-such-mcp-server"), "{reason}")
-        }
-        other => panic!("{other:?}"),
-    }
+    // Why, in words that hold neither its command nor what it printed.
+    assert_eq!(
+        servers.state("missing"),
+        Some(McpState::Failed("its program wasn't found".into()))
+    );
     assert_eq!(
         servers.summary().unwrap(),
         "MCP servers stub server (2 tools), missing (failed)"

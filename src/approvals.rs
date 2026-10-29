@@ -49,6 +49,9 @@ pub struct Approvals {
     feed: Option<Feed>,
     /// Someone can answer: a terminal or an app.
     answerable: bool,
+    /// The web page is served, where the user answers too (shared by the
+    /// clones).
+    page: Arc<std::sync::atomic::AtomicBool>,
     /// Where the line prompt shows a request.
     output: Option<Arc<Output>>,
 }
@@ -68,8 +71,15 @@ impl Approvals {
         Self {
             feed,
             answerable,
+            page: Arc::default(),
             output,
         }
+    }
+
+    /// Says whether the session's web page is served, where the user can
+    /// answer requests also without a terminal or an app.
+    pub(crate) fn set_page_served(&self, served: bool) {
+        self.page.store(served, std::sync::atomic::Ordering::SeqCst);
     }
 
     /// Approvals no one can answer.
@@ -78,10 +88,12 @@ impl Approvals {
         Self::new(None, false, None)
     }
 
-    /// Whether anyone can answer a request. A tool that can't go on without
-    /// an answer refuses when no one can, in words the agent can act on.
+    /// Whether anyone can answer a request: at a terminal, in an app, or on
+    /// the web page while it is served. A tool that can't go on without an
+    /// answer refuses when no one can, in words the agent can act on.
     pub fn can_answer(&self) -> bool {
-        self.answerable && self.feed.is_some()
+        (self.answerable || self.page.load(std::sync::atomic::Ordering::SeqCst))
+            && self.feed.is_some()
     }
 
     /// Asks the user to approve `approval` for the tool call of `context`,

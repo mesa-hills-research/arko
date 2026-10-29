@@ -152,3 +152,51 @@ fn mcp_name_shows_one_server_whole() {
         "There's no MCP server named gihub. The servers are github, figma, and broken."
     );
 }
+
+/// `/mcp` and `/mcp remove NAME` typed on the web page are answered there,
+/// as in the terminal.
+#[tokio::test]
+async fn mcp_answers_on_the_web_page() {
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, _inputs, _sender) =
+        crate::harness::tests::harness(temp.path(), arko_ai::LLMClient::new(), false);
+    // The page's items after the command, by kind and text.
+    let after = |harness: &Harness, command: &str| -> Vec<(String, String)> {
+        let items: Vec<serde_json::Value> = harness
+            .feed
+            .subscribe()
+            .0
+            .items
+            .iter()
+            .map(|item| serde_json::to_value(item).unwrap())
+            .collect();
+        let at = items
+            .iter()
+            .rposition(|item| item["text"] == command)
+            .unwrap();
+        items[at + 1..]
+            .iter()
+            .map(|item| {
+                (
+                    item["kind"].as_str().unwrap_or_default().to_string(),
+                    item["text"].as_str().unwrap_or_default().to_string(),
+                )
+            })
+            .collect()
+    };
+    assert!(harness.live_command("/mcp", crate::remote::Source::Web));
+    let said = after(&harness, "/mcp");
+    assert!(
+        said.iter()
+            .any(|(kind, text)| kind == "output" && text.starts_with("No MCP servers.")),
+        "{said:?}"
+    );
+    assert!(harness.live_command("/mcp remove nosuch", crate::remote::Source::Web));
+    assert_eq!(
+        after(&harness, "/mcp remove nosuch"),
+        [(
+            "output".to_string(),
+            "There's no MCP server named nosuch.".to_string()
+        )]
+    );
+}
