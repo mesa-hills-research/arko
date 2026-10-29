@@ -1291,7 +1291,7 @@ async fn a_worker_in_its_own_worktree_finds_the_profiles_of_the_leads_workspace(
     git(&["init", "-q"]);
     git(&["add", "a.txt"]);
     git(&["commit", "-q", "-m", "one"]);
-    let folder = work.join(".agents").join("profiles");
+    let folder = work.join(".arko").join("profiles");
     std::fs::create_dir_all(&folder).unwrap();
     std::fs::write(
         folder.join("reviewer.md"),
@@ -1302,7 +1302,7 @@ async fn a_worker_in_its_own_worktree_finds_the_profiles_of_the_leads_workspace(
     until(|| script.requests("r2").len() == 1).await;
     let worktree = harness.session.dir.join("worktrees").join("r1");
     assert!(worktree.join("a.txt").is_file());
-    assert!(!worktree.join(".agents").exists(), "the worktree has no profiles");
+    assert!(!worktree.join(".arko").exists(), "the worktree has no profiles");
     assert!(
         first_message(&script.requests("r2")[0])
             .contains("# Your profile (reviewer)\nReview it with care."),
