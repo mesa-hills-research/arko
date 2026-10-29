@@ -462,6 +462,14 @@ pub struct LiveSettings {
     /// Each built-in skill, and whether it is left out by name (apart from
     /// `builtin_skills`).
     pub builtin_skill_list: Vec<BuiltinSkillSetting>,
+    /// Agents ask before they add an MCP server (`/extensions ask-mcp`).
+    pub ask_before_adding_mcp: bool,
+    /// Agents ask before they save a skill in the project too
+    /// (`/extensions review-skills`).
+    pub review_project_skills: bool,
+    /// The files agents save in the project's `.arko` folder stay out of
+    /// git (`/extensions keep-out-of-git`).
+    pub keep_agents_files_out_of_git: bool,
 }
 
 /// A built-in skill and whether `/builtin-skills` leaves it out by name.

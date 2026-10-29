@@ -1931,6 +1931,7 @@ impl Harness {
             "/worker-depth" => self.worker_depth_command(argument, source),
             "/worker-retry-cap" => self.worker_retry_cap_command(argument, source),
             "/message-copies" => self.message_copies_command(argument, source),
+            "/extensions" => self.extensions_command(argument, source),
             "/profiles" => self.profiles_command(argument),
             "/jobs" => self.jobs_command(argument),
             "/notes" => self.notes_command(argument),
@@ -4854,7 +4855,7 @@ pub(crate) fn publish_title_from_disk(session: &Session, gauges: &Gauges) {
 /// The commands that change a setting while the session runs, which take
 /// an argument: `/outside`, `/model`, `/handover`, `/handover-at`, `/keys`.
 /// And `/message`, which works while the agent works too.
-pub(crate) const LIVE_COMMANDS: [&str; 25] = [
+pub(crate) const LIVE_COMMANDS: [&str; 26] = [
     "/outside",
     "/model",
     "/handover",
@@ -4876,6 +4877,7 @@ pub(crate) const LIVE_COMMANDS: [&str; 25] = [
     "/worker-depth",
     "/worker-retry-cap",
     "/message-copies",
+    "/extensions",
     "/profiles",
     "/jobs",
     "/notes",
@@ -6083,6 +6085,7 @@ pub(crate) mod tests {
             worker_retry_cap: Default::default(),
             message_copies: Default::default(),
             builtin_skills: Default::default(),
+            extensions: Default::default(),
             project: Default::default(),
             background: background.clone(),
             feed: Some(feed.clone()),

@@ -74,6 +74,8 @@ struct DockPress {
 pub struct Info {
     /// The working directory's name.
     pub workspace: String,
+    /// The working directory, where the project's `.arko` folder is.
+    pub workspace_dir: Option<PathBuf>,
     /// The handover size the session started with, until the status says.
     pub handover_at: usize,
     /// The session's folder: the web page's key is there.
@@ -1533,6 +1535,10 @@ impl App {
                 id => self.say(format!("No worker {id}")),
             },
             "/settings" => {
+                // (Another front end may have changed the file.)
+                if let Some(root) = self.info.root.as_deref() {
+                    self.profile_prefs = crate::profiles::Preferences::load(root);
+                }
                 self.overlay = Some(Overlay::Settings {
                     row: 0,
                     picker: None,
@@ -1671,6 +1677,26 @@ impl App {
             // shown (drawn before any key is read) and the workers: should
             // another have started, the session asks again. No leaves the
             // choice unsaved, so the next quit asks again.
+            // Esc is Cancel, and either button goes back to the settings.
+            Overlay::AskOff { row, choice } => match key.code {
+                _ if close => Some(Overlay::Settings { row, picker: None }),
+                KeyCode::Left
+                | KeyCode::Right
+                | KeyCode::Up
+                | KeyCode::Down
+                | KeyCode::Tab
+                | KeyCode::BackTab => Some(Overlay::AskOff {
+                    row,
+                    choice: 1 - choice,
+                }),
+                KeyCode::Enter | KeyCode::Char(' ') => {
+                    if choice == 0 {
+                        self.send("/extensions ask-mcp off");
+                    }
+                    Some(Overlay::Settings { row, picker: None })
+                }
+                _ => Some(Overlay::AskOff { row, choice }),
+            },
             Overlay::Quit { choice, dont_ask } => match key.code {
                 _ if close => None,
                 KeyCode::Left | KeyCode::Up | KeyCode::BackTab => Some(Overlay::Quit {
@@ -1749,6 +1775,11 @@ impl App {
                 (0..self.reading.settings.builtin_skill_list.len()).map(SettingsRow::BuiltinSkill),
             );
         }
+        if commands::find("/extensions ask-mcp on").is_some() {
+            rows.push(SettingsRow::AskBeforeMcp);
+            rows.push(SettingsRow::ReviewProjectSkills);
+        }
+        rows.push(SettingsRow::KeepProfilesOutOfGit);
         if self.reading.models.has_workers {
             if commands::find("/worker-models agent").is_some() {
                 rows.push(SettingsRow::WorkerModels);
@@ -1766,7 +1797,6 @@ impl App {
             if commands::find("/message-copies on").is_some() {
                 rows.push(SettingsRow::MessageCopies);
             }
-            rows.push(SettingsRow::KeepProfilesOutOfGit);
             rows.push(SettingsRow::RepoRootProfiles);
         }
         rows.push(SettingsRow::Keys);
@@ -2034,15 +2064,35 @@ impl App {
                     } else {
                         now.repo_root = !now.repo_root;
                     }
-                    match self
-                        .info
-                        .root
-                        .as_deref()
-                        .map_or(Ok(()), |root| now.save(root))
-                    {
-                        Ok(()) => self.profile_prefs = now,
-                        Err(error) => self.say(error),
+                    if let Some(root) = self.info.root.as_deref() {
+                        // The keep-out-of-git choice also reaches the project's
+                        // `.arko/.gitignore`.
+                        let saved = match self.info.workspace_dir.as_deref() {
+                            Some(workspace) => now.save_in(root, workspace),
+                            None => now.save(root),
+                        };
+                        // (A `.gitignore` that couldn't change still saved the choice.)
+                        self.profile_prefs = crate::profiles::Preferences::load(root);
+                        if let Err(error) = saved {
+                            self.say(error);
+                        }
+                    } else {
+                        self.profile_prefs = now;
                     }
+                }
+                SettingsRow::AskBeforeMcp => {
+                    if self.reading.settings.ask_before_adding_mcp {
+                        // The safe choice is on, so turning it off asks.
+                        return Some(Overlay::AskOff { row, choice: 1 });
+                    }
+                    self.send("/extensions ask-mcp on");
+                }
+                SettingsRow::ReviewProjectSkills => {
+                    self.send(if self.reading.settings.review_project_skills {
+                        "/extensions review-skills off"
+                    } else {
+                        "/extensions review-skills on"
+                    });
                 }
                 SettingsRow::BuiltinSkills => {
                     self.send(if self.builtin_skills() {
@@ -3830,9 +3880,8 @@ pub(super) mod tests {
         assert_eq!(rows[models + 1], SettingsRow::WorkerDepth);
         assert_eq!(rows[models + 2], SettingsRow::WorkerRetryCap);
         assert_eq!(rows[models + 3], SettingsRow::MessageCopies);
-        assert_eq!(rows[models + 4], SettingsRow::KeepProfilesOutOfGit);
-        assert_eq!(rows[models + 5], SettingsRow::RepoRootProfiles);
-        assert_eq!(rows[models + 6], SettingsRow::Keys);
+        assert_eq!(rows[models + 4], SettingsRow::RepoRootProfiles);
+        assert_eq!(rows[models + 5], SettingsRow::Keys);
         // Worker billing steps through plans, ask and api, ask by default.
         app.overlay = Some(Overlay::Settings {
             row: models - 1,
@@ -3955,6 +4004,152 @@ pub(super) mod tests {
             }
         );
         assert!(sent(&mut app).is_empty(), "nothing goes to the session");
+    }
+
+    /// The git row also takes Arko's `.gitignore` out of the project's `.arko`
+    /// folder when it goes off, and writes it back when it goes on.
+    #[test]
+    fn the_git_row_changes_the_projects_gitignore() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("arko");
+        let workspace = temp.path().join("work");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let ignore = crate::arko_dir::ensure(&workspace, &root)
+            .unwrap()
+            .join(".gitignore");
+        assert!(ignore.is_file(), "made with the folder");
+        let mut app = App::new(
+            Snapshot::default(),
+            Editor::new(History::load(None)),
+            Info {
+                root: Some(root),
+                workspace_dir: Some(workspace),
+                ..Info::default()
+            },
+            Catalog::load(None),
+            Depth::Rgb,
+        );
+        let row = app
+            .settings_rows()
+            .iter()
+            .position(|row| *row == SettingsRow::KeepProfilesOutOfGit)
+            .unwrap();
+        app.overlay = Some(Overlay::Settings { row, picker: None });
+        press(&mut app, KeyCode::Right, KeyModifiers::NONE);
+        assert!(!app.profile_prefs.keep_out_of_git);
+        assert!(!ignore.exists(), "off removes it");
+        press(&mut app, KeyCode::Left, KeyModifiers::NONE);
+        assert!(app.profile_prefs.keep_out_of_git);
+        assert!(ignore.is_file(), "on writes it again");
+    }
+
+    /// The approval rows send `/extensions`. Turning asking about MCP servers
+    /// off asks first, and Cancel or Esc sends nothing. Turning it on and the
+    /// other row need no question.
+    #[test]
+    fn the_approval_rows_send_the_commands_and_turning_asking_off_asks_first() {
+        let mut app = app();
+        let rows = app.settings_rows();
+        let ask = rows
+            .iter()
+            .position(|row| *row == SettingsRow::AskBeforeMcp)
+            .unwrap();
+        assert_eq!(rows[ask + 1], SettingsRow::ReviewProjectSkills);
+        assert_eq!(rows[ask + 2], SettingsRow::KeepProfilesOutOfGit);
+        app.reading.settings.ask_before_adding_mcp = true;
+        app.overlay = Some(Overlay::Settings {
+            row: ask,
+            picker: None,
+        });
+        let settings = Some(Overlay::Settings {
+            row: ask,
+            picker: None,
+        });
+        // The question opens on Cancel, and Enter there changes nothing.
+        press(&mut app, KeyCode::Right, KeyModifiers::NONE);
+        assert_eq!(
+            app.overlay,
+            Some(Overlay::AskOff {
+                row: ask,
+                choice: 1
+            })
+        );
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(app.overlay, settings);
+        // Esc is Cancel too.
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        press(&mut app, KeyCode::Left, KeyModifiers::NONE);
+        assert_eq!(
+            app.overlay,
+            Some(Overlay::AskOff {
+                row: ask,
+                choice: 0
+            })
+        );
+        press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!(app.overlay, settings);
+        assert!(sent(&mut app).is_empty(), "nothing is sent until Turn off");
+        // Turn off sends the command and goes back to the settings.
+        press(&mut app, KeyCode::Right, KeyModifiers::NONE);
+        press(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+        assert_eq!(
+            app.overlay,
+            Some(Overlay::AskOff {
+                row: ask,
+                choice: 0
+            })
+        );
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(app.overlay, settings);
+        assert_eq!(sent(&mut app), ["/extensions ask-mcp off"]);
+        // Turning it on asks nothing.
+        app.reading.settings.ask_before_adding_mcp = false;
+        press(&mut app, KeyCode::Right, KeyModifiers::NONE);
+        assert_eq!(app.overlay, settings);
+        assert_eq!(sent(&mut app), ["/extensions ask-mcp on"]);
+        // The skills review turns on and off.
+        app.overlay = Some(Overlay::Settings {
+            row: ask + 1,
+            picker: None,
+        });
+        press(&mut app, KeyCode::Right, KeyModifiers::NONE);
+        app.reading.settings.review_project_skills = true;
+        press(&mut app, KeyCode::Left, KeyModifiers::NONE);
+        assert_eq!(
+            sent(&mut app),
+            [
+                "/extensions review-skills on",
+                "/extensions review-skills off"
+            ]
+        );
+    }
+
+    /// Opening the settings reads the git row again, as the web page may
+    /// have changed it.
+    #[test]
+    fn the_settings_read_the_git_row_when_they_open() {
+        use crate::profiles::Preferences;
+        let temp = tempfile::tempdir().unwrap();
+        let mut app = App::new(
+            Snapshot::default(),
+            Editor::new(History::load(None)),
+            Info {
+                root: Some(temp.path().to_path_buf()),
+                ..Info::default()
+            },
+            Catalog::load(None),
+            Depth::Rgb,
+        );
+        assert!(app.profile_prefs.keep_out_of_git);
+        Preferences {
+            keep_out_of_git: false,
+            ..Preferences::default()
+        }
+        .save(temp.path())
+        .unwrap();
+        app.editor.set("/settings");
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert!(!app.profile_prefs.keep_out_of_git);
     }
 
     /// Text replies are a session setting: the row turns them on or off with

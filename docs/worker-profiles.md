@@ -69,9 +69,10 @@ Delete the file to share what Arko writes there with your team. Arko writes it o
 the folder, so it doesn't come back.
 
 In a subfolder of a git repository, Arko also reads the repository root's `.arko/profiles` and
-`.agents/profiles`, after the working directory's own. The "Keep out of git" and "Repo root" rows
-under "Worker profiles" in `/settings` turn off the file above and this lookup. Both are on by
-default and kept for every project in `profiles.json` in Arko's folder.
+`.agents/profiles`, after the working directory's own. In `/settings`, "Keep agents' project files out
+of git" under "Project files" turns off the file above, and "Repo root" under "Worker profiles"
+turns off this lookup. Both are on by default and kept for every project in `profiles.json` in
+Arko's folder.
 
 ## How a worker's setup is chosen
 

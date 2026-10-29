@@ -1762,6 +1762,26 @@ mod tests {
         assert!(page_has(SETTING_NAME));
     }
 
+    /// The words of the settings for what agents add on the page are the
+    /// library's.
+    #[test]
+    fn the_pages_approval_settings_use_the_librarys_words() {
+        use crate::extension_prefs::*;
+        for text in [
+            ASK_MCP_NAME,
+            ASK_MCP_ABOUT,
+            ASK_MCP_OFF,
+            TURN_OFF,
+            CANCEL,
+            REVIEW_SKILLS_NAME,
+            REVIEW_SKILLS_ABOUT,
+            KEEP_OUT_OF_GIT_NAME,
+            KEEP_OUT_OF_GIT_ABOUT,
+        ] {
+            assert!(page_has(text), "{text}");
+        }
+    }
+
     /// A worker's meta line holds its model, profile and cost, which a phone
     /// would cut at the end if the line couldn't wrap.
     #[test]

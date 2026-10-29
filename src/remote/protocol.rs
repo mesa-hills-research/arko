@@ -483,6 +483,12 @@ pub struct SettingsData {
     pub builtin_skills: bool,
     #[serde(deserialize_with = "lenient")]
     pub builtin_skill_list: Vec<SkillData>,
+    #[serde(deserialize_with = "lenient")]
+    pub ask_before_adding_mcp: bool,
+    #[serde(deserialize_with = "lenient")]
+    pub review_project_skills: bool,
+    #[serde(deserialize_with = "lenient")]
+    pub keep_agents_files_out_of_git: bool,
 }
 
 /// A built-in skill and whether it is on.

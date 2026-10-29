@@ -17,6 +17,7 @@ use super::transcript::View;
 use super::wrap::{self, width as text_width};
 use crate::agents::ExtraRules;
 use crate::commands;
+use crate::extension_prefs;
 use crate::glyphs;
 use crate::project;
 use crate::remote;
@@ -52,6 +53,10 @@ pub enum Overlay {
     /// `choice` is what is on (0: Yes, 1: No, 2: the box), and `dont_ask`
     /// whether the box is ticked.
     Quit { choice: usize, dont_ask: bool },
+    /// Turning off "Ask before adding MCP servers" in the settings, which
+    /// asks first: `row` is the settings row to go back to and `choice` the
+    /// button on (0: Turn off, 1: Cancel).
+    AskOff { row: usize, choice: usize },
 }
 
 /// A setting.
@@ -96,7 +101,12 @@ pub enum SettingsRow {
     /// Whether the agent that started a worker gets a copy of the user's
     /// messages to it.
     MessageCopies,
-    /// Whether a profiles folder Arko makes in a project is kept out of git.
+    /// Whether agents ask before they add an MCP server.
+    AskBeforeMcp,
+    /// Whether agents ask before they save a skill in the project too.
+    ReviewProjectSkills,
+    /// Whether the files agents save in a project's `.arko` folder are kept
+    /// out of git.
     KeepProfilesOutOfGit,
     /// Whether profiles are also read from the git repo's root.
     RepoRootProfiles,
@@ -219,7 +229,59 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect, screen: Rect) {
         Overlay::Names(menu) => super::names_menu::draw(frame, &app.theme, area, menu),
         Overlay::Resume(picker) => super::resume_picker::draw(frame, &app.theme, area, picker),
         Overlay::Quit { choice, dont_ask } => quit(frame, app, area, *choice, *dont_ask),
+        Overlay::AskOff { choice, .. } => ask_off(frame, app, area, *choice),
     }
+}
+
+/// The question before "Ask before adding MCP servers" goes off.
+fn ask_off(frame: &mut Frame, app: &App, area: Rect, choice: usize) {
+    let theme = &app.theme;
+    let width = 60.min(area.width.saturating_sub(4)).max(20);
+    let inner = width.saturating_sub(4) as usize;
+    let mut lines: Vec<Line<'static>> = wrap::wrap(
+        &[Span::styled(
+            extension_prefs::ASK_MCP_OFF.to_string(),
+            theme.text(),
+        )],
+        inner,
+        0,
+    )
+    .into_iter()
+    .map(Line::from)
+    .collect();
+    lines.push(Line::default());
+    let mut buttons = Vec::new();
+    for (n, option) in [extension_prefs::TURN_OFF, extension_prefs::CANCEL]
+        .into_iter()
+        .enumerate()
+    {
+        if n > 0 {
+            buttons.push(Span::raw("  "));
+        }
+        let style = if n == choice {
+            theme.chosen()
+        } else {
+            theme.key()
+        };
+        buttons.push(Span::styled(format!(" {option} "), style));
+    }
+    lines.push(Line::from(buttons));
+    let height = (lines.len() as u16 + 4).min(area.height);
+    let rect = centred(area, width, height);
+    let inner_rect = frame_box(frame, rect, theme, extension_prefs::ASK_MCP_NAME);
+    let body = Rect::new(
+        inner_rect.x + 1,
+        inner_rect.y + 1,
+        inner_rect.width.saturating_sub(2),
+        inner_rect.height.saturating_sub(2),
+    );
+    put(frame, body, &lines, 0);
+    footer(
+        frame,
+        rect,
+        theme,
+        &[("← →", "choose"), ("Enter", "go on"), ("Esc", "cancel")],
+    );
 }
 
 /// The background jobs listed in the quit popup: more are counted.
@@ -475,6 +537,9 @@ fn choices(theme: &Theme, options: &[&str], current: usize) -> Vec<Span<'static>
     }
     spans
 }
+
+/// The width of the label column for a name too long for the usual one.
+const WIDE_LABEL: usize = 38;
 
 fn settings(frame: &mut Frame, app: &App, area: Rect, selected: usize) {
     let theme = &app.theme;
@@ -771,20 +836,35 @@ fn settings(frame: &mut Frame, app: &App, area: Rect, selected: usize) {
                 choices(theme, &["on", "off"], usize::from(!app.message_copies())),
                 crate::workers::copies_about(app.message_copies()).to_string(),
             ),
+            SettingsRow::AskBeforeMcp => (
+                "Approvals",
+                extension_prefs::ASK_MCP_NAME,
+                choices(
+                    theme,
+                    &["on", "off"],
+                    usize::from(!app.reading.settings.ask_before_adding_mcp),
+                ),
+                extension_prefs::ASK_MCP_ABOUT.to_string(),
+            ),
+            SettingsRow::ReviewProjectSkills => (
+                "Approvals",
+                extension_prefs::REVIEW_SKILLS_NAME,
+                choices(
+                    theme,
+                    &["on", "off"],
+                    usize::from(!app.reading.settings.review_project_skills),
+                ),
+                extension_prefs::REVIEW_SKILLS_ABOUT.to_string(),
+            ),
             SettingsRow::KeepProfilesOutOfGit => (
-                "Worker profiles",
-                "Keep out of git",
+                "Project files",
+                extension_prefs::KEEP_OUT_OF_GIT_NAME,
                 choices(
                     theme,
                     &["on", "off"],
                     usize::from(!app.profile_prefs.keep_out_of_git),
                 ),
-                if app.profile_prefs.keep_out_of_git {
-                    "A new profile folder gets a .gitignore, so git ignores it. Delete that file to share the profiles."
-                } else {
-                    "A new profile folder is left for git to track."
-                }
-                .to_string(),
+                extension_prefs::KEEP_OUT_OF_GIT_ABOUT.to_string(),
             ),
             SettingsRow::RepoRootProfiles => (
                 "Worker profiles",
@@ -795,9 +875,9 @@ fn settings(frame: &mut Frame, app: &App, area: Rect, selected: usize) {
                     usize::from(!app.profile_prefs.repo_root),
                 ),
                 if app.profile_prefs.repo_root {
-                    "In a subfolder of a git repo, the .agents/profiles in the repo root is read too."
+                    "In a subfolder of a git repo, the profiles in the repo root's .arko folder are read too."
                 } else {
-                    "Only the project's own .agents/profiles is read."
+                    "Only the profiles in the project's own .arko folder are read."
                 }
                 .to_string(),
             ),
@@ -938,9 +1018,16 @@ fn settings(frame: &mut Frame, app: &App, area: Rect, selected: usize) {
         } else {
             theme.text()
         };
+        // A name longer than the column (the approvals' sentences) takes the
+        // wide one, so its choices line up with those of the rows beside it.
+        let column = if text_width(label) > label_width {
+            WIDE_LABEL
+        } else {
+            label_width
+        };
         let mut spans = vec![
             marker,
-            Span::styled(format!("{label:<label_width$}"), label_style),
+            Span::styled(format!("{label:<column$}"), label_style),
         ];
         spans.extend(value);
         lines.push(Line::from(spans));

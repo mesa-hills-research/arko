@@ -163,6 +163,17 @@ pub fn builtin_skills_about(started: bool) -> String {
     text
 }
 
+/// The settings for what agents add (the library's `extension_prefs`
+/// words, which the server's tests find on the page).
+pub const ASK_MCP_NAME: &str = "Ask before adding MCP servers";
+pub const ASK_MCP_ABOUT: &str =
+    "Agents ask before they add a server, for this project or every project.";
+pub const ASK_MCP_OFF: &str = "Agents will add MCP servers without asking. A server runs a program the agent chose, with your permissions and outside the command guard.";
+pub const REVIEW_SKILLS_NAME: &str = "Review project skills";
+pub const REVIEW_SKILLS_ABOUT: &str = "Agents ask before they save a skill in the project too. Skills for every project and downloaded skills always ask.";
+pub const KEEP_OUT_OF_GIT_NAME: &str = "Keep agents' project files out of git";
+pub const KEEP_OUT_OF_GIT_ABOUT: &str = "Skills, MCP servers and worker profiles that agents save in the project's .arko folder stay out of git. Off removes Arko's .gitignore from that folder.";
+
 /// Who gets the extra rules for small models, as `/extra-rules` takes it.
 pub const RULES: [(&str, &str, &str); 3] = [
     (
@@ -886,6 +897,22 @@ mod tests {
         assert_eq!(WORKER_BILLING.map(|(key, ..)| key), ["plans", "ask", "api"]);
         assert!(builtin_skills_about(true).contains("keeps its skills"));
         assert!(!builtin_skills_about(false).contains("keeps its skills"));
+    }
+
+    /// The settings for what agents add read as one plain sentence each.
+    #[test]
+    fn the_approval_settings_have_no_colon_or_semicolon() {
+        for text in [
+            ASK_MCP_NAME,
+            ASK_MCP_ABOUT,
+            ASK_MCP_OFF,
+            REVIEW_SKILLS_NAME,
+            REVIEW_SKILLS_ABOUT,
+            KEEP_OUT_OF_GIT_NAME,
+            KEEP_OUT_OF_GIT_ABOUT,
+        ] {
+            assert!(!text.contains([':', ';']), "{text}");
+        }
     }
 
     #[test]
